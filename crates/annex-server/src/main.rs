@@ -6,20 +6,27 @@
 mod config;
 
 use axum::{routing::get, Json, Router};
-use serde_json::{json, Value};
+use serde::Serialize;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
+
+/// Response structure for the health check endpoint.
+#[derive(Serialize)]
+struct HealthResponse {
+    status: &'static str,
+    version: &'static str,
+}
 
 /// Health check handler.
 ///
 /// Returns `200 OK` with server status and version. Used by load balancers,
 /// monitoring, and CI to verify the server is running.
-async fn health() -> Json<Value> {
-    Json(json!({
-        "status": "ok",
-        "version": "0.0.1"
-    }))
+async fn health() -> Json<HealthResponse> {
+    Json(HealthResponse {
+        status: "ok",
+        version: "0.0.1",
+    })
 }
 
 /// Builds the application router with all routes.
@@ -109,6 +116,7 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use serde_json::Value;
     use tower::ServiceExt;
 
     #[tokio::test]

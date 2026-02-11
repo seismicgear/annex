@@ -104,6 +104,10 @@ pub enum ConfigError {
     /// Failed to parse the configuration file.
     #[error("failed to parse config file: {0}")]
     Parse(#[from] toml::de::Error),
+
+    /// Failed to parse an environment variable.
+    #[error("failed to parse environment variable {0}: {1}")]
+    EnvVar(String, String),
 }
 
 /// Loads configuration from a TOML file, falling back to defaults.
@@ -133,13 +137,15 @@ pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
 
     // Environment variable overrides
     if let Ok(host) = std::env::var("ANNEX_HOST") {
-        if let Ok(parsed) = host.parse() {
-            config.server.host = parsed;
+        match host.parse() {
+            Ok(parsed) => config.server.host = parsed,
+            Err(e) => return Err(ConfigError::EnvVar("ANNEX_HOST".to_string(), e.to_string())),
         }
     }
     if let Ok(port) = std::env::var("ANNEX_PORT") {
-        if let Ok(parsed) = port.parse() {
-            config.server.port = parsed;
+        match port.parse() {
+            Ok(parsed) => config.server.port = parsed,
+            Err(e) => return Err(ConfigError::EnvVar("ANNEX_PORT".to_string(), e.to_string())),
         }
     }
     if let Ok(db_path) = std::env::var("ANNEX_DB_PATH") {
