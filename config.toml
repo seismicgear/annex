@@ -1,0 +1,14 @@
+# Annex server configuration.
+# Environment variables override values in this file.
+# See crates/annex-server/src/config.rs for override details.
+
+[server]
+host = "127.0.0.1"
+port = 3000
+
+[database]
+path = "annex.db"
+
+[logging]
+level = "info"
+json = false

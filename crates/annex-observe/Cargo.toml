@@ -1,0 +1,11 @@
+[package]
+name = "annex-observe"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+annex-types = { workspace = true }
+annex-db = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

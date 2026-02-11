@@ -1,0 +1,12 @@
+[package]
+name = "annex-identity"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+annex-types = { workspace = true }
+annex-db = { workspace = true }
+sha2 = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
