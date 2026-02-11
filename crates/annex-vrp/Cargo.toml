@@ -1,0 +1,10 @@
+[package]
+name = "annex-vrp"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+annex-types = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
