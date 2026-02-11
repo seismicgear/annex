@@ -46,6 +46,13 @@ pub enum MigrationError {
 /// Returns `MigrationError` if any migration fails to execute or if the
 /// migration tracking table cannot be queried.
 pub fn run_migrations(conn: &Connection) -> Result<usize, MigrationError> {
+    run_migrations_from_list(conn, MIGRATIONS)
+}
+
+fn run_migrations_from_list(
+    conn: &Connection,
+    migrations: &[Migration],
+) -> Result<usize, MigrationError> {
     // Ensure the tracking table exists (the first migration creates it,
     // but we need it to exist before we can check what's been applied).
     conn.execute_batch(
@@ -62,7 +69,7 @@ pub fn run_migrations(conn: &Connection) -> Result<usize, MigrationError> {
 
     let mut applied = 0;
 
-    for migration in MIGRATIONS {
+    for migration in migrations {
         let already_applied: bool = conn
             .query_row(
                 "SELECT COUNT(*) > 0 FROM _annex_migrations WHERE name = ?1",
@@ -81,17 +88,29 @@ pub fn run_migrations(conn: &Connection) -> Result<usize, MigrationError> {
 
         tracing::info!(migration = migration.name, "applying migration");
 
-        conn.execute_batch(migration.sql)
+        let tx = conn
+            .unchecked_transaction()
             .map_err(|e| MigrationError::ExecutionFailed {
                 name: migration.name.to_string(),
                 source: e,
             })?;
 
-        conn.execute(
+        tx.execute_batch(migration.sql)
+            .map_err(|e| MigrationError::ExecutionFailed {
+                name: migration.name.to_string(),
+                source: e,
+            })?;
+
+        tx.execute(
             "INSERT INTO _annex_migrations (name) VALUES (?1)",
             [migration.name],
         )
         .map_err(|e| MigrationError::ExecutionFailed {
+            name: migration.name.to_string(),
+            source: e,
+        })?;
+
+        tx.commit().map_err(|e| MigrationError::ExecutionFailed {
             name: migration.name.to_string(),
             source: e,
         })?;
@@ -131,5 +150,40 @@ mod tests {
 
         let second = run_migrations(&conn).expect("second run should succeed");
         assert_eq!(second, 0, "no new migrations to apply");
+    }
+
+    #[test]
+    fn migration_side_effects_rollback_when_tracking_insert_fails() {
+        let conn = Connection::open_in_memory().expect("should open in-memory db");
+        let migrations = [Migration {
+            name: "001_tracking_insert_conflict",
+            sql: "
+                CREATE TABLE rollback_probe (id INTEGER PRIMARY KEY);
+                INSERT INTO _annex_migrations (name) VALUES ('001_tracking_insert_conflict');
+            ",
+        }];
+
+        let err = run_migrations_from_list(&conn, &migrations)
+            .expect_err("tracking insert conflict should fail migration");
+
+        match err {
+            MigrationError::ExecutionFailed { name, .. } => {
+                assert_eq!(name, "001_tracking_insert_conflict")
+            }
+            other => panic!("unexpected error type: {other:?}"),
+        }
+
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'rollback_probe')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("should query sqlite_master");
+
+        assert!(
+            !exists,
+            "schema side effects should be rolled back when tracking insert fails"
+        );
     }
 }
