@@ -1,7 +1,7 @@
+use crate::poseidon::hash_inputs;
+use crate::IdentityError;
 use ark_bn254::Fr;
 use ark_ff::{BigInteger, PrimeField};
-use crate::IdentityError;
-use crate::poseidon::hash_inputs;
 
 /// Roles defined in the system.
 ///
@@ -45,10 +45,13 @@ impl TryFrom<u8> for RoleCode {
 ///
 /// Returns [`IdentityError::InvalidHex`] if `sk_hex` is not valid hex.
 /// Returns [`IdentityError::PoseidonError`] if hashing fails.
-pub fn generate_commitment(sk_hex: &str, role: RoleCode, node_id: u64) -> Result<String, IdentityError> {
+pub fn generate_commitment(
+    sk_hex: &str,
+    role: RoleCode,
+    node_id: u64,
+) -> Result<String, IdentityError> {
     // Parse sk_hex to bytes.
-    let sk_bytes = hex::decode(sk_hex)
-        .map_err(|_| IdentityError::InvalidHex(sk_hex.to_string()))?;
+    let sk_bytes = hex::decode(sk_hex).map_err(|_| IdentityError::InvalidHex)?;
 
     // Convert to Fr. interpret bytes as big-endian integer.
     // If bytes length > 32 or value >= modulus, it's reduced modulo order.
@@ -92,8 +95,10 @@ mod tests {
         let role2 = RoleCode::AiAgent;
         let node_id = 42;
 
-        let comm1 = generate_commitment(sk, role1, node_id).expect("should generate commitment for role 1");
-        let comm2 = generate_commitment(sk, role2, node_id).expect("should generate commitment for role 2");
+        let comm1 =
+            generate_commitment(sk, role1, node_id).expect("should generate commitment for role 1");
+        let comm2 =
+            generate_commitment(sk, role2, node_id).expect("should generate commitment for role 2");
 
         assert_ne!(comm1, comm2);
     }
@@ -103,6 +108,10 @@ mod tests {
         let role = RoleCode::Human;
         let node_id = 42;
         let err = generate_commitment("invalid-hex", role, node_id);
-        assert!(matches!(err, Err(IdentityError::InvalidHex(_))), "Expected InvalidHex error, got {:?}", err);
+        assert!(
+            matches!(err, Err(IdentityError::InvalidHex)),
+            "Expected InvalidHex error, got {:?}",
+            err
+        );
     }
 }

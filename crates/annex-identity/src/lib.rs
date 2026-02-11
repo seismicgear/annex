@@ -28,8 +28,8 @@ pub enum IdentityError {
     #[error("nullifier hex must be 64 lowercase hex characters")]
     InvalidNullifierFormat,
     /// The input hex string is invalid.
-    #[error("invalid hex string: {0}")]
-    InvalidHex(String),
+    #[error("invalid hex string")]
+    InvalidHex,
     /// The role code is invalid.
     #[error("invalid role code: {0}")]
     InvalidRoleCode(u8),

@@ -1,6 +1,6 @@
+use crate::IdentityError;
 use ark_bn254::Fr;
 use light_poseidon::{Poseidon, PoseidonHasher};
-use crate::IdentityError;
 
 /// Hashes a slice of field elements using Poseidon with BN254 parameters compatible with Circom.
 ///
@@ -11,10 +11,12 @@ use crate::IdentityError;
 pub fn hash_inputs(inputs: &[Fr]) -> Result<Fr, IdentityError> {
     // light-poseidon supports specific input lengths.
     // For 2 inputs (Merkle) and 3 inputs (Commitment), it should work.
-    let mut poseidon = Poseidon::<Fr>::new_circom(inputs.len())
-        .map_err(|e| IdentityError::PoseidonError(format!("Failed to initialize Poseidon: {:?}", e)))?;
+    let mut poseidon = Poseidon::<Fr>::new_circom(inputs.len()).map_err(|e| {
+        IdentityError::PoseidonError(format!("Failed to initialize Poseidon: {:?}", e))
+    })?;
 
-    poseidon.hash(inputs)
+    poseidon
+        .hash(inputs)
         .map_err(|e| IdentityError::PoseidonError(format!("Poseidon hash failed: {:?}", e)))
 }
 
