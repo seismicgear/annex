@@ -265,7 +265,9 @@ pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::sync::{Mutex, OnceLock};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn env_lock() -> &'static Mutex<()> {
         static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -282,6 +284,17 @@ mod tests {
         std::env::remove_var("ANNEX_LOG_JSON");
     }
 
+    fn write_temp_config(contents: &str) -> String {
+        let unique_suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        let file_name = format!("annex-config-{unique_suffix}.toml");
+        let path = std::env::temp_dir().join(file_name);
+        fs::write(&path, contents).expect("failed to write temp config");
+        path.to_string_lossy().into_owned()
+    }
+
     #[test]
     fn defaults_are_loaded_when_file_missing() {
         let _guard = env_lock().lock().expect("env lock poisoned");
@@ -296,6 +309,41 @@ mod tests {
         assert_eq!(cfg.database.pool_max_size, default_db_pool_max_size());
         assert_eq!(cfg.logging.level, default_log_level());
         assert!(!cfg.logging.json);
+    }
+
+    #[test]
+    fn explicit_config_path_is_loaded() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+
+        let path = write_temp_config(
+            r#"
+[server]
+host = "0.0.0.0"
+port = 4567
+
+[database]
+path = "path-from-file.db"
+busy_timeout_ms = 15000
+pool_max_size = 32
+
+[logging]
+level = "trace"
+json = true
+"#,
+        );
+
+        let cfg = load_config(Some(path.as_str())).expect("load should succeed");
+
+        assert_eq!(cfg.server.host, IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)));
+        assert_eq!(cfg.server.port, 4567);
+        assert_eq!(cfg.database.path, "path-from-file.db");
+        assert_eq!(cfg.database.busy_timeout_ms, 15_000);
+        assert_eq!(cfg.database.pool_max_size, 32);
+        assert_eq!(cfg.logging.level, "trace");
+        assert!(cfg.logging.json);
+
+        fs::remove_file(path).expect("failed to remove temp config");
     }
 
     #[test]

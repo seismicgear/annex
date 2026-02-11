@@ -27,10 +27,30 @@ fn app() -> Router {
     Router::new().route("/health", get(health))
 }
 
+fn resolve_config_path() -> (Option<String>, &'static str) {
+    if let Some(path) = std::env::args()
+        .nth(1)
+        .filter(|value| !value.trim().is_empty())
+    {
+        return (Some(path), "cli-arg");
+    }
+
+    if let Ok(path) = std::env::var("ANNEX_CONFIG_PATH") {
+        if !path.trim().is_empty() {
+            return (Some(path), "env-var");
+        }
+    }
+
+    (None, "default")
+}
+
 #[tokio::main]
 async fn main() {
+    let (resolved_config_path, config_source) = resolve_config_path();
+    let selected_config_path = resolved_config_path.as_deref().or(Some("config.toml"));
+
     // Load configuration
-    let config = config::load_config(Some("config.toml"))
+    let config = config::load_config(selected_config_path)
         .expect("failed to load configuration — the server cannot start without valid config");
 
     // Initialize tracing
@@ -45,6 +65,12 @@ async fn main() {
     } else {
         tracing_subscriber::fmt().with_env_filter(filter).init();
     }
+
+    tracing::info!(
+        source = config_source,
+        path = selected_config_path.unwrap_or("<none>"),
+        "resolved startup configuration path"
+    );
 
     // Initialize database
     let pool = annex_db::create_pool(
