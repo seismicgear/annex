@@ -10,3 +10,7 @@ sha2 = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+ark-bn254 = "0.5.0"
+ark-ff = "0.5.0"
+light-poseidon = "0.4.0"
+hex = "0.4.3"
