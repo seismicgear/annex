@@ -13,11 +13,13 @@ fn test_merkle_persistence_round_trip() {
     // Insert some leaves
     let leaf1 = Fr::from(100);
     let index1 = tree.insert(leaf1).expect("failed to insert leaf1");
-    tree.persist_leaf(&conn, index1, leaf1).expect("failed to persist leaf1");
+    tree.persist_leaf(&conn, index1, leaf1)
+        .expect("failed to persist leaf1");
 
     let leaf2 = Fr::from(200);
     let index2 = tree.insert(leaf2).expect("failed to insert leaf2");
-    tree.persist_leaf(&conn, index2, leaf2).expect("failed to persist leaf2");
+    tree.persist_leaf(&conn, index2, leaf2)
+        .expect("failed to persist leaf2");
 
     // Persist root
     tree.persist_root(&conn).expect("failed to persist root");
@@ -29,7 +31,9 @@ fn test_merkle_persistence_round_trip() {
     assert_eq!(tree.root(), restored_tree.root());
 
     // Verify proofs work on restored tree
-    let (proof1, indices1) = restored_tree.get_proof(index1).expect("failed to get proof1");
+    let (proof1, indices1) = restored_tree
+        .get_proof(index1)
+        .expect("failed to get proof1");
     assert_eq!(proof1.len(), depth);
     assert_eq!(indices1.len(), depth);
 
@@ -37,8 +41,12 @@ fn test_merkle_persistence_round_trip() {
     let mut restored_tree = restored_tree; // mut
     let leaf3 = Fr::from(300);
     let index3 = restored_tree.insert(leaf3).expect("failed to insert leaf3");
-    restored_tree.persist_leaf(&conn, index3, leaf3).expect("failed to persist leaf3");
-    restored_tree.persist_root(&conn).expect("failed to persist new root");
+    restored_tree
+        .persist_leaf(&conn, index3, leaf3)
+        .expect("failed to persist leaf3");
+    restored_tree
+        .persist_root(&conn)
+        .expect("failed to persist new root");
 
     assert_ne!(tree.root(), restored_tree.root());
 }
@@ -52,7 +60,8 @@ fn test_restore_recovers_on_root_mismatch() {
     let mut tree = MerkleTree::new(depth).expect("failed to create tree");
     let leaf = Fr::from(100);
     let index = tree.insert(leaf).expect("failed to insert");
-    tree.persist_leaf(&conn, index, leaf).expect("failed to persist leaf");
+    tree.persist_leaf(&conn, index, leaf)
+        .expect("failed to persist leaf");
     tree.persist_root(&conn).expect("failed to persist root");
 
     // Tamper with the root in DB
