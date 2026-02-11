@@ -96,7 +96,7 @@ Every PR must pass all of the following before merge:
 
 ## Phase 0: Project Scaffold
 
-**Status**: `NOT STARTED`
+**Status**: `COMPLETE`
 **Prerequisites**: None
 **Estimated scope**: Repository structure, dependency setup, CI pipeline, development environment
 
@@ -188,7 +188,7 @@ Phase 0 is **COMPLETE** when:
 
 ## Phase 1: Identity Plane
 
-**Status**: `NOT STARTED`
+**Status**: `IN PROGRESS`
 **Prerequisites**: Phase 0 `COMPLETE`
 **Estimated scope**: ZKP circuits, Poseidon Merkle tree, VRP registry, identity commitment, pseudonym derivation
 
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-11 | Phase 0 `COMPLETE`. Phase 1 `IN PROGRESS`. |
 | 2026-02-11 | Roadmap created. All phases `NOT STARTED`. |
 
 ---
