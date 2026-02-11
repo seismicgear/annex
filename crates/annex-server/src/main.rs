@@ -47,8 +47,14 @@ async fn main() {
     }
 
     // Initialize database
-    let pool = annex_db::create_pool(&config.database.path)
-        .expect("failed to create database pool — check database.path in config");
+    let pool = annex_db::create_pool(
+        &config.database.path,
+        annex_db::DbRuntimeSettings {
+            busy_timeout_ms: config.database.busy_timeout_ms,
+            pool_max_size: config.database.pool_max_size,
+        },
+    )
+    .expect("failed to create database pool — check database.path in config");
 
     {
         let conn = pool
