@@ -1,0 +1,214 @@
+//! Poseidon Merkle Tree implementation.
+//!
+//! A binary Merkle tree using Poseidon hash function.
+//! Supports append-only insertion and proof generation.
+
+use crate::{poseidon::hash_inputs, IdentityError};
+use ark_bn254::Fr;
+use std::collections::HashMap;
+
+/// A Poseidon Merkle tree.
+///
+/// Stores leaves and internal nodes in a sparse map to support large depths
+/// while keeping memory usage proportional to the number of inserted leaves.
+#[derive(Debug)]
+pub struct MerkleTree {
+    /// Depth of the tree (number of levels excluding root).
+    pub depth: usize,
+    /// Next available leaf index for insertion.
+    pub next_index: usize,
+    /// Sparse storage for nodes. Key: (level, index).
+    /// Level 0 is leaves. Level `depth` is root.
+    nodes: HashMap<(usize, usize), Fr>,
+    /// Precomputed zero hashes for each level.
+    /// zeros[i] is the default value for a node at level i.
+    zeros: Vec<Fr>,
+}
+
+impl MerkleTree {
+    /// Creates a new empty Merkle tree with the given depth.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdentityError::PoseidonError`] if zero hash precomputation fails.
+    pub fn new(depth: usize) -> Result<Self, IdentityError> {
+        let mut zeros = Vec::with_capacity(depth + 1);
+        zeros.push(Fr::from(0));
+        for i in 0..depth {
+            let zero = zeros[i];
+            let hash = hash_inputs(&[zero, zero])?;
+            zeros.push(hash);
+        }
+
+        Ok(Self {
+            depth,
+            next_index: 0,
+            nodes: HashMap::new(),
+            zeros,
+        })
+    }
+
+    /// Inserts a leaf into the next available slot.
+    ///
+    /// Returns the index of the inserted leaf.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdentityError::TreeFull`] if the tree is full.
+    /// Returns [`IdentityError::PoseidonError`] if hashing fails.
+    pub fn insert(&mut self, leaf: Fr) -> Result<usize, IdentityError> {
+        if self.next_index >= 1 << self.depth {
+            return Err(IdentityError::TreeFull);
+        }
+
+        let index = self.next_index;
+        self.next_index += 1;
+
+        // Update path to root
+        let mut current_idx = index;
+        let mut current_val = leaf;
+
+        // Insert leaf
+        self.nodes.insert((0, current_idx), current_val);
+
+        for level in 0..self.depth {
+            let sibling_idx = current_idx ^ 1;
+            let sibling_val = *self
+                .nodes
+                .get(&(level, sibling_idx))
+                .unwrap_or(&self.zeros[level]);
+
+            let parent_val = if current_idx & 1 == 0 {
+                // Current is left, sibling is right
+                hash_inputs(&[current_val, sibling_val])?
+            } else {
+                // Current is right, sibling is left
+                hash_inputs(&[sibling_val, current_val])?
+            };
+
+            current_idx /= 2;
+            current_val = parent_val;
+            self.nodes.insert((level + 1, current_idx), current_val);
+        }
+
+        Ok(index)
+    }
+
+    /// Returns the current Merkle root.
+    pub fn root(&self) -> Fr {
+        *self
+            .nodes
+            .get(&(self.depth, 0))
+            .unwrap_or(&self.zeros[self.depth])
+    }
+
+    /// Generates a Merkle proof for the leaf at the given index.
+    ///
+    /// Returns a tuple `(path_elements, path_indices)`.
+    /// `path_elements`: The sibling hashes along the path to the root.
+    /// `path_indices`: The direction bits (0 for left, 1 for right) indicating
+    /// where the current node is relative to its sibling.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdentityError::InvalidIndex`] if `index` is out of bounds (>= next_index).
+    pub fn get_proof(&self, index: usize) -> Result<(Vec<Fr>, Vec<u8>), IdentityError> {
+        if index >= self.next_index {
+            return Err(IdentityError::InvalidIndex(index));
+        }
+
+        let mut path_elements = Vec::with_capacity(self.depth);
+        let mut path_indices = Vec::with_capacity(self.depth);
+
+        let mut current_idx = index;
+
+        for level in 0..self.depth {
+            let sibling_idx = current_idx ^ 1;
+            let sibling_val = *self
+                .nodes
+                .get(&(level, sibling_idx))
+                .unwrap_or(&self.zeros[level]);
+
+            path_elements.push(sibling_val);
+            path_indices.push((current_idx % 2) as u8);
+
+            current_idx /= 2;
+        }
+
+        Ok((path_elements, path_indices))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_merkle_tree_init() {
+        let tree = MerkleTree::new(5).expect("failed to create tree");
+        assert_eq!(tree.depth, 5);
+        assert_eq!(tree.next_index, 0);
+        // Root should be zero hash
+        // zeros[0] = 0
+        // zeros[1] = hash(0,0)
+        // ...
+        assert_eq!(tree.root(), tree.zeros[5]);
+    }
+
+    #[test]
+    fn test_merkle_tree_insert_updates_root() {
+        let mut tree = MerkleTree::new(3).expect("failed to create tree");
+        let initial_root = tree.root();
+
+        let leaf1 = Fr::from(1);
+        let index1 = tree.insert(leaf1).expect("failed to insert leaf");
+        assert_eq!(index1, 0);
+        assert_ne!(tree.root(), initial_root);
+
+        let leaf2 = Fr::from(2);
+        let index2 = tree.insert(leaf2).expect("failed to insert leaf");
+        assert_eq!(index2, 1);
+    }
+
+    #[test]
+    fn test_merkle_proof_verification() {
+        let mut tree = MerkleTree::new(3).expect("failed to create tree");
+        let leaf = Fr::from(123);
+        let index = tree.insert(leaf).expect("failed to insert");
+
+        let (path_elements, path_indices) = tree.get_proof(index).expect("failed to get proof");
+
+        // Verify manually
+        let mut current = leaf;
+        for (element, index_bit) in path_elements.iter().zip(path_indices.iter()) {
+            current = if *index_bit == 0 {
+                hash_inputs(&[current, *element]).unwrap()
+            } else {
+                hash_inputs(&[*element, current]).unwrap()
+            };
+        }
+
+        assert_eq!(current, tree.root(), "Proof verification failed");
+    }
+
+    #[test]
+    fn test_merkle_tree_full_error() {
+        // Create small tree of depth 1 (capacity 2)
+        let mut tree = MerkleTree::new(1).expect("failed to create tree");
+        tree.insert(Fr::from(1)).unwrap();
+        tree.insert(Fr::from(2)).unwrap();
+
+        let err = tree.insert(Fr::from(3));
+        assert_eq!(err, Err(IdentityError::TreeFull));
+    }
+
+    #[test]
+    fn test_invalid_index_error() {
+        let mut tree = MerkleTree::new(3).expect("failed to create tree");
+        tree.insert(Fr::from(1)).unwrap();
+
+        assert!(tree.get_proof(0).is_ok());
+        assert_eq!(tree.get_proof(1), Err(IdentityError::InvalidIndex(1)));
+        assert_eq!(tree.get_proof(100), Err(IdentityError::InvalidIndex(100)));
+    }
+}

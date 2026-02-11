@@ -7,9 +7,11 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 pub mod commitment;
+pub mod merkle;
 pub mod poseidon;
 
 pub use commitment::{generate_commitment, RoleCode};
+pub use merkle::MerkleTree;
 pub use poseidon::hash_inputs;
 
 /// Errors produced by identity derivation operations.
@@ -36,6 +38,12 @@ pub enum IdentityError {
     /// Poseidon hashing failed.
     #[error("poseidon error: {0}")]
     PoseidonError(String),
+    /// Merkle tree is full.
+    #[error("merkle tree is full")]
+    TreeFull,
+    /// Invalid leaf index.
+    #[error("invalid leaf index: {0}")]
+    InvalidIndex(usize),
 }
 
 /// Deterministically derives the nullifier hex for a commitment and topic.
@@ -101,19 +109,7 @@ pub fn derive_topic_scoped_pseudonym(
 
 fn sha256_hex(input: &str) -> String {
     let digest = Sha256::digest(input.as_bytes());
-    let mut hex = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        hex.push(hex_char((byte >> 4) & 0x0f));
-        hex.push(hex_char(byte & 0x0f));
-    }
-    hex
-}
-
-fn hex_char(nibble: u8) -> char {
-    const HEX: [char; 16] = [
-        '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
-    ];
-    HEX[(nibble & 0x0f) as usize]
+    hex::encode(digest)
 }
 
 fn is_lower_hex_64(value: &str) -> bool {
