@@ -8,8 +8,15 @@ mod config;
 use axum::{routing::get, Json, Router};
 use serde_json::{json, Value};
 use std::net::SocketAddr;
+use thiserror::Error;
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
+
+#[derive(Debug, Error)]
+enum StartupError {
+    #[error("invalid logging.level '{value}': {reason}")]
+    InvalidLoggingLevel { value: String, reason: String },
+}
 
 /// Health check handler.
 ///
@@ -44,8 +51,15 @@ fn resolve_config_path() -> (Option<String>, &'static str) {
     (None, "default")
 }
 
+fn parse_logging_filter(level: &str) -> Result<EnvFilter, StartupError> {
+    EnvFilter::try_new(level).map_err(|err| StartupError::InvalidLoggingLevel {
+        value: level.to_string(),
+        reason: err.to_string(),
+    })
+}
+
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), StartupError> {
     let (resolved_config_path, config_source) = resolve_config_path();
     let selected_config_path = resolved_config_path.as_deref().or(Some("config.toml"));
 
@@ -54,8 +68,7 @@ async fn main() {
         .expect("failed to load configuration — the server cannot start without valid config");
 
     // Initialize tracing
-    let filter =
-        EnvFilter::try_new(&config.logging.level).unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = parse_logging_filter(&config.logging.level)?;
 
     if config.logging.json {
         tracing_subscriber::fmt()
@@ -109,6 +122,8 @@ async fn main() {
         .expect("server error");
 
     tracing::info!("annex server shut down");
+
+    Ok(())
 }
 
 /// Waits for a SIGINT (Ctrl+C) or SIGTERM signal for graceful shutdown.
@@ -165,5 +180,27 @@ mod tests {
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["status"], "ok");
         assert_eq!(json["version"], "0.0.1");
+    }
+
+    #[test]
+    fn parse_logging_filter_accepts_valid_level() {
+        let filter = parse_logging_filter("annex_server=debug,info");
+
+        assert!(filter.is_ok(), "expected valid logging filter to parse");
+    }
+
+    #[test]
+    fn parse_logging_filter_rejects_invalid_level() {
+        let err = parse_logging_filter("annex_server=bogus").unwrap_err();
+
+        match err {
+            StartupError::InvalidLoggingLevel { value, reason } => {
+                assert_eq!(value, "annex_server=bogus");
+                assert!(
+                    !reason.trim().is_empty(),
+                    "parser reason should not be empty"
+                );
+            }
+        }
     }
 }
