@@ -29,6 +29,9 @@ pub enum IdentityError {
     /// The caller provided a nullifier that is not 64-char lowercase hex.
     #[error("nullifier hex must be 64 lowercase hex characters")]
     InvalidNullifierFormat,
+    /// The caller provided a commitment that is not 64-char lowercase hex.
+    #[error("commitment hex must be 64 lowercase hex characters")]
+    InvalidCommitmentFormat,
     /// The input hex string is invalid.
     #[error("invalid hex string")]
     InvalidHex,
@@ -54,12 +57,17 @@ pub enum IdentityError {
 ///
 /// Returns [`IdentityError::EmptyCommitment`] if `commitment_hex` is empty.
 /// Returns [`IdentityError::EmptyTopic`] if `topic` is empty.
+/// Returns [`IdentityError::InvalidCommitmentFormat`] if `commitment_hex` is not
+/// a 64-character lowercase hexadecimal string.
 pub fn derive_nullifier_hex(commitment_hex: &str, topic: &str) -> Result<String, IdentityError> {
     if commitment_hex.is_empty() {
         return Err(IdentityError::EmptyCommitment);
     }
     if topic.is_empty() {
         return Err(IdentityError::EmptyTopic);
+    }
+    if !is_lower_hex_64(commitment_hex) {
+        return Err(IdentityError::InvalidCommitmentFormat);
     }
 
     Ok(sha256_hex(&format!("{commitment_hex}:{topic}")))
@@ -125,7 +133,7 @@ mod tests {
 
     #[test]
     fn pseudonym_derivation_is_deterministic_for_same_input() {
-        let commitment = "0xabc123";
+        let commitment = "0000000000000000000000000000000000000000000000000000000000abc123";
         let topic = "annex:server:v1";
 
         let first = derive_topic_scoped_pseudonym(commitment, topic);
@@ -137,7 +145,7 @@ mod tests {
 
     #[test]
     fn pseudonym_changes_across_topics() {
-        let commitment = "0xabc123";
+        let commitment = "0000000000000000000000000000000000000000000000000000000000abc123";
 
         let server = derive_topic_scoped_pseudonym(commitment, "annex:server:v1");
         let channel = derive_topic_scoped_pseudonym(commitment, "annex:channel:v1");
@@ -149,12 +157,13 @@ mod tests {
 
     #[test]
     fn returns_error_for_empty_inputs() {
+        let valid_commitment = "0000000000000000000000000000000000000000000000000000000000abc123";
         assert_eq!(
             derive_topic_scoped_pseudonym("", "annex:server:v1"),
             Err(IdentityError::EmptyCommitment)
         );
         assert_eq!(
-            derive_topic_scoped_pseudonym("0xabc123", ""),
+            derive_topic_scoped_pseudonym(valid_commitment, ""),
             Err(IdentityError::EmptyTopic)
         );
     }
@@ -183,6 +192,25 @@ mod tests {
         assert_eq!(
             derive_pseudonym_id("annex:server:v1", "0123456789abcdef"),
             Err(IdentityError::InvalidNullifierFormat)
+        );
+    }
+
+    #[test]
+    fn derive_nullifier_hex_rejects_invalid_commitment() {
+        assert_eq!(
+            derive_nullifier_hex("invalid", "annex:server:v1"),
+            Err(IdentityError::InvalidCommitmentFormat)
+        );
+        assert_eq!(
+            derive_nullifier_hex("0xabc123", "annex:server:v1"),
+            Err(IdentityError::InvalidCommitmentFormat)
+        );
+        assert_eq!(
+            derive_nullifier_hex(
+                "ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789",
+                "annex:server:v1"
+            ),
+            Err(IdentityError::InvalidCommitmentFormat)
         );
     }
 
