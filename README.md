@@ -269,7 +269,7 @@ This is getting built either way. Contributions welcome.
 
 ## License
 
-Open source. License TBD.
+See **LICENSE**.md
 
 ---
 
