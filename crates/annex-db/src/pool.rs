@@ -5,6 +5,25 @@ use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::OpenFlags;
 use thiserror::Error;
 
+/// Runtime tunables for SQLite connection behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DbRuntimeSettings {
+    /// Busy timeout for SQLite connections, in milliseconds.
+    pub busy_timeout_ms: u64,
+
+    /// Maximum number of pooled SQLite connections.
+    pub pool_max_size: u32,
+}
+
+impl Default for DbRuntimeSettings {
+    fn default() -> Self {
+        Self {
+            busy_timeout_ms: 5_000,
+            pool_max_size: 8,
+        }
+    }
+}
+
 /// A type alias for the SQLite connection pool.
 pub type DbPool = Pool<SqliteConnectionManager>;
 
@@ -26,22 +45,25 @@ pub enum PoolError {
 /// # Errors
 ///
 /// Returns `PoolError::PoolInit` if the connection pool cannot be created.
-pub fn create_pool(db_path: &str) -> Result<DbPool, PoolError> {
+pub fn create_pool(db_path: &str, settings: DbRuntimeSettings) -> Result<DbPool, PoolError> {
     let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
         | OpenFlags::SQLITE_OPEN_CREATE
         | OpenFlags::SQLITE_OPEN_FULL_MUTEX;
 
     let manager = SqliteConnectionManager::file(db_path)
         .with_flags(flags)
-        .with_init(|conn| {
-            conn.execute_batch(
+        .with_init(move |conn| {
+            conn.execute_batch(&format!(
                 "PRAGMA journal_mode = WAL;
              PRAGMA foreign_keys = ON;
-             PRAGMA busy_timeout = 5000;",
-            )
+             PRAGMA busy_timeout = {};",
+                settings.busy_timeout_ms
+            ))
         });
 
-    let pool = Pool::builder().max_size(8).build(manager)?;
+    let pool = Pool::builder()
+        .max_size(settings.pool_max_size)
+        .build(manager)?;
 
     Ok(pool)
 }
@@ -52,7 +74,12 @@ mod tests {
 
     #[test]
     fn create_in_memory_pool() {
-        let pool = create_pool(":memory:").expect("pool creation should succeed");
+        let settings = DbRuntimeSettings {
+            busy_timeout_ms: 2_500,
+            pool_max_size: 3,
+        };
+
+        let pool = create_pool(":memory:", settings).expect("pool creation should succeed");
         let conn = pool.get().expect("should get a connection");
 
         // Verify WAL mode is active
@@ -70,5 +97,14 @@ mod tests {
             .query_row("PRAGMA foreign_keys;", [], |row| row.get(0))
             .expect("should query foreign_keys");
         assert_eq!(fk, 1, "foreign keys should be enabled");
+
+        // Verify busy timeout is configured
+        let busy_timeout: i32 = conn
+            .query_row("PRAGMA busy_timeout;", [], |row| row.get(0))
+            .expect("should query busy_timeout");
+        assert_eq!(busy_timeout, 2_500, "busy timeout should match settings");
+
+        // Verify pool max size is configured
+        assert_eq!(pool.max_size(), 3, "pool max size should match settings");
     }
 }

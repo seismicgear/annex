@@ -8,6 +8,8 @@ port = 3000
 
 [database]
 path = "annex.db"
+busy_timeout_ms = 5000
+pool_max_size = 8
 
 [logging]
 level = "info"

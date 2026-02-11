@@ -39,6 +39,14 @@ pub struct DatabaseConfig {
     /// Path to the SQLite database file.
     #[serde(default = "default_db_path")]
     pub path: String,
+
+    /// Busy timeout for SQLite connections, in milliseconds.
+    #[serde(default = "default_db_busy_timeout_ms")]
+    pub busy_timeout_ms: u64,
+
+    /// Maximum number of pooled SQLite connections.
+    #[serde(default = "default_db_pool_max_size")]
+    pub pool_max_size: u32,
 }
 
 /// Logging configuration.
@@ -69,6 +77,14 @@ fn default_log_level() -> String {
     "info".to_string()
 }
 
+fn default_db_busy_timeout_ms() -> u64 {
+    5_000
+}
+
+fn default_db_pool_max_size() -> u32 {
+    8
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -82,6 +98,8 @@ impl Default for DatabaseConfig {
     fn default() -> Self {
         Self {
             path: default_db_path(),
+            busy_timeout_ms: default_db_busy_timeout_ms(),
+            pool_max_size: default_db_pool_max_size(),
         }
     }
 }
@@ -109,6 +127,40 @@ pub enum ConfigError {
     /// Environment variable value was invalid for the expected type.
     #[error("invalid environment variable {name}: {reason}")]
     InvalidEnvVar { name: &'static str, reason: String },
+
+    /// Configuration value is outside the allowed range.
+    #[error("invalid configuration value for {field}: {reason}")]
+    InvalidValue { field: &'static str, reason: String },
+}
+
+const MIN_DB_BUSY_TIMEOUT_MS: u64 = 1;
+const MAX_DB_BUSY_TIMEOUT_MS: u64 = 60_000;
+const MIN_DB_POOL_MAX_SIZE: u32 = 1;
+const MAX_DB_POOL_MAX_SIZE: u32 = 64;
+
+fn validate_config(config: &Config) -> Result<(), ConfigError> {
+    if !(MIN_DB_BUSY_TIMEOUT_MS..=MAX_DB_BUSY_TIMEOUT_MS).contains(&config.database.busy_timeout_ms)
+    {
+        return Err(ConfigError::InvalidValue {
+            field: "database.busy_timeout_ms",
+            reason: format!(
+                "must be in range {MIN_DB_BUSY_TIMEOUT_MS}..={MAX_DB_BUSY_TIMEOUT_MS}, got {}",
+                config.database.busy_timeout_ms
+            ),
+        });
+    }
+
+    if !(MIN_DB_POOL_MAX_SIZE..=MAX_DB_POOL_MAX_SIZE).contains(&config.database.pool_max_size) {
+        return Err(ConfigError::InvalidValue {
+            field: "database.pool_max_size",
+            reason: format!(
+                "must be in range {MIN_DB_POOL_MAX_SIZE}..={MAX_DB_POOL_MAX_SIZE}, got {}",
+                config.database.pool_max_size
+            ),
+        });
+    }
+
+    Ok(())
 }
 
 fn parse_env_var<T>(name: &'static str) -> Result<Option<T>, ConfigError>
@@ -161,6 +213,8 @@ fn parse_env_bool(name: &'static str) -> Result<Option<bool>, ConfigError> {
 /// - `ANNEX_HOST` overrides `server.host`
 /// - `ANNEX_PORT` overrides `server.port`
 /// - `ANNEX_DB_PATH` overrides `database.path`
+/// - `ANNEX_DB_BUSY_TIMEOUT_MS` overrides `database.busy_timeout_ms`
+/// - `ANNEX_DB_POOL_MAX_SIZE` overrides `database.pool_max_size`
 /// - `ANNEX_LOG_LEVEL` overrides `logging.level`
 /// - `ANNEX_LOG_JSON` overrides `logging.json` (set to "true" to enable)
 ///
@@ -190,12 +244,20 @@ pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
     if let Ok(db_path) = std::env::var("ANNEX_DB_PATH") {
         config.database.path = db_path;
     }
+    if let Some(timeout) = parse_env_var("ANNEX_DB_BUSY_TIMEOUT_MS")? {
+        config.database.busy_timeout_ms = timeout;
+    }
+    if let Some(max_size) = parse_env_var("ANNEX_DB_POOL_MAX_SIZE")? {
+        config.database.pool_max_size = max_size;
+    }
     if let Ok(level) = std::env::var("ANNEX_LOG_LEVEL") {
         config.logging.level = level;
     }
     if let Some(json) = parse_env_bool("ANNEX_LOG_JSON")? {
         config.logging.json = json;
     }
+
+    validate_config(&config)?;
 
     Ok(config)
 }
@@ -214,6 +276,8 @@ mod tests {
         std::env::remove_var("ANNEX_HOST");
         std::env::remove_var("ANNEX_PORT");
         std::env::remove_var("ANNEX_DB_PATH");
+        std::env::remove_var("ANNEX_DB_BUSY_TIMEOUT_MS");
+        std::env::remove_var("ANNEX_DB_POOL_MAX_SIZE");
         std::env::remove_var("ANNEX_LOG_LEVEL");
         std::env::remove_var("ANNEX_LOG_JSON");
     }
@@ -228,6 +292,8 @@ mod tests {
         assert_eq!(cfg.server.host, default_host());
         assert_eq!(cfg.server.port, default_port());
         assert_eq!(cfg.database.path, default_db_path());
+        assert_eq!(cfg.database.busy_timeout_ms, default_db_busy_timeout_ms());
+        assert_eq!(cfg.database.pool_max_size, default_db_pool_max_size());
         assert_eq!(cfg.logging.level, default_log_level());
         assert!(!cfg.logging.json);
     }
@@ -240,6 +306,8 @@ mod tests {
         std::env::set_var("ANNEX_HOST", "0.0.0.0");
         std::env::set_var("ANNEX_PORT", "9876");
         std::env::set_var("ANNEX_DB_PATH", "custom.db");
+        std::env::set_var("ANNEX_DB_BUSY_TIMEOUT_MS", "12000");
+        std::env::set_var("ANNEX_DB_POOL_MAX_SIZE", "16");
         std::env::set_var("ANNEX_LOG_LEVEL", "debug");
         std::env::set_var("ANNEX_LOG_JSON", "yes");
 
@@ -248,6 +316,8 @@ mod tests {
         assert_eq!(cfg.server.host, IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)));
         assert_eq!(cfg.server.port, 9876);
         assert_eq!(cfg.database.path, "custom.db");
+        assert_eq!(cfg.database.busy_timeout_ms, 12_000);
+        assert_eq!(cfg.database.pool_max_size, 16);
         assert_eq!(cfg.logging.level, "debug");
         assert!(cfg.logging.json);
 
@@ -280,6 +350,42 @@ mod tests {
         let err = load_config(None).expect_err("load should fail for invalid bool value");
         match err {
             ConfigError::InvalidEnvVar { name, .. } => assert_eq!(name, "ANNEX_LOG_JSON"),
+            other => panic!("unexpected error: {other}"),
+        }
+
+        clear_env();
+    }
+
+    #[test]
+    fn out_of_range_busy_timeout_returns_error() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+
+        std::env::set_var("ANNEX_DB_BUSY_TIMEOUT_MS", "0");
+
+        let err = load_config(None).expect_err("load should fail for out-of-range timeout");
+        match err {
+            ConfigError::InvalidValue { field, .. } => {
+                assert_eq!(field, "database.busy_timeout_ms")
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+
+        clear_env();
+    }
+
+    #[test]
+    fn out_of_range_pool_max_size_returns_error() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+
+        std::env::set_var("ANNEX_DB_POOL_MAX_SIZE", "0");
+
+        let err = load_config(None).expect_err("load should fail for out-of-range pool size");
+        match err {
+            ConfigError::InvalidValue { field, .. } => {
+                assert_eq!(field, "database.pool_max_size")
+            }
             other => panic!("unexpected error: {other}"),
         }
 
