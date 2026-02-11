@@ -10,7 +10,9 @@ pub mod commitment;
 pub mod merkle;
 pub mod poseidon;
 
-pub use commitment::{generate_commitment, RoleCode};
+pub use annex_types::RoleCode;
+pub use ark_bn254::Fr;
+pub use commitment::generate_commitment;
 pub use merkle::MerkleTree;
 pub use poseidon::hash_inputs;
 
@@ -47,6 +49,9 @@ pub enum IdentityError {
     /// Invalid leaf index.
     #[error("invalid leaf index: {0}")]
     InvalidIndex(usize),
+    /// Database error.
+    #[error("database error: {0}")]
+    DatabaseError(String),
 }
 
 /// Deterministically derives the nullifier hex for a commitment and topic.
