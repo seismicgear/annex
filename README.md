@@ -261,7 +261,7 @@ This is getting built either way. Contributions welcome.
 
 ## Related Projects
 
-- **[MABOS](https://github.com/seismicgear/cortex.os)** — Multi-Agent Behavioral Operating System. Cognitive architecture whose VRP implementation (`value_resonance.rs`) is the trust negotiation backbone for Annex's agent and federation protocols.
+- **[MABOS](https://github.com/seismicgear/cortex.os)** — Modular AI Brain Operating System. Cognitive architecture whose VRP implementation (`value_resonance.rs`) is the trust negotiation backbone for Annex's agent and federation protocols.
 - **[Monolith Index](https://github.com/seismicgear/monolith-index)** — Civic Mesh backbone node. Annex shares the identity substrate, federation pattern, ZKP stack, and graph architecture.
 - **[The Montopian Governance Model](https://www.montgomerykuykendall.com/frameworks/montopia)** — The constitutional framework that defines civic identity, federated governance, and the invariants Annex inherits.
 
