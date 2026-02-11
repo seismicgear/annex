@@ -6,6 +6,12 @@
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+pub mod commitment;
+pub mod poseidon;
+
+pub use commitment::{generate_commitment, RoleCode};
+pub use poseidon::hash_inputs;
+
 /// Errors produced by identity derivation operations.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum IdentityError {
@@ -21,6 +27,15 @@ pub enum IdentityError {
     /// The caller provided a nullifier that is not 64-char lowercase hex.
     #[error("nullifier hex must be 64 lowercase hex characters")]
     InvalidNullifierFormat,
+    /// The input hex string is invalid.
+    #[error("invalid hex string")]
+    InvalidHex,
+    /// The role code is invalid.
+    #[error("invalid role code: {0}")]
+    InvalidRoleCode(u8),
+    /// Poseidon hashing failed.
+    #[error("poseidon error: {0}")]
+    PoseidonError(String),
 }
 
 /// Deterministically derives the nullifier hex for a commitment and topic.
