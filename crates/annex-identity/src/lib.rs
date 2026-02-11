@@ -15,6 +15,12 @@ pub enum IdentityError {
     /// The caller provided an empty topic string.
     #[error("topic cannot be empty")]
     EmptyTopic,
+    /// The caller provided an empty nullifier string.
+    #[error("nullifier hex cannot be empty")]
+    EmptyNullifier,
+    /// The caller provided a nullifier that is not 64-char lowercase hex.
+    #[error("nullifier hex must be 64 lowercase hex characters")]
+    InvalidNullifierFormat,
 }
 
 /// Deterministically derives the nullifier hex for a commitment and topic.
@@ -43,9 +49,18 @@ pub fn derive_nullifier_hex(commitment_hex: &str, topic: &str) -> Result<String,
 /// # Errors
 ///
 /// Returns [`IdentityError::EmptyTopic`] if `topic` is empty.
+/// Returns [`IdentityError::EmptyNullifier`] if `nullifier_hex` is empty.
+/// Returns [`IdentityError::InvalidNullifierFormat`] if `nullifier_hex` is not
+/// a 64-character lowercase hexadecimal string.
 pub fn derive_pseudonym_id(topic: &str, nullifier_hex: &str) -> Result<String, IdentityError> {
     if topic.is_empty() {
         return Err(IdentityError::EmptyTopic);
+    }
+    if nullifier_hex.is_empty() {
+        return Err(IdentityError::EmptyNullifier);
+    }
+    if !is_lower_hex_64(nullifier_hex) {
+        return Err(IdentityError::InvalidNullifierFormat);
     }
 
     Ok(sha256_hex(&format!("{topic}:{nullifier_hex}")))
@@ -86,6 +101,13 @@ fn hex_char(nibble: u8) -> char {
     HEX[(nibble & 0x0f) as usize]
 }
 
+fn is_lower_hex_64(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,5 +146,44 @@ mod tests {
             derive_topic_scoped_pseudonym("0xabc123", ""),
             Err(IdentityError::EmptyTopic)
         );
+    }
+
+    #[test]
+    fn derive_pseudonym_id_rejects_empty_nullifier() {
+        assert_eq!(
+            derive_pseudonym_id("annex:server:v1", ""),
+            Err(IdentityError::EmptyNullifier)
+        );
+    }
+
+    #[test]
+    fn derive_pseudonym_id_rejects_malformed_nullifier() {
+        assert_eq!(
+            derive_pseudonym_id("annex:server:v1", "not-a-hex-value"),
+            Err(IdentityError::InvalidNullifierFormat)
+        );
+        assert_eq!(
+            derive_pseudonym_id(
+                "annex:server:v1",
+                "ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789"
+            ),
+            Err(IdentityError::InvalidNullifierFormat)
+        );
+        assert_eq!(
+            derive_pseudonym_id("annex:server:v1", "0123456789abcdef"),
+            Err(IdentityError::InvalidNullifierFormat)
+        );
+    }
+
+    #[test]
+    fn derive_pseudonym_id_is_deterministic_for_valid_inputs() {
+        let topic = "annex:server:v1";
+        let nullifier = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+        let first = derive_pseudonym_id(topic, nullifier);
+        let second = derive_pseudonym_id(topic, nullifier);
+
+        assert!(first.is_ok());
+        assert_eq!(first, second);
     }
 }
