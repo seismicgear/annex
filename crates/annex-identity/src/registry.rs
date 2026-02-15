@@ -77,9 +77,9 @@ pub fn register_identity(
                     commitment_hex
                 )));
             }
-            return Err(IdentityError::DatabaseError(rusqlite::Error::SqliteFailure(
-                err, None,
-            )));
+            return Err(IdentityError::DatabaseError(
+                rusqlite::Error::SqliteFailure(err, None),
+            ));
         }
         Err(e) => return Err(IdentityError::DatabaseError(e)),
     };
@@ -126,14 +126,8 @@ mod tests {
         let mut tree = MerkleTree::new(5).unwrap();
         let commitment = "0000000000000000000000000000000000000000000000000000000000000001";
 
-        let result = register_identity(
-            &mut tree,
-            &mut conn,
-            commitment,
-            RoleCode::Human,
-            100,
-        )
-        .expect("registration should succeed");
+        let result = register_identity(&mut tree, &mut conn, commitment, RoleCode::Human, 100)
+            .expect("registration should succeed");
 
         assert_eq!(result.leaf_index, 0);
         assert_eq!(result.path_indices.len(), 5);
@@ -158,14 +152,7 @@ mod tests {
         let mut tree = MerkleTree::new(5).unwrap();
         let commitment = "0000000000000000000000000000000000000000000000000000000000000001";
 
-        register_identity(
-            &mut tree,
-            &mut conn,
-            commitment,
-            RoleCode::Human,
-            100,
-        )
-        .unwrap();
+        register_identity(&mut tree, &mut conn, commitment, RoleCode::Human, 100).unwrap();
 
         let err = register_identity(
             &mut tree,

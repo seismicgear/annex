@@ -53,8 +53,7 @@ async fn main() -> Result<(), StartupError> {
     let selected_config_path = resolved_config_path.as_deref().or(Some("config.toml"));
 
     // Load configuration
-    let config = config::load_config(selected_config_path)
-        .map_err(StartupError::ConfigError)?;
+    let config = config::load_config(selected_config_path).map_err(StartupError::ConfigError)?;
 
     // Initialize tracing
     let filter = parse_logging_filter(&config.logging.level)?;
