@@ -7,7 +7,7 @@
 //! multiple types (`Text`, `Voice`, `Hybrid`, `Agent`, `Broadcast`), each
 //! with distinct capability requirements and federation scoping.
 
-use annex_types::{AlignmentStatus, ChannelType, FederationScope};
+use annex_types::{AlignmentStatus, ChannelType, FederationScope, ServerPolicy};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -259,6 +259,196 @@ fn map_row_to_channel(row: &Row) -> rusqlite::Result<Channel> {
     })
 }
 
+/// A message in a channel.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Message {
+    /// Internal database ID.
+    pub id: i64,
+    /// ID of the server.
+    pub server_id: i64,
+    /// Public ID of the channel.
+    pub channel_id: String,
+    /// Unique public ID of the message.
+    pub message_id: String,
+    /// Pseudonym of the sender.
+    pub sender_pseudonym: String,
+    /// Message content (text).
+    pub content: String,
+    /// ID of the message being replied to, if any.
+    pub reply_to_message_id: Option<String>,
+    /// Creation timestamp (ISO 8601).
+    pub created_at: String,
+    /// Expiration timestamp (ISO 8601), if retention applies.
+    pub expires_at: Option<String>,
+}
+
+/// Parameters for creating a new message.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateMessageParams {
+    pub channel_id: String,
+    pub message_id: String,
+    pub sender_pseudonym: String,
+    pub content: String,
+    pub reply_to_message_id: Option<String>,
+}
+
+/// Creates a new message, enforcing retention policy.
+pub fn create_message(
+    conn: &Connection,
+    params: &CreateMessageParams,
+) -> Result<Message, ChannelError> {
+    // 1. Resolve retention days and server_id
+    let (server_id, retention_days) = resolve_retention_days(conn, &params.channel_id)?;
+
+    // 2. Insert message with computed expiration
+    // We use datetime('now', '+N days') if retention_days is set.
+    let expires_expr = if let Some(days) = retention_days {
+        format!("datetime('now', '+{} days')", days)
+    } else {
+        "NULL".to_string()
+    };
+
+    // We can't easily bind the expression part for '+N days' safely with rusqlite params if we construct the string dynamically
+    // But since `days` is u32, it is safe to format into the string.
+
+    let sql = format!(
+        "INSERT INTO messages (
+            server_id, channel_id, message_id, sender_pseudonym, content,
+            reply_to_message_id, expires_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, {})
+        RETURNING id, server_id, channel_id, message_id, sender_pseudonym, content, reply_to_message_id, created_at, expires_at",
+        expires_expr
+    );
+
+    let message = conn.query_row(
+        &sql,
+        params![
+            server_id,
+            params.channel_id,
+            params.message_id,
+            params.sender_pseudonym,
+            params.content,
+            params.reply_to_message_id,
+        ],
+        map_row_to_message,
+    )?;
+
+    Ok(message)
+}
+
+/// Retrieves a message by its ID.
+pub fn get_message(conn: &Connection, message_id: &str) -> Result<Message, ChannelError> {
+    conn.query_row(
+        "SELECT
+            id, server_id, channel_id, message_id, sender_pseudonym, content,
+            reply_to_message_id, created_at, expires_at
+        FROM messages WHERE message_id = ?1",
+        [message_id],
+        map_row_to_message,
+    )
+    .optional()?
+    .ok_or_else(|| ChannelError::NotFound(message_id.to_string()))
+}
+
+/// Lists messages in a channel, with pagination.
+///
+/// If `before` is provided, returns messages created before that timestamp/message_id.
+/// For simplicity, we filter by created_at.
+/// `limit` defaults to 50 if not specified.
+pub fn list_messages(
+    conn: &Connection,
+    channel_id: &str,
+    before: Option<String>,
+    limit: Option<u32>,
+) -> Result<Vec<Message>, ChannelError> {
+    let limit = limit.unwrap_or(50).min(100);
+
+    let sql = if before.is_some() {
+        format!(
+            "SELECT
+                id, server_id, channel_id, message_id, sender_pseudonym, content,
+                reply_to_message_id, created_at, expires_at
+            FROM messages
+            WHERE channel_id = ?1 AND created_at < ?2
+            ORDER BY created_at DESC
+            LIMIT {}",
+            limit
+        )
+    } else {
+        format!(
+            "SELECT
+                id, server_id, channel_id, message_id, sender_pseudonym, content,
+                reply_to_message_id, created_at, expires_at
+            FROM messages
+            WHERE channel_id = ?1
+            ORDER BY created_at DESC
+            LIMIT {}",
+            limit
+        )
+    };
+
+    let mut stmt = conn.prepare(&sql)?;
+
+    let rows = if let Some(before_ts) = before {
+        stmt.query_map(params![channel_id, before_ts], map_row_to_message)?
+    } else {
+        stmt.query_map(params![channel_id], map_row_to_message)?
+    };
+
+    let mut messages = Vec::new();
+    for row in rows {
+        messages.push(row?);
+    }
+    Ok(messages)
+}
+
+/// Helper: Resolve server_id and retention days for a channel.
+fn resolve_retention_days(
+    conn: &Connection,
+    channel_id: &str,
+) -> Result<(i64, Option<u32>), ChannelError> {
+    // 1. Get channel info
+    let (server_id, retention_days): (i64, Option<u32>) = conn
+        .query_row(
+            "SELECT server_id, retention_days FROM channels WHERE channel_id = ?1",
+            [channel_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?
+        .ok_or_else(|| ChannelError::NotFound(channel_id.to_string()))?;
+
+    // 2. If retention_days is Some, return it.
+    if let Some(days) = retention_days {
+        return Ok((server_id, Some(days)));
+    }
+
+    // 3. If None, fetch server policy.
+    let policy_json: String = conn
+        .query_row(
+            "SELECT policy_json FROM servers WHERE id = ?1",
+            [server_id],
+            |row| row.get(0),
+        )
+        .map_err(ChannelError::Database)?;
+
+    let policy: ServerPolicy = serde_json::from_str(&policy_json)?;
+    Ok((server_id, Some(policy.default_retention_days)))
+}
+
+fn map_row_to_message(row: &Row) -> rusqlite::Result<Message> {
+    Ok(Message {
+        id: row.get(0)?,
+        server_id: row.get(1)?,
+        channel_id: row.get(2)?,
+        message_id: row.get(3)?,
+        sender_pseudonym: row.get(4)?,
+        content: row.get(5)?,
+        reply_to_message_id: row.get(6)?,
+        created_at: row.get(7)?,
+        expires_at: row.get(8)?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,10 +458,14 @@ mod tests {
     fn setup_db() -> Connection {
         let conn = Connection::open_in_memory().expect("failed to open in-memory db");
         run_migrations(&conn).expect("failed to run migrations");
+
+        let policy = ServerPolicy::default();
+        let policy_json = serde_json::to_string(&policy).expect("failed to serialize policy");
+
         // We need a server to reference
         conn.execute(
-            "INSERT INTO servers (slug, label, policy_json) VALUES ('test-server', 'Test Server', '{}')",
-            [],
+            "INSERT INTO servers (slug, label, policy_json) VALUES ('test-server', 'Test Server', ?1)",
+            [policy_json],
         )
         .expect("failed to create dummy server");
         conn
@@ -332,5 +526,93 @@ mod tests {
             ChannelError::NotFound(_) => (),
             _ => panic!("unexpected error type"),
         }
+    }
+
+    #[test]
+    fn test_message_lifecycle() {
+        let conn = setup_db();
+        let server_id = 1;
+
+        // Create a channel with specific retention
+        let params = CreateChannelParams {
+            server_id,
+            channel_id: "chan-msg".to_string(),
+            name: "Message Test".to_string(),
+            channel_type: ChannelType::Text,
+            topic: None,
+            vrp_topic_binding: None,
+            required_capabilities_json: None,
+            agent_min_alignment: None,
+            retention_days: Some(7),
+            federation_scope: FederationScope::Local,
+        };
+        create_channel(&conn, &params).expect("create channel failed");
+
+        // Create message
+        let msg_params = CreateMessageParams {
+            channel_id: "chan-msg".to_string(),
+            message_id: "msg-1".to_string(),
+            sender_pseudonym: "pseudo-1".to_string(),
+            content: "Hello World".to_string(),
+            reply_to_message_id: None,
+        };
+
+        let msg = create_message(&conn, &msg_params).expect("create message failed");
+        assert_eq!(msg.content, "Hello World");
+        assert!(msg.expires_at.is_some()); // Should have expiration
+
+        // Create reply
+        let reply_params = CreateMessageParams {
+            channel_id: "chan-msg".to_string(),
+            message_id: "msg-2".to_string(),
+            sender_pseudonym: "pseudo-2".to_string(),
+            content: "Hello back".to_string(),
+            reply_to_message_id: Some("msg-1".to_string()),
+        };
+        let reply = create_message(&conn, &reply_params).expect("create reply failed");
+        assert_eq!(reply.reply_to_message_id, Some("msg-1".to_string()));
+
+        // Get message
+        let fetched = get_message(&conn, "msg-1").expect("get message failed");
+        assert_eq!(fetched.content, "Hello World");
+
+        // List messages
+        let messages = list_messages(&conn, "chan-msg", None, None).expect("list messages failed");
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].message_id, "msg-2"); // Reverse chronological
+        assert_eq!(messages[1].message_id, "msg-1");
+    }
+
+    #[test]
+    fn test_message_server_retention_fallback() {
+        let conn = setup_db();
+        let server_id = 1;
+
+        // Channel with NO retention override
+        let params = CreateChannelParams {
+            server_id,
+            channel_id: "chan-default".to_string(),
+            name: "Default Retention".to_string(),
+            channel_type: ChannelType::Text,
+            topic: None,
+            vrp_topic_binding: None,
+            required_capabilities_json: None,
+            agent_min_alignment: None,
+            retention_days: None, // Use server default
+            federation_scope: FederationScope::Local,
+        };
+        create_channel(&conn, &params).expect("create channel failed");
+
+        let msg_params = CreateMessageParams {
+            channel_id: "chan-default".to_string(),
+            message_id: "msg-default".to_string(),
+            sender_pseudonym: "pseudo-1".to_string(),
+            content: "Default retention".to_string(),
+            reply_to_message_id: None,
+        };
+
+        let msg = create_message(&conn, &msg_params).expect("create message failed");
+        assert!(msg.expires_at.is_some());
+        // Server default is 30 days (default impl of ServerPolicy)
     }
 }

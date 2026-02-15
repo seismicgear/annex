@@ -541,7 +541,7 @@ Working text chat. After this phase, authenticated users can create channels, jo
 - [x] Channel CRUD operations in `annex-channels`
 
 #### 4.2 — Message model
-- [ ] `annex-db` migration: `messages` table:
+- [x] `annex-db` migration: `messages` table:
   ```sql
   CREATE TABLE messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -556,7 +556,7 @@ Working text chat. After this phase, authenticated users can create channels, jo
     FOREIGN KEY (channel_id) REFERENCES channels(channel_id)
   );
   ```
-- [ ] Message insert with automatic `expires_at` computation from channel/server retention policy
+- [x] Message insert with automatic `expires_at` computation from channel/server retention policy
 
 #### 4.3 — WebSocket infrastructure
 - [ ] Implement WebSocket upgrade on `GET /ws`
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-16 | Phase 4.2 (`Message model`) completed. |
 | 2026-02-16 | Phase 4.1 (`Channel model`) completed. |
 | 2026-02-16 | Phase 3 `COMPLETE`. Phase 4 `IN PROGRESS`. |
 | 2026-02-16 | Phase 3.8 (`Transfer acceptance validation`) completed. |
