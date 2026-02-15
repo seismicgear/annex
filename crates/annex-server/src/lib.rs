@@ -7,12 +7,14 @@ pub mod middleware;
 use annex_db::DbPool;
 use annex_identity::zk::{Bn254, VerifyingKey};
 use annex_identity::MerkleTree;
+use annex_types::ServerPolicy;
 use axum::{
     routing::{get, post},
     Extension, Json, Router,
 };
+use middleware::RateLimiter;
 use serde_json::{json, Value};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 /// Application state shared across all request handlers.
 #[derive(Clone)]
@@ -25,6 +27,10 @@ pub struct AppState {
     pub membership_vkey: Arc<VerifyingKey<Bn254>>,
     /// The local server ID.
     pub server_id: i64,
+    /// Server policy configuration.
+    pub policy: Arc<RwLock<ServerPolicy>>,
+    /// Rate limiter state.
+    pub rate_limiter: RateLimiter,
 }
 
 /// Health check handler.
@@ -62,5 +68,6 @@ pub fn app(state: AppState) -> Router {
             "/api/identity/{pseudonymId}/capabilities",
             get(api::get_identity_capabilities_handler),
         )
+        .layer(axum::middleware::from_fn(middleware::rate_limit_middleware))
         .layer(Extension(Arc::new(state)))
 }
