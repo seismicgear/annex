@@ -19,6 +19,30 @@ pub struct ServerPolicy {
     pub voice_enabled: bool,
     /// Maximum number of members allowed on the server.
     pub max_members: u32,
+    /// Rate limiting configuration.
+    #[serde(default)]
+    pub rate_limit: RateLimitConfig,
+}
+
+/// Configuration for API rate limiting.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RateLimitConfig {
+    /// Max requests per minute for registration endpoint.
+    pub registration_limit: u32,
+    /// Max requests per minute for verification endpoint.
+    pub verification_limit: u32,
+    /// Max requests per minute for other endpoints.
+    pub default_limit: u32,
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            registration_limit: 5,
+            verification_limit: 5,
+            default_limit: 60,
+        }
+    }
 }
 
 impl Default for ServerPolicy {
@@ -30,6 +54,7 @@ impl Default for ServerPolicy {
             default_retention_days: 30,
             voice_enabled: true,
             max_members: 1000,
+            rate_limit: RateLimitConfig::default(),
         }
     }
 }
@@ -47,6 +72,9 @@ mod tests {
         assert_eq!(policy.default_retention_days, 30);
         assert!(policy.voice_enabled);
         assert_eq!(policy.max_members, 1000);
+        assert_eq!(policy.rate_limit.registration_limit, 5);
+        assert_eq!(policy.rate_limit.verification_limit, 5);
+        assert_eq!(policy.rate_limit.default_limit, 60);
     }
 
     #[test]

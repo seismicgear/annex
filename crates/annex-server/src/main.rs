@@ -4,10 +4,12 @@
 //! and graceful shutdown on SIGTERM/SIGINT.
 
 use annex_identity::MerkleTree;
+use annex_server::middleware::RateLimiter;
 use annex_server::{app, config, AppState};
+use annex_types::ServerPolicy;
 use rusqlite::OptionalExtension;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use thiserror::Error;
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
@@ -106,18 +108,29 @@ async fn main() -> Result<(), StartupError> {
         MerkleTree::restore(&conn, 20)?
     };
 
-    // Get Server ID
-    let server_id: i64 = {
+    // Get Server ID and Policy
+    let (server_id, policy): (i64, ServerPolicy) = {
         let conn = pool
             .get()
             .expect("failed to get database connection for server id");
-        conn.query_row("SELECT id FROM servers LIMIT 1", [], |row| row.get(0))
-            .optional()
-            .expect("failed to query servers table")
-            .unwrap_or_else(|| {
-                tracing::error!("no server configured in 'servers' table");
-                std::process::exit(1);
-            })
+        conn.query_row("SELECT id, policy_json FROM servers LIMIT 1", [], |row| {
+            let id: i64 = row.get(0)?;
+            let policy_json: String = row.get(1)?;
+            let policy: ServerPolicy = serde_json::from_str(&policy_json).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    1,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?;
+            Ok((id, policy))
+        })
+        .optional()
+        .expect("failed to query servers table")
+        .unwrap_or_else(|| {
+            tracing::error!("no server configured in 'servers' table");
+            std::process::exit(1);
+        })
     };
 
     // Load ZK verification key
@@ -135,6 +148,8 @@ async fn main() -> Result<(), StartupError> {
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: Arc::new(membership_vkey),
         server_id,
+        policy: Arc::new(RwLock::new(policy)),
+        rate_limiter: RateLimiter::new(),
     };
 
     // Build application
@@ -148,10 +163,13 @@ async fn main() -> Result<(), StartupError> {
         .expect("failed to bind to address — is another process using this port?");
 
     // Serve with graceful shutdown
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .expect("server error");
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .expect("server error");
 
     tracing::info!("annex server shut down");
 

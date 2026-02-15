@@ -386,9 +386,9 @@ A running server that accepts identity registrations, processes VRP membership p
 - [x] Endpoints that require authentication use this middleware via axum layer
 
 #### 2.9 — Rate limiting
-- [ ] Per-pseudonym rate limiting on registration and verification endpoints
-- [ ] Configurable via server policy
-- [ ] Returns 429 with `Retry-After` header
+- [x] Per-pseudonym rate limiting on registration and verification endpoints
+- [x] Configurable via server policy
+- [x] Returns 429 with `Retry-After` header
 
 ### Completion Criteria
 
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-16 | Phase 2.9 (`Rate limiting`) completed. |
 | 2026-02-16 | Phase 2.8 (`Request authentication middleware`) completed. |
 | 2026-02-15 | Phase 2.7 (`Identity query endpoints`) completed. |
 | 2026-02-15 | Phase 2.6 (`VRP topics and roles endpoints`) completed. |

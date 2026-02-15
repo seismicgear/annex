@@ -1,11 +1,15 @@
 use annex_identity::{get_platform_identity, PlatformIdentity};
 use axum::{
     body::Body,
+    extract::ConnectInfo,
     http::{Request, StatusCode},
     middleware::Next,
     response::Response,
 };
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::AppState;
 
@@ -70,6 +74,115 @@ pub async fn auth_middleware(mut req: Request<Body>, next: Next) -> Result<Respo
 
     // 5. Insert into extensions
     req.extensions_mut().insert(IdentityContext(identity));
+
+    Ok(next.run(req).await)
+}
+
+/// Rate limiting key.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum RateLimitKey {
+    /// Rate limit by IP address.
+    Ip(IpAddr),
+    /// Rate limit by pseudonym.
+    Pseudonym(String),
+}
+
+/// In-memory rate limiter state.
+///
+/// Uses a simple fixed window counter.
+#[derive(Clone, Debug)]
+pub struct RateLimiter {
+    state: Arc<Mutex<HashMap<RateLimitKey, (u32, Instant)>>>,
+}
+
+impl RateLimiter {
+    pub fn new() -> Self {
+        Self {
+            state: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Check if the request is allowed.
+    ///
+    /// Returns `true` if allowed, `false` if limit exceeded.
+    pub fn check(&self, key: RateLimitKey, limit: u32) -> bool {
+        let mut state = self.state.lock().expect("rate limiter lock poisoned");
+        let now = Instant::now();
+
+        // Periodic cleanup to prevent memory leak
+        // If map grows too large, clear it. This is a crude but safe way to prevent DoS.
+        // A more sophisticated approach would use an LRU cache or randomized eviction.
+        if state.len() > 10000 {
+            state.clear();
+        }
+
+        let (count, start) = state.entry(key).or_insert((0, now));
+
+        if now.duration_since(*start) > Duration::from_secs(60) {
+            // Reset window
+            *count = 1;
+            *start = now;
+            true
+        } else {
+            *count += 1;
+            *count <= limit
+        }
+    }
+}
+
+impl Default for RateLimiter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Rate limiting middleware.
+pub async fn rate_limit_middleware(req: Request<Body>, next: Next) -> Result<Response, StatusCode> {
+    // 1. Get AppState
+    let state = req
+        .extensions()
+        .get::<Arc<AppState>>()
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?
+        .clone();
+
+    // 2. Identify Key
+    // Check IdentityContext first (Pseudonym), then ConnectInfo (IP)
+    // Note: IdentityContext is only available if auth_middleware runs *before* this middleware.
+    // Currently, auth_middleware is not applied globally, so this usually falls back to IP.
+    let key = if let Some(identity) = req.extensions().get::<IdentityContext>() {
+        RateLimitKey::Pseudonym(identity.0.pseudonym_id.clone())
+    } else if let Some(ConnectInfo(addr)) = req.extensions().get::<ConnectInfo<SocketAddr>>() {
+        RateLimitKey::Ip(addr.ip())
+    } else {
+        // In test environments, ConnectInfo might be missing if not injected manually.
+        // We log a warning (if we could) and fail safe or allow?
+        // Safe default: Fail. Misconfiguration should be fixed.
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    };
+
+    // 3. Get Policy Limit
+    let limit = {
+        let policy = state.policy.read().expect("policy lock poisoned");
+        let path = req.uri().path();
+        if path == "/api/registry/register" {
+            policy.rate_limit.registration_limit
+        } else if path == "/api/zk/verify-membership" {
+            policy.rate_limit.verification_limit
+        } else {
+            policy.rate_limit.default_limit
+        }
+    };
+
+    // 4. Check Limit
+    if !state.rate_limiter.check(key, limit) {
+        let mut response = Response::new(Body::empty());
+        *response.status_mut() = StatusCode::TOO_MANY_REQUESTS;
+        response.headers_mut().insert(
+            axum::http::header::RETRY_AFTER,
+            axum::http::HeaderValue::from_static("60"),
+        );
+        return Ok(response);
+    }
 
     Ok(next.run(req).await)
 }

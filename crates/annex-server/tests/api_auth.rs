@@ -1,9 +1,10 @@
 use annex_db::{create_pool, DbRuntimeSettings};
 use annex_identity::{create_platform_identity, MerkleTree, RoleCode};
 use annex_server::{
-    middleware::{auth_middleware, IdentityContext},
+    middleware::{auth_middleware, IdentityContext, RateLimiter},
     AppState,
 };
+use annex_types::ServerPolicy;
 use axum::{
     body::Body,
     http::{Request, StatusCode},
@@ -11,7 +12,7 @@ use axum::{
     routing::get,
     Extension, Router,
 };
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use tower::ServiceExt;
 
 fn load_vkey() -> Arc<annex_identity::zk::VerifyingKey<annex_identity::zk::Bn254>> {
@@ -59,6 +60,8 @@ async fn test_auth_middleware_flow() {
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: load_vkey(),
         server_id: 1,
+        policy: Arc::new(RwLock::new(ServerPolicy::default())),
+        rate_limiter: RateLimiter::new(),
     };
 
     // 5. Setup Router with middleware
@@ -73,7 +76,7 @@ async fn test_auth_middleware_flow() {
             ),
         )
         .layer(middleware::from_fn(auth_middleware))
-        .layer(Extension(Arc::new(state)));
+        .layer(Extension(Arc::new(state.clone())));
 
     // Test 1: No header
     let req = Request::builder()

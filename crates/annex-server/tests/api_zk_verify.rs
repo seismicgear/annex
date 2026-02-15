@@ -2,17 +2,22 @@ use annex_db::{create_pool, DbRuntimeSettings};
 use annex_identity::{generate_commitment, MerkleTree, RoleCode};
 use annex_server::{
     api::{GetPathResponse, VerifyMembershipResponse},
-    app, AppState,
+    app,
+    middleware::RateLimiter,
+    AppState,
 };
+use annex_types::ServerPolicy;
 use axum::{
     body::Body,
+    extract::ConnectInfo,
     http::{Request, StatusCode},
 };
 use serde_json::Value;
 use std::fs;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use tower::ServiceExt;
 
 fn load_vkey() -> Arc<annex_identity::zk::VerifyingKey<annex_identity::zk::Bn254>> {
@@ -45,8 +50,12 @@ async fn test_verify_membership_flow() {
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: load_vkey(),
         server_id: 1,
+        policy: Arc::new(RwLock::new(ServerPolicy::default())),
+        rate_limiter: RateLimiter::new(),
     };
     let app = app(state);
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
 
     // 2. Generate Identity
     // Use simple values for deterministic testing
@@ -63,22 +72,24 @@ async fn test_verify_membership_flow() {
         "nodeId": node_id
     });
 
-    let reg_req = Request::builder()
+    let mut reg_req = Request::builder()
         .uri("/api/registry/register")
         .method("POST")
         .header("content-type", "application/json")
         .body(Body::from(register_body.to_string()))
         .unwrap();
+    reg_req.extensions_mut().insert(ConnectInfo(addr));
 
     let reg_resp = app.clone().oneshot(reg_req).await.unwrap();
     assert_eq!(reg_resp.status(), StatusCode::OK);
 
     // 4. Get Path
-    let path_req = Request::builder()
+    let mut path_req = Request::builder()
         .uri(format!("/api/registry/path/{}", commitment_hex))
         .method("GET")
         .body(Body::empty())
         .unwrap();
+    path_req.extensions_mut().insert(ConnectInfo(addr));
 
     let path_resp = app.clone().oneshot(path_req).await.unwrap();
     assert_eq!(path_resp.status(), StatusCode::OK);
@@ -176,12 +187,13 @@ async fn test_verify_membership_flow() {
         "publicSignals": public_signals
     });
 
-    let verify_req = Request::builder()
+    let mut verify_req = Request::builder()
         .uri("/api/zk/verify-membership")
         .method("POST")
         .header("content-type", "application/json")
         .body(Body::from(verify_body.to_string()))
         .unwrap();
+    verify_req.extensions_mut().insert(ConnectInfo(addr));
 
     let verify_resp = app.clone().oneshot(verify_req).await.unwrap();
 
@@ -205,12 +217,13 @@ async fn test_verify_membership_flow() {
     assert!(!verify_data.pseudonym_id.is_empty());
 
     // 7. Verify duplicate submission fails
-    let verify_req_dup = Request::builder()
+    let mut verify_req_dup = Request::builder()
         .uri("/api/zk/verify-membership")
         .method("POST")
         .header("content-type", "application/json")
         .body(Body::from(verify_body.to_string()))
         .unwrap();
+    verify_req_dup.extensions_mut().insert(ConnectInfo(addr));
 
     let verify_resp_dup = app.oneshot(verify_req_dup).await.unwrap();
     assert_eq!(verify_resp_dup.status(), StatusCode::CONFLICT);

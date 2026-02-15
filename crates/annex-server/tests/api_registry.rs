@@ -1,11 +1,14 @@
 use annex_db::{create_pool, DbRuntimeSettings};
 use annex_identity::MerkleTree;
-use annex_server::{api::RegisterResponse, app, AppState};
+use annex_server::{api::RegisterResponse, app, middleware::RateLimiter, AppState};
+use annex_types::ServerPolicy;
 use axum::{
     body::Body,
+    extract::ConnectInfo,
     http::{Request, StatusCode},
 };
-use std::sync::{Arc, Mutex};
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex, RwLock};
 use tower::ServiceExt; // for oneshot
 
 fn load_vkey() -> Arc<annex_identity::zk::VerifyingKey<annex_identity::zk::Bn254>> {
@@ -30,6 +33,8 @@ async fn test_register_identity_success() {
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: load_vkey(),
         server_id: 1,
+        policy: Arc::new(RwLock::new(ServerPolicy::default())),
+        rate_limiter: RateLimiter::new(),
     };
     let app = app(state);
 
@@ -41,12 +46,15 @@ async fn test_register_identity_success() {
         "nodeId": 100
     });
 
-    let request = Request::builder()
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+
+    let mut request = Request::builder()
         .uri("/api/registry/register")
         .method("POST")
         .header("content-type", "application/json")
         .body(Body::from(body_json.to_string()))
         .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
 
     let response = app.oneshot(request).await.unwrap();
 
@@ -77,8 +85,12 @@ async fn test_register_duplicate_failure() {
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: load_vkey(),
         server_id: 1,
+        policy: Arc::new(RwLock::new(ServerPolicy::default())),
+        rate_limiter: RateLimiter::new(),
     };
     let app = app(state);
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
 
     // 2. Register first time
     let commitment = "0000000000000000000000000000000000000000000000000000000000000002";
@@ -88,12 +100,13 @@ async fn test_register_duplicate_failure() {
         "nodeId": 100
     });
 
-    let request = Request::builder()
+    let mut request = Request::builder()
         .uri("/api/registry/register")
         .method("POST")
         .header("content-type", "application/json")
         .body(Body::from(body_json.to_string()))
         .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
 
     // We need to clone the app service or rebuild it because oneshot consumes it?
     // Axum Router implements Service and Clone.
@@ -101,12 +114,13 @@ async fn test_register_duplicate_failure() {
     assert_eq!(response1.status(), StatusCode::OK);
 
     // 3. Register duplicate
-    let request2 = Request::builder()
+    let mut request2 = Request::builder()
         .uri("/api/registry/register")
         .method("POST")
         .header("content-type", "application/json")
         .body(Body::from(body_json.to_string()))
         .unwrap();
+    request2.extensions_mut().insert(ConnectInfo(addr));
 
     let response2 = app.oneshot(request2).await.unwrap();
 
@@ -124,8 +138,12 @@ async fn test_register_invalid_role_failure() {
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: load_vkey(),
         server_id: 1,
+        policy: Arc::new(RwLock::new(ServerPolicy::default())),
+        rate_limiter: RateLimiter::new(),
     };
     let app = app(state);
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
 
     // 2. Execute with invalid role
     let commitment = "0000000000000000000000000000000000000000000000000000000000000003";
@@ -135,12 +153,13 @@ async fn test_register_invalid_role_failure() {
         "nodeId": 100
     });
 
-    let request = Request::builder()
+    let mut request = Request::builder()
         .uri("/api/registry/register")
         .method("POST")
         .header("content-type", "application/json")
         .body(Body::from(body_json.to_string()))
         .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
 
     let response = app.oneshot(request).await.unwrap();
 

@@ -2,13 +2,18 @@ use annex_db::{create_pool, DbRuntimeSettings};
 use annex_identity::MerkleTree;
 use annex_server::{
     api::{GetPathResponse, RegisterResponse},
-    app, AppState,
+    app,
+    middleware::RateLimiter,
+    AppState,
 };
+use annex_types::ServerPolicy;
 use axum::{
     body::Body,
+    extract::ConnectInfo,
     http::{Request, StatusCode},
 };
-use std::sync::{Arc, Mutex};
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex, RwLock};
 use tower::ServiceExt;
 
 fn load_vkey() -> Arc<annex_identity::zk::VerifyingKey<annex_identity::zk::Bn254>> {
@@ -33,8 +38,12 @@ async fn test_get_path_success() {
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: load_vkey(),
         server_id: 1,
+        policy: Arc::new(RwLock::new(ServerPolicy::default())),
+        rate_limiter: RateLimiter::new(),
     };
     let app = app(state);
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
 
     // 2. Register identity
     let commitment = "0000000000000000000000000000000000000000000000000000000000000001";
@@ -44,12 +53,13 @@ async fn test_get_path_success() {
         "nodeId": 100
     });
 
-    let request = Request::builder()
+    let mut request = Request::builder()
         .uri("/api/registry/register")
         .method("POST")
         .header("content-type", "application/json")
         .body(Body::from(body_json.to_string()))
         .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
 
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -61,11 +71,12 @@ async fn test_get_path_success() {
     let reg_resp: RegisterResponse = serde_json::from_slice(&body_bytes).unwrap();
 
     // 3. Get Path
-    let request_path = Request::builder()
+    let mut request_path = Request::builder()
         .uri(format!("/api/registry/path/{}", commitment))
         .method("GET")
         .body(Body::empty())
         .unwrap();
+    request_path.extensions_mut().insert(ConnectInfo(addr));
 
     let response_path = app.oneshot(request_path).await.unwrap();
     assert_eq!(response_path.status(), StatusCode::OK);
@@ -95,16 +106,21 @@ async fn test_get_path_not_found() {
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: load_vkey(),
         server_id: 1,
+        policy: Arc::new(RwLock::new(ServerPolicy::default())),
+        rate_limiter: RateLimiter::new(),
     };
     let app = app(state);
 
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+
     // 2. Get Path for non-existent commitment
     let commitment = "0000000000000000000000000000000000000000000000000000000000000099";
-    let request_path = Request::builder()
+    let mut request_path = Request::builder()
         .uri(format!("/api/registry/path/{}", commitment))
         .method("GET")
         .body(Body::empty())
         .unwrap();
+    request_path.extensions_mut().insert(ConnectInfo(addr));
 
     let response_path = app.oneshot(request_path).await.unwrap();
     assert_eq!(response_path.status(), StatusCode::NOT_FOUND);
