@@ -8,10 +8,10 @@ use rusqlite::Connection;
 
 #[test]
 fn test_platform_identity_lifecycle() {
-    let mut conn = Connection::open_in_memory().expect("failed to open in-memory db");
+    let conn = Connection::open_in_memory().expect("failed to open in-memory db");
 
     // 1. Run migrations
-    run_migrations(&mut conn).expect("failed to run migrations");
+    run_migrations(&conn).expect("failed to run migrations");
 
     // 2. Create Identity
     let server_id = 1;
@@ -68,8 +68,8 @@ fn test_platform_identity_lifecycle() {
 
 #[test]
 fn test_duplicate_pseudonym_per_server() {
-    let mut conn = Connection::open_in_memory().expect("failed to open in-memory db");
-    run_migrations(&mut conn).expect("failed to run migrations");
+    let conn = Connection::open_in_memory().expect("failed to open in-memory db");
+    run_migrations(&conn).expect("failed to run migrations");
 
     let server_id = 1;
     let pseudonym_id = "duplicate-check";
@@ -84,8 +84,8 @@ fn test_duplicate_pseudonym_per_server() {
 
 #[test]
 fn test_same_pseudonym_different_servers() {
-    let mut conn = Connection::open_in_memory().expect("failed to open in-memory db");
-    run_migrations(&mut conn).expect("failed to run migrations");
+    let conn = Connection::open_in_memory().expect("failed to open in-memory db");
+    run_migrations(&conn).expect("failed to run migrations");
 
     let pseudonym_id = "shared-pseudonym"; // Usually pseudonyms are derived per topic, but let's test unique constraint logic
     let role = RoleCode::Collective;
