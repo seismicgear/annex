@@ -111,8 +111,8 @@ fn test_compare_peer_anchor_aligned() {
 
 #[test]
 fn test_compare_peer_anchor_conflict() {
-    let snap1 = VrpAnchorSnapshot::new(&vec!["p1".to_string()], &vec![]);
-    let snap2 = VrpAnchorSnapshot::new(&vec!["p2".to_string()], &vec![]); // different
+    let snap1 = VrpAnchorSnapshot::new(&["p1".to_string()], &[]);
+    let snap2 = VrpAnchorSnapshot::new(&["p2".to_string()], &[]); // different
 
     let config = VrpAlignmentConfig {
         semantic_alignment_required: false,
@@ -224,8 +224,8 @@ fn test_validate_federation_handshake_success() {
 
 #[test]
 fn test_validate_federation_handshake_conflict_principles() {
-    let local_anchor = VrpAnchorSnapshot::new(&vec!["A".to_string()], &vec![]);
-    let remote_anchor = VrpAnchorSnapshot::new(&vec!["B".to_string()], &vec![]);
+    let local_anchor = VrpAnchorSnapshot::new(&["A".to_string()], &[]);
+    let remote_anchor = VrpAnchorSnapshot::new(&["B".to_string()], &[]);
     let local_contract = VrpCapabilitySharingContract {
         required_capabilities: vec![],
         offered_capabilities: vec![],
@@ -259,7 +259,7 @@ fn test_validate_federation_handshake_conflict_principles() {
 
 #[test]
 fn test_validate_federation_handshake_contract_fail() {
-    let local_anchor = VrpAnchorSnapshot::new(&vec!["A".to_string()], &vec![]);
+    let local_anchor = VrpAnchorSnapshot::new(&["A".to_string()], &[]);
     let local_contract = VrpCapabilitySharingContract {
         required_capabilities: vec!["MustHave".to_string()],
         offered_capabilities: vec![],
