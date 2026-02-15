@@ -16,3 +16,14 @@
 //! The full implementation of this crate is Phase 3 of the roadmap. The
 //! current skeleton provides the module structure that will be filled in
 //! during that phase.
+
+pub mod types;
+
+#[cfg(test)]
+mod tests;
+
+pub use types::{
+    VrpAlignmentConfig, VrpAlignmentStatus, VrpAnchorSnapshot, VrpCapabilitySharingContract,
+    VrpFederationHandshake, VrpTransferAcceptanceConfig, VrpTransferAcceptanceError,
+    VrpTransferScope, VrpValidationReport,
+};
