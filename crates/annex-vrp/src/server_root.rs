@@ -1,6 +1,6 @@
+use crate::VrpAnchorSnapshot;
 use annex_types::ServerPolicy;
 use serde::{Deserialize, Serialize};
-use crate::VrpAnchorSnapshot;
 
 /// A server's policy root, used for VRP alignment.
 ///
