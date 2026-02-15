@@ -177,9 +177,11 @@ mod tests {
         assert_eq!(role_count, 5);
 
         let human_label: String = conn
-            .query_row("SELECT label FROM vrp_roles WHERE role_code = 1", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT label FROM vrp_roles WHERE role_code = 1",
+                [],
+                |row| row.get(0),
+            )
             .expect("should query human role");
         assert_eq!(human_label, "HUMAN");
 
