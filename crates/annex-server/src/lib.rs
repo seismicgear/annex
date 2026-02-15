@@ -1,6 +1,7 @@
 //! Annex server library logic.
 
 pub mod api;
+pub mod api_vrp;
 pub mod config;
 pub mod middleware;
 
@@ -67,6 +68,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/api/identity/{pseudonymId}/capabilities",
             get(api::get_identity_capabilities_handler),
+        )
+        .route(
+            "/api/vrp/agent-handshake",
+            post(api_vrp::agent_handshake_handler),
         )
         .layer(axum::middleware::from_fn(middleware::rate_limit_middleware))
         .layer(Extension(Arc::new(state)))
