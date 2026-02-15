@@ -9,6 +9,10 @@ use ark_ff::{BigInteger, PrimeField};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
 
+/// Result of a preview insertion operation.
+/// Tuple of: (leaf_index, new_root, updates_to_apply).
+pub type InsertionPreview = (usize, Fr, Vec<((usize, usize), Fr)>);
+
 /// A Poseidon Merkle tree.
 ///
 /// Stores leaves and internal nodes in a sparse map to support large depths
@@ -76,7 +80,7 @@ impl MerkleTree {
     pub fn preview_insert(
         &self,
         leaf: Fr,
-    ) -> Result<(usize, Fr, Vec<((usize, usize), Fr)>), IdentityError> {
+    ) -> Result<InsertionPreview, IdentityError> {
         if self.next_index >= 1 << self.depth {
             return Err(IdentityError::TreeFull);
         }
