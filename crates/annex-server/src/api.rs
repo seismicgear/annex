@@ -7,6 +7,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use thiserror::Error;
@@ -60,6 +61,20 @@ pub struct GetPathResponse {
     /// The Merkle path indices (0 or 1).
     #[serde(rename = "pathIndexBits")]
     pub path_indices: Vec<u8>,
+}
+
+/// Response body for current root retrieval.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GetRootResponse {
+    /// The current Merkle root (hex string).
+    #[serde(rename = "rootHex")]
+    pub root_hex: String,
+    /// The number of leaves currently in the tree.
+    #[serde(rename = "leafCount")]
+    pub leaf_count: usize,
+    /// Timestamp when this root was created (if persisted).
+    #[serde(rename = "updatedAt")]
+    pub updated_at: Option<String>,
 }
 
 /// API error type mapping to HTTP status codes.
@@ -177,5 +192,43 @@ pub async fn get_path_handler(
         root_hex: result.1,
         path_elements: result.2,
         path_indices: result.3,
+    }))
+}
+
+/// Handler for `GET /api/registry/current-root`.
+pub async fn get_current_root_handler(
+    Extension(state): Extension<Arc<AppState>>,
+) -> Result<Json<GetRootResponse>, ApiError> {
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = state
+            .pool
+            .get()
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
+
+        let (root_hex, leaf_count) = {
+            let tree = state.merkle_tree.lock().map_err(|_| {
+                ApiError::InternalServerError("merkle tree lock poisoned".to_string())
+            })?;
+            (tree.root_hex(), tree.next_index)
+        };
+
+        let updated_at: Option<String> = conn
+            .query_row(
+                "SELECT created_at FROM vrp_roots WHERE root_hex = ?1",
+                [&root_hex],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| ApiError::InternalServerError(format!("db query failed: {}", e)))?;
+
+        Ok((root_hex, leaf_count, updated_at))
+    })
+    .await
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+
+    Ok(Json(GetRootResponse {
+        root_hex: result.0,
+        leaf_count: result.1,
+        updated_at: result.2,
     }))
 }

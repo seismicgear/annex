@@ -14,6 +14,7 @@ path = "src/main.rs"
 annex-types = { workspace = true }
 annex-db = { workspace = true }
 annex-identity = { workspace = true }
+rusqlite = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 tower = { workspace = true }

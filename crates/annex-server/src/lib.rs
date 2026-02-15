@@ -38,5 +38,9 @@ pub fn app(state: AppState) -> Router {
             "/api/registry/path/{commitmentHex}",
             get(api::get_path_handler),
         )
+        .route(
+            "/api/registry/current-root",
+            get(api::get_current_root_handler),
+        )
         .layer(Extension(Arc::new(state)))
 }
