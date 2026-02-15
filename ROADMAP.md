@@ -370,8 +370,8 @@ A running server that accepts identity registrations, processes VRP membership p
   - Errors: invalid proof (401), stale root (409), duplicate nullifier (409)
 
 #### 2.6 — VRP topics and roles endpoints
-- [ ] `GET /api/registry/topics` — list all registered VRP topics
-- [ ] `GET /api/registry/roles` — list all registered role codes
+- [x] `GET /api/registry/topics` — list all registered VRP topics
+- [x] `GET /api/registry/roles` — list all registered role codes
 
 #### 2.7 — Identity query endpoints
 - [ ] `GET /api/identity/:pseudonymId` — returns participant type, capability flags, active status
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-15 | Phase 2.6 (`VRP topics and roles endpoints`) completed. |
 | 2026-02-15 | Phase 2.5 (`ZK membership verification endpoint`) completed. |
 | 2026-02-15 | Phase 2.4 (`Current root endpoint`) completed. |
 | 2026-02-15 | Phase 2.3 (`Merkle path retrieval endpoint`) completed. |

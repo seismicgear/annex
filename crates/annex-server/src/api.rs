@@ -3,9 +3,9 @@
 use crate::AppState;
 use annex_identity::{
     check_nullifier_exists, create_platform_identity, derive_nullifier_hex, derive_pseudonym_id,
-    get_path_for_commitment, insert_nullifier, register_identity,
+    get_all_roles, get_all_topics, get_path_for_commitment, insert_nullifier, register_identity,
     zk::{parse_fr_from_hex, parse_proof, parse_public_signals, verify_proof},
-    RoleCode,
+    RoleCode, VrpRoleEntry, VrpTopic,
 };
 use axum::{
     extract::{Extension, Json, Path},
@@ -411,4 +411,40 @@ pub async fn verify_membership_handler(
         ok: true,
         pseudonym_id: result,
     }))
+}
+
+/// Handler for `GET /api/registry/topics`.
+pub async fn get_topics_handler(
+    Extension(state): Extension<Arc<AppState>>,
+) -> Result<Json<Vec<VrpTopic>>, ApiError> {
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = state
+            .pool
+            .get()
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
+
+        get_all_topics(&conn).map_err(|e| ApiError::InternalServerError(e.to_string()))
+    })
+    .await
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+
+    Ok(Json(result))
+}
+
+/// Handler for `GET /api/registry/roles`.
+pub async fn get_roles_handler(
+    Extension(state): Extension<Arc<AppState>>,
+) -> Result<Json<Vec<VrpRoleEntry>>, ApiError> {
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = state
+            .pool
+            .get()
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
+
+        get_all_roles(&conn).map_err(|e| ApiError::InternalServerError(e.to_string()))
+    })
+    .await
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+
+    Ok(Json(result))
 }

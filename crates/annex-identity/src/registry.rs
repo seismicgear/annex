@@ -7,6 +7,25 @@ use crate::{IdentityError, MerkleTree, RoleCode};
 use ark_bn254::Fr;
 use ark_ff::{BigInteger, PrimeField};
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
+
+/// VRP Topic definition.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VrpTopic {
+    /// The unique topic identifier (e.g., "annex:server:v1").
+    pub topic: String,
+    /// Human-readable description.
+    pub description: String,
+}
+
+/// VRP Role definition.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VrpRoleEntry {
+    /// The numeric role code.
+    pub role_code: u8,
+    /// The string label (e.g., "HUMAN").
+    pub label: String,
+}
 
 /// Result of a successful registration.
 #[derive(Debug)]
@@ -155,6 +174,46 @@ pub fn get_path_for_commitment(
     let root_hex = hex::encode(tree.root().into_bigint().to_bytes_be());
 
     Ok((leaf_index, root_hex, path_elements, path_indices))
+}
+
+/// Retrieves all registered VRP topics.
+pub fn get_all_topics(conn: &Connection) -> Result<Vec<VrpTopic>, IdentityError> {
+    let mut stmt = conn
+        .prepare("SELECT topic, description FROM vrp_topics ORDER BY created_at ASC")
+        .map_err(IdentityError::DatabaseError)?;
+
+    let topics = stmt
+        .query_map([], |row| {
+            Ok(VrpTopic {
+                topic: row.get(0)?,
+                description: row.get(1)?,
+            })
+        })
+        .map_err(IdentityError::DatabaseError)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(IdentityError::DatabaseError)?;
+
+    Ok(topics)
+}
+
+/// Retrieves all registered VRP roles.
+pub fn get_all_roles(conn: &Connection) -> Result<Vec<VrpRoleEntry>, IdentityError> {
+    let mut stmt = conn
+        .prepare("SELECT role_code, label FROM vrp_roles ORDER BY role_code ASC")
+        .map_err(IdentityError::DatabaseError)?;
+
+    let roles = stmt
+        .query_map([], |row| {
+            Ok(VrpRoleEntry {
+                role_code: row.get(0)?,
+                label: row.get(1)?,
+            })
+        })
+        .map_err(IdentityError::DatabaseError)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(IdentityError::DatabaseError)?;
+
+    Ok(roles)
 }
 
 #[cfg(test)]

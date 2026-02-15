@@ -23,7 +23,10 @@ pub use platform::{
     update_capabilities, Capabilities, PlatformIdentity,
 };
 pub use poseidon::hash_inputs;
-pub use registry::{get_path_for_commitment, register_identity};
+pub use registry::{
+    get_all_roles, get_all_topics, get_path_for_commitment, register_identity, VrpRoleEntry,
+    VrpTopic,
+};
 
 /// Errors produced by identity derivation operations.
 #[derive(Debug, Error)]
