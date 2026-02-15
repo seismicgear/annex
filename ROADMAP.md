@@ -378,12 +378,12 @@ A running server that accepts identity registrations, processes VRP membership p
 - [x] `GET /api/identity/:pseudonymId/capabilities` — returns capability flags only
 
 #### 2.8 — Request authentication middleware
-- [ ] Implement middleware that:
+- [x] Implement middleware that:
   - Extracts pseudonym from request header (`X-Annex-Pseudonym`) or bearer token
   - Validates pseudonym exists and is active in `platform_identities`
   - Injects identity context into request extensions for downstream handlers
   - Returns 401 for missing/invalid pseudonym
-- [ ] Endpoints that require authentication use this middleware via axum layer
+- [x] Endpoints that require authentication use this middleware via axum layer
 
 #### 2.9 — Rate limiting
 - [ ] Per-pseudonym rate limiting on registration and verification endpoints
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-16 | Phase 2.8 (`Request authentication middleware`) completed. |
 | 2026-02-15 | Phase 2.7 (`Identity query endpoints`) completed. |
 | 2026-02-15 | Phase 2.6 (`VRP topics and roles endpoints`) completed. |
 | 2026-02-15 | Phase 2.5 (`ZK membership verification endpoint`) completed. |

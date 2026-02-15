@@ -5,6 +5,7 @@
 
 use annex_identity::MerkleTree;
 use annex_server::{app, config, AppState};
+use rusqlite::OptionalExtension;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
@@ -105,6 +106,20 @@ async fn main() -> Result<(), StartupError> {
         MerkleTree::restore(&conn, 20)?
     };
 
+    // Get Server ID
+    let server_id: i64 = {
+        let conn = pool
+            .get()
+            .expect("failed to get database connection for server id");
+        conn.query_row("SELECT id FROM servers LIMIT 1", [], |row| row.get(0))
+            .optional()
+            .expect("failed to query servers table")
+            .unwrap_or_else(|| {
+                tracing::error!("no server configured in 'servers' table");
+                std::process::exit(1);
+            })
+    };
+
     // Load ZK verification key
     let vkey_path = std::env::var("ANNEX_ZK_KEY_PATH")
         .unwrap_or_else(|_| "zk/keys/membership_vkey.json".to_string());
@@ -119,6 +134,7 @@ async fn main() -> Result<(), StartupError> {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: Arc::new(membership_vkey),
+        server_id,
     };
 
     // Build application
