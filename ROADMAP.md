@@ -223,29 +223,29 @@ The cryptographic identity substrate. After this phase, an entity can generate a
 - [x] Test: insert leaves → restart (drop in-memory tree) → rebuild → verify root matches → insert more leaves → verify proofs still work
 
 #### 1.5 — Circom circuits
-- [ ] `zk/circuits/identity.circom`:
+- [x] `zk/circuits/identity.circom`:
   - Private inputs: `sk`, `roleCode`, `nodeId`
   - Public output: `commitment`
   - Computes `Poseidon(sk, roleCode, nodeId)` and constrains output
-- [ ] `zk/circuits/membership.circom`:
+- [x] `zk/circuits/membership.circom`:
   - Private inputs: `sk`, `roleCode`, `nodeId`, `leafIndex`, `pathElements[depth]`, `pathIndexBits[depth]`
   - Public signals: `root`, `commitment`
   - Recomputes identity leaf, rebuilds Merkle path, constrains final root
-- [ ] `zk/scripts/build-circuits.js`: compiles both circuits to R1CS + WASM + sym
-- [ ] `zk/scripts/setup-groth16.js`: Groth16 trusted setup (powers of tau + circuit-specific), exports verification key
-- [ ] `zk/scripts/test-proofs.js`: generates witness from known inputs, produces proof, verifies proof — end-to-end
+- [x] `zk/scripts/build-circuits.js`: compiles both circuits to R1CS + WASM + sym
+- [x] `zk/scripts/setup-groth16.js`: Groth16 trusted setup (powers of tau + circuit-specific), exports verification key
+- [x] `zk/scripts/test-proofs.js`: generates witness from known inputs, produces proof, verifies proof — end-to-end
 
 #### 1.6 — Proof generation and verification in Rust
-- [ ] Implement proof generation: given private inputs + circuit WASM + zkey, produce Groth16 proof + public signals
+- [x] Implement proof generation: given private inputs + circuit WASM + zkey, produce Groth16 proof + public signals
   - This may use snarkjs via wasm-bindgen, FFI to a JS runtime, or a native Rust Groth16 prover (ark-groth16)
   - ADR required for the chosen approach with benchmarks
-- [ ] Implement proof verification: given proof + public signals + verification key, return bool
-- [ ] Test: generate proof from valid witness → verify succeeds; tamper with public signal → verify fails
+- [x] Implement proof verification: given proof + public signals + verification key, return bool
+- [x] Test: generate proof from valid witness → verify succeeds; tamper with public signal → verify fails
 
 #### 1.7 — Pseudonym derivation
-- [ ] Implement: `nullifierHex = sha256(commitmentHex + ":" + topic)`
-- [ ] Implement: `pseudonymId = sha256(topic + ":" + nullifierHex)`
-- [ ] Test: same commitment + same topic → same pseudonym; same commitment + different topic → different pseudonym
+- [x] Implement: `nullifierHex = sha256(commitmentHex + ":" + topic)`
+- [x] Implement: `pseudonymId = sha256(topic + ":" + nullifierHex)`
+- [x] Test: same commitment + same topic → same pseudonym; same commitment + different topic → different pseudonym
 
 #### 1.8 — Nullifier tracking
 - [ ] `annex-db` migration: `zk_nullifiers` table (`topic TEXT, nullifier_hex TEXT, created_at TEXT, UNIQUE(topic, nullifier_hex)`)
