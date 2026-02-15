@@ -33,6 +33,7 @@ fn test_nullifier_tracking_lifecycle() {
     let other_topic = "annex:channel:v1";
     insert_nullifier(&conn, other_topic, &nullifier).expect("insertion for other topic failed");
 
-    let exists_other = check_nullifier_exists(&conn, other_topic, &nullifier).expect("check failed");
+    let exists_other =
+        check_nullifier_exists(&conn, other_topic, &nullifier).expect("check failed");
     assert!(exists_other, "nullifier should exist for other topic");
 }
