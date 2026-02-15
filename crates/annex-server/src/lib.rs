@@ -51,5 +51,13 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/api/registry/topics", get(api::get_topics_handler))
         .route("/api/registry/roles", get(api::get_roles_handler))
+        .route(
+            "/api/identity/{pseudonymId}",
+            get(api::get_identity_handler),
+        )
+        .route(
+            "/api/identity/{pseudonymId}/capabilities",
+            get(api::get_identity_capabilities_handler),
+        )
         .layer(Extension(Arc::new(state)))
 }

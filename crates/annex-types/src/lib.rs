@@ -139,6 +139,24 @@ pub enum EdgeKind {
     Moderates,
 }
 
+/// Capability flags for a participant.
+///
+/// These flags determine what actions a participant is allowed to perform
+/// on the platform, independent of their role.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Capabilities {
+    /// Can join voice channels and publish audio.
+    pub can_voice: bool,
+    /// Can perform moderation actions (kick, ban, delete).
+    pub can_moderate: bool,
+    /// Can generate invite links.
+    pub can_invite: bool,
+    /// Can initiate federation handshakes.
+    pub can_federate: bool,
+    /// Can operate as a bridge.
+    pub can_bridge: bool,
+}
+
 mod policy;
 pub use policy::ServerPolicy;
 

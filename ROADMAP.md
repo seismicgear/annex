@@ -374,8 +374,8 @@ A running server that accepts identity registrations, processes VRP membership p
 - [x] `GET /api/registry/roles` — list all registered role codes
 
 #### 2.7 — Identity query endpoints
-- [ ] `GET /api/identity/:pseudonymId` — returns participant type, capability flags, active status
-- [ ] `GET /api/identity/:pseudonymId/capabilities` — returns capability flags only
+- [x] `GET /api/identity/:pseudonymId` — returns participant type, capability flags, active status
+- [x] `GET /api/identity/:pseudonymId/capabilities` — returns capability flags only
 
 #### 2.8 — Request authentication middleware
 - [ ] Implement middleware that:
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-15 | Phase 2.7 (`Identity query endpoints`) completed. |
 | 2026-02-15 | Phase 2.6 (`VRP topics and roles endpoints`) completed. |
 | 2026-02-15 | Phase 2.5 (`ZK membership verification endpoint`) completed. |
 | 2026-02-15 | Phase 2.4 (`Current root endpoint`) completed. |

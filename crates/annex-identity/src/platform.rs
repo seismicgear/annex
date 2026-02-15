@@ -4,6 +4,7 @@
 //! and storing their capability flags.
 
 use crate::IdentityError;
+pub use annex_types::Capabilities;
 use annex_types::RoleCode;
 use rusqlite::{params, Connection};
 
@@ -22,16 +23,6 @@ pub struct PlatformIdentity {
     pub active: bool,
     pub created_at: String,
     pub updated_at: String,
-}
-
-/// Capability flags for a participant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Capabilities {
-    pub can_voice: bool,
-    pub can_moderate: bool,
-    pub can_invite: bool,
-    pub can_federate: bool,
-    pub can_bridge: bool,
 }
 
 /// Converts a string label to a RoleCode.
