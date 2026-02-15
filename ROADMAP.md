@@ -248,9 +248,9 @@ The cryptographic identity substrate. After this phase, an entity can generate a
 - [x] Test: same commitment + same topic → same pseudonym; same commitment + different topic → different pseudonym
 
 #### 1.8 — Nullifier tracking
-- [ ] `annex-db` migration: `zk_nullifiers` table (`topic TEXT, nullifier_hex TEXT, created_at TEXT, UNIQUE(topic, nullifier_hex)`)
-- [ ] Insert nullifier on successful proof verification; reject if nullifier already exists for that topic (anti-double-join)
-- [ ] Test: first verification succeeds and inserts nullifier; second verification with same commitment + topic fails
+- [x] `annex-db` migration: `zk_nullifiers` table (`topic TEXT, nullifier_hex TEXT, created_at TEXT, UNIQUE(topic, nullifier_hex)`)
+- [x] Insert nullifier on successful proof verification; reject if nullifier already exists for that topic (anti-double-join)
+- [x] Test: first verification succeeds and inserts nullifier; second verification with same commitment + topic fails
 
 #### 1.9 — VRP identity registry
 - [ ] `annex-db` migration: `vrp_identities` table (`commitment_hex TEXT UNIQUE, role_code INTEGER, node_id INTEGER, created_at TEXT`)

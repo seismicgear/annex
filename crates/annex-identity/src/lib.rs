@@ -8,11 +8,13 @@ use thiserror::Error;
 
 pub mod commitment;
 pub mod merkle;
+pub mod nullifier;
 pub mod poseidon;
 pub mod zk;
 
 pub use commitment::{generate_commitment, RoleCode};
 pub use merkle::MerkleTree;
+pub use nullifier::{check_nullifier_exists, insert_nullifier};
 pub use poseidon::hash_inputs;
 
 /// Errors produced by identity derivation operations.
@@ -48,6 +50,9 @@ pub enum IdentityError {
     /// Invalid leaf index.
     #[error("invalid leaf index: {0}")]
     InvalidIndex(usize),
+    /// Nullifier already exists for this topic.
+    #[error("nullifier already exists for topic '{0}'")]
+    DuplicateNullifier(String),
     /// Database error.
     #[error("database error: {0}")]
     DatabaseError(#[from] rusqlite::Error),
@@ -66,6 +71,7 @@ impl PartialEq for IdentityError {
             (Self::PoseidonError(a), Self::PoseidonError(b)) => a == b,
             (Self::TreeFull, Self::TreeFull) => true,
             (Self::InvalidIndex(a), Self::InvalidIndex(b)) => a == b,
+            (Self::DuplicateNullifier(a), Self::DuplicateNullifier(b)) => a == b,
             (Self::DatabaseError(a), Self::DatabaseError(b)) => a.to_string() == b.to_string(),
             _ => false,
         }
