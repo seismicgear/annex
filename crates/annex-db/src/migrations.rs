@@ -14,10 +14,16 @@ struct Migration {
 }
 
 /// All migrations in order. New migrations are appended here.
-const MIGRATIONS: &[Migration] = &[Migration {
-    name: "000_init",
-    sql: include_str!("migrations/000_init.sql"),
-}];
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        name: "000_init",
+        sql: include_str!("migrations/000_init.sql"),
+    },
+    Migration {
+        name: "001_identity",
+        sql: include_str!("migrations/001_identity.sql"),
+    },
+];
 
 /// Errors that can occur during migration execution.
 #[derive(Debug, Error)]

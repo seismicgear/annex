@@ -15,7 +15,7 @@ pub use merkle::MerkleTree;
 pub use poseidon::hash_inputs;
 
 /// Errors produced by identity derivation operations.
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Error)]
 pub enum IdentityError {
     /// The caller provided an empty commitment string.
     #[error("commitment hex cannot be empty")]
@@ -47,7 +47,31 @@ pub enum IdentityError {
     /// Invalid leaf index.
     #[error("invalid leaf index: {0}")]
     InvalidIndex(usize),
+    /// Database error.
+    #[error("database error: {0}")]
+    DatabaseError(#[from] rusqlite::Error),
 }
+
+impl PartialEq for IdentityError {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::EmptyCommitment, Self::EmptyCommitment) => true,
+            (Self::EmptyTopic, Self::EmptyTopic) => true,
+            (Self::EmptyNullifier, Self::EmptyNullifier) => true,
+            (Self::InvalidNullifierFormat, Self::InvalidNullifierFormat) => true,
+            (Self::InvalidCommitmentFormat, Self::InvalidCommitmentFormat) => true,
+            (Self::InvalidHex, Self::InvalidHex) => true,
+            (Self::InvalidRoleCode(a), Self::InvalidRoleCode(b)) => a == b,
+            (Self::PoseidonError(a), Self::PoseidonError(b)) => a == b,
+            (Self::TreeFull, Self::TreeFull) => true,
+            (Self::InvalidIndex(a), Self::InvalidIndex(b)) => a == b,
+            (Self::DatabaseError(a), Self::DatabaseError(b)) => a.to_string() == b.to_string(),
+            _ => false,
+        }
+    }
+}
+
+impl Eq for IdentityError {}
 
 /// Deterministically derives the nullifier hex for a commitment and topic.
 ///

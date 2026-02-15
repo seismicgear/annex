@@ -199,28 +199,28 @@ The cryptographic identity substrate. After this phase, an entity can generate a
 ### Steps
 
 #### 1.1 — Poseidon hash implementation
-- [ ] Implement or integrate Poseidon hash over BN254 scalar field
-- [ ] Support 2-input (for Merkle internal nodes) and 3-input (for identity commitment) variants
-- [ ] Test vectors against known Poseidon implementations (circomlibjs reference vectors)
-- [ ] Benchmark: target < 1ms per hash on release build
+- [x] Implement or integrate Poseidon hash over BN254 scalar field
+- [x] Support 2-input (for Merkle internal nodes) and 3-input (for identity commitment) variants
+- [x] Test vectors against known Poseidon implementations (circomlibjs reference vectors)
+- [x] Benchmark: target < 1ms per hash on release build
 
 #### 1.2 — Identity commitment
-- [ ] Implement `commitment = Poseidon(sk, roleCode, nodeId)` in Rust
-- [ ] Define `RoleCode` enum: `Human = 1`, `AiAgent = 2`, `Collective = 3`, `Bridge = 4`, `Service = 5`
-- [ ] Commitment output is a BN254 scalar serialized as 32-byte big-endian hex string
-- [ ] Test: deterministic output for known inputs; different inputs produce different commitments
+- [x] Implement `commitment = Poseidon(sk, roleCode, nodeId)` in Rust
+- [x] Define `RoleCode` enum: `Human = 1`, `AiAgent = 2`, `Collective = 3`, `Bridge = 4`, `Service = 5`
+- [x] Commitment output is a BN254 scalar serialized as 32-byte big-endian hex string
+- [x] Test: deterministic output for known inputs; different inputs produce different commitments
 
 #### 1.3 — Merkle tree implementation
-- [ ] Implement binary Poseidon Merkle tree with configurable depth (default: 20, supporting ~1M leaves)
-- [ ] Operations: `insert(leaf) → leafIndex`, `get_proof(leafIndex) → (pathElements, pathIndexBits)`, `get_root() → root`
-- [ ] Tree is append-only (no deletion of leaves — deactivation is handled at the identity layer)
-- [ ] Test: insert N leaves, verify each proof against current root; verify proof fails against stale root
+- [x] Implement binary Poseidon Merkle tree with configurable depth (default: 20, supporting ~1M leaves)
+- [x] Operations: `insert(leaf) → leafIndex`, `get_proof(leafIndex) → (pathElements, pathIndexBits)`, `get_root() → root`
+- [x] Tree is append-only (no deletion of leaves — deactivation is handled at the identity layer)
+- [x] Test: insert N leaves, verify each proof against current root; verify proof fails against stale root
 
 #### 1.4 — Merkle persistence
-- [ ] `annex-db` migration: `vrp_leaves` table (`leaf_index INTEGER, commitment_hex TEXT, inserted_at TEXT`)
-- [ ] `annex-db` migration: `vrp_roots` table (`root_hex TEXT, active INTEGER, created_at TEXT`)
-- [ ] On startup: reconstruct Merkle tree from `vrp_leaves` in leaf-index order, verify final root matches active `vrp_roots` entry
-- [ ] Test: insert leaves → restart (drop in-memory tree) → rebuild → verify root matches → insert more leaves → verify proofs still work
+- [x] `annex-db` migration: `vrp_leaves` table (`leaf_index INTEGER, commitment_hex TEXT, inserted_at TEXT`)
+- [x] `annex-db` migration: `vrp_roots` table (`root_hex TEXT, active INTEGER, created_at TEXT`)
+- [x] On startup: reconstruct Merkle tree from `vrp_leaves` in leaf-index order, verify final root matches active `vrp_roots` entry
+- [x] Test: insert leaves → restart (drop in-memory tree) → rebuild → verify root matches → insert more leaves → verify proofs still work
 
 #### 1.5 — Circom circuits
 - [ ] `zk/circuits/identity.circom`:
