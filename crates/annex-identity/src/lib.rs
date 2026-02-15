@@ -23,7 +23,7 @@ pub use platform::{
     update_capabilities, Capabilities, PlatformIdentity,
 };
 pub use poseidon::hash_inputs;
-pub use registry::register_identity;
+pub use registry::{get_path_for_commitment, register_identity};
 
 /// Errors produced by identity derivation operations.
 #[derive(Debug, Error)]
@@ -64,6 +64,9 @@ pub enum IdentityError {
     /// Nullifier already exists for this topic.
     #[error("nullifier already exists for topic '{0}'")]
     DuplicateNullifier(String),
+    /// Commitment not found in the registry.
+    #[error("commitment not found: {0}")]
+    CommitmentNotFound(String),
     /// Database error.
     #[error("database error: {0}")]
     DatabaseError(#[from] rusqlite::Error),
@@ -84,6 +87,7 @@ impl PartialEq for IdentityError {
             (Self::TreeFull, Self::TreeFull) => true,
             (Self::InvalidIndex(a), Self::InvalidIndex(b)) => a == b,
             (Self::DuplicateNullifier(a), Self::DuplicateNullifier(b)) => a == b,
+            (Self::CommitmentNotFound(a), Self::CommitmentNotFound(b)) => a == b,
             (Self::DatabaseError(a), Self::DatabaseError(b)) => a.to_string() == b.to_string(),
             _ => false,
         }

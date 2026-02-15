@@ -1,9 +1,9 @@
 //! API handlers for the Annex server.
 
 use crate::AppState;
-use annex_identity::{register_identity, RoleCode};
+use annex_identity::{get_path_for_commitment, register_identity, RoleCode};
 use axum::{
-    extract::{Extension, Json},
+    extract::{Extension, Json, Path},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
@@ -45,11 +45,30 @@ pub struct RegisterResponse {
     pub path_indices: Vec<u8>,
 }
 
+/// Response body for Merkle path retrieval.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GetPathResponse {
+    /// The Merkle tree leaf index.
+    #[serde(rename = "leafIndex")]
+    pub leaf_index: usize,
+    /// The current Merkle root (hex string).
+    #[serde(rename = "rootHex")]
+    pub root_hex: String,
+    /// The Merkle path elements (hex strings).
+    #[serde(rename = "pathElements")]
+    pub path_elements: Vec<String>,
+    /// The Merkle path indices (0 or 1).
+    #[serde(rename = "pathIndexBits")]
+    pub path_indices: Vec<u8>,
+}
+
 /// API error type mapping to HTTP status codes.
 #[derive(Debug, Error)]
 pub enum ApiError {
     #[error("invalid input: {0}")]
     BadRequest(String),
+    #[error("not found: {0}")]
+    NotFound(String),
     #[error("conflict: {0}")]
     Conflict(String),
     #[error("internal server error: {0}")]
@@ -60,6 +79,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
             ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
+            ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
             ApiError::Conflict(msg) => (StatusCode::CONFLICT, msg),
             ApiError::InternalServerError(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
         };
@@ -124,5 +144,38 @@ pub async fn register_handler(
         root_hex: result.root_hex,
         path_elements: result.path_elements,
         path_indices: result.path_indices,
+    }))
+}
+
+/// Handler for `GET /api/registry/path/:commitmentHex`.
+pub async fn get_path_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Path(commitment_hex): Path<String>,
+) -> Result<Json<GetPathResponse>, ApiError> {
+    let result =
+        tokio::task::spawn_blocking(move || {
+            let conn = state.pool.get().map_err(|e| {
+                ApiError::InternalServerError(format!("db connection failed: {}", e))
+            })?;
+
+            let tree = state.merkle_tree.lock().map_err(|_| {
+                ApiError::InternalServerError("merkle tree lock poisoned".to_string())
+            })?;
+
+            get_path_for_commitment(&tree, &conn, &commitment_hex).map_err(|e| match e {
+                annex_identity::IdentityError::CommitmentNotFound(_) => {
+                    ApiError::NotFound(format!("commitment not found: {}", commitment_hex))
+                }
+                _ => ApiError::InternalServerError(e.to_string()),
+            })
+        })
+        .await
+        .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+
+    Ok(Json(GetPathResponse {
+        leaf_index: result.0,
+        root_hex: result.1,
+        path_elements: result.2,
+        path_indices: result.3,
     }))
 }
