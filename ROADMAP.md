@@ -348,7 +348,7 @@ A running server that accepts identity registrations, processes VRP membership p
   - Errors: duplicate commitment (409), invalid role code (400), tree full (507)
 
 #### 2.3 — Merkle path retrieval endpoint
-- [ ] `GET /api/registry/path/:commitmentHex`
+- [x] `GET /api/registry/path/:commitmentHex`
   - Returns current Merkle path for an existing commitment
   - Error: commitment not found (404)
 
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-15 | Phase 2.3 (`Merkle path retrieval endpoint`) completed. |
 | 2026-02-15 | Phase 2.2 (`VRP registration endpoint`) completed. |
 | 2026-02-15 | Phase 1 `COMPLETE`. Phase 2 `IN PROGRESS`. |
 | 2026-02-11 | Phase 0 `COMPLETE`. Phase 1 `IN PROGRESS`. |

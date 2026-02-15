@@ -6,7 +6,7 @@
 use crate::{IdentityError, MerkleTree, RoleCode};
 use ark_bn254::Fr;
 use ark_ff::{BigInteger, PrimeField};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 /// Result of a successful registration.
 #[derive(Debug)]
@@ -111,6 +111,50 @@ pub fn register_identity(
         path_elements,
         path_indices,
     })
+}
+
+/// Retrieves the Merkle path for an existing commitment.
+///
+/// 1. Lookups the leaf index in `vrp_leaves` using the commitment hex.
+/// 2. Calls `tree.get_proof(leaf_index)` to generate the path.
+///
+/// # Errors
+///
+/// Returns [`IdentityError::CommitmentNotFound`] if the commitment does not exist.
+/// Returns [`IdentityError::DatabaseError`] if SQL fails.
+pub fn get_path_for_commitment(
+    tree: &MerkleTree,
+    conn: &Connection,
+    commitment_hex: &str,
+) -> Result<(usize, String, Vec<String>, Vec<u8>), IdentityError> {
+    let leaf_index: Option<usize> = conn
+        .query_row(
+            "SELECT leaf_index FROM vrp_leaves WHERE commitment_hex = ?1",
+            params![commitment_hex],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(IdentityError::DatabaseError)?;
+
+    let leaf_index = match leaf_index {
+        Some(idx) => idx,
+        None => {
+            return Err(IdentityError::CommitmentNotFound(
+                commitment_hex.to_string(),
+            ))
+        }
+    };
+
+    let (path_elements_fr, path_indices) = tree.get_proof(leaf_index)?;
+
+    let path_elements = path_elements_fr
+        .into_iter()
+        .map(|fr| hex::encode(fr.into_bigint().to_bytes_be()))
+        .collect();
+
+    let root_hex = hex::encode(tree.root().into_bigint().to_bytes_be());
+
+    Ok((leaf_index, root_hex, path_elements, path_indices))
 }
 
 #[cfg(test)]

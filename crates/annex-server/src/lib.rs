@@ -34,5 +34,9 @@ pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/api/registry/register", post(api::register_handler))
+        .route(
+            "/api/registry/path/{commitmentHex}",
+            get(api::get_path_handler),
+        )
         .layer(Extension(Arc::new(state)))
 }
