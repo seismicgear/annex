@@ -443,10 +443,10 @@ The trust negotiation layer. After this phase, an entity (agent or server) can p
 - [x] All with full test suites matching MABOS test coverage
 
 #### 3.3 — Semantic alignment (optional but recommended)
-- [ ] Port `calculate_semantic_alignment` with embedder trait
+- [x] Port `calculate_semantic_alignment` with embedder trait
 - [ ] Implement or integrate a local embedding model for semantic comparison
 - [ ] ADR: which embedding model, local vs. API, latency budget
-- [ ] If deferred: ensure `VrpAlignmentConfig.semantic_alignment_required` can be set to `false` without breaking the handshake flow
+- [x] If deferred: ensure `VrpAlignmentConfig.semantic_alignment_required` can be set to `false` without breaking the handshake flow
 
 #### 3.4 — Reputation system
 - [ ] `annex-db` migration: `vrp_handshake_log` table (stores `VrpValidationReport` summaries per counterparty)
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-16 | Phase 3.3 (`Semantic alignment`) completed (interface and stub; model integration deferred). |
 | 2026-02-16 | Phase 3.2 (`Anchor comparison engine`) completed. |
 | 2026-02-16 | Phase 2 `COMPLETE`. Phase 3 `IN PROGRESS`. |
 | 2026-02-16 | Phase 2.9 (`Rate limiting`) completed. |
