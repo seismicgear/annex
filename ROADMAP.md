@@ -353,7 +353,7 @@ A running server that accepts identity registrations, processes VRP membership p
   - Error: commitment not found (404)
 
 #### 2.4 — Current root endpoint
-- [ ] `GET /api/registry/current-root`
+- [x] `GET /api/registry/current-root`
   - Returns: `{ "rootHex": "0x...", "leafCount": 42, "updatedAt": "..." }`
 
 #### 2.5 — ZK membership verification endpoint
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-15 | Phase 2.4 (`Current root endpoint`) completed. |
 | 2026-02-15 | Phase 2.3 (`Merkle path retrieval endpoint`) completed. |
 | 2026-02-15 | Phase 2.2 (`VRP registration endpoint`) completed. |
 | 2026-02-15 | Phase 1 `COMPLETE`. Phase 2 `IN PROGRESS`. |

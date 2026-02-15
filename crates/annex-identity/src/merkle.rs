@@ -131,6 +131,13 @@ impl MerkleTree {
             .unwrap_or(&self.zeros[self.depth])
     }
 
+    /// Returns the current Merkle root as a big-endian hex string.
+    pub fn root_hex(&self) -> String {
+        let root = self.root();
+        let bytes = root.into_bigint().to_bytes_be();
+        hex::encode(bytes)
+    }
+
     /// Generates a Merkle proof for the leaf at the given index.
     ///
     /// Returns a tuple `(path_elements, path_indices)`.
