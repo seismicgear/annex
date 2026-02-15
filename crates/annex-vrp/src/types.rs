@@ -23,7 +23,7 @@ impl fmt::Display for VrpAlignmentStatus {
 }
 
 /// Defines the scope of data transfer permitted based on alignment.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub enum VrpTransferScope {
     /// No data transfer allowed.
     NoTransfer,

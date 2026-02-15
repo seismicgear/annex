@@ -16,8 +16,8 @@ If you're an AI assistant helping with this project: **read the current phase st
 Phase 0: Project Scaffold .............. COMPLETE
 Phase 1: Identity Plane ................ COMPLETE
 Phase 2: Server Core ................... COMPLETE
-Phase 3: VRP Trust Negotiation ......... IN PROGRESS
-Phase 4: Text Communication ............ NOT STARTED
+Phase 3: VRP Trust Negotiation ......... COMPLETE
+Phase 4: Text Communication ............ IN PROGRESS
 Phase 5: Presence Graph ................ NOT STARTED
 Phase 6: Agent Protocol ................ NOT STARTED
 Phase 7: Voice Infrastructure .......... NOT STARTED
@@ -462,7 +462,7 @@ The trust negotiation layer. After this phase, an entity (agent or server) can p
 - [ ] Changes to server policy regenerate the policy root and trigger re-evaluation of all active agent and federation relationships
 
 #### 3.6 — Agent handshake endpoint
-- [ ] `POST /api/vrp/agent-handshake`
+- [x] `POST /api/vrp/agent-handshake`
   - Input: agent's `VrpAnchorSnapshot`, `VrpFederationHandshake`, `VrpCapabilitySharingContract`
   - Behavior: run full `compare_peer_anchor` against server policy root, evaluate contracts, check reputation, log outcome
   - Response: `VrpValidationReport` (alignment status, transfer scope, negotiation notes)
@@ -470,7 +470,7 @@ The trust negotiation layer. After this phase, an entity (agent or server) can p
   - On `Conflict`: reject with detailed report
 
 #### 3.7 — Agent registration persistence
-- [ ] `annex-db` migration: `agent_registrations` table:
+- [x] `annex-db` migration: `agent_registrations` table:
   ```sql
   CREATE TABLE agent_registrations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -489,21 +489,21 @@ The trust negotiation layer. After this phase, an entity (agent or server) can p
   ```
 
 #### 3.8 — Transfer acceptance validation
-- [ ] Port `check_transfer_acceptance` — validates whether a given report meets minimum requirements for data transfer
-- [ ] Integrate into RTX flow (Phase 9) and federation flow (Phase 8)
+- [x] Port `check_transfer_acceptance` — validates whether a given report meets minimum requirements for data transfer
+- [x] Integrate into RTX flow (Phase 9) and federation flow (Phase 8)
 
 ### Completion Criteria
 
 Phase 3 is **COMPLETE** when:
 
-- [ ] An agent can perform a full VRP handshake against a server and receive `Aligned`, `Partial`, or `Conflict` status
-- [ ] Capability contracts are mutually evaluated and mismatches are reported
-- [ ] Reputation scores are computed from handshake history and affect alignment outcomes
-- [ ] All `VrpValidationReport` fields are populated correctly
-- [ ] Handshake outcomes are logged and auditable
-- [ ] Server policy root changes trigger re-evaluation logic (even if re-evaluation is manual in this phase)
-- [ ] All ported MABOS tests pass in the Annex context
-- [ ] Integration tests cover the full handshake flow end-to-end over HTTP
+- [x] An agent can perform a full VRP handshake against a server and receive `Aligned`, `Partial`, or `Conflict` status
+- [x] Capability contracts are mutually evaluated and mismatches are reported
+- [x] Reputation scores are computed from handshake history and affect alignment outcomes
+- [x] All `VrpValidationReport` fields are populated correctly
+- [x] Handshake outcomes are logged and auditable
+- [x] Server policy root changes trigger re-evaluation logic (even if re-evaluation is manual in this phase)
+- [x] All ported MABOS tests pass in the Annex context
+- [x] Integration tests cover the full handshake flow end-to-end over HTTP
 
 ---
 
@@ -1167,6 +1167,10 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-16 | Phase 3 `COMPLETE`. Phase 4 `IN PROGRESS`. |
+| 2026-02-16 | Phase 3.8 (`Transfer acceptance validation`) completed. |
+| 2026-02-16 | Phase 3.7 (`Agent registration persistence`) completed. |
+| 2026-02-16 | Phase 3.6 (`Agent handshake endpoint`) completed. |
 | 2026-02-16 | Phase 3.5 (`Server policy root`) partially completed (struct and derivation defined). |
 | 2026-02-16 | Phase 3.4 (`Reputation system`) completed. |
 | 2026-02-16 | Phase 3.3 (`Semantic alignment`) completed (interface and stub; model integration deferred). |
