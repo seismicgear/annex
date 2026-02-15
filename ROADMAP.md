@@ -260,7 +260,7 @@ The cryptographic identity substrate. After this phase, an entity can generate a
 - [x] Seed default roles: `Human = 1`, `AiAgent = 2`, `Collective = 3`, `Bridge = 4`, `Service = 5`
 
 #### 1.10 — Platform identity registry
-- [ ] `annex-db` migration: `platform_identities` table:
+- [x] `annex-db` migration: `platform_identities` table:
   ```sql
   CREATE TABLE platform_identities (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -278,8 +278,8 @@ The cryptographic identity substrate. After this phase, an entity can generate a
     UNIQUE (server_id, pseudonym_id)
   );
   ```
-- [ ] CRUD operations in `annex-identity` with proper error types
-- [ ] Test: create identity → lookup by pseudonym → update capability flags → verify flags changed
+- [x] CRUD operations in `annex-identity` with proper error types
+- [x] Test: create identity → lookup by pseudonym → update capability flags → verify flags changed
 
 ### Completion Criteria
 

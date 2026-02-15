@@ -3,18 +3,24 @@
 //! This crate implements the first phase of the Annex identity plane with
 //! deterministic, topic-scoped pseudonym derivation helpers.
 
+pub use annex_types::RoleCode;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 pub mod commitment;
 pub mod merkle;
 pub mod nullifier;
+pub mod platform;
 pub mod poseidon;
 pub mod zk;
 
-pub use commitment::{generate_commitment, RoleCode};
+pub use commitment::generate_commitment;
 pub use merkle::MerkleTree;
 pub use nullifier::{check_nullifier_exists, insert_nullifier};
+pub use platform::{
+    create_platform_identity, deactivate_platform_identity, get_platform_identity,
+    update_capabilities, Capabilities, PlatformIdentity,
+};
 pub use poseidon::hash_inputs;
 
 /// Errors produced by identity derivation operations.
@@ -41,6 +47,9 @@ pub enum IdentityError {
     /// The role code is invalid.
     #[error("invalid role code: {0}")]
     InvalidRoleCode(u8),
+    /// The role label is invalid.
+    #[error("invalid role label: {0}")]
+    InvalidRoleLabel(String),
     /// Poseidon hashing failed.
     #[error("poseidon error: {0}")]
     PoseidonError(String),
@@ -68,6 +77,7 @@ impl PartialEq for IdentityError {
             (Self::InvalidCommitmentFormat, Self::InvalidCommitmentFormat) => true,
             (Self::InvalidHex, Self::InvalidHex) => true,
             (Self::InvalidRoleCode(a), Self::InvalidRoleCode(b)) => a == b,
+            (Self::InvalidRoleLabel(a), Self::InvalidRoleLabel(b)) => a == b,
             (Self::PoseidonError(a), Self::PoseidonError(b)) => a == b,
             (Self::TreeFull, Self::TreeFull) => true,
             (Self::InvalidIndex(a), Self::InvalidIndex(b)) => a == b,

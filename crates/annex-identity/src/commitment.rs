@@ -1,35 +1,8 @@
 use crate::poseidon::hash_inputs;
 use crate::IdentityError;
+use annex_types::RoleCode;
 use ark_bn254::Fr;
 use ark_ff::{BigInteger, PrimeField};
-
-/// Roles defined in the system.
-///
-/// Human = 1, AiAgent = 2, Collective = 3, Bridge = 4, Service = 5
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum RoleCode {
-    Human = 1,
-    AiAgent = 2,
-    Collective = 3,
-    Bridge = 4,
-    Service = 5,
-}
-
-impl TryFrom<u8> for RoleCode {
-    type Error = IdentityError;
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            1 => Ok(RoleCode::Human),
-            2 => Ok(RoleCode::AiAgent),
-            3 => Ok(RoleCode::Collective),
-            4 => Ok(RoleCode::Bridge),
-            5 => Ok(RoleCode::Service),
-            _ => Err(IdentityError::InvalidRoleCode(value)),
-        }
-    }
-}
 
 /// Generates a Poseidon commitment: `Poseidon(sk, roleCode, nodeId)`.
 ///
