@@ -13,9 +13,9 @@ If you're an AI assistant helping with this project: **read the current phase st
 ## Current State
 
 ```
-Phase 0: Project Scaffold .............. NOT STARTED ← START HERE
-Phase 1: Identity Plane ................ NOT STARTED
-Phase 2: Server Core ................... NOT STARTED
+Phase 0: Project Scaffold .............. COMPLETE
+Phase 1: Identity Plane ................ COMPLETE
+Phase 2: Server Core ................... IN PROGRESS
 Phase 3: VRP Trust Negotiation ......... NOT STARTED
 Phase 4: Text Communication ............ NOT STARTED
 Phase 5: Presence Graph ................ NOT STARTED
@@ -188,7 +188,7 @@ Phase 0 is **COMPLETE** when:
 
 ## Phase 1: Identity Plane
 
-**Status**: `IN PROGRESS`
+**Status**: `COMPLETE`
 **Prerequisites**: Phase 0 `COMPLETE`
 **Estimated scope**: ZKP circuits, Poseidon Merkle tree, VRP registry, identity commitment, pseudonym derivation
 
@@ -300,7 +300,7 @@ Phase 1 is **COMPLETE** when:
 
 ## Phase 2: Server Core
 
-**Status**: `NOT STARTED`
+**Status**: `IN PROGRESS`
 **Prerequisites**: Phase 1 `COMPLETE`
 **Estimated scope**: HTTP API for identity operations, server configuration, authentication middleware, tenant model
 
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-15 | Phase 1 `COMPLETE`. Phase 2 `IN PROGRESS`. |
 | 2026-02-11 | Phase 0 `COMPLETE`. Phase 1 `IN PROGRESS`. |
 | 2026-02-11 | Roadmap created. All phases `NOT STARTED`. |
 

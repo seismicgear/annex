@@ -139,6 +139,9 @@ pub enum EdgeKind {
     Moderates,
 }
 
+mod policy;
+pub use policy::ServerPolicy;
+
 #[cfg(test)]
 mod tests {
     use super::*;
