@@ -77,10 +77,7 @@ impl MerkleTree {
     ///
     /// Returns [`IdentityError::TreeFull`] if the tree is full.
     /// Returns [`IdentityError::PoseidonError`] if hashing fails.
-    pub fn preview_insert(
-        &self,
-        leaf: Fr,
-    ) -> Result<InsertionPreview, IdentityError> {
+    pub fn preview_insert(&self, leaf: Fr) -> Result<InsertionPreview, IdentityError> {
         if self.next_index >= 1 << self.depth {
             return Err(IdentityError::TreeFull);
         }
