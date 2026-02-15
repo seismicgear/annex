@@ -10,6 +10,9 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 sha2 = { workspace = true }
 hex = "0.4"
+rusqlite = { workspace = true }
+annex-db = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

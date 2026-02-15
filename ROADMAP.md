@@ -449,10 +449,10 @@ The trust negotiation layer. After this phase, an entity (agent or server) can p
 - [x] If deferred: ensure `VrpAlignmentConfig.semantic_alignment_required` can be set to `false` without breaking the handshake flow
 
 #### 3.4 — Reputation system
-- [ ] `annex-db` migration: `vrp_handshake_log` table (stores `VrpValidationReport` summaries per counterparty)
-- [ ] Port `check_reputation_score` — compute longitudinal alignment from handshake history
-- [ ] Port `record_vrp_outcome` — log handshake results
-- [ ] Test: reputation degrades over repeated `Partial` or `Conflict` outcomes; improves over `Aligned` outcomes
+- [x] `annex-db` migration: `vrp_handshake_log` table (stores `VrpValidationReport` summaries per counterparty)
+- [x] Port `check_reputation_score` — compute longitudinal alignment from handshake history
+- [x] Port `record_vrp_outcome` — log handshake results
+- [x] Test: reputation degrades over repeated `Partial` or `Conflict` outcomes; improves over `Aligned` outcomes
 
 #### 3.5 — Server policy root
 - [ ] Define `ServerPolicyRoot` struct (maps to `EthicalRoot` shape):
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-16 | Phase 3.4 (`Reputation system`) completed. |
 | 2026-02-16 | Phase 3.3 (`Semantic alignment`) completed (interface and stub; model integration deferred). |
 | 2026-02-16 | Phase 3.2 (`Anchor comparison engine`) completed. |
 | 2026-02-16 | Phase 2 `COMPLETE`. Phase 3 `IN PROGRESS`. |

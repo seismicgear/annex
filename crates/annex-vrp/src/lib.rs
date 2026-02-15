@@ -17,12 +17,14 @@
 //! current skeleton provides the module structure that will be filled in
 //! during that phase.
 
+pub mod reputation;
 pub mod semantic;
 pub mod types;
 
 #[cfg(test)]
 mod tests;
 
+pub use reputation::{check_reputation_score, record_vrp_outcome, ReputationError};
 pub use types::{
     VrpAlignmentConfig, VrpAlignmentStatus, VrpAnchorSnapshot, VrpCapabilitySharingContract,
     VrpFederationHandshake, VrpTransferAcceptanceConfig, VrpTransferAcceptanceError,
