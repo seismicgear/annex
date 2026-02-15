@@ -1,11 +1,14 @@
 use annex_db::{create_pool, DbRuntimeSettings};
 use annex_identity::MerkleTree;
-use annex_server::{api::GetRootResponse, app, AppState};
+use annex_server::{api::GetRootResponse, app, middleware::RateLimiter, AppState};
+use annex_types::ServerPolicy;
 use axum::{
     body::Body,
+    extract::ConnectInfo,
     http::{Request, StatusCode},
 };
-use std::sync::{Arc, Mutex};
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex, RwLock};
 use tower::ServiceExt;
 
 fn load_vkey() -> Arc<annex_identity::zk::VerifyingKey<annex_identity::zk::Bn254>> {
@@ -29,13 +32,18 @@ async fn test_get_current_root_empty_tree() {
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: load_vkey(),
         server_id: 1,
+        policy: Arc::new(RwLock::new(ServerPolicy::default())),
+        rate_limiter: RateLimiter::new(),
     };
     let app = app(state);
 
-    let request = Request::builder()
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+
+    let mut request = Request::builder()
         .uri("/api/registry/current-root")
         .body(Body::empty())
         .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
 
     let response = app.oneshot(request).await.unwrap();
 
@@ -67,8 +75,12 @@ async fn test_get_current_root_after_registration() {
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: load_vkey(),
         server_id: 1,
+        policy: Arc::new(RwLock::new(ServerPolicy::default())),
+        rate_limiter: RateLimiter::new(),
     };
     let app = app(state);
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
 
     // Register
     let commitment = "0000000000000000000000000000000000000000000000000000000000000001";
@@ -78,20 +90,22 @@ async fn test_get_current_root_after_registration() {
         "nodeId": 100
     });
 
-    let reg_req = Request::builder()
+    let mut reg_req = Request::builder()
         .uri("/api/registry/register")
         .method("POST")
         .header("content-type", "application/json")
         .body(Body::from(register_body.to_string()))
         .unwrap();
+    reg_req.extensions_mut().insert(ConnectInfo(addr));
 
     let _ = app.clone().oneshot(reg_req).await.unwrap();
 
     // Get Root
-    let request = Request::builder()
+    let mut request = Request::builder()
         .uri("/api/registry/current-root")
         .body(Body::empty())
         .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
 
     let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);

@@ -1,11 +1,14 @@
 use annex_db::{create_pool, DbRuntimeSettings};
 use annex_identity::{MerkleTree, VrpRoleEntry, VrpTopic};
-use annex_server::{app, AppState};
+use annex_server::{app, middleware::RateLimiter, AppState};
+use annex_types::ServerPolicy;
 use axum::{
     body::Body,
+    extract::ConnectInfo,
     http::{Request, StatusCode},
 };
-use std::sync::{Arc, Mutex};
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex, RwLock};
 use tower::ServiceExt; // for oneshot
 
 fn load_vkey() -> Arc<annex_identity::zk::VerifyingKey<annex_identity::zk::Bn254>> {
@@ -38,13 +41,18 @@ async fn test_get_topics() {
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: load_vkey(),
         server_id: 1,
+        policy: Arc::new(RwLock::new(ServerPolicy::default())),
+        rate_limiter: RateLimiter::new(),
     };
     let app = app(state);
 
-    let request = Request::builder()
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+
+    let mut request = Request::builder()
         .uri("/api/registry/topics")
         .body(Body::empty())
         .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
 
     let response = app.oneshot(request).await.unwrap();
 
@@ -75,13 +83,18 @@ async fn test_get_roles() {
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: load_vkey(),
         server_id: 1,
+        policy: Arc::new(RwLock::new(ServerPolicy::default())),
+        rate_limiter: RateLimiter::new(),
     };
     let app = app(state);
 
-    let request = Request::builder()
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+
+    let mut request = Request::builder()
         .uri("/api/registry/roles")
         .body(Body::empty())
         .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
 
     let response = app.oneshot(request).await.unwrap();
 

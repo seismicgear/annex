@@ -2,13 +2,18 @@ use annex_db::{create_pool, DbRuntimeSettings};
 use annex_identity::{create_platform_identity, RoleCode};
 use annex_server::{
     api::{GetCapabilitiesResponse, GetIdentityResponse},
-    app, AppState,
+    app,
+    middleware::RateLimiter,
+    AppState,
 };
+use annex_types::ServerPolicy;
 use axum::{
     body::Body,
+    extract::ConnectInfo,
     http::{Request, StatusCode},
 };
-use std::sync::{Arc, Mutex};
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex, RwLock};
 use tower::ServiceExt;
 
 #[tokio::test]
@@ -32,11 +37,6 @@ async fn test_get_identity_endpoints() {
     let vkey_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../zk/keys/membership_vkey.json");
 
-    // Check if key exists (integration tests might run where keys are generated)
-    // If not, we might fail. The memory says keys are regenerated if missing by annex-identity tests,
-    // but we are in annex-server.
-    // Ideally we should use a shared helper or ensure keys exist.
-    // For now, assume keys exist as per existing tests.
     let vkey_json = std::fs::read_to_string(&vkey_path).expect("failed to read vkey");
     let vk = annex_identity::zk::parse_verification_key(&vkey_json).expect("failed to parse vkey");
 
@@ -45,6 +45,8 @@ async fn test_get_identity_endpoints() {
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: Arc::new(vk),
         server_id: 1,
+        policy: Arc::new(RwLock::new(ServerPolicy::default())),
+        rate_limiter: RateLimiter::new(),
     };
     let app = app(state);
 
@@ -64,11 +66,14 @@ async fn test_get_identity_endpoints() {
         ).unwrap();
     }
 
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+
     // 3. Test GET /api/identity/:pseudonymId
-    let req = Request::builder()
+    let mut req = Request::builder()
         .uri(format!("/api/identity/{}", pseudonym_id))
         .body(Body::empty())
         .unwrap();
+    req.extensions_mut().insert(ConnectInfo(addr));
 
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -86,10 +91,11 @@ async fn test_get_identity_endpoints() {
     assert!(!identity.capabilities.can_invite); // Default
 
     // 4. Test GET /api/identity/:pseudonymId/capabilities
-    let req_caps = Request::builder()
+    let mut req_caps = Request::builder()
         .uri(format!("/api/identity/{}/capabilities", pseudonym_id))
         .body(Body::empty())
         .unwrap();
+    req_caps.extensions_mut().insert(ConnectInfo(addr));
 
     let resp_caps = app.clone().oneshot(req_caps).await.unwrap();
     assert_eq!(resp_caps.status(), StatusCode::OK);
@@ -104,10 +110,11 @@ async fn test_get_identity_endpoints() {
     assert!(!caps_resp.capabilities.can_invite);
 
     // 5. Test Not Found
-    let req_nf = Request::builder()
+    let mut req_nf = Request::builder()
         .uri("/api/identity/non-existent")
         .body(Body::empty())
         .unwrap();
+    req_nf.extensions_mut().insert(ConnectInfo(addr));
 
     let resp_nf = app.oneshot(req_nf).await.unwrap();
     assert_eq!(resp_nf.status(), StatusCode::NOT_FOUND);

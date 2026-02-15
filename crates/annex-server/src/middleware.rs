@@ -110,9 +110,10 @@ impl RateLimiter {
         let now = Instant::now();
 
         // Periodic cleanup to prevent memory leak
-        // If map grows too large, remove stale entries
+        // If map grows too large, clear it. This is a crude but safe way to prevent DoS.
+        // A more sophisticated approach would use an LRU cache or randomized eviction.
         if state.len() > 10000 {
-            state.retain(|_, (_, start)| now.duration_since(*start) < Duration::from_secs(60));
+            state.clear();
         }
 
         let (count, start) = state.entry(key).or_insert((0, now));
@@ -146,6 +147,8 @@ pub async fn rate_limit_middleware(req: Request<Body>, next: Next) -> Result<Res
 
     // 2. Identify Key
     // Check IdentityContext first (Pseudonym), then ConnectInfo (IP)
+    // Note: IdentityContext is only available if auth_middleware runs *before* this middleware.
+    // Currently, auth_middleware is not applied globally, so this usually falls back to IP.
     let key = if let Some(identity) = req.extensions().get::<IdentityContext>() {
         RateLimitKey::Pseudonym(identity.0.pseudonym_id.clone())
     } else if let Some(ConnectInfo(addr)) = req.extensions().get::<ConnectInfo<SocketAddr>>() {
