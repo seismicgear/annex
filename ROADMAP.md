@@ -455,10 +455,10 @@ The trust negotiation layer. After this phase, an entity (agent or server) can p
 - [x] Test: reputation degrades over repeated `Partial` or `Conflict` outcomes; improves over `Aligned` outcomes
 
 #### 3.5 — Server policy root
-- [ ] Define `ServerPolicyRoot` struct (maps to `EthicalRoot` shape):
+- [x] Define `ServerPolicyRoot` struct (maps to `EthicalRoot` shape):
   - `principles: Vec<String>` — server's declared operating principles
   - `prohibited_actions: Vec<String>` — what the server prohibits
-- [ ] Server policy root is derived from `server_policy_versions.policy_json`
+- [x] Server policy root is derived from `server_policy_versions.policy_json`
 - [ ] Changes to server policy regenerate the policy root and trigger re-evaluation of all active agent and federation relationships
 
 #### 3.6 — Agent handshake endpoint
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-16 | Phase 3.5 (`Server policy root`) partially completed (struct and derivation defined). |
 | 2026-02-16 | Phase 3.4 (`Reputation system`) completed. |
 | 2026-02-16 | Phase 3.3 (`Semantic alignment`) completed (interface and stub; model integration deferred). |
 | 2026-02-16 | Phase 3.2 (`Anchor comparison engine`) completed. |

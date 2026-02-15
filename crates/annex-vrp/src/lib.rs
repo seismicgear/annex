@@ -19,12 +19,14 @@
 
 pub mod reputation;
 pub mod semantic;
+pub mod server_root;
 pub mod types;
 
 #[cfg(test)]
 mod tests;
 
 pub use reputation::{check_reputation_score, record_vrp_outcome, ReputationError};
+pub use server_root::ServerPolicyRoot;
 pub use types::{
     VrpAlignmentConfig, VrpAlignmentStatus, VrpAnchorSnapshot, VrpCapabilitySharingContract,
     VrpFederationHandshake, VrpTransferAcceptanceConfig, VrpTransferAcceptanceError,
