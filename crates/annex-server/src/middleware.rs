@@ -23,10 +23,7 @@ pub struct IdentityContext(pub PlatformIdentity);
 /// will likely introduce signed requests or session tokens.
 ///
 /// For now, the "Bearer" token IS the pseudonym.
-pub async fn auth_middleware(
-    mut req: Request<Body>,
-    next: Next,
-) -> Result<Response, StatusCode> {
+pub async fn auth_middleware(mut req: Request<Body>, next: Next) -> Result<Response, StatusCode> {
     // 1. Extract pseudonym from header
     let pseudonym = if let Some(val) = req.headers().get("X-Annex-Pseudonym") {
         val.to_str()

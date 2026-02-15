@@ -27,7 +27,8 @@ async fn test_get_current_root_empty_tree() {
     let state = AppState {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
-        membership_vkey: load_vkey(), server_id: 1,
+        membership_vkey: load_vkey(),
+        server_id: 1,
     };
     let app = app(state);
 
@@ -64,7 +65,8 @@ async fn test_get_current_root_after_registration() {
     let state = AppState {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
-        membership_vkey: load_vkey(), server_id: 1,
+        membership_vkey: load_vkey(),
+        server_id: 1,
     };
     let app = app(state);
 
