@@ -164,14 +164,20 @@ mod tests {
         let mut embedder = MockEmbedder::new();
         // A is [1, 0]
         // C is [0.707, 0.707] (45 degrees from A)
+        embedder.insert(
+            "C",
+            vec![
+                std::f32::consts::FRAC_1_SQRT_2,
+                std::f32::consts::FRAC_1_SQRT_2,
+            ],
+        );
         embedder.insert("A", vec![1.0, 0.0]);
-        embedder.insert("C", vec![0.70710678, 0.70710678]);
 
         let p1 = vec!["A".to_string()];
         let p2 = vec!["C".to_string()];
 
         let score = calculate_semantic_alignment(&p1, &p2, &embedder).unwrap();
         // Cosine similarity should be close to 0.707
-        assert!((score - 0.70710678).abs() < 1e-4);
+        assert!((score - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-4);
     }
 }
