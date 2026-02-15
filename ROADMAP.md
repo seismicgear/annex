@@ -15,8 +15,8 @@ If you're an AI assistant helping with this project: **read the current phase st
 ```
 Phase 0: Project Scaffold .............. COMPLETE
 Phase 1: Identity Plane ................ COMPLETE
-Phase 2: Server Core ................... IN PROGRESS
-Phase 3: VRP Trust Negotiation ......... NOT STARTED
+Phase 2: Server Core ................... COMPLETE
+Phase 3: VRP Trust Negotiation ......... IN PROGRESS
 Phase 4: Text Communication ............ NOT STARTED
 Phase 5: Presence Graph ................ NOT STARTED
 Phase 6: Agent Protocol ................ NOT STARTED
@@ -300,7 +300,7 @@ Phase 1 is **COMPLETE** when:
 
 ## Phase 2: Server Core
 
-**Status**: `IN PROGRESS`
+**Status**: `COMPLETE`
 **Prerequisites**: Phase 1 `COMPLETE`
 **Estimated scope**: HTTP API for identity operations, server configuration, authentication middleware, tenant model
 
@@ -409,7 +409,7 @@ Phase 2 is **COMPLETE** when:
 
 ## Phase 3: VRP Trust Negotiation
 
-**Status**: `NOT STARTED`
+**Status**: `IN PROGRESS`
 **Prerequisites**: Phase 2 `COMPLETE`
 **Estimated scope**: Port/adapt MABOS VRP trust negotiation for server-agent and server-server contexts
 
@@ -420,7 +420,7 @@ The trust negotiation layer. After this phase, an entity (agent or server) can p
 ### Steps
 
 #### 3.1 — VRP types adaptation
-- [ ] Port or vendor the following from MABOS `value_resonance.rs` into `annex-vrp`:
+- [x] Port or vendor the following from MABOS `value_resonance.rs` into `annex-vrp`:
   - `VrpAnchorSnapshot`
   - `VrpAlignmentStatus` (Aligned, Partial, Conflict)
   - `VrpTransferScope` (NoTransfer, ReflectionSummariesOnly, FullKnowledgeBundle)
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-16 | Phase 2 `COMPLETE`. Phase 3 `IN PROGRESS`. |
 | 2026-02-16 | Phase 2.9 (`Rate limiting`) completed. |
 | 2026-02-16 | Phase 2.8 (`Request authentication middleware`) completed. |
 | 2026-02-15 | Phase 2.7 (`Identity query endpoints`) completed. |
