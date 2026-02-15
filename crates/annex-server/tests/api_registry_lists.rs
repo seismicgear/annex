@@ -37,6 +37,7 @@ async fn test_get_topics() {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: load_vkey(),
+        server_id: 1,
     };
     let app = app(state);
 
@@ -73,6 +74,7 @@ async fn test_get_roles() {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: load_vkey(),
+        server_id: 1,
     };
     let app = app(state);
 

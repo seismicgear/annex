@@ -44,6 +44,7 @@ async fn test_verify_membership_flow() {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: load_vkey(),
+        server_id: 1,
     };
     let app = app(state);
 

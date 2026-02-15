@@ -2,6 +2,7 @@
 
 pub mod api;
 pub mod config;
+pub mod middleware;
 
 use annex_db::DbPool;
 use annex_identity::zk::{Bn254, VerifyingKey};
@@ -22,6 +23,8 @@ pub struct AppState {
     pub merkle_tree: Arc<Mutex<MerkleTree>>,
     /// ZK Membership verification key.
     pub membership_vkey: Arc<VerifyingKey<Bn254>>,
+    /// The local server ID.
+    pub server_id: i64,
 }
 
 /// Health check handler.

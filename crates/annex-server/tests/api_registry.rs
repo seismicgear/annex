@@ -29,6 +29,7 @@ async fn test_register_identity_success() {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: load_vkey(),
+        server_id: 1,
     };
     let app = app(state);
 
@@ -75,6 +76,7 @@ async fn test_register_duplicate_failure() {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: load_vkey(),
+        server_id: 1,
     };
     let app = app(state);
 
@@ -121,6 +123,7 @@ async fn test_register_invalid_role_failure() {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: load_vkey(),
+        server_id: 1,
     };
     let app = app(state);
 

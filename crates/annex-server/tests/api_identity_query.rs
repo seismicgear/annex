@@ -44,6 +44,7 @@ async fn test_get_identity_endpoints() {
         pool: pool.clone(),
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: Arc::new(vk),
+        server_id: 1,
     };
     let app = app(state);
 
