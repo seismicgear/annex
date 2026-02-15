@@ -253,11 +253,11 @@ The cryptographic identity substrate. After this phase, an entity can generate a
 - [x] Test: first verification succeeds and inserts nullifier; second verification with same commitment + topic fails
 
 #### 1.9 — VRP identity registry
-- [ ] `annex-db` migration: `vrp_identities` table (`commitment_hex TEXT UNIQUE, role_code INTEGER, node_id INTEGER, created_at TEXT`)
-- [ ] `annex-db` migration: `vrp_topics` table (`topic TEXT UNIQUE, description TEXT, created_at TEXT`)
-- [ ] `annex-db` migration: `vrp_roles` table (`role_code INTEGER UNIQUE, label TEXT`)
-- [ ] Seed default topics: `annex:server:v1`, `annex:channel:v1`, `annex:federation:v1`
-- [ ] Seed default roles: `Human = 1`, `AiAgent = 2`, `Collective = 3`, `Bridge = 4`, `Service = 5`
+- [x] `annex-db` migration: `vrp_identities` table (`commitment_hex TEXT UNIQUE, role_code INTEGER, node_id INTEGER, created_at TEXT`)
+- [x] `annex-db` migration: `vrp_topics` table (`topic TEXT UNIQUE, description TEXT, created_at TEXT`)
+- [x] `annex-db` migration: `vrp_roles` table (`role_code INTEGER UNIQUE, label TEXT`)
+- [x] Seed default topics: `annex:server:v1`, `annex:channel:v1`, `annex:federation:v1`
+- [x] Seed default roles: `Human = 1`, `AiAgent = 2`, `Collective = 3`, `Bridge = 4`, `Service = 5`
 
 #### 1.10 — Platform identity registry
 - [ ] `annex-db` migration: `platform_identities` table:
