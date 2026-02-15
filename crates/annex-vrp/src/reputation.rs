@@ -58,7 +58,7 @@ pub fn check_reputation_score(
         Ok(status)
     })?;
 
-    let mut score = 0.5; // Start neutral
+    let mut score: f32 = 0.5; // Start neutral
 
     for row in rows {
         let status_str = row?;
@@ -82,12 +82,7 @@ pub fn check_reputation_score(
     }
 
     // Ensure bounds (though logic shouldn't exceed them)
-    if score > 1.0 {
-        score = 1.0;
-    }
-    if score < 0.0 {
-        score = 0.0;
-    }
+    score = score.clamp(0.0, 1.0);
 
     Ok(score)
 }
