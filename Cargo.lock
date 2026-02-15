@@ -126,6 +126,7 @@ dependencies = [
  "annex-identity",
  "annex-types",
  "axum",
+ "num-bigint",
  "reqwest",
  "rusqlite",
  "serde",
@@ -137,6 +138,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber 0.3.22",
+ "uuid",
 ]
 
 [[package]]

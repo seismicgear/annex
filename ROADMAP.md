@@ -357,7 +357,7 @@ A running server that accepts identity registrations, processes VRP membership p
   - Returns: `{ "rootHex": "0x...", "leafCount": 42, "updatedAt": "..." }`
 
 #### 2.5 — ZK membership verification endpoint
-- [ ] `POST /api/zk/verify-membership`
+- [x] `POST /api/zk/verify-membership`
   - Input: `{ "root": "...", "commitment": "...", "topic": "annex:server:v1", "proof": {...}, "publicSignals": [...] }`
   - Behavior:
     1. Verify `root` matches an active `vrp_roots` entry
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-15 | Phase 2.5 (`ZK membership verification endpoint`) completed. |
 | 2026-02-15 | Phase 2.4 (`Current root endpoint`) completed. |
 | 2026-02-15 | Phase 2.3 (`Merkle path retrieval endpoint`) completed. |
 | 2026-02-15 | Phase 2.2 (`VRP registration endpoint`) completed. |

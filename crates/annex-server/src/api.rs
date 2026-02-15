@@ -1,7 +1,12 @@
 //! API handlers for the Annex server.
 
 use crate::AppState;
-use annex_identity::{get_path_for_commitment, register_identity, RoleCode};
+use annex_identity::{
+    check_nullifier_exists, create_platform_identity, derive_nullifier_hex, derive_pseudonym_id,
+    get_path_for_commitment, insert_nullifier, register_identity,
+    zk::{parse_fr_from_hex, parse_proof, parse_public_signals, verify_proof},
+    RoleCode,
+};
 use axum::{
     extract::{Extension, Json, Path},
     http::StatusCode,
@@ -77,11 +82,48 @@ pub struct GetRootResponse {
     pub updated_at: Option<String>,
 }
 
+/// Request body for ZK membership verification.
+///
+/// Note on privacy: This endpoint requires the public identity commitment to be
+/// submitted alongside the proof. This allows the server to verify that the
+/// proof corresponds to the claimed identity (via public signals) and to derive
+/// the deterministic pseudonym. While the proof demonstrates membership in the
+/// Merkle tree without revealing the private key or Merkle path to *observers*
+/// of the proof alone, the server here acts as the verifier and issuer of the
+/// topic-scoped pseudonym, and thus learns the mapping between commitment and
+/// pseudonym for this interaction. This is consistent with the Phase 1 identity model.
+#[derive(Debug, Deserialize)]
+pub struct VerifyMembershipRequest {
+    /// The Merkle root against which the proof was generated.
+    pub root: String,
+    /// The identity commitment.
+    pub commitment: String,
+    /// The topic for which the pseudonym is being derived.
+    pub topic: String,
+    /// The Groth16 proof (JSON object).
+    pub proof: serde_json::Value,
+    /// The public signals (array of strings).
+    #[serde(rename = "publicSignals")]
+    pub public_signals: Vec<String>,
+}
+
+/// Response body for successful membership verification.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct VerifyMembershipResponse {
+    /// Whether verification succeeded.
+    pub ok: bool,
+    /// The derived pseudonym ID.
+    #[serde(rename = "pseudonymId")]
+    pub pseudonym_id: String,
+}
+
 /// API error type mapping to HTTP status codes.
 #[derive(Debug, Error)]
 pub enum ApiError {
     #[error("invalid input: {0}")]
     BadRequest(String),
+    #[error("unauthorized: {0}")]
+    Unauthorized(String),
     #[error("not found: {0}")]
     NotFound(String),
     #[error("conflict: {0}")]
@@ -94,6 +136,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
             ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
+            ApiError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg),
             ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
             ApiError::Conflict(msg) => (StatusCode::CONFLICT, msg),
             ApiError::InternalServerError(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
@@ -230,5 +273,142 @@ pub async fn get_current_root_handler(
         root_hex: result.0,
         leaf_count: result.1,
         updated_at: result.2,
+    }))
+}
+
+/// Handler for `POST /api/zk/verify-membership`.
+pub async fn verify_membership_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(payload): Json<VerifyMembershipRequest>,
+) -> Result<Json<VerifyMembershipResponse>, ApiError> {
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = state
+            .pool
+            .get()
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
+
+        // 1. Verify root exists and is active/valid
+        let root_exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM vrp_roots WHERE root_hex = ?1",
+                [&payload.root],
+                |row| row.get(0),
+            )
+            .map_err(|e| ApiError::InternalServerError(format!("db query failed: {}", e)))
+            .map(|count: i64| count > 0)?;
+
+        if !root_exists {
+            return Err(ApiError::Conflict(format!(
+                "stale or invalid root: {}",
+                payload.root
+            )));
+        }
+
+        // 2. Parse proof and public signals
+        let proof = parse_proof(&payload.proof.to_string())
+            .map_err(|e| ApiError::BadRequest(format!("invalid proof format: {}", e)))?;
+
+        let public_signals_json = serde_json::to_string(&payload.public_signals).map_err(|e| {
+            ApiError::BadRequest(format!("failed to serialize public signals: {}", e))
+        })?;
+        let public_signals = parse_public_signals(&public_signals_json)
+            .map_err(|e| ApiError::BadRequest(format!("invalid public signals format: {}", e)))?;
+
+        // 3. Verify proof
+        let valid = verify_proof(&state.membership_vkey, &proof, &public_signals)
+            .map_err(|e| ApiError::Unauthorized(format!("proof verification failed: {}", e)))?;
+
+        if !valid {
+            return Err(ApiError::Unauthorized("invalid proof".to_string()));
+        }
+
+        // 4. Verify public signals match claimed root and commitment
+        // membership.circom public output: [root, commitment]
+        if public_signals.len() != 2 {
+            return Err(ApiError::BadRequest(
+                "invalid number of public signals".to_string(),
+            ));
+        }
+
+        // Convert input hex strings to Fr for comparison
+        let claimed_root = parse_fr_from_hex(&payload.root)
+            .map_err(|e| ApiError::BadRequest(format!("invalid root hex: {}", e)))?;
+        let claimed_commitment = parse_fr_from_hex(&payload.commitment)
+            .map_err(|e| ApiError::BadRequest(format!("invalid commitment hex: {}", e)))?;
+
+        if public_signals[0] != claimed_root {
+            return Err(ApiError::BadRequest(
+                "proof root does not match claimed root".to_string(),
+            ));
+        }
+        if public_signals[1] != claimed_commitment {
+            return Err(ApiError::BadRequest(
+                "proof commitment does not match claimed commitment".to_string(),
+            ));
+        }
+
+        // 5. Derive nullifier
+        let nullifier_hex = derive_nullifier_hex(&payload.commitment, &payload.topic)
+            .map_err(|e| ApiError::BadRequest(format!("failed to derive nullifier: {}", e)))?;
+
+        // 6. Check duplicate nullifier
+        let exists = check_nullifier_exists(&conn, &payload.topic, &nullifier_hex)
+            .map_err(|e| ApiError::InternalServerError(format!("db check failed: {}", e)))?;
+
+        if exists {
+            return Err(ApiError::Conflict(format!(
+                "duplicate nullifier for topic: {}",
+                payload.topic
+            )));
+        }
+
+        // 7. Insert nullifier
+        insert_nullifier(&conn, &payload.topic, &nullifier_hex).map_err(|e| match e {
+            annex_identity::IdentityError::DuplicateNullifier(_) => {
+                ApiError::Conflict(e.to_string())
+            }
+            _ => ApiError::InternalServerError(format!("failed to insert nullifier: {}", e)),
+        })?;
+
+        // 8. Derive pseudonym
+        let pseudonym_id = derive_pseudonym_id(&payload.topic, &nullifier_hex).map_err(|e| {
+            ApiError::InternalServerError(format!("failed to derive pseudonym: {}", e))
+        })?;
+
+        // 9. Lookup role code from vrp_identities
+        let role_code_int: u8 = conn
+            .query_row(
+                "SELECT role_code FROM vrp_identities WHERE commitment_hex = ?1",
+                [&payload.commitment],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| ApiError::InternalServerError(format!("db query failed: {}", e)))?
+            .ok_or_else(|| ApiError::NotFound("identity not found in registry".to_string()))?;
+
+        let role_code = RoleCode::from_u8(role_code_int).ok_or_else(|| {
+            ApiError::InternalServerError(format!("invalid role code in db: {}", role_code_int))
+        })?;
+
+        // 10. Get Server ID (assuming single server for now, or taking first)
+        let server_id: i64 = conn
+            .query_row("SELECT id FROM servers LIMIT 1", [], |row| row.get(0))
+            .optional()
+            .map_err(|e| ApiError::InternalServerError(format!("db query failed: {}", e)))?
+            .ok_or_else(|| ApiError::InternalServerError("no server configured".to_string()))?;
+
+        // 11. Create Platform Identity
+        create_platform_identity(&conn, server_id, &pseudonym_id, role_code).map_err(|e| {
+            ApiError::InternalServerError(format!("failed to create platform identity: {}", e))
+        })?;
+
+        Ok(pseudonym_id)
+    })
+    .await
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+
+    Ok(Json(VerifyMembershipResponse {
+        ok: true,
+        pseudonym_id: result,
     }))
 }

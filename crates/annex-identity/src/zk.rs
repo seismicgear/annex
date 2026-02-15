@@ -1,5 +1,9 @@
-use ark_bn254::{Bn254, Fq, Fq2, Fr, G1Affine, G2Affine};
-use ark_groth16::{Groth16, Proof, VerifyingKey};
+pub use ark_bn254::Bn254;
+pub use ark_bn254::Fr;
+use ark_bn254::{Fq, Fq2, G1Affine, G2Affine};
+use ark_ff::PrimeField;
+use ark_groth16::Groth16;
+pub use ark_groth16::{Proof, VerifyingKey};
 use ark_snark::SNARK;
 use serde::Deserialize;
 use std::str::FromStr;
@@ -40,6 +44,11 @@ struct SnarkJsVKey {
 
 pub fn parse_fr(s: &str) -> Result<Fr, ZkError> {
     Fr::from_str(s).map_err(|_| ZkError::FieldElementError)
+}
+
+pub fn parse_fr_from_hex(hex: &str) -> Result<Fr, ZkError> {
+    let bytes = hex::decode(hex).map_err(|_| ZkError::FieldElementError)?;
+    Ok(Fr::from_be_bytes_mod_order(&bytes))
 }
 
 pub fn parse_fq(s: &str) -> Result<Fq, ZkError> {
