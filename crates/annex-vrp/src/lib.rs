@@ -17,6 +17,7 @@
 //! current skeleton provides the module structure that will be filled in
 //! during that phase.
 
+pub mod semantic;
 pub mod types;
 
 #[cfg(test)]
@@ -61,7 +62,12 @@ impl VrpAnchorSnapshot {
 /// Compares two anchor snapshots to determine alignment status.
 ///
 /// In Phase 3, this performs an exact hash match.
-/// Future phases will incorporate semantic similarity checks for partial matches.
+///
+/// Note: Semantic alignment (embedding comparison) for partial matches is defined in the
+/// `semantic` module. However, because `VrpAnchorSnapshot` only contains hashes of the
+/// principles, this function currently only supports exact matches (Aligned) or
+/// mismatches (Conflict). To support partial alignment, the full principle text
+/// must be available and passed to `semantic::calculate_semantic_alignment`.
 pub fn compare_peer_anchor(
     local: &VrpAnchorSnapshot,
     remote: &VrpAnchorSnapshot,
