@@ -136,7 +136,7 @@ mod tests {
     fn run_migrations_on_fresh_db() {
         let conn = Connection::open_in_memory().expect("should open in-memory db");
         let applied = run_migrations(&conn).expect("migrations should succeed");
-        assert_eq!(applied, 1, "should apply the initial migration");
+        assert_eq!(applied, 2, "should apply the initial migration");
 
         // Verify tracking table exists and has a record
         let count: i32 = conn
@@ -144,7 +144,7 @@ mod tests {
                 row.get(0)
             })
             .expect("should query migration count");
-        assert_eq!(count, 1);
+        assert_eq!(count, 2);
     }
 
     #[test]
@@ -152,7 +152,7 @@ mod tests {
         let conn = Connection::open_in_memory().expect("should open in-memory db");
 
         let first = run_migrations(&conn).expect("first run should succeed");
-        assert_eq!(first, 1);
+        assert_eq!(first, 2);
 
         let second = run_migrations(&conn).expect("second run should succeed");
         assert_eq!(second, 0, "no new migrations to apply");
