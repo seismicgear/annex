@@ -6,9 +6,11 @@ fn test_policy_to_root_to_snapshot() {
     let principles = vec!["Transparency".to_string(), "User Sovereignty".to_string()];
     let prohibited_actions = vec!["Data Selling".to_string(), "Censorship".to_string()];
 
-    let mut policy = ServerPolicy::default();
-    policy.principles = principles.clone();
-    policy.prohibited_actions = prohibited_actions.clone();
+    let policy = ServerPolicy {
+        principles: principles.clone(),
+        prohibited_actions: prohibited_actions.clone(),
+        ..Default::default()
+    };
 
     // 1. Convert to ServerPolicyRoot
     let root = ServerPolicyRoot::from_policy(&policy);
