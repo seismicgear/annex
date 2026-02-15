@@ -14,6 +14,7 @@ path = "src/main.rs"
 annex-types = { workspace = true }
 annex-db = { workspace = true }
 annex-identity = { workspace = true }
+annex-vrp = { workspace = true }
 rusqlite = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
@@ -25,6 +26,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["json"] }
