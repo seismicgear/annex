@@ -59,19 +59,35 @@ impl MerkleTree {
     /// Returns [`IdentityError::TreeFull`] if the tree is full.
     /// Returns [`IdentityError::PoseidonError`] if hashing fails.
     pub fn insert(&mut self, leaf: Fr) -> Result<usize, IdentityError> {
+        let (index, _, updates) = self.preview_insert(leaf)?;
+        self.apply_updates(index + 1, updates);
+        Ok(index)
+    }
+
+    /// Calculates the updates required to insert a leaf without modifying the tree.
+    ///
+    /// Returns `(index, new_root, updates)`.
+    /// `updates` is a list of node keys and values that need to be inserted.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdentityError::TreeFull`] if the tree is full.
+    /// Returns [`IdentityError::PoseidonError`] if hashing fails.
+    pub fn preview_insert(
+        &self,
+        leaf: Fr,
+    ) -> Result<(usize, Fr, Vec<((usize, usize), Fr)>), IdentityError> {
         if self.next_index >= 1 << self.depth {
             return Err(IdentityError::TreeFull);
         }
 
         let index = self.next_index;
-        self.next_index += 1;
-
-        // Update path to root
         let mut current_idx = index;
         let mut current_val = leaf;
+        let mut updates = Vec::with_capacity(self.depth + 1);
 
-        // Insert leaf
-        self.nodes.insert((0, current_idx), current_val);
+        // Leaf update
+        updates.push(((0, current_idx), current_val));
 
         for level in 0..self.depth {
             let sibling_idx = current_idx ^ 1;
@@ -90,10 +106,20 @@ impl MerkleTree {
 
             current_idx /= 2;
             current_val = parent_val;
-            self.nodes.insert((level + 1, current_idx), current_val);
+            updates.push(((level + 1, current_idx), current_val));
         }
 
-        Ok(index)
+        Ok((index, current_val, updates))
+    }
+
+    /// Applies updates calculated by `preview_insert`.
+    ///
+    /// Also updates `next_index`.
+    pub fn apply_updates(&mut self, next_index: usize, updates: Vec<((usize, usize), Fr)>) {
+        self.next_index = next_index;
+        for (key, val) in updates {
+            self.nodes.insert(key, val);
+        }
     }
 
     /// Returns the current Merkle root.
@@ -202,39 +228,63 @@ impl MerkleTree {
         Ok(tree)
     }
 
-    /// Inserts a leaf and persists it to the database.
-    pub fn insert_and_persist(
-        &mut self,
-        conn: &mut Connection,
+    /// Persists a leaf and the current root to the database without starting a transaction.
+    ///
+    /// Use this when you are already inside a transaction or need fine-grained control.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdentityError::DatabaseError`] if SQL execution fails.
+    pub fn persist_leaf_and_root(
+        &self,
+        conn: &Connection,
+        index: usize,
         leaf: Fr,
-    ) -> Result<usize, IdentityError> {
-        let index = self.insert(leaf)?;
-
-        // Persist leaf
+        root: Fr,
+    ) -> Result<(), IdentityError> {
         let leaf_bytes = leaf.into_bigint().to_bytes_be();
         let leaf_hex = hex::encode(leaf_bytes);
-        let root_bytes = self.root().into_bigint().to_bytes_be();
+        let root_bytes = root.into_bigint().to_bytes_be();
         let root_hex = hex::encode(root_bytes);
 
-        let tx = conn.transaction().map_err(IdentityError::DatabaseError)?;
+        // Note: rusqlite::Connection executes directly.
+        // If called with a Transaction object (which Derefs to Connection), it works within that transaction.
 
-        tx.execute(
+        conn.execute(
             "INSERT INTO vrp_leaves (leaf_index, commitment_hex) VALUES (?1, ?2)",
             params![index, leaf_hex],
         )
         .map_err(IdentityError::DatabaseError)?;
 
         // Mark previous root as inactive
-        tx.execute("UPDATE vrp_roots SET active = 0 WHERE active = 1", [])
+        conn.execute("UPDATE vrp_roots SET active = 0 WHERE active = 1", [])
             .map_err(IdentityError::DatabaseError)?;
 
         // Insert new active root
-        tx.execute(
+        conn.execute(
             "INSERT INTO vrp_roots (root_hex, active) VALUES (?1, 1)",
             params![root_hex],
         )
         .map_err(IdentityError::DatabaseError)?;
 
+        Ok(())
+    }
+
+    /// Inserts a leaf and persists it to the database, managing its own transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdentityError::DatabaseError`] if transaction or SQL fails.
+    pub fn insert_and_persist(
+        &mut self,
+        conn: &mut Connection,
+        leaf: Fr,
+    ) -> Result<usize, IdentityError> {
+        let index = self.insert(leaf)?;
+        let root = self.root();
+
+        let tx = conn.transaction().map_err(IdentityError::DatabaseError)?;
+        self.persist_leaf_and_root(&tx, index, leaf, root)?;
         tx.commit().map_err(IdentityError::DatabaseError)?;
 
         Ok(index)

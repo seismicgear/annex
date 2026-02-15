@@ -311,7 +311,7 @@ A running server that accepts identity registrations, processes VRP membership p
 ### Steps
 
 #### 2.1 — Server configuration model
-- [ ] `annex-db` migration: `servers` table:
+- [x] `annex-db` migration: `servers` table:
   ```sql
   CREATE TABLE servers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -321,7 +321,7 @@ A running server that accepts identity registrations, processes VRP membership p
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
   ```
-- [ ] `annex-db` migration: `server_policy_versions` table (append-only policy changelog):
+- [x] `annex-db` migration: `server_policy_versions` table (append-only policy changelog):
   ```sql
   CREATE TABLE server_policy_versions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -332,7 +332,7 @@ A running server that accepts identity registrations, processes VRP membership p
     FOREIGN KEY (server_id) REFERENCES servers(id)
   );
   ```
-- [ ] Default server policy struct in `annex-types`:
+- [x] Default server policy struct in `annex-types`:
   - `agent_min_alignment_score: f32`
   - `agent_required_capabilities: Vec<String>`
   - `federation_enabled: bool`
@@ -341,7 +341,7 @@ A running server that accepts identity registrations, processes VRP membership p
   - `max_members: u32`
 
 #### 2.2 — VRP registration endpoint
-- [ ] `POST /api/registry/register`
+- [x] `POST /api/registry/register`
   - Input: `{ "commitmentHex": "0x...", "roleCode": 1, "nodeId": 42 }`
   - Behavior: insert into `vrp_identities`, allocate leaf in Merkle tree, update `vrp_roots`, return Merkle path
   - Response: `{ "identityId": 123, "leafIndex": 5, "rootHex": "0x...", "pathElements": [...], "pathIndexBits": [...] }`
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-15 | Phase 2.2 (`VRP registration endpoint`) completed. |
 | 2026-02-15 | Phase 1 `COMPLETE`. Phase 2 `IN PROGRESS`. |
 | 2026-02-11 | Phase 0 `COMPLETE`. Phase 1 `IN PROGRESS`. |
 | 2026-02-11 | Roadmap created. All phases `NOT STARTED`. |

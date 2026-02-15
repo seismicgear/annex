@@ -3,6 +3,9 @@ name = "annex-server"
 version.workspace = true
 edition.workspace = true
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "annex-server"
 path = "src/main.rs"
@@ -10,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 annex-types = { workspace = true }
 annex-db = { workspace = true }
+annex-identity = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 tower = { workspace = true }

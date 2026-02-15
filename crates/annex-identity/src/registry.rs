@@ -1,0 +1,186 @@
+//! Identity Registry.
+//!
+//! Handles high-level identity registration: inserting into `vrp_identities`
+//! and updating the Merkle tree atomically.
+
+use crate::{IdentityError, MerkleTree, RoleCode};
+use ark_bn254::Fr;
+use ark_ff::{BigInteger, PrimeField};
+use rusqlite::{params, Connection};
+
+/// Result of a successful registration.
+#[derive(Debug)]
+pub struct RegistrationResult {
+    /// The unique ID in the `vrp_identities` table (not the leaf index).
+    pub identity_id: i64,
+    /// The Merkle tree leaf index assigned to this identity.
+    pub leaf_index: usize,
+    /// The updated Merkle root (hex string).
+    pub root_hex: String,
+    /// Merkle path elements (hex strings) for the proof.
+    pub path_elements: Vec<String>,
+    /// Merkle path indices (0 or 1).
+    pub path_indices: Vec<u8>,
+}
+
+/// Registers a new identity commitment.
+///
+/// 1. Checks if the commitment is already registered in `vrp_identities`.
+/// 2. Inserts the new identity into `vrp_identities`.
+/// 3. Inserts the commitment into the Merkle tree.
+/// 4. Persists the tree update to `vrp_leaves` and `vrp_roots`.
+/// 5. Returns the Merkle path and new root.
+///
+/// All database operations are wrapped in a transaction.
+///
+/// # Errors
+///
+/// Returns [`IdentityError::InvalidCommitmentFormat`] if commitment is invalid hex.
+/// Returns [`IdentityError::DuplicateNullifier`] (reused error variant) if commitment already exists.
+/// Returns [`IdentityError::TreeFull`] if the tree is full.
+/// Returns [`IdentityError::DatabaseError`] if SQL fails.
+pub fn register_identity(
+    tree: &mut MerkleTree,
+    conn: &mut Connection,
+    commitment_hex: &str,
+    role: RoleCode,
+    node_id: i64,
+) -> Result<RegistrationResult, IdentityError> {
+    // Validate format
+    if commitment_hex.len() != 64 || !commitment_hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(IdentityError::InvalidCommitmentFormat);
+    }
+
+    // Convert commitment to Fr leaf
+    let leaf_bytes = hex::decode(commitment_hex).map_err(|_| IdentityError::InvalidHex)?;
+    let leaf = Fr::from_be_bytes_mod_order(&leaf_bytes);
+
+    // 1. Preview Merkle Tree changes (Read-Only)
+    // This calculates the new root and updates without modifying the tree.
+    let (leaf_index, new_root, updates) = tree.preview_insert(leaf)?;
+
+    // Start transaction
+    let tx = conn.transaction().map_err(IdentityError::DatabaseError)?;
+
+    // 2. Check & Insert into vrp_identities
+    // We try to insert directly. If it fails due to UNIQUE constraint, it's a duplicate.
+    let identity_id = match tx.execute(
+        "INSERT INTO vrp_identities (commitment_hex, role_code, node_id) VALUES (?1, ?2, ?3)",
+        params![commitment_hex, role.as_u8(), node_id],
+    ) {
+        Ok(_) => tx.last_insert_rowid(),
+        Err(rusqlite::Error::SqliteFailure(err, _)) => {
+            if err.code == rusqlite::ErrorCode::ConstraintViolation {
+                // Determine if it was commitment constraint
+                return Err(IdentityError::DuplicateNullifier(format!(
+                    "commitment '{}' already registered",
+                    commitment_hex
+                )));
+            }
+            return Err(IdentityError::DatabaseError(rusqlite::Error::SqliteFailure(
+                err, None,
+            )));
+        }
+        Err(e) => return Err(IdentityError::DatabaseError(e)),
+    };
+
+    // 3. Persist Merkle Tree update (In Transaction)
+    tree.persist_leaf_and_root(&tx, leaf_index, leaf, new_root)?;
+
+    // 4. Commit Transaction
+    tx.commit().map_err(IdentityError::DatabaseError)?;
+
+    // 5. Apply updates to In-Memory Tree
+    // Only done if transaction succeeds.
+    tree.apply_updates(leaf_index + 1, updates);
+
+    // 5. Generate Proof (Read-only)
+    let (path_elements_fr, path_indices) = tree.get_proof(leaf_index)?;
+
+    let path_elements = path_elements_fr
+        .into_iter()
+        .map(|fr| hex::encode(fr.into_bigint().to_bytes_be()))
+        .collect();
+
+    let root_hex = hex::encode(new_root.into_bigint().to_bytes_be());
+
+    Ok(RegistrationResult {
+        identity_id,
+        leaf_index,
+        root_hex,
+        path_elements,
+        path_indices,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use annex_db::run_migrations;
+
+    #[test]
+    fn test_register_identity_success() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        let mut tree = MerkleTree::new(5).unwrap();
+        let commitment = "0000000000000000000000000000000000000000000000000000000000000001";
+
+        let result = register_identity(
+            &mut tree,
+            &mut conn,
+            commitment,
+            RoleCode::Human,
+            100,
+        )
+        .expect("registration should succeed");
+
+        assert_eq!(result.leaf_index, 0);
+        assert_eq!(result.path_indices.len(), 5);
+        assert_eq!(result.path_indices, vec![0, 0, 0, 0, 0]); // First leaf path is all left
+
+        // Verify it's in DB
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM vrp_identities WHERE commitment_hex = ?1)",
+                params![commitment],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(exists);
+    }
+
+    #[test]
+    fn test_register_duplicate_commitment_fails() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        let mut tree = MerkleTree::new(5).unwrap();
+        let commitment = "0000000000000000000000000000000000000000000000000000000000000001";
+
+        register_identity(
+            &mut tree,
+            &mut conn,
+            commitment,
+            RoleCode::Human,
+            100,
+        )
+        .unwrap();
+
+        let err = register_identity(
+            &mut tree,
+            &mut conn,
+            commitment,
+            RoleCode::AiAgent, // Even with different role
+            101,
+        )
+        .unwrap_err();
+
+        match err {
+            IdentityError::DuplicateNullifier(msg) => {
+                assert!(msg.contains("already registered"));
+            }
+            _ => panic!("expected DuplicateNullifier error, got {:?}", err),
+        }
+    }
+}
