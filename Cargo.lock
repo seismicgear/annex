@@ -165,8 +165,10 @@ dependencies = [
 name = "annex-vrp"
 version = "0.0.1"
 dependencies = [
+ "annex-db",
  "annex-types",
  "hex",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",
