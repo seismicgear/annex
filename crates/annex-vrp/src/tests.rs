@@ -298,3 +298,54 @@ fn test_validate_federation_handshake_contract_fail() {
     assert!(!report.negotiation_notes.is_empty());
     assert!(report.negotiation_notes[0].contains("Capability contracts incompatible"));
 }
+
+#[test]
+fn test_check_transfer_acceptance() {
+    let report_aligned = VrpValidationReport {
+        alignment_status: VrpAlignmentStatus::Aligned,
+        transfer_scope: VrpTransferScope::FullKnowledgeBundle,
+        alignment_score: 1.0,
+        negotiation_notes: vec![],
+    };
+
+    let report_partial = VrpValidationReport {
+        alignment_status: VrpAlignmentStatus::Partial,
+        transfer_scope: VrpTransferScope::ReflectionSummariesOnly,
+        alignment_score: 0.5,
+        negotiation_notes: vec![],
+    };
+
+    let report_conflict = VrpValidationReport {
+        alignment_status: VrpAlignmentStatus::Conflict,
+        transfer_scope: VrpTransferScope::NoTransfer,
+        alignment_score: 0.0,
+        negotiation_notes: vec![],
+    };
+
+    // 1. Conflict always fails
+    assert!(matches!(
+        check_transfer_acceptance(&report_conflict, VrpTransferScope::NoTransfer),
+        Err(VrpTransferAcceptanceError::Conflict)
+    ));
+
+    // 2. Insufficient scope
+    assert!(matches!(
+        check_transfer_acceptance(&report_partial, VrpTransferScope::FullKnowledgeBundle),
+        Err(VrpTransferAcceptanceError::Rejected(_))
+    ));
+
+    // 3. Sufficient scope (equal)
+    assert!(
+        check_transfer_acceptance(&report_partial, VrpTransferScope::ReflectionSummariesOnly)
+            .is_ok()
+    );
+
+    // 4. Sufficient scope (greater)
+    assert!(
+        check_transfer_acceptance(&report_aligned, VrpTransferScope::ReflectionSummariesOnly)
+            .is_ok()
+    );
+
+    // 5. NoTransfer requirement always met if not conflict
+    assert!(check_transfer_acceptance(&report_partial, VrpTransferScope::NoTransfer).is_ok());
+}

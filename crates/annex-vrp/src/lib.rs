@@ -182,3 +182,25 @@ pub fn validate_federation_handshake(
         negotiation_notes: notes,
     }
 }
+
+/// Validates whether a validation report meets the requirements for a specific transfer scope.
+///
+/// This function is used to gate data transfers (e.g., RTX bundles) based on the
+/// negotiated VRP alignment and transfer scope.
+pub fn check_transfer_acceptance(
+    report: &VrpValidationReport,
+    required_scope: VrpTransferScope,
+) -> Result<(), VrpTransferAcceptanceError> {
+    if report.alignment_status == VrpAlignmentStatus::Conflict {
+        return Err(VrpTransferAcceptanceError::Conflict);
+    }
+
+    if report.transfer_scope < required_scope {
+        return Err(VrpTransferAcceptanceError::Rejected(format!(
+            "Insufficient transfer scope: negotiated {}, required {}",
+            report.transfer_scope, required_scope
+        )));
+    }
+
+    Ok(())
+}
