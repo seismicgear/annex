@@ -22,6 +22,12 @@ pub struct ServerPolicy {
     /// Rate limiting configuration.
     #[serde(default)]
     pub rate_limit: RateLimitConfig,
+    /// The server's core operating principles (for VRP alignment).
+    #[serde(default)]
+    pub principles: Vec<String>,
+    /// Actions prohibited by the server (for VRP alignment).
+    #[serde(default)]
+    pub prohibited_actions: Vec<String>,
 }
 
 /// Configuration for API rate limiting.
@@ -55,6 +61,8 @@ impl Default for ServerPolicy {
             voice_enabled: true,
             max_members: 1000,
             rate_limit: RateLimitConfig::default(),
+            principles: Vec::new(),
+            prohibited_actions: Vec::new(),
         }
     }
 }
@@ -75,6 +83,8 @@ mod tests {
         assert_eq!(policy.rate_limit.registration_limit, 5);
         assert_eq!(policy.rate_limit.verification_limit, 5);
         assert_eq!(policy.rate_limit.default_limit, 60);
+        assert!(policy.principles.is_empty());
+        assert!(policy.prohibited_actions.is_empty());
     }
 
     #[test]
