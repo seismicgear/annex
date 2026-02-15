@@ -3,9 +3,10 @@
 use crate::AppState;
 use annex_identity::{
     check_nullifier_exists, create_platform_identity, derive_nullifier_hex, derive_pseudonym_id,
-    get_all_roles, get_all_topics, get_path_for_commitment, insert_nullifier, register_identity,
+    get_all_roles, get_all_topics, get_path_for_commitment, get_platform_identity,
+    insert_nullifier, register_identity,
     zk::{parse_fr_from_hex, parse_proof, parse_public_signals, verify_proof},
-    RoleCode, VrpRoleEntry, VrpTopic,
+    Capabilities, PlatformIdentity, RoleCode, VrpRoleEntry, VrpTopic,
 };
 use axum::{
     extract::{Extension, Json, Path},
@@ -115,6 +116,28 @@ pub struct VerifyMembershipResponse {
     /// The derived pseudonym ID.
     #[serde(rename = "pseudonymId")]
     pub pseudonym_id: String,
+}
+
+/// Response body for identity query.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GetIdentityResponse {
+    /// The pseudonym ID.
+    #[serde(rename = "pseudonymId")]
+    pub pseudonym_id: String,
+    /// The participant type (role).
+    #[serde(rename = "participantType")]
+    pub participant_type: RoleCode,
+    /// Whether the identity is active.
+    pub active: bool,
+    /// Capability flags.
+    pub capabilities: Capabilities,
+}
+
+/// Response body for identity capabilities query.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GetCapabilitiesResponse {
+    /// Capability flags.
+    pub capabilities: Capabilities,
 }
 
 /// API error type mapping to HTTP status codes.
@@ -429,6 +452,75 @@ pub async fn get_topics_handler(
     .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
 
     Ok(Json(result))
+}
+
+/// Helper to fetch platform identity. Blocking.
+fn fetch_platform_identity(
+    state: &AppState,
+    pseudonym_id: &str,
+) -> Result<PlatformIdentity, ApiError> {
+    let conn = state
+        .pool
+        .get()
+        .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
+
+    let server_id: i64 = conn
+        .query_row("SELECT id FROM servers LIMIT 1", [], |row| row.get(0))
+        .optional()
+        .map_err(|e| ApiError::InternalServerError(format!("db query failed: {}", e)))?
+        .ok_or_else(|| ApiError::InternalServerError("no server configured".to_string()))?;
+
+    get_platform_identity(&conn, server_id, pseudonym_id).map_err(|e| match e {
+        annex_identity::IdentityError::DatabaseError(rusqlite::Error::QueryReturnedNoRows) => {
+            ApiError::NotFound(format!("identity not found: {}", pseudonym_id))
+        }
+        _ => ApiError::InternalServerError(e.to_string()),
+    })
+}
+
+/// Handler for `GET /api/identity/:pseudonymId`.
+pub async fn get_identity_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Path(pseudonym_id): Path<String>,
+) -> Result<Json<GetIdentityResponse>, ApiError> {
+    let result =
+        tokio::task::spawn_blocking(move || fetch_platform_identity(&state, &pseudonym_id))
+            .await
+            .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+
+    Ok(Json(GetIdentityResponse {
+        pseudonym_id: result.pseudonym_id,
+        participant_type: result.participant_type,
+        active: result.active,
+        capabilities: Capabilities {
+            can_voice: result.can_voice,
+            can_moderate: result.can_moderate,
+            can_invite: result.can_invite,
+            can_federate: result.can_federate,
+            can_bridge: result.can_bridge,
+        },
+    }))
+}
+
+/// Handler for `GET /api/identity/:pseudonymId/capabilities`.
+pub async fn get_identity_capabilities_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Path(pseudonym_id): Path<String>,
+) -> Result<Json<GetCapabilitiesResponse>, ApiError> {
+    let result =
+        tokio::task::spawn_blocking(move || fetch_platform_identity(&state, &pseudonym_id))
+            .await
+            .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+
+    Ok(Json(GetCapabilitiesResponse {
+        capabilities: Capabilities {
+            can_voice: result.can_voice,
+            can_moderate: result.can_moderate,
+            can_invite: result.can_invite,
+            can_federate: result.can_federate,
+            can_bridge: result.can_bridge,
+        },
+    }))
 }
 
 /// Handler for `GET /api/registry/roles`.
