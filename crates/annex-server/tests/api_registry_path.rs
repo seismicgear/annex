@@ -11,6 +11,14 @@ use axum::{
 use std::sync::{Arc, Mutex};
 use tower::ServiceExt;
 
+fn load_vkey() -> Arc<annex_identity::zk::VerifyingKey<annex_identity::zk::Bn254>> {
+    let vkey_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../zk/keys/membership_vkey.json");
+    let vkey_json = std::fs::read_to_string(vkey_path).expect("failed to read vkey");
+    let vk = annex_identity::zk::parse_verification_key(&vkey_json).expect("failed to parse vkey");
+    Arc::new(vk)
+}
+
 #[tokio::test]
 async fn test_get_path_success() {
     // 1. Setup
@@ -23,6 +31,7 @@ async fn test_get_path_success() {
     let state = AppState {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
+        membership_vkey: load_vkey(),
     };
     let app = app(state);
 
@@ -83,6 +92,7 @@ async fn test_get_path_not_found() {
     let state = AppState {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
+        membership_vkey: load_vkey(),
     };
     let app = app(state);
 

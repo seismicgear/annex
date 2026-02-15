@@ -4,6 +4,7 @@ pub mod api;
 pub mod config;
 
 use annex_db::DbPool;
+use annex_identity::zk::{Bn254, VerifyingKey};
 use annex_identity::MerkleTree;
 use axum::{
     routing::{get, post},
@@ -19,6 +20,8 @@ pub struct AppState {
     pub pool: DbPool,
     /// In-memory Merkle tree state.
     pub merkle_tree: Arc<Mutex<MerkleTree>>,
+    /// ZK Membership verification key.
+    pub membership_vkey: Arc<VerifyingKey<Bn254>>,
 }
 
 /// Health check handler.
@@ -41,6 +44,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/api/registry/current-root",
             get(api::get_current_root_handler),
+        )
+        .route(
+            "/api/zk/verify-membership",
+            post(api::verify_membership_handler),
         )
         .layer(Extension(Arc::new(state)))
 }

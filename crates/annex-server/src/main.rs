@@ -21,6 +21,10 @@ enum StartupError {
     DatabaseError(#[from] annex_db::PoolError),
     #[error("failed to initialize merkle tree: {0}")]
     IdentityError(#[from] annex_identity::IdentityError),
+    #[error("failed to read verification key: {0}")]
+    IoError(#[from] std::io::Error),
+    #[error("failed to parse verification key: {0}")]
+    ZkError(#[from] annex_identity::zk::ZkError),
 }
 
 fn resolve_config_path() -> (Option<String>, &'static str) {
@@ -101,9 +105,20 @@ async fn main() -> Result<(), StartupError> {
         MerkleTree::restore(&conn, 20)?
     };
 
+    // Load ZK verification key
+    let vkey_path = std::env::var("ANNEX_ZK_KEY_PATH")
+        .unwrap_or_else(|_| "zk/keys/membership_vkey.json".to_string());
+    let vkey_json = std::fs::read_to_string(&vkey_path).map_err(|e| {
+        tracing::error!(path = %vkey_path, "failed to read verification key");
+        StartupError::IoError(e)
+    })?;
+    let membership_vkey =
+        annex_identity::zk::parse_verification_key(&vkey_json).map_err(StartupError::ZkError)?;
+
     let state = AppState {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
+        membership_vkey: Arc::new(membership_vkey),
     };
 
     // Build application
