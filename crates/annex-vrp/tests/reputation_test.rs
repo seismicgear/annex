@@ -26,8 +26,8 @@ fn test_reputation_scoring() {
     let peer_pseudonym = "agent-007";
 
     // Initial score should be 0.5 (neutral)
-    let initial_score = check_reputation_score(&conn, server_id, peer_pseudonym)
-        .expect("should check score");
+    let initial_score =
+        check_reputation_score(&conn, server_id, peer_pseudonym).expect("should check score");
     assert!((initial_score - 0.5).abs() < f32::EPSILON);
 
     // Record an ALIGNED outcome
@@ -43,8 +43,8 @@ fn test_reputation_scoring() {
 
     // Score should increase
     // 0.5 + 0.1 * (1.0 - 0.5) = 0.5 + 0.05 = 0.55
-    let score_after_aligned = check_reputation_score(&conn, server_id, peer_pseudonym)
-        .expect("should check score");
+    let score_after_aligned =
+        check_reputation_score(&conn, server_id, peer_pseudonym).expect("should check score");
     assert!(score_after_aligned > initial_score);
     assert!((score_after_aligned - 0.55).abs() < 0.001);
 
@@ -61,8 +61,8 @@ fn test_reputation_scoring() {
 
     // Score should decrease significantly
     // 0.55 - 0.2 * 0.55 = 0.55 - 0.11 = 0.44
-    let score_after_conflict = check_reputation_score(&conn, server_id, peer_pseudonym)
-        .expect("should check score");
+    let score_after_conflict =
+        check_reputation_score(&conn, server_id, peer_pseudonym).expect("should check score");
     assert!(score_after_conflict < score_after_aligned);
     assert!((score_after_conflict - 0.44).abs() < 0.001);
 
@@ -79,8 +79,8 @@ fn test_reputation_scoring() {
 
     // Score should decrease slightly
     // 0.44 - 0.05 * 0.44 = 0.44 - 0.022 = 0.418
-    let score_after_partial = check_reputation_score(&conn, server_id, peer_pseudonym)
-        .expect("should check score");
+    let score_after_partial =
+        check_reputation_score(&conn, server_id, peer_pseudonym).expect("should check score");
     assert!(score_after_partial < score_after_conflict);
     assert!((score_after_partial - 0.418).abs() < 0.001);
 }
@@ -102,11 +102,13 @@ fn test_reputation_persistence() {
         .expect("should record outcome");
 
     // Query directly to verify persistence
-    let count: i32 = conn.query_row(
-        "SELECT COUNT(*) FROM vrp_handshake_log WHERE peer_pseudonym = ?1",
-        [peer_pseudonym],
-        |row| row.get(0)
-    ).expect("should query count");
+    let count: i32 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM vrp_handshake_log WHERE peer_pseudonym = ?1",
+            [peer_pseudonym],
+            |row| row.get(0),
+        )
+        .expect("should query count");
 
     assert_eq!(count, 1);
 }
