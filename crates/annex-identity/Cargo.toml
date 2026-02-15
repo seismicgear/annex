@@ -13,5 +13,14 @@ rusqlite = { workspace = true }
 tracing = { workspace = true }
 ark-bn254 = "0.5.0"
 ark-ff = "0.5.0"
+ark-groth16 = "0.5.0"
+ark-serialize = "0.5.0"
+ark-snark = "0.5.1"
 light-poseidon = "0.4.0"
 hex = "0.4.3"
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+ark-bn254 = "0.5.0"
+serde_json = { workspace = true }

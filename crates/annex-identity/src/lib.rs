@@ -9,6 +9,7 @@ use thiserror::Error;
 pub mod commitment;
 pub mod merkle;
 pub mod poseidon;
+pub mod zk;
 
 pub use commitment::{generate_commitment, RoleCode};
 pub use merkle::MerkleTree;
