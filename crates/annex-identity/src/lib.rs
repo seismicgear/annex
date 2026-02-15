@@ -12,6 +12,7 @@ pub mod merkle;
 pub mod nullifier;
 pub mod platform;
 pub mod poseidon;
+pub mod registry;
 pub mod zk;
 
 pub use commitment::generate_commitment;
@@ -22,6 +23,7 @@ pub use platform::{
     update_capabilities, Capabilities, PlatformIdentity,
 };
 pub use poseidon::hash_inputs;
+pub use registry::register_identity;
 
 /// Errors produced by identity derivation operations.
 #[derive(Debug, Error)]

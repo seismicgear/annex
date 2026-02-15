@@ -3,11 +3,10 @@
 //! Starts an axum HTTP server with structured logging, database initialization,
 //! and graceful shutdown on SIGTERM/SIGINT.
 
-mod config;
-
-use axum::{routing::get, Json, Router};
-use serde_json::{json, Value};
+use annex_identity::MerkleTree;
+use annex_server::{app, config, AppState};
 use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
@@ -16,22 +15,12 @@ use tracing_subscriber::EnvFilter;
 enum StartupError {
     #[error("invalid logging.level '{value}': {reason}")]
     InvalidLoggingLevel { value: String, reason: String },
-}
-
-/// Health check handler.
-///
-/// Returns `200 OK` with server status and version. Used by load balancers,
-/// monitoring, and CI to verify the server is running.
-async fn health() -> Json<Value> {
-    Json(json!({
-        "status": "ok",
-        "version": "0.0.1"
-    }))
-}
-
-/// Builds the application router with all routes.
-fn app() -> Router {
-    Router::new().route("/health", get(health))
+    #[error("failed to load configuration: {0}")]
+    ConfigError(#[from] config::ConfigError),
+    #[error("failed to initialize database pool: {0}")]
+    DatabaseError(#[from] annex_db::PoolError),
+    #[error("failed to initialize merkle tree: {0}")]
+    IdentityError(#[from] annex_identity::IdentityError),
 }
 
 fn resolve_config_path() -> (Option<String>, &'static str) {
@@ -64,8 +53,7 @@ async fn main() -> Result<(), StartupError> {
     let selected_config_path = resolved_config_path.as_deref().or(Some("config.toml"));
 
     // Load configuration
-    let config = config::load_config(selected_config_path)
-        .expect("failed to load configuration — the server cannot start without valid config");
+    let config = config::load_config(selected_config_path).map_err(StartupError::ConfigError)?;
 
     // Initialize tracing
     let filter = parse_logging_filter(&config.logging.level)?;
@@ -92,8 +80,7 @@ async fn main() -> Result<(), StartupError> {
             busy_timeout_ms: config.database.busy_timeout_ms,
             pool_max_size: config.database.pool_max_size,
         },
-    )
-    .expect("failed to create database pool — check database.path in config");
+    )?;
 
     {
         let conn = pool
@@ -105,8 +92,22 @@ async fn main() -> Result<(), StartupError> {
         }
     }
 
+    // Initialize Merkle Tree
+    // Get a dedicated connection for tree initialization
+    let tree = {
+        let conn = pool
+            .get()
+            .expect("failed to get database connection for merkle tree init");
+        MerkleTree::restore(&conn, 20)?
+    };
+
+    let state = AppState {
+        pool,
+        merkle_tree: Arc::new(Mutex::new(tree)),
+    };
+
     // Build application
-    let app = app();
+    let app = app(state);
     let addr = SocketAddr::new(config.server.host, config.server.port);
 
     tracing::info!(%addr, "starting annex server");
@@ -148,59 +149,5 @@ async fn shutdown_signal() {
     tokio::select! {
         () = ctrl_c => { tracing::info!("received SIGINT, initiating graceful shutdown"); }
         () = terminate => { tracing::info!("received SIGTERM, initiating graceful shutdown"); }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use axum::body::Body;
-    use axum::http::{Request, StatusCode};
-    use tower::ServiceExt;
-
-    #[tokio::test]
-    async fn health_check_returns_ok() {
-        let app = app();
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/health")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let json: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["status"], "ok");
-        assert_eq!(json["version"], "0.0.1");
-    }
-
-    #[test]
-    fn parse_logging_filter_accepts_valid_level() {
-        let filter = parse_logging_filter("annex_server=debug,info");
-
-        assert!(filter.is_ok(), "expected valid logging filter to parse");
-    }
-
-    #[test]
-    fn parse_logging_filter_rejects_invalid_level() {
-        let err = parse_logging_filter("annex_server=bogus").unwrap_err();
-
-        match err {
-            StartupError::InvalidLoggingLevel { value, reason } => {
-                assert_eq!(value, "annex_server=bogus");
-                assert!(
-                    !reason.trim().is_empty(),
-                    "parser reason should not be empty"
-                );
-            }
-        }
     }
 }

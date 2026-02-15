@@ -123,6 +123,7 @@ name = "annex-server"
 version = "0.0.1"
 dependencies = [
  "annex-db",
+ "annex-identity",
  "annex-types",
  "axum",
  "reqwest",
