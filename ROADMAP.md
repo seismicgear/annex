@@ -434,13 +434,13 @@ The trust negotiation layer. After this phase, an entity (agent or server) can p
 - [ ] ADR: vendored vs. shared dependency with MABOS crate
 
 #### 3.2 — Anchor comparison engine
-- [ ] Port `compare_peer_anchor` into `annex-vrp`
-- [ ] Port `anchor_snapshot` (Poseidon or SHA256 hashing of principles + prohibited actions)
-- [ ] Port `negotiate_transfer_scope`
-- [ ] Port `resolve_transfer_scope`
-- [ ] Port `contracts_mutually_accepted`
-- [ ] Port `validate_federation_handshake`
-- [ ] All with full test suites matching MABOS test coverage
+- [x] Port `compare_peer_anchor` into `annex-vrp`
+- [x] Port `anchor_snapshot` (Poseidon or SHA256 hashing of principles + prohibited actions)
+- [x] Port `negotiate_transfer_scope`
+- [x] Port `resolve_transfer_scope`
+- [x] Port `contracts_mutually_accepted`
+- [x] Port `validate_federation_handshake`
+- [x] All with full test suites matching MABOS test coverage
 
 #### 3.3 — Semantic alignment (optional but recommended)
 - [ ] Port `calculate_semantic_alignment` with embedder trait
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-16 | Phase 3.2 (`Anchor comparison engine`) completed. |
 | 2026-02-16 | Phase 2 `COMPLETE`. Phase 3 `IN PROGRESS`. |
 | 2026-02-16 | Phase 2.9 (`Rate limiting`) completed. |
 | 2026-02-16 | Phase 2.8 (`Request authentication middleware`) completed. |

@@ -1,4 +1,4 @@
-use crate::types::*;
+use crate::*;
 
 #[test]
 fn test_vrp_alignment_status_serialization() {
@@ -76,4 +76,228 @@ fn test_display_impls() {
         VrpTransferScope::FullKnowledgeBundle.to_string(),
         "FULL_KNOWLEDGE_BUNDLE"
     );
+}
+
+#[test]
+fn test_anchor_snapshot_determinism() {
+    let p1 = vec!["principle A".to_string(), "principle B".to_string()];
+    let p2 = vec!["principle B".to_string(), "principle A".to_string()];
+    let prohibited = vec!["bad action".to_string()];
+
+    let snap1 = VrpAnchorSnapshot::new(&p1, &prohibited);
+    let snap2 = VrpAnchorSnapshot::new(&p2, &prohibited);
+
+    assert_eq!(snap1.principles_hash, snap2.principles_hash);
+    assert_eq!(
+        snap1.prohibited_actions_hash,
+        snap2.prohibited_actions_hash
+    );
+    // Timestamps might differ slightly, so ignore them for hash check
+}
+
+#[test]
+fn test_compare_peer_anchor_aligned() {
+    let principles = vec!["p1".to_string()];
+    let prohibited = vec!["no1".to_string()];
+    let snap1 = VrpAnchorSnapshot::new(&principles, &prohibited);
+    // Clone via serialize/deserialize to simulate remote
+    let snap2 = snap1.clone();
+
+    let config = VrpAlignmentConfig {
+        semantic_alignment_required: false,
+        min_alignment_score: 0.8,
+    };
+
+    let status = compare_peer_anchor(&snap1, &snap2, &config);
+    assert_eq!(status, VrpAlignmentStatus::Aligned);
+}
+
+#[test]
+fn test_compare_peer_anchor_conflict() {
+    let snap1 = VrpAnchorSnapshot::new(&vec!["p1".to_string()], &vec![]);
+    let snap2 = VrpAnchorSnapshot::new(&vec!["p2".to_string()], &vec![]); // different
+
+    let config = VrpAlignmentConfig {
+        semantic_alignment_required: false,
+        min_alignment_score: 0.8,
+    };
+
+    let status = compare_peer_anchor(&snap1, &snap2, &config);
+    assert_eq!(status, VrpAlignmentStatus::Conflict);
+}
+
+#[test]
+fn test_contracts_mutually_accepted() {
+    let local = VrpCapabilitySharingContract {
+        required_capabilities: vec!["cap_A".to_string()],
+        offered_capabilities: vec!["cap_B".to_string()],
+    };
+    let remote = VrpCapabilitySharingContract {
+        required_capabilities: vec!["cap_B".to_string()],
+        offered_capabilities: vec!["cap_A".to_string()],
+    };
+    assert!(contracts_mutually_accepted(&local, &remote));
+
+    let remote_lacking = VrpCapabilitySharingContract {
+        required_capabilities: vec!["cap_B".to_string()],
+        offered_capabilities: vec![], // Doesn't offer A
+    };
+    assert!(!contracts_mutually_accepted(&local, &remote_lacking));
+
+    let local_lacking = VrpCapabilitySharingContract {
+        required_capabilities: vec!["cap_C".to_string()], // Wants C, remote doesn't offer
+        offered_capabilities: vec!["cap_B".to_string()],
+    };
+    assert!(!contracts_mutually_accepted(&local_lacking, &remote));
+}
+
+#[test]
+fn test_resolve_transfer_scope() {
+    let config_full = VrpTransferAcceptanceConfig {
+        allow_full_knowledge: true,
+        allow_reflection_summaries: true,
+    };
+    let config_partial = VrpTransferAcceptanceConfig {
+        allow_full_knowledge: false,
+        allow_reflection_summaries: true,
+    };
+    let config_none = VrpTransferAcceptanceConfig {
+        allow_full_knowledge: false,
+        allow_reflection_summaries: false,
+    };
+
+    assert_eq!(
+        resolve_transfer_scope(VrpAlignmentStatus::Aligned, &config_full),
+        VrpTransferScope::FullKnowledgeBundle
+    );
+    assert_eq!(
+        resolve_transfer_scope(VrpAlignmentStatus::Aligned, &config_partial),
+        VrpTransferScope::ReflectionSummariesOnly
+    );
+    assert_eq!(
+        resolve_transfer_scope(VrpAlignmentStatus::Partial, &config_full),
+        VrpTransferScope::ReflectionSummariesOnly
+    );
+    assert_eq!(
+        resolve_transfer_scope(VrpAlignmentStatus::Conflict, &config_full),
+        VrpTransferScope::NoTransfer
+    );
+    assert_eq!(
+        resolve_transfer_scope(VrpAlignmentStatus::Aligned, &config_none),
+        VrpTransferScope::NoTransfer
+    );
+}
+
+#[test]
+fn test_validate_federation_handshake_success() {
+    let principles = vec!["p1".to_string()];
+    let prohibited = vec!["no1".to_string()];
+    let local_anchor = VrpAnchorSnapshot::new(&principles, &prohibited);
+    let local_contract = VrpCapabilitySharingContract {
+        required_capabilities: vec![],
+        offered_capabilities: vec![],
+    };
+
+    let handshake = VrpFederationHandshake {
+        anchor_snapshot: local_anchor.clone(),
+        capability_contract: local_contract.clone(),
+    };
+
+    let align_config = VrpAlignmentConfig {
+        semantic_alignment_required: false,
+        min_alignment_score: 0.8,
+    };
+    let transfer_config = VrpTransferAcceptanceConfig {
+        allow_full_knowledge: true,
+        allow_reflection_summaries: true,
+    };
+
+    let report = validate_federation_handshake(
+        &local_anchor,
+        &local_contract,
+        &handshake,
+        &align_config,
+        &transfer_config,
+    );
+
+    assert_eq!(report.alignment_status, VrpAlignmentStatus::Aligned);
+    assert_eq!(report.transfer_scope, VrpTransferScope::FullKnowledgeBundle);
+    assert!(report.negotiation_notes.is_empty());
+}
+
+#[test]
+fn test_validate_federation_handshake_conflict_principles() {
+    let local_anchor = VrpAnchorSnapshot::new(&vec!["A".to_string()], &vec![]);
+    let remote_anchor = VrpAnchorSnapshot::new(&vec!["B".to_string()], &vec![]);
+    let local_contract = VrpCapabilitySharingContract {
+        required_capabilities: vec![],
+        offered_capabilities: vec![],
+    };
+
+    let handshake = VrpFederationHandshake {
+        anchor_snapshot: remote_anchor,
+        capability_contract: local_contract.clone(),
+    };
+
+    let align_config = VrpAlignmentConfig {
+        semantic_alignment_required: false,
+        min_alignment_score: 0.8,
+    };
+    let transfer_config = VrpTransferAcceptanceConfig {
+        allow_full_knowledge: true,
+        allow_reflection_summaries: true,
+    };
+
+    let report = validate_federation_handshake(
+        &local_anchor,
+        &local_contract,
+        &handshake,
+        &align_config,
+        &transfer_config,
+    );
+
+    assert_eq!(report.alignment_status, VrpAlignmentStatus::Conflict);
+    assert_eq!(report.transfer_scope, VrpTransferScope::NoTransfer);
+}
+
+#[test]
+fn test_validate_federation_handshake_contract_fail() {
+    let local_anchor = VrpAnchorSnapshot::new(&vec!["A".to_string()], &vec![]);
+    let local_contract = VrpCapabilitySharingContract {
+        required_capabilities: vec!["MustHave".to_string()],
+        offered_capabilities: vec![],
+    };
+    // Remote doesn't offer MustHave
+    let remote_contract = VrpCapabilitySharingContract {
+        required_capabilities: vec![],
+        offered_capabilities: vec![],
+    };
+
+    let handshake = VrpFederationHandshake {
+        anchor_snapshot: local_anchor.clone(),
+        capability_contract: remote_contract,
+    };
+
+    let align_config = VrpAlignmentConfig {
+        semantic_alignment_required: false,
+        min_alignment_score: 0.8,
+    };
+    let transfer_config = VrpTransferAcceptanceConfig {
+        allow_full_knowledge: true,
+        allow_reflection_summaries: true,
+    };
+
+    let report = validate_federation_handshake(
+        &local_anchor,
+        &local_contract,
+        &handshake,
+        &align_config,
+        &transfer_config,
+    );
+
+    // Principles align, but contracts fail -> Conflict
+    assert_eq!(report.alignment_status, VrpAlignmentStatus::Conflict);
+    assert_eq!(report.transfer_scope, VrpTransferScope::NoTransfer);
+    assert!(!report.negotiation_notes.is_empty());
+    assert!(report.negotiation_notes[0].contains("Capability contracts incompatible"));
 }
