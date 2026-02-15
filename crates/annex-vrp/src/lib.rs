@@ -142,8 +142,7 @@ pub fn validate_federation_handshake(
         compare_peer_anchor(local_anchor, &handshake.anchor_snapshot, alignment_config);
 
     // 2. Check capability contracts
-    let contracts_ok =
-        contracts_mutually_accepted(local_contract, &handshake.capability_contract);
+    let contracts_ok = contracts_mutually_accepted(local_contract, &handshake.capability_contract);
 
     let mut notes = Vec::new();
     let final_status = if !contracts_ok {

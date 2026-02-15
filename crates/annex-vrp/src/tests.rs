@@ -88,10 +88,7 @@ fn test_anchor_snapshot_determinism() {
     let snap2 = VrpAnchorSnapshot::new(&p2, &prohibited);
 
     assert_eq!(snap1.principles_hash, snap2.principles_hash);
-    assert_eq!(
-        snap1.prohibited_actions_hash,
-        snap2.prohibited_actions_hash
-    );
+    assert_eq!(snap1.prohibited_actions_hash, snap2.prohibited_actions_hash);
     // Timestamps might differ slightly, so ignore them for hash check
 }
 
