@@ -5,6 +5,8 @@
 
 use crate::{poseidon::hash_inputs, IdentityError};
 use ark_bn254::Fr;
+use ark_ff::{BigInteger, PrimeField};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
 
 /// A Poseidon Merkle tree.
@@ -136,6 +138,106 @@ impl MerkleTree {
         }
 
         Ok((path_elements, path_indices))
+    }
+
+    /// Reconstructs the Merkle tree from the database.
+    ///
+    /// Loads all leaves from `vrp_leaves` in order and inserts them into a fresh tree.
+    /// Verifies that the final root matches the active root in `vrp_roots`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdentityError::PoseidonError`] if hashing fails.
+    /// Returns [`IdentityError::TreeFull`] if the tree cannot hold the persisted leaves.
+    /// Returns [`IdentityError::InvalidHex`] if stored commitments or roots are invalid.
+    /// Returns error if database query fails (wrapped).
+    pub fn restore(conn: &Connection, depth: usize) -> Result<Self, IdentityError> {
+        // 1. Create new empty tree
+        let mut tree = Self::new(depth)?;
+
+        // 2. Load leaves ordered by leaf_index
+        let mut stmt = conn
+            .prepare("SELECT commitment_hex FROM vrp_leaves ORDER BY leaf_index ASC")
+            .map_err(IdentityError::DatabaseError)?;
+
+        let leaf_iter = stmt
+            .query_map([], |row| {
+                let hex: String = row.get(0)?;
+                Ok(hex)
+            })
+            .map_err(IdentityError::DatabaseError)?;
+
+        for leaf_result in leaf_iter {
+            let hex_str = leaf_result.map_err(IdentityError::DatabaseError)?;
+            // Convert hex to Fr
+            let bytes = hex::decode(&hex_str).map_err(|_| IdentityError::InvalidHex)?;
+            let leaf = Fr::from_be_bytes_mod_order(&bytes);
+            tree.insert(leaf)?;
+        }
+
+        // 3. Verify root
+        let stored_root_hex: Option<String> = conn
+            .query_row(
+                "SELECT root_hex FROM vrp_roots WHERE active = 1 ORDER BY created_at DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(IdentityError::DatabaseError)?;
+
+        if let Some(stored_hex) = stored_root_hex {
+            let current_root_bytes = tree.root().into_bigint().to_bytes_be();
+            let current_root_hex = hex::encode(current_root_bytes);
+
+            if current_root_hex != stored_hex {
+                tracing::warn!(
+                    "Merkle root mismatch! Stored: {}, Computed: {}",
+                    stored_hex,
+                    current_root_hex
+                );
+                // We prioritize computed root.
+            }
+        }
+
+        Ok(tree)
+    }
+
+    /// Inserts a leaf and persists it to the database.
+    pub fn insert_and_persist(
+        &mut self,
+        conn: &mut Connection,
+        leaf: Fr,
+    ) -> Result<usize, IdentityError> {
+        let index = self.insert(leaf)?;
+
+        // Persist leaf
+        let leaf_bytes = leaf.into_bigint().to_bytes_be();
+        let leaf_hex = hex::encode(leaf_bytes);
+        let root_bytes = self.root().into_bigint().to_bytes_be();
+        let root_hex = hex::encode(root_bytes);
+
+        let tx = conn.transaction().map_err(IdentityError::DatabaseError)?;
+
+        tx.execute(
+            "INSERT INTO vrp_leaves (leaf_index, commitment_hex) VALUES (?1, ?2)",
+            params![index, leaf_hex],
+        )
+        .map_err(IdentityError::DatabaseError)?;
+
+        // Mark previous root as inactive
+        tx.execute("UPDATE vrp_roots SET active = 0 WHERE active = 1", [])
+            .map_err(IdentityError::DatabaseError)?;
+
+        // Insert new active root
+        tx.execute(
+            "INSERT INTO vrp_roots (root_hex, active) VALUES (?1, 1)",
+            params![root_hex],
+        )
+        .map_err(IdentityError::DatabaseError)?;
+
+        tx.commit().map_err(IdentityError::DatabaseError)?;
+
+        Ok(index)
     }
 }
 
