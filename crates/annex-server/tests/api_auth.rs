@@ -62,6 +62,7 @@ async fn test_auth_middleware_flow() {
         server_id: 1,
         policy: Arc::new(RwLock::new(ServerPolicy::default())),
         rate_limiter: RateLimiter::new(),
+        connection_manager: annex_server::api_ws::ConnectionManager::new(),
     };
 
     // 5. Setup Router with middleware
