@@ -15,6 +15,7 @@
 use annex_types::{EdgeKind, NodeType, RoleCode};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashSet, VecDeque};
 use thiserror::Error;
 
 /// Errors specific to the graph module.
@@ -66,6 +67,17 @@ pub struct GraphEdge {
     pub weight: f64,
     /// Creation timestamp (ISO 8601).
     pub created_at: String,
+}
+
+/// Result of a BFS path finding operation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BfsPath {
+    /// Whether a path was found.
+    pub found: bool,
+    /// The sequence of pseudonyms from start to end.
+    pub path: Vec<String>,
+    /// The length of the path (number of edges).
+    pub length: usize,
 }
 
 /// Converts a `RoleCode` to a `NodeType`.
@@ -241,6 +253,86 @@ pub fn get_edges(
     Ok(edges)
 }
 
+/// Finds the shortest path between two nodes using BFS.
+///
+/// Treats the graph as undirected (checks both `from->to` and `to->from` edges).
+pub fn find_path_bfs(
+    conn: &Connection,
+    server_id: i64,
+    from_node: &str,
+    to_node: &str,
+    max_depth: u32,
+) -> Result<BfsPath, GraphError> {
+    if from_node == to_node {
+        return Ok(BfsPath {
+            found: true,
+            path: vec![from_node.to_string()],
+            length: 0,
+        });
+    }
+
+    let mut queue = VecDeque::new();
+    queue.push_back((from_node.to_string(), vec![from_node.to_string()]));
+
+    let mut visited = HashSet::new();
+    visited.insert(from_node.to_string());
+
+    // Prepare statements for neighbor lookup (undirected)
+    let mut stmt_out =
+        conn.prepare("SELECT to_node FROM graph_edges WHERE server_id = ?1 AND from_node = ?2")?;
+    let mut stmt_in =
+        conn.prepare("SELECT from_node FROM graph_edges WHERE server_id = ?1 AND to_node = ?2")?;
+
+    while let Some((current_node, current_path)) = queue.pop_front() {
+        if current_path.len() > max_depth as usize {
+            continue;
+        }
+
+        let mut neighbors = Vec::new();
+
+        // Outgoing edges
+        let rows_out = stmt_out.query_map(params![server_id, current_node], |row| {
+            row.get::<_, String>(0)
+        })?;
+        for r in rows_out {
+            neighbors.push(r?);
+        }
+
+        // Incoming edges
+        let rows_in = stmt_in.query_map(params![server_id, current_node], |row| {
+            row.get::<_, String>(0)
+        })?;
+        for r in rows_in {
+            neighbors.push(r?);
+        }
+
+        for neighbor in neighbors {
+            if neighbor == to_node {
+                let mut new_path = current_path.clone();
+                new_path.push(neighbor);
+                return Ok(BfsPath {
+                    found: true,
+                    length: new_path.len() - 1,
+                    path: new_path,
+                });
+            }
+
+            if !visited.contains(&neighbor) {
+                visited.insert(neighbor.clone());
+                let mut new_path = current_path.clone();
+                new_path.push(neighbor.clone());
+                queue.push_back((neighbor, new_path));
+            }
+        }
+    }
+
+    Ok(BfsPath {
+        found: false,
+        path: Vec::new(),
+        length: 0,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,5 +376,55 @@ mod tests {
         let edges_after =
             get_edges(&conn, server_id, node_a).expect("get_edges after delete failed");
         assert!(edges_after.is_empty());
+    }
+
+    #[test]
+    fn test_bfs() {
+        let conn = Connection::open_in_memory().expect("db open failed");
+        run_migrations(&conn).expect("migrations failed");
+        let server_id = 1;
+
+        // Graph: A -> B -> C, and A -> D
+        let nodes = vec!["A", "B", "C", "D"];
+        for n in &nodes {
+            ensure_graph_node(&conn, server_id, n, NodeType::Human).unwrap();
+        }
+
+        create_edge(&conn, server_id, "A", "B", EdgeKind::Connected, 1.0).unwrap();
+        create_edge(&conn, server_id, "B", "C", EdgeKind::Connected, 1.0).unwrap();
+        create_edge(&conn, server_id, "A", "D", EdgeKind::Connected, 1.0).unwrap();
+
+        // 1. Direct path A -> B
+        let path = find_path_bfs(&conn, server_id, "A", "B", 5).unwrap();
+        assert!(path.found);
+        assert_eq!(path.path, vec!["A", "B"]);
+        assert_eq!(path.length, 1);
+
+        // 2. Path A -> C (length 2)
+        let path = find_path_bfs(&conn, server_id, "A", "C", 5).unwrap();
+        assert!(path.found);
+        assert_eq!(path.path, vec!["A", "B", "C"]);
+        assert_eq!(path.length, 2);
+
+        // 3. Undirected check: C -> A
+        let path = find_path_bfs(&conn, server_id, "C", "A", 5).unwrap();
+        assert!(path.found);
+        assert_eq!(path.path, vec!["C", "B", "A"]); // Should traverse back
+        assert_eq!(path.length, 2);
+
+        // 4. Max depth exceeded
+        let path = find_path_bfs(&conn, server_id, "A", "C", 1).unwrap();
+        assert!(!path.found);
+
+        // 5. No path
+        ensure_graph_node(&conn, server_id, "Z", NodeType::Human).unwrap();
+        let path = find_path_bfs(&conn, server_id, "A", "Z", 5).unwrap();
+        assert!(!path.found);
+
+        // 6. Self path
+        let path = find_path_bfs(&conn, server_id, "A", "A", 5).unwrap();
+        assert!(path.found);
+        assert_eq!(path.length, 0);
+        assert_eq!(path.path, vec!["A"]);
     }
 }

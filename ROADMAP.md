@@ -654,10 +654,10 @@ The live presence graph. After this phase, participants appear as nodes, relatio
 - [x] Edge CRUD operations
 
 #### 5.3 — BFS degrees of separation
-- [ ] Implement `find_path_bfs(from, to, max_depth)` over `graph_edges` (treat as undirected)
-- [ ] `GET /api/graph/degrees?from=A&to=B&maxDepth=6`
-- [ ] Returns `{ "found": true, "path": [...], "length": N }` or `{ "found": false }`
-- [ ] Test: verify shortest path is found; verify max_depth is respected
+- [x] Implement `find_path_bfs(from, to, max_depth)` over `graph_edges` (treat as undirected)
+- [x] `GET /api/graph/degrees?from=A&to=B&maxDepth=6`
+- [x] Returns `{ "found": true, "path": [...], "length": N }` or `{ "found": false }`
+- [x] Test: verify shortest path is found; verify max_depth is respected
 
 #### 5.4 — Visibility service
 - [ ] Implement `GraphVisibilityService`:
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-19 | Phase 5.3 (`BFS degrees of separation`) completed. |
 | 2026-02-19 | Phase 5.2 (`Graph edge model`) completed. |
 | 2026-02-18 | Phase 5.1 (`Graph node model`) completed. |
 | 2026-02-18 | Phase 4 `COMPLETE`. Phase 5 `IN PROGRESS`. |
