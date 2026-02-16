@@ -40,6 +40,9 @@ async fn test_sse_presence_stream() {
         rate_limiter: middleware::RateLimiter::new(),
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
         presence_tx: presence_tx.clone(),
+        voice_service: Arc::new(annex_voice::VoiceService::new(
+            annex_voice::LiveKitConfig::default(),
+        )),
     };
 
     // 3. Start Server

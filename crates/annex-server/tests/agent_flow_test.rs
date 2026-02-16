@@ -75,6 +75,7 @@ async fn test_agent_connection_flow_end_to_end() {
         rate_limiter: RateLimiter::new(),
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
         presence_tx: tokio::sync::broadcast::channel(100).0,
+        voice_service: Arc::new(annex_voice::VoiceService::new(annex_voice::LiveKitConfig::default())),
     };
     let app = app(state);
     let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
