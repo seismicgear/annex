@@ -1,4 +1,4 @@
-use annex_channels::{create_channel, is_member, CreateChannelParams};
+use annex_channels::{create_channel, is_member, list_messages, CreateChannelParams};
 use annex_db::{create_pool, run_migrations, DbRuntimeSettings};
 use annex_identity::MerkleTree;
 use annex_server::{app, middleware::RateLimiter, AppState};
@@ -360,5 +360,102 @@ async fn test_ws_subscription_enforcement() {
         }
     } else {
         panic!("connection closed or no message");
+    }
+}
+
+#[tokio::test]
+async fn test_ws_message_enforcement() {
+    // 1. Setup
+    let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
+    {
+        let conn = pool.get().unwrap();
+        run_migrations(&conn).unwrap();
+        let policy = ServerPolicy::default();
+        let policy_json = serde_json::to_string(&policy).unwrap();
+        conn.execute(
+            "INSERT INTO servers (slug, label, policy_json) VALUES ('test', 'Test', ?1)",
+            [policy_json],
+        )
+        .unwrap();
+
+        conn.execute("INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active) VALUES (1, 'user-bad', 'HUMAN', 1)", []).unwrap();
+
+        let params = CreateChannelParams {
+            server_id: 1,
+            channel_id: "chan-bad".to_string(),
+            name: "Bad Channel".to_string(),
+            channel_type: ChannelType::Text,
+            topic: None,
+            vrp_topic_binding: None,
+            required_capabilities_json: None,
+            agent_min_alignment: None,
+            retention_days: None,
+            federation_scope: FederationScope::Local,
+        };
+        create_channel(&conn, &params).unwrap();
+    }
+
+    let tree = MerkleTree::new(20).unwrap();
+    let state = AppState {
+        pool: pool.clone(),
+        merkle_tree: Arc::new(Mutex::new(tree)),
+        membership_vkey: load_vkey(),
+        server_id: 1,
+        policy: Arc::new(RwLock::new(ServerPolicy::default())),
+        rate_limiter: RateLimiter::new(),
+        connection_manager: annex_server::api_ws::ConnectionManager::new(),
+    };
+
+    let app = app(state);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+
+    // 2. Connect
+    let ws_url = format!("ws://{}/ws?pseudonym=user-bad", addr);
+    let (mut ws_stream, _) = connect_async(ws_url).await.expect("failed to connect");
+
+    // 3. Try Send Message (Not a member, and NOT subscribed)
+    // Even if we don't subscribe, sending should fail.
+    let msg = json!({
+        "type": "message",
+        "channelId": "chan-bad",
+        "content": "Illegal message",
+        "replyTo": null
+    });
+    ws_stream
+        .send(Message::Text(msg.to_string().into()))
+        .await
+        .unwrap();
+
+    // 4. Expect Error Message
+    if let Some(Ok(msg)) = ws_stream.next().await {
+        if let Message::Text(text) = msg {
+            let received: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(received["type"], "error");
+            assert!(received["message"]
+                .as_str()
+                .unwrap()
+                .contains("Not a member"));
+        } else {
+            panic!("expected text message");
+        }
+    } else {
+        panic!("connection closed or no message");
+    }
+
+    // 5. Verify Not Persisted
+    {
+        let conn = pool.get().unwrap();
+        let messages = list_messages(&conn, "chan-bad", None, None).unwrap();
+        assert_eq!(messages.len(), 0);
     }
 }
