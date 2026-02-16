@@ -98,6 +98,79 @@ pub struct BfsPath {
     pub length: usize,
 }
 
+/// Updates the last seen timestamp of a node and ensures it is active.
+///
+/// Returns `true` if the node was previously inactive, allowing the caller to emit a reactivation event.
+/// Returns `false` if the node was already active or does not exist.
+pub fn update_node_activity(
+    conn: &Connection,
+    server_id: i64,
+    pseudonym_id: &str,
+) -> Result<bool, GraphError> {
+    // 1. Try updating an already-active node (most common case).
+    let count = conn
+        .execute(
+            "UPDATE graph_nodes
+             SET last_seen_at = datetime('now')
+             WHERE server_id = ?1 AND pseudonym_id = ?2 AND active = 1",
+            params![server_id, pseudonym_id],
+        )
+        .map_err(GraphError::DatabaseError)?;
+
+    if count > 0 {
+        return Ok(false); // Was already active
+    }
+
+    // 2. If not found, try activating an inactive node.
+    let count = conn
+        .execute(
+            "UPDATE graph_nodes
+             SET active = 1, last_seen_at = datetime('now')
+             WHERE server_id = ?1 AND pseudonym_id = ?2 AND active = 0",
+            params![server_id, pseudonym_id],
+        )
+        .map_err(GraphError::DatabaseError)?;
+
+    if count > 0 {
+        return Ok(true); // Was inactive, now active
+    }
+
+    // Node does not exist
+    Ok(false)
+}
+
+/// Prunes inactive nodes based on a threshold.
+///
+/// Sets `active = 0` for nodes where `last_seen_at` is older than the threshold
+/// and the node is currently active.
+///
+/// Returns a list of pseudonyms that were pruned.
+pub fn prune_inactive_nodes(
+    conn: &Connection,
+    server_id: i64,
+    threshold_seconds: u64,
+) -> Result<Vec<String>, GraphError> {
+    let mut stmt = conn.prepare(
+        "UPDATE graph_nodes
+         SET active = 0
+         WHERE server_id = ?1
+           AND active = 1
+           AND last_seen_at < datetime('now', '-' || ?2 || ' seconds')
+         RETURNING pseudonym_id",
+    )?;
+
+    let rows = stmt.query_map(params![server_id, threshold_seconds], |row| {
+        row.get::<_, String>(0)
+    })?;
+
+    let mut pruned = Vec::new();
+    for r in rows {
+        pruned.push(r.map_err(GraphError::DatabaseError)?);
+    }
+
+    Ok(pruned)
+}
+
 /// Converts a `RoleCode` to a `NodeType`.
 pub fn role_code_to_node_type(role: RoleCode) -> NodeType {
     match role {

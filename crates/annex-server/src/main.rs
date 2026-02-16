@@ -163,6 +163,12 @@ async fn main() -> Result<(), StartupError> {
         presence_tx,
     };
 
+    // Start background pruning task
+    tokio::spawn(annex_server::background::start_pruning_task(
+        Arc::new(state.clone()),
+        config.server.inactivity_threshold_seconds,
+    ));
+
     // Build application
     let app = app(state);
     let addr = SocketAddr::new(config.server.host, config.server.port);

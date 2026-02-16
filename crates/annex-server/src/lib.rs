@@ -6,6 +6,7 @@ pub mod api_graph;
 pub mod api_sse;
 pub mod api_vrp;
 pub mod api_ws;
+pub mod background;
 pub mod config;
 pub mod middleware;
 pub mod retention;
