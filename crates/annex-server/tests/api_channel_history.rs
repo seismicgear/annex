@@ -1,6 +1,6 @@
 use annex_channels::{
-    create_channel, create_message, add_member, CreateChannelParams,
-    CreateMessageParams, Message as ChannelMessage,
+    add_member, create_channel, create_message, CreateChannelParams, CreateMessageParams,
+    Message as ChannelMessage,
 };
 use annex_db::{create_pool, run_migrations, DbRuntimeSettings};
 use annex_identity::MerkleTree;
@@ -89,37 +89,49 @@ async fn test_get_history_success() {
 
         // Create Messages
         // Msg 1 (oldest)
-        create_message(&conn, &CreateMessageParams {
-            channel_id: "chan-hist".to_string(),
-            message_id: "msg-1".to_string(),
-            sender_pseudonym: "user-1".to_string(),
-            content: "First".to_string(),
-            reply_to_message_id: None,
-        }).unwrap();
+        create_message(
+            &conn,
+            &CreateMessageParams {
+                channel_id: "chan-hist".to_string(),
+                message_id: "msg-1".to_string(),
+                sender_pseudonym: "user-1".to_string(),
+                content: "First".to_string(),
+                reply_to_message_id: None,
+            },
+        )
+        .unwrap();
 
         // Sleep to ensure timestamp diff
         std::thread::sleep(std::time::Duration::from_secs(1));
 
         // Msg 2
-        create_message(&conn, &CreateMessageParams {
-            channel_id: "chan-hist".to_string(),
-            message_id: "msg-2".to_string(),
-            sender_pseudonym: "user-1".to_string(),
-            content: "Second".to_string(),
-            reply_to_message_id: None,
-        }).unwrap();
+        create_message(
+            &conn,
+            &CreateMessageParams {
+                channel_id: "chan-hist".to_string(),
+                message_id: "msg-2".to_string(),
+                sender_pseudonym: "user-1".to_string(),
+                content: "Second".to_string(),
+                reply_to_message_id: None,
+            },
+        )
+        .unwrap();
 
         // Sleep to ensure timestamp diff
         std::thread::sleep(std::time::Duration::from_secs(1));
 
         // Msg 3 (newest)
-        create_message(&conn, &CreateMessageParams {
-            channel_id: "chan-hist".to_string(),
-            message_id: "msg-3".to_string(),
-            sender_pseudonym: "user-1".to_string(),
-            content: "Third".to_string(),
-            reply_to_message_id: None,
-        }).unwrap();
+        create_message(
+            &conn,
+            &CreateMessageParams {
+                channel_id: "chan-hist".to_string(),
+                message_id: "msg-3".to_string(),
+                sender_pseudonym: "user-1".to_string(),
+                content: "Third".to_string(),
+                reply_to_message_id: None,
+            },
+        )
+        .unwrap();
     }
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
@@ -141,7 +153,9 @@ async fn test_get_history_success() {
     let response = app.clone().oneshot(req1).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
-    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let messages: Vec<ChannelMessage> = serde_json::from_slice(&body_bytes).unwrap();
 
     assert_eq!(messages.len(), 3);
@@ -161,7 +175,9 @@ async fn test_get_history_success() {
     let response = app.clone().oneshot(req2).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
-    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let messages: Vec<ChannelMessage> = serde_json::from_slice(&body_bytes).unwrap();
 
     assert_eq!(messages.len(), 1);
@@ -173,7 +189,10 @@ async fn test_get_history_success() {
     let encoded_ts = newest_ts.replace(" ", "%20").replace(":", "%3A");
 
     let mut req3 = Request::builder()
-        .uri(format!("/api/channels/chan-hist/messages?before={}", encoded_ts))
+        .uri(format!(
+            "/api/channels/chan-hist/messages?before={}",
+            encoded_ts
+        ))
         .method("GET")
         .header("X-Annex-Pseudonym", "user-1")
         .body(Body::empty())
@@ -183,7 +202,9 @@ async fn test_get_history_success() {
     let response = app.clone().oneshot(req3).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
-    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let messages: Vec<ChannelMessage> = serde_json::from_slice(&body_bytes).unwrap();
 
     assert_eq!(messages.len(), 2);
