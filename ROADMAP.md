@@ -802,9 +802,9 @@ Voice channels that work for both humans and agents. Humans speak via WebRTC thr
 - [x] ADR: STT model selection, latency vs. accuracy tradeoff, resource allocation
 
 #### 7.6 — Voice profile assignment
-- [ ] Server operator assigns voice profiles to agents via `agent_registrations.voice_profile_id`
-- [ ] `PUT /api/agents/:pseudonymId/voice-profile` — operator endpoint
-- [ ] Default voice profile for agents without explicit assignment
+- [x] Server operator assigns voice profiles to agents via `agent_registrations.voice_profile_id`
+- [x] `PUT /api/agents/:pseudonymId/voice-profile` — operator endpoint
+- [x] Default voice profile for agents without explicit assignment
 
 #### 7.7 — Voice channel management
 - [ ] `POST /api/channels/:channelId/voice/join` — join voice channel (creates LiveKit room participant)
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-20 | Phase 7.6 (`Voice profile assignment`) completed. |
 | 2026-02-20 | Phase 7.5 (`STT service`) completed. |
 | 2026-02-20 | Phase 7.2 (`Human voice flow`) completed. |
 | 2026-02-20 | Phase 7.4 (`Agent voice output pipeline`) completed. |
