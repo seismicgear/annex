@@ -8,3 +8,9 @@ annex-types = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+
+livekit-api = "0.4"
+livekit-protocol = "0.7"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }

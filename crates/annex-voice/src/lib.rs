@@ -12,3 +12,11 @@
 //! # Phase 7 implementation
 //!
 //! The full implementation of this crate is Phase 7 of the roadmap.
+
+pub mod config;
+pub mod error;
+pub mod service;
+
+pub use config::LiveKitConfig;
+pub use error::VoiceError;
+pub use service::VoiceService;
