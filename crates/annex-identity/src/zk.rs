@@ -1,7 +1,7 @@
 pub use ark_bn254::Bn254;
 pub use ark_bn254::Fr;
-pub use ark_bn254::{G1Affine, G2Affine};
 use ark_bn254::{Fq, Fq2};
+pub use ark_bn254::{G1Affine, G2Affine};
 use ark_ff::PrimeField;
 use ark_groth16::Groth16;
 pub use ark_groth16::{Proof, VerifyingKey};

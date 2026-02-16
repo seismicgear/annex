@@ -1,5 +1,6 @@
 use annex_db::{create_pool, DbRuntimeSettings};
 use annex_graph::{create_edge, ensure_graph_node};
+use annex_identity::zk::{G1Affine, G2Affine, VerifyingKey};
 use annex_server::{app, AppState};
 use annex_types::{EdgeKind, NodeType, ServerPolicy};
 use axum::{
@@ -10,7 +11,6 @@ use axum::{
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, RwLock};
 use tower::ServiceExt; // for oneshot
-use annex_identity::zk::{G1Affine, G2Affine, VerifyingKey};
 
 #[tokio::test]
 async fn test_get_degrees() {
@@ -57,16 +57,29 @@ async fn test_get_degrees() {
     ensure_graph_node(&conn, server_id, "user_b", NodeType::Human).unwrap();
     ensure_graph_node(&conn, server_id, "user_c", NodeType::Human).unwrap();
 
-    create_edge(&conn, server_id, "user_a", "user_b", EdgeKind::Connected, 1.0).unwrap();
-    create_edge(&conn, server_id, "user_b", "user_c", EdgeKind::Connected, 1.0).unwrap();
+    create_edge(
+        &conn,
+        server_id,
+        "user_a",
+        "user_b",
+        EdgeKind::Connected,
+        1.0,
+    )
+    .unwrap();
+    create_edge(
+        &conn,
+        server_id,
+        "user_b",
+        "user_c",
+        EdgeKind::Connected,
+        1.0,
+    )
+    .unwrap();
 
     // 4. Test API: A -> C (Depth 5)
     let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
     let uri = "/api/graph/degrees?from=user_a&to=user_c&maxDepth=5";
-    let req = Request::builder()
-        .uri(uri)
-        .body(Body::empty())
-        .unwrap();
+    let req = Request::builder().uri(uri).body(Body::empty()).unwrap();
     let req = {
         let mut r = req;
         r.extensions_mut().insert(ConnectInfo(addr));
@@ -93,10 +106,7 @@ async fn test_get_degrees() {
 
     // 5. Test API: A -> C (Depth 1) - Should fail
     let uri = "/api/graph/degrees?from=user_a&to=user_c&maxDepth=1";
-    let req = Request::builder()
-        .uri(uri)
-        .body(Body::empty())
-        .unwrap();
+    let req = Request::builder().uri(uri).body(Body::empty()).unwrap();
     let req = {
         let mut r = req;
         r.extensions_mut().insert(ConnectInfo(addr));
@@ -106,7 +116,9 @@ async fn test_get_degrees() {
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
 
     assert_eq!(json["found"], false);

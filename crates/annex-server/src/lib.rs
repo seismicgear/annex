@@ -102,10 +102,7 @@ pub fn app(state: AppState) -> Router {
             "/api/vrp/agent-handshake",
             post(api_vrp::agent_handshake_handler),
         )
-        .route(
-            "/api/graph/degrees",
-            get(api_graph::get_degrees_handler),
-        )
+        .route("/api/graph/degrees", get(api_graph::get_degrees_handler))
         .merge(protected_routes)
         .route("/ws", get(api_ws::ws_handler))
         .layer(axum::middleware::from_fn(middleware::rate_limit_middleware))

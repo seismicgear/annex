@@ -278,10 +278,10 @@ pub fn find_path_bfs(
     visited.insert(from_node.to_string());
 
     // Prepare statements for neighbor lookup (undirected)
-    let mut stmt_out = conn
-        .prepare("SELECT to_node FROM graph_edges WHERE server_id = ?1 AND from_node = ?2")?;
-    let mut stmt_in = conn
-        .prepare("SELECT from_node FROM graph_edges WHERE server_id = ?1 AND to_node = ?2")?;
+    let mut stmt_out =
+        conn.prepare("SELECT to_node FROM graph_edges WHERE server_id = ?1 AND from_node = ?2")?;
+    let mut stmt_in =
+        conn.prepare("SELECT from_node FROM graph_edges WHERE server_id = ?1 AND to_node = ?2")?;
 
     while let Some((current_node, current_path)) = queue.pop_front() {
         if current_path.len() - 1 >= max_depth as usize {
@@ -291,15 +291,17 @@ pub fn find_path_bfs(
         let mut neighbors = Vec::new();
 
         // Outgoing edges
-        let rows_out =
-            stmt_out.query_map(params![server_id, current_node], |row| row.get::<_, String>(0))?;
+        let rows_out = stmt_out.query_map(params![server_id, current_node], |row| {
+            row.get::<_, String>(0)
+        })?;
         for r in rows_out {
             neighbors.push(r?);
         }
 
         // Incoming edges
-        let rows_in =
-            stmt_in.query_map(params![server_id, current_node], |row| row.get::<_, String>(0))?;
+        let rows_in = stmt_in.query_map(params![server_id, current_node], |row| {
+            row.get::<_, String>(0)
+        })?;
         for r in rows_in {
             neighbors.push(r?);
         }
