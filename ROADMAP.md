@@ -622,7 +622,7 @@ The live presence graph. After this phase, participants appear as nodes, relatio
 ### Steps
 
 #### 5.1 — Graph node model
-- [ ] `annex-db` migration: `graph_nodes` table (from Monolith spec, adapted):
+- [x] `annex-db` migration: `graph_nodes` table (from Monolith spec, adapted):
   ```sql
   CREATE TABLE graph_nodes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -636,7 +636,7 @@ The live presence graph. After this phase, participants appear as nodes, relatio
     UNIQUE (server_id, pseudonym_id)
   );
   ```
-- [ ] Auto-create graph node on successful VRP membership verification (tie into Phase 2 verify-membership flow)
+- [x] Auto-create graph node on successful VRP membership verification (tie into Phase 2 verify-membership flow)
 
 #### 5.2 — Graph edge model
 - [ ] `annex-db` migration: `graph_edges` table:
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-18 | Phase 5.1 (`Graph node model`) completed. |
 | 2026-02-18 | Phase 4 `COMPLETE`. Phase 5 `IN PROGRESS`. |
 | 2026-02-18 | Phase 4.7 (`Channel REST API`) completed. |
 | 2026-02-18 | Phase 4.6 (`Retention enforcement`) completed. |

@@ -30,6 +30,7 @@ thiserror = { workspace = true }
 toml = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.0", features = ["v4"] }
+annex-graph = { version = "0.0.1", path = "../annex-graph" }
 
 [dev-dependencies]
 tokio-tungstenite = "0.28"
