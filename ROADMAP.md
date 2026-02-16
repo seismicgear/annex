@@ -705,14 +705,14 @@ End-to-end agent participation. After this phase, an AI agent can perform a VRP 
 ### Steps
 
 #### 6.1 — Agent connection flow
-- [ ] Define the full agent connection sequence:
+- [x] Define the full agent connection sequence:
   1. Agent calls `POST /api/vrp/agent-handshake` (Phase 3)
   2. On `Aligned` or `Partial`: agent calls `POST /api/registry/register` with its commitment
   3. Agent generates membership proof client-side
   4. Agent calls `POST /api/zk/verify-membership` → receives pseudonym
   5. Agent opens WebSocket connection with pseudonym
   6. Agent joins channels via `POST /api/channels/:channelId/join`
-- [ ] Document this flow in `docs/protocol/agent-connection.md`
+- [x] Document this flow in `docs/protocol/agent-connection.md`
 
 #### 6.2 — Capability-gated channel access
 - [ ] Channel join validates agent's alignment status against `channel.agent_min_alignment`
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-19 | Phase 6.1 (`Agent connection flow`) completed. |
 | 2026-02-19 | Phase 5 `COMPLETE`. Phase 6 `IN PROGRESS`. |
 | 2026-02-19 | Phase 5.6 (`Activity tracking and pruning`) completed. |
 | 2026-02-19 | Phase 5.5 (`SSE presence stream`) completed. |
