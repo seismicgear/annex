@@ -57,6 +57,10 @@ pub fn app(state: AppState) -> Router {
             "/api/channels/{channelId}/leave",
             post(api_channels::leave_channel_handler),
         )
+        .route(
+            "/api/channels/{channelId}/messages",
+            get(api_channels::get_channel_history_handler),
+        )
         .layer(axum::middleware::from_fn(middleware::auth_middleware));
 
     Router::new()

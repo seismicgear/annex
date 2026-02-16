@@ -1,14 +1,62 @@
 use crate::{middleware::IdentityContext, AppState};
-use annex_channels::{add_member, get_channel, remove_member};
+use annex_channels::{add_member, get_channel, is_member, list_messages, remove_member, Message};
 use annex_types::{AlignmentStatus, RoleCode};
 use axum::{
-    extract::{Extension, Path},
+    extract::{Extension, Path, Query},
     http::StatusCode,
     response::Json,
 };
 use rusqlite::{params, OptionalExtension};
+use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
+
+#[derive(Deserialize)]
+pub struct HistoryParams {
+    pub before: Option<String>,
+    pub limit: Option<u32>,
+}
+
+/// GET /api/channels/:channelId/messages
+pub async fn get_channel_history_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(IdentityContext(identity)): Extension<IdentityContext>,
+    Path(channel_id): Path<String>,
+    Query(params): Query<HistoryParams>,
+) -> Result<Json<Vec<Message>>, StatusCode> {
+    // 1. Verify Membership
+    let is_member = tokio::task::spawn_blocking({
+        let pool = state.pool.clone();
+        let cid = channel_id.clone();
+        let pid = identity.pseudonym_id.clone();
+        move || {
+            let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            is_member(&conn, &cid, &pid).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+
+    if !is_member {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    // 2. Fetch Messages
+    let messages = tokio::task::spawn_blocking({
+        let pool = state.pool.clone();
+        let cid = channel_id.clone();
+        let before = params.before;
+        let limit = params.limit;
+        move || {
+            let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            list_messages(&conn, &cid, before, limit).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+
+    Ok(Json(messages))
+}
 
 /// POST /api/channels/:channelId/join
 pub async fn join_channel_handler(
