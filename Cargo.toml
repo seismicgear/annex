@@ -49,6 +49,9 @@ r2d2_sqlite = "0.25"
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4", "serde"] }
 
+# Testing
+tempfile = "3"
+
 # Configuration
 toml = "0.8"
 

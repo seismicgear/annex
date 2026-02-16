@@ -779,13 +779,13 @@ Voice channels that work for both humans and agents. Humans speak via WebRTC thr
 - [ ] No server-side audio processing needed for human-to-human voice
 
 #### 7.3 — Voice LLM service (TTS)
-- [ ] `annex-voice` implements TTS service:
+- [x] `annex-voice` implements TTS service:
   - Accepts text input + voice profile ID
   - Renders audio via local voice model (Piper, Bark, or Parler-TTS)
   - Outputs PCM/opus audio frames
-- [ ] ADR: which TTS model, quantization strategy, latency targets
-- [ ] Voice profile model: voice timbre, speed, pitch parameters per profile
-- [ ] `annex-db` migration: `voice_profiles` table
+- [x] ADR: which TTS model, quantization strategy, latency targets
+- [x] Voice profile model: voice timbre, speed, pitch parameters per profile
+- [x] `annex-db` migration: `voice_profiles` table
 
 #### 7.4 — Agent voice output pipeline
 - [ ] Agent sends text intent via WebSocket message with `type: "voice_intent"`
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-20 | Phase 7.3 (`Voice LLM service (TTS)`) completed. |
 | 2026-02-20 | Phase 7.1 (`LiveKit server integration`) completed. |
 | 2026-02-20 | Phase 6 `COMPLETE`. Phase 7 `IN PROGRESS`. |
 | 2026-02-20 | Phase 6.6 (`Re-evaluation on policy change`) completed. |

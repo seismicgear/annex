@@ -11,6 +11,8 @@ tracing = { workspace = true }
 
 livekit-api = "0.4"
 livekit-protocol = "0.7"
+tokio = { workspace = true, features = ["process", "io-util", "sync"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
+tempfile = { workspace = true }
