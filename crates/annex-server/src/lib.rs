@@ -6,6 +6,7 @@ pub mod api_vrp;
 pub mod api_ws;
 pub mod config;
 pub mod middleware;
+pub mod retention;
 
 use annex_db::DbPool;
 use annex_identity::zk::{Bn254, VerifyingKey};

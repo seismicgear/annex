@@ -501,6 +501,15 @@ pub fn list_messages(
     Ok(messages)
 }
 
+/// Deletes messages that have passed their expiration time.
+pub fn delete_expired_messages(conn: &Connection) -> Result<usize, ChannelError> {
+    let count = conn.execute(
+        "DELETE FROM messages WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
+        [],
+    )?;
+    Ok(count)
+}
+
 /// Helper: Resolve server_id and retention days for a channel.
 fn resolve_retention_days(
     conn: &Connection,
