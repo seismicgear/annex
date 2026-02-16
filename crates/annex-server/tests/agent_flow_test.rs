@@ -48,8 +48,8 @@ async fn test_agent_connection_flow_end_to_end() {
 
     // 1. Setup
     // Use file::memory:?cache=shared to ensure connection pooling shares the same DB
-    let pool =
-        create_pool("file::memory:?cache=shared", DbRuntimeSettings::default()).expect("failed to create pool");
+    let pool = create_pool("file::memory:?cache=shared", DbRuntimeSettings::default())
+        .expect("failed to create pool");
     let conn = pool.get().expect("failed to get connection");
     annex_db::run_migrations(&conn).expect("failed to run migrations");
 
