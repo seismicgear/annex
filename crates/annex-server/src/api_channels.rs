@@ -227,51 +227,47 @@ pub async fn join_channel_handler(
 
     // 3. Check Agent Alignment
     if identity.participant_type == RoleCode::AiAgent {
+        // Query agent registration
+        let alignment_status: Option<String> = tokio::task::spawn_blocking({
+            let pool = state.pool.clone();
+            let server_id = state.server_id;
+            let pseudo = identity.pseudonym_id.clone();
+            move || {
+                let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                conn.query_row(
+                    "SELECT alignment_status FROM agent_registrations WHERE server_id = ?1 AND pseudonym_id = ?2",
+                    params![server_id, pseudo],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+            }
+        })
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+
+        let status_str = alignment_status.ok_or(StatusCode::FORBIDDEN)?; // Agent not registered
+
+        // Parse alignment status (handle both quoted JSON string and plain text)
+        let status: AlignmentStatus = serde_json::from_str(&status_str)
+            .or_else(|_| serde_json::from_str(&format!("\"{}\"", status_str)))
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        // Rule: Conflict agents cannot join any channel
+        if status == AlignmentStatus::Conflict {
+            return Err(StatusCode::FORBIDDEN);
+        }
+
+        // Rule: Partial agents are restricted to TEXT channels only
+        if status == AlignmentStatus::Partial && channel.channel_type != ChannelType::Text {
+            return Err(StatusCode::FORBIDDEN);
+        }
+
+        // Rule: Channel minimum alignment requirement
         if let Some(min_alignment) = channel.agent_min_alignment {
-            // Query agent registration
-            let alignment_status: Option<String> = tokio::task::spawn_blocking({
-                let pool = state.pool.clone();
-                let server_id = state.server_id;
-                let pseudo = identity.pseudonym_id.clone();
-                move || {
-                    let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-                    conn.query_row(
-                        "SELECT alignment_status FROM agent_registrations WHERE server_id = ?1 AND pseudonym_id = ?2",
-                        params![server_id, pseudo],
-                        |row| row.get(0),
-                    )
-                    .optional()
-                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
-                }
-            })
-            .await
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
-
-            let status_str = alignment_status.ok_or(StatusCode::FORBIDDEN)?; // Agent not registered
-
-            // Compare alignment
-            // AlignmentStatus enum: Aligned, Partial, Conflict
-            // Parsing: The DB stores string representation "Aligned", "Partial", "Conflict" (via serde_json or Display?)
-            // Migration 008 says: alignment_status TEXT
-            // annex-vrp likely stores via serde_json.
-            // If stored as "Aligned" (quoted json string) or Aligned (plain text)?
-            // Usually serde_json::to_string gives "\"Aligned\"".
-            // Let's assume serde_json serialization.
-
-            // If stored as JSON string "\"Aligned\"", from_str works.
-            // If stored as plain text "Aligned", we need to quote it or parse manually.
-            // annex-vrp reputation module likely uses serde_json to store it in handshake log,
-            // but agent_registrations table?
-            // "alignment_status TEXT NOT NULL"
-            // Let's assume serde_json.
-
-            let status: AlignmentStatus = serde_json::from_str(&status_str)
-                .or_else(|_| serde_json::from_str(&format!("\"{}\"", status_str))) // Try quoting if raw
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
             // Logic: Aligned > Partial > Conflict
             let allowed = match min_alignment {
-                AlignmentStatus::Conflict => true,
+                AlignmentStatus::Conflict => true, // Conflict agents are already blocked above, but for completeness
                 AlignmentStatus::Partial => status != AlignmentStatus::Conflict,
                 AlignmentStatus::Aligned => status == AlignmentStatus::Aligned,
             };
