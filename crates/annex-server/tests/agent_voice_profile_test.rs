@@ -80,14 +80,16 @@ async fn test_update_agent_voice_profile() {
             capability_contract_json, reputation_score, last_handshake_at
         ) VALUES (1, ?1, 'ALIGNED', 'FULL_KNOWLEDGE_BUNDLE', '{}', 1.0, datetime('now'))",
         rusqlite::params![agent_pseudonym],
-    ).unwrap();
+    )
+    .unwrap();
 
     // Create voice profile
     conn.execute(
         "INSERT INTO voice_profiles (server_id, profile_id, name, model, model_path)
          VALUES (1, ?1, 'Test Voice', 'piper', 'test.onnx')",
         rusqlite::params![voice_profile_id_str],
-    ).unwrap();
+    )
+    .unwrap();
     let voice_profile_db_id: i64 = conn.last_insert_rowid();
 
     // 3. Test: Moderator assigns voice profile
@@ -99,7 +101,10 @@ async fn test_update_agent_voice_profile() {
         .method("PUT")
         .header("X-Annex-Pseudonym", moderator)
         .header("Content-Type", "application/json")
-        .extension(axum::extract::ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12345))))
+        .extension(axum::extract::ConnectInfo(SocketAddr::from((
+            [127, 0, 0, 1],
+            12345,
+        ))))
         .body(Body::from(serde_json::to_vec(&payload).unwrap()))
         .unwrap();
 
@@ -107,11 +112,13 @@ async fn test_update_agent_voice_profile() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     // Verify DB update
-    let stored_id: Option<i64> = conn.query_row(
-        "SELECT voice_profile_id FROM agent_registrations WHERE pseudonym_id = ?1",
-        rusqlite::params![agent_pseudonym],
-        |row| row.get(0),
-    ).unwrap();
+    let stored_id: Option<i64> = conn
+        .query_row(
+            "SELECT voice_profile_id FROM agent_registrations WHERE pseudonym_id = ?1",
+            rusqlite::params![agent_pseudonym],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert_eq!(stored_id, Some(voice_profile_db_id));
 
     // 4. Test: Non-moderator tries to assign (Forbidden)
@@ -120,7 +127,10 @@ async fn test_update_agent_voice_profile() {
         .method("PUT")
         .header("X-Annex-Pseudonym", normal_user)
         .header("Content-Type", "application/json")
-        .extension(axum::extract::ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12345))))
+        .extension(axum::extract::ConnectInfo(SocketAddr::from((
+            [127, 0, 0, 1],
+            12345,
+        ))))
         .body(Body::from(serde_json::to_vec(&payload).unwrap()))
         .unwrap();
 
@@ -134,7 +144,10 @@ async fn test_update_agent_voice_profile() {
         .method("PUT")
         .header("X-Annex-Pseudonym", moderator)
         .header("Content-Type", "application/json")
-        .extension(axum::extract::ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12345))))
+        .extension(axum::extract::ConnectInfo(SocketAddr::from((
+            [127, 0, 0, 1],
+            12345,
+        ))))
         .body(Body::from(serde_json::to_vec(&payload_unset).unwrap()))
         .unwrap();
 
@@ -142,11 +155,13 @@ async fn test_update_agent_voice_profile() {
     assert_eq!(resp_unset.status(), StatusCode::OK);
 
     // Verify DB update (should be NULL)
-    let stored_id_null: Option<i64> = conn.query_row(
-        "SELECT voice_profile_id FROM agent_registrations WHERE pseudonym_id = ?1",
-        rusqlite::params![agent_pseudonym],
-        |row| row.get(0),
-    ).unwrap();
+    let stored_id_null: Option<i64> = conn
+        .query_row(
+            "SELECT voice_profile_id FROM agent_registrations WHERE pseudonym_id = ?1",
+            rusqlite::params![agent_pseudonym],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert_eq!(stored_id_null, None);
 
     // 6. Test: Invalid Profile ID (BadRequest)
@@ -156,7 +171,10 @@ async fn test_update_agent_voice_profile() {
         .method("PUT")
         .header("X-Annex-Pseudonym", moderator)
         .header("Content-Type", "application/json")
-        .extension(axum::extract::ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12345))))
+        .extension(axum::extract::ConnectInfo(SocketAddr::from((
+            [127, 0, 0, 1],
+            12345,
+        ))))
         .body(Body::from(serde_json::to_vec(&payload_invalid).unwrap()))
         .unwrap();
 
@@ -170,7 +188,10 @@ async fn test_update_agent_voice_profile() {
         .method("PUT")
         .header("X-Annex-Pseudonym", moderator)
         .header("Content-Type", "application/json")
-        .extension(axum::extract::ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12345))))
+        .extension(axum::extract::ConnectInfo(SocketAddr::from((
+            [127, 0, 0, 1],
+            12345,
+        ))))
         .body(Body::from(serde_json::to_vec(&payload).unwrap()))
         .unwrap();
 
