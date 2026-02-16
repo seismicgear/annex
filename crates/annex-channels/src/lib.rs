@@ -353,7 +353,10 @@ pub fn is_member(
 }
 
 /// Lists all members of a channel.
-pub fn list_members(conn: &Connection, channel_id: &str) -> Result<Vec<ChannelMember>, ChannelError> {
+pub fn list_members(
+    conn: &Connection,
+    channel_id: &str,
+) -> Result<Vec<ChannelMember>, ChannelError> {
     let mut stmt = conn.prepare(
         "SELECT id, server_id, channel_id, pseudonym_id, role, joined_at
          FROM channel_members WHERE channel_id = ?1 ORDER BY joined_at ASC",

@@ -1,6 +1,4 @@
-use annex_channels::{
-    create_channel, is_member, CreateChannelParams,
-};
+use annex_channels::{create_channel, is_member, CreateChannelParams};
 use annex_db::{create_pool, run_migrations, DbRuntimeSettings};
 use annex_identity::MerkleTree;
 use annex_server::{app, middleware::RateLimiter, AppState};
@@ -10,13 +8,13 @@ use axum::{
     extract::ConnectInfo,
     http::{Request, StatusCode},
 };
-use std::net::SocketAddr;
-use std::sync::{Arc, Mutex, RwLock};
-use tower::ServiceExt;
-use tokio::net::TcpListener;
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex, RwLock};
+use tokio::net::TcpListener;
+use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use tower::ServiceExt;
 
 // Helper to load verification key
 fn load_vkey() -> Arc<annex_identity::zk::VerifyingKey<annex_identity::zk::Bn254>> {
@@ -28,7 +26,10 @@ fn load_vkey() -> Arc<annex_identity::zk::VerifyingKey<annex_identity::zk::Bn254
 
     let vkey_json = std::fs::read_to_string(&path1)
         .or_else(|_| std::fs::read_to_string(path2))
-        .expect(&format!("failed to read vkey from {:?} or {:?}", path1, path2));
+        .expect(&format!(
+            "failed to read vkey from {:?} or {:?}",
+            path1, path2
+        ));
 
     let vk = annex_identity::zk::parse_verification_key(&vkey_json).expect("failed to parse vkey");
     Arc::new(vk)
@@ -244,7 +245,11 @@ async fn test_ws_subscription_enforcement() {
         run_migrations(&conn).unwrap();
         let policy = ServerPolicy::default();
         let policy_json = serde_json::to_string(&policy).unwrap();
-        conn.execute("INSERT INTO servers (slug, label, policy_json) VALUES ('test', 'Test', ?1)", [policy_json]).unwrap();
+        conn.execute(
+            "INSERT INTO servers (slug, label, policy_json) VALUES ('test', 'Test', ?1)",
+            [policy_json],
+        )
+        .unwrap();
 
         conn.execute("INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active) VALUES (1, 'user-ws', 'HUMAN', 1)", []).unwrap();
 
@@ -279,7 +284,12 @@ async fn test_ws_subscription_enforcement() {
     let addr = listener.local_addr().unwrap();
 
     tokio::spawn(async move {
-        axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
     });
 
     // 2. Connect
@@ -291,14 +301,20 @@ async fn test_ws_subscription_enforcement() {
         "type": "subscribe",
         "channelId": "chan-ws"
     });
-    ws_stream.send(Message::Text(subscribe_msg.to_string().into())).await.unwrap();
+    ws_stream
+        .send(Message::Text(subscribe_msg.to_string().into()))
+        .await
+        .unwrap();
 
     // 4. Expect Error Message
     if let Some(Ok(msg)) = ws_stream.next().await {
         if let Message::Text(text) = msg {
             let received: serde_json::Value = serde_json::from_str(&text).unwrap();
             assert_eq!(received["type"], "error");
-            assert!(received["message"].as_str().unwrap().contains("Not a member"));
+            assert!(received["message"]
+                .as_str()
+                .unwrap()
+                .contains("Not a member"));
         } else {
             panic!("expected text message");
         }
@@ -313,7 +329,10 @@ async fn test_ws_subscription_enforcement() {
     }
 
     // 6. Try Subscribe Again
-    ws_stream.send(Message::Text(subscribe_msg.to_string().into())).await.unwrap();
+    ws_stream
+        .send(Message::Text(subscribe_msg.to_string().into()))
+        .await
+        .unwrap();
 
     // Send a message to verify subscription worked (broadcast back)
     let content = "Hello";
@@ -323,7 +342,10 @@ async fn test_ws_subscription_enforcement() {
         "content": content,
         "replyTo": null
     });
-    ws_stream.send(Message::Text(msg.to_string().into())).await.unwrap();
+    ws_stream
+        .send(Message::Text(msg.to_string().into()))
+        .await
+        .unwrap();
 
     // 7. Receive Broadcast
     // We expect the message back.
