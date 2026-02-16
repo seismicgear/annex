@@ -2,7 +2,8 @@
 
 use crate::AppState;
 use annex_channels::{create_message, is_member, CreateMessageParams, Message};
-use annex_identity::get_platform_identity;
+use annex_identity::{get_platform_identity, PlatformIdentity};
+use annex_types::RoleCode;
 use axum::{
     extract::{
         ws::{Message as AxumMessage, WebSocket},
@@ -47,6 +48,12 @@ pub enum IncomingMessage {
         content: String,
         #[serde(rename = "replyTo")]
         reply_to: Option<String>,
+    },
+    #[serde(rename = "voice_intent")]
+    VoiceIntent {
+        #[serde(rename = "channelId")]
+        channel_id: String,
+        text: String,
     },
 }
 
@@ -214,9 +221,9 @@ pub async fn ws_handler(
     .await;
 
     match auth_result {
-        Ok(Ok(_identity)) => {
+        Ok(Ok(identity)) => {
             // Success
-            ws.on_upgrade(move |socket| handle_socket(socket, state, params.pseudonym))
+            ws.on_upgrade(move |socket| handle_socket(socket, state, identity))
         }
         Ok(Err(code)) => code.into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -224,7 +231,13 @@ pub async fn ws_handler(
 }
 
 /// Handles the WebSocket connection.
-async fn handle_socket(socket: WebSocket, state: Arc<AppState>, pseudonym: String) {
+async fn handle_socket(
+    socket: WebSocket,
+    state: Arc<AppState>,
+    identity: PlatformIdentity,
+) {
+    let pseudonym = identity.pseudonym_id.clone();
+
     // 1. Mark as active immediately
     tokio::spawn(touch_activity(state.clone(), pseudonym.clone()));
 
@@ -277,12 +290,11 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, pseudonym: Strin
                                 .subscribe(channel_id, pseudonym.clone())
                                 .await;
                         } else {
-                            let _ = tx.send(
-                                serde_json::to_string(&OutgoingMessage::Error {
-                                    message: format!("Not a member of channel {}", channel_id),
-                                })
-                                .unwrap(),
-                            );
+                            if let Ok(json) = serde_json::to_string(&OutgoingMessage::Error {
+                                message: format!("Not a member of channel {}", channel_id),
+                            }) {
+                                let _ = tx.send(json);
+                            }
                         }
                     }
                     IncomingMessage::Unsubscribe { channel_id } => {
@@ -311,12 +323,11 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, pseudonym: Strin
                         };
 
                         if !allowed {
-                            let _ = tx.send(
-                                serde_json::to_string(&OutgoingMessage::Error {
-                                    message: format!("Not a member of channel {}", channel_id),
-                                })
-                                .unwrap(),
-                            );
+                            if let Ok(json) = serde_json::to_string(&OutgoingMessage::Error {
+                                message: format!("Not a member of channel {}", channel_id),
+                            }) {
+                                let _ = tx.send(json);
+                            }
                             continue;
                         }
 
@@ -356,6 +367,105 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, pseudonym: Strin
                             }
                             Err(e) => {
                                 tracing::error!("Task join error: {}", e);
+                            }
+                        }
+                    }
+                    IncomingMessage::VoiceIntent { channel_id, text } => {
+                        if identity.participant_type != RoleCode::AiAgent {
+                            if let Ok(json) = serde_json::to_string(&OutgoingMessage::Error {
+                                message: "Only AI agents can use VoiceIntent".to_string(),
+                            }) {
+                                let _ = tx.send(json);
+                            }
+                            continue;
+                        }
+
+                        // Check membership
+                        let allowed = {
+                            let pool = state.pool.clone();
+                            let cid = channel_id.clone();
+                            let pid = pseudonym.clone();
+                            tokio::task::spawn_blocking(move || {
+                                let conn = pool.get().map_err(|_| "pool error")?;
+                                is_member(&conn, &cid, &pid).map_err(|_| "db error")
+                            })
+                            .await
+                            .unwrap_or(Ok(false))
+                            .unwrap_or(false)
+                        };
+
+                        if !allowed {
+                            if let Ok(json) = serde_json::to_string(&OutgoingMessage::Error {
+                                message: format!("Not a member of channel {}", channel_id),
+                            }) {
+                                let _ = tx.send(json);
+                            }
+                            continue;
+                        }
+
+                        // Synthesize
+                        match state.tts_service.synthesize(&text, "default").await {
+                            Ok(audio) => {
+                                // Get or create voice client
+                                let client_opt = match state.voice_sessions.read() {
+                                    Ok(sessions) => sessions.get(&pseudonym).cloned(),
+                                    Err(_) => {
+                                        tracing::error!("voice_sessions lock poisoned");
+                                        continue;
+                                    }
+                                };
+
+                                let client = if let Some(c) = client_opt {
+                                    c
+                                } else {
+                                    // Connect
+                                    let room_name = channel_id.clone();
+                                    let token = state
+                                        .voice_service
+                                        .generate_join_token(&room_name, &pseudonym, &pseudonym)
+                                        .unwrap_or_default();
+                                    let url = state.voice_service.get_url();
+
+                                    match annex_voice::AgentVoiceClient::connect(url, &token, &room_name)
+                                        .await
+                                    {
+                                        Ok(c) => {
+                                            let arc = Arc::new(c);
+                                            match state.voice_sessions.write() {
+                                                Ok(mut sessions) => {
+                                                    sessions.insert(pseudonym.clone(), arc.clone());
+                                                }
+                                                Err(_) => {
+                                                    tracing::error!("voice_sessions lock poisoned");
+                                                }
+                                            }
+                                            arc
+                                        }
+                                        Err(e) => {
+                                            if let Ok(json) = serde_json::to_string(&OutgoingMessage::Error {
+                                                message: format!("Failed to connect voice: {}", e),
+                                            }) {
+                                                let _ = tx.send(json);
+                                            }
+                                            continue;
+                                        }
+                                    }
+                                };
+
+                                if let Err(e) = client.publish_audio(&audio).await {
+                                    if let Ok(json) = serde_json::to_string(&OutgoingMessage::Error {
+                                        message: format!("Failed to publish audio: {}", e),
+                                    }) {
+                                        let _ = tx.send(json);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                if let Ok(json) = serde_json::to_string(&OutgoingMessage::Error {
+                                    message: format!("TTS failed: {}", e),
+                                }) {
+                                    let _ = tx.send(json);
+                                }
                             }
                         }
                     }

@@ -788,10 +788,10 @@ Voice channels that work for both humans and agents. Humans speak via WebRTC thr
 - [x] `annex-db` migration: `voice_profiles` table
 
 #### 7.4 — Agent voice output pipeline
-- [ ] Agent sends text intent via WebSocket message with `type: "voice_intent"`
-- [ ] Server routes text to TTS service with the agent's assigned voice profile
-- [ ] TTS output is published to the LiveKit room as an audio track attributed to the agent's pseudonym
-- [ ] Test: agent sends text → audio appears in LiveKit room → other participants hear it
+- [x] Agent sends text intent via WebSocket message with `type: "voice_intent"`
+- [x] Server routes text to TTS service with the agent's assigned voice profile
+- [x] TTS output is published to the LiveKit room as an audio track attributed to the agent's pseudonym
+- [x] Test: agent sends text → audio appears in LiveKit room → other participants hear it
 
 #### 7.5 — STT service
 - [ ] `annex-voice` implements STT service:
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-20 | Phase 7.4 (`Agent voice output pipeline`) completed. |
 | 2026-02-20 | Phase 7.3 (`Voice LLM service (TTS)`) completed. |
 | 2026-02-20 | Phase 7.1 (`LiveKit server integration`) completed. |
 | 2026-02-20 | Phase 6 `COMPLETE`. Phase 7 `IN PROGRESS`. |

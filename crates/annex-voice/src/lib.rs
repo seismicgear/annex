@@ -13,11 +13,13 @@
 //!
 //! The full implementation of this crate is Phase 7 of the roadmap.
 
+pub mod agent;
 pub mod config;
 pub mod error;
 pub mod service;
 pub mod tts;
 
+pub use agent::AgentVoiceClient;
 pub use config::LiveKitConfig;
 pub use error::VoiceError;
 pub use service::VoiceService;
