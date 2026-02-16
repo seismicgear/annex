@@ -49,6 +49,8 @@ pub struct AppState {
     pub voice_service: Arc<annex_voice::VoiceService>,
     /// TTS service.
     pub tts_service: Arc<annex_voice::TtsService>,
+    /// STT service.
+    pub stt_service: Arc<annex_voice::SttService>,
     /// Active agent voice sessions (pseudonym -> client).
     pub voice_sessions:
         Arc<RwLock<std::collections::HashMap<String, Arc<annex_voice::AgentVoiceClient>>>>,

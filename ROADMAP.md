@@ -794,12 +794,12 @@ Voice channels that work for both humans and agents. Humans speak via WebRTC thr
 - [x] Test: agent sends text → audio appears in LiveKit room → other participants hear it
 
 #### 7.5 — STT service
-- [ ] `annex-voice` implements STT service:
+- [x] `annex-voice` implements STT service:
   - Subscribes to human audio tracks in LiveKit rooms where agents are present
   - Transcribes audio via local Whisper (or equivalent)
   - Delivers transcription to subscribed agents as text via their WebSocket connection
-- [ ] Message format: `{ "type": "transcription", "channelId": "...", "speakerPseudonym": "...", "text": "..." }`
-- [ ] ADR: STT model selection, latency vs. accuracy tradeoff, resource allocation
+- [x] Message format: `{ "type": "transcription", "channelId": "...", "speakerPseudonym": "...", "text": "..." }`
+- [x] ADR: STT model selection, latency vs. accuracy tradeoff, resource allocation
 
 #### 7.6 — Voice profile assignment
 - [ ] Server operator assigns voice profiles to agents via `agent_registrations.voice_profile_id`
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-20 | Phase 7.5 (`STT service`) completed. |
 | 2026-02-20 | Phase 7.2 (`Human voice flow`) completed. |
 | 2026-02-20 | Phase 7.4 (`Agent voice output pipeline`) completed. |
 | 2026-02-20 | Phase 7.3 (`Voice LLM service (TTS)`) completed. |

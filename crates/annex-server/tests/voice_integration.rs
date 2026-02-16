@@ -60,6 +60,7 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool) {
         presence_tx: tokio::sync::broadcast::channel(100).0,
         voice_service: Arc::new(voice_service),
         tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper")),
+        stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),
         voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
     };
 

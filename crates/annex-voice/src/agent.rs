@@ -1,5 +1,16 @@
 use crate::error::VoiceError;
+use crate::stt::SttService;
+use std::sync::Arc;
+use tokio::sync::broadcast;
 use tracing::info;
+
+/// Event emitted when an agent hears and transcribes speech.
+#[derive(Debug, Clone)]
+pub struct TranscriptionEvent {
+    pub channel_id: String,
+    pub speaker_pseudonym: String,
+    pub text: String,
+}
 
 /// A client for an agent to participate in a LiveKit room.
 ///
@@ -13,11 +24,18 @@ pub struct AgentVoiceClient {
     pub token: String,
     pub room_name: String,
     pub connected: bool,
+    pub stt_service: Arc<SttService>,
+    pub transcription_tx: broadcast::Sender<TranscriptionEvent>,
 }
 
 impl AgentVoiceClient {
     /// Connects to a LiveKit room.
-    pub async fn connect(url: &str, token: &str, room_name: &str) -> Result<Self, VoiceError> {
+    pub async fn connect(
+        url: &str,
+        token: &str,
+        room_name: &str,
+        stt_service: Arc<SttService>,
+    ) -> Result<Self, VoiceError> {
         info!(
             "Agent connecting to LiveKit room '{}' at '{}' with token length {}",
             room_name,
@@ -28,11 +46,15 @@ impl AgentVoiceClient {
         // Simulate connection delay
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
+        let (tx, _) = broadcast::channel(100);
+
         Ok(Self {
             room_url: url.to_string(),
             token: token.to_string(),
             room_name: room_name.to_string(),
             connected: true,
+            stt_service,
+            transcription_tx: tx,
         })
     }
 
@@ -65,5 +87,40 @@ impl AgentVoiceClient {
             info!("Agent disconnecting from room '{}'", self.room_name);
             self.connected = false;
         }
+    }
+
+    /// Simulates the agent hearing audio from a speaker in the room.
+    /// In a real implementation, this would be triggered by incoming audio frames from LiveKit.
+    pub async fn simulate_hearing(&self, audio: &[u8], speaker: &str) -> Result<(), VoiceError> {
+        if !self.connected {
+            return Err(VoiceError::RoomService(
+                "Agent is not connected to a room".to_string(),
+            ));
+        }
+
+        info!(
+            "Agent hearing {} bytes from '{}' in room '{}'",
+            audio.len(),
+            speaker,
+            self.room_name
+        );
+
+        let text = self.stt_service.transcribe(audio).await?;
+
+        let event = TranscriptionEvent {
+            channel_id: self.room_name.clone(),
+            speaker_pseudonym: speaker.to_string(),
+            text,
+        };
+
+        // Broadcast event
+        let _ = self.transcription_tx.send(event);
+
+        Ok(())
+    }
+
+    /// Subscribes to transcription events from this client.
+    pub fn subscribe_transcriptions(&self) -> broadcast::Receiver<TranscriptionEvent> {
+        self.transcription_tx.subscribe()
     }
 }

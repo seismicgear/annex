@@ -44,6 +44,7 @@ async fn test_sse_presence_stream() {
             annex_voice::LiveKitConfig::default(),
         )),
         tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper")),
+        stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),
         voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
     };
 

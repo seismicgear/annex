@@ -63,6 +63,14 @@ pub enum IncomingMessage {
 pub enum OutgoingMessage {
     #[serde(rename = "message")]
     Message(Message),
+    #[serde(rename = "transcription")]
+    Transcription {
+        #[serde(rename = "channelId")]
+        channel_id: String,
+        #[serde(rename = "speakerPseudonym")]
+        speaker_pseudonym: String,
+        text: String,
+    },
     #[serde(rename = "error")]
     Error { message: String },
 }
@@ -191,6 +199,14 @@ impl ConnectionManager {
                     let _ = sender.send(message_json.clone());
                 }
             }
+        }
+    }
+
+    /// Sends a message string to a specific user (pseudonym).
+    pub async fn send(&self, pseudonym: &str, message_json: String) {
+        let sessions = self.sessions.read().await;
+        if let Some((_, sender)) = sessions.get(pseudonym) {
+            let _ = sender.send(message_json);
         }
     }
 }
@@ -421,12 +437,35 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                     let url = state.voice_service.get_url();
 
                                     match annex_voice::AgentVoiceClient::connect(
-                                        url, &token, &room_name,
+                                        url,
+                                        &token,
+                                        &room_name,
+                                        state.stt_service.clone(),
                                     )
                                     .await
                                     {
                                         Ok(c) => {
                                             let arc = Arc::new(c);
+
+                                            // Subscribe to transcriptions
+                                            let mut rx = arc.subscribe_transcriptions();
+                                            let cm = state.connection_manager.clone();
+                                            let p_clone = pseudonym.clone();
+
+                                            tokio::spawn(async move {
+                                                while let Ok(event) = rx.recv().await {
+                                                    let msg = OutgoingMessage::Transcription {
+                                                        channel_id: event.channel_id,
+                                                        speaker_pseudonym: event.speaker_pseudonym,
+                                                        text: event.text,
+                                                    };
+
+                                                    if let Ok(json) = serde_json::to_string(&msg) {
+                                                        cm.send(&p_clone, json).await;
+                                                    }
+                                                }
+                                            });
+
                                             match state.voice_sessions.write() {
                                                 Ok(mut sessions) => {
                                                     sessions.insert(pseudonym.clone(), arc.clone());

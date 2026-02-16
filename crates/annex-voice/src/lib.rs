@@ -17,10 +17,12 @@ pub mod agent;
 pub mod config;
 pub mod error;
 pub mod service;
+pub mod stt;
 pub mod tts;
 
-pub use agent::AgentVoiceClient;
+pub use agent::{AgentVoiceClient, TranscriptionEvent};
 pub use config::LiveKitConfig;
 pub use error::VoiceError;
 pub use service::VoiceService;
+pub use stt::SttService;
 pub use tts::TtsService;
