@@ -18,8 +18,8 @@ Phase 1: Identity Plane ................ COMPLETE
 Phase 2: Server Core ................... COMPLETE
 Phase 3: VRP Trust Negotiation ......... COMPLETE
 Phase 4: Text Communication ............ COMPLETE
-Phase 5: Presence Graph ................ IN PROGRESS
-Phase 6: Agent Protocol ................ NOT STARTED
+Phase 5: Presence Graph ................ COMPLETE
+Phase 6: Agent Protocol ................ IN PROGRESS
 Phase 7: Voice Infrastructure .......... NOT STARTED
 Phase 8: Federation .................... NOT STARTED
 Phase 9: RTX Knowledge Exchange ........ NOT STARTED
@@ -672,23 +672,23 @@ The live presence graph. After this phase, participants appear as nodes, relatio
 - [x] Subscriber management per server (connection tracking, cleanup on disconnect)
 
 #### 5.6 — Activity tracking and pruning
-- [ ] Update `graph_nodes.last_seen_at` on VRP handshake, message send, WebSocket heartbeat
-- [ ] Background pruning job: nodes where `last_seen_at < now - inactivity_threshold` → `active = 0`
-- [ ] Emit `NODE_PRUNED` event
-- [ ] Reactivation: fresh VRP handshake reactivates existing node (flip `active = 1`)
-- [ ] Test: inactive node is pruned → reconnect → node reactivated → pseudonym preserved
+- [x] Update `graph_nodes.last_seen_at` on VRP handshake, message send, WebSocket heartbeat
+- [x] Background pruning job: nodes where `last_seen_at < now - inactivity_threshold` → `active = 0`
+- [x] Emit `NODE_PRUNED` event
+- [x] Reactivation: fresh VRP handshake reactivates existing node (flip `active = 1`)
+- [x] Test: inactive node is pruned → reconnect → node reactivated → pseudonym preserved
 
 ### Completion Criteria
 
 Phase 5 is **COMPLETE** when:
 
-- [ ] Participants appear as graph nodes automatically on membership verification
-- [ ] Edges can be created and queried
-- [ ] BFS shortest path works correctly
-- [ ] Visibility levels are enforced server-side based on degree
-- [ ] SSE stream delivers real-time presence events
-- [ ] Inactive nodes are pruned and reactivatable
-- [ ] All operations are scoped by `server_id`
+- [x] Participants appear as graph nodes automatically on membership verification
+- [x] Edges can be created and queried
+- [x] BFS shortest path works correctly
+- [x] Visibility levels are enforced server-side based on degree
+- [x] SSE stream delivers real-time presence events
+- [x] Inactive nodes are pruned and reactivatable
+- [x] All operations are scoped by `server_id`
 
 ---
 
@@ -1167,6 +1167,8 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-19 | Phase 5 `COMPLETE`. Phase 6 `IN PROGRESS`. |
+| 2026-02-19 | Phase 5.6 (`Activity tracking and pruning`) completed. |
 | 2026-02-19 | Phase 5.5 (`SSE presence stream`) completed. |
 | 2026-02-19 | Phase 5.4 (`Visibility service`) completed. |
 | 2026-02-19 | Phase 5.3 (`BFS degrees of separation`) completed. |

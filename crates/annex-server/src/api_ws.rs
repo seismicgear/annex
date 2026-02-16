@@ -213,6 +213,9 @@ pub async fn ws_handler(
 
 /// Handles the WebSocket connection.
 async fn handle_socket(socket: WebSocket, state: Arc<AppState>, pseudonym: String) {
+    // 1. Mark as active immediately
+    tokio::spawn(touch_activity(state.clone(), pseudonym.clone()));
+
     let (mut sender, mut receiver) = socket.split();
 
     // Create a channel for this session
@@ -235,6 +238,9 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, pseudonym: Strin
 
     // Handle incoming messages
     while let Some(Ok(msg)) = receiver.next().await {
+        // Update activity on any message (fire and forget)
+        tokio::spawn(touch_activity(state.clone(), pseudonym.clone()));
+
         if let AxumMessage::Text(text) = msg {
             if let Ok(incoming) = serde_json::from_str::<IncomingMessage>(&text.to_string()) {
                 match incoming {
@@ -356,4 +362,23 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, pseudonym: Strin
         .remove_session(&pseudonym, session_id)
         .await;
     send_task.abort();
+}
+
+async fn touch_activity(state: Arc<AppState>, pseudonym: String) {
+    let pool = state.pool.clone();
+    let server_id = state.server_id;
+    let tx = state.presence_tx.clone();
+
+    tokio::task::spawn_blocking(move || {
+        if let Ok(conn) = pool.get() {
+            if let Ok(true) = annex_graph::update_node_activity(&conn, server_id, &pseudonym) {
+                let _ = tx.send(annex_types::PresenceEvent::NodeUpdated {
+                    pseudonym_id: pseudonym,
+                    active: true,
+                });
+            }
+        }
+    })
+    .await
+    .ok();
 }

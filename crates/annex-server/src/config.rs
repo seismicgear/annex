@@ -35,6 +35,10 @@ pub struct ServerConfig {
     /// Interval in seconds for the message retention background task.
     #[serde(default = "default_retention_check_interval_seconds")]
     pub retention_check_interval_seconds: u64,
+
+    /// Inactivity threshold in seconds for graph node pruning.
+    #[serde(default = "default_inactivity_threshold_seconds")]
+    pub inactivity_threshold_seconds: u64,
 }
 
 /// Database configuration.
@@ -77,6 +81,10 @@ fn default_retention_check_interval_seconds() -> u64 {
     3600
 }
 
+fn default_inactivity_threshold_seconds() -> u64 {
+    300
+}
+
 fn default_db_path() -> String {
     "annex.db".to_string()
 }
@@ -99,6 +107,7 @@ impl Default for ServerConfig {
             host: default_host(),
             port: default_port(),
             retention_check_interval_seconds: default_retention_check_interval_seconds(),
+            inactivity_threshold_seconds: default_inactivity_threshold_seconds(),
         }
     }
 }
@@ -252,6 +261,9 @@ pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
     }
     if let Some(interval) = parse_env_var("ANNEX_RETENTION_CHECK_INTERVAL_SECONDS")? {
         config.server.retention_check_interval_seconds = interval;
+    }
+    if let Some(threshold) = parse_env_var("ANNEX_INACTIVITY_THRESHOLD_SECONDS")? {
+        config.server.inactivity_threshold_seconds = threshold;
     }
     if let Ok(db_path) = std::env::var("ANNEX_DB_PATH") {
         config.database.path = db_path;

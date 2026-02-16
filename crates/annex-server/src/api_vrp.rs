@@ -1,6 +1,8 @@
 //! VRP Handshake API handlers.
 
 use crate::{api::ApiError, AppState};
+use annex_graph::update_node_activity;
+use annex_types::PresenceEvent;
 use annex_vrp::{
     check_reputation_score, record_vrp_outcome, validate_federation_handshake, ServerPolicyRoot,
     VrpAlignmentConfig, VrpAlignmentStatus, VrpCapabilitySharingContract, VrpFederationHandshake,
@@ -103,6 +105,14 @@ pub async fn agent_handshake_handler(
         if report.alignment_status == VrpAlignmentStatus::Aligned
             || report.alignment_status == VrpAlignmentStatus::Partial
         {
+            // Also update graph node activity if it exists
+            if let Ok(true) = update_node_activity(&conn, state.server_id, &payload.pseudonym_id) {
+                let _ = state.presence_tx.send(PresenceEvent::NodeUpdated {
+                    pseudonym_id: payload.pseudonym_id.clone(),
+                    active: true,
+                });
+            }
+
             let contract_json = serde_json::to_string(&payload.handshake.capability_contract)
                 .map_err(|e| {
                     ApiError::InternalServerError(format!("failed to serialize contract: {}", e))
