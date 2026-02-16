@@ -1,6 +1,7 @@
 //! Annex server library logic.
 
 pub mod api;
+pub mod api_channels;
 pub mod api_vrp;
 pub mod api_ws;
 pub mod config;
@@ -47,6 +48,17 @@ async fn health() -> Json<Value> {
 
 /// Builds the application router with all routes.
 pub fn app(state: AppState) -> Router {
+    let protected_routes = Router::new()
+        .route(
+            "/api/channels/{channelId}/join",
+            post(api_channels::join_channel_handler),
+        )
+        .route(
+            "/api/channels/{channelId}/leave",
+            post(api_channels::leave_channel_handler),
+        )
+        .layer(axum::middleware::from_fn(middleware::auth_middleware));
+
     Router::new()
         .route("/health", get(health))
         .route("/api/registry/register", post(api::register_handler))
@@ -76,6 +88,7 @@ pub fn app(state: AppState) -> Router {
             "/api/vrp/agent-handshake",
             post(api_vrp::agent_handshake_handler),
         )
+        .merge(protected_routes)
         .route("/ws", get(api_ws::ws_handler))
         .layer(axum::middleware::from_fn(middleware::rate_limit_middleware))
         .layer(Extension(Arc::new(state)))
