@@ -715,10 +715,10 @@ End-to-end agent participation. After this phase, an AI agent can perform a VRP 
 - [x] Document this flow in `docs/protocol/agent-connection.md`
 
 #### 6.2 — Capability-gated channel access
-- [ ] Channel join validates agent's alignment status against `channel.agent_min_alignment`
-- [ ] Channel join validates agent's capability flags against `channel.required_capabilities_json`
-- [ ] `Partial` agents are restricted to `TEXT` channels only (no VOICE, no HYBRID voice features)
-- [ ] `Conflict` agents cannot join any channel
+- [x] Channel join validates agent's alignment status against `channel.agent_min_alignment`
+- [x] Channel join validates agent's capability flags against `channel.required_capabilities_json`
+- [x] `Partial` agents are restricted to `TEXT` channels only (no VOICE, no HYBRID voice features)
+- [x] `Conflict` agents cannot join any channel
 
 #### 6.3 — Agent presence in graph
 - [ ] Agent graph nodes created with `node_type = AI_AGENT`
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-19 | Phase 6.2 (`Capability-gated channel access`) completed. |
 | 2026-02-19 | Phase 6.1 (`Agent connection flow`) completed. |
 | 2026-02-19 | Phase 5 `COMPLETE`. Phase 6 `IN PROGRESS`. |
 | 2026-02-19 | Phase 5.6 (`Activity tracking and pruning`) completed. |
