@@ -51,6 +51,14 @@ async fn health() -> Json<Value> {
 pub fn app(state: AppState) -> Router {
     let protected_routes = Router::new()
         .route(
+            "/api/channels",
+            post(api_channels::create_channel_handler).get(api_channels::list_channels_handler),
+        )
+        .route(
+            "/api/channels/{channelId}",
+            get(api_channels::get_channel_handler).delete(api_channels::delete_channel_handler),
+        )
+        .route(
             "/api/channels/{channelId}/join",
             post(api_channels::join_channel_handler),
         )
