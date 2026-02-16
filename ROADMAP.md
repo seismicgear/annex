@@ -769,12 +769,12 @@ Voice channels that work for both humans and agents. Humans speak via WebRTC thr
 #### 7.1 — LiveKit server integration
 - [x] LiveKit server deployment configuration (Docker or native)
 - [x] `annex-voice` crate: LiveKit server SDK integration for room management
-- [ ] Create LiveKit room per `VOICE` or `HYBRID` channel
+- [x] Create LiveKit room per `VOICE` or `HYBRID` channel
 - [x] Token generation for human participants to join LiveKit rooms
 - [x] Test: create room → generate token → verify token grants correct room access
 
 #### 7.2 — Human voice flow
-- [ ] Client connects to LiveKit room using generated token
+- [x] Client connects to LiveKit room using generated token
 - [ ] Audio published and subscribed via standard LiveKit WebRTC flow
 - [ ] No server-side audio processing needed for human-to-human voice
 
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-20 | Phase 7.1 (`LiveKit server integration`) completed. |
 | 2026-02-20 | Phase 6 `COMPLETE`. Phase 7 `IN PROGRESS`. |
 | 2026-02-20 | Phase 6.6 (`Re-evaluation on policy change`) completed. |
 | 2026-02-19 | Phase 6.5 (`Agent WebSocket behavior`) completed. |

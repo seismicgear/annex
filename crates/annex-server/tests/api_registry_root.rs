@@ -36,6 +36,9 @@ async fn test_get_current_root_empty_tree() {
         rate_limiter: RateLimiter::new(),
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
         presence_tx: tokio::sync::broadcast::channel(100).0,
+        voice_service: Arc::new(annex_voice::VoiceService::new(
+            annex_voice::LiveKitConfig::default(),
+        )),
     };
     let app = app(state);
 
@@ -81,6 +84,9 @@ async fn test_get_current_root_after_registration() {
         rate_limiter: RateLimiter::new(),
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
         presence_tx: tokio::sync::broadcast::channel(100).0,
+        voice_service: Arc::new(annex_voice::VoiceService::new(
+            annex_voice::LiveKitConfig::default(),
+        )),
     };
     let app = app(state);
 

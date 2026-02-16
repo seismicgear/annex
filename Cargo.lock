@@ -140,6 +140,7 @@ dependencies = [
  "annex-graph",
  "annex-identity",
  "annex-types",
+ "annex-voice",
  "annex-vrp",
  "axum",
  "chrono",

@@ -11,7 +11,7 @@ use axum::{
     response::Json,
 };
 use rusqlite::{params, OptionalExtension};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -34,6 +34,12 @@ pub struct CreateChannelRequest {
     pub federation_scope: FederationScope,
 }
 
+#[derive(Serialize)]
+pub struct JoinVoiceResponse {
+    pub token: String,
+    pub url: String,
+}
+
 /// POST /api/channels
 pub async fn create_channel_handler(
     Extension(state): Extension<Arc<AppState>>,
@@ -46,7 +52,7 @@ pub async fn create_channel_handler(
 
     let params = CreateChannelParams {
         server_id: state.server_id,
-        channel_id: payload.channel_id,
+        channel_id: payload.channel_id.clone(),
         name: payload.name,
         channel_type: payload.channel_type,
         topic: payload.topic,
@@ -57,11 +63,9 @@ pub async fn create_channel_handler(
         federation_scope: payload.federation_scope,
     };
 
+    let pool = state.pool.clone();
     tokio::task::spawn_blocking(move || {
-        let conn = state
-            .pool
-            .get()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         create_channel(&conn, &params).map_err(|e| {
             // Handle unique constraint violation -> 409 Conflict
             if let annex_channels::ChannelError::Database(rusqlite::Error::SqliteFailure(
@@ -78,6 +82,20 @@ pub async fn create_channel_handler(
     })
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+
+    // Create LiveKit room if needed and enabled
+    if (payload.channel_type == ChannelType::Voice || payload.channel_type == ChannelType::Hybrid)
+        && state.voice_service.is_enabled()
+    {
+        if let Err(e) = state.voice_service.create_room(&payload.channel_id).await {
+            tracing::error!(
+                "failed to create LiveKit room for channel {}: {}",
+                payload.channel_id,
+                e
+            );
+            // We log but don't fail the request since the DB record was created successfully.
+        }
+    }
 
     Ok(Json(json!({"status": "created"})))
 }
@@ -338,4 +356,59 @@ pub async fn leave_channel_handler(
         .await;
 
     Ok(Json(json!({"status": "left"})))
+}
+
+/// POST /api/channels/:channelId/voice/join
+pub async fn join_voice_channel_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(IdentityContext(identity)): Extension<IdentityContext>,
+    Path(channel_id): Path<String>,
+) -> Result<Json<JoinVoiceResponse>, StatusCode> {
+    // 1. Check if user is a member of the channel
+    let is_member = tokio::task::spawn_blocking({
+        let pool = state.pool.clone();
+        let cid = channel_id.clone();
+        let pid = identity.pseudonym_id.clone();
+        move || {
+            let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            is_member(&conn, &cid, &pid).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+
+    if !is_member {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    // 2. Fetch channel to verify type
+    let channel = tokio::task::spawn_blocking({
+        let pool = state.pool.clone();
+        let cid = channel_id.clone();
+        move || {
+            let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            get_channel(&conn, &cid).map_err(|_| StatusCode::NOT_FOUND)
+        }
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+
+    if channel.channel_type != ChannelType::Voice && channel.channel_type != ChannelType::Hybrid {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // 3. Generate Token
+    // We use the pseudonym as the participant identity and name.
+    let token = state
+        .voice_service
+        .generate_join_token(&channel_id, &identity.pseudonym_id, &identity.pseudonym_id)
+        .map_err(|e| {
+            tracing::error!("failed to generate LiveKit token: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(JoinVoiceResponse {
+        token,
+        url: state.voice_service.get_url().to_string(),
+    }))
 }

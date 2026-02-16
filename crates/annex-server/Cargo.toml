@@ -16,6 +16,7 @@ annex-channels = { workspace = true }
 annex-db = { workspace = true }
 annex-identity = { workspace = true }
 annex-vrp = { workspace = true }
+annex-voice = { workspace = true }
 rusqlite = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
@@ -34,6 +35,7 @@ annex-graph = { version = "0.0.1", path = "../annex-graph" }
 tokio-stream = { version = "0.1.18", features = ["sync"] }
 
 [dev-dependencies]
+annex-voice = { workspace = true }
 tokio-tungstenite = "0.28"
 futures-util = "0.3"
 reqwest = { version = "0.12", features = ["json"] }

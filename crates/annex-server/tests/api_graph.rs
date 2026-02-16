@@ -44,6 +44,9 @@ fn setup_test_app() -> (axum::Router, annex_db::DbPool, tempfile::NamedTempFile)
         rate_limiter: middleware::RateLimiter::new(),
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
         presence_tx: tokio::sync::broadcast::channel(100).0,
+        voice_service: Arc::new(annex_voice::VoiceService::new(
+            annex_voice::LiveKitConfig::default(),
+        )),
     };
 
     (app(state), pool, temp_file)

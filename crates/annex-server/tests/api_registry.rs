@@ -37,6 +37,9 @@ async fn test_register_identity_success() {
         rate_limiter: RateLimiter::new(),
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
         presence_tx: tokio::sync::broadcast::channel(100).0,
+        voice_service: Arc::new(annex_voice::VoiceService::new(
+            annex_voice::LiveKitConfig::default(),
+        )),
     };
     let app = app(state);
 
@@ -91,6 +94,9 @@ async fn test_register_duplicate_failure() {
         rate_limiter: RateLimiter::new(),
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
         presence_tx: tokio::sync::broadcast::channel(100).0,
+        voice_service: Arc::new(annex_voice::VoiceService::new(
+            annex_voice::LiveKitConfig::default(),
+        )),
     };
     let app = app(state);
 
@@ -146,6 +152,9 @@ async fn test_register_invalid_role_failure() {
         rate_limiter: RateLimiter::new(),
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
         presence_tx: tokio::sync::broadcast::channel(100).0,
+        voice_service: Arc::new(annex_voice::VoiceService::new(
+            annex_voice::LiveKitConfig::default(),
+        )),
     };
     let app = app(state);
 
