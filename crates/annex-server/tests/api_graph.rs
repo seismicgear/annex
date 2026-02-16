@@ -42,7 +42,7 @@ fn setup_test_app() -> (axum::Router, annex_db::DbPool, tempfile::NamedTempFile)
         server_id: 1,
         policy: Arc::new(RwLock::new(ServerPolicy::default())),
         rate_limiter: middleware::RateLimiter::new(),
-        connection_manager: annex_server::api_ws::ConnectionManager::new(),
+        connection_manager: annex_server::api_ws::ConnectionManager::new(), presence_tx: tokio::sync::broadcast::channel(100).0,
     };
 
     (app(state), pool, temp_file)

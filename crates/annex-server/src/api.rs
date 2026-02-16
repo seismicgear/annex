@@ -9,6 +9,7 @@ use annex_identity::{
     zk::{parse_fr_from_hex, parse_proof, parse_public_signals, verify_proof},
     Capabilities, PlatformIdentity, RoleCode, VrpRoleEntry, VrpTopic,
 };
+use annex_types::PresenceEvent;
 use axum::{
     extract::{Extension, Json, Path},
     http::StatusCode,
@@ -431,6 +432,14 @@ pub async fn verify_membership_handler(
         ensure_graph_node(&conn, server_id, &pseudonym_id, node_type).map_err(|e| {
             ApiError::InternalServerError(format!("failed to ensure graph node: {}", e))
         })?;
+
+        // 13. Emit Presence Event
+        let event = PresenceEvent::NodeUpdated {
+            pseudonym_id: pseudonym_id.clone(),
+            active: true,
+        };
+        // We ignore the error if there are no active subscribers
+        let _ = state.presence_tx.send(event);
 
         Ok(pseudonym_id)
     })
