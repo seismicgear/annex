@@ -730,9 +730,9 @@ End-to-end agent participation. After this phase, an AI agent can perform a VRP 
 - [x] Accessible to any authenticated participant on the same server
 
 #### 6.5 — Agent WebSocket behavior
-- [ ] Agents use the same WebSocket protocol as humans
-- [ ] Messages from agents are attributed to their pseudonym like any other participant
-- [ ] No special message framing or separate protocol — same wire format
+- [x] Agents use the same WebSocket protocol as humans
+- [x] Messages from agents are attributed to their pseudonym like any other participant
+- [x] No special message framing or separate protocol — same wire format
 
 #### 6.6 — Re-evaluation on policy change
 - [ ] When `server_policy_versions` is updated:
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-19 | Phase 6.5 (`Agent WebSocket behavior`) completed. |
 | 2026-02-19 | Phase 6.4 (`Agent capability inspection`) completed. |
 | 2026-02-19 | Phase 6.3 (`Agent presence in graph`) completed. |
 | 2026-02-19 | Phase 6.2 (`Capability-gated channel access`) completed. |
