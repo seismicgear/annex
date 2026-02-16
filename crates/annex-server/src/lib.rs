@@ -111,7 +111,10 @@ pub fn app(state: AppState) -> Router {
             "/api/graph/profile/{targetPseudonym}",
             get(api_graph::get_profile_handler),
         )
-        .route("/events/presence", get(api_sse::get_presence_stream_handler))
+        .route(
+            "/events/presence",
+            get(api_sse::get_presence_stream_handler),
+        )
         .merge(protected_routes)
         .route("/ws", get(api_ws::ws_handler))
         .layer(axum::middleware::from_fn(middleware::rate_limit_middleware))

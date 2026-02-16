@@ -182,15 +182,26 @@ pub use policy::ServerPolicy;
 #[serde(tag = "type", content = "payload")]
 pub enum PresenceEvent {
     /// A new node has been added to the graph.
-    NodeAdded { pseudonym_id: String, node_type: NodeType },
+    NodeAdded {
+        pseudonym_id: String,
+        node_type: NodeType,
+    },
     /// An existing node has been updated (e.g., active status change).
     NodeUpdated { pseudonym_id: String, active: bool },
     /// A node has been pruned due to inactivity.
     NodePruned { pseudonym_id: String },
     /// A new edge has been created.
-    EdgeAdded { from_node: String, to_node: String, kind: EdgeKind },
+    EdgeAdded {
+        from_node: String,
+        to_node: String,
+        kind: EdgeKind,
+    },
     /// An edge has been removed.
-    EdgeRemoved { from_node: String, to_node: String, kind: EdgeKind },
+    EdgeRemoved {
+        from_node: String,
+        to_node: String,
+        kind: EdgeKind,
+    },
 }
 
 #[cfg(test)]

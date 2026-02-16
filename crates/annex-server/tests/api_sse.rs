@@ -1,7 +1,7 @@
 use annex_db::{create_pool, run_migrations, DbRuntimeSettings};
 use annex_identity::zk::{G1Affine, G2Affine, VerifyingKey};
 use annex_server::{app, middleware, AppState};
-use annex_types::{ServerPolicy};
+use annex_types::ServerPolicy;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::net::TcpListener;
@@ -79,7 +79,11 @@ async fn test_sse_presence_stream() {
 
     // 6. Receive Event
     // We expect "data: {...}\n\n"
-    let chunk = response.chunk().await.expect("Failed to read chunk").expect("Stream closed");
+    let chunk = response
+        .chunk()
+        .await
+        .expect("Failed to read chunk")
+        .expect("Stream closed");
     let chunk_str = String::from_utf8(chunk.to_vec()).unwrap();
 
     println!("Received chunk: {}", chunk_str);

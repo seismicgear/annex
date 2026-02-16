@@ -35,7 +35,8 @@ async fn test_register_identity_success() {
         server_id: 1,
         policy: Arc::new(RwLock::new(ServerPolicy::default())),
         rate_limiter: RateLimiter::new(),
-        connection_manager: annex_server::api_ws::ConnectionManager::new(), presence_tx: tokio::sync::broadcast::channel(100).0,
+        connection_manager: annex_server::api_ws::ConnectionManager::new(),
+        presence_tx: tokio::sync::broadcast::channel(100).0,
     };
     let app = app(state);
 
@@ -88,7 +89,8 @@ async fn test_register_duplicate_failure() {
         server_id: 1,
         policy: Arc::new(RwLock::new(ServerPolicy::default())),
         rate_limiter: RateLimiter::new(),
-        connection_manager: annex_server::api_ws::ConnectionManager::new(), presence_tx: tokio::sync::broadcast::channel(100).0,
+        connection_manager: annex_server::api_ws::ConnectionManager::new(),
+        presence_tx: tokio::sync::broadcast::channel(100).0,
     };
     let app = app(state);
 
@@ -142,7 +144,8 @@ async fn test_register_invalid_role_failure() {
         server_id: 1,
         policy: Arc::new(RwLock::new(ServerPolicy::default())),
         rate_limiter: RateLimiter::new(),
-        connection_manager: annex_server::api_ws::ConnectionManager::new(), presence_tx: tokio::sync::broadcast::channel(100).0,
+        connection_manager: annex_server::api_ws::ConnectionManager::new(),
+        presence_tx: tokio::sync::broadcast::channel(100).0,
     };
     let app = app(state);
 

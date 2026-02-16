@@ -75,7 +75,8 @@ async fn test_ws_lifecycle() {
         server_id: 1,
         policy: Arc::new(RwLock::new(ServerPolicy::default())),
         rate_limiter: RateLimiter::new(),
-        connection_manager: api_ws::ConnectionManager::new(), presence_tx: tokio::sync::broadcast::channel(100).0,
+        connection_manager: api_ws::ConnectionManager::new(),
+        presence_tx: tokio::sync::broadcast::channel(100).0,
     };
 
     // 3. Start Server
