@@ -47,6 +47,8 @@ fn setup_test_app() -> (axum::Router, annex_db::DbPool, tempfile::NamedTempFile)
         voice_service: Arc::new(annex_voice::VoiceService::new(
             annex_voice::LiveKitConfig::default(),
         )),
+        tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper")),
+        voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
     };
 
     (app(state), pool, temp_file)

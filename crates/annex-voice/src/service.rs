@@ -49,6 +49,8 @@ impl VoiceService {
             .with_grants(VideoGrants {
                 room_join: true,
                 room: room_name.to_string(),
+                can_publish: true,
+                can_subscribe: true,
                 ..Default::default()
             })
             .with_ttl(Duration::from_secs(60 * 60)); // 1 hour TTL

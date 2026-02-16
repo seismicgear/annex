@@ -62,6 +62,8 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool) {
         voice_service: Arc::new(annex_voice::VoiceService::new(
             annex_voice::LiveKitConfig::default(),
         )),
+        tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper")),
+        voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
     };
 
     (app(state), pool)
@@ -286,6 +288,8 @@ async fn test_ws_subscription_enforcement() {
         voice_service: Arc::new(annex_voice::VoiceService::new(
             annex_voice::LiveKitConfig::default(),
         )),
+        tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper")),
+        voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
     };
 
     let app = app(state);
@@ -422,6 +426,8 @@ async fn test_ws_message_enforcement() {
         voice_service: Arc::new(annex_voice::VoiceService::new(
             annex_voice::LiveKitConfig::default(),
         )),
+        tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper")),
+        voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
     };
 
     let app = app(state);

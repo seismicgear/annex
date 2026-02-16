@@ -16,3 +16,4 @@ tokio = { workspace = true, features = ["process", "io-util", "sync"] }
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
 tempfile = { workspace = true }
+jsonwebtoken = "9.3"

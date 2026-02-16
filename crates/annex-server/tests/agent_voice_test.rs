@@ -134,7 +134,7 @@ async fn test_agent_voice_intent_pipeline() {
     match msg {
         Ok(Some(Ok(WsMessage::Text(text)))) => {
             println!("Received: {}", text);
-            let v: Value = serde_json::from_str(&text.as_str()).unwrap();
+            let v: Value = serde_json::from_str(text.as_str()).unwrap();
 
             // Should be an error message because TTS failed
             assert_eq!(v.get("type").unwrap().as_str().unwrap(), "error");

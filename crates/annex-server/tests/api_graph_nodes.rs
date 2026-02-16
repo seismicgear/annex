@@ -54,6 +54,8 @@ async fn test_graph_node_creation_on_verification() {
         voice_service: Arc::new(annex_voice::VoiceService::new(
             annex_voice::LiveKitConfig::default(),
         )),
+        tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper")),
+        voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
     };
     let app = app(state);
     let addr = SocketAddr::from(([127, 0, 0, 1], 12345));

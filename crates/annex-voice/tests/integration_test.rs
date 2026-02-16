@@ -52,3 +52,45 @@ async fn test_create_room() {
         }
     }
 }
+
+#[tokio::test]
+async fn test_token_permissions() {
+    use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
+    use serde::Deserialize;
+
+    let config = LiveKitConfig::new(DEFAULT_URL, DEFAULT_KEY, DEFAULT_SECRET);
+    let service = VoiceService::new(config);
+
+    let token = service
+        .generate_join_token("perm-room", "user-perm", "Perm User")
+        .expect("Failed to generate token");
+
+    #[derive(Deserialize)]
+    struct Claims {
+        video: VideoClaims,
+    }
+
+    #[derive(Deserialize)]
+    struct VideoClaims {
+        #[serde(rename = "canPublish")]
+        can_publish: bool,
+        #[serde(rename = "canSubscribe")]
+        can_subscribe: bool,
+        #[serde(rename = "roomJoin")]
+        room_join: bool,
+    }
+
+    let validation = Validation::new(Algorithm::HS256);
+    let key = DecodingKey::from_secret(DEFAULT_SECRET.as_bytes());
+    let token_data = decode::<Claims>(&token, &key, &validation).expect("Failed to decode token");
+
+    assert!(
+        token_data.claims.video.can_publish,
+        "canPublish should be true"
+    );
+    assert!(
+        token_data.claims.video.can_subscribe,
+        "canSubscribe should be true"
+    );
+    assert!(token_data.claims.video.room_join, "roomJoin should be true");
+}

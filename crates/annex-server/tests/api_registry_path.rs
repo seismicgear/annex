@@ -45,6 +45,8 @@ async fn test_get_path_success() {
         voice_service: Arc::new(annex_voice::VoiceService::new(
             annex_voice::LiveKitConfig::default(),
         )),
+        tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper")),
+        voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
     };
     let app = app(state);
 
@@ -118,6 +120,8 @@ async fn test_get_path_not_found() {
         voice_service: Arc::new(annex_voice::VoiceService::new(
             annex_voice::LiveKitConfig::default(),
         )),
+        tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper")),
+        voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
     };
     let app = app(state);
 

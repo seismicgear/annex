@@ -61,6 +61,8 @@ async fn test_recalculate_agent_alignments() {
         voice_service: Arc::new(annex_voice::VoiceService::new(
             annex_voice::LiveKitConfig::default(),
         )),
+        tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper")),
+        voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
     });
 
     // 2. Register an Agent (Aligned)
