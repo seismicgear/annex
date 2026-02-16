@@ -157,6 +157,23 @@ pub struct Capabilities {
     pub can_bridge: bool,
 }
 
+/// Visibility levels for the presence graph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VisibilityLevel {
+    /// The viewer is the participant themselves.
+    Self_,
+    /// Viewer is 1 degree away (direct connection).
+    Degree1,
+    /// Viewer is 2 degrees away.
+    Degree2,
+    /// Viewer is 3 degrees away.
+    Degree3,
+    /// Viewer is further away but on the same server (aggregate stats only).
+    AggregateOnly,
+    /// No visibility.
+    None,
+}
+
 mod policy;
 pub use policy::ServerPolicy;
 

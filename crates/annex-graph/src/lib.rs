@@ -12,8 +12,8 @@
 //!
 //! The full implementation of this crate is Phase 5 of the roadmap.
 
-use annex_types::{EdgeKind, NodeType, RoleCode};
-use rusqlite::{params, Connection};
+use annex_types::{EdgeKind, NodeType, RoleCode, VisibilityLevel};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashSet, VecDeque};
 use thiserror::Error;
@@ -27,6 +27,24 @@ pub enum GraphError {
     SerializationError(#[from] serde_json::Error),
     #[error("node already exists: {0}")]
     NodeAlreadyExists(String),
+    #[error("node not found: {0}")]
+    NodeNotFound(String),
+}
+
+/// A filtered view of a graph node, respecting visibility rules.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphProfile {
+    pub pseudonym_id: String,
+    pub node_type: NodeType,
+    pub active: bool,
+    pub created_at: String,
+    /// Only visible if visibility >= Degree1 (or Self).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_seen_at: Option<String>,
+    /// Only visible if visibility == Self or specific permission (not implemented yet, so Self only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata_json: Option<String>,
+    pub visibility: VisibilityLevel,
 }
 
 /// A node in the presence graph, representing a participant.
@@ -251,6 +269,103 @@ pub fn get_edges(
     }
 
     Ok(edges)
+}
+
+/// Retrieves a graph node by pseudonym.
+pub fn get_graph_node(
+    conn: &Connection,
+    server_id: i64,
+    pseudonym_id: &str,
+) -> Result<Option<GraphNode>, GraphError> {
+    conn.query_row(
+        "SELECT id, server_id, pseudonym_id, node_type, active, last_seen_at, metadata_json, created_at
+         FROM graph_nodes
+         WHERE server_id = ?1 AND pseudonym_id = ?2",
+        params![server_id, pseudonym_id],
+        |row| {
+            let node_type_str: String = row.get(3)?;
+            let node_type = match node_type_str.as_str() {
+                "HUMAN" => NodeType::Human,
+                "AI_AGENT" => NodeType::AiAgent,
+                "COLLECTIVE" => NodeType::Collective,
+                "BRIDGE" => NodeType::Bridge,
+                "SERVICE" => NodeType::Service,
+                _ => NodeType::Human,
+            };
+
+            Ok(GraphNode {
+                id: row.get(0)?,
+                server_id: row.get(1)?,
+                pseudonym_id: row.get(2)?,
+                node_type,
+                active: row.get(4)?,
+                last_seen_at: row.get(5)?,
+                metadata_json: row.get(6)?,
+                created_at: row.get(7)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(GraphError::DatabaseError)
+}
+
+/// Calculates the visibility level of a target node from the perspective of a viewer.
+pub fn get_node_visibility(
+    conn: &Connection,
+    server_id: i64,
+    viewer: &str,
+    target: &str,
+) -> Result<VisibilityLevel, GraphError> {
+    if viewer == target {
+        return Ok(VisibilityLevel::Self_);
+    }
+
+    // Max depth 3 for visibility calculation
+    let path = find_path_bfs(conn, server_id, viewer, target, 3)?;
+
+    if !path.found {
+        return Ok(VisibilityLevel::None);
+    }
+
+    match path.length {
+        0 => Ok(VisibilityLevel::Self_), // Should be covered by viewer == target, but just in case
+        1 => Ok(VisibilityLevel::Degree1),
+        2 => Ok(VisibilityLevel::Degree2),
+        3 => Ok(VisibilityLevel::Degree3),
+        _ => Ok(VisibilityLevel::None), // Should not happen given max_depth=3
+    }
+}
+
+/// Retrieves the profile of a target node visible to the viewer.
+pub fn get_visible_profile(
+    conn: &Connection,
+    server_id: i64,
+    viewer: &str,
+    target: &str,
+) -> Result<GraphProfile, GraphError> {
+    let node = get_graph_node(conn, server_id, target)?
+        .ok_or_else(|| GraphError::NodeNotFound(target.to_string()))?;
+
+    let visibility = get_node_visibility(conn, server_id, viewer, target)?;
+
+    let (last_seen_at, metadata_json) = match visibility {
+        VisibilityLevel::Self_ => (node.last_seen_at, node.metadata_json),
+        VisibilityLevel::Degree1 => (node.last_seen_at, None), // Hide metadata for degree 1
+        VisibilityLevel::Degree2 => (None, None),              // Hide last_seen and metadata
+        VisibilityLevel::Degree3 => (None, None),              // Hide last_seen and metadata
+        VisibilityLevel::AggregateOnly => (None, None),
+        VisibilityLevel::None => (None, None),
+    };
+
+    Ok(GraphProfile {
+        pseudonym_id: node.pseudonym_id,
+        node_type: node.node_type,
+        active: node.active,
+        created_at: node.created_at,
+        last_seen_at,
+        metadata_json,
+        visibility,
+    })
 }
 
 /// Finds the shortest path between two nodes using BFS.
