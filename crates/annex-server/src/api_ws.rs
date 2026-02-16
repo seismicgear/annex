@@ -278,9 +278,29 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, pseudonym: Strin
                         content,
                         reply_to,
                     } => {
-                        // 1. Validate subscription? For now, assume if they send to it, they can (Phase 4.4 will enforce caps)
-                        // But strictly, we should check if they are allowed.
-                        // For 4.3, we'll just persist and broadcast.
+                        // 1. Validate membership (enforcing Phase 4.4 requirements)
+                        let allowed = {
+                            let pool = state.pool.clone();
+                            let cid = channel_id.clone();
+                            let pid = pseudonym.clone();
+                            tokio::task::spawn_blocking(move || {
+                                let conn = pool.get().map_err(|_| "pool error")?;
+                                is_member(&conn, &cid, &pid).map_err(|_| "db error")
+                            })
+                            .await
+                            .unwrap_or(Ok(false))
+                            .unwrap_or(false)
+                        };
+
+                        if !allowed {
+                            let _ = tx.send(
+                                serde_json::to_string(&OutgoingMessage::Error {
+                                    message: format!("Not a member of channel {}", channel_id),
+                                })
+                                .unwrap(),
+                            );
+                            continue;
+                        }
 
                         let message_id = Uuid::new_v4().to_string();
                         let params = CreateMessageParams {

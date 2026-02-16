@@ -575,9 +575,9 @@ Working text chat. After this phase, authenticated users can create channels, jo
 - [x] Handle disconnection cleanup
 
 #### 4.4 — Channel join/leave
-- [ ] `POST /api/channels/:channelId/join` — validates capability flags, creates membership record
-- [ ] `POST /api/channels/:channelId/leave` — removes membership, unsubscribes WebSocket
-- [ ] WebSocket subscription management tied to channel membership
+- [x] `POST /api/channels/:channelId/join` — validates capability flags, creates membership record
+- [x] `POST /api/channels/:channelId/leave` — removes membership, unsubscribes WebSocket
+- [x] WebSocket subscription management tied to channel membership
 
 #### 4.5 — Message history
 - [ ] `GET /api/channels/:channelId/messages?before=...&limit=...` — paginated message retrieval
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-17 | Phase 4.4 (`Channel join/leave`) completed. |
 | 2026-02-16 | Phase 4.3 (`WebSocket infrastructure`) completed. |
 | 2026-02-16 | Phase 4.2 (`Message model`) completed. |
 | 2026-02-16 | Phase 4.1 (`Channel model`) completed. |
