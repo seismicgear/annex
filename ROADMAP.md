@@ -585,9 +585,9 @@ Working text chat. After this phase, authenticated users can create channels, jo
 - [x] Respects authentication (only members can read)
 
 #### 4.6 — Retention enforcement
-- [ ] Background task: periodically scan `messages` where `expires_at < now()`, hard delete
-- [ ] Configurable scan interval
-- [ ] Test: insert message with 1-second retention → wait → verify deletion
+- [x] Background task: periodically scan `messages` where `expires_at < now()`, hard delete
+- [x] Configurable scan interval
+- [x] Test: insert message with 1-second retention → wait → verify deletion
 
 #### 4.7 — Channel REST API
 - [ ] `POST /api/channels` — create channel (requires `can_moderate` or operator)
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-18 | Phase 4.6 (`Retention enforcement`) completed. |
 | 2026-02-17 | Phase 4.5 (`Message history`) completed. |
 | 2026-02-17 | Phase 4.4 (`Channel join/leave`) completed. |
 | 2026-02-16 | Phase 4.3 (`WebSocket infrastructure`) completed. |

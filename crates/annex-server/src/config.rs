@@ -31,6 +31,10 @@ pub struct ServerConfig {
     /// Port to listen on.
     #[serde(default = "default_port")]
     pub port: u16,
+
+    /// Interval in seconds for the message retention background task.
+    #[serde(default = "default_retention_check_interval_seconds")]
+    pub retention_check_interval_seconds: u64,
 }
 
 /// Database configuration.
@@ -69,6 +73,10 @@ fn default_port() -> u16 {
     3000
 }
 
+fn default_retention_check_interval_seconds() -> u64 {
+    3600
+}
+
 fn default_db_path() -> String {
     "annex.db".to_string()
 }
@@ -90,6 +98,7 @@ impl Default for ServerConfig {
         Self {
             host: default_host(),
             port: default_port(),
+            retention_check_interval_seconds: default_retention_check_interval_seconds(),
         }
     }
 }
@@ -240,6 +249,9 @@ pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
     }
     if let Some(port) = parse_env_var("ANNEX_PORT")? {
         config.server.port = port;
+    }
+    if let Some(interval) = parse_env_var("ANNEX_RETENTION_CHECK_INTERVAL_SECONDS")? {
+        config.server.retention_check_interval_seconds = interval;
     }
     if let Ok(db_path) = std::env::var("ANNEX_DB_PATH") {
         config.database.path = db_path;

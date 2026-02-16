@@ -99,6 +99,12 @@ async fn main() -> Result<(), StartupError> {
         }
     }
 
+    // Start background retention task
+    tokio::spawn(annex_server::retention::start_retention_task(
+        pool.clone(),
+        config.server.retention_check_interval_seconds,
+    ));
+
     // Initialize Merkle Tree
     // Get a dedicated connection for tree initialization
     let tree = {
