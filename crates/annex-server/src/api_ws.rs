@@ -285,12 +285,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                 .connection_manager
                                 .subscribe(channel_id, pseudonym.clone())
                                 .await;
-                        } else {
-                            if let Ok(json) = serde_json::to_string(&OutgoingMessage::Error {
-                                message: format!("Not a member of channel {}", channel_id),
-                            }) {
-                                let _ = tx.send(json);
-                            }
+                        } else if let Ok(json) = serde_json::to_string(&OutgoingMessage::Error {
+                            message: format!("Not a member of channel {}", channel_id),
+                        }) {
+                            let _ = tx.send(json);
                         }
                     }
                     IncomingMessage::Unsubscribe { channel_id } => {
