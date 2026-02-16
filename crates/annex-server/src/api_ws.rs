@@ -4,9 +4,12 @@ use crate::AppState;
 use annex_channels::{create_message, CreateMessageParams, Message};
 use annex_identity::get_platform_identity;
 use axum::{
-    extract::{Query, Extension, WebSocketUpgrade, ws::{WebSocket, Message as AxumMessage}},
-    response::IntoResponse,
+    extract::{
+        ws::{Message as AxumMessage, WebSocket},
+        Extension, Query, WebSocketUpgrade,
+    },
     http::StatusCode,
+    response::IntoResponse,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -57,11 +60,14 @@ pub enum OutgoingMessage {
     Error { message: String },
 }
 
+/// Type alias for session map to satisfy clippy complexity checks.
+type SessionMap = HashMap<String, (Uuid, mpsc::UnboundedSender<String>)>;
+
 /// Manages active WebSocket connections and subscriptions.
 #[derive(Clone, Default)]
 pub struct ConnectionManager {
     /// Active sessions: pseudonym -> (session_id, sender).
-    sessions: Arc<RwLock<HashMap<String, (Uuid, mpsc::UnboundedSender<String>)>>>,
+    sessions: Arc<RwLock<SessionMap>>,
     /// Subscriptions: channel_id -> set of pseudonyms.
     channel_subscriptions: Arc<RwLock<HashMap<String, HashSet<String>>>>,
     /// Reverse mapping: pseudonym -> set of channel_ids.
@@ -79,9 +85,16 @@ impl ConnectionManager {
 
     /// Registers a new session for a pseudonym.
     /// Returns the unique session ID.
-    pub async fn add_session(&self, pseudonym: String, sender: mpsc::UnboundedSender<String>) -> Uuid {
+    pub async fn add_session(
+        &self,
+        pseudonym: String,
+        sender: mpsc::UnboundedSender<String>,
+    ) -> Uuid {
         let session_id = Uuid::new_v4();
-        self.sessions.write().await.insert(pseudonym, (session_id, sender));
+        self.sessions
+            .write()
+            .await
+            .insert(pseudonym, (session_id, sender));
         session_id
     }
 
@@ -121,7 +134,10 @@ impl ConnectionManager {
     /// Subscribes a pseudonym to a channel.
     pub async fn subscribe(&self, channel_id: String, pseudonym: String) {
         let mut chan_subs = self.channel_subscriptions.write().await;
-        chan_subs.entry(channel_id.clone()).or_default().insert(pseudonym.clone());
+        chan_subs
+            .entry(channel_id.clone())
+            .or_default()
+            .insert(pseudonym.clone());
 
         let mut user_subs = self.user_subscriptions.write().await;
         user_subs.entry(pseudonym).or_default().insert(channel_id);
@@ -167,18 +183,23 @@ pub async fn ws_handler(
     Query(params): Query<WsConnectParams>,
 ) -> impl IntoResponse {
     // 1. Authenticate
+    // We do a blocking check against the DB.
     let server_id = state.server_id;
     let pseudonym = params.pseudonym.clone();
 
     let state_clone = state.clone();
     let auth_result = tokio::task::spawn_blocking(move || {
-        let conn = state_clone.pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let conn = state_clone
+            .pool
+            .get()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         match get_platform_identity(&conn, server_id, &pseudonym) {
             Ok(identity) if identity.active => Ok(identity),
-            Ok(_) => Err(StatusCode::FORBIDDEN),
+            Ok(_) => Err(StatusCode::FORBIDDEN), // Inactive
             Err(_) => Err(StatusCode::UNAUTHORIZED),
         }
-    }).await;
+    })
+    .await;
 
     match auth_result {
         Ok(Ok(_identity)) => {
@@ -198,7 +219,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, pseudonym: Strin
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
 
     // Register session
-    let session_id = state.connection_manager.add_session(pseudonym.clone(), tx).await;
+    let session_id = state
+        .connection_manager
+        .add_session(pseudonym.clone(), tx)
+        .await;
 
     // Spawn a task to forward messages from rx to the websocket sender
     let send_task = tokio::spawn(async move {
@@ -215,12 +239,26 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, pseudonym: Strin
             if let Ok(incoming) = serde_json::from_str::<IncomingMessage>(&text.to_string()) {
                 match incoming {
                     IncomingMessage::Subscribe { channel_id } => {
-                        state.connection_manager.subscribe(channel_id, pseudonym.clone()).await;
+                        state
+                            .connection_manager
+                            .subscribe(channel_id, pseudonym.clone())
+                            .await;
                     }
                     IncomingMessage::Unsubscribe { channel_id } => {
-                        state.connection_manager.unsubscribe(&channel_id, &pseudonym).await;
+                        state
+                            .connection_manager
+                            .unsubscribe(&channel_id, &pseudonym)
+                            .await;
                     }
-                    IncomingMessage::Message { channel_id, content, reply_to } => {
+                    IncomingMessage::Message {
+                        channel_id,
+                        content,
+                        reply_to,
+                    } => {
+                        // 1. Validate subscription? For now, assume if they send to it, they can (Phase 4.4 will enforce caps)
+                        // But strictly, we should check if they are allowed.
+                        // For 4.3, we'll just persist and broadcast.
+
                         let message_id = Uuid::new_v4().to_string();
                         let params = CreateMessageParams {
                             channel_id: channel_id.clone(),
@@ -237,18 +275,23 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, pseudonym: Strin
                         let res = tokio::task::spawn_blocking(move || {
                             let conn = state_clone.pool.get().map_err(|e| e.to_string())?;
                             create_message(&conn, &params).map_err(|e| e.to_string())
-                        }).await;
+                        })
+                        .await;
 
                         match res {
                             Ok(Ok(message)) => {
                                 // Broadcast
                                 let out = OutgoingMessage::Message(message);
                                 if let Ok(json) = serde_json::to_string(&out) {
-                                    state.connection_manager.broadcast(&channel_id_clone, json).await;
+                                    state
+                                        .connection_manager
+                                        .broadcast(&channel_id_clone, json)
+                                        .await;
                                 }
                             }
                             Ok(Err(e)) => {
                                 tracing::error!("Failed to persist message: {}", e);
+                                // Ideally send error back to user
                             }
                             Err(e) => {
                                 tracing::error!("Task join error: {}", e);
@@ -260,11 +303,14 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, pseudonym: Strin
                 tracing::warn!("Failed to parse incoming WebSocket message");
             }
         } else if let AxumMessage::Close(_) = msg {
-             break;
+            break;
         }
     }
 
     // Cleanup with session_id check
-    state.connection_manager.remove_session(&pseudonym, session_id).await;
+    state
+        .connection_manager
+        .remove_session(&pseudonym, session_id)
+        .await;
     send_task.abort();
 }

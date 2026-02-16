@@ -1,15 +1,15 @@
-use annex_channels::{create_channel, CreateChannelParams, list_messages};
-use annex_server::{app, AppState, api_ws};
-use annex_server::middleware::RateLimiter;
-use annex_types::{ServerPolicy, AlignmentStatus, ChannelType, FederationScope};
+use annex_channels::{create_channel, list_messages, CreateChannelParams};
+use annex_db::run_migrations;
 use annex_identity::MerkleTree;
+use annex_server::middleware::RateLimiter;
+use annex_server::{api_ws, app, AppState};
+use annex_types::{AlignmentStatus, ChannelType, FederationScope, ServerPolicy};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::net::TcpListener;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-use annex_db::run_migrations;
 
 #[tokio::test]
 async fn test_ws_lifecycle() {
@@ -21,7 +21,11 @@ async fn test_ws_lifecycle() {
 
         let policy = ServerPolicy::default();
         let policy_json = serde_json::to_string(&policy).unwrap();
-        conn.execute("INSERT INTO servers (slug, label, policy_json) VALUES ('test', 'Test', ?1)", [policy_json]).unwrap();
+        conn.execute(
+            "INSERT INTO servers (slug, label, policy_json) VALUES ('test', 'Test', ?1)",
+            [policy_json],
+        )
+        .unwrap();
 
         // Create Identity
         let pseudo = "user-1".to_string();
@@ -53,10 +57,13 @@ async fn test_ws_lifecycle() {
     let vkey_path = "zk/keys/membership_vkey.json";
     let vkey_json = match std::fs::read_to_string(vkey_path) {
         Ok(s) => s,
-        Err(_) => std::fs::read_to_string(format!("../../{}", vkey_path)).expect("failed to read vkey"),
+        Err(_) => {
+            std::fs::read_to_string(format!("../../{}", vkey_path)).expect("failed to read vkey")
+        }
     };
 
-    let vkey = annex_identity::zk::parse_verification_key(&vkey_json).expect("failed to parse vkey");
+    let vkey =
+        annex_identity::zk::parse_verification_key(&vkey_json).expect("failed to parse vkey");
 
     let state = AppState {
         pool: pool.clone(),
@@ -74,7 +81,12 @@ async fn test_ws_lifecycle() {
     let addr = listener.local_addr().unwrap();
 
     tokio::spawn(async move {
-        axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
     });
 
     // 4. Connect WS
@@ -86,7 +98,10 @@ async fn test_ws_lifecycle() {
         "type": "subscribe",
         "channelId": "chan-1"
     });
-    ws_stream.send(Message::Text(subscribe_msg.to_string().into())).await.expect("failed to send subscribe");
+    ws_stream
+        .send(Message::Text(subscribe_msg.to_string().into()))
+        .await
+        .expect("failed to send subscribe");
 
     // Wait a bit for subscription to process
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -99,36 +114,40 @@ async fn test_ws_lifecycle() {
         "content": content,
         "replyTo": null
     });
-    ws_stream.send(Message::Text(msg.to_string().into())).await.expect("failed to send message");
+    ws_stream
+        .send(Message::Text(msg.to_string().into()))
+        .await
+        .expect("failed to send message");
 
     // 7. Receive Broadcast
     // We expect the message back.
     if let Some(Ok(msg)) = ws_stream.next().await {
         if let Message::Text(text) = msg {
-            let received: serde_json::Value = serde_json::from_str(&text).expect("failed to parse json");
+            let received: serde_json::Value =
+                serde_json::from_str(&text).expect("failed to parse json");
             // Check if it's the message we sent (echoed back due to broadcast)
             if received["type"] == "message" {
-                 // With serde(tag="type"), fields are flattened at top level for newtype variant holding struct
-                 // OR it might be wrapped if it can't flatten?
-                 // Let's assume flattening.
-                 if !received["content"].is_null() {
-                     assert_eq!(received["content"], content);
-                     assert_eq!(received["sender_pseudonym"], "user-1");
-                 } else {
-                     // Maybe it IS wrapped?
-                     // Let's debug print
-                     println!("Received JSON: {}", received);
-                     // If it's wrapped in "message" key despite my assumption:
-                     if !received["message"].is_null() {
-                         assert_eq!(received["message"]["content"], content);
-                         assert_eq!(received["message"]["sender_pseudonym"], "user-1");
-                     } else {
-                         // Fallback to error
-                         panic!("Missing content or message field in: {}", received);
-                     }
-                 }
+                // With serde(tag="type"), fields are flattened at top level for newtype variant holding struct
+                // OR it might be wrapped if it can't flatten?
+                // Let's assume flattening.
+                if !received["content"].is_null() {
+                    assert_eq!(received["content"], content);
+                    assert_eq!(received["sender_pseudonym"], "user-1");
+                } else {
+                    // Maybe it IS wrapped?
+                    // Let's debug print
+                    println!("Received JSON: {}", received);
+                    // If it's wrapped in "message" key despite my assumption:
+                    if !received["message"].is_null() {
+                        assert_eq!(received["message"]["content"], content);
+                        assert_eq!(received["message"]["sender_pseudonym"], "user-1");
+                    } else {
+                        // Fallback to error
+                        panic!("Missing content or message field in: {}", received);
+                    }
+                }
             } else {
-                 panic!("unexpected message type: {}", received["type"]);
+                panic!("unexpected message type: {}", received["type"]);
             }
         } else {
             panic!("expected text message");
