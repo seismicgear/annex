@@ -17,8 +17,8 @@ Phase 0: Project Scaffold .............. COMPLETE
 Phase 1: Identity Plane ................ COMPLETE
 Phase 2: Server Core ................... COMPLETE
 Phase 3: VRP Trust Negotiation ......... COMPLETE
-Phase 4: Text Communication ............ IN PROGRESS
-Phase 5: Presence Graph ................ NOT STARTED
+Phase 4: Text Communication ............ COMPLETE
+Phase 5: Presence Graph ................ IN PROGRESS
 Phase 6: Agent Protocol ................ NOT STARTED
 Phase 7: Voice Infrastructure .......... NOT STARTED
 Phase 8: Federation .................... NOT STARTED
@@ -590,22 +590,22 @@ Working text chat. After this phase, authenticated users can create channels, jo
 - [x] Test: insert message with 1-second retention → wait → verify deletion
 
 #### 4.7 — Channel REST API
-- [ ] `POST /api/channels` — create channel (requires `can_moderate` or operator)
-- [ ] `GET /api/channels` — list channels on this server (filtered by membership/visibility)
-- [ ] `GET /api/channels/:channelId` — channel metadata
-- [ ] `DELETE /api/channels/:channelId` — delete channel (operator only)
+- [x] `POST /api/channels` — create channel (requires `can_moderate` or operator)
+- [x] `GET /api/channels` — list channels on this server (filtered by membership/visibility)
+- [x] `GET /api/channels/:channelId` — channel metadata
+- [x] `DELETE /api/channels/:channelId` — delete channel (operator only)
 
 ### Completion Criteria
 
 Phase 4 is **COMPLETE** when:
 
-- [ ] Users can create channels, join channels, send messages, and receive messages in real time
-- [ ] Messages persist to SQLite and are retrievable via history endpoint
-- [ ] Retention policies are enforced (messages are deleted when expired)
-- [ ] WebSocket connections handle authentication, subscription, broadcast, and disconnection
-- [ ] Channel capability requirements are enforced on join
-- [ ] All endpoints and WebSocket flows have integration tests
-- [ ] Message ordering is consistent under concurrent writers (tested)
+- [x] Users can create channels, join channels, send messages, and receive messages in real time
+- [x] Messages persist to SQLite and are retrievable via history endpoint
+- [x] Retention policies are enforced (messages are deleted when expired)
+- [x] WebSocket connections handle authentication, subscription, broadcast, and disconnection
+- [x] Channel capability requirements are enforced on join
+- [x] All endpoints and WebSocket flows have integration tests
+- [x] Message ordering is consistent under concurrent writers (tested)
 
 ---
 
@@ -1167,6 +1167,8 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-18 | Phase 4 `COMPLETE`. Phase 5 `IN PROGRESS`. |
+| 2026-02-18 | Phase 4.7 (`Channel REST API`) completed. |
 | 2026-02-18 | Phase 4.6 (`Retention enforcement`) completed. |
 | 2026-02-17 | Phase 4.5 (`Message history`) completed. |
 | 2026-02-17 | Phase 4.4 (`Channel join/leave`) completed. |

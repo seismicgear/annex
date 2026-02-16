@@ -1,6 +1,9 @@
 use crate::{middleware::IdentityContext, AppState};
-use annex_channels::{add_member, get_channel, is_member, list_messages, remove_member, Message};
-use annex_types::{AlignmentStatus, RoleCode};
+use annex_channels::{
+    add_member, create_channel, delete_channel, get_channel, is_member, list_channels,
+    list_messages, remove_member, Channel, CreateChannelParams, Message,
+};
+use annex_types::{AlignmentStatus, ChannelType, FederationScope, RoleCode};
 use axum::{
     extract::{Extension, Path, Query},
     http::StatusCode,
@@ -15,6 +18,127 @@ use std::sync::Arc;
 pub struct HistoryParams {
     pub before: Option<String>,
     pub limit: Option<u32>,
+}
+
+#[derive(Deserialize)]
+pub struct CreateChannelRequest {
+    pub channel_id: String,
+    pub name: String,
+    pub channel_type: ChannelType,
+    pub topic: Option<String>,
+    pub vrp_topic_binding: Option<String>,
+    pub required_capabilities_json: Option<String>,
+    pub agent_min_alignment: Option<AlignmentStatus>,
+    pub retention_days: Option<u32>,
+    pub federation_scope: FederationScope,
+}
+
+/// POST /api/channels
+pub async fn create_channel_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(IdentityContext(identity)): Extension<IdentityContext>,
+    Json(payload): Json<CreateChannelRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    if !identity.can_moderate {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let params = CreateChannelParams {
+        server_id: state.server_id,
+        channel_id: payload.channel_id,
+        name: payload.name,
+        channel_type: payload.channel_type,
+        topic: payload.topic,
+        vrp_topic_binding: payload.vrp_topic_binding,
+        required_capabilities_json: payload.required_capabilities_json,
+        agent_min_alignment: payload.agent_min_alignment,
+        retention_days: payload.retention_days,
+        federation_scope: payload.federation_scope,
+    };
+
+    tokio::task::spawn_blocking(move || {
+        let conn = state
+            .pool
+            .get()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        create_channel(&conn, &params).map_err(|e| {
+            // Handle unique constraint violation -> 409 Conflict
+            if let annex_channels::ChannelError::Database(rusqlite::Error::SqliteFailure(
+                error_code,
+                _,
+            )) = e
+            {
+                if error_code.code == rusqlite::ffi::ErrorCode::ConstraintViolation {
+                    return StatusCode::CONFLICT;
+                }
+            }
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+
+    Ok(Json(json!({"status": "created"})))
+}
+
+/// GET /api/channels
+pub async fn list_channels_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(IdentityContext(_identity)): Extension<IdentityContext>,
+) -> Result<Json<Vec<Channel>>, StatusCode> {
+    let channels = tokio::task::spawn_blocking(move || {
+        let conn = state
+            .pool
+            .get()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        list_channels(&conn, state.server_id).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+
+    Ok(Json(channels))
+}
+
+/// GET /api/channels/:channelId
+pub async fn get_channel_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(IdentityContext(_identity)): Extension<IdentityContext>,
+    Path(channel_id): Path<String>,
+) -> Result<Json<Channel>, StatusCode> {
+    let channel = tokio::task::spawn_blocking(move || {
+        let conn = state
+            .pool
+            .get()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        get_channel(&conn, &channel_id).map_err(|_| StatusCode::NOT_FOUND)
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+
+    Ok(Json(channel))
+}
+
+/// DELETE /api/channels/:channelId
+pub async fn delete_channel_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(IdentityContext(identity)): Extension<IdentityContext>,
+    Path(channel_id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    if !identity.can_moderate {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    tokio::task::spawn_blocking(move || {
+        let conn = state
+            .pool
+            .get()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        delete_channel(&conn, &channel_id).map_err(|_| StatusCode::NOT_FOUND)
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+
+    Ok(Json(json!({"status": "deleted"})))
 }
 
 /// GET /api/channels/:channelId/messages
