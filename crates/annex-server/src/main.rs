@@ -159,6 +159,11 @@ async fn main() -> Result<(), StartupError> {
     // TODO: Make these paths configurable via config.toml
     let tts_service = annex_voice::TtsService::new("assets/voices", "assets/piper/piper");
 
+    // Initialize STT Service
+    // TODO: Make these paths configurable via config.toml
+    let stt_service =
+        annex_voice::SttService::new("assets/models/ggml-base.en.bin", "assets/whisper/whisper");
+
     let state = AppState {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
@@ -170,6 +175,7 @@ async fn main() -> Result<(), StartupError> {
         presence_tx,
         voice_service: Arc::new(voice_service),
         tts_service: Arc::new(tts_service),
+        stt_service: Arc::new(stt_service),
         voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
     };
 

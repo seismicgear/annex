@@ -319,6 +319,71 @@ pub async fn join_channel_handler(
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
 
+    // 5. Connect Agent Voice Client if applicable
+    if identity.participant_type == RoleCode::AiAgent
+        && (channel.channel_type == ChannelType::Voice
+            || channel.channel_type == ChannelType::Hybrid)
+    {
+        let pseudonym = identity.pseudonym_id.clone();
+        let channel_id_clone = channel_id.clone();
+
+        // Check if session exists
+        let exists = {
+            let sessions = state
+                .voice_sessions
+                .read()
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            sessions.contains_key(&pseudonym)
+        };
+
+        if !exists {
+            let token = state
+                .voice_service
+                .generate_join_token(&channel_id_clone, &pseudonym, &pseudonym)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            let url = state.voice_service.get_url();
+
+            let client = annex_voice::AgentVoiceClient::connect(
+                url,
+                &token,
+                &channel_id_clone,
+                state.stt_service.clone(),
+            )
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to connect agent voice client: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+
+            let client = Arc::new(client);
+
+            // Subscribe to transcriptions
+            let mut rx = client.subscribe_transcriptions();
+            let cm = state.connection_manager.clone();
+            let p_clone = pseudonym.clone();
+
+            tokio::spawn(async move {
+                while let Ok(event) = rx.recv().await {
+                    let msg = crate::api_ws::OutgoingMessage::Transcription {
+                        channel_id: event.channel_id,
+                        speaker_pseudonym: event.speaker_pseudonym,
+                        text: event.text,
+                    };
+
+                    if let Ok(json) = serde_json::to_string(&msg) {
+                        cm.send(&p_clone, json).await;
+                    }
+                }
+            });
+
+            state
+                .voice_sessions
+                .write()
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+                .insert(pseudonym, client);
+        }
+    }
+
     Ok(Json(json!({"status": "joined"})))
 }
 

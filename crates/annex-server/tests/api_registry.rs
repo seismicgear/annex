@@ -41,6 +41,7 @@ async fn test_register_identity_success() {
             annex_voice::LiveKitConfig::default(),
         )),
         tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper")),
+        stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),
         voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
     };
     let app = app(state);
@@ -100,6 +101,7 @@ async fn test_register_duplicate_failure() {
             annex_voice::LiveKitConfig::default(),
         )),
         tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper")),
+        stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),
         voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
     };
     let app = app(state);
@@ -160,6 +162,7 @@ async fn test_register_invalid_role_failure() {
             annex_voice::LiveKitConfig::default(),
         )),
         tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper")),
+        stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),
         voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
     };
     let app = app(state);
