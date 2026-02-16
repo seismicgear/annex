@@ -1,0 +1,9 @@
+CREATE TABLE graph_edges (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  server_id INTEGER NOT NULL,
+  from_node TEXT NOT NULL,
+  to_node TEXT NOT NULL,
+  kind TEXT NOT NULL,                -- MEMBER_OF | CONNECTED | AGENT_SERVING | FEDERATED_WITH | MODERATES
+  weight REAL DEFAULT 1.0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
