@@ -3,23 +3,23 @@ use annex_db::{create_pool, run_migrations, DbRuntimeSettings};
 use annex_identity::MerkleTree;
 use annex_server::{app, middleware::RateLimiter, AppState};
 use annex_types::{ChannelType, FederationScope, ServerPolicy};
+use futures_util::{SinkExt, StreamExt};
+use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, RwLock};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
-use futures_util::{SinkExt, StreamExt};
-use serde_json::{json, Value};
 
 fn load_vkey() -> Arc<annex_identity::zk::VerifyingKey<annex_identity::zk::Bn254>> {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let path1 = manifest.join("../../zk/keys/membership_vkey.json");
     let path2 = std::path::Path::new("zk/keys/membership_vkey.json");
 
-    let vkey_json = std::fs::read_to_string(&path1)
-        .or_else(|_| std::fs::read_to_string(path2));
+    let vkey_json = std::fs::read_to_string(&path1).or_else(|_| std::fs::read_to_string(path2));
 
     match vkey_json {
         Ok(json) => {
-            let vk = annex_identity::zk::parse_verification_key(&json).expect("failed to parse vkey");
+            let vk =
+                annex_identity::zk::parse_verification_key(&json).expect("failed to parse vkey");
             Arc::new(vk)
         }
         Err(_) => {
@@ -105,7 +105,12 @@ async fn test_agent_voice_intent_pipeline() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
     });
 
     // Connect WS
@@ -118,7 +123,10 @@ async fn test_agent_voice_intent_pipeline() {
         "channelId": "voice-1",
         "text": "Hello world"
     });
-    socket.send(WsMessage::Text(msg.to_string().into())).await.expect("Failed to send");
+    socket
+        .send(WsMessage::Text(msg.to_string().into()))
+        .await
+        .expect("Failed to send");
 
     // Wait for response (expecting error due to missing TTS models)
     let msg = tokio::time::timeout(std::time::Duration::from_secs(2), socket.next()).await;

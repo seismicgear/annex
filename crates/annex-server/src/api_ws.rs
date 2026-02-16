@@ -231,11 +231,7 @@ pub async fn ws_handler(
 }
 
 /// Handles the WebSocket connection.
-async fn handle_socket(
-    socket: WebSocket,
-    state: Arc<AppState>,
-    identity: PlatformIdentity,
-) {
+async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: PlatformIdentity) {
     let pseudonym = identity.pseudonym_id.clone();
 
     // 1. Mark as active immediately
@@ -426,8 +422,10 @@ async fn handle_socket(
                                         .unwrap_or_default();
                                     let url = state.voice_service.get_url();
 
-                                    match annex_voice::AgentVoiceClient::connect(url, &token, &room_name)
-                                        .await
+                                    match annex_voice::AgentVoiceClient::connect(
+                                        url, &token, &room_name,
+                                    )
+                                    .await
                                     {
                                         Ok(c) => {
                                             let arc = Arc::new(c);
@@ -442,9 +440,14 @@ async fn handle_socket(
                                             arc
                                         }
                                         Err(e) => {
-                                            if let Ok(json) = serde_json::to_string(&OutgoingMessage::Error {
-                                                message: format!("Failed to connect voice: {}", e),
-                                            }) {
+                                            if let Ok(json) =
+                                                serde_json::to_string(&OutgoingMessage::Error {
+                                                    message: format!(
+                                                        "Failed to connect voice: {}",
+                                                        e
+                                                    ),
+                                                })
+                                            {
                                                 let _ = tx.send(json);
                                             }
                                             continue;
@@ -453,9 +456,11 @@ async fn handle_socket(
                                 };
 
                                 if let Err(e) = client.publish_audio(&audio).await {
-                                    if let Ok(json) = serde_json::to_string(&OutgoingMessage::Error {
-                                        message: format!("Failed to publish audio: {}", e),
-                                    }) {
+                                    if let Ok(json) =
+                                        serde_json::to_string(&OutgoingMessage::Error {
+                                            message: format!("Failed to publish audio: {}", e),
+                                        })
+                                    {
                                         let _ = tx.send(json);
                                     }
                                 }
