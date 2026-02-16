@@ -26,10 +26,7 @@ fn load_vkey() -> Arc<annex_identity::zk::VerifyingKey<annex_identity::zk::Bn254
 
     let vkey_json = std::fs::read_to_string(&path1)
         .or_else(|_| std::fs::read_to_string(path2))
-        .expect(&format!(
-            "failed to read vkey from {:?} or {:?}",
-            path1, path2
-        ));
+        .unwrap_or_else(|_| panic!("failed to read vkey from {:?} or {:?}", path1, path2));
 
     let vk = annex_identity::zk::parse_verification_key(&vkey_json).expect("failed to parse vkey");
     Arc::new(vk)
