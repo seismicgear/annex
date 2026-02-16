@@ -262,15 +262,8 @@ mod tests {
         ensure_graph_node(&conn, server_id, node_b, NodeType::Human).expect("node b failed");
 
         // Create edge
-        let edge = create_edge(
-            &conn,
-            server_id,
-            node_a,
-            node_b,
-            EdgeKind::Connected,
-            1.5,
-        )
-        .expect("create_edge failed");
+        let edge = create_edge(&conn, server_id, node_a, node_b, EdgeKind::Connected, 1.5)
+            .expect("create_edge failed");
 
         assert_eq!(edge.from_node, node_a);
         assert_eq!(edge.to_node, node_b);
@@ -288,7 +281,8 @@ mod tests {
         assert_eq!(deleted, 1);
 
         // Verify empty
-        let edges_after = get_edges(&conn, server_id, node_a).expect("get_edges after delete failed");
+        let edges_after =
+            get_edges(&conn, server_id, node_a).expect("get_edges after delete failed");
         assert!(edges_after.is_empty());
     }
 }
