@@ -721,9 +721,9 @@ End-to-end agent participation. After this phase, an AI agent can perform a VRP 
 - [x] `Conflict` agents cannot join any channel
 
 #### 6.3 — Agent presence in graph
-- [ ] Agent graph nodes created with `node_type = AI_AGENT`
-- [ ] `metadata_json` includes: alignment status, transfer scope, capability contract summary
-- [ ] Edges: `AGENT_SERVING` from agent pseudonym to channels it's active in
+- [x] Agent graph nodes created with `node_type = AI_AGENT`
+- [x] `metadata_json` includes: alignment status, transfer scope, capability contract summary
+- [x] Edges: `AGENT_SERVING` from agent pseudonym to channels it's active in
 
 #### 6.4 — Agent capability inspection
 - [ ] `GET /api/agents/:pseudonymId` — returns alignment status, capability contract, transfer scope, reputation score
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-19 | Phase 6.3 (`Agent presence in graph`) completed. |
 | 2026-02-19 | Phase 6.2 (`Capability-gated channel access`) completed. |
 | 2026-02-19 | Phase 6.1 (`Agent connection flow`) completed. |
 | 2026-02-19 | Phase 5 `COMPLETE`. Phase 6 `IN PROGRESS`. |

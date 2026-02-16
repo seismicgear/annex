@@ -214,6 +214,7 @@ pub fn ensure_graph_node(
     server_id: i64,
     pseudonym_id: &str,
     node_type: NodeType,
+    metadata_json: Option<String>,
 ) -> Result<GraphNode, GraphError> {
     // Serialize node type
     let node_type_str = match node_type {
@@ -226,13 +227,14 @@ pub fn ensure_graph_node(
 
     // Upsert logic using ON CONFLICT DO UPDATE
     let node = conn.query_row(
-        "INSERT INTO graph_nodes (server_id, pseudonym_id, node_type, active, last_seen_at)
-         VALUES (?1, ?2, ?3, 1, datetime('now'))
+        "INSERT INTO graph_nodes (server_id, pseudonym_id, node_type, active, last_seen_at, metadata_json)
+         VALUES (?1, ?2, ?3, 1, datetime('now'), ?4)
          ON CONFLICT(server_id, pseudonym_id) DO UPDATE SET
             active = 1,
-            last_seen_at = datetime('now')
+            last_seen_at = datetime('now'),
+            metadata_json = COALESCE(?4, metadata_json)
          RETURNING id, server_id, pseudonym_id, node_type, active, last_seen_at, metadata_json, created_at",
-        (server_id, pseudonym_id, node_type_str),
+        params![server_id, pseudonym_id, node_type_str, metadata_json],
         |row| {
             let node_type_str: String = row.get(3)?;
             let node_type = match node_type_str.as_str() {
@@ -538,8 +540,8 @@ mod tests {
         let node_b = "user_b";
 
         // Create nodes
-        ensure_graph_node(&conn, server_id, node_a, NodeType::Human).expect("node a failed");
-        ensure_graph_node(&conn, server_id, node_b, NodeType::Human).expect("node b failed");
+        ensure_graph_node(&conn, server_id, node_a, NodeType::Human, None).expect("node a failed");
+        ensure_graph_node(&conn, server_id, node_b, NodeType::Human, None).expect("node b failed");
 
         // Create edge
         let edge = create_edge(&conn, server_id, node_a, node_b, EdgeKind::Connected, 1.5)
@@ -575,7 +577,7 @@ mod tests {
         // Graph: A -> B -> C, and A -> D
         let nodes = vec!["A", "B", "C", "D"];
         for n in &nodes {
-            ensure_graph_node(&conn, server_id, n, NodeType::Human).unwrap();
+            ensure_graph_node(&conn, server_id, n, NodeType::Human, None).unwrap();
         }
 
         create_edge(&conn, server_id, "A", "B", EdgeKind::Connected, 1.0).unwrap();
@@ -605,7 +607,7 @@ mod tests {
         assert!(!path.found);
 
         // 5. No path
-        ensure_graph_node(&conn, server_id, "Z", NodeType::Human).unwrap();
+        ensure_graph_node(&conn, server_id, "Z", NodeType::Human, None).unwrap();
         let path = find_path_bfs(&conn, server_id, "A", "Z", 5).unwrap();
         assert!(!path.found);
 

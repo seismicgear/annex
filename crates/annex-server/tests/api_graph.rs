@@ -56,9 +56,9 @@ async fn test_get_degrees() {
     let server_id = 1;
 
     // A -> B -> C
-    ensure_graph_node(&conn, server_id, "user_a", NodeType::Human).unwrap();
-    ensure_graph_node(&conn, server_id, "user_b", NodeType::Human).unwrap();
-    ensure_graph_node(&conn, server_id, "user_c", NodeType::Human).unwrap();
+    ensure_graph_node(&conn, server_id, "user_a", NodeType::Human, None).unwrap();
+    ensure_graph_node(&conn, server_id, "user_b", NodeType::Human, None).unwrap();
+    ensure_graph_node(&conn, server_id, "user_c", NodeType::Human, None).unwrap();
 
     create_edge(
         &conn,
@@ -133,7 +133,7 @@ async fn test_get_profile_visibility() {
     // Graph: A -> B -> C -> D, and E (disconnected)
     let nodes = vec!["A", "B", "C", "D", "E"];
     for n in &nodes {
-        ensure_graph_node(&conn, server_id, n, NodeType::Human).unwrap();
+        ensure_graph_node(&conn, server_id, n, NodeType::Human, None).unwrap();
     }
 
     create_edge(&conn, server_id, "A", "B", EdgeKind::Connected, 1.0).unwrap();
