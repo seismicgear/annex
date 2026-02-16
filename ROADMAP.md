@@ -639,7 +639,7 @@ The live presence graph. After this phase, participants appear as nodes, relatio
 - [x] Auto-create graph node on successful VRP membership verification (tie into Phase 2 verify-membership flow)
 
 #### 5.2 — Graph edge model
-- [ ] `annex-db` migration: `graph_edges` table:
+- [x] `annex-db` migration: `graph_edges` table:
   ```sql
   CREATE TABLE graph_edges (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -651,7 +651,7 @@ The live presence graph. After this phase, participants appear as nodes, relatio
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
   ```
-- [ ] Edge CRUD operations
+- [x] Edge CRUD operations
 
 #### 5.3 — BFS degrees of separation
 - [ ] Implement `find_path_bfs(from, to, max_depth)` over `graph_edges` (treat as undirected)
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-19 | Phase 5.2 (`Graph edge model`) completed. |
 | 2026-02-18 | Phase 5.1 (`Graph node model`) completed. |
 | 2026-02-18 | Phase 4 `COMPLETE`. Phase 5 `IN PROGRESS`. |
 | 2026-02-18 | Phase 4.7 (`Channel REST API`) completed. |
