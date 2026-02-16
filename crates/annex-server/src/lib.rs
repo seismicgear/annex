@@ -1,6 +1,7 @@
 //! Annex server library logic.
 
 pub mod api;
+pub mod api_agent;
 pub mod api_channels;
 pub mod api_graph;
 pub mod api_sse;
@@ -75,6 +76,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/api/channels/{channelId}/messages",
             get(api_channels::get_channel_history_handler),
+        )
+        .route(
+            "/api/agents/{pseudonymId}",
+            get(api_agent::get_agent_profile_handler),
         )
         .layer(axum::middleware::from_fn(middleware::auth_middleware));
 
