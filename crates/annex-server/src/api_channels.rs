@@ -3,7 +3,8 @@ use annex_channels::{
     add_member, create_channel, delete_channel, get_channel, is_member, list_channels,
     list_messages, remove_member, Channel, CreateChannelParams, Message,
 };
-use annex_types::{AlignmentStatus, ChannelType, FederationScope, RoleCode};
+use annex_graph::{create_edge, delete_edge};
+use annex_types::{AlignmentStatus, ChannelType, EdgeKind, FederationScope, RoleCode};
 use axum::{
     extract::{Extension, Path, Query},
     http::StatusCode,
@@ -284,9 +285,17 @@ pub async fn join_channel_handler(
         let server_id = state.server_id;
         let cid = channel_id.clone();
         let pid = identity.pseudonym_id.clone();
+        let is_agent = identity.participant_type == RoleCode::AiAgent;
         move || {
             let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            add_member(&conn, server_id, &cid, &pid).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+            add_member(&conn, server_id, &cid, &pid)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            if is_agent {
+                create_edge(&conn, server_id, &pid, &cid, EdgeKind::AgentServing, 1.0)
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            }
+            Ok::<(), StatusCode>(())
         }
     })
     .await
@@ -304,11 +313,19 @@ pub async fn leave_channel_handler(
     // 1. Remove Member
     tokio::task::spawn_blocking({
         let pool = state.pool.clone();
+        let server_id = state.server_id;
         let cid = channel_id.clone();
         let pid = identity.pseudonym_id.clone();
+        let is_agent = identity.participant_type == RoleCode::AiAgent;
         move || {
             let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            remove_member(&conn, &cid, &pid).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+            remove_member(&conn, &cid, &pid).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            if is_agent {
+                delete_edge(&conn, server_id, &pid, &cid, EdgeKind::AgentServing)
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            }
+            Ok::<(), StatusCode>(())
         }
     })
     .await

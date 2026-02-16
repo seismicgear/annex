@@ -429,7 +429,41 @@ pub async fn verify_membership_handler(
 
         // 12. Create/Update Graph Node
         let node_type = role_code_to_node_type(role_code);
-        ensure_graph_node(&conn, server_id, &pseudonym_id, node_type).map_err(|e| {
+
+        // If agent, fetch metadata
+        let metadata_json = if role_code == RoleCode::AiAgent {
+            let agent_data: Option<(String, String, String, f64)> = conn
+                .query_row(
+                    "SELECT alignment_status, transfer_scope, capability_contract_json, reputation_score
+                     FROM agent_registrations
+                     WHERE server_id = ?1 AND pseudonym_id = ?2",
+                    rusqlite::params![server_id, pseudonym_id],
+                    |row| Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                    )),
+                )
+                .optional()
+                .map_err(|e| ApiError::InternalServerError(format!("db query failed: {}", e)))?;
+
+            if let Some((alignment, scope, contract, reputation)) = agent_data {
+                let metadata = serde_json::json!({
+                    "alignment_status": alignment,
+                    "transfer_scope": scope,
+                    "capability_contract": serde_json::from_str::<serde_json::Value>(&contract).unwrap_or(serde_json::Value::String(contract)),
+                    "reputation_score": reputation
+                });
+                Some(metadata.to_string())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        ensure_graph_node(&conn, server_id, &pseudonym_id, node_type, metadata_json).map_err(|e| {
             ApiError::InternalServerError(format!("failed to ensure graph node: {}", e))
         })?;
 

@@ -13,7 +13,7 @@ fn test_presence_logic() {
     let pseudonym = "user_abc";
 
     // 1. Ensure node (active by default)
-    ensure_graph_node(&conn, server_id, pseudonym, NodeType::Human).expect("ensure failed");
+    ensure_graph_node(&conn, server_id, pseudonym, NodeType::Human, None).expect("ensure failed");
 
     // 2. Try update (already active) -> returns false
     let reactivated = update_node_activity(&conn, server_id, pseudonym).expect("update failed");
