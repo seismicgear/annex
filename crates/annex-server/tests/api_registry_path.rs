@@ -42,7 +42,9 @@ async fn test_get_path_success() {
         rate_limiter: RateLimiter::new(),
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
         presence_tx: tokio::sync::broadcast::channel(100).0,
-        voice_service: Arc::new(annex_voice::VoiceService::new(annex_voice::LiveKitConfig::default())),
+        voice_service: Arc::new(annex_voice::VoiceService::new(
+            annex_voice::LiveKitConfig::default(),
+        )),
     };
     let app = app(state);
 
@@ -113,7 +115,9 @@ async fn test_get_path_not_found() {
         rate_limiter: RateLimiter::new(),
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
         presence_tx: tokio::sync::broadcast::channel(100).0,
-        voice_service: Arc::new(annex_voice::VoiceService::new(annex_voice::LiveKitConfig::default())),
+        voice_service: Arc::new(annex_voice::VoiceService::new(
+            annex_voice::LiveKitConfig::default(),
+        )),
     };
     let app = app(state);
 

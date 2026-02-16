@@ -77,7 +77,9 @@ async fn test_ws_lifecycle() {
         rate_limiter: RateLimiter::new(),
         connection_manager: api_ws::ConnectionManager::new(),
         presence_tx: tokio::sync::broadcast::channel(100).0,
-        voice_service: Arc::new(annex_voice::VoiceService::new(annex_voice::LiveKitConfig::default())),
+        voice_service: Arc::new(annex_voice::VoiceService::new(
+            annex_voice::LiveKitConfig::default(),
+        )),
     };
 
     // 3. Start Server

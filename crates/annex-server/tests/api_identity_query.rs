@@ -49,7 +49,9 @@ async fn test_get_identity_endpoints() {
         rate_limiter: RateLimiter::new(),
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
         presence_tx: tokio::sync::broadcast::channel(100).0,
-        voice_service: Arc::new(annex_voice::VoiceService::new(annex_voice::LiveKitConfig::default())),
+        voice_service: Arc::new(annex_voice::VoiceService::new(
+            annex_voice::LiveKitConfig::default(),
+        )),
     };
     let app = app(state);
 
