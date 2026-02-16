@@ -61,6 +61,7 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool) {
         server_id: 1,
         policy: Arc::new(RwLock::new(policy)),
         rate_limiter: RateLimiter::new(),
+        connection_manager: annex_server::api_ws::ConnectionManager::new(),
     };
 
     (app(state), pool)

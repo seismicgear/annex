@@ -47,6 +47,7 @@ async fn test_get_identity_endpoints() {
         server_id: 1,
         policy: Arc::new(RwLock::new(ServerPolicy::default())),
         rate_limiter: RateLimiter::new(),
+        connection_manager: annex_server::api_ws::ConnectionManager::new(),
     };
     let app = app(state);
 

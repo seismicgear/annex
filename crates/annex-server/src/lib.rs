@@ -2,6 +2,7 @@
 
 pub mod api;
 pub mod api_vrp;
+pub mod api_ws;
 pub mod config;
 pub mod middleware;
 
@@ -32,6 +33,8 @@ pub struct AppState {
     pub policy: Arc<RwLock<ServerPolicy>>,
     /// Rate limiter state.
     pub rate_limiter: RateLimiter,
+    /// Connection manager for WebSockets.
+    pub connection_manager: api_ws::ConnectionManager,
 }
 
 /// Health check handler.
@@ -73,6 +76,7 @@ pub fn app(state: AppState) -> Router {
             "/api/vrp/agent-handshake",
             post(api_vrp::agent_handshake_handler),
         )
+        .route("/ws", get(api_ws::ws_handler))
         .layer(axum::middleware::from_fn(middleware::rate_limit_middleware))
         .layer(Extension(Arc::new(state)))
 }

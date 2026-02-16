@@ -150,6 +150,7 @@ async fn main() -> Result<(), StartupError> {
         server_id,
         policy: Arc::new(RwLock::new(policy)),
         rate_limiter: RateLimiter::new(),
+        connection_manager: annex_server::api_ws::ConnectionManager::new(),
     };
 
     // Build application

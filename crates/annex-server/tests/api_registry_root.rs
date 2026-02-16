@@ -34,6 +34,7 @@ async fn test_get_current_root_empty_tree() {
         server_id: 1,
         policy: Arc::new(RwLock::new(ServerPolicy::default())),
         rate_limiter: RateLimiter::new(),
+        connection_manager: annex_server::api_ws::ConnectionManager::new(),
     };
     let app = app(state);
 
@@ -77,6 +78,7 @@ async fn test_get_current_root_after_registration() {
         server_id: 1,
         policy: Arc::new(RwLock::new(ServerPolicy::default())),
         rate_limiter: RateLimiter::new(),
+        connection_manager: annex_server::api_ws::ConnectionManager::new(),
     };
     let app = app(state);
 

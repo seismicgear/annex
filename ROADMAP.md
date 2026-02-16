@@ -559,10 +559,10 @@ Working text chat. After this phase, authenticated users can create channels, jo
 - [x] Message insert with automatic `expires_at` computation from channel/server retention policy
 
 #### 4.3 — WebSocket infrastructure
-- [ ] Implement WebSocket upgrade on `GET /ws`
-- [ ] Authenticate via pseudonym on connection (query param or first message)
-- [ ] Connection manager: track active connections per channel, per pseudonym
-- [ ] Message frame format:
+- [x] Implement WebSocket upgrade on `GET /ws`
+- [x] Authenticate via pseudonym on connection (query param or first message)
+- [x] Connection manager: track active connections per channel, per pseudonym
+- [x] Message frame format:
   ```json
   {
     "type": "message",
@@ -571,8 +571,8 @@ Working text chat. After this phase, authenticated users can create channels, jo
     "replyTo": null
   }
   ```
-- [ ] Broadcast incoming messages to all connections subscribed to that channel
-- [ ] Handle disconnection cleanup
+- [x] Broadcast incoming messages to all connections subscribed to that channel
+- [x] Handle disconnection cleanup
 
 #### 4.4 — Channel join/leave
 - [ ] `POST /api/channels/:channelId/join` — validates capability flags, creates membership record
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-16 | Phase 4.3 (`WebSocket infrastructure`) completed. |
 | 2026-02-16 | Phase 4.2 (`Message model`) completed. |
 | 2026-02-16 | Phase 4.1 (`Channel model`) completed. |
 | 2026-02-16 | Phase 3 `COMPLETE`. Phase 4 `IN PROGRESS`. |
