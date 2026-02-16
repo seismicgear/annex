@@ -1,18 +1,17 @@
 use annex_db::{create_pool, DbRuntimeSettings};
-use annex_identity::{MerkleTree, zk::{VerifyingKey, G1Affine, G2Affine}};
+use annex_identity::{
+    zk::{G1Affine, G2Affine, VerifyingKey},
+    MerkleTree,
+};
 use annex_server::{
-    api_ws::ConnectionManager,
-    policy::recalculate_agent_alignments,
+    api_ws::ConnectionManager, middleware::RateLimiter, policy::recalculate_agent_alignments,
     AppState,
-    middleware::RateLimiter,
 };
 use annex_types::ServerPolicy;
-use annex_vrp::{
-    VrpAnchorSnapshot, VrpCapabilitySharingContract,
-};
+use annex_vrp::{VrpAnchorSnapshot, VrpCapabilitySharingContract};
 use std::sync::{Arc, Mutex, RwLock};
-use tokio::sync::broadcast;
 use tempfile::NamedTempFile;
+use tokio::sync::broadcast;
 
 fn load_dummy_vkey() -> Arc<VerifyingKey<annex_identity::zk::Bn254>> {
     let g1 = G1Affine::default();
@@ -44,7 +43,8 @@ async fn test_recalculate_agent_alignments() {
     conn.execute(
         "INSERT INTO servers (id, slug, label, policy_json) VALUES (1, 'test', 'Test', '{}')",
         [],
-    ).unwrap();
+    )
+    .unwrap();
 
     let policy = ServerPolicy::default();
     let policy_lock = Arc::new(RwLock::new(policy.clone()));
@@ -78,11 +78,13 @@ async fn test_recalculate_agent_alignments() {
         [&contract_json, &anchor_json],
     ).unwrap();
 
-    let active: bool = conn.query_row(
-        "SELECT active FROM agent_registrations WHERE pseudonym_id = 'agent-aligned'",
-        [],
-        |row| row.get(0)
-    ).unwrap();
+    let active: bool = conn
+        .query_row(
+            "SELECT active FROM agent_registrations WHERE pseudonym_id = 'agent-aligned'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert!(active);
 
     // Drop connection to return to pool (though r2d2 handles it, good practice)

@@ -767,11 +767,11 @@ Voice channels that work for both humans and agents. Humans speak via WebRTC thr
 ### Steps
 
 #### 7.1 — LiveKit server integration
-- [ ] LiveKit server deployment configuration (Docker or native)
-- [ ] `annex-voice` crate: LiveKit server SDK integration for room management
+- [x] LiveKit server deployment configuration (Docker or native)
+- [x] `annex-voice` crate: LiveKit server SDK integration for room management
 - [ ] Create LiveKit room per `VOICE` or `HYBRID` channel
-- [ ] Token generation for human participants to join LiveKit rooms
-- [ ] Test: create room → generate token → verify token grants correct room access
+- [x] Token generation for human participants to join LiveKit rooms
+- [x] Test: create room → generate token → verify token grants correct room access
 
 #### 7.2 — Human voice flow
 - [ ] Client connects to LiveKit room using generated token
