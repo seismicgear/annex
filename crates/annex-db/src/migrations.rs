@@ -59,6 +59,10 @@ const MIGRATIONS: &[Migration] = &[
         name: "010_messages",
         sql: include_str!("migrations/010_messages.sql"),
     },
+    Migration {
+        name: "011_channel_members",
+        sql: include_str!("migrations/011_channel_members.sql"),
+    },
 ];
 
 /// Errors that can occur during migration execution.
@@ -172,7 +176,7 @@ mod tests {
     fn run_migrations_on_fresh_db() {
         let conn = Connection::open_in_memory().expect("should open in-memory db");
         let applied = run_migrations(&conn).expect("migrations should succeed");
-        assert_eq!(applied, 11, "should apply the initial migration");
+        assert_eq!(applied, 12, "should apply the initial migration");
 
         // Verify tracking table exists and has a record
         let count: i32 = conn
@@ -180,7 +184,7 @@ mod tests {
                 row.get(0)
             })
             .expect("should query migration count");
-        assert_eq!(count, 11);
+        assert_eq!(count, 12);
     }
 
     #[test]
@@ -188,7 +192,7 @@ mod tests {
         let conn = Connection::open_in_memory().expect("should open in-memory db");
 
         let first = run_migrations(&conn).expect("first run should succeed");
-        assert_eq!(first, 11);
+        assert_eq!(first, 12);
 
         let second = run_migrations(&conn).expect("second run should succeed");
         assert_eq!(second, 0, "no new migrations to apply");

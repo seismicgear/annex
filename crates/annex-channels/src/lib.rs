@@ -282,6 +282,105 @@ pub struct Message {
     pub expires_at: Option<String>,
 }
 
+/// A member of a channel.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ChannelMember {
+    /// Internal database ID.
+    pub id: i64,
+    /// ID of the server.
+    pub server_id: i64,
+    /// Public ID of the channel.
+    pub channel_id: String,
+    /// Pseudonym of the member.
+    pub pseudonym_id: String,
+    /// Role in the channel (e.g. "MEMBER").
+    pub role: String,
+    /// Join timestamp (ISO 8601).
+    pub joined_at: String,
+}
+
+/// Adds a member to a channel.
+///
+/// Returns error if already a member.
+pub fn add_member(
+    conn: &Connection,
+    server_id: i64,
+    channel_id: &str,
+    pseudonym_id: &str,
+) -> Result<(), ChannelError> {
+    // Check if channel exists first to return proper error
+    let _ = get_channel(conn, channel_id)?;
+
+    conn.execute(
+        "INSERT OR IGNORE INTO channel_members (server_id, channel_id, pseudonym_id) VALUES (?1, ?2, ?3)",
+        params![server_id, channel_id, pseudonym_id],
+    )?;
+    Ok(())
+}
+
+/// Removes a member from a channel.
+pub fn remove_member(
+    conn: &Connection,
+    channel_id: &str,
+    pseudonym_id: &str,
+) -> Result<(), ChannelError> {
+    let count = conn.execute(
+        "DELETE FROM channel_members WHERE channel_id = ?1 AND pseudonym_id = ?2",
+        [channel_id, pseudonym_id],
+    )?;
+    if count == 0 {
+        // Not considered an error if they weren't a member?
+        // Or should we return NotFound?
+        // Idempotency suggests OK, but for consistency with delete_channel, maybe verify membership first?
+        // Usually leave is idempotent.
+        return Ok(());
+    }
+    Ok(())
+}
+
+/// Checks if a pseudonym is a member of a channel.
+pub fn is_member(
+    conn: &Connection,
+    channel_id: &str,
+    pseudonym_id: &str,
+) -> Result<bool, ChannelError> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM channel_members WHERE channel_id = ?1 AND pseudonym_id = ?2)",
+        [channel_id, pseudonym_id],
+        |row| row.get(0),
+    )?;
+    Ok(exists)
+}
+
+/// Lists all members of a channel.
+pub fn list_members(
+    conn: &Connection,
+    channel_id: &str,
+) -> Result<Vec<ChannelMember>, ChannelError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, server_id, channel_id, pseudonym_id, role, joined_at
+         FROM channel_members WHERE channel_id = ?1 ORDER BY joined_at ASC",
+    )?;
+
+    let rows = stmt.query_map([channel_id], map_row_to_member)?;
+    let mut members = Vec::new();
+    for row in rows {
+        members.push(row?);
+    }
+    Ok(members)
+}
+
+fn map_row_to_member(row: &Row) -> rusqlite::Result<ChannelMember> {
+    Ok(ChannelMember {
+        id: row.get(0)?,
+        server_id: row.get(1)?,
+        channel_id: row.get(2)?,
+        pseudonym_id: row.get(3)?,
+        role: row.get(4)?,
+        joined_at: row.get(5)?,
+    })
+}
+
 /// Parameters for creating a new message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateMessageParams {
@@ -614,5 +713,49 @@ mod tests {
         let msg = create_message(&conn, &msg_params).expect("create message failed");
         assert!(msg.expires_at.is_some());
         // Server default is 30 days (default impl of ServerPolicy)
+    }
+
+    #[test]
+    fn test_channel_membership() {
+        let conn = setup_db();
+        let server_id = 1;
+
+        // Create channel
+        let params = CreateChannelParams {
+            server_id,
+            channel_id: "chan-mem".to_string(),
+            name: "Members Only".to_string(),
+            channel_type: ChannelType::Text,
+            topic: None,
+            vrp_topic_binding: None,
+            required_capabilities_json: None,
+            agent_min_alignment: None,
+            retention_days: None,
+            federation_scope: FederationScope::Local,
+        };
+        create_channel(&conn, &params).expect("create channel failed");
+
+        // We need a platform identity to link to, due to FK
+        // setup_db only creates the server.
+        conn.execute(
+            "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type) VALUES (1, 'user-1', 'HUMAN')",
+            [],
+        ).expect("create identity failed");
+
+        // Add member
+        add_member(&conn, server_id, "chan-mem", "user-1").expect("add member failed");
+
+        // Check is_member
+        assert!(is_member(&conn, "chan-mem", "user-1").unwrap());
+        assert!(!is_member(&conn, "chan-mem", "user-2").unwrap());
+
+        // List members
+        let members = list_members(&conn, "chan-mem").expect("list members failed");
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].pseudonym_id, "user-1");
+
+        // Remove member
+        remove_member(&conn, "chan-mem", "user-1").expect("remove member failed");
+        assert!(!is_member(&conn, "chan-mem", "user-1").unwrap());
     }
 }

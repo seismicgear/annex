@@ -1,7 +1,7 @@
 //! WebSocket API handler and connection management.
 
 use crate::AppState;
-use annex_channels::{create_message, CreateMessageParams, Message};
+use annex_channels::{create_message, is_member, CreateMessageParams, Message};
 use annex_identity::get_platform_identity;
 use axum::{
     extract::{
@@ -221,7 +221,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, pseudonym: Strin
     // Register session
     let session_id = state
         .connection_manager
-        .add_session(pseudonym.clone(), tx)
+        .add_session(pseudonym.clone(), tx.clone())
         .await;
 
     // Spawn a task to forward messages from rx to the websocket sender
@@ -239,10 +239,33 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, pseudonym: Strin
             if let Ok(incoming) = serde_json::from_str::<IncomingMessage>(&text.to_string()) {
                 match incoming {
                     IncomingMessage::Subscribe { channel_id } => {
-                        state
-                            .connection_manager
-                            .subscribe(channel_id, pseudonym.clone())
-                            .await;
+                        // Check membership
+                        let allowed = {
+                            let pool = state.pool.clone();
+                            let cid = channel_id.clone();
+                            let pid = pseudonym.clone();
+                            tokio::task::spawn_blocking(move || {
+                                let conn = pool.get().map_err(|_| "pool error")?;
+                                is_member(&conn, &cid, &pid).map_err(|_| "db error")
+                            })
+                            .await
+                            .unwrap_or(Ok(false))
+                            .unwrap_or(false)
+                        };
+
+                        if allowed {
+                            state
+                                .connection_manager
+                                .subscribe(channel_id, pseudonym.clone())
+                                .await;
+                        } else {
+                            let _ = tx.send(
+                                serde_json::to_string(&OutgoingMessage::Error {
+                                    message: format!("Not a member of channel {}", channel_id),
+                                })
+                                .unwrap(),
+                            );
+                        }
                     }
                     IncomingMessage::Unsubscribe { channel_id } => {
                         state
