@@ -47,6 +47,11 @@ pub struct AppState {
     pub presence_tx: broadcast::Sender<annex_types::PresenceEvent>,
     /// Voice service.
     pub voice_service: Arc<annex_voice::VoiceService>,
+    /// TTS service.
+    pub tts_service: Arc<annex_voice::TtsService>,
+    /// Active agent voice sessions (pseudonym -> client).
+    pub voice_sessions:
+        Arc<RwLock<std::collections::HashMap<String, Arc<annex_voice::AgentVoiceClient>>>>,
 }
 
 /// Health check handler.

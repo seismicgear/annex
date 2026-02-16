@@ -155,6 +155,10 @@ async fn main() -> Result<(), StartupError> {
     // Initialize Voice Service
     let voice_service = annex_voice::VoiceService::new(config.livekit);
 
+    // Initialize TTS Service
+    // TODO: Make these paths configurable via config.toml
+    let tts_service = annex_voice::TtsService::new("assets/voices", "assets/piper/piper");
+
     let state = AppState {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
@@ -165,6 +169,8 @@ async fn main() -> Result<(), StartupError> {
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
         presence_tx,
         voice_service: Arc::new(voice_service),
+        tts_service: Arc::new(tts_service),
+        voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
     };
 
     // Start background pruning task
