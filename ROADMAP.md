@@ -580,9 +580,9 @@ Working text chat. After this phase, authenticated users can create channels, jo
 - [x] WebSocket subscription management tied to channel membership
 
 #### 4.5 — Message history
-- [ ] `GET /api/channels/:channelId/messages?before=...&limit=...` — paginated message retrieval
-- [ ] Returns messages in reverse chronological order
-- [ ] Respects authentication (only members can read)
+- [x] `GET /api/channels/:channelId/messages?before=...&limit=...` — paginated message retrieval
+- [x] Returns messages in reverse chronological order
+- [x] Respects authentication (only members can read)
 
 #### 4.6 — Retention enforcement
 - [ ] Background task: periodically scan `messages` where `expires_at < now()`, hard delete
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-17 | Phase 4.5 (`Message history`) completed. |
 | 2026-02-17 | Phase 4.4 (`Channel join/leave`) completed. |
 | 2026-02-16 | Phase 4.3 (`WebSocket infrastructure`) completed. |
 | 2026-02-16 | Phase 4.2 (`Message model`) completed. |
