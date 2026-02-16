@@ -33,7 +33,9 @@ fn load_vkey() -> Arc<annex_identity::zk::VerifyingKey<annex_identity::zk::Bn254
 }
 
 async fn setup_app() -> (axum::Router, annex_db::DbPool) {
-    let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
+    let db_id = uuid::Uuid::new_v4();
+    let db_path = format!("file:memdb{}?mode=memory&cache=shared", db_id);
+    let pool = create_pool(&db_path, DbRuntimeSettings::default()).unwrap();
     {
         let conn = pool.get().unwrap();
         run_migrations(&conn).unwrap();
@@ -237,7 +239,9 @@ async fn test_leave_channel() {
 #[tokio::test]
 async fn test_ws_subscription_enforcement() {
     // 1. Setup (full server spawn needed for WS)
-    let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
+    let db_id = uuid::Uuid::new_v4();
+    let db_path = format!("file:memdb{}?mode=memory&cache=shared", db_id);
+    let pool = create_pool(&db_path, DbRuntimeSettings::default()).unwrap();
     {
         let conn = pool.get().unwrap();
         run_migrations(&conn).unwrap();
@@ -368,7 +372,9 @@ async fn test_ws_subscription_enforcement() {
 #[tokio::test]
 async fn test_ws_message_enforcement() {
     // 1. Setup
-    let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
+    let db_id = uuid::Uuid::new_v4();
+    let db_path = format!("file:memdb{}?mode=memory&cache=shared", db_id);
+    let pool = create_pool(&db_path, DbRuntimeSettings::default()).unwrap();
     {
         let conn = pool.get().unwrap();
         run_migrations(&conn).unwrap();
