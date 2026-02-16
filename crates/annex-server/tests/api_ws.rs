@@ -1,4 +1,4 @@
-use annex_channels::{create_channel, list_messages, CreateChannelParams};
+use annex_channels::{add_member, create_channel, list_messages, CreateChannelParams};
 use annex_db::run_migrations;
 use annex_identity::MerkleTree;
 use annex_server::middleware::RateLimiter;
@@ -45,6 +45,9 @@ async fn test_ws_lifecycle() {
             federation_scope: FederationScope::Local,
         };
         create_channel(&conn, &chan_params).unwrap();
+
+        // Add Member
+        add_member(&conn, 1, "chan-1", "user-1").unwrap();
     }
 
     // 2. Setup AppState
