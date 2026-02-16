@@ -284,7 +284,7 @@ pub fn find_path_bfs(
         conn.prepare("SELECT from_node FROM graph_edges WHERE server_id = ?1 AND to_node = ?2")?;
 
     while let Some((current_node, current_path)) = queue.pop_front() {
-        if current_path.len() - 1 >= max_depth as usize {
+        if current_path.len() > max_depth as usize {
             continue;
         }
 
