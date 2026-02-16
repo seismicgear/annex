@@ -726,8 +726,8 @@ End-to-end agent participation. After this phase, an AI agent can perform a VRP 
 - [x] Edges: `AGENT_SERVING` from agent pseudonym to channels it's active in
 
 #### 6.4 — Agent capability inspection
-- [ ] `GET /api/agents/:pseudonymId` — returns alignment status, capability contract, transfer scope, reputation score
-- [ ] Accessible to any authenticated participant on the same server
+- [x] `GET /api/agents/:pseudonymId` — returns alignment status, capability contract, transfer scope, reputation score
+- [x] Accessible to any authenticated participant on the same server
 
 #### 6.5 — Agent WebSocket behavior
 - [ ] Agents use the same WebSocket protocol as humans
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-19 | Phase 6.4 (`Agent capability inspection`) completed. |
 | 2026-02-19 | Phase 6.3 (`Agent presence in graph`) completed. |
 | 2026-02-19 | Phase 6.2 (`Capability-gated channel access`) completed. |
 | 2026-02-19 | Phase 6.1 (`Agent connection flow`) completed. |
