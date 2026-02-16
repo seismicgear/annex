@@ -2,6 +2,7 @@
 
 pub mod api;
 pub mod api_channels;
+pub mod api_graph;
 pub mod api_vrp;
 pub mod api_ws;
 pub mod config;
@@ -100,6 +101,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/api/vrp/agent-handshake",
             post(api_vrp::agent_handshake_handler),
+        )
+        .route(
+            "/api/graph/degrees",
+            get(api_graph::get_degrees_handler),
         )
         .merge(protected_routes)
         .route("/ws", get(api_ws::ws_handler))
