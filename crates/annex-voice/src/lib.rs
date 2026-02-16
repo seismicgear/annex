@@ -16,7 +16,9 @@
 pub mod config;
 pub mod error;
 pub mod service;
+pub mod tts;
 
 pub use config::LiveKitConfig;
 pub use error::VoiceError;
 pub use service::VoiceService;
+pub use tts::TtsService;

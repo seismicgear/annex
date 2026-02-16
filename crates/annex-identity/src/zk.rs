@@ -135,3 +135,23 @@ pub fn verify_proof(
     Groth16::<Bn254>::verify(vk, public_inputs, proof)
         .map_err(|e| ZkError::SnarkError(e.to_string()))
 }
+
+/// Generates a dummy verifying key for testing purposes.
+/// This key is mathematically valid (points on curve) but useless for verification.
+/// It corresponds to an empty circuit.
+pub fn generate_dummy_vkey() -> VerifyingKey<Bn254> {
+    use ark_ec::AffineRepr;
+    use ark_ff::Field;
+
+    // Use generator points which are guaranteed to be on the curve
+    let g1 = G1Affine::generator();
+    let g2 = G2Affine::generator();
+
+    VerifyingKey {
+        alpha_g1: g1,
+        beta_g2: g2,
+        gamma_g2: g2,
+        delta_g2: g2,
+        gamma_abc_g1: vec![g1; 2], // 2 public inputs
+    }
+}

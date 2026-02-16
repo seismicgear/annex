@@ -183,6 +183,9 @@ pub enum VisibilityLevel {
 mod policy;
 pub use policy::ServerPolicy;
 
+pub mod voice;
+pub use voice::{VoiceModel, VoiceProfile};
+
 /// Event types for the SSE presence stream (Phase 5).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "payload")]

@@ -10,4 +10,10 @@ pub enum VoiceError {
 
     #[error("Invalid configuration: {0}")]
     Config(String),
+
+    #[error("TTS error: {0}")]
+    Tts(String),
+
+    #[error("Voice profile not found: {0}")]
+    ProfileNotFound(String),
 }

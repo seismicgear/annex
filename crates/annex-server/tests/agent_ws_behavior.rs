@@ -59,17 +59,16 @@ async fn test_agent_websocket_behavior() {
         MerkleTree::restore(&conn, 20).unwrap()
     };
 
-    // Load real vkey from repo root or fallback
+    // Load real vkey from repo root or fallback to a generated dummy for tests
     let vkey_path = "zk/keys/membership_vkey.json";
-    let vkey_json = match std::fs::read_to_string(vkey_path) {
-        Ok(s) => s,
-        Err(_) => {
-            std::fs::read_to_string(format!("../../{}", vkey_path)).expect("failed to read vkey")
-        }
+    let vkey = match std::fs::read_to_string(vkey_path) {
+        Ok(s) => annex_identity::zk::parse_verification_key(&s).expect("failed to parse vkey"),
+        Err(_) => match std::fs::read_to_string(format!("../../{}", vkey_path)) {
+            Ok(s) => annex_identity::zk::parse_verification_key(&s).expect("failed to parse vkey"),
+            // Fallback to generated dummy key if file not found (e.g. in CI)
+            Err(_) => annex_identity::zk::generate_dummy_vkey(),
+        },
     };
-
-    let vkey =
-        annex_identity::zk::parse_verification_key(&vkey_json).expect("failed to parse vkey");
 
     let state = AppState {
         pool: pool.clone(),
