@@ -67,10 +67,13 @@ impl RoleCode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AlignmentStatus {
     /// Full trust: principles and prohibitions match.
+    #[serde(alias = "ALIGNED")]
     Aligned,
     /// Partial trust: some overlap, no direct conflicts.
+    #[serde(alias = "PARTIAL")]
     Partial,
     /// No trust: direct opposition detected.
+    #[serde(alias = "CONFLICT")]
     Conflict,
 }
 
@@ -78,10 +81,13 @@ pub enum AlignmentStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TransferScope {
     /// No data crosses the boundary.
+    #[serde(alias = "NO_TRANSFER")]
     NoTransfer,
     /// Only compressed summaries without raw reasoning chains.
+    #[serde(alias = "REFLECTION_SUMMARIES_ONLY")]
     ReflectionSummariesOnly,
     /// Complete reflection bundles with full context.
+    #[serde(alias = "FULL_KNOWLEDGE_BUNDLE")]
     FullKnowledgeBundle,
 }
 
