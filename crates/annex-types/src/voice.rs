@@ -6,21 +6,16 @@
 use serde::{Deserialize, Serialize};
 
 /// Supported TTS model architectures.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VoiceModel {
     /// Piper TTS (ONNX-based, fast, local).
+    #[default]
     Piper,
     /// Bark (Transformer-based, high quality, slow).
     Bark,
     /// System TTS (OS-provided).
     System,
-}
-
-impl Default for VoiceModel {
-    fn default() -> Self {
-        Self::Piper
-    }
 }
 
 /// A voice profile configuration.
