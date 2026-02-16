@@ -55,7 +55,7 @@ async fn test_create_room() {
 
 #[tokio::test]
 async fn test_token_permissions() {
-    use jsonwebtoken::{decode, DecodingKey, Validation, Algorithm};
+    use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
     use serde::Deserialize;
 
     let config = LiveKitConfig::new(DEFAULT_URL, DEFAULT_KEY, DEFAULT_SECRET);
@@ -84,7 +84,13 @@ async fn test_token_permissions() {
     let key = DecodingKey::from_secret(DEFAULT_SECRET.as_bytes());
     let token_data = decode::<Claims>(&token, &key, &validation).expect("Failed to decode token");
 
-    assert!(token_data.claims.video.can_publish, "canPublish should be true");
-    assert!(token_data.claims.video.can_subscribe, "canSubscribe should be true");
+    assert!(
+        token_data.claims.video.can_publish,
+        "canPublish should be true"
+    );
+    assert!(
+        token_data.claims.video.can_subscribe,
+        "canSubscribe should be true"
+    );
     assert!(token_data.claims.video.room_join, "roomJoin should be true");
 }
