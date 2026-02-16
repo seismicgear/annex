@@ -141,7 +141,6 @@ pub fn verify_proof(
 /// It corresponds to an empty circuit.
 pub fn generate_dummy_vkey() -> VerifyingKey<Bn254> {
     use ark_ec::AffineRepr;
-    use ark_ff::Field;
 
     // Use generator points which are guaranteed to be on the curve
     let g1 = G1Affine::generator();
