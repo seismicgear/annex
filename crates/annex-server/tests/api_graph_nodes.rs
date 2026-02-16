@@ -50,6 +50,7 @@ async fn test_graph_node_creation_on_verification() {
         policy: Arc::new(RwLock::new(ServerPolicy::default())),
         rate_limiter: RateLimiter::new(),
         connection_manager: ConnectionManager::new(),
+        presence_tx: tokio::sync::broadcast::channel(100).0,
     };
     let app = app(state);
     let addr = SocketAddr::from(([127, 0, 0, 1], 12345));

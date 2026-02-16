@@ -56,6 +56,7 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool) {
         policy: Arc::new(RwLock::new(ServerPolicy::default())),
         rate_limiter: RateLimiter::new(),
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
+        presence_tx: tokio::sync::broadcast::channel(100).0,
     };
 
     (app(state), pool)
@@ -274,6 +275,7 @@ async fn test_ws_subscription_enforcement() {
         policy: Arc::new(RwLock::new(ServerPolicy::default())),
         rate_limiter: RateLimiter::new(),
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
+        presence_tx: tokio::sync::broadcast::channel(100).0,
     };
 
     let app = app(state);
@@ -404,6 +406,7 @@ async fn test_ws_message_enforcement() {
         policy: Arc::new(RwLock::new(ServerPolicy::default())),
         rate_limiter: RateLimiter::new(),
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
+        presence_tx: tokio::sync::broadcast::channel(100).0,
     };
 
     let app = app(state);

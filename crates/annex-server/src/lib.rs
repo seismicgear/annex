@@ -3,6 +3,7 @@
 pub mod api;
 pub mod api_channels;
 pub mod api_graph;
+pub mod api_sse;
 pub mod api_vrp;
 pub mod api_ws;
 pub mod config;
@@ -20,6 +21,7 @@ use axum::{
 use middleware::RateLimiter;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex, RwLock};
+use tokio::sync::broadcast;
 
 /// Application state shared across all request handlers.
 #[derive(Clone)]
@@ -38,6 +40,8 @@ pub struct AppState {
     pub rate_limiter: RateLimiter,
     /// Connection manager for WebSockets.
     pub connection_manager: api_ws::ConnectionManager,
+    /// Broadcast channel for presence events.
+    pub presence_tx: broadcast::Sender<annex_types::PresenceEvent>,
 }
 
 /// Health check handler.
@@ -106,6 +110,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/api/graph/profile/{targetPseudonym}",
             get(api_graph::get_profile_handler),
+        )
+        .route(
+            "/events/presence",
+            get(api_sse::get_presence_stream_handler),
         )
         .merge(protected_routes)
         .route("/ws", get(api_ws::ws_handler))

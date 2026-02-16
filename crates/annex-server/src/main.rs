@@ -149,6 +149,9 @@ async fn main() -> Result<(), StartupError> {
     let membership_vkey =
         annex_identity::zk::parse_verification_key(&vkey_json).map_err(StartupError::ZkError)?;
 
+    // Create presence event broadcast channel
+    let (presence_tx, _) = tokio::sync::broadcast::channel(100);
+
     let state = AppState {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
@@ -157,6 +160,7 @@ async fn main() -> Result<(), StartupError> {
         policy: Arc::new(RwLock::new(policy)),
         rate_limiter: RateLimiter::new(),
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
+        presence_tx,
     };
 
     // Build application

@@ -660,16 +660,16 @@ The live presence graph. After this phase, participants appear as nodes, relatio
 - [x] Test: verify shortest path is found; verify max_depth is respected
 
 #### 5.4 — Visibility service
-- [ ] Implement `GraphVisibilityService`:
+- [x] Implement `GraphVisibilityService`:
   - Given `viewerPseudonym`, compute degree map via BFS from viewer up to depth 3
   - Return `VisibilityLevel` per target: `Self`, `Degree1`, `Degree2`, `Degree3`, `AggregateOnly`, `None`
-- [ ] `GET /api/graph/profile/:targetPseudonym` with `X-Annex-Viewer` header:
+- [x] `GET /api/graph/profile/:targetPseudonym` with `X-Annex-Viewer` header:
   - Returns fields filtered by visibility level
 
 #### 5.5 — SSE presence stream
-- [ ] `GET /events/presence` — Server-Sent Events stream, scoped by server
-- [ ] Events: `NODE_ADDED`, `NODE_UPDATED`, `NODE_PRUNED`, `EDGE_ADDED`, `EDGE_REMOVED`
-- [ ] Subscriber management per server (connection tracking, cleanup on disconnect)
+- [x] `GET /events/presence` — Server-Sent Events stream, scoped by server
+- [x] Events: `NODE_ADDED`, `NODE_UPDATED`, `NODE_PRUNED`, `EDGE_ADDED`, `EDGE_REMOVED`
+- [x] Subscriber management per server (connection tracking, cleanup on disconnect)
 
 #### 5.6 — Activity tracking and pruning
 - [ ] Update `graph_nodes.last_seen_at` on VRP handshake, message send, WebSocket heartbeat
@@ -1167,6 +1167,8 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-19 | Phase 5.5 (`SSE presence stream`) completed. |
+| 2026-02-19 | Phase 5.4 (`Visibility service`) completed. |
 | 2026-02-19 | Phase 5.3 (`BFS degrees of separation`) completed. |
 | 2026-02-19 | Phase 5.2 (`Graph edge model`) completed. |
 | 2026-02-18 | Phase 5.1 (`Graph node model`) completed. |
