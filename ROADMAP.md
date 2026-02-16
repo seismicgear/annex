@@ -775,8 +775,8 @@ Voice channels that work for both humans and agents. Humans speak via WebRTC thr
 
 #### 7.2 — Human voice flow
 - [x] Client connects to LiveKit room using generated token
-- [ ] Audio published and subscribed via standard LiveKit WebRTC flow
-- [ ] No server-side audio processing needed for human-to-human voice
+- [x] Audio published and subscribed via standard LiveKit WebRTC flow
+- [x] No server-side audio processing needed for human-to-human voice
 
 #### 7.3 — Voice LLM service (TTS)
 - [x] `annex-voice` implements TTS service:
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-20 | Phase 7.2 (`Human voice flow`) completed. |
 | 2026-02-20 | Phase 7.4 (`Agent voice output pipeline`) completed. |
 | 2026-02-20 | Phase 7.3 (`Voice LLM service (TTS)`) completed. |
 | 2026-02-20 | Phase 7.1 (`LiveKit server integration`) completed. |
