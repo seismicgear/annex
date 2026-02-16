@@ -20,6 +20,14 @@ impl VoiceService {
         }
     }
 
+    pub fn is_enabled(&self) -> bool {
+        !self.config.url.is_empty()
+    }
+
+    pub fn get_url(&self) -> &str {
+        &self.config.url
+    }
+
     pub async fn create_room(&self, name: &str) -> Result<Room, VoiceError> {
         let options = CreateRoomOptions::default();
 

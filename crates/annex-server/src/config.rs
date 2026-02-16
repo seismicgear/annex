@@ -1,5 +1,6 @@
 //! Server configuration loading from file and environment variables.
 
+use annex_voice::LiveKitConfig;
 use serde::Deserialize;
 use std::net::{IpAddr, Ipv4Addr};
 use std::str::FromStr;
@@ -19,6 +20,10 @@ pub struct Config {
     /// Logging settings.
     #[serde(default)]
     pub logging: LoggingConfig,
+
+    /// LiveKit configuration.
+    #[serde(default)]
+    pub livekit: LiveKitConfig,
 }
 
 /// Network configuration for the HTTP server.
@@ -279,6 +284,15 @@ pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
     }
     if let Some(json) = parse_env_bool("ANNEX_LOG_JSON")? {
         config.logging.json = json;
+    }
+    if let Some(url) = parse_env_var("ANNEX_LIVEKIT_URL")? {
+        config.livekit.url = url;
+    }
+    if let Some(api_key) = parse_env_var("ANNEX_LIVEKIT_API_KEY")? {
+        config.livekit.api_key = api_key;
+    }
+    if let Some(api_secret) = parse_env_var("ANNEX_LIVEKIT_API_SECRET")? {
+        config.livekit.api_secret = api_secret;
     }
 
     validate_config(&config)?;

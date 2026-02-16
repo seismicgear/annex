@@ -152,6 +152,9 @@ async fn main() -> Result<(), StartupError> {
     // Create presence event broadcast channel
     let (presence_tx, _) = tokio::sync::broadcast::channel(100);
 
+    // Initialize Voice Service
+    let voice_service = annex_voice::VoiceService::new(config.livekit);
+
     let state = AppState {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
@@ -161,6 +164,7 @@ async fn main() -> Result<(), StartupError> {
         rate_limiter: RateLimiter::new(),
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
         presence_tx,
+        voice_service: Arc::new(voice_service),
     };
 
     // Start background pruning task

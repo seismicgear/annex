@@ -16,6 +16,7 @@ annex-channels = { workspace = true }
 annex-db = { workspace = true }
 annex-identity = { workspace = true }
 annex-vrp = { workspace = true }
+annex-voice = { workspace = true }
 rusqlite = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }

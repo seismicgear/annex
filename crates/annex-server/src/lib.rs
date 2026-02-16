@@ -45,6 +45,8 @@ pub struct AppState {
     pub connection_manager: api_ws::ConnectionManager,
     /// Broadcast channel for presence events.
     pub presence_tx: broadcast::Sender<annex_types::PresenceEvent>,
+    /// Voice service.
+    pub voice_service: Arc<annex_voice::VoiceService>,
 }
 
 /// Health check handler.
@@ -69,6 +71,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/api/channels/{channelId}/join",
             post(api_channels::join_channel_handler),
+        )
+        .route(
+            "/api/channels/{channelId}/voice/join",
+            post(api_channels::join_voice_channel_handler),
         )
         .route(
             "/api/channels/{channelId}/leave",
