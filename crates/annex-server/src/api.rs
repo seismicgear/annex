@@ -1,6 +1,7 @@
 //! API handlers for the Annex server.
 
 use crate::AppState;
+use annex_graph::{ensure_graph_node, role_code_to_node_type};
 use annex_identity::{
     check_nullifier_exists, create_platform_identity, derive_nullifier_hex, derive_pseudonym_id,
     get_all_roles, get_all_topics, get_path_for_commitment, get_platform_identity,
@@ -423,6 +424,12 @@ pub async fn verify_membership_handler(
         // 11. Create Platform Identity
         create_platform_identity(&conn, server_id, &pseudonym_id, role_code).map_err(|e| {
             ApiError::InternalServerError(format!("failed to create platform identity: {}", e))
+        })?;
+
+        // 12. Create/Update Graph Node
+        let node_type = role_code_to_node_type(role_code);
+        ensure_graph_node(&conn, server_id, &pseudonym_id, node_type).map_err(|e| {
+            ApiError::InternalServerError(format!("failed to ensure graph node: {}", e))
         })?;
 
         Ok(pseudonym_id)

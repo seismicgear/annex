@@ -81,7 +81,9 @@ version = "0.0.1"
 dependencies = [
  "annex-db",
  "annex-types",
+ "rusqlite",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -135,6 +137,7 @@ version = "0.0.1"
 dependencies = [
  "annex-channels",
  "annex-db",
+ "annex-graph",
  "annex-identity",
  "annex-types",
  "annex-vrp",
