@@ -118,17 +118,23 @@ pub async fn agent_handshake_handler(
                     ApiError::InternalServerError(format!("failed to serialize contract: {}", e))
                 })?;
 
+            let anchor_json = serde_json::to_string(&payload.handshake.anchor_snapshot)
+                .map_err(|e| {
+                    ApiError::InternalServerError(format!("failed to serialize anchor: {}", e))
+                })?;
+
             let now = chrono::Utc::now().to_rfc3339();
 
             conn.execute(
                 "INSERT INTO agent_registrations (
                     server_id, pseudonym_id, alignment_status, transfer_scope,
-                    capability_contract_json, reputation_score, last_handshake_at, created_at, updated_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'), datetime('now'))
+                    capability_contract_json, anchor_snapshot_json, reputation_score, last_handshake_at, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'), datetime('now'))
                 ON CONFLICT(server_id, pseudonym_id) DO UPDATE SET
                     alignment_status = excluded.alignment_status,
                     transfer_scope = excluded.transfer_scope,
                     capability_contract_json = excluded.capability_contract_json,
+                    anchor_snapshot_json = excluded.anchor_snapshot_json,
                     reputation_score = excluded.reputation_score,
                     last_handshake_at = excluded.last_handshake_at,
                     updated_at = datetime('now')
@@ -139,6 +145,7 @@ pub async fn agent_handshake_handler(
                     report.alignment_status.to_string(),
                     report.transfer_scope.to_string(),
                     contract_json,
+                    anchor_json,
                     reputation_score,
                     now
                 ],

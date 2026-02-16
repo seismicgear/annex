@@ -19,8 +19,8 @@ Phase 2: Server Core ................... COMPLETE
 Phase 3: VRP Trust Negotiation ......... COMPLETE
 Phase 4: Text Communication ............ COMPLETE
 Phase 5: Presence Graph ................ COMPLETE
-Phase 6: Agent Protocol ................ IN PROGRESS
-Phase 7: Voice Infrastructure .......... NOT STARTED
+Phase 6: Agent Protocol ................ COMPLETE
+Phase 7: Voice Infrastructure .......... IN PROGRESS
 Phase 8: Federation .................... NOT STARTED
 Phase 9: RTX Knowledge Exchange ........ NOT STARTED
 Phase 10: Observability ................ NOT STARTED
@@ -694,7 +694,7 @@ Phase 5 is **COMPLETE** when:
 
 ## Phase 6: Agent Protocol
 
-**Status**: `NOT STARTED`
+**Status**: `COMPLETE`
 **Prerequisites**: Phase 3 `COMPLETE`, Phase 4 `COMPLETE`, Phase 5 `COMPLETE`
 **Estimated scope**: Agent connection flow (VRP handshake → membership → channels), agent presence, capability enforcement
 
@@ -735,7 +735,7 @@ End-to-end agent participation. After this phase, an AI agent can perform a VRP 
 - [x] No special message framing or separate protocol — same wire format
 
 #### 6.6 — Re-evaluation on policy change
-- [ ] When `server_policy_versions` is updated:
+- [x] When `server_policy_versions` is updated:
   - Recompute alignment for all active `agent_registrations`
   - Downgrade or reject agents whose alignment dropped
   - Disconnect agents that are now `Conflict`
@@ -745,12 +745,12 @@ End-to-end agent participation. After this phase, an AI agent can perform a VRP 
 
 Phase 6 is **COMPLETE** when:
 
-- [ ] An AI agent can connect, handshake, prove membership, join channels, and send/receive messages end-to-end
-- [ ] Alignment and capability restrictions are enforced on channel join
-- [ ] Agents appear correctly in the presence graph with metadata
-- [ ] Agent capabilities are inspectable by other participants
-- [ ] Server policy changes trigger agent re-evaluation
-- [ ] Integration test: full agent lifecycle from handshake to message exchange to disconnection
+- [x] An AI agent can connect, handshake, prove membership, join channels, and send/receive messages end-to-end
+- [x] Alignment and capability restrictions are enforced on channel join
+- [x] Agents appear correctly in the presence graph with metadata
+- [x] Agent capabilities are inspectable by other participants
+- [x] Server policy changes trigger agent re-evaluation
+- [x] Integration test: full agent lifecycle from handshake to message exchange to disconnection
 
 ---
 
@@ -1167,6 +1167,8 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-20 | Phase 6 `COMPLETE`. Phase 7 `IN PROGRESS`. |
+| 2026-02-20 | Phase 6.6 (`Re-evaluation on policy change`) completed. |
 | 2026-02-19 | Phase 6.5 (`Agent WebSocket behavior`) completed. |
 | 2026-02-19 | Phase 6.4 (`Agent capability inspection`) completed. |
 | 2026-02-19 | Phase 6.3 (`Agent presence in graph`) completed. |

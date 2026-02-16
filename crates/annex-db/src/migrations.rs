@@ -71,6 +71,10 @@ const MIGRATIONS: &[Migration] = &[
         name: "013_graph_edges",
         sql: include_str!("migrations/013_graph_edges.sql"),
     },
+    Migration {
+        name: "014_add_anchor_to_agent_registrations",
+        sql: include_str!("migrations/014_add_anchor_to_agent_registrations.sql"),
+    },
 ];
 
 /// Errors that can occur during migration execution.

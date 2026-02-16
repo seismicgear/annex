@@ -98,6 +98,18 @@ impl ConnectionManager {
         session_id
     }
 
+    /// Disconnects a user by pseudonym, closing their WebSocket session.
+    pub async fn disconnect_user(&self, pseudonym: &str) {
+        let session_id = {
+            let sessions = self.sessions.read().await;
+            sessions.get(pseudonym).map(|(id, _)| *id)
+        };
+
+        if let Some(id) = session_id {
+            self.remove_session(pseudonym, id).await;
+        }
+    }
+
     /// Removes a session for a pseudonym if the session ID matches.
     pub async fn remove_session(&self, pseudonym: &str, session_id: Uuid) {
         let mut sessions = self.sessions.write().await;

@@ -10,6 +10,7 @@ pub mod api_ws;
 pub mod background;
 pub mod config;
 pub mod middleware;
+pub mod policy;
 pub mod retention;
 
 use annex_db::DbPool;
