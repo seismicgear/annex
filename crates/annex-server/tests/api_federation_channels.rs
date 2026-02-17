@@ -65,6 +65,8 @@ async fn setup_app() -> (axum::Router, Arc<AppState>, TempDir) {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: Arc::new(membership_vkey),
+        signing_key: Arc::new(SigningKey::from_bytes(&[0u8; 32])),
+        public_url: "http://localhost:3000".to_string(),
         server_id,
         policy: Arc::new(RwLock::new(policy)),
         rate_limiter: annex_server::middleware::RateLimiter::new(),

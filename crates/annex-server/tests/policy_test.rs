@@ -53,6 +53,8 @@ async fn test_recalculate_agent_alignments() {
         pool: pool.clone(),
         merkle_tree: Arc::new(Mutex::new(MerkleTree::new(20).unwrap())),
         membership_vkey: load_dummy_vkey(),
+        signing_key: Arc::new(ed25519_dalek::SigningKey::from_bytes(&[0u8; 32])),
+        public_url: "http://localhost:3000".to_string(),
         server_id: 1,
         policy: policy_lock.clone(),
         rate_limiter: RateLimiter::new(),

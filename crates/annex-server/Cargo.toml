@@ -49,3 +49,4 @@ tempfile = "3"
 rand = "0.8"
 annex-vrp = { workspace = true }
 annex-identity = { workspace = true }
+ed25519-dalek = "2"

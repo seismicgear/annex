@@ -11,6 +11,7 @@ use axum::{
     extract::ConnectInfo,
     http::{Request, StatusCode},
 };
+use ed25519_dalek::SigningKey;
 use serde_json::Value;
 use std::fs;
 use std::net::SocketAddr;
@@ -46,6 +47,8 @@ async fn test_graph_node_creation_on_verification() {
         pool: pool.clone(),
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: load_vkey(),
+        signing_key: Arc::new(SigningKey::from_bytes(&[0u8; 32])),
+        public_url: "http://localhost:3000".to_string(),
         server_id: 1,
         policy: Arc::new(RwLock::new(ServerPolicy::default())),
         rate_limiter: RateLimiter::new(),

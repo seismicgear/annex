@@ -39,6 +39,8 @@ fn setup_test_app() -> (axum::Router, annex_db::DbPool, tempfile::NamedTempFile)
         pool: pool.clone(),
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: Arc::new(vk),
+        signing_key: Arc::new(ed25519_dalek::SigningKey::from_bytes(&[0u8; 32])),
+        public_url: "http://localhost:3000".to_string(),
         server_id: 1,
         policy: Arc::new(RwLock::new(ServerPolicy::default())),
         rate_limiter: middleware::RateLimiter::new(),
