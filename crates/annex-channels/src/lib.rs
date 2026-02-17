@@ -143,6 +143,29 @@ pub fn list_channels(conn: &Connection, server_id: i64) -> Result<Vec<Channel>, 
     Ok(channels)
 }
 
+/// Lists all federated channels for a given server.
+pub fn list_federated_channels(
+    conn: &Connection,
+    server_id: i64,
+) -> Result<Vec<Channel>, ChannelError> {
+    let mut stmt = conn.prepare(
+        "SELECT
+            id, server_id, channel_id, name, channel_type, topic,
+            vrp_topic_binding, required_capabilities_json, agent_min_alignment,
+            retention_days, federation_scope, created_at
+        FROM channels
+        WHERE server_id = ?1 AND federation_scope LIKE '%Federated%'
+        ORDER BY name ASC",
+    )?;
+
+    let rows = stmt.query_map([server_id], map_row_to_channel)?;
+    let mut channels = Vec::new();
+    for row in rows {
+        channels.push(row?);
+    }
+    Ok(channels)
+}
+
 /// Updates an existing channel.
 pub fn update_channel(
     conn: &Connection,

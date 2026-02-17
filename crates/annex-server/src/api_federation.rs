@@ -1,11 +1,17 @@
 use crate::{api::GetRootResponse, AppState};
+use annex_channels::{add_member, list_federated_channels, Channel};
 use annex_federation::{process_incoming_handshake, AttestationRequest, HandshakeError};
+use annex_graph::{ensure_graph_node, GraphError};
 use annex_identity::{
     derive_nullifier_hex, derive_pseudonym_id,
     zk::{parse_fr_from_hex, parse_proof, verify_proof},
 };
+use annex_types::NodeType;
 use annex_vrp::{VrpFederationHandshake, VrpValidationReport};
-use axum::{extract::Extension, Json};
+use axum::{
+    extract::{Extension, Path},
+    Json,
+};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey as EdVerifyingKey};
 use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
@@ -32,6 +38,10 @@ pub enum FederationError {
     ZkVerification(String),
     #[error("Identity derivation failed: {0}")]
     IdentityDerivation(String),
+    #[error("Channel error: {0}")]
+    Channel(#[from] annex_channels::ChannelError),
+    #[error("Forbidden: {0}")]
+    Forbidden(String),
 }
 
 impl axum::response::IntoResponse for FederationError {
@@ -43,6 +53,7 @@ impl axum::response::IntoResponse for FederationError {
             FederationError::UnknownRemote(_) => {
                 (axum::http::StatusCode::NOT_FOUND, self.to_string())
             }
+            FederationError::Forbidden(_) => (axum::http::StatusCode::FORBIDDEN, self.to_string()),
             _ => (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 self.to_string(),
@@ -59,6 +70,16 @@ pub struct HandshakeRequest {
     /// The VRP handshake payload.
     #[serde(flatten)]
     pub handshake: VrpFederationHandshake,
+}
+
+#[derive(Deserialize, serde::Serialize)]
+pub struct JoinFederatedChannelRequest {
+    /// The base URL of the originating server.
+    pub originating_server: String,
+    /// The pseudonym ID of the participant joining.
+    pub pseudonym_id: String,
+    /// Signature of SHA256(channel_id + pseudonym_id).
+    pub signature: String,
 }
 
 pub async fn federation_handshake_handler(
@@ -191,10 +212,11 @@ pub async fn attest_membership_handler(
     .map_err(|e| FederationError::DbError(rusqlite::Error::ToSqlConversionFailure(Box::new(e))))??;
 
     // Verify Signature
-    // Message: SHA256(topic || commitment)
-    // Actually, payload.signature should sign the content.
-    // Let's assume the message is simply the concatenation of topic and commitment bytes.
-    let message = format!("{}{}", payload.topic, payload.commitment);
+    // Message: SHA256(topic || commitment || participant_type)
+    let message = format!(
+        "{}{}{}",
+        payload.topic, payload.commitment, payload.participant_type
+    );
     let public_key_bytes = hex::decode(&public_key_hex)
         .map_err(|e| FederationError::InvalidSignature(format!("Invalid public key hex: {}", e)))?;
     let signature_bytes = hex::decode(&payload.signature)
@@ -285,6 +307,47 @@ pub async fn attest_membership_handler(
         )
         .map_err(FederationError::DbError)?;
 
+        // Ensure Platform Identity
+        // We set default capabilities to 0 (false) for federated users initially.
+        // They can be upgraded later based on VRP negotiation if needed.
+        conn.execute(
+            "INSERT INTO platform_identities (
+                server_id, pseudonym_id, participant_type, active
+            ) VALUES (?1, ?2, ?3, 1)
+            ON CONFLICT(server_id, pseudonym_id) DO UPDATE SET
+                active = 1,
+                participant_type = excluded.participant_type
+            ",
+            params![
+                state_clone.server_id,
+                pseudonym_id,
+                payload.participant_type
+            ],
+        )
+        .map_err(FederationError::DbError)?;
+
+        // Ensure Graph Node
+        let node_type = match payload.participant_type.as_str() {
+            "HUMAN" => NodeType::Human,
+            "AI_AGENT" => NodeType::AiAgent,
+            "COLLECTIVE" => NodeType::Collective,
+            "BRIDGE" => NodeType::Bridge,
+            "SERVICE" => NodeType::Service,
+            _ => NodeType::Human, // Fallback
+        };
+
+        ensure_graph_node(
+            &conn,
+            state_clone.server_id,
+            &pseudonym_id,
+            node_type,
+            None, // metadata_json
+        )
+        .map_err(|e| match e {
+            GraphError::DatabaseError(err) => FederationError::DbError(err),
+            _ => FederationError::DbError(rusqlite::Error::ToSqlConversionFailure(Box::new(e))),
+        })?;
+
         Ok::<_, FederationError>(pseudonym_id)
     })
     .await
@@ -294,4 +357,115 @@ pub async fn attest_membership_handler(
         "ok": true,
         "pseudonymId": pseudonym_id
     })))
+}
+
+/// Handler for `GET /api/federation/channels`.
+pub async fn get_federated_channels_handler(
+    Extension(state): Extension<Arc<AppState>>,
+) -> Result<Json<Vec<Channel>>, FederationError> {
+    let channels = tokio::task::spawn_blocking(move || {
+        let conn = state
+            .pool
+            .get()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        list_federated_channels(&conn, state.server_id).map_err(FederationError::Channel)
+    })
+    .await
+    .map_err(|e| FederationError::DbError(rusqlite::Error::ToSqlConversionFailure(Box::new(e))))??;
+
+    Ok(Json(channels))
+}
+
+/// Handler for `POST /api/federation/channels/:channelId/join`.
+pub async fn join_federated_channel_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Path(channel_id): Path<String>,
+    Json(payload): Json<JoinFederatedChannelRequest>,
+) -> Result<Json<serde_json::Value>, FederationError> {
+    let state_clone = state.clone();
+    let channel_id_clone = channel_id.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let conn = state_clone
+            .pool
+            .get()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+        // 1. Verify Originating Server
+        let (remote_instance_id, public_key_hex, status): (i64, String, String) = conn
+            .query_row(
+                "SELECT id, public_key, status FROM instances WHERE base_url = ?1",
+                params![payload.originating_server],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(|e| {
+                if e == rusqlite::Error::QueryReturnedNoRows {
+                    FederationError::UnknownRemote(payload.originating_server.clone())
+                } else {
+                    FederationError::DbError(e)
+                }
+            })?;
+
+        if status != "ACTIVE" {
+            return Err(FederationError::Forbidden(format!(
+                "Instance {} is not active",
+                payload.originating_server
+            )));
+        }
+
+        // 2. Verify Signature
+        // Message: SHA256(channel_id + pseudonym_id)
+        let message = format!("{}{}", channel_id_clone, payload.pseudonym_id);
+        let public_key_bytes = hex::decode(&public_key_hex).map_err(|e| {
+            FederationError::InvalidSignature(format!("Invalid public key hex: {}", e))
+        })?;
+        let signature_bytes = hex::decode(&payload.signature).map_err(|e| {
+            FederationError::InvalidSignature(format!("Invalid signature hex: {}", e))
+        })?;
+
+        let public_key = EdVerifyingKey::from_bytes(&public_key_bytes.try_into().map_err(|_| {
+            FederationError::InvalidSignature("Invalid public key length".to_string())
+        })?)
+        .map_err(|e| FederationError::InvalidSignature(e.to_string()))?;
+
+        let signature = Signature::from_bytes(&signature_bytes.try_into().map_err(|_| {
+            FederationError::InvalidSignature("Invalid signature length".to_string())
+        })?);
+
+        public_key
+            .verify(message.as_bytes(), &signature)
+            .map_err(|e| FederationError::InvalidSignature(e.to_string()))?;
+
+        // 3. Verify Federated Identity Exists
+        // Must match remote_instance_id AND pseudonym_id
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM federated_identities WHERE remote_instance_id = ?1 AND pseudonym_id = ?2)",
+                params![remote_instance_id, payload.pseudonym_id],
+                |row| row.get(0),
+            )
+            .map_err(FederationError::DbError)?;
+
+        if !exists {
+            return Err(FederationError::Forbidden(format!(
+                "Identity {} not attested for instance {}",
+                payload.pseudonym_id, payload.originating_server
+            )));
+        }
+
+        // 4. Add Member
+        add_member(
+            &conn,
+            state_clone.server_id,
+            &channel_id_clone,
+            &payload.pseudonym_id,
+        )
+        .map_err(FederationError::Channel)?;
+
+        Ok::<(), FederationError>(())
+    })
+    .await
+    .map_err(|e| FederationError::DbError(rusqlite::Error::ToSqlConversionFailure(Box::new(e))))??;
+
+    Ok(Json(serde_json::json!({ "status": "joined" })))
 }
