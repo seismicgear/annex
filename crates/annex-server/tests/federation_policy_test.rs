@@ -8,9 +8,7 @@ use annex_server::{
     AppState,
 };
 use annex_types::ServerPolicy;
-use annex_vrp::{
-    VrpAnchorSnapshot, VrpCapabilitySharingContract, VrpFederationHandshake,
-};
+use annex_vrp::{VrpAnchorSnapshot, VrpCapabilitySharingContract, VrpFederationHandshake};
 use std::sync::{Arc, Mutex, RwLock};
 use tempfile::NamedTempFile;
 use tokio::sync::broadcast;
@@ -103,7 +101,9 @@ async fn test_recalculate_federation_agreements() {
     });
 
     // 3. Verify Initial State (No change expected)
-    recalculate_federation_agreements(state.clone()).await.unwrap();
+    recalculate_federation_agreements(state.clone())
+        .await
+        .unwrap();
 
     let conn = pool.get().unwrap();
     let status: String = conn
@@ -124,7 +124,9 @@ async fn test_recalculate_federation_agreements() {
     drop(conn);
 
     // 5. Recalculate
-    recalculate_federation_agreements(state.clone()).await.unwrap();
+    recalculate_federation_agreements(state.clone())
+        .await
+        .unwrap();
 
     // 6. Verify Conflict
     let conn = pool.get().unwrap();

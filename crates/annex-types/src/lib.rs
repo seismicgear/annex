@@ -217,9 +217,7 @@ pub enum PresenceEvent {
         alignment_status: AlignmentStatus,
     },
     /// A federation agreement has been severed.
-    FederationSevered {
-        remote_base_url: String,
-    },
+    FederationSevered { remote_base_url: String },
 }
 
 #[cfg(test)]
