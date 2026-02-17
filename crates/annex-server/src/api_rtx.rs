@@ -8,9 +8,14 @@
 use crate::api::ApiError;
 use crate::middleware::IdentityContext;
 use crate::AppState;
-use annex_rtx::{check_redacted_topics, enforce_transfer_scope, validate_bundle_structure};
+use annex_federation::FederatedRtxEnvelope;
+use annex_rtx::{
+    check_redacted_topics, enforce_transfer_scope, validate_bundle_structure, BundleProvenance,
+    ReflectionSummaryBundle,
+};
 use annex_vrp::VrpTransferScope;
 use axum::{extract::Extension, Json};
+use ed25519_dalek::Signer;
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -270,6 +275,9 @@ pub async fn publish_handler(
         state.connection_manager.send(pseudonym, json.clone()).await;
     }
 
+    // 12. Relay to federated peers (background task — does not block response)
+    tokio::spawn(relay_rtx_bundles(state.clone(), bundle));
+
     Ok(Json(PublishResponse {
         ok: true,
         bundle_id,
@@ -526,6 +534,143 @@ fn extract_redacted_topics(contract_json: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Constructs the deterministic signing payload for an RTX relay envelope.
+///
+/// The signed payload is: `bundle_id + relaying_server + origin_server + relay_path_joined`,
+/// where `relay_path_joined` concatenates all relay path entries with `|` separators.
+pub fn rtx_relay_signing_payload(
+    bundle_id: &str,
+    relaying_server: &str,
+    origin_server: &str,
+    relay_path: &[String],
+) -> String {
+    let relay_path_joined = relay_path.join("|");
+    format!(
+        "{}{}{}{}",
+        bundle_id, relaying_server, origin_server, relay_path_joined
+    )
+}
+
+/// Relays an RTX bundle to all active federation peers.
+///
+/// This function is intended to be spawned as a background task after a local
+/// publish. For each federation peer with an active agreement and sufficient
+/// transfer scope, it constructs a `FederatedRtxEnvelope`, signs it with the
+/// server's Ed25519 key, and POSTs it to the peer's `/api/federation/rtx`
+/// endpoint.
+///
+/// Transfer scope enforcement:
+/// - `NoTransfer` peers are skipped entirely.
+/// - `ReflectionSummariesOnly` peers receive bundles with `reasoning_chain` stripped.
+/// - `FullKnowledgeBundle` peers receive the full bundle.
+///
+/// The provenance chain tracks the original source server and all relay hops.
+pub async fn relay_rtx_bundles(state: Arc<AppState>, bundle: ReflectionSummaryBundle) {
+    let peers = tokio::task::spawn_blocking({
+        let pool = state.pool.clone();
+        let server_id = state.server_id;
+        move || -> Result<Vec<(String, String)>, String> {
+            let conn = pool.get().map_err(|e| e.to_string())?;
+
+            let mut stmt = conn
+                .prepare(
+                    "SELECT i.base_url, fa.transfer_scope
+                     FROM federation_agreements fa
+                     JOIN instances i ON fa.remote_instance_id = i.id
+                     WHERE fa.local_server_id = ?1 AND fa.active = 1 AND i.status = 'ACTIVE'",
+                )
+                .map_err(|e| e.to_string())?;
+
+            let rows = stmt
+                .query_map(rusqlite::params![server_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|e| e.to_string())?;
+
+            let mut peers = Vec::new();
+            for row in rows {
+                peers.push(row.map_err(|e| e.to_string())?);
+            }
+
+            Ok(peers)
+        }
+    })
+    .await
+    .unwrap_or_else(|e| Err(e.to_string()));
+
+    let peers = match peers {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!("Failed to fetch federation peers for RTX relay: {}", e);
+            return;
+        }
+    };
+
+    if peers.is_empty() {
+        return;
+    }
+
+    let client = reqwest::Client::new();
+
+    for (base_url, transfer_scope_str) in peers {
+        let scope = match parse_transfer_scope(&transfer_scope_str) {
+            Some(s) if s >= VrpTransferScope::ReflectionSummariesOnly => s,
+            _ => continue, // Skip NoTransfer or unknown peers
+        };
+
+        // Apply federation transfer scope to the bundle
+        let scoped_bundle = match enforce_transfer_scope(&bundle, scope) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+
+        // Build provenance (this server is the first relay hop)
+        let provenance = BundleProvenance {
+            origin_server: bundle.source_server.clone(),
+            relay_path: vec![state.public_url.clone()],
+            bundle_id: bundle.bundle_id.clone(),
+        };
+
+        // Sign the relay envelope
+        let signing_payload = rtx_relay_signing_payload(
+            &bundle.bundle_id,
+            &state.public_url,
+            &bundle.source_server,
+            &provenance.relay_path,
+        );
+        let signature = state.signing_key.sign(signing_payload.as_bytes());
+        let signature_hex = hex::encode(signature.to_bytes());
+
+        let envelope = FederatedRtxEnvelope {
+            bundle: scoped_bundle,
+            provenance,
+            relaying_server: state.public_url.clone(),
+            signature: signature_hex,
+        };
+
+        let url = format!("{}/api/federation/rtx", base_url);
+        let client_clone = client.clone();
+
+        tokio::spawn(async move {
+            match client_clone.post(&url).json(&envelope).send().await {
+                Ok(resp) if !resp.status().is_success() => {
+                    tracing::warn!("RTX relay to {} returned status {}", url, resp.status());
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to relay RTX bundle to {}: {}", url, e);
+                }
+                Ok(_) => {
+                    tracing::debug!(
+                        "RTX bundle {} relayed to {}",
+                        envelope.bundle.bundle_id,
+                        url
+                    );
+                }
+            }
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -565,5 +710,26 @@ mod tests {
     fn test_extract_redacted_topics_invalid_json() {
         let topics = extract_redacted_topics("not json");
         assert!(topics.is_empty());
+    }
+
+    #[test]
+    fn test_rtx_relay_signing_payload_deterministic() {
+        let p1 = rtx_relay_signing_payload("b1", "relay", "origin", &["hop1".into()]);
+        let p2 = rtx_relay_signing_payload("b1", "relay", "origin", &["hop1".into()]);
+        assert_eq!(p1, p2);
+    }
+
+    #[test]
+    fn test_rtx_relay_signing_payload_multi_hop() {
+        let payload = rtx_relay_signing_payload(
+            "bundle-123",
+            "http://relay.com",
+            "http://origin.com",
+            &["http://hop1.com".into(), "http://hop2.com".into()],
+        );
+        assert_eq!(
+            payload,
+            "bundle-123http://relay.comhttp://origin.comhttp://hop1.com|http://hop2.com"
+        );
     }
 }

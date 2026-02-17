@@ -176,6 +176,10 @@ pub fn app(state: AppState) -> Router {
             "/api/federation/messages",
             post(api_federation::receive_federated_message_handler),
         )
+        .route(
+            "/api/federation/rtx",
+            post(api_federation::receive_federated_rtx_handler),
+        )
         .route("/api/graph/degrees", get(api_graph::get_degrees_handler))
         .route(
             "/api/graph/profile/{targetPseudonym}",

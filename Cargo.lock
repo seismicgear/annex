@@ -69,6 +69,7 @@ name = "annex-federation"
 version = "0.0.1"
 dependencies = [
  "annex-db",
+ "annex-rtx",
  "annex-types",
  "annex-vrp",
  "rusqlite",

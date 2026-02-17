@@ -19,4 +19,6 @@ pub mod types;
 
 pub use db::{create_agreement, get_agreement};
 pub use handshake::{process_incoming_handshake, HandshakeError};
-pub use types::{AttestationRequest, FederatedMessageEnvelope, FederationAgreement};
+pub use types::{
+    AttestationRequest, FederatedMessageEnvelope, FederatedRtxEnvelope, FederationAgreement,
+};
