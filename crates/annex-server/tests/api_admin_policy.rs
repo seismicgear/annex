@@ -65,6 +65,7 @@ async fn test_update_policy_and_recalculate() {
     let contract = VrpCapabilitySharingContract {
         required_capabilities: vec![],
         offered_capabilities: vec!["federation".to_string()],
+        redacted_topics: vec![],
     };
     let handshake = VrpFederationHandshake {
         anchor_snapshot: anchor,

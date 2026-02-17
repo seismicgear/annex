@@ -90,6 +90,7 @@ async fn test_agent_handshake_aligned() {
     let contract = VrpCapabilitySharingContract {
         required_capabilities: vec![],
         offered_capabilities: vec!["TEXT".to_string(), "VRP".to_string()],
+        redacted_topics: vec![],
     };
 
     let handshake = VrpFederationHandshake {
@@ -165,6 +166,7 @@ async fn test_agent_handshake_conflict() {
     let contract = VrpCapabilitySharingContract {
         required_capabilities: vec![],
         offered_capabilities: vec![],
+        redacted_topics: vec![],
     };
 
     let handshake = VrpFederationHandshake {

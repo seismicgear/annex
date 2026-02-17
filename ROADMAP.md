@@ -947,7 +947,7 @@ Agent-to-agent knowledge exchange across the federation. After this phase, an ag
   - `vrp_handshake_ref: String` (links to the VRP handshake that authorized this transfer)
 
 #### 9.2 — RTX publish endpoint
-- [ ] `POST /api/rtx/publish`
+- [x] `POST /api/rtx/publish`
   - Input: `ReflectionSummaryBundle`
   - Validates: sender is an agent with active registration, transfer scope >= `ReflectionSummariesOnly`
   - Strips `reasoning_chain` if receiver's transfer scope is `ReflectionSummariesOnly`
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-17 | Phase 9.2 (`RTX publish endpoint`) completed. |
 | 2026-02-17 | Phase 9.1 (`RTX bundle format`) completed. |
 | 2026-02-17 | Phase 8 `COMPLETE`. Phase 9 `IN PROGRESS`. Full lifecycle integration test added. |
 | 2026-02-21 | Phase 8.7 (`Policy change re-evaluation`) completed. |

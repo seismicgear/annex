@@ -114,6 +114,7 @@ async fn test_agent_connection_flow_end_to_end() {
     let contract = VrpCapabilitySharingContract {
         required_capabilities: vec![],
         offered_capabilities: vec!["TEXT".to_string()],
+        redacted_topics: vec![],
     };
     let handshake = VrpFederationHandshake {
         anchor_snapshot: anchor,

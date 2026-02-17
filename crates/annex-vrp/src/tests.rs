@@ -41,6 +41,7 @@ fn test_vrp_federation_handshake_serialization() {
         capability_contract: VrpCapabilitySharingContract {
             required_capabilities: vec!["cap1".to_string()],
             offered_capabilities: vec!["cap2".to_string()],
+            redacted_topics: vec![],
         },
     };
     let json = serde_json::to_string(&handshake).unwrap();
@@ -128,22 +129,26 @@ fn test_contracts_mutually_accepted() {
     let local = VrpCapabilitySharingContract {
         required_capabilities: vec!["cap_A".to_string()],
         offered_capabilities: vec!["cap_B".to_string()],
+        redacted_topics: vec![],
     };
     let remote = VrpCapabilitySharingContract {
         required_capabilities: vec!["cap_B".to_string()],
         offered_capabilities: vec!["cap_A".to_string()],
+        redacted_topics: vec![],
     };
     assert!(contracts_mutually_accepted(&local, &remote));
 
     let remote_lacking = VrpCapabilitySharingContract {
         required_capabilities: vec!["cap_B".to_string()],
         offered_capabilities: vec![], // Doesn't offer A
+        redacted_topics: vec![],
     };
     assert!(!contracts_mutually_accepted(&local, &remote_lacking));
 
     let local_lacking = VrpCapabilitySharingContract {
         required_capabilities: vec!["cap_C".to_string()], // Wants C, remote doesn't offer
         offered_capabilities: vec!["cap_B".to_string()],
+        redacted_topics: vec![],
     };
     assert!(!contracts_mutually_accepted(&local_lacking, &remote));
 }
@@ -193,6 +198,7 @@ fn test_validate_federation_handshake_success() {
     let local_contract = VrpCapabilitySharingContract {
         required_capabilities: vec![],
         offered_capabilities: vec![],
+        redacted_topics: vec![],
     };
 
     let handshake = VrpFederationHandshake {
@@ -229,6 +235,7 @@ fn test_validate_federation_handshake_conflict_principles() {
     let local_contract = VrpCapabilitySharingContract {
         required_capabilities: vec![],
         offered_capabilities: vec![],
+        redacted_topics: vec![],
     };
 
     let handshake = VrpFederationHandshake {
@@ -263,11 +270,13 @@ fn test_validate_federation_handshake_contract_fail() {
     let local_contract = VrpCapabilitySharingContract {
         required_capabilities: vec!["MustHave".to_string()],
         offered_capabilities: vec![],
+        redacted_topics: vec![],
     };
     // Remote doesn't offer MustHave
     let remote_contract = VrpCapabilitySharingContract {
         required_capabilities: vec![],
         offered_capabilities: vec![],
+        redacted_topics: vec![],
     };
 
     let handshake = VrpFederationHandshake {
@@ -348,4 +357,24 @@ fn test_check_transfer_acceptance() {
 
     // 5. NoTransfer requirement always met if not conflict
     assert!(check_transfer_acceptance(&report_partial, VrpTransferScope::NoTransfer).is_ok());
+}
+
+#[test]
+fn test_redacted_topics_backward_compatible_deserialization() {
+    // Contracts serialized without redacted_topics should still deserialize
+    let json = r#"{"required_capabilities":["cap1"],"offered_capabilities":["cap2"]}"#;
+    let contract: VrpCapabilitySharingContract = serde_json::from_str(json).unwrap();
+    assert!(contract.redacted_topics.is_empty());
+}
+
+#[test]
+fn test_redacted_topics_round_trip() {
+    let contract = VrpCapabilitySharingContract {
+        required_capabilities: vec![],
+        offered_capabilities: vec![],
+        redacted_topics: vec!["politics".to_string(), "finance".to_string()],
+    };
+    let json = serde_json::to_string(&contract).unwrap();
+    let deserialized: VrpCapabilitySharingContract = serde_json::from_str(&json).unwrap();
+    assert_eq!(deserialized.redacted_topics, vec!["politics", "finance"]);
 }

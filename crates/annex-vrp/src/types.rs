@@ -61,6 +61,12 @@ pub struct VrpCapabilitySharingContract {
     pub required_capabilities: Vec<String>,
     /// Capabilities offered by this entity to the counterparty.
     pub offered_capabilities: Vec<String>,
+    /// Knowledge domains that must not be shared in RTX transfers.
+    ///
+    /// Bundles whose `domain_tags` overlap with these topics are blocked
+    /// from transfer per the VRP agreement.
+    #[serde(default)]
+    pub redacted_topics: Vec<String>,
 }
 
 /// The payload exchanged during a VRP handshake.
