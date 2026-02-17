@@ -21,14 +21,14 @@ Phase 4: Text Communication ............ COMPLETE
 Phase 5: Presence Graph ................ COMPLETE
 Phase 6: Agent Protocol ................ COMPLETE
 Phase 7: Voice Infrastructure .......... COMPLETE
-Phase 8: Federation .................... IN PROGRESS
-Phase 9: RTX Knowledge Exchange ........ NOT STARTED
+Phase 8: Federation .................... COMPLETE
+Phase 9: RTX Knowledge Exchange ........ IN PROGRESS
 Phase 10: Observability ................ NOT STARTED
 Phase 11: Client ....................... NOT STARTED
 Phase 12: Hardening & Audit ............ NOT STARTED
 ```
 
-**Last updated**: 2026-02-11
+**Last updated**: 2026-02-17
 
 When phases change status, update this block and add a dated entry to the [Changelog](#changelog) at the bottom of this document.
 
@@ -827,7 +827,7 @@ Phase 7 is **COMPLETE** when:
 
 ## Phase 8: Federation
 
-**Status**: `IN PROGRESS`
+**Status**: `COMPLETE`
 **Prerequisites**: Phase 3 `COMPLETE`, Phase 4 `COMPLETE`, Phase 5 `COMPLETE`
 **Estimated scope**: Server-to-server VRP handshake, cross-server identity attestation, federated channels, message relay
 
@@ -912,18 +912,18 @@ Server-to-server federation. After this phase, two Annex instances can negotiate
 
 Phase 8 is **COMPLETE** when:
 
-- [ ] Two Annex servers can perform bilateral VRP handshake and establish federation
-- [ ] Cross-server identity attestation works (user on Server A is attested on Server B)
-- [ ] Messages relay across federated channels with cryptographic verification
-- [ ] Policy changes trigger automatic re-evaluation of federation trust
-- [ ] Federation can be severed cleanly when alignment drops to `Conflict`
-- [ ] Integration test: two servers federate → user on A sends message → user on B receives it → A changes policy → trust downgrades → restricted behavior enforced
+- [x] Two Annex servers can perform bilateral VRP handshake and establish federation
+- [x] Cross-server identity attestation works (user on Server A is attested on Server B)
+- [x] Messages relay across federated channels with cryptographic verification
+- [x] Policy changes trigger automatic re-evaluation of federation trust
+- [x] Federation can be severed cleanly when alignment drops to `Conflict`
+- [x] Integration test: two servers federate → user on A sends message → user on B receives it → A changes policy → trust downgrades → restricted behavior enforced
 
 ---
 
 ## Phase 9: RTX Knowledge Exchange
 
-**Status**: `NOT STARTED`
+**Status**: `IN PROGRESS`
 **Prerequisites**: Phase 6 `COMPLETE`, Phase 8 `COMPLETE`
 **Estimated scope**: ReflectionSummaryBundle format, RTX publish/subscribe, transfer scope enforcement, governance endpoint
 
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-17 | Phase 8 `COMPLETE`. Phase 9 `IN PROGRESS`. Full lifecycle integration test added. |
 | 2026-02-21 | Phase 8.7 (`Policy change re-evaluation`) completed. |
 | 2026-02-21 | Phase 8.6 (`Cross-server message relay`) completed. |
 | 2026-02-21 | Phase 8.5 (`Federated channels`) completed. |
