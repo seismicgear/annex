@@ -34,6 +34,12 @@ async fn test_agent_websocket_behavior() {
             [&pseudo]
         ).unwrap();
 
+        // Register Agent (required for alignment checks)
+        conn.execute(
+            "INSERT INTO agent_registrations (server_id, pseudonym_id, alignment_status, transfer_scope, capability_contract_json, last_handshake_at) VALUES (1, ?1, 'ALIGNED', 'NO_TRANSFER', '{}', datetime('now'))",
+            [&pseudo]
+        ).unwrap();
+
         // Create Channel
         let chan_params = CreateChannelParams {
             server_id: 1,
@@ -139,6 +145,9 @@ async fn test_agent_websocket_behavior() {
                 serde_json::from_str(&text).expect("failed to parse json");
 
             // Check type and flattened fields
+            if received["type"] == "error" {
+                panic!("Received error from server: {:?}", received);
+            }
             assert_eq!(received["type"], "message");
             assert_eq!(received["content"], content);
             assert_eq!(received["sender_pseudonym"], "agent-007");
