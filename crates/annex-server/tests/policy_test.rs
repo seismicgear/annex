@@ -54,7 +54,9 @@ async fn test_recalculate_agent_alignments() {
         merkle_tree: Arc::new(Mutex::new(MerkleTree::new(20).unwrap())),
         membership_vkey: load_dummy_vkey(),
         server_id: 1,
-        signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng)),
+        signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
+            &mut rand::rngs::OsRng,
+        )),
         public_url: "http://localhost:3000".to_string(),
         policy: policy_lock.clone(),
         rate_limiter: RateLimiter::new(),

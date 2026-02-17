@@ -66,7 +66,9 @@ async fn setup_app() -> (axum::Router, Arc<AppState>, TempDir) {
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: Arc::new(membership_vkey),
         server_id,
-        signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng)),
+        signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
+            &mut rand::rngs::OsRng,
+        )),
         public_url: "http://localhost:3000".to_string(),
         policy: Arc::new(RwLock::new(policy)),
         rate_limiter: annex_server::middleware::RateLimiter::new(),
