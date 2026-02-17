@@ -1,18 +1,18 @@
-use annex_server::{app, api_ws, AppState};
-use annex_types::ServerPolicy;
 use annex_db::run_migrations;
-use annex_identity::{MerkleTree, zk};
-use annex_voice::{LiveKitConfig, VoiceService, TtsService, SttService};
+use annex_identity::{zk, MerkleTree};
+use annex_server::{api_ws, app, AppState};
+use annex_types::ServerPolicy;
+use annex_voice::{LiveKitConfig, SttService, TtsService, VoiceService};
 use axum::{
     body::Body,
     extract::ConnectInfo,
     http::{Request, StatusCode},
 };
 use ed25519_dalek::{Signer, SigningKey};
-use std::net::SocketAddr;
 use rand::{rngs::OsRng, RngCore};
 use serde_json::json;
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, RwLock};
 use tempfile::TempDir;
 use tower::ServiceExt; // for `oneshot`
@@ -119,14 +119,18 @@ async fn test_list_federated_channels() {
 
     if response.status() != StatusCode::OK {
         let status = response.status();
-        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body_str = String::from_utf8_lossy(&body_bytes);
         panic!("Request failed with status {}: {}", status, body_str);
     }
 
     assert_eq!(response.status(), StatusCode::OK);
 
-    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let channels: Vec<serde_json::Value> = serde_json::from_slice(&body_bytes).unwrap();
 
     assert_eq!(channels.len(), 1);
@@ -211,7 +215,9 @@ async fn test_join_federated_channel() {
 
     if response.status() != StatusCode::OK {
         let status = response.status();
-        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let body_str = String::from_utf8_lossy(&body_bytes);
         panic!("Request failed with status {}: {}", status, body_str);
     }

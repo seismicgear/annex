@@ -154,10 +154,9 @@ pub async fn get_vrp_root_handler(
             (tree.root_hex(), tree.next_index)
         };
 
-        let conn = state
-            .pool
-            .get()
-            .map_err(|e| FederationError::DbError(rusqlite::Error::ToSqlConversionFailure(Box::new(e))))?;
+        let conn = state.pool.get().map_err(|e| {
+            FederationError::DbError(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+        })?;
 
         let updated_at: Option<String> = conn
             .query_row(
@@ -171,7 +170,9 @@ pub async fn get_vrp_root_handler(
         Ok::<_, FederationError>((root_hex, leaf_count, updated_at))
     })
     .await
-    .map_err(|e| FederationError::DbError(rusqlite::Error::ToSqlConversionFailure(Box::new(e))))??;
+    .map_err(|e| {
+        FederationError::DbError(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+    })??;
 
     Ok(Json(GetRootResponse {
         root_hex: result.0,
@@ -209,7 +210,9 @@ pub async fn attest_membership_handler(
         })
     })
     .await
-    .map_err(|e| FederationError::DbError(rusqlite::Error::ToSqlConversionFailure(Box::new(e))))??;
+    .map_err(|e| {
+        FederationError::DbError(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+    })??;
 
     // Verify Signature
     // Message: SHA256(topic || commitment || participant_type)
@@ -222,14 +225,16 @@ pub async fn attest_membership_handler(
     let signature_bytes = hex::decode(&payload.signature)
         .map_err(|e| FederationError::InvalidSignature(format!("Invalid signature hex: {}", e)))?;
 
-    let public_key = EdVerifyingKey::from_bytes(&public_key_bytes.try_into().map_err(|_| {
-        FederationError::InvalidSignature("Invalid public key length".to_string())
-    })?)
-    .map_err(|e| FederationError::InvalidSignature(e.to_string()))?;
+    let public_key =
+        EdVerifyingKey::from_bytes(&public_key_bytes.try_into().map_err(|_| {
+            FederationError::InvalidSignature("Invalid public key length".to_string())
+        })?)
+        .map_err(|e| FederationError::InvalidSignature(e.to_string()))?;
 
-    let signature = Signature::from_bytes(&signature_bytes.try_into().map_err(|_| {
-        FederationError::InvalidSignature("Invalid signature length".to_string())
-    })?);
+    let signature =
+        Signature::from_bytes(&signature_bytes.try_into().map_err(|_| {
+            FederationError::InvalidSignature("Invalid signature length".to_string())
+        })?);
 
     public_key
         .verify(message.as_bytes(), &signature)
@@ -274,15 +279,15 @@ pub async fn attest_membership_handler(
 
     // 4. Persist Attestation
     let pseudonym_id = tokio::task::spawn_blocking(move || {
-        let conn = state_clone
-            .pool
-            .get()
-            .map_err(|e| FederationError::DbError(rusqlite::Error::ToSqlConversionFailure(Box::new(e))))?;
+        let conn = state_clone.pool.get().map_err(|e| {
+            FederationError::DbError(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+        })?;
 
         // Derive local identifiers
-        let nullifier_hex = derive_nullifier_hex(&payload.commitment, &payload.topic).map_err(
-            |e| FederationError::IdentityDerivation(format!("Failed to derive nullifier: {}", e)),
-        )?;
+        let nullifier_hex =
+            derive_nullifier_hex(&payload.commitment, &payload.topic).map_err(|e| {
+                FederationError::IdentityDerivation(format!("Failed to derive nullifier: {}", e))
+            })?;
         let pseudonym_id = derive_pseudonym_id(&payload.topic, &nullifier_hex).map_err(|e| {
             FederationError::IdentityDerivation(format!("Failed to derive pseudonym: {}", e))
         })?;
@@ -351,7 +356,9 @@ pub async fn attest_membership_handler(
         Ok::<_, FederationError>(pseudonym_id)
     })
     .await
-    .map_err(|e| FederationError::DbError(rusqlite::Error::ToSqlConversionFailure(Box::new(e))))??;
+    .map_err(|e| {
+        FederationError::DbError(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+    })??;
 
     Ok(Json(serde_json::json!({
         "ok": true,
@@ -371,7 +378,9 @@ pub async fn get_federated_channels_handler(
         list_federated_channels(&conn, state.server_id).map_err(FederationError::Channel)
     })
     .await
-    .map_err(|e| FederationError::DbError(rusqlite::Error::ToSqlConversionFailure(Box::new(e))))??;
+    .map_err(|e| {
+        FederationError::DbError(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+    })??;
 
     Ok(Json(channels))
 }
