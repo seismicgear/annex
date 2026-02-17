@@ -40,6 +40,8 @@ async fn test_get_agent_profile() {
         merkle_tree: Arc::new(Mutex::new(annex_identity::MerkleTree::new(20).unwrap())),
         membership_vkey: Arc::new(vk),
         server_id: 1,
+        signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng)),
+        public_url: "http://localhost:3000".to_string(),
         policy: Arc::new(RwLock::new(ServerPolicy::default())),
         rate_limiter: middleware::RateLimiter::new(),
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
