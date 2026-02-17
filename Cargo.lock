@@ -130,7 +130,9 @@ name = "annex-rtx"
 version = "0.0.1"
 dependencies = [
  "annex-types",
+ "annex-vrp",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "tracing",
 ]
