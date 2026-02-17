@@ -149,6 +149,28 @@ async fn main() -> Result<(), StartupError> {
     let membership_vkey =
         annex_identity::zk::parse_verification_key(&vkey_json).map_err(StartupError::ZkError)?;
 
+    // Load Server Signing Key
+    let signing_key = if let Ok(key_hex) = std::env::var("ANNEX_SIGNING_KEY") {
+        let bytes = hex::decode(&key_hex).map_err(|e| {
+            tracing::error!("invalid ANNEX_SIGNING_KEY hex: {}", e);
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid signing key hex")
+        })?;
+        ed25519_dalek::SigningKey::from_bytes(&bytes.try_into().map_err(|_| {
+            tracing::error!("invalid ANNEX_SIGNING_KEY length");
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid signing key length",
+            )
+        })?)
+    } else {
+        tracing::warn!("ANNEX_SIGNING_KEY not set, generating random key (federation identity will change on restart)");
+        let mut csprng = rand::rngs::OsRng;
+        let mut bytes = [0u8; 32];
+        use rand::RngCore;
+        csprng.fill_bytes(&mut bytes);
+        ed25519_dalek::SigningKey::from_bytes(&bytes)
+    };
+
     // Create presence event broadcast channel
     let (presence_tx, _) = tokio::sync::broadcast::channel(100);
 
@@ -168,6 +190,8 @@ async fn main() -> Result<(), StartupError> {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: Arc::new(membership_vkey),
+        signing_key: Arc::new(signing_key),
+        public_url: config.server.public_url.clone(),
         server_id,
         policy: Arc::new(RwLock::new(policy)),
         rate_limiter: RateLimiter::new(),

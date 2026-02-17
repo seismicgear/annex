@@ -44,6 +44,10 @@ pub struct ServerConfig {
     /// Inactivity threshold in seconds for graph node pruning.
     #[serde(default = "default_inactivity_threshold_seconds")]
     pub inactivity_threshold_seconds: u64,
+
+    /// Public URL for federation (e.g., "https://annex.example.com").
+    #[serde(default = "default_public_url")]
+    pub public_url: String,
 }
 
 /// Database configuration.
@@ -90,6 +94,10 @@ fn default_inactivity_threshold_seconds() -> u64 {
     300
 }
 
+fn default_public_url() -> String {
+    "http://localhost:3000".to_string()
+}
+
 fn default_db_path() -> String {
     "annex.db".to_string()
 }
@@ -113,6 +121,7 @@ impl Default for ServerConfig {
             port: default_port(),
             retention_check_interval_seconds: default_retention_check_interval_seconds(),
             inactivity_threshold_seconds: default_inactivity_threshold_seconds(),
+            public_url: default_public_url(),
         }
     }
 }
@@ -270,6 +279,9 @@ pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
     if let Some(threshold) = parse_env_var("ANNEX_INACTIVITY_THRESHOLD_SECONDS")? {
         config.server.inactivity_threshold_seconds = threshold;
     }
+    if let Some(url) = parse_env_var("ANNEX_PUBLIC_URL")? {
+        config.server.public_url = url;
+    }
     if let Ok(db_path) = std::env::var("ANNEX_DB_PATH") {
         config.database.path = db_path;
     }
@@ -320,6 +332,7 @@ mod tests {
         std::env::remove_var("ANNEX_DB_POOL_MAX_SIZE");
         std::env::remove_var("ANNEX_LOG_LEVEL");
         std::env::remove_var("ANNEX_LOG_JSON");
+        std::env::remove_var("ANNEX_PUBLIC_URL");
     }
 
     fn write_temp_config(contents: &str) -> String {
@@ -396,6 +409,7 @@ json = true
         std::env::set_var("ANNEX_DB_POOL_MAX_SIZE", "16");
         std::env::set_var("ANNEX_LOG_LEVEL", "debug");
         std::env::set_var("ANNEX_LOG_JSON", "yes");
+        std::env::set_var("ANNEX_PUBLIC_URL", "https://annex.test");
 
         let cfg = load_config(None).expect("load should succeed");
 
@@ -406,6 +420,7 @@ json = true
         assert_eq!(cfg.database.pool_max_size, 16);
         assert_eq!(cfg.logging.level, "debug");
         assert!(cfg.logging.json);
+        assert_eq!(cfg.server.public_url, "https://annex.test");
 
         clear_env();
     }

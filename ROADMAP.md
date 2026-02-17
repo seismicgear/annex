@@ -892,13 +892,13 @@ Server-to-server federation. After this phase, two Annex instances can negotiate
 - [x] Federated channel join: remote user's pseudonym is attested via `federated_identities`, then granted channel access
 
 #### 8.6 — Cross-server message relay
-- [ ] Messages in federated channels are relayed to federation peers
-- [ ] Message envelopes include:
+- [x] Messages in federated channels are relayed to federation peers
+- [x] Message envelopes include:
   - Sender pseudonym
   - Sender's VRP attestation reference (so receiving server can verify)
   - Message content
   - Cryptographic signature from originating server
-- [ ] Receiving server verifies signature and attestation before delivering to local subscribers
+- [x] Receiving server verifies signature and attestation before delivering to local subscribers
 
 #### 8.7 — Policy change re-evaluation
 - [ ] When either server updates its policy:

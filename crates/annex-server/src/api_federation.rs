@@ -1,18 +1,23 @@
-use crate::{api::GetRootResponse, AppState};
-use annex_channels::{add_member, list_federated_channels, Channel};
-use annex_federation::{process_incoming_handshake, AttestationRequest, HandshakeError};
+use crate::{api::GetRootResponse, api_ws::OutgoingMessage, AppState};
+use annex_channels::{
+    add_member, create_message, get_channel, is_member, list_federated_channels, Channel,
+    CreateMessageParams, Message,
+};
+use annex_federation::{
+    process_incoming_handshake, AttestationRequest, FederatedMessageEnvelope, HandshakeError,
+};
 use annex_graph::{ensure_graph_node, GraphError};
 use annex_identity::{
     derive_nullifier_hex, derive_pseudonym_id,
     zk::{parse_fr_from_hex, parse_proof, verify_proof},
 };
-use annex_types::NodeType;
+use annex_types::{FederationScope, NodeType};
 use annex_vrp::{VrpFederationHandshake, VrpValidationReport};
 use axum::{
     extract::{Extension, Path},
     Json,
 };
-use ed25519_dalek::{Signature, Verifier, VerifyingKey as EdVerifyingKey};
+use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey as EdVerifyingKey};
 use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
 use std::sync::Arc;
@@ -477,4 +482,273 @@ pub async fn join_federated_channel_handler(
     .map_err(|e| FederationError::DbError(rusqlite::Error::ToSqlConversionFailure(Box::new(e))))??;
 
     Ok(Json(serde_json::json!({ "status": "joined" })))
+}
+
+/// Relays a message to all active federation peers.
+pub async fn relay_message(
+    state: Arc<AppState>,
+    message: annex_channels::Message,
+) -> Result<(), FederationError> {
+    let state_clone = state.clone();
+
+    // 1. Identify Peers (Active Federation Agreements)
+    let peers: Vec<String> = tokio::task::spawn_blocking(move || {
+        let conn = state_clone
+            .pool
+            .get()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT i.base_url
+             FROM federation_agreements fa
+             JOIN instances i ON fa.remote_instance_id = i.id
+             WHERE fa.active = 1 AND i.status = 'ACTIVE'",
+            )
+            .map_err(FederationError::DbError)?;
+
+        let rows = stmt
+            .query_map([], |row| row.get(0))
+            .map_err(FederationError::DbError)?;
+
+        let mut urls = Vec::new();
+        for row in rows {
+            urls.push(row.map_err(FederationError::DbError)?);
+        }
+        Ok::<_, FederationError>(urls)
+    })
+    .await
+    .map_err(|e| {
+        FederationError::DbError(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+    })??;
+
+    if peers.is_empty() {
+        return Ok(());
+    }
+
+    // 2. Construct Envelope
+    let envelope = FederatedMessageEnvelope {
+        message_id: message.message_id.clone(),
+        channel_id: message.channel_id.clone(),
+        content: message.content.clone(),
+        sender_pseudonym: message.sender_pseudonym.clone(),
+        originating_server: state.public_url.clone(),
+        attestation_ref: "implicit".to_string(), // Redundant as receiver has federated_identities
+        signature: "".to_string(),
+        created_at: message.created_at.clone(),
+    };
+
+    // 3. Sign
+    let payload_string = format!(
+        "{}{}{}{}{}{}{}",
+        envelope.message_id,
+        envelope.channel_id,
+        envelope.content,
+        envelope.sender_pseudonym,
+        envelope.originating_server,
+        envelope.attestation_ref,
+        envelope.created_at
+    );
+    let signature = state.signing_key.sign(payload_string.as_bytes());
+    let mut envelope = envelope;
+    envelope.signature = hex::encode(signature.to_bytes());
+
+    // 4. Send to Peers
+    let client = reqwest::Client::new();
+    let env_json = serde_json::to_value(&envelope).map_err(|_| {
+        FederationError::DbError(rusqlite::Error::ToSqlConversionFailure(Box::new(
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "serialization failed"),
+        )))
+    })?;
+
+    for base_url in peers {
+        let url = format!("{}/api/federation/messages", base_url);
+        let client = client.clone();
+        let json = env_json.clone();
+
+        tokio::spawn(async move {
+            match client.post(&url).json(&json).send().await {
+                Ok(resp) => {
+                    if !resp.status().is_success() {
+                        tracing::warn!(
+                            "Failed to relay message to {}: status {}",
+                            url,
+                            resp.status()
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to relay message to {}: {}", url, e);
+                }
+            }
+        });
+    }
+
+    Ok(())
+}
+
+/// Handler for `POST /api/federation/messages`.
+pub async fn receive_federated_message_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(envelope): Json<FederatedMessageEnvelope>,
+) -> Result<Json<serde_json::Value>, FederationError> {
+    let state_clone = state.clone();
+
+    // 1. Verify Originating Server (Resolve Instance & Check Signature)
+    let originating_server = envelope.originating_server.clone();
+    let (remote_instance_id, public_key_hex, status): (i64, String, String) =
+        tokio::task::spawn_blocking(move || {
+            let conn = state_clone
+                .pool
+                .get()
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+            conn.query_row(
+                "SELECT id, public_key, status FROM instances WHERE base_url = ?1",
+                params![originating_server],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(|e| {
+                if e == rusqlite::Error::QueryReturnedNoRows {
+                    FederationError::UnknownRemote(originating_server.clone())
+                } else {
+                    FederationError::DbError(e)
+                }
+            })
+        })
+        .await
+        .map_err(|e| {
+            FederationError::DbError(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+        })??;
+
+    if status != "ACTIVE" {
+        return Err(FederationError::Forbidden(format!(
+            "Instance {} is not active",
+            envelope.originating_server
+        )));
+    }
+
+    // Verify Signature
+    // Message: SHA256(message_id + channel_id + content + sender_pseudonym + originating_server + attestation_ref + created_at)
+    let payload_string = format!(
+        "{}{}{}{}{}{}{}",
+        envelope.message_id,
+        envelope.channel_id,
+        envelope.content,
+        envelope.sender_pseudonym,
+        envelope.originating_server,
+        envelope.attestation_ref,
+        envelope.created_at
+    );
+
+    let public_key_bytes = hex::decode(&public_key_hex)
+        .map_err(|e| FederationError::InvalidSignature(format!("Invalid public key hex: {}", e)))?;
+    let signature_bytes = hex::decode(&envelope.signature)
+        .map_err(|e| FederationError::InvalidSignature(format!("Invalid signature hex: {}", e)))?;
+
+    let public_key =
+        EdVerifyingKey::from_bytes(&public_key_bytes.try_into().map_err(|_| {
+            FederationError::InvalidSignature("Invalid public key length".to_string())
+        })?)
+        .map_err(|e| FederationError::InvalidSignature(e.to_string()))?;
+
+    let signature =
+        Signature::from_bytes(&signature_bytes.try_into().map_err(|_| {
+            FederationError::InvalidSignature("Invalid signature length".to_string())
+        })?);
+
+    public_key
+        .verify(payload_string.as_bytes(), &signature)
+        .map_err(|e| FederationError::InvalidSignature(e.to_string()))?;
+
+    // 2. Verify Sender is Attested
+    let state_clone = state.clone();
+    let sender_pseudonym = envelope.sender_pseudonym.clone();
+    let channel_id = envelope.channel_id.clone();
+    let message_id = envelope.message_id.clone();
+    let content = envelope.content.clone();
+
+    let msg_opt: Option<Message> = tokio::task::spawn_blocking(move || {
+        let conn = state_clone
+            .pool
+            .get()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+        // Check federated_identities
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM federated_identities WHERE remote_instance_id = ?1 AND pseudonym_id = ?2)",
+                params![remote_instance_id, sender_pseudonym],
+                |row| row.get(0),
+            )
+            .map_err(FederationError::DbError)?;
+
+        if !exists {
+            return Err(FederationError::Forbidden(format!(
+                "Sender {} not attested from instance {}",
+                sender_pseudonym, remote_instance_id
+            )));
+        }
+
+        // 3. Verify Channel is Federated
+        let channel = get_channel(&conn, &channel_id).map_err(FederationError::Channel)?;
+
+        if channel.federation_scope == FederationScope::Local {
+            return Err(FederationError::Forbidden(format!(
+                "Channel {} is LOCAL only",
+                channel_id
+            )));
+        }
+
+        // 4. Verify Sender is a Member
+        if !is_member(&conn, &channel_id, &sender_pseudonym).map_err(FederationError::Channel)? {
+            // Option: Auto-join if policy allows?
+            // For now, strict: must have joined via explicit join endpoint.
+            return Err(FederationError::Forbidden(format!(
+                "Sender {} is not a member of channel {}",
+                sender_pseudonym, channel_id
+            )));
+        }
+
+        // 5. Insert Message
+        // Important: check if message_id already exists (idempotency)
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM messages WHERE message_id = ?1)",
+                params![message_id],
+                |row| row.get(0),
+            )
+            .map_err(FederationError::DbError)?;
+
+        if exists {
+            return Ok(None);
+        }
+
+        let params = CreateMessageParams {
+            channel_id: channel_id.clone(),
+            message_id: message_id.clone(),
+            sender_pseudonym: sender_pseudonym.clone(),
+            content: content.clone(),
+            reply_to_message_id: None, // Replies across federation not fully supported yet or handled via ID matching
+        };
+
+        let msg = create_message(&conn, &params).map_err(FederationError::Channel)?;
+
+        Ok::<_, FederationError>(Some(msg))
+    })
+    .await
+    .map_err(|e| FederationError::DbError(rusqlite::Error::ToSqlConversionFailure(Box::new(e))))??; // Flatten join error + result error
+
+    // 6. Broadcast
+    if let Some(msg) = msg_opt {
+        let out = OutgoingMessage::Message(msg);
+        if let Ok(json) = serde_json::to_string(&out) {
+            state
+                .connection_manager
+                .broadcast(&envelope.channel_id, json)
+                .await;
+        }
+    }
+
+    Ok(Json(serde_json::json!({ "status": "received" })))
 }

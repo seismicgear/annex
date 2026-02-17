@@ -364,12 +364,41 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                         match res {
                             Ok(Ok(message)) => {
                                 // Broadcast
-                                let out = OutgoingMessage::Message(message);
+                                let out = OutgoingMessage::Message(message.clone());
                                 if let Ok(json) = serde_json::to_string(&out) {
                                     state
                                         .connection_manager
                                         .broadcast(&channel_id_clone, json)
                                         .await;
+                                }
+
+                                // Check federation and relay
+                                let pool = state.pool.clone();
+                                let cid = channel_id_clone.clone();
+                                let is_federated = tokio::task::spawn_blocking(move || {
+                                    if let Ok(conn) = pool.get() {
+                                        if let Ok(ch) = annex_channels::get_channel(&conn, &cid) {
+                                            return ch.federation_scope
+                                                != annex_types::FederationScope::Local;
+                                        }
+                                    }
+                                    false
+                                })
+                                .await
+                                .unwrap_or(false);
+
+                                if is_federated {
+                                    let state_clone = state.clone();
+                                    tokio::spawn(async move {
+                                        if let Err(e) = crate::api_federation::relay_message(
+                                            state_clone,
+                                            message,
+                                        )
+                                        .await
+                                        {
+                                            tracing::warn!("Failed to relay message: {}", e);
+                                        }
+                                    });
                                 }
                             }
                             Ok(Err(e)) => {
