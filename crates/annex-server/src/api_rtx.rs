@@ -14,7 +14,10 @@ use annex_rtx::{
     ReflectionSummaryBundle,
 };
 use annex_vrp::VrpTransferScope;
-use axum::{extract::Extension, Json};
+use axum::{
+    extract::{Extension, Query},
+    Json,
+};
 use ed25519_dalek::Signer;
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
@@ -669,6 +672,329 @@ pub async fn relay_rtx_bundles(state: Arc<AppState>, bundle: ReflectionSummaryBu
             }
         });
     }
+}
+
+// ===========================================================================
+// Governance Mediation — Auditable transfer log queries (Step 9.5)
+// ===========================================================================
+
+/// Query parameters for `GET /api/rtx/governance/transfers`.
+#[derive(Debug, Deserialize)]
+pub struct TransferLogQuery {
+    /// Filter by bundle_id.
+    pub bundle_id: Option<String>,
+    /// Filter by source pseudonym.
+    pub source: Option<String>,
+    /// Filter by destination pseudonym.
+    pub destination: Option<String>,
+    /// Filter transfers at or after this ISO 8601 timestamp.
+    pub since: Option<String>,
+    /// Filter transfers at or before this ISO 8601 timestamp.
+    pub until: Option<String>,
+    /// Maximum number of results to return (default 50, max 500).
+    pub limit: Option<u32>,
+    /// Number of results to skip (for pagination).
+    pub offset: Option<u32>,
+}
+
+/// A single entry from the RTX transfer log.
+#[derive(Debug, Serialize)]
+pub struct TransferLogEntry {
+    pub id: i64,
+    pub bundle_id: String,
+    pub source_pseudonym: String,
+    pub destination_pseudonym: Option<String>,
+    pub transfer_scope_applied: String,
+    pub redactions_applied: Option<String>,
+    pub transferred_at: String,
+}
+
+/// Response for `GET /api/rtx/governance/transfers`.
+#[derive(Debug, Serialize)]
+pub struct TransferLogResponse {
+    pub transfers: Vec<TransferLogEntry>,
+    pub total: i64,
+    pub limit: u32,
+    pub offset: u32,
+}
+
+/// Handler for `GET /api/rtx/governance/transfers`.
+///
+/// Returns a paginated, filterable view of the RTX transfer log.
+/// Requires `can_moderate` permission (server operator access).
+pub async fn governance_transfers_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(IdentityContext(identity)): Extension<IdentityContext>,
+    Query(query): Query<TransferLogQuery>,
+) -> Result<Json<TransferLogResponse>, ApiError> {
+    // Operator-only: require can_moderate
+    if !identity.can_moderate {
+        return Err(ApiError::Forbidden(
+            "governance endpoints require can_moderate permission".to_string(),
+        ));
+    }
+
+    let limit = query.limit.unwrap_or(50).min(500);
+    let offset = query.offset.unwrap_or(0);
+
+    let result = tokio::task::spawn_blocking({
+        let state = state.clone();
+        move || -> Result<TransferLogResponse, ApiError> {
+            let conn = state.pool.get().map_err(|e| {
+                ApiError::InternalServerError(format!("db connection failed: {}", e))
+            })?;
+
+            // Build dynamic WHERE clause
+            let mut conditions = vec!["server_id = ?1".to_string()];
+            let mut param_idx = 2u32;
+            let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(state.server_id)];
+
+            if let Some(ref bid) = query.bundle_id {
+                conditions.push(format!("bundle_id = ?{}", param_idx));
+                params.push(Box::new(bid.clone()));
+                param_idx += 1;
+            }
+            if let Some(ref src) = query.source {
+                conditions.push(format!("source_pseudonym = ?{}", param_idx));
+                params.push(Box::new(src.clone()));
+                param_idx += 1;
+            }
+            if let Some(ref dst) = query.destination {
+                conditions.push(format!("destination_pseudonym = ?{}", param_idx));
+                params.push(Box::new(dst.clone()));
+                param_idx += 1;
+            }
+            if let Some(ref since) = query.since {
+                conditions.push(format!("transferred_at >= ?{}", param_idx));
+                params.push(Box::new(since.clone()));
+                param_idx += 1;
+            }
+            if let Some(ref until) = query.until {
+                conditions.push(format!("transferred_at <= ?{}", param_idx));
+                params.push(Box::new(until.clone()));
+                param_idx += 1;
+            }
+
+            let where_clause = conditions.join(" AND ");
+
+            // Count total matching entries
+            let count_sql = format!(
+                "SELECT COUNT(*) FROM rtx_transfer_log WHERE {}",
+                where_clause
+            );
+            let total: i64 = conn
+                .query_row(
+                    &count_sql,
+                    rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
+                    |row| row.get(0),
+                )
+                .map_err(|e| ApiError::InternalServerError(format!("count query failed: {}", e)))?;
+
+            // Fetch paginated results
+            let data_sql = format!(
+                "SELECT id, bundle_id, source_pseudonym, destination_pseudonym,
+                        transfer_scope_applied, redactions_applied, transferred_at
+                 FROM rtx_transfer_log
+                 WHERE {}
+                 ORDER BY id DESC
+                 LIMIT ?{} OFFSET ?{}",
+                where_clause,
+                param_idx,
+                param_idx + 1,
+            );
+
+            params.push(Box::new(limit));
+            params.push(Box::new(offset));
+
+            let mut stmt = conn.prepare(&data_sql).map_err(|e| {
+                ApiError::InternalServerError(format!("prepare query failed: {}", e))
+            })?;
+
+            let rows = stmt
+                .query_map(
+                    rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
+                    |row| {
+                        Ok(TransferLogEntry {
+                            id: row.get(0)?,
+                            bundle_id: row.get(1)?,
+                            source_pseudonym: row.get(2)?,
+                            destination_pseudonym: row.get(3)?,
+                            transfer_scope_applied: row.get(4)?,
+                            redactions_applied: row.get(5)?,
+                            transferred_at: row.get(6)?,
+                        })
+                    },
+                )
+                .map_err(|e| {
+                    ApiError::InternalServerError(format!("transfer log query failed: {}", e))
+                })?;
+
+            let mut transfers = Vec::new();
+            for row in rows {
+                transfers.push(row.map_err(|e| {
+                    ApiError::InternalServerError(format!("row read error: {}", e))
+                })?);
+            }
+
+            Ok(TransferLogResponse {
+                transfers,
+                total,
+                limit,
+                offset,
+            })
+        }
+    })
+    .await
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+
+    Ok(Json(result))
+}
+
+/// Breakdown of transfers by scope.
+#[derive(Debug, Serialize)]
+pub struct ScopeBreakdown {
+    pub scope: String,
+    pub count: i64,
+}
+
+/// Response for `GET /api/rtx/governance/summary`.
+#[derive(Debug, Serialize)]
+pub struct GovernanceSummaryResponse {
+    /// Total number of transfer log entries on this server.
+    pub total_transfers: i64,
+    /// Count of distinct bundle IDs.
+    pub unique_bundles: i64,
+    /// Count of distinct source pseudonyms.
+    pub unique_sources: i64,
+    /// Count of distinct destination pseudonyms (excluding NULL for publishes).
+    pub unique_destinations: i64,
+    /// Count of transfers where redactions were applied.
+    pub redacted_transfers: i64,
+    /// Breakdown by transfer scope.
+    pub by_scope: Vec<ScopeBreakdown>,
+}
+
+/// Handler for `GET /api/rtx/governance/summary`.
+///
+/// Returns aggregate statistics about RTX transfers for operator auditing.
+/// Requires `can_moderate` permission (server operator access).
+pub async fn governance_summary_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(IdentityContext(identity)): Extension<IdentityContext>,
+) -> Result<Json<GovernanceSummaryResponse>, ApiError> {
+    // Operator-only: require can_moderate
+    if !identity.can_moderate {
+        return Err(ApiError::Forbidden(
+            "governance endpoints require can_moderate permission".to_string(),
+        ));
+    }
+
+    let result = tokio::task::spawn_blocking({
+        let state = state.clone();
+        move || -> Result<GovernanceSummaryResponse, ApiError> {
+            let conn = state.pool.get().map_err(|e| {
+                ApiError::InternalServerError(format!("db connection failed: {}", e))
+            })?;
+
+            let server_id = state.server_id;
+
+            let total_transfers: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM rtx_transfer_log WHERE server_id = ?1",
+                    rusqlite::params![server_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| {
+                    ApiError::InternalServerError(format!("total count query failed: {}", e))
+                })?;
+
+            let unique_bundles: i64 = conn
+                .query_row(
+                    "SELECT COUNT(DISTINCT bundle_id) FROM rtx_transfer_log WHERE server_id = ?1",
+                    rusqlite::params![server_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| {
+                    ApiError::InternalServerError(format!("unique bundles query failed: {}", e))
+                })?;
+
+            let unique_sources: i64 = conn
+                .query_row(
+                    "SELECT COUNT(DISTINCT source_pseudonym) FROM rtx_transfer_log WHERE server_id = ?1",
+                    rusqlite::params![server_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| {
+                    ApiError::InternalServerError(format!("unique sources query failed: {}", e))
+                })?;
+
+            let unique_destinations: i64 = conn
+                .query_row(
+                    "SELECT COUNT(DISTINCT destination_pseudonym) FROM rtx_transfer_log
+                     WHERE server_id = ?1 AND destination_pseudonym IS NOT NULL",
+                    rusqlite::params![server_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| {
+                    ApiError::InternalServerError(format!("unique destinations query failed: {}", e))
+                })?;
+
+            let redacted_transfers: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM rtx_transfer_log
+                     WHERE server_id = ?1 AND redactions_applied IS NOT NULL",
+                    rusqlite::params![server_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| {
+                    ApiError::InternalServerError(format!("redacted count query failed: {}", e))
+                })?;
+
+            // Breakdown by transfer scope
+            let mut stmt = conn
+                .prepare(
+                    "SELECT transfer_scope_applied, COUNT(*) as cnt
+                     FROM rtx_transfer_log
+                     WHERE server_id = ?1
+                     GROUP BY transfer_scope_applied
+                     ORDER BY cnt DESC",
+                )
+                .map_err(|e| {
+                    ApiError::InternalServerError(format!("scope breakdown query failed: {}", e))
+                })?;
+
+            let scope_rows = stmt
+                .query_map(rusqlite::params![server_id], |row| {
+                    Ok(ScopeBreakdown {
+                        scope: row.get(0)?,
+                        count: row.get(1)?,
+                    })
+                })
+                .map_err(|e| {
+                    ApiError::InternalServerError(format!("scope breakdown read failed: {}", e))
+                })?;
+
+            let mut by_scope = Vec::new();
+            for row in scope_rows {
+                by_scope.push(row.map_err(|e| {
+                    ApiError::InternalServerError(format!("scope row error: {}", e))
+                })?);
+            }
+
+            Ok(GovernanceSummaryResponse {
+                total_transfers,
+                unique_bundles,
+                unique_sources,
+                unique_destinations,
+                redacted_transfers,
+                by_scope,
+            })
+        }
+    })
+    .await
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+
+    Ok(Json(result))
 }
 
 #[cfg(test)]

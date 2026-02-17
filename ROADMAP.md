@@ -22,8 +22,8 @@ Phase 5: Presence Graph ................ COMPLETE
 Phase 6: Agent Protocol ................ COMPLETE
 Phase 7: Voice Infrastructure .......... COMPLETE
 Phase 8: Federation .................... COMPLETE
-Phase 9: RTX Knowledge Exchange ........ IN PROGRESS
-Phase 10: Observability ................ NOT STARTED
+Phase 9: RTX Knowledge Exchange ........ COMPLETE
+Phase 10: Observability ................ IN PROGRESS
 Phase 11: Client ....................... NOT STARTED
 Phase 12: Hardening & Audit ............ NOT STARTED
 ```
@@ -923,7 +923,7 @@ Phase 8 is **COMPLETE** when:
 
 ## Phase 9: RTX Knowledge Exchange
 
-**Status**: `IN PROGRESS`
+**Status**: `COMPLETE`
 **Prerequisites**: Phase 6 `COMPLETE`, Phase 8 `COMPLETE`
 **Estimated scope**: ReflectionSummaryBundle format, RTX publish/subscribe, transfer scope enforcement, governance endpoint
 
@@ -969,26 +969,26 @@ Agent-to-agent knowledge exchange across the federation. After this phase, an ag
 - [x] Receiving server validates: bundle signature, VRP handshake reference, federation agreement permits transfer
 
 #### 9.5 — Governance mediation
-- [ ] All RTX transfers are logged in `rtx_transfer_log` table
-- [ ] Transfer log includes: bundle_id, source, destination, transfer scope applied, redactions applied, timestamp
-- [ ] Auditable by server operators
+- [x] All RTX transfers are logged in `rtx_transfer_log` table
+- [x] Transfer log includes: bundle_id, source, destination, transfer scope applied, redactions applied, timestamp
+- [x] Auditable by server operators via `GET /api/rtx/governance/transfers` (paginated, filterable) and `GET /api/rtx/governance/summary` (aggregate stats); both require `can_moderate` permission
 
 ### Completion Criteria
 
 Phase 9 is **COMPLETE** when:
 
-- [ ] Agent on Server A publishes RTX bundle → agent on Server B receives it
-- [ ] Transfer scope is enforced (reasoning chain stripped for `ReflectionSummariesOnly`)
-- [ ] Redacted topics are enforced (bundles with redacted content are blocked)
-- [ ] Cross-server relay works with federation trust gating
-- [ ] All transfers are logged and auditable
-- [ ] Integration test: full RTX lifecycle across two federated servers with different transfer scopes
+- [x] Agent on Server A publishes RTX bundle → agent on Server B receives it
+- [x] Transfer scope is enforced (reasoning chain stripped for `ReflectionSummariesOnly`)
+- [x] Redacted topics are enforced (bundles with redacted content are blocked)
+- [x] Cross-server relay works with federation trust gating
+- [x] All transfers are logged and auditable
+- [x] Integration test: full RTX lifecycle across two federated servers with different transfer scopes
 
 ---
 
 ## Phase 10: Observability
 
-**Status**: `NOT STARTED`
+**Status**: `IN PROGRESS`
 **Prerequisites**: Phase 8 `COMPLETE`
 **Estimated scope**: Public event log, public APIs, SSE event streams, audit trail
 
@@ -1171,6 +1171,8 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-17 | Phase 9 `COMPLETE`. Phase 10 `IN PROGRESS`. All RTX Knowledge Exchange criteria met. |
+| 2026-02-17 | Phase 9.5 (`Governance mediation`) completed. Governance audit endpoints (`GET /api/rtx/governance/transfers`, `GET /api/rtx/governance/summary`) with `can_moderate` gating, pagination, filtering. 14 integration tests. |
 | 2026-02-17 | Phase 9.4 (`Cross-server RTX relay`) completed. FederatedRtxEnvelope, relay_rtx_bundles, receive_federated_rtx_handler, provenance tracking, 16 integration tests. |
 | 2026-02-17 | Phase 9.2 (`RTX publish endpoint`) completed. |
 | 2026-02-17 | Phase 9.1 (`RTX bundle format`) completed. |
