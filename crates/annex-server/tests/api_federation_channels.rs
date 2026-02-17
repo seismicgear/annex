@@ -177,6 +177,14 @@ async fn test_join_federated_channel() {
         .unwrap();
         let remote_instance_id = conn.last_insert_rowid();
 
+        // Insert Active Federation Agreement (Required for join)
+        conn.execute(
+            "INSERT INTO federation_agreements (
+                local_server_id, remote_instance_id, alignment_status, transfer_scope, agreement_json, active
+            ) VALUES (?1, ?2, 'ALIGNED', 'REFLECTION_SUMMARIES_ONLY', '{}', 1)",
+            rusqlite::params![state.server_id, remote_instance_id],
+        ).unwrap();
+
         // Insert federated identity (simulate prior attestation)
         conn.execute(
             "INSERT INTO federated_identities (server_id, remote_instance_id, commitment_hex, pseudonym_id, vrp_topic) VALUES (?1, ?2, 'commit-hex', ?3, 'topic')",
