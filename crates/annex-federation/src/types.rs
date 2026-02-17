@@ -26,7 +26,9 @@ pub struct AttestationRequest {
     pub commitment: String,
     /// The Groth16 proof (JSON object).
     pub proof: serde_json::Value,
+    /// The type of participant (e.g., "HUMAN", "AI_AGENT").
+    pub participant_type: String,
     /// The signature of the request (hex).
-    /// Signed message: SHA256(topic || commitment).
+    /// Signed message: SHA256(topic || commitment || participant_type).
     pub signature: String,
 }

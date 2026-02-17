@@ -87,6 +87,7 @@ async fn test_attest_membership_unknown_remote() {
         topic: "annex:server:v1".to_string(),
         commitment: "0000000000000000000000000000000000000000000000000000000000000001".to_string(),
         proof: serde_json::json!({}), // Dummy proof
+        participant_type: "HUMAN".to_string(),
         signature: "00".to_string(), // Dummy signature
     };
 
@@ -160,6 +161,7 @@ async fn test_attest_membership_invalid_signature() {
         topic: "annex:server:v1".to_string(),
         commitment: "0000000000000000000000000000000000000000000000000000000000000001".to_string(),
         proof: serde_json::json!({}),
+        participant_type: "HUMAN".to_string(),
         signature: "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000".to_string(), // Invalid signature (64 bytes hex = 128 chars)
     };
 
@@ -235,7 +237,8 @@ async fn test_attest_membership_valid_signature_fails_network() {
 
     let topic = "annex:server:v1".to_string();
     let commitment = "0000000000000000000000000000000000000000000000000000000000000001".to_string();
-    let message = format!("{}{}", topic, commitment);
+    let participant_type = "HUMAN".to_string();
+    let message = format!("{}{}{}", topic, commitment, participant_type);
     let signature = signing_key.sign(message.as_bytes());
     let signature_hex = hex::encode(signature.to_bytes());
 
@@ -244,6 +247,7 @@ async fn test_attest_membership_valid_signature_fails_network() {
         topic,
         commitment,
         proof: serde_json::json!({}),
+        participant_type,
         signature: signature_hex,
     };
 

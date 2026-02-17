@@ -147,6 +147,14 @@ pub fn app(state: AppState) -> Router {
             "/api/federation/attest-membership",
             post(api_federation::attest_membership_handler),
         )
+        .route(
+            "/api/federation/channels",
+            get(api_federation::get_federated_channels_handler),
+        )
+        .route(
+            "/api/federation/channels/{channelId}/join",
+            post(api_federation::join_federated_channel_handler),
+        )
         .route("/api/graph/degrees", get(api_graph::get_degrees_handler))
         .route(
             "/api/graph/profile/{targetPseudonym}",
