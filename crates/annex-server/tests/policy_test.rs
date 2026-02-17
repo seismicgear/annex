@@ -75,6 +75,7 @@ async fn test_recalculate_agent_alignments() {
     let contract = VrpCapabilitySharingContract {
         required_capabilities: vec![],
         offered_capabilities: vec!["TEXT".to_string(), "VRP".to_string()],
+        redacted_topics: vec![],
     };
 
     let anchor_json = serde_json::to_string(&anchor).unwrap();

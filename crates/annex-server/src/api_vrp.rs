@@ -60,6 +60,7 @@ pub async fn agent_handshake_handler(
         let local_contract = VrpCapabilitySharingContract {
             required_capabilities: policy.agent_required_capabilities.clone(),
             offered_capabilities,
+            redacted_topics: vec![],
         };
 
         // 5. Construct Alignment Config

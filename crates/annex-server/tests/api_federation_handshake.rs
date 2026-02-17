@@ -76,6 +76,7 @@ async fn test_federation_handshake_success() {
     let contract = VrpCapabilitySharingContract {
         required_capabilities: vec![],
         offered_capabilities: vec![],
+        redacted_topics: vec![],
     };
     let handshake = VrpFederationHandshake {
         anchor_snapshot: anchor,
@@ -131,6 +132,7 @@ async fn test_federation_handshake_unknown_instance() {
     let contract = VrpCapabilitySharingContract {
         required_capabilities: vec![],
         offered_capabilities: vec![],
+        redacted_topics: vec![],
     };
     let handshake = VrpFederationHandshake {
         anchor_snapshot: anchor,

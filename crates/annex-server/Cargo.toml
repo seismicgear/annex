@@ -18,6 +18,7 @@ annex-identity = { workspace = true }
 annex-vrp = { workspace = true }
 annex-voice = { workspace = true }
 annex-federation = { workspace = true }
+annex-rtx = { workspace = true }
 rusqlite = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
@@ -49,4 +50,5 @@ num-bigint = "0.4"
 tempfile = "3"
 rand = "0.8"
 annex-vrp = { workspace = true }
+annex-rtx = { workspace = true }
 annex-identity = { workspace = true }

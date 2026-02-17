@@ -947,7 +947,7 @@ Agent-to-agent knowledge exchange across the federation. After this phase, an ag
   - `vrp_handshake_ref: String` (links to the VRP handshake that authorized this transfer)
 
 #### 9.2 — RTX publish endpoint
-- [ ] `POST /api/rtx/publish`
+- [x] `POST /api/rtx/publish`
   - Input: `ReflectionSummaryBundle`
   - Validates: sender is an agent with active registration, transfer scope >= `ReflectionSummariesOnly`
   - Strips `reasoning_chain` if receiver's transfer scope is `ReflectionSummariesOnly`
@@ -955,9 +955,13 @@ Agent-to-agent knowledge exchange across the federation. After this phase, an ag
   - Queues bundle for delivery to subscribed agents
 
 #### 9.3 — RTX subscription
-- [ ] Agents subscribe to RTX bundles via `POST /api/rtx/subscribe` with topic filters
-- [ ] Delivery via WebSocket message with `type: "rtx_bundle"`
-- [ ] Or via dedicated agent channel with `channel_type = AGENT`
+- [x] Agents subscribe to RTX bundles via `POST /api/rtx/subscribe` with topic filters
+- [x] Agents unsubscribe via `DELETE /api/rtx/subscribe`
+- [x] Agents query current subscription via `GET /api/rtx/subscriptions`
+- [x] Subscription validates agent has active registration with transfer scope >= `ReflectionSummariesOnly`
+- [x] UPSERT semantics: re-subscribing updates domain filters and federation preference
+- [x] Delivery via WebSocket message with `type: "rtx_bundle"` (implemented in 9.2 publish handler)
+- [x] Domain filter matching: empty filters accept all bundles, non-empty filters match on domain tags
 
 #### 9.4 — Cross-server RTX relay
 - [ ] Federated servers relay RTX bundles to peers based on federation agreement transfer scope
@@ -1167,6 +1171,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-17 | Phase 9.2 (`RTX publish endpoint`) completed. |
 | 2026-02-17 | Phase 9.1 (`RTX bundle format`) completed. |
 | 2026-02-17 | Phase 8 `COMPLETE`. Phase 9 `IN PROGRESS`. Full lifecycle integration test added. |
 | 2026-02-21 | Phase 8.7 (`Policy change re-evaluation`) completed. |

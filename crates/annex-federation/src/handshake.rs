@@ -50,6 +50,7 @@ pub fn process_incoming_handshake(
     let local_contract = VrpCapabilitySharingContract {
         required_capabilities,
         offered_capabilities,
+        redacted_topics: vec![],
     };
 
     // 3. Define alignment config
@@ -117,6 +118,7 @@ mod tests {
         let contract = VrpCapabilitySharingContract {
             required_capabilities: vec![],
             offered_capabilities: vec![],
+            redacted_topics: vec![],
         };
         let handshake = VrpFederationHandshake {
             anchor_snapshot: anchor,

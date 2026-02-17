@@ -55,6 +55,7 @@ async fn test_recalculate_federation_agreements() {
     let contract = VrpCapabilitySharingContract {
         required_capabilities: vec![],
         offered_capabilities: vec!["federation".to_string()],
+        redacted_topics: vec![],
     };
 
     let initial_policy = ServerPolicy {

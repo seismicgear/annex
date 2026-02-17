@@ -37,6 +37,7 @@ pub async fn recalculate_agent_alignments(state: Arc<AppState>) -> Result<(), Ap
     let local_contract = VrpCapabilitySharingContract {
         required_capabilities: policy.agent_required_capabilities.clone(),
         offered_capabilities,
+        redacted_topics: vec![],
     };
 
     let alignment_config = VrpAlignmentConfig {
@@ -194,6 +195,7 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
     let local_contract = VrpCapabilitySharingContract {
         required_capabilities: policy.agent_required_capabilities.clone(),
         offered_capabilities,
+        redacted_topics: vec![],
     };
 
     let alignment_config = VrpAlignmentConfig {
