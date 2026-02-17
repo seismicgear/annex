@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use annex_vrp::{VrpAlignmentStatus, VrpTransferScope, VrpValidationReport};
+use serde::{Deserialize, Serialize};
 
 /// Represents an existing federation agreement between two servers.
 #[derive(Debug, Serialize, Deserialize)]

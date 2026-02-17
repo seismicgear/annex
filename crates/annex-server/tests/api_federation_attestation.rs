@@ -130,7 +130,8 @@ async fn test_attest_membership_invalid_signature() {
     conn.execute(
         "INSERT INTO instances (base_url, public_key, label) VALUES (?1, ?2, 'Remote Server')",
         rusqlite::params!["http://remote.com", public_key_hex],
-    ).unwrap();
+    )
+    .unwrap();
 
     drop(conn);
 
@@ -210,7 +211,8 @@ async fn test_attest_membership_valid_signature_fails_network() {
     conn.execute(
         "INSERT INTO instances (base_url, public_key, label) VALUES (?1, ?2, 'Remote Server')",
         rusqlite::params!["http://localhost:9999", public_key_hex], // Port 9999 likely closed
-    ).unwrap();
+    )
+    .unwrap();
 
     drop(conn);
 
@@ -263,7 +265,7 @@ async fn test_attest_membership_valid_signature_fails_network() {
 
     // Should fail with 500 (Network error)
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-     let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
     let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();

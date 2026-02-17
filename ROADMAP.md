@@ -887,9 +887,9 @@ Server-to-server federation. After this phase, two Annex instances can negotiate
 - [x] `GET /federation/vrp-root?topic=...` — publish current Merkle root for federation peers
 
 #### 8.5 — Federated channels
-- [ ] Channels with `federation_scope = 'FEDERATED'` are visible to federation peers
-- [ ] `GET /federation/channels` — list federated channels (public API for peers)
-- [ ] Federated channel join: remote user's pseudonym is attested via `federated_identities`, then granted channel access
+- [x] Channels with `federation_scope = 'FEDERATED'` are visible to federation peers
+- [x] `GET /federation/channels` — list federated channels (public API for peers)
+- [x] Federated channel join: remote user's pseudonym is attested via `federated_identities`, then granted channel access
 
 #### 8.6 — Cross-server message relay
 - [ ] Messages in federated channels are relayed to federation peers
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-21 | Phase 8.5 (`Federated channels`) completed. |
 | 2026-02-21 | Phase 7 `COMPLETE`. Phase 8 `IN PROGRESS`. |
 | 2026-02-20 | Phase 7.7 (`Voice channel management`) completed. |
 | 2026-02-20 | Phase 7.6 (`Voice profile assignment`) completed. |
