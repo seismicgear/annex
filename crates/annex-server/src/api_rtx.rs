@@ -11,7 +11,8 @@ use crate::AppState;
 use annex_rtx::{check_redacted_topics, enforce_transfer_scope, validate_bundle_structure};
 use annex_vrp::VrpTransferScope;
 use axum::{extract::Extension, Json};
-use serde::Serialize;
+use rusqlite::OptionalExtension;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// Response returned after a successful bundle publish.
@@ -273,6 +274,235 @@ pub async fn publish_handler(
         ok: true,
         bundle_id,
         delivered_to: delivered_count,
+    }))
+}
+
+/// Request body for `POST /api/rtx/subscribe`.
+#[derive(Debug, Deserialize)]
+pub struct SubscribeRequest {
+    /// Domain tags to filter incoming bundles (empty = accept all).
+    #[serde(default)]
+    pub domain_filters: Vec<String>,
+    /// Whether to accept bundles relayed from federated servers.
+    #[serde(default)]
+    pub accept_federated: bool,
+}
+
+/// Response from subscribe/unsubscribe operations.
+#[derive(Debug, Serialize)]
+pub struct SubscribeResponse {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subscription: Option<SubscriptionInfo>,
+}
+
+/// Serialized representation of an RTX subscription.
+#[derive(Debug, Serialize)]
+pub struct SubscriptionInfo {
+    pub subscriber_pseudonym: String,
+    pub domain_filters: Vec<String>,
+    pub accept_federated: bool,
+    pub created_at: String,
+}
+
+/// Handler for `POST /api/rtx/subscribe`.
+///
+/// Creates or updates an RTX subscription for the authenticated agent.
+/// The agent must have an active registration with transfer scope
+/// `>= ReflectionSummariesOnly` to subscribe.
+pub async fn subscribe_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(IdentityContext(identity)): Extension<IdentityContext>,
+    Json(req): Json<SubscribeRequest>,
+) -> Result<Json<SubscribeResponse>, ApiError> {
+    let pseudonym = identity.pseudonym_id.clone();
+
+    let info = tokio::task::spawn_blocking({
+        let state = state.clone();
+        let pseudonym = pseudonym.clone();
+        let domain_filters = req.domain_filters.clone();
+        let accept_federated = req.accept_federated;
+        move || -> Result<SubscriptionInfo, ApiError> {
+            let conn = state.pool.get().map_err(|e| {
+                ApiError::InternalServerError(format!("db connection failed: {}", e))
+            })?;
+
+            // 1. Verify agent has active registration with sufficient scope
+            let scope_str: String = conn
+                .query_row(
+                    "SELECT transfer_scope FROM agent_registrations
+                     WHERE server_id = ?1 AND pseudonym_id = ?2 AND active = 1",
+                    rusqlite::params![state.server_id, pseudonym],
+                    |row| row.get(0),
+                )
+                .map_err(|e| match e {
+                    rusqlite::Error::QueryReturnedNoRows => ApiError::Forbidden(format!(
+                        "agent '{}' does not have an active registration",
+                        pseudonym
+                    )),
+                    _ => ApiError::InternalServerError(format!("db query failed: {}", e)),
+                })?;
+
+            let scope = parse_transfer_scope(&scope_str).ok_or_else(|| {
+                ApiError::Forbidden(
+                    "agent's transfer scope does not permit RTX subscriptions".into(),
+                )
+            })?;
+
+            if scope < VrpTransferScope::ReflectionSummariesOnly {
+                return Err(ApiError::Forbidden(
+                    "agent's transfer scope does not permit RTX subscriptions".to_string(),
+                ));
+            }
+
+            // 2. UPSERT subscription
+            let filters_json = serde_json::to_string(&domain_filters).map_err(|e| {
+                ApiError::InternalServerError(format!("json serialization failed: {}", e))
+            })?;
+            let accept_fed_int: i32 = if accept_federated { 1 } else { 0 };
+
+            conn.execute(
+                "INSERT INTO rtx_subscriptions (
+                    server_id, subscriber_pseudonym, domain_filters_json, accept_federated
+                ) VALUES (?1, ?2, ?3, ?4)
+                ON CONFLICT(server_id, subscriber_pseudonym) DO UPDATE SET
+                    domain_filters_json = excluded.domain_filters_json,
+                    accept_federated = excluded.accept_federated",
+                rusqlite::params![state.server_id, pseudonym, filters_json, accept_fed_int],
+            )
+            .map_err(|e| {
+                ApiError::InternalServerError(format!("failed to create subscription: {}", e))
+            })?;
+
+            // 3. Read back for response
+            let (filters_back, fed_back, created_at): (String, bool, String) = conn
+                .query_row(
+                    "SELECT domain_filters_json, accept_federated, created_at
+                     FROM rtx_subscriptions
+                     WHERE server_id = ?1 AND subscriber_pseudonym = ?2",
+                    rusqlite::params![state.server_id, pseudonym],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(|e| {
+                    ApiError::InternalServerError(format!("failed to read subscription: {}", e))
+                })?;
+
+            let parsed_filters: Vec<String> =
+                serde_json::from_str(&filters_back).unwrap_or_default();
+
+            Ok(SubscriptionInfo {
+                subscriber_pseudonym: pseudonym,
+                domain_filters: parsed_filters,
+                accept_federated: fed_back,
+                created_at,
+            })
+        }
+    })
+    .await
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+
+    Ok(Json(SubscribeResponse {
+        ok: true,
+        subscription: Some(info),
+    }))
+}
+
+/// Handler for `DELETE /api/rtx/subscribe`.
+///
+/// Removes the authenticated agent's RTX subscription.
+pub async fn unsubscribe_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(IdentityContext(identity)): Extension<IdentityContext>,
+) -> Result<Json<SubscribeResponse>, ApiError> {
+    let pseudonym = identity.pseudonym_id.clone();
+
+    tokio::task::spawn_blocking({
+        let state = state.clone();
+        move || -> Result<(), ApiError> {
+            let conn = state.pool.get().map_err(|e| {
+                ApiError::InternalServerError(format!("db connection failed: {}", e))
+            })?;
+
+            let deleted = conn
+                .execute(
+                    "DELETE FROM rtx_subscriptions
+                     WHERE server_id = ?1 AND subscriber_pseudonym = ?2",
+                    rusqlite::params![state.server_id, pseudonym],
+                )
+                .map_err(|e| {
+                    ApiError::InternalServerError(format!("failed to delete subscription: {}", e))
+                })?;
+
+            if deleted == 0 {
+                return Err(ApiError::NotFound("no active RTX subscription".to_string()));
+            }
+
+            Ok(())
+        }
+    })
+    .await
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+
+    Ok(Json(SubscribeResponse {
+        ok: true,
+        subscription: None,
+    }))
+}
+
+/// Handler for `GET /api/rtx/subscriptions`.
+///
+/// Returns the authenticated agent's current RTX subscription, if any.
+pub async fn get_subscription_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(IdentityContext(identity)): Extension<IdentityContext>,
+) -> Result<Json<SubscribeResponse>, ApiError> {
+    let pseudonym = identity.pseudonym_id.clone();
+
+    let info = tokio::task::spawn_blocking({
+        let state = state.clone();
+        move || -> Result<Option<SubscriptionInfo>, ApiError> {
+            let conn = state.pool.get().map_err(|e| {
+                ApiError::InternalServerError(format!("db connection failed: {}", e))
+            })?;
+
+            let result = conn
+                .query_row(
+                    "SELECT domain_filters_json, accept_federated, created_at
+                     FROM rtx_subscriptions
+                     WHERE server_id = ?1 AND subscriber_pseudonym = ?2",
+                    rusqlite::params![state.server_id, pseudonym],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, bool>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(|e| ApiError::InternalServerError(format!("db query failed: {}", e)))?;
+
+            match result {
+                Some((filters_json, accept_federated, created_at)) => {
+                    let domain_filters: Vec<String> =
+                        serde_json::from_str(&filters_json).unwrap_or_default();
+                    Ok(Some(SubscriptionInfo {
+                        subscriber_pseudonym: pseudonym,
+                        domain_filters,
+                        accept_federated,
+                        created_at,
+                    }))
+                }
+                None => Ok(None),
+            }
+        }
+    })
+    .await
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+
+    Ok(Json(SubscribeResponse {
+        ok: true,
+        subscription: info,
     }))
 }
 

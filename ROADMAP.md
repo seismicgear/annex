@@ -955,9 +955,13 @@ Agent-to-agent knowledge exchange across the federation. After this phase, an ag
   - Queues bundle for delivery to subscribed agents
 
 #### 9.3 — RTX subscription
-- [ ] Agents subscribe to RTX bundles via `POST /api/rtx/subscribe` with topic filters
-- [ ] Delivery via WebSocket message with `type: "rtx_bundle"`
-- [ ] Or via dedicated agent channel with `channel_type = AGENT`
+- [x] Agents subscribe to RTX bundles via `POST /api/rtx/subscribe` with topic filters
+- [x] Agents unsubscribe via `DELETE /api/rtx/subscribe`
+- [x] Agents query current subscription via `GET /api/rtx/subscriptions`
+- [x] Subscription validates agent has active registration with transfer scope >= `ReflectionSummariesOnly`
+- [x] UPSERT semantics: re-subscribing updates domain filters and federation preference
+- [x] Delivery via WebSocket message with `type: "rtx_bundle"` (implemented in 9.2 publish handler)
+- [x] Domain filter matching: empty filters accept all bundles, non-empty filters match on domain tags
 
 #### 9.4 — Cross-server RTX relay
 - [ ] Federated servers relay RTX bundles to peers based on federation agreement transfer scope

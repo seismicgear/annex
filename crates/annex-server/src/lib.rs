@@ -112,6 +112,14 @@ pub fn app(state: AppState) -> Router {
             put(api_agent::update_agent_voice_profile_handler),
         )
         .route("/api/rtx/publish", post(api_rtx::publish_handler))
+        .route(
+            "/api/rtx/subscribe",
+            post(api_rtx::subscribe_handler).delete(api_rtx::unsubscribe_handler),
+        )
+        .route(
+            "/api/rtx/subscriptions",
+            get(api_rtx::get_subscription_handler),
+        )
         .route("/api/admin/policy", put(api_admin::update_policy_handler))
         .layer(axum::middleware::from_fn(middleware::auth_middleware));
 
