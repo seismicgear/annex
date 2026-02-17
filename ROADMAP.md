@@ -20,8 +20,8 @@ Phase 3: VRP Trust Negotiation ......... COMPLETE
 Phase 4: Text Communication ............ COMPLETE
 Phase 5: Presence Graph ................ COMPLETE
 Phase 6: Agent Protocol ................ COMPLETE
-Phase 7: Voice Infrastructure .......... IN PROGRESS
-Phase 8: Federation .................... NOT STARTED
+Phase 7: Voice Infrastructure .......... COMPLETE
+Phase 8: Federation .................... IN PROGRESS
 Phase 9: RTX Knowledge Exchange ........ NOT STARTED
 Phase 10: Observability ................ NOT STARTED
 Phase 11: Client ....................... NOT STARTED
@@ -756,7 +756,7 @@ Phase 6 is **COMPLETE** when:
 
 ## Phase 7: Voice Infrastructure
 
-**Status**: `NOT STARTED`
+**Status**: `COMPLETE`
 **Prerequisites**: Phase 4 `COMPLETE`, Phase 6 `COMPLETE`
 **Estimated scope**: LiveKit integration, voice LLM TTS service, STT service, agent voice pipeline, voice profiles
 
@@ -815,19 +815,19 @@ Voice channels that work for both humans and agents. Humans speak via WebRTC thr
 
 Phase 7 is **COMPLETE** when:
 
-- [ ] Humans can join voice channels and speak to each other via WebRTC/LiveKit
-- [ ] Agents can send text and have it rendered as voice in the channel
-- [ ] Agents receive transcriptions of human speech as text
-- [ ] Voice profiles are assignable and produce distinct voices
-- [ ] Voice works in `VOICE` and `HYBRID` channel types
-- [ ] Latency from agent text intent to audible voice is < 2 seconds (target; document actual)
-- [ ] Integration test: human speaks → agent receives transcription → agent responds → human hears voice
+- [x] Humans can join voice channels and speak to each other via WebRTC/LiveKit
+- [x] Agents can send text and have it rendered as voice in the channel
+- [x] Agents receive transcriptions of human speech as text
+- [x] Voice profiles are assignable and produce distinct voices
+- [x] Voice works in `VOICE` and `HYBRID` channel types
+- [x] Latency from agent text intent to audible voice is < 2 seconds (target; document actual)
+- [x] Integration test: human speaks → agent receives transcription → agent responds → human hears voice
 
 ---
 
 ## Phase 8: Federation
 
-**Status**: `NOT STARTED`
+**Status**: `IN PROGRESS`
 **Prerequisites**: Phase 3 `COMPLETE`, Phase 4 `COMPLETE`, Phase 5 `COMPLETE`
 **Estimated scope**: Server-to-server VRP handshake, cross-server identity attestation, federated channels, message relay
 
@@ -838,7 +838,7 @@ Server-to-server federation. After this phase, two Annex instances can negotiate
 ### Steps
 
 #### 8.1 — Instance registry
-- [ ] `annex-db` migration: `instances` table:
+- [x] `annex-db` migration: `instances` table:
   ```sql
   CREATE TABLE instances (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-21 | Phase 7 `COMPLETE`. Phase 8 `IN PROGRESS`. |
 | 2026-02-20 | Phase 7.7 (`Voice channel management`) completed. |
 | 2026-02-20 | Phase 7.6 (`Voice profile assignment`) completed. |
 | 2026-02-20 | Phase 7.5 (`STT service`) completed. |
