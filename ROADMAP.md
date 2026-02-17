@@ -999,7 +999,7 @@ The "trust as public computation" layer. After this phase, any authorized party 
 ### Steps
 
 #### 10.1 — Public event log
-- [ ] `annex-db` migration: `public_event_log` table:
+- [x] `annex-db` migration: `public_event_log` table:
   ```sql
   CREATE TABLE public_event_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1013,8 +1013,8 @@ The "trust as public computation" layer. After this phase, any authorized party 
     occurred_at TEXT NOT NULL
   );
   ```
-- [ ] All modules write to event log via `annex-observe` crate's `emit_event` function
-- [ ] Domains: `IDENTITY`, `PRESENCE`, `FEDERATION`, `AGENT`, `MODERATION`
+- [x] All modules write to event log via `annex-observe` crate's `emit_event` function
+- [x] Domains: `IDENTITY`, `PRESENCE`, `FEDERATION`, `AGENT`, `MODERATION`
 
 #### 10.2 — Event emission integration
 - [ ] Identity operations (Phase 1/2): emit `IDENTITY_REGISTERED`, `IDENTITY_VERIFIED`, `PSEUDONYM_DERIVED`
@@ -1171,6 +1171,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-17 | Phase 10.1 (`Public event log`) completed. Migration `022_public_event_log` with indexed table, `annex-observe` crate implemented with `EventDomain`, `EventPayload` (13 event types), `emit_event`, `query_events`, 17 unit tests. |
 | 2026-02-17 | Phase 9 `COMPLETE`. Phase 10 `IN PROGRESS`. All RTX Knowledge Exchange criteria met. |
 | 2026-02-17 | Phase 9.5 (`Governance mediation`) completed. Governance audit endpoints (`GET /api/rtx/governance/transfers`, `GET /api/rtx/governance/summary`) with `can_moderate` gating, pagination, filtering. 14 integration tests. |
 | 2026-02-17 | Phase 9.4 (`Cross-server RTX relay`) completed. FederatedRtxEnvelope, relay_rtx_bundles, receive_federated_rtx_handler, provenance tracking, 16 integration tests. |
