@@ -934,7 +934,7 @@ Agent-to-agent knowledge exchange across the federation. After this phase, an ag
 ### Steps
 
 #### 9.1 — RTX bundle format
-- [ ] Define `ReflectionSummaryBundle` struct in `annex-rtx`:
+- [x] Define `ReflectionSummaryBundle` struct in `annex-rtx`:
   - `bundle_id: String`
   - `source_pseudonym: String`
   - `source_server: String`
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-17 | Phase 9.1 (`RTX bundle format`) completed. |
 | 2026-02-17 | Phase 8 `COMPLETE`. Phase 9 `IN PROGRESS`. Full lifecycle integration test added. |
 | 2026-02-21 | Phase 8.7 (`Policy change re-evaluation`) completed. |
 | 2026-02-21 | Phase 8.6 (`Cross-server message relay`) completed. |
