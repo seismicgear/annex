@@ -879,12 +879,12 @@ Server-to-server federation. After this phase, two Annex instances can negotiate
   ```
 
 #### 8.4 — Cross-server identity attestation
-- [ ] `POST /federation/attest-membership`
+- [x] `POST /federation/attest-membership`
   - Remote server submits: VRP topic, commitment, Merkle path, Groth16 proof, signed by remote server's key
   - Local server: fetches remote's current Merkle root via `GET /federation/vrp-root`, verifies proof
   - On success: creates `federated_identities` row
-- [ ] `annex-db` migration: `federated_identities` table (from Monolith spec)
-- [ ] `GET /federation/vrp-root?topic=...` — publish current Merkle root for federation peers
+- [x] `annex-db` migration: `federated_identities` table (from Monolith spec)
+- [x] `GET /federation/vrp-root?topic=...` — publish current Merkle root for federation peers
 
 #### 8.5 — Federated channels
 - [ ] Channels with `federation_scope = 'FEDERATED'` are visible to federation peers

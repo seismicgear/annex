@@ -139,6 +139,14 @@ pub fn app(state: AppState) -> Router {
             "/api/federation/handshake",
             post(api_federation::federation_handshake_handler),
         )
+        .route(
+            "/api/federation/vrp-root",
+            get(api_federation::get_vrp_root_handler),
+        )
+        .route(
+            "/api/federation/attest-membership",
+            post(api_federation::attest_membership_handler),
+        )
         .route("/api/graph/degrees", get(api_graph::get_degrees_handler))
         .route(
             "/api/graph/profile/{targetPseudonym}",
