@@ -1,6 +1,7 @@
 //! Annex server library logic.
 
 pub mod api;
+pub mod api_admin;
 pub mod api_agent;
 pub mod api_channels;
 pub mod api_federation;
@@ -109,6 +110,7 @@ pub fn app(state: AppState) -> Router {
             "/api/agents/{pseudonymId}/voice-profile",
             put(api_agent::update_agent_voice_profile_handler),
         )
+        .route("/api/admin/policy", put(api_admin::update_policy_handler))
         .layer(axum::middleware::from_fn(middleware::auth_middleware));
 
     Router::new()
