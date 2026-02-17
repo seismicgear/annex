@@ -901,7 +901,7 @@ Server-to-server federation. After this phase, two Annex instances can negotiate
 - [x] Receiving server verifies signature and attestation before delivering to local subscribers
 
 #### 8.7 — Policy change re-evaluation
-- [ ] When either server updates its policy:
+- [x] When either server updates its policy:
   - Re-run VRP handshake
   - Update `federation_agreements` alignment status
   - If downgraded to `Conflict`: sever federation, disconnect cross-server channels
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-21 | Phase 8.7 (`Policy change re-evaluation`) completed. |
 | 2026-02-21 | Phase 8.6 (`Cross-server message relay`) completed. |
 | 2026-02-21 | Phase 8.5 (`Federated channels`) completed. |
 | 2026-02-21 | Phase 7 `COMPLETE`. Phase 8 `IN PROGRESS`. |
