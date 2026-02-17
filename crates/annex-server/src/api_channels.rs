@@ -393,7 +393,24 @@ pub async fn leave_channel_handler(
     Extension(IdentityContext(identity)): Extension<IdentityContext>,
     Path(channel_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    // 1. Remove Member
+    // 1. Fetch Channel (to check type)
+    let channel = {
+        let pool = state.pool.clone();
+        let cid = channel_id.clone();
+        let channel_res = tokio::task::spawn_blocking(move || {
+            let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            get_channel(&conn, &cid).map_err(|_| StatusCode::NOT_FOUND)
+        })
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        match channel_res {
+            Ok(c) => c,
+            Err(code) => return Err(code),
+        }
+    };
+
+    // 2. Remove Member
     tokio::task::spawn_blocking({
         let pool = state.pool.clone();
         let server_id = state.server_id;
@@ -414,11 +431,30 @@ pub async fn leave_channel_handler(
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
 
-    // 2. Unsubscribe from WebSocket
+    // 3. Unsubscribe from WebSocket
     state
         .connection_manager
         .unsubscribe(&channel_id, &identity.pseudonym_id)
         .await;
+
+    // 4. Remove from Voice Channel (if applicable)
+    if (channel.channel_type == ChannelType::Voice || channel.channel_type == ChannelType::Hybrid)
+        && state.voice_service.is_enabled()
+    {
+        if let Err(e) = state
+            .voice_service
+            .remove_participant(&channel_id, &identity.pseudonym_id)
+            .await
+        {
+            // We log but don't fail, as the user has successfully left the Annex channel.
+            tracing::warn!(
+                "failed to remove participant {} from voice room {}: {}",
+                identity.pseudonym_id,
+                channel_id,
+                e
+            );
+        }
+    }
 
     Ok(Json(json!({"status": "left"})))
 }
@@ -476,4 +512,64 @@ pub async fn join_voice_channel_handler(
         token,
         url: state.voice_service.get_url().to_string(),
     }))
+}
+
+/// POST /api/channels/:channelId/voice/leave
+pub async fn leave_voice_channel_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(IdentityContext(identity)): Extension<IdentityContext>,
+    Path(channel_id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    // 1. Check if user is a member of the channel
+    let is_member = tokio::task::spawn_blocking({
+        let pool = state.pool.clone();
+        let cid = channel_id.clone();
+        let pid = identity.pseudonym_id.clone();
+        move || {
+            let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            is_member(&conn, &cid, &pid).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+
+    if !is_member {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    // 2. Fetch channel to verify type
+    let channel = tokio::task::spawn_blocking({
+        let pool = state.pool.clone();
+        let cid = channel_id.clone();
+        move || {
+            let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            get_channel(&conn, &cid).map_err(|_| StatusCode::NOT_FOUND)
+        }
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+
+    if channel.channel_type != ChannelType::Voice && channel.channel_type != ChannelType::Hybrid {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // 3. Remove Participant
+    if state.voice_service.is_enabled() {
+        if let Err(e) = state
+            .voice_service
+            .remove_participant(&channel_id, &identity.pseudonym_id)
+            .await
+        {
+            tracing::warn!(
+                "failed to remove participant {} from voice room {}: {}",
+                identity.pseudonym_id,
+                channel_id,
+                e
+            );
+            // We return OK even if this fails, as it's a best-effort cleanup.
+            // If the user wasn't in the room, it's fine.
+        }
+    }
+
+    Ok(Json(json!({"status": "left"})))
 }

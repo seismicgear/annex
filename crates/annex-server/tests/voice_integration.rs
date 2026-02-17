@@ -14,15 +14,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use tower::ServiceExt;
 
 fn load_vkey() -> Arc<annex_identity::zk::VerifyingKey<annex_identity::zk::Bn254>> {
-    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let path1 = manifest.join("../../zk/keys/membership_vkey.json");
-    let path2 = std::path::Path::new("zk/keys/membership_vkey.json");
-
-    let vkey_json = std::fs::read_to_string(&path1)
-        .or_else(|_| std::fs::read_to_string(path2))
-        .unwrap_or_else(|_| panic!("failed to read vkey from {:?} or {:?}", path1, path2));
-
-    let vk = annex_identity::zk::parse_verification_key(&vkey_json).expect("failed to parse vkey");
+    let vk = annex_identity::zk::generate_dummy_vkey();
     Arc::new(vk)
 }
 
@@ -251,4 +243,54 @@ async fn test_join_voice_channel_bad_request_wrong_type() {
 
     let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_leave_voice_channel_success() {
+    let (app, pool) = setup_app().await;
+
+    // Seed user and voice channel
+    {
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active) VALUES (1, 'user-1', 'HUMAN', 1)",
+            [],
+        )
+        .unwrap();
+
+        let params = annex_channels::CreateChannelParams {
+            server_id: 1,
+            channel_id: "voice-leave".to_string(),
+            name: "Voice Leave".to_string(),
+            channel_type: ChannelType::Voice,
+            topic: None,
+            vrp_topic_binding: None,
+            required_capabilities_json: None,
+            agent_min_alignment: None,
+            retention_days: None,
+            federation_scope: FederationScope::Local,
+        };
+        create_channel(&conn, &params).unwrap();
+
+        add_member(&conn, 1, "voice-leave", "user-1").unwrap();
+    }
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+    let mut request = Request::builder()
+        .uri("/api/channels/voice-leave/voice/leave")
+        .method("POST")
+        .header("X-Annex-Pseudonym", "user-1")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    assert_eq!(body.get("status").unwrap().as_str().unwrap(), "left");
 }

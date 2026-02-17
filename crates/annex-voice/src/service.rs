@@ -57,4 +57,11 @@ impl VoiceService {
 
         token.to_jwt().map_err(VoiceError::LiveKit)
     }
+
+    pub async fn remove_participant(&self, room: &str, identity: &str) -> Result<(), VoiceError> {
+        self.room_client
+            .remove_participant(room, identity)
+            .await
+            .map_err(|e| VoiceError::RoomService(e.to_string()))
+    }
 }
