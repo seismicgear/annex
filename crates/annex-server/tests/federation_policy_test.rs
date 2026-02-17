@@ -57,8 +57,10 @@ async fn test_recalculate_federation_agreements() {
         offered_capabilities: vec!["federation".to_string()],
     };
 
-    let mut initial_policy = ServerPolicy::default();
-    initial_policy.federation_enabled = true; // So we offer federation
+    let initial_policy = ServerPolicy {
+        federation_enabled: true,
+        ..Default::default()
+    };
 
     let handshake = VrpFederationHandshake {
         anchor_snapshot: anchor,
