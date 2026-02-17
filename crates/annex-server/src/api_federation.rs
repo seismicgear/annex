@@ -11,6 +11,7 @@ use annex_identity::{
     derive_nullifier_hex, derive_pseudonym_id,
     zk::{parse_fr_from_hex, parse_proof, verify_proof},
 };
+use annex_observe::{emit_event, EventDomain, EventPayload};
 use annex_rtx::{enforce_transfer_scope, validate_bundle_structure};
 use annex_types::NodeType;
 use annex_vrp::{VrpFederationHandshake, VrpTransferScope, VrpValidationReport};
@@ -479,7 +480,7 @@ pub async fn federation_handshake_handler(
         );
         let policy = state_clone.policy.read().unwrap();
 
-        process_incoming_handshake(
+        let report = process_incoming_handshake(
             &conn,
             state_clone.server_id,
             &policy,
@@ -489,7 +490,26 @@ pub async fn federation_handshake_handler(
         .map_err(|e| {
             tracing::error!("Handshake failed: {:?}", e);
             FederationError::Handshake(e)
-        })
+        })?;
+
+        // Emit FEDERATION_ESTABLISHED to persistent log
+        let observe_payload = EventPayload::FederationEstablished {
+            remote_url: payload.base_url.clone(),
+            alignment_status: report.alignment_status.to_string(),
+        };
+        if let Err(e) = emit_event(
+            &conn,
+            state_clone.server_id,
+            EventDomain::Federation,
+            observe_payload.event_type(),
+            observe_payload.entity_type(),
+            &payload.base_url,
+            &observe_payload,
+        ) {
+            tracing::warn!("failed to emit FEDERATION_ESTABLISHED event: {}", e);
+        }
+
+        Ok::<_, FederationError>(report)
     })
     .await
     .map_err(|e| {

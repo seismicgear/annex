@@ -3,6 +3,7 @@
 use crate::{
     api::ApiError, middleware::IdentityContext, policy::recalculate_all_alignments, AppState,
 };
+use annex_observe::{emit_event, EventDomain, EventPayload};
 use annex_types::ServerPolicy;
 use axum::{
     extract::{Extension, Json},
@@ -39,6 +40,7 @@ pub async fn update_policy_handler(
     let policy_clone = new_policy.clone();
     let version_id_clone = version_id.clone();
     let policy_json_clone = policy_json.clone();
+    let moderator_pseudonym = identity.pseudonym_id.clone();
 
     tokio::task::spawn_blocking(move || {
         let mut conn = state_clone.pool.get().map_err(|e| {
@@ -66,6 +68,25 @@ pub async fn update_policy_handler(
         tx.commit().map_err(|e| {
             ApiError::InternalServerError(format!("failed to commit transaction: {}", e))
         })?;
+
+        // Emit MODERATION_ACTION to persistent event log
+        let observe_payload = EventPayload::ModerationAction {
+            moderator_pseudonym: moderator_pseudonym.clone(),
+            action_type: "policy_update".to_string(),
+            target_pseudonym: None,
+            description: format!("Server policy updated to version {}", version_id_clone),
+        };
+        if let Err(e) = emit_event(
+            &conn,
+            state_clone.server_id,
+            EventDomain::Moderation,
+            observe_payload.event_type(),
+            observe_payload.entity_type(),
+            &moderator_pseudonym,
+            &observe_payload,
+        ) {
+            tracing::warn!("failed to emit MODERATION_ACTION event: {}", e);
+        }
 
         Ok::<(), ApiError>(())
     })

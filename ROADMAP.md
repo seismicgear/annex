@@ -1017,11 +1017,11 @@ The "trust as public computation" layer. After this phase, any authorized party 
 - [x] Domains: `IDENTITY`, `PRESENCE`, `FEDERATION`, `AGENT`, `MODERATION`
 
 #### 10.2 — Event emission integration
-- [ ] Identity operations (Phase 1/2): emit `IDENTITY_REGISTERED`, `IDENTITY_VERIFIED`, `PSEUDONYM_DERIVED`
-- [ ] Presence changes (Phase 5): emit `NODE_ADDED`, `NODE_PRUNED`, `NODE_REACTIVATED`
-- [ ] Federation (Phase 8): emit `FEDERATION_ESTABLISHED`, `FEDERATION_REALIGNED`, `FEDERATION_SEVERED`
-- [ ] Agent lifecycle (Phase 6): emit `AGENT_CONNECTED`, `AGENT_REALIGNED`, `AGENT_DISCONNECTED`
-- [ ] Moderation actions: emit `MODERATION_ACTION` with action type and target
+- [x] Identity operations (Phase 1/2): emit `IDENTITY_REGISTERED`, `IDENTITY_VERIFIED`, `PSEUDONYM_DERIVED`
+- [x] Presence changes (Phase 5): emit `NODE_ADDED`, `NODE_PRUNED`, `NODE_REACTIVATED`
+- [x] Federation (Phase 8): emit `FEDERATION_ESTABLISHED`, `FEDERATION_REALIGNED`, `FEDERATION_SEVERED`
+- [x] Agent lifecycle (Phase 6): emit `AGENT_CONNECTED`, `AGENT_REALIGNED`, `AGENT_DISCONNECTED`
+- [x] Moderation actions: emit `MODERATION_ACTION` with action type and target
 
 #### 10.3 — Public event API
 - [ ] `GET /api/public/events?domain=...&since=...&limit=...` — paginated event retrieval
@@ -1171,6 +1171,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-17 | Phase 10.2 (`Event emission integration`) completed. All 13 event types wired into server handlers: `api.rs` (IDENTITY_REGISTERED, IDENTITY_VERIFIED, PSEUDONYM_DERIVED, NODE_ADDED), `background.rs` (NODE_PRUNED), `api_vrp.rs` (NODE_REACTIVATED, AGENT_CONNECTED), `api_federation.rs` (FEDERATION_ESTABLISHED), `policy.rs` (AGENT_REALIGNED, AGENT_DISCONNECTED, FEDERATION_REALIGNED, FEDERATION_SEVERED), `api_admin.rs` (MODERATION_ACTION). 3 integration tests. |
 | 2026-02-17 | Phase 10.1 (`Public event log`) completed. Migration `022_public_event_log` with indexed table, `annex-observe` crate implemented with `EventDomain`, `EventPayload` (13 event types), `emit_event`, `query_events`, 17 unit tests. |
 | 2026-02-17 | Phase 9 `COMPLETE`. Phase 10 `IN PROGRESS`. All RTX Knowledge Exchange criteria met. |
 | 2026-02-17 | Phase 9.5 (`Governance mediation`) completed. Governance audit endpoints (`GET /api/rtx/governance/transfers`, `GET /api/rtx/governance/summary`) with `can_moderate` gating, pagination, filtering. 14 integration tests. |

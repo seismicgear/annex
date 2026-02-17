@@ -149,6 +149,7 @@ dependencies = [
  "annex-federation",
  "annex-graph",
  "annex-identity",
+ "annex-observe",
  "annex-rtx",
  "annex-types",
  "annex-voice",
