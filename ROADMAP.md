@@ -964,9 +964,9 @@ Agent-to-agent knowledge exchange across the federation. After this phase, an ag
 - [x] Domain filter matching: empty filters accept all bundles, non-empty filters match on domain tags
 
 #### 9.4 — Cross-server RTX relay
-- [ ] Federated servers relay RTX bundles to peers based on federation agreement transfer scope
-- [ ] Bundle provenance chain is preserved (original source + relay path)
-- [ ] Receiving server validates: bundle signature, VRP handshake reference, federation agreement permits transfer
+- [x] Federated servers relay RTX bundles to peers based on federation agreement transfer scope
+- [x] Bundle provenance chain is preserved (original source + relay path)
+- [x] Receiving server validates: bundle signature, VRP handshake reference, federation agreement permits transfer
 
 #### 9.5 — Governance mediation
 - [ ] All RTX transfers are logged in `rtx_transfer_log` table
@@ -1171,6 +1171,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-17 | Phase 9.4 (`Cross-server RTX relay`) completed. FederatedRtxEnvelope, relay_rtx_bundles, receive_federated_rtx_handler, provenance tracking, 16 integration tests. |
 | 2026-02-17 | Phase 9.2 (`RTX publish endpoint`) completed. |
 | 2026-02-17 | Phase 9.1 (`RTX bundle format`) completed. |
 | 2026-02-17 | Phase 8 `COMPLETE`. Phase 9 `IN PROGRESS`. Full lifecycle integration test added. |

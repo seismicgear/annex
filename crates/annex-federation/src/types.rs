@@ -1,3 +1,4 @@
+use annex_rtx::{BundleProvenance, ReflectionSummaryBundle};
 use annex_vrp::{
     VrpAlignmentStatus, VrpFederationHandshake, VrpTransferScope, VrpValidationReport,
 };
@@ -55,4 +56,30 @@ pub struct FederatedMessageEnvelope {
     pub signature: String,
     /// Creation timestamp (ISO 8601).
     pub created_at: String,
+}
+
+/// An RTX bundle relayed from a federation peer.
+///
+/// When a bundle is published on one server and relayed to a federated peer,
+/// it is wrapped in this envelope. The envelope carries:
+/// - The original bundle (with transfer scope already applied by the sending server)
+/// - The provenance chain tracking all relay hops
+/// - The relaying server's Ed25519 signature proving authenticity
+///
+/// The receiving server validates the signature against the relaying server's
+/// public key, checks the federation agreement's transfer scope, and delivers
+/// the bundle to local subscribers with `accept_federated = true`.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FederatedRtxEnvelope {
+    /// The RTX bundle being relayed.
+    pub bundle: ReflectionSummaryBundle,
+    /// The provenance chain tracking relay hops from origin to this server.
+    pub provenance: BundleProvenance,
+    /// The base URL of the server sending this relay (the immediate sender).
+    pub relaying_server: String,
+    /// Ed25519 signature of the relay payload (hex-encoded).
+    ///
+    /// Signed payload: `bundle_id + relaying_server + origin_server + relay_path_joined`.
+    /// The relay path is joined with `|` separators for deterministic signing.
+    pub signature: String,
 }

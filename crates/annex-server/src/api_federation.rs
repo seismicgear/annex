@@ -1,17 +1,19 @@
-use crate::{api::GetRootResponse, AppState};
+use crate::{api::GetRootResponse, api_rtx::rtx_relay_signing_payload, AppState};
 use annex_channels::{
     add_member, create_message, list_federated_channels, Channel, CreateMessageParams,
 };
 use annex_federation::{
-    process_incoming_handshake, AttestationRequest, FederatedMessageEnvelope, HandshakeError,
+    process_incoming_handshake, AttestationRequest, FederatedMessageEnvelope, FederatedRtxEnvelope,
+    HandshakeError,
 };
 use annex_graph::{ensure_graph_node, GraphError};
 use annex_identity::{
     derive_nullifier_hex, derive_pseudonym_id,
     zk::{parse_fr_from_hex, parse_proof, verify_proof},
 };
+use annex_rtx::{enforce_transfer_scope, validate_bundle_structure};
 use annex_types::NodeType;
-use annex_vrp::{VrpFederationHandshake, VrpValidationReport};
+use annex_vrp::{VrpFederationHandshake, VrpTransferScope, VrpValidationReport};
 use axum::{
     extract::{Extension, Path},
     Json,
@@ -851,4 +853,305 @@ pub async fn join_federated_channel_handler(
     .map_err(|e| FederationError::DbError(rusqlite::Error::ToSqlConversionFailure(Box::new(e))))??;
 
     Ok(Json(serde_json::json!({ "status": "joined" })))
+}
+
+/// Parses a transfer scope string from the database.
+fn parse_transfer_scope(s: &str) -> Option<VrpTransferScope> {
+    match s {
+        "FULL_KNOWLEDGE_BUNDLE" => Some(VrpTransferScope::FullKnowledgeBundle),
+        "REFLECTION_SUMMARIES_ONLY" => Some(VrpTransferScope::ReflectionSummariesOnly),
+        "NO_TRANSFER" => Some(VrpTransferScope::NoTransfer),
+        _ => None,
+    }
+}
+
+/// Handler for `POST /api/federation/rtx`.
+///
+/// Receives an RTX bundle relayed from a federation peer. Validates:
+/// 1. The relaying server is a known, active instance
+/// 2. An active federation agreement exists with sufficient transfer scope
+/// 3. The server's Ed25519 signature on the envelope is valid
+/// 4. The bundle structure is well-formed
+/// 5. The bundle has not already been stored (idempotency via bundle_id uniqueness)
+///
+/// On success, stores the bundle with provenance, logs the transfer, and delivers
+/// to local subscribers with `accept_federated = true`.
+pub async fn receive_federated_rtx_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(envelope): Json<FederatedRtxEnvelope>,
+) -> Result<Json<serde_json::Value>, FederationError> {
+    let state_clone = state.clone();
+    let bundle = envelope.bundle.clone();
+
+    let (delivered_count, deliveries) = tokio::task::spawn_blocking(move || {
+        let conn = state_clone
+            .pool
+            .get()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+        // 1. Resolve relaying server instance
+        let (remote_instance_id, public_key_hex, status): (i64, String, String) = conn
+            .query_row(
+                "SELECT id, public_key, status FROM instances WHERE base_url = ?1",
+                params![envelope.relaying_server],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(|e| {
+                if e == rusqlite::Error::QueryReturnedNoRows {
+                    FederationError::UnknownRemote(envelope.relaying_server.clone())
+                } else {
+                    FederationError::DbError(e)
+                }
+            })?;
+
+        if status != "ACTIVE" {
+            return Err(FederationError::Forbidden(format!(
+                "Instance {} is not active",
+                envelope.relaying_server
+            )));
+        }
+
+        // 2. Verify active federation agreement and check transfer scope
+        let transfer_scope_str: String = conn
+            .query_row(
+                "SELECT transfer_scope FROM federation_agreements
+                 WHERE remote_instance_id = ?1 AND active = 1",
+                params![remote_instance_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| {
+                if e == rusqlite::Error::QueryReturnedNoRows {
+                    FederationError::Forbidden(format!(
+                        "No active federation agreement with {}",
+                        envelope.relaying_server
+                    ))
+                } else {
+                    FederationError::DbError(e)
+                }
+            })?;
+
+        let agreement_scope = parse_transfer_scope(&transfer_scope_str).ok_or_else(|| {
+            FederationError::Forbidden(
+                "Federation agreement has invalid transfer scope".to_string(),
+            )
+        })?;
+
+        if agreement_scope < VrpTransferScope::ReflectionSummariesOnly {
+            return Err(FederationError::Forbidden(
+                "Federation agreement does not permit RTX transfer".to_string(),
+            ));
+        }
+
+        // 3. Verify server signature on the envelope
+        let signing_payload = rtx_relay_signing_payload(
+            &envelope.bundle.bundle_id,
+            &envelope.relaying_server,
+            &envelope.provenance.origin_server,
+            &envelope.provenance.relay_path,
+        );
+
+        let public_key_bytes = hex::decode(&public_key_hex).map_err(|e| {
+            FederationError::InvalidSignature(format!("Invalid public key hex: {}", e))
+        })?;
+        let signature_bytes = hex::decode(&envelope.signature).map_err(|e| {
+            FederationError::InvalidSignature(format!("Invalid signature hex: {}", e))
+        })?;
+
+        let public_key =
+            EdVerifyingKey::from_bytes(&public_key_bytes.try_into().map_err(|_| {
+                FederationError::InvalidSignature("Invalid public key length".to_string())
+            })?)
+            .map_err(|e| FederationError::InvalidSignature(e.to_string()))?;
+
+        let signature = Signature::from_bytes(&signature_bytes.try_into().map_err(|_| {
+            FederationError::InvalidSignature("Invalid signature length".to_string())
+        })?);
+
+        public_key
+            .verify(signing_payload.as_bytes(), &signature)
+            .map_err(|e| FederationError::InvalidSignature(e.to_string()))?;
+
+        // 4. Validate bundle structure
+        validate_bundle_structure(&envelope.bundle)
+            .map_err(|e| FederationError::Forbidden(format!("Invalid bundle structure: {}", e)))?;
+
+        // 5. Enforce the local federation agreement's transfer scope on the bundle
+        //    (may strip reasoning_chain if our agreement is ReflectionSummariesOnly)
+        let scoped_bundle = enforce_transfer_scope(&envelope.bundle, agreement_scope)
+            .map_err(|e| FederationError::Forbidden(e.to_string()))?;
+
+        // 6. Store bundle with provenance (idempotent on duplicate bundle_id)
+        let domain_tags_json = serde_json::to_string(&scoped_bundle.domain_tags)
+            .map_err(FederationError::Serialization)?;
+        let caveats_json = serde_json::to_string(&scoped_bundle.caveats)
+            .map_err(FederationError::Serialization)?;
+        let provenance_json =
+            serde_json::to_string(&envelope.provenance).map_err(FederationError::Serialization)?;
+
+        let insert_result = conn.execute(
+            "INSERT INTO rtx_bundles (
+                server_id, bundle_id, source_pseudonym, source_server,
+                domain_tags_json, summary, reasoning_chain, caveats_json,
+                created_at_ms, signature, vrp_handshake_ref, provenance_json
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                state_clone.server_id,
+                scoped_bundle.bundle_id,
+                scoped_bundle.source_pseudonym,
+                scoped_bundle.source_server,
+                domain_tags_json,
+                scoped_bundle.summary,
+                scoped_bundle.reasoning_chain,
+                caveats_json,
+                scoped_bundle.created_at as i64,
+                scoped_bundle.signature,
+                scoped_bundle.vrp_handshake_ref,
+                provenance_json,
+            ],
+        );
+
+        match insert_result {
+            Ok(_) => {}
+            Err(rusqlite::Error::SqliteFailure(ref err, _))
+                if err.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                // Duplicate bundle (idempotent) — already received
+                return Ok((0, Vec::new()));
+            }
+            Err(e) => return Err(FederationError::DbError(e)),
+        }
+
+        // 7. Log the federated transfer
+        let redactions = if scoped_bundle.reasoning_chain.is_none()
+            && envelope.bundle.reasoning_chain.is_some()
+        {
+            Some("reasoning_chain_stripped")
+        } else {
+            None
+        };
+
+        conn.execute(
+            "INSERT INTO rtx_transfer_log (
+                server_id, bundle_id, source_pseudonym, destination_pseudonym,
+                transfer_scope_applied, redactions_applied
+            ) VALUES (?1, ?2, ?3, NULL, ?4, ?5)",
+            params![
+                state_clone.server_id,
+                scoped_bundle.bundle_id,
+                scoped_bundle.source_pseudonym,
+                agreement_scope.to_string(),
+                redactions,
+            ],
+        )
+        .map_err(FederationError::DbError)?;
+
+        // 8. Find matching local subscribers with accept_federated = true
+        let mut deliveries: Vec<(String, String)> = Vec::new();
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT s.subscriber_pseudonym, s.domain_filters_json, a.transfer_scope
+                 FROM rtx_subscriptions s
+                 JOIN agent_registrations a
+                   ON a.server_id = s.server_id AND a.pseudonym_id = s.subscriber_pseudonym
+                 WHERE s.server_id = ?1 AND s.accept_federated = 1 AND a.active = 1",
+            )
+            .map_err(FederationError::DbError)?;
+
+        let rows = stmt
+            .query_map(params![state_clone.server_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(FederationError::DbError)?;
+
+        for row in rows {
+            let (sub_pseudonym, domain_filters_json, scope_str) =
+                row.map_err(FederationError::DbError)?;
+
+            // Parse domain filters
+            let domain_filters: Vec<String> =
+                serde_json::from_str(&domain_filters_json).unwrap_or_default();
+
+            // Check domain tag match (empty filters = accept all)
+            let matches = domain_filters.is_empty()
+                || scoped_bundle
+                    .domain_tags
+                    .iter()
+                    .any(|tag| domain_filters.contains(tag));
+
+            if !matches {
+                continue;
+            }
+
+            // Parse receiver's transfer scope
+            let receiver_scope = match parse_transfer_scope(&scope_str) {
+                Some(s) if s >= VrpTransferScope::ReflectionSummariesOnly => s,
+                _ => continue,
+            };
+
+            // Apply receiver's transfer scope enforcement
+            let receiver_bundle = match enforce_transfer_scope(&scoped_bundle, receiver_scope) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+
+            let payload = serde_json::json!({
+                "type": "rtx_bundle",
+                "bundle": receiver_bundle,
+                "federated": true,
+                "provenance": envelope.provenance,
+            });
+
+            if let Ok(json) = serde_json::to_string(&payload) {
+                // Log delivery
+                let delivery_redactions = if receiver_scope
+                    == VrpTransferScope::ReflectionSummariesOnly
+                    && scoped_bundle.reasoning_chain.is_some()
+                {
+                    Some("reasoning_chain_stripped")
+                } else {
+                    None
+                };
+
+                let _ = conn.execute(
+                    "INSERT INTO rtx_transfer_log (
+                        server_id, bundle_id, source_pseudonym, destination_pseudonym,
+                        transfer_scope_applied, redactions_applied
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        state_clone.server_id,
+                        scoped_bundle.bundle_id,
+                        scoped_bundle.source_pseudonym,
+                        sub_pseudonym,
+                        receiver_scope.to_string(),
+                        delivery_redactions,
+                    ],
+                );
+
+                deliveries.push((sub_pseudonym, json));
+            }
+        }
+
+        let count = deliveries.len();
+        Ok::<_, FederationError>((count, deliveries))
+    })
+    .await
+    .map_err(|e| {
+        FederationError::DbError(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+    })??;
+
+    // 9. Deliver via WebSocket (async, outside spawn_blocking)
+    for (pseudonym, json) in &deliveries {
+        state.connection_manager.send(pseudonym, json.clone()).await;
+    }
+
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "bundleId": bundle.bundle_id,
+        "delivered_to": delivered_count,
+    })))
 }
