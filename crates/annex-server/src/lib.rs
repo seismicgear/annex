@@ -120,6 +120,14 @@ pub fn app(state: AppState) -> Router {
             "/api/rtx/subscriptions",
             get(api_rtx::get_subscription_handler),
         )
+        .route(
+            "/api/rtx/governance/transfers",
+            get(api_rtx::governance_transfers_handler),
+        )
+        .route(
+            "/api/rtx/governance/summary",
+            get(api_rtx::governance_summary_handler),
+        )
         .route("/api/admin/policy", put(api_admin::update_policy_handler))
         .layer(axum::middleware::from_fn(middleware::auth_middleware));
 
