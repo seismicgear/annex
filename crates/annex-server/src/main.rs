@@ -7,6 +7,8 @@ use annex_identity::MerkleTree;
 use annex_server::middleware::RateLimiter;
 use annex_server::{app, config, AppState};
 use annex_types::ServerPolicy;
+use ed25519_dalek::SigningKey;
+use rand::rngs::OsRng;
 use rusqlite::OptionalExtension;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, RwLock};
@@ -149,6 +151,19 @@ async fn main() -> Result<(), StartupError> {
     let membership_vkey =
         annex_identity::zk::parse_verification_key(&vkey_json).map_err(StartupError::ZkError)?;
 
+    // Load or generate Signing Key
+    let signing_key = if let Ok(hex_key) = std::env::var("ANNEX_SIGNING_KEY") {
+        let bytes = hex::decode(&hex_key).expect("ANNEX_SIGNING_KEY must be valid hex");
+        SigningKey::from_bytes(
+            &bytes
+                .try_into()
+                .expect("ANNEX_SIGNING_KEY must be 32 bytes"),
+        )
+    } else {
+        tracing::warn!("ANNEX_SIGNING_KEY not set. Generating ephemeral key. Federation signatures will change on restart.");
+        SigningKey::generate(&mut OsRng)
+    };
+
     // Create presence event broadcast channel
     let (presence_tx, _) = tokio::sync::broadcast::channel(100);
 
@@ -169,6 +184,8 @@ async fn main() -> Result<(), StartupError> {
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: Arc::new(membership_vkey),
         server_id,
+        signing_key: Arc::new(signing_key),
+        public_url: config.server.public_url.clone(),
         policy: Arc::new(RwLock::new(policy)),
         rate_limiter: RateLimiter::new(),
         connection_manager: annex_server::api_ws::ConnectionManager::new(),

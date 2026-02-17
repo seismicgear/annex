@@ -1,9 +1,10 @@
 //! WebSocket API handler and connection management.
 
+use crate::api_federation::relay_message;
 use crate::AppState;
-use annex_channels::{create_message, is_member, CreateMessageParams, Message};
+use annex_channels::{create_message, get_channel, is_member, CreateMessageParams, Message};
 use annex_identity::{get_platform_identity, PlatformIdentity};
-use annex_types::RoleCode;
+use annex_types::{FederationScope, RoleCode};
 use axum::{
     extract::{
         ws::{Message as AxumMessage, WebSocket},
@@ -357,19 +358,36 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                         // DB Insert (blocking)
                         let res = tokio::task::spawn_blocking(move || {
                             let conn = state_clone.pool.get().map_err(|e| e.to_string())?;
-                            create_message(&conn, &params).map_err(|e| e.to_string())
+                            let msg = create_message(&conn, &params).map_err(|e| e.to_string())?;
+
+                            // Check if channel is federated
+                            let channel =
+                                get_channel(&conn, &channel_id_clone).map_err(|e| e.to_string())?;
+                            let is_federated =
+                                matches!(channel.federation_scope, FederationScope::Federated);
+
+                            Ok::<_, String>((msg, is_federated))
                         })
                         .await;
 
                         match res {
-                            Ok(Ok(message)) => {
+                            Ok(Ok((message, is_federated))) => {
                                 // Broadcast
-                                let out = OutgoingMessage::Message(message);
+                                let out = OutgoingMessage::Message(message.clone());
                                 if let Ok(json) = serde_json::to_string(&out) {
                                     state
                                         .connection_manager
-                                        .broadcast(&channel_id_clone, json)
+                                        .broadcast(&message.channel_id, json)
                                         .await;
+                                }
+
+                                // Relay if federated
+                                if is_federated {
+                                    tokio::spawn(relay_message(
+                                        state.clone(),
+                                        message.channel_id.clone(),
+                                        message,
+                                    ));
                                 }
                             }
                             Ok(Err(e)) => {

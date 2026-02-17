@@ -35,8 +35,10 @@ uuid = { version = "1.0", features = ["v4"] }
 annex-graph = { version = "0.0.1", path = "../annex-graph" }
 tokio-stream = { version = "0.1.18", features = ["sync"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
-ed25519-dalek = { version = "2", features = ["serde"] }
+ed25519-dalek = { version = "2", features = ["rand_core", "serde"] }
 hex = "0.4"
+rand = "0.8"
+sha2.workspace = true
 
 [dev-dependencies]
 annex-voice = { workspace = true }
