@@ -12,3 +12,11 @@
 //! # Phase 8 implementation
 //!
 //! The full implementation of this crate is Phase 8 of the roadmap.
+
+pub mod db;
+pub mod handshake;
+pub mod types;
+
+pub use db::{create_agreement, get_agreement};
+pub use handshake::{process_incoming_handshake, HandshakeError};
+pub use types::FederationAgreement;

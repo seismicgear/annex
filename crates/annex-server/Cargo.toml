@@ -17,6 +17,7 @@ annex-db = { workspace = true }
 annex-identity = { workspace = true }
 annex-vrp = { workspace = true }
 annex-voice = { workspace = true }
+annex-federation = { workspace = true }
 rusqlite = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }

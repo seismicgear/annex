@@ -3,6 +3,7 @@
 pub mod api;
 pub mod api_agent;
 pub mod api_channels;
+pub mod api_federation;
 pub mod api_graph;
 pub mod api_sse;
 pub mod api_vrp;
@@ -133,6 +134,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/api/vrp/agent-handshake",
             post(api_vrp::agent_handshake_handler),
+        )
+        .route(
+            "/api/federation/handshake",
+            post(api_federation::federation_handshake_handler),
         )
         .route("/api/graph/degrees", get(api_graph::get_degrees_handler))
         .route(
