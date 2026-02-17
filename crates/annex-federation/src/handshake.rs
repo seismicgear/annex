@@ -102,7 +102,8 @@ mod tests {
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             )",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
         let policy = ServerPolicy::default();
         let anchor = VrpAnchorSnapshot::new(&[], &[]);
@@ -116,13 +117,16 @@ mod tests {
         };
 
         let report = process_incoming_handshake(&conn, 1, &policy, 10, &handshake).unwrap();
-        assert_eq!(report.alignment_status, annex_vrp::VrpAlignmentStatus::Aligned);
+        assert_eq!(
+            report.alignment_status,
+            annex_vrp::VrpAlignmentStatus::Aligned
+        );
 
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM federation_agreements",
-            [],
-            |row| row.get(0)
-        ).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM federation_agreements", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
         assert_eq!(count, 1);
     }
 }
