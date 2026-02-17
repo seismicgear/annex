@@ -14,7 +14,11 @@ use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 #[tokio::test]
 async fn test_agent_websocket_behavior() {
     // 1. Setup DB
-    let pool = annex_db::create_pool(":memory:", annex_db::DbRuntimeSettings::default()).unwrap();
+    // Use a temp file instead of :memory: to ensure all pooled connections see the same DB
+    let db_file = tempfile::NamedTempFile::new().unwrap();
+    let db_path = db_file.path().to_str().unwrap().to_string();
+
+    let pool = annex_db::create_pool(&db_path, annex_db::DbRuntimeSettings::default()).unwrap();
     {
         let conn = pool.get().unwrap();
         run_migrations(&conn).unwrap();

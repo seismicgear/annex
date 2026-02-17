@@ -17,6 +17,7 @@ annex-db = { workspace = true }
 annex-identity = { workspace = true }
 annex-vrp = { workspace = true }
 annex-voice = { workspace = true }
+annex-federation = { workspace = true }
 rusqlite = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
@@ -42,3 +43,5 @@ reqwest = { version = "0.12", features = ["json"] }
 tokio = { workspace = true, features = ["test-util"] }
 num-bigint = "0.4"
 tempfile = "3"
+annex-vrp = { workspace = true }
+annex-identity = { workspace = true }

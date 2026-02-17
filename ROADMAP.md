@@ -854,15 +854,15 @@ Server-to-server federation. After this phase, two Annex instances can negotiate
   ```
 
 #### 8.2 — Server-to-server VRP handshake
-- [ ] `POST /federation/handshake`
+- [x] `POST /federation/handshake`
   - Input: requesting server's `VrpFederationHandshake` + `VrpAnchorSnapshot` + `VrpCapabilitySharingContract`
   - Behavior: run `compare_peer_anchor` between server policy roots, evaluate contracts, log outcome
   - Response: `VrpValidationReport`
-- [ ] Both servers must independently handshake with each other (bilateral)
-- [ ] Store result in `federation_agreements` table
+- [x] Both servers must independently handshake with each other (bilateral)
+- [x] Store result in `federation_agreements` table
 
 #### 8.3 — Federation agreement persistence
-- [ ] `annex-db` migration: `federation_agreements` table:
+- [x] `annex-db` migration: `federation_agreements` table:
   ```sql
   CREATE TABLE federation_agreements (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
