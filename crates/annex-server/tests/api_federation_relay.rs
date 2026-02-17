@@ -49,6 +49,14 @@ async fn test_receive_federated_message() {
     ).unwrap();
     let remote_instance_id = conn.last_insert_rowid();
 
+    // Seed Active Federation Agreement (Required for relay)
+    conn.execute(
+        "INSERT INTO federation_agreements (
+            local_server_id, remote_instance_id, alignment_status, transfer_scope, agreement_json, active
+        ) VALUES (?1, ?2, 'ALIGNED', 'REFLECTION_SUMMARIES_ONLY', '{}', 1)",
+        rusqlite::params![local_server_id, remote_instance_id],
+    ).unwrap();
+
     // 3. Seed Federated Identity (The sender)
     let commitment = "0000000000000000000000000000000000000000000000000000000000000001";
     let topic = "annex:server:v1";
