@@ -39,6 +39,10 @@ async fn setup_app() -> axum::Router {
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: load_dummy_vkey(),
         server_id: 1,
+        signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
+            &mut rand::rngs::OsRng,
+        )),
+        public_url: "http://localhost:3000".to_string(),
         policy: Arc::new(RwLock::new(ServerPolicy::default())),
         rate_limiter: RateLimiter::new(),
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
@@ -141,6 +145,10 @@ async fn test_attest_membership_invalid_signature() {
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: load_dummy_vkey(),
         server_id: 1,
+        signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
+            &mut rand::rngs::OsRng,
+        )),
+        public_url: "http://localhost:3000".to_string(),
         policy: Arc::new(RwLock::new(ServerPolicy::default())),
         rate_limiter: RateLimiter::new(),
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
@@ -222,6 +230,10 @@ async fn test_attest_membership_valid_signature_fails_network() {
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: load_dummy_vkey(),
         server_id: 1,
+        signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
+            &mut rand::rngs::OsRng,
+        )),
+        public_url: "http://localhost:3000".to_string(),
         policy: Arc::new(RwLock::new(ServerPolicy::default())),
         rate_limiter: RateLimiter::new(),
         connection_manager: annex_server::api_ws::ConnectionManager::new(),

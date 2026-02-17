@@ -32,3 +32,24 @@ pub struct AttestationRequest {
     /// Signed message: SHA256(topic || commitment || participant_type).
     pub signature: String,
 }
+
+/// A message relayed from a federation peer.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FederatedMessageEnvelope {
+    /// Unique public ID of the message (on the originating server).
+    pub message_id: String,
+    /// The public channel ID.
+    pub channel_id: String,
+    /// The message content.
+    pub content: String,
+    /// The sender's pseudonym on the originating server.
+    pub sender_pseudonym: String,
+    /// The base URL of the originating server.
+    pub originating_server: String,
+    /// VRP attestation reference (format: "topic:commitment_hex").
+    pub attestation_ref: String,
+    /// Signature of SHA256(message_id + channel_id + content + sender + originating_server + attestation_ref + created_at).
+    pub signature: String,
+    /// Creation timestamp (ISO 8601).
+    pub created_at: String,
+}

@@ -22,6 +22,7 @@ use axum::{
     routing::{get, post, put},
     Extension, Json, Router,
 };
+use ed25519_dalek::SigningKey;
 use middleware::RateLimiter;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex, RwLock};
@@ -38,6 +39,10 @@ pub struct AppState {
     pub membership_vkey: Arc<VerifyingKey<Bn254>>,
     /// The local server ID.
     pub server_id: i64,
+    /// The local server signing key (Ed25519).
+    pub signing_key: Arc<SigningKey>,
+    /// The public URL of the server.
+    pub public_url: String,
     /// Server policy configuration.
     pub policy: Arc<RwLock<ServerPolicy>>,
     /// Rate limiter state.
@@ -154,6 +159,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/api/federation/channels/{channelId}/join",
             post(api_federation::join_federated_channel_handler),
+        )
+        .route(
+            "/api/federation/messages",
+            post(api_federation::receive_federated_message_handler),
         )
         .route("/api/graph/degrees", get(api_graph::get_degrees_handler))
         .route(

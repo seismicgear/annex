@@ -44,6 +44,10 @@ pub struct ServerConfig {
     /// Inactivity threshold in seconds for graph node pruning.
     #[serde(default = "default_inactivity_threshold_seconds")]
     pub inactivity_threshold_seconds: u64,
+
+    /// Public URL of the server (e.g. "https://annex.example.com").
+    #[serde(default = "default_public_url")]
+    pub public_url: String,
 }
 
 /// Database configuration.
@@ -90,6 +94,10 @@ fn default_inactivity_threshold_seconds() -> u64 {
     300
 }
 
+fn default_public_url() -> String {
+    "http://localhost:3000".to_string()
+}
+
 fn default_db_path() -> String {
     "annex.db".to_string()
 }
@@ -113,6 +121,7 @@ impl Default for ServerConfig {
             port: default_port(),
             retention_check_interval_seconds: default_retention_check_interval_seconds(),
             inactivity_threshold_seconds: default_inactivity_threshold_seconds(),
+            public_url: default_public_url(),
         }
     }
 }
@@ -269,6 +278,9 @@ pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
     }
     if let Some(threshold) = parse_env_var("ANNEX_INACTIVITY_THRESHOLD_SECONDS")? {
         config.server.inactivity_threshold_seconds = threshold;
+    }
+    if let Some(public_url) = parse_env_var("ANNEX_PUBLIC_URL")? {
+        config.server.public_url = public_url;
     }
     if let Ok(db_path) = std::env::var("ANNEX_DB_PATH") {
         config.database.path = db_path;
