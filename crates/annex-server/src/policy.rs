@@ -169,3 +169,188 @@ pub async fn recalculate_agent_alignments(state: Arc<AppState>) -> Result<(), Ap
 
     Ok(())
 }
+
+/// Recalculates alignment for all active federation agreements based on the current server policy.
+pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(), ApiError> {
+    // 1. Get Server Policy (Read Lock)
+    let policy = state
+        .policy
+        .read()
+        .map_err(|_| ApiError::InternalServerError("policy lock poisoned".to_string()))?
+        .clone();
+
+    // 2. Prepare Validation Context
+    let local_root = ServerPolicyRoot::from_policy(&policy);
+    let local_anchor = local_root.to_anchor_snapshot();
+
+    let mut offered_capabilities = Vec::new();
+    if policy.voice_enabled {
+        offered_capabilities.push("voice".to_string());
+    }
+    if policy.federation_enabled {
+        offered_capabilities.push("federation".to_string());
+    }
+
+    let local_contract = VrpCapabilitySharingContract {
+        required_capabilities: policy.agent_required_capabilities.clone(),
+        offered_capabilities,
+    };
+
+    let alignment_config = VrpAlignmentConfig {
+        semantic_alignment_required: false,
+        min_alignment_score: policy.agent_min_alignment_score,
+    };
+
+    let transfer_config = VrpTransferAcceptanceConfig {
+        allow_reflection_summaries: policy.federation_enabled,
+        allow_full_knowledge: false,
+    };
+
+    let state_clone = state.clone();
+
+    // 3. Process in Background
+    tokio::task::spawn_blocking(move || {
+        let conn = state_clone
+            .pool
+            .get()
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
+
+        let updates = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT fa.id, i.base_url, fa.alignment_status, fa.transfer_scope, fa.remote_handshake_json
+                     FROM federation_agreements fa
+                     JOIN instances i ON fa.remote_instance_id = i.id
+                     WHERE fa.active = 1",
+                )
+                .map_err(|e| ApiError::InternalServerError(format!("prepare failed: {}", e)))?;
+
+            let iter = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                })
+                .map_err(|e| ApiError::InternalServerError(format!("query failed: {}", e)))?;
+
+            let mut updates = Vec::new();
+
+            for row in iter {
+                let (id, base_url, old_alignment_str, old_scope_str, handshake_json) =
+                    row.map_err(|e| ApiError::InternalServerError(format!("row error: {}", e)))?;
+
+                let handshake_json = match handshake_json {
+                    Some(json) => json,
+                    None => {
+                        tracing::warn!(
+                            "Federation agreement {} ({}) has no handshake data, skipping re-evaluation",
+                            id,
+                            base_url
+                        );
+                        continue;
+                    }
+                };
+
+                let handshake: VrpFederationHandshake = serde_json::from_str(&handshake_json)
+                    .map_err(|_| {
+                        ApiError::InternalServerError("failed to parse handshake".to_string())
+                    })?;
+
+                let report = validate_federation_handshake(
+                    &local_anchor,
+                    &local_contract,
+                    &handshake,
+                    &alignment_config,
+                    &transfer_config,
+                );
+
+                let new_alignment_str = report.alignment_status.to_string();
+                let new_scope_str = report.transfer_scope.to_string();
+
+                if new_alignment_str != old_alignment_str || new_scope_str != old_scope_str {
+                    updates.push((id, base_url, report));
+                }
+            }
+            updates
+        };
+
+        // Apply updates
+        for (id, base_url, report) in updates {
+            let active_int = if report.alignment_status == VrpAlignmentStatus::Conflict {
+                0
+            } else {
+                1
+            };
+
+            // Serialize updated report
+            let report_json = serde_json::to_string(&report).map_err(|e| {
+                ApiError::InternalServerError(format!("failed to serialize report: {}", e))
+            })?;
+
+            conn.execute(
+                "UPDATE federation_agreements SET
+                    alignment_status = ?1,
+                    transfer_scope = ?2,
+                    agreement_json = ?3,
+                    active = ?4,
+                    updated_at = datetime('now')
+                 WHERE id = ?5",
+                rusqlite::params![
+                    report.alignment_status.to_string(),
+                    report.transfer_scope.to_string(),
+                    report_json,
+                    active_int,
+                    id
+                ],
+            )
+            .map_err(|e| ApiError::InternalServerError(format!("update failed: {}", e)))?;
+
+            // Emit Event
+            if report.alignment_status == VrpAlignmentStatus::Conflict {
+                tracing::info!(
+                    "Federation severed with {} due to policy conflict",
+                    base_url
+                );
+                let _ = state_clone.presence_tx.send(PresenceEvent::FederationSevered {
+                    remote_base_url: base_url,
+                });
+            } else {
+                tracing::info!(
+                    "Federation realigned with {}: {}",
+                    base_url,
+                    report.alignment_status
+                );
+                // Map VrpAlignmentStatus to annex_types::AlignmentStatus
+                let status = match report.alignment_status {
+                    VrpAlignmentStatus::Aligned => annex_types::AlignmentStatus::Aligned,
+                    VrpAlignmentStatus::Partial => annex_types::AlignmentStatus::Partial,
+                    VrpAlignmentStatus::Conflict => annex_types::AlignmentStatus::Conflict,
+                };
+
+                let _ = state_clone
+                    .presence_tx
+                    .send(PresenceEvent::FederationRealigned {
+                        remote_base_url: base_url,
+                        alignment_status: status,
+                    });
+            }
+        }
+
+        Ok::<(), ApiError>(())
+    })
+    .await
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+
+    Ok(())
+}
+
+/// Recalculates alignments for both agents and federation agreements.
+pub async fn recalculate_all_alignments(state: Arc<AppState>) -> Result<(), ApiError> {
+    recalculate_agent_alignments(state.clone()).await?;
+    recalculate_federation_agreements(state).await?;
+    Ok(())
+}

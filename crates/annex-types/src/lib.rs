@@ -211,6 +211,15 @@ pub enum PresenceEvent {
         to_node: String,
         kind: EdgeKind,
     },
+    /// A federation agreement has been realigned.
+    FederationRealigned {
+        remote_base_url: String,
+        alignment_status: AlignmentStatus,
+    },
+    /// A federation agreement has been severed.
+    FederationSevered {
+        remote_base_url: String,
+    },
 }
 
 #[cfg(test)]

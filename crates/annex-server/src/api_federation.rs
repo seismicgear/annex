@@ -286,6 +286,22 @@ pub async fn receive_federated_message_handler(
             )));
         }
 
+        // 1.5. Verify Active Federation Agreement
+        let agreement_active: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM federation_agreements WHERE remote_instance_id = ?1 AND active = 1)",
+                params![remote_instance_id],
+                |row| row.get(0),
+            )
+            .map_err(FederationError::DbError)?;
+
+        if !agreement_active {
+            return Err(FederationError::Forbidden(format!(
+                "No active federation agreement with {}",
+                envelope.originating_server
+            )));
+        }
+
         // 2. Verify Signature
         let signature_input = format!(
             "{}{}{}{}{}{}{}",
@@ -760,6 +776,22 @@ pub async fn join_federated_channel_handler(
         if status != "ACTIVE" {
             return Err(FederationError::Forbidden(format!(
                 "Instance {} is not active",
+                payload.originating_server
+            )));
+        }
+
+        // 1.5. Verify Active Federation Agreement
+        let agreement_active: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM federation_agreements WHERE remote_instance_id = ?1 AND active = 1)",
+                params![remote_instance_id],
+                |row| row.get(0),
+            )
+            .map_err(FederationError::DbError)?;
+
+        if !agreement_active {
+            return Err(FederationError::Forbidden(format!(
+                "No active federation agreement with {}",
                 payload.originating_server
             )));
         }

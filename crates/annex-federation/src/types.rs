@@ -1,4 +1,6 @@
-use annex_vrp::{VrpAlignmentStatus, VrpTransferScope, VrpValidationReport};
+use annex_vrp::{
+    VrpAlignmentStatus, VrpFederationHandshake, VrpTransferScope, VrpValidationReport,
+};
 use serde::{Deserialize, Serialize};
 
 /// Represents an existing federation agreement between two servers.
@@ -10,6 +12,7 @@ pub struct FederationAgreement {
     pub alignment_status: VrpAlignmentStatus,
     pub transfer_scope: VrpTransferScope,
     pub agreement_json: VrpValidationReport,
+    pub remote_handshake_json: Option<VrpFederationHandshake>,
     pub active: bool,
     pub created_at: String,
     pub updated_at: String,

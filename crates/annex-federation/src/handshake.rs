@@ -75,7 +75,13 @@ pub fn process_incoming_handshake(
     );
 
     // 6. Persist agreement
-    create_agreement(conn, local_server_id, remote_instance_id, &report)?;
+    create_agreement(
+        conn,
+        local_server_id,
+        remote_instance_id,
+        &report,
+        Some(handshake),
+    )?;
 
     Ok(report)
 }
@@ -97,6 +103,7 @@ mod tests {
                 alignment_status TEXT NOT NULL,
                 transfer_scope TEXT NOT NULL,
                 agreement_json TEXT NOT NULL,
+                remote_handshake_json TEXT,
                 active INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
