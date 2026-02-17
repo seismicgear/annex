@@ -1,6 +1,8 @@
 //! Admin API handlers for the Annex server.
 
-use crate::{api::ApiError, middleware::IdentityContext, policy::recalculate_all_alignments, AppState};
+use crate::{
+    api::ApiError, middleware::IdentityContext, policy::recalculate_all_alignments, AppState,
+};
 use annex_types::ServerPolicy;
 use axum::{
     extract::{Extension, Json},
@@ -30,9 +32,8 @@ pub async fn update_policy_handler(
 
     // 2. Persist Policy
     let version_id = Uuid::new_v4().to_string();
-    let policy_json = serde_json::to_string(&new_policy).map_err(|e| {
-        ApiError::BadRequest(format!("failed to serialize policy: {}", e))
-    })?;
+    let policy_json = serde_json::to_string(&new_policy)
+        .map_err(|e| ApiError::BadRequest(format!("failed to serialize policy: {}", e)))?;
 
     let state_clone = state.clone();
     let policy_clone = new_policy.clone();

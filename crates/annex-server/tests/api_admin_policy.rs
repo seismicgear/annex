@@ -3,9 +3,7 @@ use annex_identity::{
     zk::{G1Affine, G2Affine, VerifyingKey},
     MerkleTree,
 };
-use annex_server::{
-    api_ws::ConnectionManager, middleware::RateLimiter, app, AppState,
-};
+use annex_server::{api_ws::ConnectionManager, app, middleware::RateLimiter, AppState};
 use annex_types::ServerPolicy;
 use annex_vrp::{VrpAnchorSnapshot, VrpCapabilitySharingContract, VrpFederationHandshake};
 use axum::{
@@ -15,8 +13,8 @@ use axum::{
 };
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, RwLock};
-use tower::ServiceExt;
 use tempfile::TempDir;
+use tower::ServiceExt;
 
 fn load_dummy_vkey() -> Arc<VerifyingKey<annex_identity::zk::Bn254>> {
     let g1 = G1Affine::default();
@@ -46,7 +44,8 @@ async fn test_update_policy_and_recalculate() {
     conn.execute(
         "INSERT INTO servers (id, slug, label, policy_json) VALUES (1, 'test', 'Test', '{}')",
         [],
-    ).unwrap();
+    )
+    .unwrap();
 
     // Insert Moderator Identity
     conn.execute(
@@ -154,10 +153,10 @@ async fn test_update_policy_and_recalculate() {
     assert!(!active);
 
     // Check Policy Version
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM server_policy_versions",
-        [],
-        |row| row.get(0)
-    ).unwrap();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM server_policy_versions", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
     assert_eq!(count, 1);
 }
