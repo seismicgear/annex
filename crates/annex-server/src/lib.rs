@@ -84,6 +84,10 @@ pub fn app(state: AppState) -> Router {
             post(api_channels::join_voice_channel_handler),
         )
         .route(
+            "/api/channels/{channelId}/voice/leave",
+            post(api_channels::leave_voice_channel_handler),
+        )
+        .route(
             "/api/channels/{channelId}/leave",
             post(api_channels::leave_channel_handler),
         )

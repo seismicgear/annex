@@ -807,9 +807,9 @@ Voice channels that work for both humans and agents. Humans speak via WebRTC thr
 - [x] Default voice profile for agents without explicit assignment
 
 #### 7.7 — Voice channel management
-- [ ] `POST /api/channels/:channelId/voice/join` — join voice channel (creates LiveKit room participant)
-- [ ] `POST /api/channels/:channelId/voice/leave` — leave voice channel
-- [ ] Voice participant list synced with channel membership
+- [x] `POST /api/channels/:channelId/voice/join` — join voice channel (creates LiveKit room participant)
+- [x] `POST /api/channels/:channelId/voice/leave` — leave voice channel
+- [x] Voice participant list synced with channel membership
 
 ### Completion Criteria
 
@@ -1167,6 +1167,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-20 | Phase 7.7 (`Voice channel management`) completed. |
 | 2026-02-20 | Phase 7.6 (`Voice profile assignment`) completed. |
 | 2026-02-20 | Phase 7.5 (`STT service`) completed. |
 | 2026-02-20 | Phase 7.2 (`Human voice flow`) completed. |
