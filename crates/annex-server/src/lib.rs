@@ -18,7 +18,7 @@ use annex_identity::zk::{Bn254, VerifyingKey};
 use annex_identity::MerkleTree;
 use annex_types::ServerPolicy;
 use axum::{
-    routing::{get, post},
+    routing::{get, post, put},
     Extension, Json, Router,
 };
 use middleware::RateLimiter;
@@ -94,6 +94,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/api/agents/{pseudonymId}",
             get(api_agent::get_agent_profile_handler),
+        )
+        .route(
+            "/api/agents/{pseudonymId}/voice-profile",
+            put(api_agent::update_agent_voice_profile_handler),
         )
         .layer(axum::middleware::from_fn(middleware::auth_middleware));
 

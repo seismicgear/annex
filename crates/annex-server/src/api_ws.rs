@@ -13,6 +13,7 @@ use axum::{
     response::IntoResponse,
 };
 use futures_util::{SinkExt, StreamExt};
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
@@ -413,8 +414,34 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                             continue;
                         }
 
+                        // Get voice profile ID
+                        let voice_profile_id = {
+                            let pool = state.pool.clone();
+                            let server_id = state.server_id;
+                            let pid = pseudonym.clone();
+                            tokio::task::spawn_blocking(move || {
+                                let conn = pool.get().map_err(|_| "pool error")?;
+                                let profile_id: Option<String> = conn
+                                    .query_row(
+                                        "SELECT vp.profile_id
+                                     FROM agent_registrations ar
+                                     JOIN voice_profiles vp ON ar.voice_profile_id = vp.id
+                                     WHERE ar.server_id = ?1 AND ar.pseudonym_id = ?2",
+                                        rusqlite::params![server_id, pid],
+                                        |row| row.get(0),
+                                    )
+                                    .optional()
+                                    .unwrap_or(None);
+                                Ok::<Option<String>, String>(profile_id)
+                            })
+                            .await
+                            .unwrap_or(Ok(None))
+                            .unwrap_or(None)
+                            .unwrap_or("default".to_string())
+                        };
+
                         // Synthesize
-                        match state.tts_service.synthesize(&text, "default").await {
+                        match state.tts_service.synthesize(&text, &voice_profile_id).await {
                             Ok(audio) => {
                                 // Get or create voice client
                                 let client_opt = match state.voice_sessions.read() {
