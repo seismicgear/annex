@@ -148,17 +148,19 @@ pub fn list_federated_channels(
     conn: &Connection,
     server_id: i64,
 ) -> Result<Vec<Channel>, ChannelError> {
+    let federated_json = serde_json::to_string(&FederationScope::Federated)?;
+
     let mut stmt = conn.prepare(
         "SELECT
             id, server_id, channel_id, name, channel_type, topic,
             vrp_topic_binding, required_capabilities_json, agent_min_alignment,
             retention_days, federation_scope, created_at
         FROM channels
-        WHERE server_id = ?1 AND federation_scope LIKE '%Federated%'
+        WHERE server_id = ?1 AND federation_scope = ?2
         ORDER BY name ASC",
     )?;
 
-    let rows = stmt.query_map([server_id], map_row_to_channel)?;
+    let rows = stmt.query_map(params![server_id, federated_json], map_row_to_channel)?;
     let mut channels = Vec::new();
     for row in rows {
         channels.push(row?);
@@ -166,75 +168,76 @@ pub fn list_federated_channels(
     Ok(channels)
 }
 
-/// Updates an existing channel.
+/// Updates an existing channel using a single atomic UPDATE statement.
+///
+/// Only fields that are `Some` in `updates` are modified; `None` fields are
+/// left untouched. This avoids the read-modify-write race that would occur
+/// if we fetched the channel, mutated in memory, and wrote back.
 pub fn update_channel(
     conn: &Connection,
     channel_id: &str,
     updates: &UpdateChannelParams,
 ) -> Result<(), ChannelError> {
-    // We construct the update query dynamically based on present fields.
-    // This is a bit verbose in rusqlite without a query builder, but robust.
-    // However, for simplicity and standard practice, we'll just check existence first
-    // then update fields that are Some.
-
-    // A simpler approach for now: fetch, update struct, save? No, race conditions.
-    // Better: individual updates or dynamic query.
-
-    // Strategy: Read the current channel, apply updates in memory, and write back all fields.
-    // This is acceptable for Phase 4 where concurrency on *channel configuration* is low.
-
-    let mut channel = get_channel(conn, channel_id)?;
+    let mut set_parts: Vec<String> = Vec::new();
+    let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    let mut idx = 1usize;
 
     if let Some(name) = &updates.name {
-        channel.name = name.clone();
+        set_parts.push(format!("name = ?{}", idx));
+        values.push(Box::new(name.clone()));
+        idx += 1;
     }
     if let Some(topic) = &updates.topic {
-        channel.topic = Some(topic.clone());
+        set_parts.push(format!("topic = ?{}", idx));
+        values.push(Box::new(topic.clone()));
+        idx += 1;
     }
     if let Some(binding) = &updates.vrp_topic_binding {
-        channel.vrp_topic_binding = Some(binding.clone());
+        set_parts.push(format!("vrp_topic_binding = ?{}", idx));
+        values.push(Box::new(binding.clone()));
+        idx += 1;
     }
     if let Some(caps) = &updates.required_capabilities_json {
-        channel.required_capabilities_json = Some(caps.clone());
+        set_parts.push(format!("required_capabilities_json = ?{}", idx));
+        values.push(Box::new(caps.clone()));
+        idx += 1;
     }
     if let Some(align) = &updates.agent_min_alignment {
-        channel.agent_min_alignment = Some(*align);
+        let json = serde_json::to_string(align)?;
+        set_parts.push(format!("agent_min_alignment = ?{}", idx));
+        values.push(Box::new(json));
+        idx += 1;
     }
     if let Some(days) = &updates.retention_days {
-        channel.retention_days = Some(*days);
+        set_parts.push(format!("retention_days = ?{}", idx));
+        values.push(Box::new(*days));
+        idx += 1;
     }
     if let Some(scope) = &updates.federation_scope {
-        channel.federation_scope = *scope;
+        let json = serde_json::to_string(scope)?;
+        set_parts.push(format!("federation_scope = ?{}", idx));
+        values.push(Box::new(json));
+        idx += 1;
     }
 
-    let federation_scope_json = serde_json::to_string(&channel.federation_scope)?;
-    let alignment_json = channel
-        .agent_min_alignment
-        .map(|a| serde_json::to_string(&a))
-        .transpose()?;
+    if set_parts.is_empty() {
+        // No fields to update; verify the channel exists for backward compat.
+        let _ = get_channel(conn, channel_id)?;
+        return Ok(());
+    }
 
-    conn.execute(
-        "UPDATE channels SET
-            name = ?1,
-            topic = ?2,
-            vrp_topic_binding = ?3,
-            required_capabilities_json = ?4,
-            agent_min_alignment = ?5,
-            retention_days = ?6,
-            federation_scope = ?7
-        WHERE channel_id = ?8",
-        params![
-            channel.name,
-            channel.topic,
-            channel.vrp_topic_binding,
-            channel.required_capabilities_json,
-            alignment_json,
-            channel.retention_days,
-            federation_scope_json,
-            channel_id
-        ],
-    )?;
+    let sql = format!(
+        "UPDATE channels SET {} WHERE channel_id = ?{}",
+        set_parts.join(", "),
+        idx
+    );
+    values.push(Box::new(channel_id.to_string()));
 
+    let params: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(|v| v.as_ref()).collect();
+    let count = conn.execute(&sql, params.as_slice())?;
+    if count == 0 {
+        return Err(ChannelError::NotFound(channel_id.to_string()));
+    }
     Ok(())
 }
 
@@ -789,5 +792,98 @@ mod tests {
         // Remove member
         remove_member(&conn, "chan-mem", "user-1").expect("remove member failed");
         assert!(!is_member(&conn, "chan-mem", "user-1").unwrap());
+    }
+
+    #[test]
+    fn test_update_channel_nonexistent() {
+        let conn = setup_db();
+
+        let updates = UpdateChannelParams {
+            name: Some("Ghost".to_string()),
+            ..Default::default()
+        };
+        let err = update_channel(&conn, "does-not-exist", &updates).unwrap_err();
+        match err {
+            ChannelError::NotFound(id) => assert_eq!(id, "does-not-exist"),
+            _ => panic!("expected NotFound, got {:?}", err),
+        }
+    }
+
+    #[test]
+    fn test_update_channel_no_fields() {
+        let conn = setup_db();
+        let server_id = 1;
+
+        let params = CreateChannelParams {
+            server_id,
+            channel_id: "chan-noop".to_string(),
+            name: "NoOp".to_string(),
+            channel_type: ChannelType::Text,
+            topic: Some("original".to_string()),
+            vrp_topic_binding: None,
+            required_capabilities_json: None,
+            agent_min_alignment: None,
+            retention_days: None,
+            federation_scope: FederationScope::Local,
+        };
+        create_channel(&conn, &params).expect("create failed");
+
+        // Update with all None — should succeed and change nothing
+        let updates = UpdateChannelParams::default();
+        update_channel(&conn, "chan-noop", &updates).expect("empty update failed");
+
+        let ch = get_channel(&conn, "chan-noop").expect("get failed");
+        assert_eq!(ch.name, "NoOp");
+        assert_eq!(ch.topic, Some("original".to_string()));
+    }
+
+    #[test]
+    fn test_update_channel_no_fields_nonexistent() {
+        let conn = setup_db();
+
+        let updates = UpdateChannelParams::default();
+        let err = update_channel(&conn, "ghost", &updates).unwrap_err();
+        match err {
+            ChannelError::NotFound(_) => {}
+            _ => panic!("expected NotFound, got {:?}", err),
+        }
+    }
+
+    #[test]
+    fn test_update_channel_multiple_fields() {
+        let conn = setup_db();
+        let server_id = 1;
+
+        let params = CreateChannelParams {
+            server_id,
+            channel_id: "chan-multi".to_string(),
+            name: "Before".to_string(),
+            channel_type: ChannelType::Text,
+            topic: Some("old topic".to_string()),
+            vrp_topic_binding: None,
+            required_capabilities_json: None,
+            agent_min_alignment: None,
+            retention_days: Some(7),
+            federation_scope: FederationScope::Local,
+        };
+        create_channel(&conn, &params).expect("create failed");
+
+        let updates = UpdateChannelParams {
+            name: Some("After".to_string()),
+            topic: Some("new topic".to_string()),
+            retention_days: Some(14),
+            federation_scope: Some(FederationScope::Federated),
+            ..Default::default()
+        };
+        update_channel(&conn, "chan-multi", &updates).expect("update failed");
+
+        let ch = get_channel(&conn, "chan-multi").expect("get failed");
+        assert_eq!(ch.name, "After");
+        assert_eq!(ch.topic, Some("new topic".to_string()));
+        assert_eq!(ch.retention_days, Some(14));
+        assert_eq!(ch.federation_scope, FederationScope::Federated);
+        // Untouched fields preserved
+        assert_eq!(ch.vrp_topic_binding, None);
+        assert_eq!(ch.required_capabilities_json, None);
     }
 }

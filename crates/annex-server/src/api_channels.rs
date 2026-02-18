@@ -15,6 +15,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 
+/// Maps a [`ChannelError`] to the correct HTTP status code.
+///
+/// `NotFound` → 404, everything else → 500.
+fn channel_err_to_status(e: annex_channels::ChannelError) -> StatusCode {
+    match e {
+        annex_channels::ChannelError::NotFound(_) => StatusCode::NOT_FOUND,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
 #[derive(Deserialize)]
 pub struct HistoryParams {
     pub before: Option<String>,
@@ -129,7 +139,10 @@ pub async fn get_channel_handler(
             .pool
             .get()
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        get_channel(&conn, &channel_id).map_err(|_| StatusCode::NOT_FOUND)
+        get_channel(&conn, &channel_id).map_err(|e| match e {
+            annex_channels::ChannelError::NotFound(_) => StatusCode::NOT_FOUND,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        })
     })
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
@@ -152,7 +165,10 @@ pub async fn delete_channel_handler(
             .pool
             .get()
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        delete_channel(&conn, &channel_id).map_err(|_| StatusCode::NOT_FOUND)
+        delete_channel(&conn, &channel_id).map_err(|e| match e {
+            annex_channels::ChannelError::NotFound(_) => StatusCode::NOT_FOUND,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        })
     })
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
@@ -213,7 +229,7 @@ pub async fn join_channel_handler(
         let cid = channel_id.clone();
         let channel_res = tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            get_channel(&conn, &cid).map_err(|_| StatusCode::NOT_FOUND)
+            get_channel(&conn, &cid).map_err(channel_err_to_status)
         })
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -406,7 +422,7 @@ pub async fn leave_channel_handler(
         let cid = channel_id.clone();
         let channel_res = tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            get_channel(&conn, &cid).map_err(|_| StatusCode::NOT_FOUND)
+            get_channel(&conn, &cid).map_err(channel_err_to_status)
         })
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -495,7 +511,7 @@ pub async fn join_voice_channel_handler(
         let cid = channel_id.clone();
         move || {
             let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            get_channel(&conn, &cid).map_err(|_| StatusCode::NOT_FOUND)
+            get_channel(&conn, &cid).map_err(channel_err_to_status)
         }
     })
     .await
@@ -550,7 +566,7 @@ pub async fn leave_voice_channel_handler(
         let cid = channel_id.clone();
         move || {
             let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            get_channel(&conn, &cid).map_err(|_| StatusCode::NOT_FOUND)
+            get_channel(&conn, &cid).map_err(channel_err_to_status)
         }
     })
     .await

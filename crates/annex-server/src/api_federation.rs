@@ -93,6 +93,9 @@ impl axum::response::IntoResponse for FederationError {
             FederationError::Handshake(_) => {
                 (axum::http::StatusCode::BAD_REQUEST, self.to_string())
             }
+            FederationError::Channel(annex_channels::ChannelError::NotFound(_)) => {
+                (axum::http::StatusCode::NOT_FOUND, self.to_string())
+            }
             _ => (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 self.to_string(),
@@ -935,7 +938,7 @@ pub async fn receive_federated_rtx_handler(
     let bundle = envelope.bundle.clone();
 
     let (delivered_count, deliveries) = tokio::task::spawn_blocking(move || {
-        let conn = state_clone
+        let mut conn = state_clone
             .pool
             .get()
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
@@ -1031,7 +1034,8 @@ pub async fn receive_federated_rtx_handler(
         let scoped_bundle = enforce_transfer_scope(&envelope.bundle, agreement_scope)
             .map_err(|e| FederationError::Forbidden(e.to_string()))?;
 
-        // 6. Store bundle with provenance (idempotent on duplicate bundle_id)
+        // 6. Start transaction for all writes (bundle insert, transfer log, deliveries).
+        //    This prevents partial state if any write fails after the first succeeds.
         let domain_tags_json = serde_json::to_string(&scoped_bundle.domain_tags)
             .map_err(FederationError::Serialization)?;
         let caveats_json = serde_json::to_string(&scoped_bundle.caveats)
@@ -1039,7 +1043,10 @@ pub async fn receive_federated_rtx_handler(
         let provenance_json =
             serde_json::to_string(&envelope.provenance).map_err(FederationError::Serialization)?;
 
-        let insert_result = conn.execute(
+        let tx = conn.transaction().map_err(FederationError::DbError)?;
+
+        // Store bundle with provenance (idempotent on duplicate bundle_id)
+        let insert_result = tx.execute(
             "INSERT INTO rtx_bundles (
                 server_id, bundle_id, source_pseudonym, source_server,
                 domain_tags_json, summary, reasoning_chain, caveats_json,
@@ -1066,7 +1073,9 @@ pub async fn receive_federated_rtx_handler(
             Err(rusqlite::Error::SqliteFailure(ref err, _))
                 if err.code == rusqlite::ErrorCode::ConstraintViolation =>
             {
-                // Duplicate bundle (idempotent) — already received
+                // Duplicate bundle (idempotent) — already received.
+                // Transaction is dropped without commit (implicit rollback), which
+                // is correct because no writes succeeded.
                 return Ok((0, Vec::new()));
             }
             Err(e) => return Err(FederationError::DbError(e)),
@@ -1081,7 +1090,7 @@ pub async fn receive_federated_rtx_handler(
             None
         };
 
-        conn.execute(
+        tx.execute(
             "INSERT INTO rtx_transfer_log (
                 server_id, bundle_id, source_pseudonym, destination_pseudonym,
                 transfer_scope_applied, redactions_applied
@@ -1096,33 +1105,41 @@ pub async fn receive_federated_rtx_handler(
         )
         .map_err(FederationError::DbError)?;
 
-        // 8. Find matching local subscribers with accept_federated = true
+        // 8. Find matching local subscribers with accept_federated = true.
+        //    The subscription query reads through the transaction, which is fine.
         let mut deliveries: Vec<(String, String)> = Vec::new();
 
-        let mut stmt = conn
-            .prepare(
-                "SELECT s.subscriber_pseudonym, s.domain_filters_json, a.transfer_scope
-                 FROM rtx_subscriptions s
-                 JOIN agent_registrations a
-                   ON a.server_id = s.server_id AND a.pseudonym_id = s.subscriber_pseudonym
-                 WHERE s.server_id = ?1 AND s.accept_federated = 1 AND a.active = 1",
-            )
-            .map_err(FederationError::DbError)?;
+        // Collect subscription rows before writing delivery logs to avoid
+        // holding a prepared statement open across writes.
+        let subscribers: Vec<(String, String, String)> = {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT s.subscriber_pseudonym, s.domain_filters_json, a.transfer_scope
+                     FROM rtx_subscriptions s
+                     JOIN agent_registrations a
+                       ON a.server_id = s.server_id AND a.pseudonym_id = s.subscriber_pseudonym
+                     WHERE s.server_id = ?1 AND s.accept_federated = 1 AND a.active = 1",
+                )
+                .map_err(FederationError::DbError)?;
 
-        let rows = stmt
-            .query_map(params![state_clone.server_id], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            })
-            .map_err(FederationError::DbError)?;
+            let rows = stmt
+                .query_map(params![state_clone.server_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .map_err(FederationError::DbError)?;
 
-        for row in rows {
-            let (sub_pseudonym, domain_filters_json, scope_str) =
-                row.map_err(FederationError::DbError)?;
+            let mut collected = Vec::new();
+            for row in rows {
+                collected.push(row.map_err(FederationError::DbError)?);
+            }
+            collected
+        };
 
+        for (sub_pseudonym, domain_filters_json, scope_str) in subscribers {
             // Parse domain filters (empty = accept all; log if corrupted)
             let domain_filters: Vec<String> =
                 serde_json::from_str(&domain_filters_json).unwrap_or_else(|e| {
@@ -1175,7 +1192,7 @@ pub async fn receive_federated_rtx_handler(
                     None
                 };
 
-                if let Err(e) = conn.execute(
+                if let Err(e) = tx.execute(
                     "INSERT INTO rtx_transfer_log (
                         server_id, bundle_id, source_pseudonym, destination_pseudonym,
                         transfer_scope_applied, redactions_applied
@@ -1202,6 +1219,10 @@ pub async fn receive_federated_rtx_handler(
         }
 
         let count = deliveries.len();
+
+        // Commit all writes atomically (bundle, transfer log, delivery logs).
+        tx.commit().map_err(FederationError::DbError)?;
+
         Ok::<_, FederationError>((count, deliveries))
     })
     .await
