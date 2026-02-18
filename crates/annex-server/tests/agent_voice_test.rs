@@ -68,6 +68,7 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool, Arc<AppState>) {
         tts_service: Arc::new(tts_service),
         stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),
         voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        observe_tx: tokio::sync::broadcast::channel(256).0,
     };
 
     (app(state.clone()), pool, Arc::new(state))

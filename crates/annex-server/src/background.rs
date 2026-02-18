@@ -5,7 +5,7 @@
 
 use crate::AppState;
 use annex_graph::prune_inactive_nodes;
-use annex_observe::{emit_event, EventDomain, EventPayload};
+use annex_observe::EventPayload;
 use annex_types::PresenceEvent;
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
@@ -36,6 +36,7 @@ pub async fn start_pruning_task(state: Arc<AppState>, threshold_seconds: u64) {
         let pool = state.pool.clone();
         let server_id = state.server_id;
         let tx = state.presence_tx.clone();
+        let observe_tx = state.observe_tx.clone();
 
         let res = tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| e.to_string())?;
@@ -47,17 +48,13 @@ pub async fn start_pruning_task(state: Arc<AppState>, threshold_seconds: u64) {
                 let observe_payload = EventPayload::NodePruned {
                     pseudonym_id: pseudonym_id.clone(),
                 };
-                if let Err(e) = emit_event(
+                crate::emit_and_broadcast(
                     &conn,
                     server_id,
-                    EventDomain::Presence,
-                    observe_payload.event_type(),
-                    observe_payload.entity_type(),
                     pseudonym_id,
                     &observe_payload,
-                ) {
-                    tracing::warn!("failed to emit NODE_PRUNED event: {}", e);
-                }
+                    &observe_tx,
+                );
             }
 
             Ok::<_, String>(pruned)

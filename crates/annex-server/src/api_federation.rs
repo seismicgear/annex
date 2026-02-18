@@ -11,7 +11,7 @@ use annex_identity::{
     derive_nullifier_hex, derive_pseudonym_id,
     zk::{parse_fr_from_hex, parse_proof, verify_proof},
 };
-use annex_observe::{emit_event, EventDomain, EventPayload};
+use annex_observe::EventPayload;
 use annex_rtx::{enforce_transfer_scope, validate_bundle_structure};
 use annex_types::NodeType;
 use annex_vrp::{VrpFederationHandshake, VrpTransferScope, VrpValidationReport};
@@ -497,17 +497,13 @@ pub async fn federation_handshake_handler(
             remote_url: payload.base_url.clone(),
             alignment_status: report.alignment_status.to_string(),
         };
-        if let Err(e) = emit_event(
+        crate::emit_and_broadcast(
             &conn,
             state_clone.server_id,
-            EventDomain::Federation,
-            observe_payload.event_type(),
-            observe_payload.entity_type(),
             &payload.base_url,
             &observe_payload,
-        ) {
-            tracing::warn!("failed to emit FEDERATION_ESTABLISHED event: {}", e);
-        }
+            &state_clone.observe_tx,
+        );
 
         Ok::<_, FederationError>(report)
     })

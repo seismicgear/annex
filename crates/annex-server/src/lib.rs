@@ -6,6 +6,7 @@ pub mod api_agent;
 pub mod api_channels;
 pub mod api_federation;
 pub mod api_graph;
+pub mod api_observe;
 pub mod api_rtx;
 pub mod api_sse;
 pub mod api_vrp;
@@ -62,6 +63,45 @@ pub struct AppState {
     /// Active agent voice sessions (pseudonym -> client).
     pub voice_sessions:
         Arc<RwLock<std::collections::HashMap<String, Arc<annex_voice::AgentVoiceClient>>>>,
+    /// Broadcast channel for public observe events (SSE stream).
+    pub observe_tx: broadcast::Sender<annex_observe::PublicEvent>,
+}
+
+/// Emits an observe event to the database and broadcasts it to the SSE stream.
+///
+/// This is a convenience wrapper that calls [`annex_observe::emit_event`] and,
+/// on success, sends the resulting [`annex_observe::PublicEvent`] through the
+/// broadcast channel. Failures are logged as warnings but never block the
+/// caller.
+pub fn emit_and_broadcast(
+    conn: &rusqlite::Connection,
+    server_id: i64,
+    entity_id: &str,
+    payload: &annex_observe::EventPayload,
+    observe_tx: &broadcast::Sender<annex_observe::PublicEvent>,
+) {
+    let domain = payload.domain();
+    match annex_observe::emit_event(
+        conn,
+        server_id,
+        domain,
+        payload.event_type(),
+        payload.entity_type(),
+        entity_id,
+        payload,
+    ) {
+        Ok(event) => {
+            let _ = observe_tx.send(event);
+        }
+        Err(e) => {
+            tracing::warn!(
+                domain = domain.as_str(),
+                event_type = payload.event_type(),
+                "failed to emit observe event: {}",
+                e
+            );
+        }
+    }
 }
 
 /// Health check handler.
@@ -197,6 +237,8 @@ pub fn app(state: AppState) -> Router {
             "/events/presence",
             get(api_sse::get_presence_stream_handler),
         )
+        .route("/api/public/events", get(api_observe::get_events_handler))
+        .route("/events/stream", get(api_observe::get_event_stream_handler))
         .merge(protected_routes)
         .route("/ws", get(api_ws::ws_handler))
         .layer(axum::middleware::from_fn(middleware::rate_limit_middleware))

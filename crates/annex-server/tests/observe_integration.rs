@@ -1,5 +1,5 @@
 //! Integration tests verifying that API handlers emit events to the
-//! public_event_log table.
+//! public_event_log table and that the public event API endpoints work.
 
 use annex_db::{create_pool, DbRuntimeSettings};
 use annex_identity::MerkleTree;
@@ -41,6 +41,7 @@ fn make_state(pool: annex_db::DbPool) -> AppState {
         tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper")),
         stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),
         voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        observe_tx: tokio::sync::broadcast::channel(256).0,
     }
 }
 
@@ -208,4 +209,262 @@ async fn failed_register_does_not_emit_event() {
 
     // No event should have been emitted
     assert_eq!(count_events_by_type(&pool, "IDENTITY_REGISTERED"), 0);
+}
+
+// ── GET /api/public/events ──────────────────────────────────────────
+
+#[tokio::test]
+async fn get_events_returns_persisted_events() {
+    let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
+    {
+        let conn = pool.get().unwrap();
+        annex_db::run_migrations(&conn).unwrap();
+    }
+
+    let state = make_state(pool.clone());
+    let application = app(state);
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+
+    // Register an identity to create an event
+    let body_json = serde_json::json!({
+        "commitmentHex": "0000000000000000000000000000000000000000000000000000000000000001",
+        "roleCode": 1,
+        "nodeId": 100
+    });
+    let mut request = Request::builder()
+        .uri("/api/registry/register")
+        .method("POST")
+        .header("content-type", "application/json")
+        .body(Body::from(body_json.to_string()))
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
+    let response = application.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Now query the events API
+    let mut request = Request::builder()
+        .uri("/api/public/events")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
+
+    let response = application.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let resp: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    assert!(resp["count"].as_u64().unwrap() >= 1);
+    let events = resp["events"].as_array().unwrap();
+    assert!(!events.is_empty());
+
+    // First event should be IDENTITY_REGISTERED
+    assert_eq!(events[0]["event_type"], "IDENTITY_REGISTERED");
+    assert_eq!(events[0]["domain"], "IDENTITY");
+    assert_eq!(events[0]["entity_type"], "identity");
+    assert_eq!(events[0]["seq"], 1);
+}
+
+#[tokio::test]
+async fn get_events_filters_by_domain() {
+    let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
+    {
+        let conn = pool.get().unwrap();
+        annex_db::run_migrations(&conn).unwrap();
+    }
+
+    // Seed events directly into the database
+    {
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO public_event_log (server_id, domain, event_type, entity_type, entity_id, seq, payload_json, occurred_at)
+             VALUES (1, 'IDENTITY', 'IDENTITY_REGISTERED', 'identity', 'c1', 1, '{}', datetime('now'))",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO public_event_log (server_id, domain, event_type, entity_type, entity_id, seq, payload_json, occurred_at)
+             VALUES (1, 'PRESENCE', 'NODE_ADDED', 'node', 'p1', 2, '{}', datetime('now'))",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO public_event_log (server_id, domain, event_type, entity_type, entity_id, seq, payload_json, occurred_at)
+             VALUES (1, 'IDENTITY', 'IDENTITY_VERIFIED', 'identity', 'c1', 3, '{}', datetime('now'))",
+            [],
+        ).unwrap();
+    }
+
+    let state = make_state(pool.clone());
+    let application = app(state);
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+
+    // Filter by IDENTITY domain
+    let mut request = Request::builder()
+        .uri("/api/public/events?domain=IDENTITY")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
+
+    let response = application.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let resp: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    assert_eq!(resp["count"], 2);
+    let events = resp["events"].as_array().unwrap();
+    assert!(events.iter().all(|e| e["domain"] == "IDENTITY"));
+
+    // Filter by PRESENCE domain
+    let mut request = Request::builder()
+        .uri("/api/public/events?domain=PRESENCE")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
+
+    let response = application.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let resp: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(resp["count"], 1);
+}
+
+#[tokio::test]
+async fn get_events_respects_limit() {
+    let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
+    {
+        let conn = pool.get().unwrap();
+        annex_db::run_migrations(&conn).unwrap();
+    }
+
+    // Seed 5 events
+    {
+        let conn = pool.get().unwrap();
+        for i in 1..=5 {
+            conn.execute(
+                "INSERT INTO public_event_log (server_id, domain, event_type, entity_type, entity_id, seq, payload_json, occurred_at)
+                 VALUES (1, 'IDENTITY', 'IDENTITY_REGISTERED', 'identity', ?1, ?2, '{}', datetime('now'))",
+                rusqlite::params![format!("c{i}"), i],
+            ).unwrap();
+        }
+    }
+
+    let state = make_state(pool.clone());
+    let application = app(state);
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+
+    let mut request = Request::builder()
+        .uri("/api/public/events?limit=2")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
+
+    let response = application.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let resp: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(resp["count"], 2);
+}
+
+#[tokio::test]
+async fn get_events_rejects_invalid_domain() {
+    let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
+    {
+        let conn = pool.get().unwrap();
+        annex_db::run_migrations(&conn).unwrap();
+    }
+
+    let state = make_state(pool.clone());
+    let application = app(state);
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+
+    let mut request = Request::builder()
+        .uri("/api/public/events?domain=INVALID")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
+
+    let response = application.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn get_events_returns_empty_when_no_events() {
+    let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
+    {
+        let conn = pool.get().unwrap();
+        annex_db::run_migrations(&conn).unwrap();
+    }
+
+    let state = make_state(pool.clone());
+    let application = app(state);
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+
+    let mut request = Request::builder()
+        .uri("/api/public/events")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
+
+    let response = application.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let resp: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(resp["count"], 0);
+    assert!(resp["events"].as_array().unwrap().is_empty());
+}
+
+// ── GET /events/stream (SSE) ────────────────────────────────────────
+
+#[tokio::test]
+async fn event_stream_returns_sse_content_type() {
+    let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
+    {
+        let conn = pool.get().unwrap();
+        annex_db::run_migrations(&conn).unwrap();
+    }
+
+    let state = make_state(pool.clone());
+    let application = app(state);
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+
+    let mut request = Request::builder()
+        .uri("/events/stream")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
+
+    let response = application.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .expect("should have content-type header")
+        .to_str()
+        .unwrap();
+    assert!(
+        content_type.contains("text/event-stream"),
+        "expected text/event-stream, got: {}",
+        content_type
+    );
 }

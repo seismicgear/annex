@@ -1024,9 +1024,9 @@ The "trust as public computation" layer. After this phase, any authorized party 
 - [x] Moderation actions: emit `MODERATION_ACTION` with action type and target
 
 #### 10.3 — Public event API
-- [ ] `GET /api/public/events?domain=...&since=...&limit=...` — paginated event retrieval
-- [ ] `GET /events/stream?domain=...` — SSE real-time stream
-- [ ] Filtered by domain, event type, entity type
+- [x] `GET /api/public/events?domain=...&since=...&limit=...` — paginated event retrieval
+- [x] `GET /events/stream?domain=...` — SSE real-time stream
+- [x] Filtered by domain, event type, entity type
 
 #### 10.4 — Public summary APIs
 - [ ] `GET /api/public/server/summary` — server metadata, member count by type, channel count, federation peer count
@@ -1171,6 +1171,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-18 | Phase 10.3 (`Public event API`) completed. `GET /api/public/events` with paginated, filterable event retrieval. `GET /events/stream` SSE real-time stream with domain filtering. `emit_and_broadcast` helper wires DB writes to broadcast channel. `emit_event` now returns `PublicEvent`. 6 new integration tests. |
 | 2026-02-17 | Phase 10.2 (`Event emission integration`) completed. All 13 event types wired into server handlers: `api.rs` (IDENTITY_REGISTERED, IDENTITY_VERIFIED, PSEUDONYM_DERIVED, NODE_ADDED), `background.rs` (NODE_PRUNED), `api_vrp.rs` (NODE_REACTIVATED, AGENT_CONNECTED), `api_federation.rs` (FEDERATION_ESTABLISHED), `policy.rs` (AGENT_REALIGNED, AGENT_DISCONNECTED, FEDERATION_REALIGNED, FEDERATION_SEVERED), `api_admin.rs` (MODERATION_ACTION). 3 integration tests. |
 | 2026-02-17 | Phase 10.1 (`Public event log`) completed. Migration `022_public_event_log` with indexed table, `annex-observe` crate implemented with `EventDomain`, `EventPayload` (13 event types), `emit_event`, `query_events`, 17 unit tests. |
 | 2026-02-17 | Phase 9 `COMPLETE`. Phase 10 `IN PROGRESS`. All RTX Knowledge Exchange criteria met. |

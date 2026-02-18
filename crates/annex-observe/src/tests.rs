@@ -35,7 +35,7 @@ fn emit_event_inserts_row() {
         role_code: 1,
     };
 
-    let id = emit_event(
+    let event = emit_event(
         &conn,
         sid,
         EventDomain::Identity,
@@ -46,22 +46,13 @@ fn emit_event_inserts_row() {
     )
     .expect("emit should succeed");
 
-    assert!(id > 0, "returned row ID should be positive");
-
-    // Verify the row exists with correct values.
-    let (domain, event_type, entity_type, entity_id, seq): (String, String, String, String, i64) =
-        conn.query_row(
-            "SELECT domain, event_type, entity_type, entity_id, seq FROM public_event_log WHERE id = ?1",
-            [id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
-        )
-        .expect("should query inserted row");
-
-    assert_eq!(domain, "IDENTITY");
-    assert_eq!(event_type, "IDENTITY_REGISTERED");
-    assert_eq!(entity_type, "identity");
-    assert_eq!(entity_id, "0xabc123");
-    assert_eq!(seq, 1);
+    assert!(event.id > 0, "returned row ID should be positive");
+    assert_eq!(event.domain, "IDENTITY");
+    assert_eq!(event.event_type, "IDENTITY_REGISTERED");
+    assert_eq!(event.entity_type, "identity");
+    assert_eq!(event.entity_id, "0xabc123");
+    assert_eq!(event.seq, 1);
+    assert!(!event.occurred_at.is_empty());
 }
 
 #[test]
@@ -74,7 +65,7 @@ fn emit_event_payload_round_trips_through_json() {
         alignment_status: "ALIGNED".to_string(),
     };
 
-    let id = emit_event(
+    let event = emit_event(
         &conn,
         sid,
         EventDomain::Federation,
@@ -85,13 +76,7 @@ fn emit_event_payload_round_trips_through_json() {
     )
     .expect("emit should succeed");
 
-    let payload_json: String = conn
-        .query_row(
-            "SELECT payload_json FROM public_event_log WHERE id = ?1",
-            [id],
-            |row| row.get(0),
-        )
-        .expect("should query payload");
+    let payload_json = event.payload_json;
 
     let restored: EventPayload =
         serde_json::from_str(&payload_json).expect("payload should deserialise");

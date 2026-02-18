@@ -167,6 +167,9 @@ async fn main() -> Result<(), StartupError> {
     // Create presence event broadcast channel
     let (presence_tx, _) = tokio::sync::broadcast::channel(100);
 
+    // Create observe event broadcast channel (for SSE /events/stream)
+    let (observe_tx, _) = tokio::sync::broadcast::channel(256);
+
     // Initialize Voice Service
     let voice_service = annex_voice::VoiceService::new(config.livekit);
 
@@ -194,6 +197,7 @@ async fn main() -> Result<(), StartupError> {
         tts_service: Arc::new(tts_service),
         stt_service: Arc::new(stt_service),
         voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        observe_tx,
     };
 
     // Start background pruning task

@@ -112,6 +112,7 @@ async fn test_receive_federated_message() {
         tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper")),
         stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),
         voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        observe_tx: tokio::sync::broadcast::channel(256).0,
     };
 
     let app = app(state);

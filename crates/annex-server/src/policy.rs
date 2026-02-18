@@ -1,7 +1,7 @@
 //! Policy management and re-evaluation logic.
 
 use crate::{api::ApiError, AppState};
-use annex_observe::{emit_event, EventDomain, EventPayload};
+use annex_observe::EventPayload;
 use annex_types::PresenceEvent;
 use annex_vrp::{
     validate_federation_handshake, ServerPolicyRoot, VrpAlignmentConfig, VrpAlignmentStatus,
@@ -165,33 +165,25 @@ pub async fn recalculate_agent_alignments(state: Arc<AppState>) -> Result<(), Ap
                     alignment_status: report.alignment_status.to_string(),
                     previous_status: "changed".to_string(),
                 };
-                if let Err(e) = emit_event(
+                crate::emit_and_broadcast(
                     &conn,
                     state_clone.server_id,
-                    EventDomain::Agent,
-                    observe_payload.event_type(),
-                    observe_payload.entity_type(),
                     &pseudonym,
                     &observe_payload,
-                ) {
-                    tracing::warn!("failed to emit AGENT_REALIGNED event: {}", e);
-                }
+                    &state_clone.observe_tx,
+                );
             } else {
                 let observe_payload = EventPayload::AgentDisconnected {
                     pseudonym_id: pseudonym.clone(),
                     reason: "policy_conflict".to_string(),
                 };
-                if let Err(e) = emit_event(
+                crate::emit_and_broadcast(
                     &conn,
                     state_clone.server_id,
-                    EventDomain::Agent,
-                    observe_payload.event_type(),
-                    observe_payload.entity_type(),
                     &pseudonym,
                     &observe_payload,
-                ) {
-                    tracing::warn!("failed to emit AGENT_DISCONNECTED event: {}", e);
-                }
+                    &state_clone.observe_tx,
+                );
             }
         }
 
@@ -362,17 +354,13 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
                     remote_url: base_url.clone(),
                     reason: "policy_conflict".to_string(),
                 };
-                if let Err(e) = emit_event(
+                crate::emit_and_broadcast(
                     &conn,
                     state_clone.server_id,
-                    EventDomain::Federation,
-                    observe_payload.event_type(),
-                    observe_payload.entity_type(),
                     &base_url,
                     &observe_payload,
-                ) {
-                    tracing::warn!("failed to emit FEDERATION_SEVERED event: {}", e);
-                }
+                    &state_clone.observe_tx,
+                );
             } else {
                 tracing::info!(
                     "Federation realigned with {}: {}",
@@ -398,17 +386,13 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
                     alignment_status: report.alignment_status.to_string(),
                     previous_status: "changed".to_string(),
                 };
-                if let Err(e) = emit_event(
+                crate::emit_and_broadcast(
                     &conn,
                     state_clone.server_id,
-                    EventDomain::Federation,
-                    observe_payload.event_type(),
-                    observe_payload.entity_type(),
                     &base_url,
                     &observe_payload,
-                ) {
-                    tracing::warn!("failed to emit FEDERATION_REALIGNED event: {}", e);
-                }
+                    &state_clone.observe_tx,
+                );
             }
         }
 

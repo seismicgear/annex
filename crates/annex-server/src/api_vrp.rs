@@ -2,7 +2,7 @@
 
 use crate::{api::ApiError, AppState};
 use annex_graph::update_node_activity;
-use annex_observe::{emit_event, EventDomain, EventPayload};
+use annex_observe::EventPayload;
 use annex_types::PresenceEvent;
 use annex_vrp::{
     check_reputation_score, record_vrp_outcome, validate_federation_handshake, ServerPolicyRoot,
@@ -118,17 +118,13 @@ pub async fn agent_handshake_handler(
                 let observe_payload = EventPayload::NodeReactivated {
                     pseudonym_id: payload.pseudonym_id.clone(),
                 };
-                if let Err(e) = emit_event(
+                crate::emit_and_broadcast(
                     &conn,
                     state.server_id,
-                    EventDomain::Presence,
-                    observe_payload.event_type(),
-                    observe_payload.entity_type(),
                     &payload.pseudonym_id,
                     &observe_payload,
-                ) {
-                    tracing::warn!("failed to emit NODE_REACTIVATED event: {}", e);
-                }
+                    &state.observe_tx,
+                );
             }
 
             let contract_json = serde_json::to_string(&payload.handshake.capability_contract)
@@ -177,17 +173,13 @@ pub async fn agent_handshake_handler(
                 pseudonym_id: payload.pseudonym_id.clone(),
                 alignment_status: report.alignment_status.to_string(),
             };
-            if let Err(e) = emit_event(
+            crate::emit_and_broadcast(
                 &conn,
                 state.server_id,
-                EventDomain::Agent,
-                observe_payload.event_type(),
-                observe_payload.entity_type(),
                 &payload.pseudonym_id,
                 &observe_payload,
-            ) {
-                tracing::warn!("failed to emit AGENT_CONNECTED event: {}", e);
-            }
+                &state.observe_tx,
+            );
         }
         // Roadmap says: "On Conflict: reject with detailed report".
         // But if an existing agent becomes Conflict, we should probably update their status.

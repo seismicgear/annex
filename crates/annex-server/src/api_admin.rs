@@ -3,7 +3,7 @@
 use crate::{
     api::ApiError, middleware::IdentityContext, policy::recalculate_all_alignments, AppState,
 };
-use annex_observe::{emit_event, EventDomain, EventPayload};
+use annex_observe::EventPayload;
 use annex_types::ServerPolicy;
 use axum::{
     extract::{Extension, Json},
@@ -76,17 +76,13 @@ pub async fn update_policy_handler(
             target_pseudonym: None,
             description: format!("Server policy updated to version {}", version_id_clone),
         };
-        if let Err(e) = emit_event(
+        crate::emit_and_broadcast(
             &conn,
             state_clone.server_id,
-            EventDomain::Moderation,
-            observe_payload.event_type(),
-            observe_payload.entity_type(),
             &moderator_pseudonym,
             &observe_payload,
-        ) {
-            tracing::warn!("failed to emit MODERATION_ACTION event: {}", e);
-        }
+            &state_clone.observe_tx,
+        );
 
         Ok::<(), ApiError>(())
     })

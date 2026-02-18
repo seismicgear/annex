@@ -30,7 +30,7 @@ pub fn emit_event(
     entity_type: &str,
     entity_id: &str,
     payload: &EventPayload,
-) -> Result<i64, ObserveError> {
+) -> Result<PublicEvent, ObserveError> {
     let payload_json = serde_json::to_string(payload)?;
     let seq = next_seq(conn, server_id)?;
 
@@ -49,7 +49,24 @@ pub fn emit_event(
         ],
     )?;
 
-    Ok(conn.last_insert_rowid())
+    let id = conn.last_insert_rowid();
+    let occurred_at: String = conn.query_row(
+        "SELECT occurred_at FROM public_event_log WHERE id = ?1",
+        params![id],
+        |row| row.get(0),
+    )?;
+
+    Ok(PublicEvent {
+        id,
+        server_id,
+        domain: domain.as_str().to_string(),
+        event_type: event_type.to_string(),
+        entity_type: entity_type.to_string(),
+        entity_id: entity_id.to_string(),
+        seq,
+        payload_json,
+        occurred_at,
+    })
 }
 
 /// Returns the next sequence number for the given server.
