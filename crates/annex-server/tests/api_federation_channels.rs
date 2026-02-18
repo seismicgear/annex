@@ -56,6 +56,7 @@ async fn setup_app() -> (axum::Router, Arc<AppState>, TempDir) {
         url: "http://localhost:7880".to_string(),
         api_key: "devkey".to_string(),
         api_secret: "secret".to_string(),
+        token_ttl_seconds: 3600,
     };
     let voice_service = VoiceService::new(voice_config);
     let tts_service = TtsService::new("dummy/voices", "dummy/piper");

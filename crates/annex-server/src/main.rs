@@ -92,6 +92,18 @@ async fn main() -> Result<(), StartupError> {
         "resolved startup configuration path"
     );
 
+    // Warn if the config file path is relative, since it depends on the
+    // working directory at startup and may break under process managers.
+    if let Some(p) = selected_config_path {
+        if !std::path::Path::new(p).is_absolute() {
+            tracing::warn!(
+                path = p,
+                "config file path is relative — behavior depends on working directory; \
+                 consider using an absolute path or ANNEX_CONFIG_PATH env var"
+            );
+        }
+    }
+
     // Initialize database
     let pool = annex_db::create_pool(
         &config.database.path,
@@ -124,7 +136,7 @@ async fn main() -> Result<(), StartupError> {
     // Initialize Merkle Tree
     let tree = {
         let conn = pool.get()?;
-        MerkleTree::restore(&conn, 20)?
+        MerkleTree::restore(&conn, config.server.merkle_tree_depth)?
     };
 
     // Get Server ID and Policy
@@ -170,7 +182,7 @@ async fn main() -> Result<(), StartupError> {
     };
 
     // Create presence event broadcast channel
-    let (presence_tx, _) = tokio::sync::broadcast::channel(100);
+    let (presence_tx, _) = tokio::sync::broadcast::channel(config.server.presence_broadcast_capacity);
 
     // Create observe event broadcast channel (for SSE /events/stream)
     let (observe_tx, _) = tokio::sync::broadcast::channel(256);

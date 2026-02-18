@@ -53,7 +53,7 @@ impl VoiceService {
                 can_subscribe: true,
                 ..Default::default()
             })
-            .with_ttl(Duration::from_secs(60 * 60)); // 1 hour TTL
+            .with_ttl(Duration::from_secs(self.config.token_ttl_seconds));
 
         token.to_jwt().map_err(VoiceError::LiveKit)
     }

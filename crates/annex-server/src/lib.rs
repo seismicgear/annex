@@ -28,6 +28,7 @@ use axum::{
 };
 use ed25519_dalek::SigningKey;
 use middleware::RateLimiter;
+use tower_http::cors::{Any, CorsLayer};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::broadcast;
@@ -62,6 +63,10 @@ pub struct AppState {
     /// STT service.
     pub stt_service: Arc<annex_voice::SttService>,
     /// Active agent voice sessions (pseudonym -> client).
+    ///
+    /// Uses `std::sync::RwLock` intentionally: all lock acquisitions are brief
+    /// HashMap operations (get/insert/remove) that never span `.await` points,
+    /// making a synchronous lock safe and more efficient than `tokio::sync::RwLock`.
     pub voice_sessions:
         Arc<RwLock<std::collections::HashMap<String, Arc<annex_voice::AgentVoiceClient>>>>,
     /// Broadcast channel for public observe events (SSE stream).
@@ -110,6 +115,13 @@ pub fn emit_and_broadcast(
             );
         }
     }
+}
+
+/// Parses a transfer scope string from the database into a [`VrpTransferScope`].
+///
+/// Returns `None` for unrecognized strings.
+pub(crate) fn parse_transfer_scope(s: &str) -> Option<annex_vrp::VrpTransferScope> {
+    s.parse().ok()
 }
 
 /// Maximum request body size (2 MiB). Protects against OOM from oversized payloads.
@@ -263,5 +275,11 @@ pub fn app(state: AppState) -> Router {
         .route("/ws", get(api_ws::ws_handler))
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .layer(axum::middleware::from_fn(middleware::rate_limit_middleware))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any),
+        )
         .layer(Extension(Arc::new(state)))
 }

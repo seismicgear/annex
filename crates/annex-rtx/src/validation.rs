@@ -90,11 +90,16 @@ pub fn validate_bundle_structure(bundle: &ReflectionSummaryBundle) -> Result<(),
 
 /// Constructs the signing payload for a bundle.
 ///
-/// The signed message is: `bundle_id + source_pseudonym + source_server + summary + created_at`.
+/// The signed message is the newline-delimited concatenation of:
+/// `bundle_id\nsource_pseudonym\nsource_server\nsummary\ncreated_at`.
+///
+/// Fields are separated by newline (`\n`) to prevent ambiguity from
+/// field value concatenation (e.g., `id="ab" + pseudo="cd"` vs `id="abcd"`).
+///
 /// Callers should SHA256-hash this payload and sign the hash with Ed25519.
 pub fn bundle_signing_payload(bundle: &ReflectionSummaryBundle) -> String {
     format!(
-        "{}{}{}{}{}",
+        "{}\n{}\n{}\n{}\n{}",
         bundle.bundle_id,
         bundle.source_pseudonym,
         bundle.source_server,

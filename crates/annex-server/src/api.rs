@@ -212,7 +212,7 @@ pub async fn register_handler(
                 annex_identity::IdentityError::InvalidCommitmentFormat
                 | annex_identity::IdentityError::InvalidRoleCode(_)
                 | annex_identity::IdentityError::InvalidHex => ApiError::BadRequest(e.to_string()),
-                annex_identity::IdentityError::DuplicateNullifier(_) => {
+                annex_identity::IdentityError::DuplicateCommitment(_) => {
                     ApiError::Conflict(e.to_string())
                 }
                 annex_identity::IdentityError::TreeFull => {
@@ -492,7 +492,7 @@ pub async fn verify_membership_handler(
         // (a) A TOCTOU race between check_nullifier_exists and insert_nullifier
         //     (another request could insert between the check and the insert).
         //     Fixed by removing the redundant check and relying on insert_nullifier's
-        //     UNIQUE constraint handling which returns DuplicateNullifier on conflict.
+        //     UNIQUE constraint handling which returns DuplicateNullifier/DuplicateCommitment on conflict.
         // (b) create_platform_identity, ensure_graph_node, and emit_and_broadcast
         //     were not wrapped in a transaction, so a failure partway through
         //     could leave inconsistent state (e.g., identity exists but no graph node).

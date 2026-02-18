@@ -15,6 +15,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 
+/// Maximum length for a channel ID.
+const MAX_CHANNEL_ID_LEN: usize = 128;
+/// Maximum length for a channel name.
+const MAX_CHANNEL_NAME_LEN: usize = 256;
+/// Maximum length for a channel topic.
+const MAX_TOPIC_LEN: usize = 1024;
+
 /// Maps a [`ChannelError`] to the correct HTTP status code, logging non-404 errors.
 ///
 /// `NotFound` → 404, everything else → 500 (with error logged).
@@ -62,6 +69,19 @@ pub async fn create_channel_handler(
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     if !identity.can_moderate {
         return Err(StatusCode::FORBIDDEN);
+    }
+
+    // Validate string lengths to prevent oversized payloads
+    if payload.channel_id.len() > MAX_CHANNEL_ID_LEN || payload.channel_id.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if payload.name.len() > MAX_CHANNEL_NAME_LEN || payload.name.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if let Some(ref t) = payload.topic {
+        if t.len() > MAX_TOPIC_LEN {
+            return Err(StatusCode::BAD_REQUEST);
+        }
     }
 
     let params = CreateChannelParams {
@@ -148,7 +168,10 @@ pub async fn get_channel_handler(
         let conn = state
             .pool
             .get()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            .map_err(|e| {
+                tracing::error!(error = %e, "failed to get db connection for get_channel");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
         get_channel(&conn, &channel_id).map_err(channel_err_to_status)
     })
     .await

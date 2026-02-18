@@ -150,8 +150,6 @@ async fn test_ws_lifecycle() {
                     assert_eq!(received["sender_pseudonym"], "user-1");
                 } else {
                     // Maybe it IS wrapped?
-                    // Let's debug print
-                    println!("Received JSON: {}", received);
                     // If it's wrapped in "message" key despite my assumption:
                     if !received["message"].is_null() {
                         assert_eq!(received["message"]["content"], content);

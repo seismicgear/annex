@@ -99,6 +99,16 @@ pub struct ServerConfig {
     /// Public URL of the server (e.g. "https://annex.example.com").
     #[serde(default = "default_public_url")]
     pub public_url: String,
+
+    /// Depth of the Merkle tree for identity commitments.
+    /// Capacity = 2^depth leaves. Default: 20 (1,048,576 identities).
+    #[serde(default = "default_merkle_tree_depth")]
+    pub merkle_tree_depth: usize,
+
+    /// Capacity of the tokio broadcast channel for presence SSE events.
+    /// Default: 256.
+    #[serde(default = "default_presence_broadcast_capacity")]
+    pub presence_broadcast_capacity: usize,
 }
 
 /// Database configuration.
@@ -157,6 +167,14 @@ fn default_log_level() -> String {
     "info".to_string()
 }
 
+fn default_merkle_tree_depth() -> usize {
+    20
+}
+
+fn default_presence_broadcast_capacity() -> usize {
+    256
+}
+
 fn default_db_busy_timeout_ms() -> u64 {
     5_000
 }
@@ -173,6 +191,8 @@ impl Default for ServerConfig {
             retention_check_interval_seconds: default_retention_check_interval_seconds(),
             inactivity_threshold_seconds: default_inactivity_threshold_seconds(),
             public_url: default_public_url(),
+            merkle_tree_depth: default_merkle_tree_depth(),
+            presence_broadcast_capacity: default_presence_broadcast_capacity(),
         }
     }
 }
@@ -250,6 +270,26 @@ fn validate_config(config: &Config) -> Result<(), ConfigError> {
             reason: format!(
                 "must be >= {MIN_RETENTION_CHECK_INTERVAL_SECONDS}, got {}",
                 config.server.retention_check_interval_seconds
+            ),
+        });
+    }
+
+    if !(1..=30).contains(&config.server.merkle_tree_depth) {
+        return Err(ConfigError::InvalidValue {
+            field: "server.merkle_tree_depth",
+            reason: format!(
+                "must be in range 1..=30, got {}",
+                config.server.merkle_tree_depth
+            ),
+        });
+    }
+
+    if !(16..=10_000).contains(&config.server.presence_broadcast_capacity) {
+        return Err(ConfigError::InvalidValue {
+            field: "server.presence_broadcast_capacity",
+            reason: format!(
+                "must be in range 16..=10000, got {}",
+                config.server.presence_broadcast_capacity
             ),
         });
     }
@@ -348,7 +388,13 @@ pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
     if let Some(public_url) = parse_env_var("ANNEX_PUBLIC_URL")? {
         config.server.public_url = public_url;
     }
-    if let Ok(db_path) = std::env::var("ANNEX_DB_PATH") {
+    if let Some(depth) = parse_env_var("ANNEX_MERKLE_TREE_DEPTH")? {
+        config.server.merkle_tree_depth = depth;
+    }
+    if let Some(cap) = parse_env_var("ANNEX_PRESENCE_BROADCAST_CAPACITY")? {
+        config.server.presence_broadcast_capacity = cap;
+    }
+    if let Some(db_path) = parse_env_var::<String>("ANNEX_DB_PATH")? {
         config.database.path = db_path;
     }
     if let Some(timeout) = parse_env_var("ANNEX_DB_BUSY_TIMEOUT_MS")? {
@@ -357,7 +403,7 @@ pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
     if let Some(max_size) = parse_env_var("ANNEX_DB_POOL_MAX_SIZE")? {
         config.database.pool_max_size = max_size;
     }
-    if let Ok(level) = std::env::var("ANNEX_LOG_LEVEL") {
+    if let Some(level) = parse_env_var::<String>("ANNEX_LOG_LEVEL")? {
         config.logging.level = level;
     }
     if let Some(json) = parse_env_bool("ANNEX_LOG_JSON")? {
@@ -372,16 +418,16 @@ pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
     if let Some(api_secret) = parse_env_var("ANNEX_LIVEKIT_API_SECRET")? {
         config.livekit.api_secret = api_secret;
     }
-    if let Ok(val) = std::env::var("ANNEX_TTS_VOICES_DIR") {
+    if let Some(val) = parse_env_var::<String>("ANNEX_TTS_VOICES_DIR")? {
         config.voice.tts_voices_dir = val;
     }
-    if let Ok(val) = std::env::var("ANNEX_TTS_BINARY_PATH") {
+    if let Some(val) = parse_env_var::<String>("ANNEX_TTS_BINARY_PATH")? {
         config.voice.tts_binary_path = val;
     }
-    if let Ok(val) = std::env::var("ANNEX_STT_MODEL_PATH") {
+    if let Some(val) = parse_env_var::<String>("ANNEX_STT_MODEL_PATH")? {
         config.voice.stt_model_path = val;
     }
-    if let Ok(val) = std::env::var("ANNEX_STT_BINARY_PATH") {
+    if let Some(val) = parse_env_var::<String>("ANNEX_STT_BINARY_PATH")? {
         config.voice.stt_binary_path = val;
     }
 
