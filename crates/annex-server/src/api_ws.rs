@@ -128,35 +128,47 @@ impl ConnectionManager {
     }
 
     /// Removes a session for a pseudonym if the session ID matches.
+    ///
+    /// Lock ordering: sessions → channel_subscriptions → user_subscriptions.
+    /// This matches the ordering used by `subscribe` and `unsubscribe`
+    /// (channel_subscriptions → user_subscriptions) to prevent deadlocks.
     pub async fn remove_session(&self, pseudonym: &str, session_id: Uuid) {
-        let mut sessions = self.sessions.write().await;
-
-        // Check if session matches
-        if let Some((current_id, _)) = sessions.get(pseudonym) {
-            if *current_id != session_id {
-                // Stale removal request, ignore
-                return;
+        // 1. Remove from sessions (independent lock, always acquired first).
+        {
+            let mut sessions = self.sessions.write().await;
+            if let Some((current_id, _)) = sessions.get(pseudonym) {
+                if *current_id != session_id {
+                    return; // Stale removal request
+                }
+            } else {
+                return; // Already removed
             }
-        } else {
-            // Already removed
-            return;
+            sessions.remove(pseudonym);
         }
 
-        // Remove session
-        sessions.remove(pseudonym);
+        // 2. Collect the channels this user was subscribed to.
+        let channels = {
+            let user_subs = self.user_subscriptions.read().await;
+            user_subs.get(pseudonym).cloned()
+        };
 
-        // Clean up subscriptions
-        let mut user_subs = self.user_subscriptions.write().await;
-        if let Some(channels) = user_subs.remove(pseudonym) {
+        // 3. Remove from channel_subscriptions first (consistent with subscribe/unsubscribe).
+        if let Some(ref channels) = channels {
             let mut chan_subs = self.channel_subscriptions.write().await;
             for channel_id in channels {
-                if let Some(listeners) = chan_subs.get_mut(&channel_id) {
+                if let Some(listeners) = chan_subs.get_mut(channel_id) {
                     listeners.remove(pseudonym);
                     if listeners.is_empty() {
-                        chan_subs.remove(&channel_id);
+                        chan_subs.remove(channel_id);
                     }
                 }
             }
+        }
+
+        // 4. Remove from user_subscriptions last.
+        if channels.is_some() {
+            let mut user_subs = self.user_subscriptions.write().await;
+            user_subs.remove(pseudonym);
         }
     }
 

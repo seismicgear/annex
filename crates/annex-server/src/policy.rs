@@ -223,11 +223,13 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
 
     let mut offered_capabilities = Vec::new();
     if policy.voice_enabled {
-        offered_capabilities.push("voice".to_string());
+        offered_capabilities.push("VOICE".to_string());
     }
     if policy.federation_enabled {
-        offered_capabilities.push("federation".to_string());
+        offered_capabilities.push("FEDERATION".to_string());
     }
+    offered_capabilities.push("TEXT".to_string());
+    offered_capabilities.push("VRP".to_string());
 
     let local_contract = VrpCapabilitySharingContract {
         required_capabilities: policy.agent_required_capabilities.clone(),

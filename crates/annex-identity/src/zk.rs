@@ -2,6 +2,7 @@ pub use ark_bn254::Bn254;
 pub use ark_bn254::Fr;
 use ark_bn254::{Fq, Fq2};
 pub use ark_bn254::{G1Affine, G2Affine};
+use ark_ec::AffineRepr;
 use ark_ff::PrimeField;
 use ark_groth16::Groth16;
 pub use ark_groth16::{Proof, VerifyingKey};
@@ -56,24 +57,58 @@ pub fn parse_fq(s: &str) -> Result<Fq, ZkError> {
     Fq::from_str(s).map_err(|_| ZkError::FieldElementError)
 }
 
+/// Validates that a G1 affine point lies on the BN254 curve and belongs
+/// to the correct prime-order subgroup. Rejecting off-curve or
+/// wrong-subgroup points prevents invalid-curve attacks on Groth16.
+fn validate_g1(point: &G1Affine) -> Result<(), ZkError> {
+    if point.is_zero() {
+        // The identity (point at infinity) is a valid group element.
+        return Ok(());
+    }
+    if !point.is_on_curve() {
+        return Err(ZkError::PointError);
+    }
+    if !point.is_in_correct_subgroup_assuming_on_curve() {
+        return Err(ZkError::PointError);
+    }
+    Ok(())
+}
+
+/// Validates that a G2 affine point lies on the BN254 twist curve and
+/// belongs to the correct prime-order subgroup.
+fn validate_g2(point: &G2Affine) -> Result<(), ZkError> {
+    if point.is_zero() {
+        return Ok(());
+    }
+    if !point.is_on_curve() {
+        return Err(ZkError::PointError);
+    }
+    if !point.is_in_correct_subgroup_assuming_on_curve() {
+        return Err(ZkError::PointError);
+    }
+    Ok(())
+}
+
 fn parse_g1(v: &[String]) -> Result<G1Affine, ZkError> {
     if v.len() < 2 {
         return Err(ZkError::PointError);
     }
     let x = parse_fq(&v[0])?;
     let y = parse_fq(&v[1])?;
-    // Checking z=1 is optional if we construct affine directly
-    Ok(G1Affine::new(x, y))
+    let point = G1Affine::new_unchecked(x, y);
+    validate_g1(&point)?;
+    Ok(point)
 }
 
 fn parse_g2(v: &[Vec<String>]) -> Result<G2Affine, ZkError> {
     if v.len() < 2 {
         return Err(ZkError::PointError);
     }
+    if v[0].len() < 2 || v[1].len() < 2 {
+        return Err(ZkError::PointError);
+    }
     // G2 in SnarkJS is [ [x_c0, x_c1], [y_c0, y_c1], ... ]
-    // But arkworks Fq2 is c0 + c1*u
-    // Need to verify the order. Usually SnarkJS uses [real, imag] or similar.
-    // For BN254, elements are Fq2.
+    // arkworks Fq2 is c0 + c1*u
 
     let x_c0 = parse_fq(&v[0][0])?;
     let x_c1 = parse_fq(&v[0][1])?;
@@ -83,7 +118,9 @@ fn parse_g2(v: &[Vec<String>]) -> Result<G2Affine, ZkError> {
     let y_c1 = parse_fq(&v[1][1])?;
     let y = Fq2::new(y_c0, y_c1);
 
-    Ok(G2Affine::new(x, y))
+    let point = G2Affine::new_unchecked(x, y);
+    validate_g2(&point)?;
+    Ok(point)
 }
 
 pub fn parse_proof(json: &str) -> Result<Proof<Bn254>, ZkError> {
@@ -140,8 +177,6 @@ pub fn verify_proof(
 /// This key is mathematically valid (points on curve) but useless for verification.
 /// It corresponds to an empty circuit.
 pub fn generate_dummy_vkey() -> VerifyingKey<Bn254> {
-    use ark_ec::AffineRepr;
-
     // Use generator points which are guaranteed to be on the curve
     let g1 = G1Affine::generator();
     let g2 = G2Affine::generator();
@@ -152,5 +187,77 @@ pub fn generate_dummy_vkey() -> VerifyingKey<Bn254> {
         gamma_g2: g2,
         delta_g2: g2,
         gamma_abc_g1: vec![g1; 2], // 2 public inputs
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_g1_accepts_generator() {
+        let g1 = G1Affine::generator();
+        assert!(validate_g1(&g1).is_ok());
+    }
+
+    #[test]
+    fn validate_g1_accepts_identity() {
+        let zero = G1Affine::zero();
+        assert!(validate_g1(&zero).is_ok());
+    }
+
+    #[test]
+    fn validate_g1_rejects_off_curve_point() {
+        // Construct a point with arbitrary coordinates not on the curve.
+        let x = Fq::from(1u64);
+        let y = Fq::from(1u64);
+        let bad = G1Affine::new_unchecked(x, y);
+        assert!(validate_g1(&bad).is_err());
+    }
+
+    #[test]
+    fn validate_g2_accepts_generator() {
+        let g2 = G2Affine::generator();
+        assert!(validate_g2(&g2).is_ok());
+    }
+
+    #[test]
+    fn validate_g2_accepts_identity() {
+        let zero = G2Affine::zero();
+        assert!(validate_g2(&zero).is_ok());
+    }
+
+    #[test]
+    fn validate_g2_rejects_off_curve_point() {
+        let x = Fq2::new(Fq::from(1u64), Fq::from(1u64));
+        let y = Fq2::new(Fq::from(1u64), Fq::from(1u64));
+        let bad = G2Affine::new_unchecked(x, y);
+        assert!(validate_g2(&bad).is_err());
+    }
+
+    #[test]
+    fn parse_proof_rejects_off_curve_pi_a() {
+        // Valid JSON structure but invalid curve point
+        let json = r#"{"pi_a":["1","1","1"],"pi_b":[["1","0"],["0","1"],["1","0"]],"pi_c":["1","1","1"]}"#;
+        let result = parse_proof(json);
+        assert!(result.is_err(), "off-curve pi_a should be rejected");
+    }
+
+    #[test]
+    fn parse_g2_rejects_short_inner_arrays() {
+        let v: Vec<Vec<String>> = vec![vec!["1".to_string()], vec!["1".to_string()]];
+        assert!(parse_g2(&v).is_err());
+    }
+
+    #[test]
+    fn parse_g1_rejects_too_few_elements() {
+        let v: Vec<String> = vec!["1".to_string()];
+        assert!(parse_g1(&v).is_err());
+    }
+
+    #[test]
+    fn parse_g2_rejects_too_few_elements() {
+        let v: Vec<Vec<String>> = vec![vec!["1".to_string(), "0".to_string()]];
+        assert!(parse_g2(&v).is_err());
     }
 }

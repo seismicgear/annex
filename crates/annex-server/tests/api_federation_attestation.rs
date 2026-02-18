@@ -186,8 +186,8 @@ async fn test_attest_membership_invalid_signature() {
 
     let response = app.oneshot(request).await.unwrap();
 
-    // Should fail with 500 (mapped from InvalidSignature)
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    // Should fail with 401 (InvalidSignature is a client error)
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
     let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
@@ -255,7 +255,7 @@ async fn test_attest_membership_valid_signature_fails_network() {
     let topic = "annex:server:v1".to_string();
     let commitment = "0000000000000000000000000000000000000000000000000000000000000001".to_string();
     let participant_type = "HUMAN".to_string();
-    let message = format!("{}{}{}", topic, commitment, participant_type);
+    let message = format!("{}\n{}\n{}", topic, commitment, participant_type);
     let signature = signing_key.sign(message.as_bytes());
     let signature_hex = hex::encode(signature.to_bytes());
 

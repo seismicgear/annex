@@ -198,8 +198,8 @@ async fn test_join_federated_channel() {
             rusqlite::params![state.server_id, pseudonym_id],
         ).unwrap();
 
-        // Generate signature: SHA256(channel_id + pseudonym_id) -> signed
-        let message = format!("{}{}", channel_id, pseudonym_id);
+        // Generate signature (newline-delimited to match server)
+        let message = format!("{}\n{}", channel_id, pseudonym_id);
 
         let signature = signing_key.sign(message.as_bytes());
         let signature_hex = hex::encode(signature.to_bytes());
