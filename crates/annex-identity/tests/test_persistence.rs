@@ -63,7 +63,7 @@ fn test_merkle_persistence_roundtrip() {
 }
 
 #[test]
-fn test_restore_prioritizes_computed_root() {
+fn test_restore_rejects_root_mismatch() {
     // 1. Setup in-memory DB
     let conn = Connection::open_in_memory().expect("failed to open DB");
     run_migrations(&conn).expect("migrations failed");
@@ -88,12 +88,14 @@ fn test_restore_prioritizes_computed_root() {
     )
     .unwrap();
 
-    // 3. Restore tree
-    let tree = MerkleTree::restore(&conn, 3).expect("should succeed despite mismatch");
-
-    // 4. Verify tree root is computed correctly (not fake_root)
-    let computed_root = tree.root();
-    let computed_root_hex = hex::encode(computed_root.into_bigint().to_bytes_be());
-
-    assert_ne!(computed_root_hex, fake_root);
+    // 3. Restore tree — should fail because stored root doesn't match computed root
+    let result = MerkleTree::restore(&conn, 3);
+    assert!(result.is_err(), "restore should fail on root mismatch");
+    let err = result.unwrap_err();
+    let err_str = err.to_string();
+    assert!(
+        err_str.contains("merkle root mismatch"),
+        "error should mention root mismatch, got: {}",
+        err_str
+    );
 }

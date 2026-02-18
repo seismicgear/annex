@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::str::FromStr;
 
 /// Alignment status of a VRP handshake.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -22,6 +23,19 @@ impl fmt::Display for VrpAlignmentStatus {
     }
 }
 
+impl FromStr for VrpAlignmentStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "ALIGNED" => Ok(VrpAlignmentStatus::Aligned),
+            "PARTIAL" => Ok(VrpAlignmentStatus::Partial),
+            "CONFLICT" => Ok(VrpAlignmentStatus::Conflict),
+            _ => Err(format!("unknown alignment status: {}", s)),
+        }
+    }
+}
+
 /// Defines the scope of data transfer permitted based on alignment.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub enum VrpTransferScope {
@@ -39,6 +53,19 @@ impl fmt::Display for VrpTransferScope {
             VrpTransferScope::NoTransfer => write!(f, "NO_TRANSFER"),
             VrpTransferScope::ReflectionSummariesOnly => write!(f, "REFLECTION_SUMMARIES_ONLY"),
             VrpTransferScope::FullKnowledgeBundle => write!(f, "FULL_KNOWLEDGE_BUNDLE"),
+        }
+    }
+}
+
+impl FromStr for VrpTransferScope {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "NO_TRANSFER" => Ok(VrpTransferScope::NoTransfer),
+            "REFLECTION_SUMMARIES_ONLY" => Ok(VrpTransferScope::ReflectionSummariesOnly),
+            "FULL_KNOWLEDGE_BUNDLE" => Ok(VrpTransferScope::FullKnowledgeBundle),
+            _ => Err(format!("unknown transfer scope: {}", s)),
         }
     }
 }

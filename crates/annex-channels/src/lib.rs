@@ -125,14 +125,15 @@ pub fn get_channel(conn: &Connection, channel_id: &str) -> Result<Channel, Chann
     .ok_or_else(|| ChannelError::NotFound(channel_id.to_string()))
 }
 
-/// Lists all channels for a given server.
+/// Lists channels for a given server (capped at 1000).
 pub fn list_channels(conn: &Connection, server_id: i64) -> Result<Vec<Channel>, ChannelError> {
     let mut stmt = conn.prepare(
         "SELECT
             id, server_id, channel_id, name, channel_type, topic,
             vrp_topic_binding, required_capabilities_json, agent_min_alignment,
             retention_days, federation_scope, created_at
-        FROM channels WHERE server_id = ?1 ORDER BY name ASC",
+        FROM channels WHERE server_id = ?1 ORDER BY name ASC
+        LIMIT 1000",
     )?;
 
     let rows = stmt.query_map([server_id], map_row_to_channel)?;
@@ -416,14 +417,15 @@ pub fn is_member(
     Ok(exists)
 }
 
-/// Lists all members of a channel.
+/// Lists members of a channel (capped at 10000).
 pub fn list_members(
     conn: &Connection,
     channel_id: &str,
 ) -> Result<Vec<ChannelMember>, ChannelError> {
     let mut stmt = conn.prepare(
         "SELECT id, server_id, channel_id, pseudonym_id, role, joined_at
-         FROM channel_members WHERE channel_id = ?1 ORDER BY joined_at ASC",
+         FROM channel_members WHERE channel_id = ?1 ORDER BY joined_at ASC
+         LIMIT 10000",
     )?;
 
     let rows = stmt.query_map([channel_id], map_row_to_member)?;
@@ -615,7 +617,16 @@ fn resolve_retention_days(
         )
         .map_err(ChannelError::Database)?;
 
-    let policy: ServerPolicy = serde_json::from_str(&policy_json)?;
+    let policy: ServerPolicy = match serde_json::from_str(&policy_json) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(
+                "failed to deserialize server policy, using default retention: {}",
+                e
+            );
+            ServerPolicy::default()
+        }
+    };
     Ok((server_id, Some(policy.default_retention_days)))
 }
 

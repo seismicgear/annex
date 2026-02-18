@@ -46,11 +46,17 @@ pub fn check_reputation_score(
     server_id: i64,
     peer_pseudonym: &str,
 ) -> Result<f32, ReputationError> {
-    // Fetch history, ordered by time (oldest first)
+    // Fetch recent history, ordered by time (oldest first within window).
+    // Limit to 1000 most recent entries: the exponential decay means older
+    // entries have negligible impact on the score, so loading the full
+    // history is unnecessary and progressively more expensive.
     let mut stmt = conn.prepare(
-        "SELECT alignment_status FROM vrp_handshake_log
-         WHERE server_id = ?1 AND peer_pseudonym = ?2
-         ORDER BY created_at ASC",
+        "SELECT alignment_status FROM (
+             SELECT alignment_status, created_at FROM vrp_handshake_log
+             WHERE server_id = ?1 AND peer_pseudonym = ?2
+             ORDER BY created_at DESC
+             LIMIT 1000
+         ) ORDER BY created_at ASC",
     )?;
 
     let rows = stmt.query_map(params![server_id, peer_pseudonym], |row| {

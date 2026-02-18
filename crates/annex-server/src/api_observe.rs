@@ -150,12 +150,22 @@ pub async fn get_event_stream_handler(
                 }
             }
         }
-        Err(broadcast_error) => {
+        Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(count)) => {
             tracing::warn!(
-                error = %broadcast_error,
-                "observe SSE stream lagged or closed; events were dropped for this subscriber"
+                missed_events = count,
+                "observe SSE stream lagged; {} events were dropped for this subscriber",
+                count
             );
-            None
+            // Send a sentinel event so the client knows it missed events
+            // and can take corrective action (e.g., re-fetch from cursor).
+            let sentinel = serde_json::json!({
+                "type": "lagged",
+                "missed_events": count
+            });
+            match serde_json::to_string(&sentinel) {
+                Ok(data) => Some(Ok(Event::default().event("lagged").data(data))),
+                Err(_) => None,
+            }
         }
     });
 
@@ -419,7 +429,8 @@ pub async fn get_agents_handler(
                         capability_contract_json, reputation_score
                  FROM agent_registrations
                  WHERE server_id = ?1 AND active = 1
-                 ORDER BY reputation_score DESC",
+                 ORDER BY reputation_score DESC
+                 LIMIT 1000",
             )
             .map_err(|e| format!("failed to prepare agents query: {}", e))?;
 

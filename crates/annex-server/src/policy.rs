@@ -128,9 +128,9 @@ pub async fn recalculate_agent_alignments(state: Arc<AppState>) -> Result<(), Ap
                 if new_alignment_str != old_alignment_str || new_scope_str != old_scope_str {
                     if report.alignment_status == VrpAlignmentStatus::Conflict {
                         disconnects.push(pseudonym.clone());
-                        updates.push((pseudonym, report, false)); // active = false
+                        updates.push((pseudonym, old_alignment_str, report, false)); // active = false
                     } else {
-                        updates.push((pseudonym, report, true)); // active = true
+                        updates.push((pseudonym, old_alignment_str, report, true)); // active = true
                     }
                 }
             }
@@ -138,7 +138,7 @@ pub async fn recalculate_agent_alignments(state: Arc<AppState>) -> Result<(), Ap
         };
 
         // Apply updates within the transaction
-        for (pseudonym, report, active) in agents_to_update {
+        for (pseudonym, previous_status, report, active) in agents_to_update {
              let active_int = if active { 1 } else { 0 };
              tx.execute(
                 "UPDATE agent_registrations SET
@@ -167,7 +167,7 @@ pub async fn recalculate_agent_alignments(state: Arc<AppState>) -> Result<(), Ap
                 let observe_payload = EventPayload::AgentRealigned {
                     pseudonym_id: pseudonym.clone(),
                     alignment_status: report.alignment_status.to_string(),
-                    previous_status: "changed".to_string(),
+                    previous_status,
                 };
                 crate::emit_and_broadcast(
                     &tx,
@@ -317,14 +317,14 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
                 let new_scope_str = report.transfer_scope.to_string();
 
                 if new_alignment_str != old_alignment_str || new_scope_str != old_scope_str {
-                    updates.push((id, base_url, report));
+                    updates.push((id, base_url, old_alignment_str, report));
                 }
             }
             updates
         };
 
         // Apply updates within the transaction
-        for (id, base_url, report) in updates {
+        for (id, base_url, previous_status, report) in updates {
             let active_int = if report.alignment_status == VrpAlignmentStatus::Conflict {
                 0
             } else {
@@ -398,7 +398,7 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
                 let observe_payload = EventPayload::FederationRealigned {
                     remote_url: base_url.clone(),
                     alignment_status: report.alignment_status.to_string(),
-                    previous_status: "changed".to_string(),
+                    previous_status,
                 };
                 crate::emit_and_broadcast(
                     &tx,
