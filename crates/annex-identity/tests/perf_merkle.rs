@@ -41,7 +41,10 @@ fn perf_merkle_insert_and_proof_1000_leaves() {
 
     // Target: single insert + proof < 50ms
     let single_op_ms = (avg_insert_us / 1000.0) + proof_elapsed.as_secs_f64() * 1000.0;
-    eprintln!("Single insert + proof: {:.2}ms (target < 50ms)", single_op_ms);
+    eprintln!(
+        "Single insert + proof: {:.2}ms (target < 50ms)",
+        single_op_ms
+    );
     assert!(
         single_op_ms < 50.0,
         "insert + proof should be under 50ms, got {:.2}ms",
@@ -56,7 +59,8 @@ fn perf_merkle_root_computation() {
 
     // Insert some leaves
     for i in 0..100 {
-        tree.insert(Fr::from((i + 1) as u64)).expect("insert failed");
+        tree.insert(Fr::from((i + 1) as u64))
+            .expect("insert failed");
     }
 
     // Time root computation
