@@ -934,12 +934,7 @@ pub async fn join_federated_channel_handler(
 
 /// Parses a transfer scope string from the database.
 fn parse_transfer_scope(s: &str) -> Option<VrpTransferScope> {
-    match s {
-        "FULL_KNOWLEDGE_BUNDLE" => Some(VrpTransferScope::FullKnowledgeBundle),
-        "REFLECTION_SUMMARIES_ONLY" => Some(VrpTransferScope::ReflectionSummariesOnly),
-        "NO_TRANSFER" => Some(VrpTransferScope::NoTransfer),
-        _ => None,
-    }
+    s.parse().ok()
 }
 
 /// Handler for `POST /api/federation/rtx`.

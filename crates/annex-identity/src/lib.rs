@@ -70,6 +70,12 @@ pub enum IdentityError {
     /// Commitment not found in the registry.
     #[error("commitment not found: {0}")]
     CommitmentNotFound(String),
+    /// Merkle root mismatch between stored and computed values.
+    #[error("merkle root mismatch: stored={stored}, computed={computed}")]
+    MerkleRootMismatch {
+        stored: String,
+        computed: String,
+    },
     /// Database error.
     #[error("database error: {0}")]
     DatabaseError(#[from] rusqlite::Error),
@@ -91,6 +97,10 @@ impl PartialEq for IdentityError {
             (Self::InvalidIndex(a), Self::InvalidIndex(b)) => a == b,
             (Self::DuplicateNullifier(a), Self::DuplicateNullifier(b)) => a == b,
             (Self::CommitmentNotFound(a), Self::CommitmentNotFound(b)) => a == b,
+            (
+                Self::MerkleRootMismatch { stored: s1, computed: c1 },
+                Self::MerkleRootMismatch { stored: s2, computed: c2 },
+            ) => s1 == s2 && c1 == c2,
             (Self::DatabaseError(a), Self::DatabaseError(b)) => a.to_string() == b.to_string(),
             _ => false,
         }

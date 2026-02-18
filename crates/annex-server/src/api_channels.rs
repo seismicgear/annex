@@ -149,13 +149,13 @@ pub async fn get_channel_handler(
             .pool
             .get()
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        get_channel(&conn, &channel_id).map_err(|e| match e {
-            annex_channels::ChannelError::NotFound(_) => StatusCode::NOT_FOUND,
-            _ => StatusCode::INTERNAL_SERVER_ERROR,
-        })
+        get_channel(&conn, &channel_id).map_err(channel_err_to_status)
     })
     .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+    .map_err(|e| {
+        tracing::error!(error = %e, "get_channel task join error");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })??;
 
     Ok(Json(channel))
 }
@@ -174,14 +174,17 @@ pub async fn delete_channel_handler(
         let conn = state
             .pool
             .get()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        delete_channel(&conn, &channel_id).map_err(|e| match e {
-            annex_channels::ChannelError::NotFound(_) => StatusCode::NOT_FOUND,
-            _ => StatusCode::INTERNAL_SERVER_ERROR,
-        })
+            .map_err(|e| {
+                tracing::error!(error = %e, "failed to get db connection for delete_channel");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        delete_channel(&conn, &channel_id).map_err(channel_err_to_status)
     })
     .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+    .map_err(|e| {
+        tracing::error!(error = %e, "delete_channel task join error");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })??;
 
     Ok(Json(json!({"status": "deleted"})))
 }

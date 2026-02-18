@@ -53,10 +53,22 @@ pub fn create_pool(db_path: &str, settings: DbRuntimeSettings) -> Result<DbPool,
     let manager = SqliteConnectionManager::file(db_path)
         .with_flags(flags)
         .with_init(move |conn| {
+            // Set WAL mode and verify it was accepted. In-memory databases
+            // report "memory" which is expected and acceptable.
+            let journal_mode: String =
+                conn.query_row("PRAGMA journal_mode = WAL;", [], |row| row.get(0))?;
+            if journal_mode != "wal" && journal_mode != "memory" {
+                return Err(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
+                    Some(format!(
+                        "failed to set WAL journal mode, got: {}",
+                        journal_mode
+                    )),
+                ));
+            }
             conn.execute_batch(&format!(
-                "PRAGMA journal_mode = WAL;
-             PRAGMA foreign_keys = ON;
-             PRAGMA busy_timeout = {};",
+                "PRAGMA foreign_keys = ON;
+                 PRAGMA busy_timeout = {};",
                 settings.busy_timeout_ms
             ))
         });

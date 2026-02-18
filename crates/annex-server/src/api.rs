@@ -602,13 +602,7 @@ fn fetch_platform_identity(
         .get()
         .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
 
-    let server_id: i64 = conn
-        .query_row("SELECT id FROM servers LIMIT 1", [], |row| row.get(0))
-        .optional()
-        .map_err(|e| ApiError::InternalServerError(format!("db query failed: {}", e)))?
-        .ok_or_else(|| ApiError::InternalServerError("no server configured".to_string()))?;
-
-    get_platform_identity(&conn, server_id, pseudonym_id).map_err(|e| match e {
+    get_platform_identity(&conn, state.server_id, pseudonym_id).map_err(|e| match e {
         annex_identity::IdentityError::DatabaseError(rusqlite::Error::QueryReturnedNoRows) => {
             ApiError::NotFound(format!("identity not found: {}", pseudonym_id))
         }

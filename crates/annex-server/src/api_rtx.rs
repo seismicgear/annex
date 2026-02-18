@@ -559,12 +559,7 @@ pub async fn get_subscription_handler(
 
 /// Parses a transfer scope string from the database.
 fn parse_transfer_scope(s: &str) -> Option<VrpTransferScope> {
-    match s {
-        "FULL_KNOWLEDGE_BUNDLE" => Some(VrpTransferScope::FullKnowledgeBundle),
-        "REFLECTION_SUMMARIES_ONLY" => Some(VrpTransferScope::ReflectionSummariesOnly),
-        "NO_TRANSFER" => Some(VrpTransferScope::NoTransfer),
-        _ => None,
-    }
+    s.parse().ok()
 }
 
 /// Extracts redacted topics from a capability contract JSON string.
