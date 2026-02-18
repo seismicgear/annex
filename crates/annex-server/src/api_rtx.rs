@@ -651,7 +651,13 @@ pub async fn relay_rtx_bundles(state: Arc<AppState>, bundle: ReflectionSummaryBu
         return;
     }
 
-    let client = reqwest::Client::new();
+    let client = match crate::api_federation::federation_http_client() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("failed to build federation HTTP client for RTX relay: {}", e);
+            return;
+        }
+    };
 
     for (base_url, transfer_scope_str) in peers {
         let scope = match parse_transfer_scope(&transfer_scope_str) {

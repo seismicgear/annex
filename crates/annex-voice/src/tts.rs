@@ -4,9 +4,17 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::sync::RwLock;
+
+/// Maximum text input size for TTS (64 KiB). Prevents resource exhaustion from
+/// oversized synthesis requests.
+const MAX_TTS_INPUT_BYTES: usize = 64 * 1024;
+
+/// Timeout for TTS process execution.
+const TTS_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Service for generating speech from text.
 #[derive(Debug, Clone)]
@@ -60,6 +68,13 @@ impl TtsService {
         text: &str,
         profile: &VoiceProfile,
     ) -> Result<Vec<u8>, VoiceError> {
+        if text.len() > MAX_TTS_INPUT_BYTES {
+            return Err(VoiceError::Tts(format!(
+                "text exceeds maximum size: {} bytes (limit: {} bytes)",
+                text.len(),
+                MAX_TTS_INPUT_BYTES
+            )));
+        }
         let model_path = if Path::new(&profile.model_path).is_absolute() {
             PathBuf::from(&profile.model_path)
         } else {
@@ -117,9 +132,14 @@ impl TtsService {
         // Spawn a task to write to stdin to avoid deadlock if output buffer fills up
         let write_task = tokio::spawn(async move { stdin.write_all(text_owned.as_bytes()).await });
 
-        let output = child
-            .wait_with_output()
+        let output = tokio::time::timeout(TTS_TIMEOUT, child.wait_with_output())
             .await
+            .map_err(|_| {
+                VoiceError::Tts(format!(
+                    "TTS process timed out after {} seconds",
+                    TTS_TIMEOUT.as_secs()
+                ))
+            })?
             .map_err(|e| VoiceError::Tts(format!("Failed to wait for piper: {}", e)))?;
 
         // Ensure writing finished successfully (or propagate error)

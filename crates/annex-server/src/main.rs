@@ -109,11 +109,17 @@ async fn main() -> Result<(), StartupError> {
         }
     }
 
-    // Start background retention task
-    tokio::spawn(annex_server::retention::start_retention_task(
+    // Start background retention task. Monitor for panics to surface
+    // them rather than silently swallowing.
+    let retention_handle = tokio::spawn(annex_server::retention::start_retention_task(
         pool.clone(),
         config.server.retention_check_interval_seconds,
     ));
+    tokio::spawn(async move {
+        if let Err(e) = retention_handle.await {
+            tracing::error!("retention background task panicked: {}", e);
+        }
+    });
 
     // Initialize Merkle Tree
     let tree = {
@@ -198,11 +204,16 @@ async fn main() -> Result<(), StartupError> {
         observe_tx,
     };
 
-    // Start background pruning task
-    tokio::spawn(annex_server::background::start_pruning_task(
+    // Start background pruning task. Monitor for panics.
+    let pruning_handle = tokio::spawn(annex_server::background::start_pruning_task(
         Arc::new(state.clone()),
         config.server.inactivity_threshold_seconds,
     ));
+    tokio::spawn(async move {
+        if let Err(e) = pruning_handle.await {
+            tracing::error!("pruning background task panicked: {}", e);
+        }
+    });
 
     // Build application
     let app = app(state);
