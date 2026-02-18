@@ -17,7 +17,7 @@ pub struct AgentProfileResponse {
     pub alignment_status: VrpAlignmentStatus,
     pub transfer_scope: VrpTransferScope,
     pub capability_contract: VrpCapabilitySharingContract,
-    pub reputation_score: f32,
+    pub reputation_score: f64,
 }
 
 /// Request body for updating an agent's voice profile.
@@ -99,7 +99,7 @@ pub async fn get_agent_profile_handler(
                 alignment_status,
                 transfer_scope,
                 capability_contract,
-                reputation_score: score as f32,
+                reputation_score: score,
             }))
         } else {
             Ok(None)

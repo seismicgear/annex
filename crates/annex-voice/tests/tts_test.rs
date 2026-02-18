@@ -77,22 +77,56 @@ async fn test_tts_invalid_speed() {
 
     let service = TtsService::new(&voices_dir, "piper");
 
-    let profile = VoiceProfile {
-        id: "invalid-speed".to_string(),
-        name: "Invalid Speed".to_string(),
+    // Zero speed is below the minimum (0.1)
+    let profile_zero = VoiceProfile {
+        id: "zero-speed".to_string(),
+        name: "Zero Speed".to_string(),
         model: VoiceModel::Piper,
         model_path: "test.onnx".to_string(),
         config_path: None,
-        speed: 0.0, // Invalid speed
+        speed: 0.0,
         pitch: 1.0,
         speaker_id: None,
     };
+    service.add_profile(profile_zero).await;
 
-    service.add_profile(profile).await;
-
-    let result = service.synthesize("Hello", "invalid-speed").await;
+    let result = service.synthesize("Hello", "zero-speed").await;
     match result {
-        Err(VoiceError::Config(msg)) => assert_eq!(msg, "Speed must be positive"),
+        Err(VoiceError::Config(msg)) => {
+            assert!(msg.contains("between 0.1 and 10.0"), "got: {}", msg)
+        }
         _ => panic!("Expected Config error about speed, got {:?}", result),
     }
+
+    // Near-zero speed (e.g., 0.001) would produce extreme length_scale
+    let profile_tiny = VoiceProfile {
+        id: "tiny-speed".to_string(),
+        name: "Tiny Speed".to_string(),
+        model: VoiceModel::Piper,
+        model_path: "test.onnx".to_string(),
+        config_path: None,
+        speed: 0.001,
+        pitch: 1.0,
+        speaker_id: None,
+    };
+    service.add_profile(profile_tiny).await;
+
+    let result = service.synthesize("Hello", "tiny-speed").await;
+    assert!(matches!(result, Err(VoiceError::Config(_))));
+
+    // Excessively high speed
+    let profile_high = VoiceProfile {
+        id: "high-speed".to_string(),
+        name: "High Speed".to_string(),
+        model: VoiceModel::Piper,
+        model_path: "test.onnx".to_string(),
+        config_path: None,
+        speed: 100.0,
+        pitch: 1.0,
+        speaker_id: None,
+    };
+    service.add_profile(profile_high).await;
+
+    let result = service.synthesize("Hello", "high-speed").await;
+    assert!(matches!(result, Err(VoiceError::Config(_))));
 }

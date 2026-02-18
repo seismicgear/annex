@@ -88,8 +88,10 @@ impl TtsService {
             )));
         }
 
-        if profile.speed <= 0.0 {
-            return Err(VoiceError::Config("Speed must be positive".to_string()));
+        if profile.speed < 0.1 || profile.speed > 10.0 {
+            return Err(VoiceError::Config(
+                "Speed must be between 0.1 and 10.0".to_string(),
+            ));
         }
 
         let mut command = Command::new(&self.piper_binary);
