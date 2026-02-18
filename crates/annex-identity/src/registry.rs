@@ -70,6 +70,11 @@ pub fn register_identity(
         return Err(IdentityError::InvalidCommitmentFormat);
     }
 
+    // Normalize to lowercase to prevent case-mismatch bugs when deriving nullifiers.
+    // derive_nullifier_hex() requires lowercase hex; storing uppercase would cause
+    // verification failures when the stored commitment is used for nullifier derivation.
+    let commitment_hex = &commitment_hex.to_ascii_lowercase();
+
     // Convert commitment to Fr leaf
     let leaf_bytes = hex::decode(commitment_hex).map_err(|_| IdentityError::InvalidHex)?;
     let leaf = Fr::from_be_bytes_mod_order(&leaf_bytes);
@@ -272,5 +277,67 @@ mod tests {
             }
             _ => panic!("expected DuplicateNullifier error, got {:?}", err),
         }
+    }
+
+    #[test]
+    fn test_register_identity_normalizes_to_lowercase() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        let mut tree = MerkleTree::new(5).unwrap();
+        // Use uppercase hex (valid ascii_hexdigit but not lowercase)
+        let commitment_upper = "000000000000000000000000000000000000000000000000000000000000ABCD";
+
+        let result = register_identity(&mut tree, &mut conn, commitment_upper, RoleCode::Human, 100)
+            .expect("registration with uppercase should succeed");
+
+        // Verify the stored commitment is lowercase
+        let stored: String = conn
+            .query_row(
+                "SELECT commitment_hex FROM vrp_identities WHERE commitment_hex = ?1",
+                params![commitment_upper.to_ascii_lowercase()],
+                |row| row.get(0),
+            )
+            .expect("should find commitment stored as lowercase");
+
+        assert_eq!(
+            stored,
+            commitment_upper.to_ascii_lowercase(),
+            "commitment should be stored as lowercase hex"
+        );
+
+        // Verify get_path works with the original uppercase input
+        // Since both vrp_leaves and vrp_identities store lowercase now,
+        // lookups should use the normalized form.
+        let path_result = get_path_for_commitment(
+            &tree,
+            &conn,
+            &commitment_upper.to_ascii_lowercase(),
+        );
+        assert!(path_result.is_ok(), "path lookup should work with lowercase commitment");
+    }
+
+    #[test]
+    fn test_register_identity_invalid_format_rejected() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        let mut tree = MerkleTree::new(5).unwrap();
+
+        // Too short
+        let err = register_identity(&mut tree, &mut conn, "abcd", RoleCode::Human, 100)
+            .unwrap_err();
+        assert_eq!(err, IdentityError::InvalidCommitmentFormat);
+
+        // Non-hex characters
+        let err = register_identity(
+            &mut tree,
+            &mut conn,
+            "000000000000000000000000000000000000000000000000000000000000ZZZZ",
+            RoleCode::Human,
+            100,
+        )
+        .unwrap_err();
+        assert_eq!(err, IdentityError::InvalidCommitmentFormat);
     }
 }

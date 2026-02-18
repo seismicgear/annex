@@ -17,7 +17,10 @@ pub mod zk;
 
 pub use commitment::generate_commitment;
 pub use merkle::MerkleTree;
-pub use nullifier::{check_nullifier_exists, insert_nullifier};
+pub use nullifier::{
+    check_nullifier_exists, insert_nullifier, insert_nullifier_with_lookup,
+    lookup_commitment_by_pseudonym,
+};
 pub use platform::{
     create_platform_identity, deactivate_platform_identity, get_platform_identity,
     update_capabilities, Capabilities, PlatformIdentity,
@@ -70,6 +73,14 @@ pub enum IdentityError {
     /// Commitment not found in the registry.
     #[error("commitment not found: {0}")]
     CommitmentNotFound(String),
+    /// Merkle root mismatch between stored and computed values.
+    #[error("merkle root mismatch: stored={stored}, computed={computed}")]
+    RootMismatch {
+        /// The root stored in the database.
+        stored: String,
+        /// The root computed from replaying leaves.
+        computed: String,
+    },
     /// Database error.
     #[error("database error: {0}")]
     DatabaseError(#[from] rusqlite::Error),
@@ -91,6 +102,16 @@ impl PartialEq for IdentityError {
             (Self::InvalidIndex(a), Self::InvalidIndex(b)) => a == b,
             (Self::DuplicateNullifier(a), Self::DuplicateNullifier(b)) => a == b,
             (Self::CommitmentNotFound(a), Self::CommitmentNotFound(b)) => a == b,
+            (
+                Self::RootMismatch {
+                    stored: sa,
+                    computed: ca,
+                },
+                Self::RootMismatch {
+                    stored: sb,
+                    computed: cb,
+                },
+            ) => sa == sb && ca == cb,
             (Self::DatabaseError(a), Self::DatabaseError(b)) => a.to_string() == b.to_string(),
             _ => false,
         }

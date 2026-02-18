@@ -4,8 +4,8 @@ use crate::AppState;
 use annex_graph::{ensure_graph_node, role_code_to_node_type};
 use annex_identity::{
     create_platform_identity, derive_nullifier_hex, derive_pseudonym_id, get_all_roles,
-    get_all_topics, get_path_for_commitment, get_platform_identity, insert_nullifier,
-    register_identity,
+    get_all_topics, get_path_for_commitment, get_platform_identity,
+    insert_nullifier_with_lookup, register_identity,
     zk::{parse_fr_from_hex, parse_proof, parse_public_signals, verify_proof},
     Capabilities, PlatformIdentity, RoleCode, VrpRoleEntry, VrpTopic,
 };
@@ -501,8 +501,16 @@ pub async fn verify_membership_handler(
             ApiError::InternalServerError(format!("failed to start transaction: {}", e))
         })?;
 
-        // Insert nullifier (returns DuplicateNullifier on conflict via UNIQUE constraint)
-        insert_nullifier(&tx, &payload.topic, &nullifier_hex).map_err(|e| match e {
+        // Insert nullifier with pseudonym and commitment for O(1) reverse lookup
+        // (returns DuplicateNullifier on conflict via UNIQUE constraint)
+        insert_nullifier_with_lookup(
+            &tx,
+            &payload.topic,
+            &nullifier_hex,
+            Some(&pseudonym_id),
+            Some(&payload.commitment),
+        )
+        .map_err(|e| match e {
             annex_identity::IdentityError::DuplicateNullifier(_) => {
                 ApiError::Conflict(e.to_string())
             }

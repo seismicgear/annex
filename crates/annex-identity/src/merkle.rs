@@ -228,12 +228,10 @@ impl MerkleTree {
             let current_root_hex = hex::encode(current_root_bytes);
 
             if current_root_hex != stored_hex {
-                tracing::warn!(
-                    "Merkle root mismatch! Stored: {}, Computed: {}",
-                    stored_hex,
-                    current_root_hex
-                );
-                // We prioritize computed root.
+                return Err(IdentityError::RootMismatch {
+                    stored: stored_hex,
+                    computed: current_root_hex,
+                });
             }
         }
 

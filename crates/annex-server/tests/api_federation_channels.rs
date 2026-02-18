@@ -88,6 +88,7 @@ async fn setup_app() -> (axum::Router, Arc<AppState>, TempDir) {
 #[tokio::test]
 async fn test_list_federated_channels() {
     let (app, state, _temp_dir) = setup_app().await;
+    let remote_base_url = "https://remote-peer.example.com";
     {
         let conn = state.pool.get().unwrap();
 
@@ -108,13 +109,34 @@ async fn test_list_federated_channels() {
             rusqlite::params![state.server_id],
         )
         .unwrap();
+
+        // Insert remote instance and active federation agreement for auth
+        conn.execute(
+            "INSERT INTO instances (base_url, public_key, label, status) VALUES (?1, 'deadbeef', 'Remote', 'ACTIVE')",
+            rusqlite::params![remote_base_url],
+        )
+        .unwrap();
+        let remote_instance_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO federation_agreements (
+                local_server_id, remote_instance_id, alignment_status, transfer_scope, agreement_json, active
+            ) VALUES (?1, ?2, 'ALIGNED', 'FULL', '{}', 1)",
+            rusqlite::params![state.server_id, remote_instance_id],
+        )
+        .unwrap();
     }
 
-    // Call GET /api/federation/channels
+    // Call GET /api/federation/channels with originating_server query param
+    // The URL doesn't contain characters requiring percent-encoding.
+    let uri = format!(
+        "/api/federation/channels?originating_server={}",
+        remote_base_url
+    );
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/api/federation/channels")
+                .uri(&uri)
                 .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 8080))))
                 .body(Body::empty())
                 .unwrap(),
@@ -141,6 +163,30 @@ async fn test_list_federated_channels() {
     assert_eq!(channels.len(), 1);
     assert_eq!(channels[0]["channel_id"], "fed-1");
     assert_eq!(channels[0]["name"], "Global Chat");
+}
+
+#[tokio::test]
+async fn test_list_federated_channels_rejects_unknown_peer() {
+    let (app, _state, _temp_dir) = setup_app().await;
+
+    // Call without a recognized originating_server
+    let uri = "/api/federation/channels?originating_server=https://unknown.example.com";
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 8080))))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "should reject unknown federation peer"
+    );
 }
 
 #[tokio::test]

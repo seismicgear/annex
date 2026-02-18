@@ -87,13 +87,32 @@ pub enum RateLimitKey {
     Pseudonym(String),
 }
 
+/// Per-key sliding window state.
+///
+/// Stores the previous window count, the current window count, and the start
+/// instant of the current window. The effective rate at any point is:
+///   `prev_count * (1 - elapsed_ratio) + current_count`
+/// where `elapsed_ratio = elapsed / WINDOW`. This prevents the 2x burst
+/// that occurs at fixed-window boundaries.
+#[derive(Debug, Clone)]
+struct SlidingWindowEntry {
+    prev_count: u32,
+    curr_count: u32,
+    window_start: Instant,
+}
+
 /// In-memory rate limiter state.
 ///
-/// Uses a simple fixed window counter.
+/// Uses a sliding window counter to prevent the 2x burst that occurs with
+/// fixed-window rate limiters at window boundaries. See H-14 in the
+/// production gap report.
 #[derive(Clone, Debug)]
 pub struct RateLimiter {
-    state: Arc<Mutex<HashMap<RateLimitKey, (u32, Instant)>>>,
+    state: Arc<Mutex<HashMap<RateLimitKey, SlidingWindowEntry>>>,
 }
+
+/// Rate limit window duration.
+const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
 
 impl RateLimiter {
     pub fn new() -> Self {
@@ -105,6 +124,7 @@ impl RateLimiter {
     /// Check if the request is allowed.
     ///
     /// Returns `true` if allowed, `false` if limit exceeded.
+    /// Uses a sliding window to smooth burst behavior at window boundaries.
     pub fn check(&self, key: RateLimitKey, limit: u32) -> bool {
         let mut state = match self.state.lock() {
             Ok(guard) => guard,
@@ -120,23 +140,41 @@ impl RateLimiter {
         let now = Instant::now();
 
         // Periodic cleanup to prevent memory leak.
-        // Instead of clearing the entire map (which resets all rate limits and
-        // allows a thundering-herd bypass), evict only entries whose window
-        // has expired. This preserves active rate limits while reclaiming memory.
+        // Evict entries whose previous AND current windows have both expired
+        // (2 full windows ago). This preserves active rate limits while reclaiming memory.
         if state.len() > 10000 {
-            state.retain(|_, (_, start)| now.duration_since(*start) <= Duration::from_secs(60));
+            let two_windows = RATE_LIMIT_WINDOW * 2;
+            state.retain(|_, entry| now.duration_since(entry.window_start) <= two_windows);
         }
 
-        let (count, start) = state.entry(key).or_insert((0, now));
+        let entry = state.entry(key).or_insert(SlidingWindowEntry {
+            prev_count: 0,
+            curr_count: 0,
+            window_start: now,
+        });
 
-        if now.duration_since(*start) > Duration::from_secs(60) {
-            // Reset window
-            *count = 1;
-            *start = now;
-            true
+        let elapsed = now.duration_since(entry.window_start);
+
+        if elapsed > RATE_LIMIT_WINDOW {
+            // Rotate: current becomes previous, start a new window
+            entry.prev_count = entry.curr_count;
+            entry.curr_count = 0;
+            entry.window_start = now;
+        }
+
+        // Calculate the sliding window estimate:
+        // Weight the previous window's count by how much of it still overlaps.
+        let elapsed_secs = now.duration_since(entry.window_start).as_secs_f64();
+        let window_secs = RATE_LIMIT_WINDOW.as_secs_f64();
+        let overlap_ratio = 1.0 - (elapsed_secs / window_secs).min(1.0);
+        let estimated = (f64::from(entry.prev_count) * overlap_ratio)
+            + f64::from(entry.curr_count);
+
+        if estimated >= f64::from(limit) {
+            false
         } else {
-            *count += 1;
-            *count <= limit
+            entry.curr_count += 1;
+            true
         }
     }
 }
@@ -259,5 +297,59 @@ mod tests {
         }
         // Now at 101 total, should be denied
         assert!(!limiter.check(key, 100));
+    }
+
+    #[test]
+    fn sliding_window_prevents_boundary_burst() {
+        // Verify that the sliding window prevents sending 2x limit across a
+        // window boundary. With a fixed-window limiter, a client could send
+        // `limit` requests at the end of window N and `limit` more at the
+        // start of window N+1, effectively doubling throughput.
+        //
+        // With the sliding window, the previous window's count is weighted
+        // by the overlap ratio, so only a small number of additional requests
+        // are allowed in the new window (not the full limit again).
+        let limiter = RateLimiter::new();
+        let key = RateLimitKey::Ip("192.168.1.1".parse().unwrap());
+        let limit = 100u32;
+
+        // Use all 100 requests in the current window
+        for _ in 0..limit {
+            assert!(limiter.check(key.clone(), limit));
+        }
+        // 101st should be denied
+        assert!(!limiter.check(key.clone(), limit));
+
+        // Simulate window rotation: current count becomes previous,
+        // current resets, new window starts
+        {
+            let mut state = limiter.state.lock().unwrap();
+            let entry = state.get_mut(&key).unwrap();
+            entry.prev_count = entry.curr_count;
+            entry.curr_count = 0;
+            entry.window_start = Instant::now();
+        }
+
+        // Count how many additional requests are allowed in the new window.
+        // A fixed-window limiter would allow `limit` (100) more requests.
+        // The sliding window should allow far fewer (close to 0 at the start).
+        let mut allowed_after_rotation = 0u32;
+        for _ in 0..limit {
+            if limiter.check(key.clone(), limit) {
+                allowed_after_rotation += 1;
+            } else {
+                break;
+            }
+        }
+
+        // With a fixed window, we'd get `limit` (100) more.
+        // With sliding window at t≈0, overlap_ratio ≈ 1.0, so we should get
+        // very few additional requests (at most a handful due to float math).
+        assert!(
+            allowed_after_rotation < limit / 2,
+            "sliding window should prevent 2x burst: got {} additional requests out of {} limit",
+            allowed_after_rotation,
+            limit
+        );
     }
 }

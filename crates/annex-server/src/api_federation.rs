@@ -16,7 +16,7 @@ use annex_rtx::{enforce_transfer_scope, validate_bundle_structure};
 use annex_types::NodeType;
 use annex_vrp::{VrpFederationHandshake, VrpTransferScope, VrpValidationReport};
 use axum::{
-    extract::{Extension, Path},
+    extract::{Extension, Path, Query},
     Json,
 };
 use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey as EdVerifyingKey};
@@ -64,6 +64,8 @@ pub enum FederationError {
     Channel(#[from] annex_channels::ChannelError),
     #[error("Forbidden: {0}")]
     Forbidden(String),
+    #[error("Unauthorized: {0}")]
+    Auth(String),
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 }
@@ -78,6 +80,9 @@ impl axum::response::IntoResponse for FederationError {
                 (axum::http::StatusCode::NOT_FOUND, self.to_string())
             }
             FederationError::Forbidden(_) => (axum::http::StatusCode::FORBIDDEN, self.to_string()),
+            FederationError::Auth(_) => {
+                (axum::http::StatusCode::UNAUTHORIZED, self.to_string())
+            }
             FederationError::InvalidSignature(_) => {
                 (axum::http::StatusCode::UNAUTHORIZED, self.to_string())
             }
@@ -112,6 +117,12 @@ pub struct HandshakeRequest {
     /// The VRP handshake payload.
     #[serde(flatten)]
     pub handshake: VrpFederationHandshake,
+}
+
+#[derive(Deserialize)]
+pub struct FederatedChannelsQuery {
+    /// The base URL of the requesting federation peer.
+    pub originating_server: String,
 }
 
 #[derive(Deserialize, serde::Serialize)]
@@ -258,38 +269,48 @@ fn find_commitment_for_pseudonym(
     conn: &rusqlite::Connection,
     pseudonym: &str,
 ) -> Result<Option<(String, String)>, rusqlite::Error> {
-    // 1. Scan `zk_nullifiers` to find potential topic and nullifier_hex
-    let mut stmt = conn.prepare("SELECT topic, nullifier_hex FROM zk_nullifiers")?;
+    // Use the indexed pseudonym_id column (migration 024) for O(1) lookup.
+    // Falls back to brute-force scan only for rows created before migration 024.
+    match annex_identity::lookup_commitment_by_pseudonym(conn, pseudonym) {
+        Ok(Some(result)) => return Ok(Some(result)),
+        Ok(None) => {} // No indexed row found; try legacy scan below
+        Err(e) => {
+            tracing::warn!(
+                pseudonym = %pseudonym,
+                error = %e,
+                "indexed pseudonym lookup failed, falling back to scan"
+            );
+        }
+    }
+
+    // Legacy fallback for pre-migration-024 rows without pseudonym_id.
+    // Scans nullifiers whose pseudonym_id IS NULL to find matches.
+    let mut stmt = conn.prepare(
+        "SELECT topic, nullifier_hex FROM zk_nullifiers WHERE pseudonym_id IS NULL"
+    )?;
     let rows = stmt.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
-
-    let mut candidate_nullifiers = Vec::new();
 
     for row in rows {
         let (topic, nullifier_hex) = row?;
         if let Ok(p) = annex_identity::derive_pseudonym_id(&topic, &nullifier_hex) {
             if p == pseudonym {
-                candidate_nullifiers.push((topic, nullifier_hex));
-            }
-        }
-    }
+                // Found via legacy scan. Look up the commitment from vrp_identities
+                // using the nullifier → commitment mapping.
+                let mut id_stmt = conn.prepare(
+                    "SELECT commitment_hex FROM vrp_identities"
+                )?;
+                let commitments: Vec<String> = id_stmt
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?;
 
-    if candidate_nullifiers.is_empty() {
-        return Ok(None);
-    }
-
-    // 2. Scan `vrp_identities` to find matching commitment
-    let mut stmt = conn.prepare("SELECT commitment_hex FROM vrp_identities")?;
-    let commitments: Vec<String> = stmt
-        .query_map([], |row| row.get::<_, String>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
-
-    for (topic, nullifier) in candidate_nullifiers {
-        for commitment in &commitments {
-            if let Ok(n) = annex_identity::derive_nullifier_hex(commitment, &topic) {
-                if n == nullifier {
-                    return Ok(Some((commitment.clone(), topic)));
+                for commitment in &commitments {
+                    if let Ok(n) = annex_identity::derive_nullifier_hex(commitment, &topic) {
+                        if n == nullifier_hex {
+                            return Ok(Some((commitment.clone(), topic)));
+                        }
+                    }
                 }
             }
         }
@@ -782,14 +803,42 @@ pub async fn attest_membership_handler(
 }
 
 /// Handler for `GET /api/federation/channels`.
+///
+/// Requires `originating_server` query parameter to identify the calling peer.
+/// Verifies the caller is a known instance with an active federation agreement
+/// before returning the list of federated channels.
 pub async fn get_federated_channels_handler(
     Extension(state): Extension<Arc<AppState>>,
+    Query(query): Query<FederatedChannelsQuery>,
 ) -> Result<Json<Vec<Channel>>, FederationError> {
     let channels = tokio::task::spawn_blocking(move || {
         let conn = state
             .pool
             .get()
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+        // Verify the caller is a known instance with an active agreement
+        let has_active_agreement: bool = conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM federation_agreements fa
+                    JOIN instances i ON fa.remote_instance_id = i.id
+                    WHERE i.base_url = ?1
+                      AND fa.local_server_id = ?2
+                      AND fa.active = 1
+                )",
+                params![query.originating_server, state.server_id],
+                |row| row.get(0),
+            )
+            .map_err(FederationError::DbError)?;
+
+        if !has_active_agreement {
+            return Err(FederationError::Auth(format!(
+                "no active federation agreement with {}",
+                query.originating_server
+            )));
+        }
+
         list_federated_channels(&conn, state.server_id).map_err(FederationError::Channel)
     })
     .await

@@ -1,5 +1,5 @@
 use annex_db::run_migrations;
-use annex_identity::MerkleTree;
+use annex_identity::{IdentityError, MerkleTree};
 use ark_bn254::Fr;
 use ark_ff::{BigInteger, PrimeField};
 use rusqlite::Connection;
@@ -63,7 +63,7 @@ fn test_merkle_persistence_roundtrip() {
 }
 
 #[test]
-fn test_restore_prioritizes_computed_root() {
+fn test_restore_fails_on_root_mismatch() {
     // 1. Setup in-memory DB
     let conn = Connection::open_in_memory().expect("failed to open DB");
     run_migrations(&conn).expect("migrations failed");
@@ -80,7 +80,7 @@ fn test_restore_prioritizes_computed_root() {
     )
     .unwrap();
 
-    // Insert a fake root that doesn't match
+    // Insert a fake root that doesn't match the computed root
     let fake_root = "000000000000000000000000000000000000000000000000000000000000dead";
     conn.execute(
         "INSERT INTO vrp_roots (root_hex, active) VALUES (?1, 1)",
@@ -88,12 +88,14 @@ fn test_restore_prioritizes_computed_root() {
     )
     .unwrap();
 
-    // 3. Restore tree
-    let tree = MerkleTree::restore(&conn, 3).expect("should succeed despite mismatch");
+    // 3. Restore should fail with RootMismatch
+    let err = MerkleTree::restore(&conn, 3).expect_err("should fail on root mismatch");
 
-    // 4. Verify tree root is computed correctly (not fake_root)
-    let computed_root = tree.root();
-    let computed_root_hex = hex::encode(computed_root.into_bigint().to_bytes_be());
-
-    assert_ne!(computed_root_hex, fake_root);
+    match err {
+        IdentityError::RootMismatch { stored, computed } => {
+            assert_eq!(stored, fake_root, "stored root should be the fake root");
+            assert_ne!(computed, fake_root, "computed root should differ from fake root");
+        }
+        other => panic!("expected RootMismatch error, got: {:?}", other),
+    }
 }
