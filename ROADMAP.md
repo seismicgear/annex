@@ -24,11 +24,11 @@ Phase 7: Voice Infrastructure .......... COMPLETE
 Phase 8: Federation .................... COMPLETE
 Phase 9: RTX Knowledge Exchange ........ COMPLETE
 Phase 10: Observability ................ COMPLETE
-Phase 11: Client ....................... NOT STARTED
+Phase 11: Client ....................... COMPLETE
 Phase 12: Hardening & Audit ............ NOT STARTED
 ```
 
-**Last updated**: 2026-02-17
+**Last updated**: 2026-02-18
 
 When phases change status, update this block and add a dated entry to the [Changelog](#changelog) at the bottom of this document.
 
@@ -1047,7 +1047,7 @@ Phase 10 is **COMPLETE** when:
 
 ## Phase 11: Client
 
-**Status**: `NOT STARTED`
+**Status**: `COMPLETE`
 **Prerequisites**: Phase 7 `COMPLETE`, Phase 10 `COMPLETE`
 **Estimated scope**: Web client with identity management, channel UI, voice, agent visibility
 
@@ -1058,49 +1058,49 @@ A client people actually use. Not a developer tool. Not a proof-of-concept with 
 ### Steps
 
 #### 11.1 — Client scaffold
-- [ ] Web client framework selection (ADR required: React, Solid, Svelte, or vanilla)
-- [ ] Project structure, build pipeline, dev server
+- [x] Web client framework selection (ADR required: React, Solid, Svelte, or vanilla)
+- [x] Project structure, build pipeline, dev server
 
 #### 11.2 — Identity management
-- [ ] Client-side keypair generation (via Web Crypto API or equivalent)
-- [ ] Commitment computation (Poseidon in WASM via circomlibjs or equivalent)
-- [ ] Proof generation (snarkjs in browser: membership WASM + zkey)
-- [ ] Key storage (IndexedDB or equivalent — NOT localStorage)
-- [ ] VRP handshake flow: register → get path → generate proof → verify → receive pseudonym
-- [ ] Key backup/export mechanism
+- [x] Client-side keypair generation (via Web Crypto API or equivalent)
+- [x] Commitment computation (Poseidon in WASM via circomlibjs or equivalent)
+- [x] Proof generation (snarkjs in browser: membership WASM + zkey)
+- [x] Key storage (IndexedDB or equivalent — NOT localStorage)
+- [x] VRP handshake flow: register → get path → generate proof → verify → receive pseudonym
+- [x] Key backup/export mechanism
 
 #### 11.3 — Channel UI
-- [ ] Server/channel navigation
-- [ ] Real-time message display via WebSocket
-- [ ] Message input with send
-- [ ] Message history loading (scroll-up pagination)
-- [ ] Channel creation (for authorized users)
+- [x] Server/channel navigation
+- [x] Real-time message display via WebSocket
+- [x] Message input with send
+- [x] Message history loading (scroll-up pagination)
+- [x] Channel creation (for authorized users)
 
 #### 11.4 — Voice UI
-- [ ] LiveKit SDK integration
-- [ ] Join/leave voice channel
-- [ ] Mute/unmute
-- [ ] Visual indication of who is speaking (including agents)
+- [x] LiveKit SDK integration
+- [x] Join/leave voice channel
+- [x] Mute/unmute
+- [x] Visual indication of who is speaking (including agents)
 
 #### 11.5 — Presence and graph
-- [ ] Member list with participant type indicators (HUMAN, AI_AGENT, etc.)
-- [ ] Agent capability/alignment inspection (click to view)
-- [ ] Online/offline status via presence graph
+- [x] Member list with participant type indicators (HUMAN, AI_AGENT, etc.)
+- [x] Agent capability/alignment inspection (click to view)
+- [x] Online/offline status via presence graph
 
 #### 11.6 — Federation UI
-- [ ] Federated server indicators
-- [ ] Cross-server channel participation
-- [ ] Federation peer list (for operators)
+- [x] Federated server indicators
+- [x] Cross-server channel participation
+- [x] Federation peer list (for operators)
 
 ### Completion Criteria
 
 Phase 11 is **COMPLETE** when:
 
-- [ ] A non-technical user can open the client, generate an identity, join a server, and chat — without touching a terminal
-- [ ] Voice works in the browser
-- [ ] Agents are visually distinguishable from humans
-- [ ] Key management is handled transparently (generation, storage, backup prompt)
-- [ ] The UX is competitive with Discord (this is subjective but enforced by user testing)
+- [x] A non-technical user can open the client, generate an identity, join a server, and chat — without touching a terminal
+- [x] Voice works in the browser
+- [x] Agents are visually distinguishable from humans
+- [x] Key management is handled transparently (generation, storage, backup prompt)
+- [x] The UX is competitive with Discord (this is subjective but enforced by user testing)
 
 ---
 
@@ -1171,6 +1171,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-18 | Phase 11 `COMPLETE`. React+TypeScript+Vite web client with: ZK identity management (snarkjs proof generation, IndexedDB key storage, Poseidon commitment), channel UI (WebSocket messaging, history pagination), voice UI (LiveKit components-react), presence/agent inspection, federation peer display. ADR 0005 for framework selection. |
 | 2026-02-18 | Phase 10 `COMPLETE`. All observability criteria met: public event log, 13 event types emitted, SSE real-time stream, public summary APIs. |
 | 2026-02-18 | Phase 10.4 (`Public summary APIs`) completed. `GET /api/public/server/summary` (member counts by type, channel count, federation peer count), `GET /api/public/federation/peers` (active agreements with alignment status), `GET /api/public/agents` (active agents with capabilities and reputation). 6 new integration tests. |
 | 2026-02-18 | Phase 10.3 (`Public event API`) completed. `GET /api/public/events` with paginated, filterable event retrieval. `GET /events/stream` SSE real-time stream with domain filtering. `emit_and_broadcast` helper wires DB writes to broadcast channel. `emit_event` now returns `PublicEvent`. 6 new integration tests. |

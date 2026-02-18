@@ -1,0 +1,571 @@
+/* Annex client layout styles */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  padding: 0 1rem;
+  height: 48px;
+  background: #1a1a2e;
+  border-bottom: 1px solid #333;
+  flex-shrink: 0;
+}
+
+.app-header h1 {
+  font-size: 1.2rem;
+  margin: 0;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+/* Setup screen */
+.app-main.setup {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+}
+
+/* Main three-column layout */
+.app-layout {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.sidebar-left {
+  width: 240px;
+  background: #16213e;
+  border-right: 1px solid #333;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+
+.sidebar-right {
+  width: 260px;
+  background: #16213e;
+  border-left: 1px solid #333;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+
+.chat-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* ── Identity Setup ── */
+
+.identity-setup {
+  max-width: 420px;
+  width: 100%;
+  text-align: center;
+}
+
+.identity-setup h2 {
+  margin-bottom: 1.5rem;
+}
+
+.phase-status {
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
+}
+
+.phase-generating,
+.phase-registering,
+.phase-proving,
+.phase-verifying {
+  background: #1a3a5c;
+  color: #7eb8da;
+}
+
+.phase-ready {
+  background: #1a3c1a;
+  color: #7eda7e;
+}
+
+.phase-error {
+  background: #3c1a1a;
+  color: #da7e7e;
+}
+
+.error-message {
+  color: #ff6b6b;
+  margin-bottom: 1rem;
+  font-size: 0.85rem;
+}
+
+.create-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+
+.create-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  text-align: left;
+  font-size: 0.85rem;
+}
+
+.create-form input {
+  padding: 0.5rem;
+  border-radius: 4px;
+  border: 1px solid #444;
+  background: #1a1a1a;
+  color: inherit;
+}
+
+.existing-identities {
+  margin-bottom: 1.5rem;
+  text-align: left;
+}
+
+.identity-option {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  text-align: left;
+  margin-bottom: 0.25rem;
+}
+
+.identity-option .pseudonym {
+  font-family: monospace;
+  font-size: 0.85rem;
+}
+
+.identity-option .server {
+  color: #888;
+  font-size: 0.8rem;
+}
+
+.import-section {
+  text-align: left;
+}
+
+.import-section input[type='file'] {
+  margin-bottom: 0.5rem;
+}
+
+/* ── Channel List ── */
+
+.channel-list {
+  padding: 0.5rem;
+}
+
+.channel-list h3 {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #888;
+  padding: 0.5rem;
+  margin: 0;
+}
+
+.channel-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.4rem 0.5rem;
+  border: none;
+  background: transparent;
+  color: #aaa;
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  text-align: left;
+}
+
+.channel-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: #ddd;
+}
+
+.channel-item.active {
+  background: rgba(100, 108, 255, 0.15);
+  color: #fff;
+}
+
+.channel-icon {
+  font-size: 0.8rem;
+  width: 1.2em;
+  text-align: center;
+}
+
+.federation-badge {
+  margin-left: auto;
+  font-size: 0.65rem;
+  padding: 0.1em 0.35em;
+  background: #3a1a5c;
+  color: #b87eda;
+  border-radius: 2px;
+}
+
+.no-channels {
+  color: #666;
+  font-size: 0.85rem;
+  padding: 0.5rem;
+}
+
+/* ── Message View ── */
+
+.message-view {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.message-view.empty {
+  align-items: center;
+  justify-content: center;
+  color: #666;
+}
+
+.message {
+  max-width: 70%;
+  padding: 0.5rem 0.75rem;
+  background: #1a2a3a;
+  border-radius: 8px;
+  border-top-left-radius: 2px;
+}
+
+.message.self {
+  align-self: flex-end;
+  background: #1a3a2a;
+  border-top-left-radius: 8px;
+  border-top-right-radius: 2px;
+}
+
+.message-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  font-size: 0.75rem;
+  color: #888;
+  margin-bottom: 0.25rem;
+}
+
+.message-content {
+  word-break: break-word;
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+/* ── Message Input ── */
+
+.message-input {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid #333;
+  background: #1a1a2e;
+}
+
+.message-input textarea {
+  flex: 1;
+  resize: none;
+  padding: 0.5rem 0.75rem;
+  border-radius: 4px;
+  border: 1px solid #444;
+  background: #0d1117;
+  color: inherit;
+  font-family: inherit;
+  font-size: 0.9rem;
+}
+
+.message-input textarea:focus {
+  outline: none;
+  border-color: #646cff;
+}
+
+.message-input button {
+  padding: 0.5rem 1rem;
+}
+
+.message-input button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Voice Panel ── */
+
+.voice-panel {
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid #333;
+  background: #1a1a2e;
+}
+
+.voice-panel.disconnected {
+  text-align: center;
+}
+
+.voice-join-btn {
+  background: #1a5c1a;
+  color: #7eda7e;
+}
+
+.voice-leave-btn {
+  background: #5c1a1a;
+  color: #da7e7e;
+}
+
+.voice-participants {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.5rem;
+}
+
+.voice-participant {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem 0.5rem;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+  font-size: 0.8rem;
+}
+
+.voice-participant.speaking {
+  background: rgba(100, 255, 100, 0.1);
+}
+
+.speaking-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #4ade80;
+  animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+/* ── Member List ── */
+
+.member-list {
+  padding: 0.75rem;
+}
+
+.server-summary h3 {
+  font-size: 0.9rem;
+  margin: 0 0 0.5rem;
+}
+
+.member-counts {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-bottom: 0.5rem;
+}
+
+.member-count {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.8rem;
+  color: #aaa;
+}
+
+.stats {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.75rem;
+  color: #666;
+  margin-bottom: 1rem;
+}
+
+.agent-list h4 {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #888;
+  margin: 0.5rem 0;
+}
+
+.agent-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  padding: 0.35rem 0.5rem;
+  border: none;
+  background: transparent;
+  color: #aaa;
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  text-align: left;
+  margin-bottom: 0.15rem;
+}
+
+.agent-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.agent-badge {
+  font-size: 0.65rem;
+  padding: 0.1em 0.35em;
+  border-radius: 2px;
+}
+
+.alignment-aligned .agent-badge,
+.alignment-aligned {
+  color: #4ade80;
+}
+
+.alignment-partial .agent-badge,
+.alignment-partial {
+  color: #fbbf24;
+}
+
+.alignment-conflict .agent-badge,
+.alignment-conflict {
+  color: #f87171;
+}
+
+/* Agent detail overlay */
+.agent-detail-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.agent-detail {
+  background: #1a1a2e;
+  border: 1px solid #444;
+  border-radius: 8px;
+  padding: 1.5rem;
+  max-width: 400px;
+  width: 90%;
+}
+
+.agent-detail h3 {
+  margin: 0 0 1rem;
+  font-size: 1rem;
+}
+
+.agent-detail dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.5rem 1rem;
+  font-size: 0.85rem;
+}
+
+.agent-detail dt {
+  color: #888;
+}
+
+.agent-detail ul {
+  margin: 0;
+  padding-left: 1.2rem;
+}
+
+/* ── Federation Panel ── */
+
+.federation-panel h3 {
+  font-size: 0.85rem;
+  margin: 0 0 0.5rem;
+}
+
+.peer-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.peer-item {
+  padding: 0.5rem;
+  border-bottom: 1px solid #333;
+  font-size: 0.8rem;
+}
+
+.peer-label {
+  font-weight: 500;
+}
+
+.peer-url {
+  color: #666;
+  font-size: 0.75rem;
+}
+
+.peer-scope {
+  color: #888;
+  font-size: 0.7rem;
+}
+
+/* ── Status Bar ── */
+
+.status-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.25rem 1rem;
+  height: 32px;
+  background: #0d1117;
+  border-top: 1px solid #333;
+  font-size: 0.75rem;
+  flex-shrink: 0;
+}
+
+.identity-info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.ws-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.ws-indicator.connected {
+  background: #4ade80;
+}
+
+.ws-indicator.disconnected {
+  background: #f87171;
+}
+
+.pseudonym {
+  font-family: monospace;
+  color: #aaa;
+}
+
+.status-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.status-actions button {
+  padding: 0.15rem 0.5rem;
+  font-size: 0.7rem;
+}
