@@ -204,9 +204,16 @@ pub async fn publish_handler(
                 let (sub_pseudonym, domain_filters_json, scope_str) =
                     row.map_err(|e| ApiError::InternalServerError(format!("db row error: {}", e)))?;
 
-                // Parse domain filters
+                // Parse domain filters (empty = accept all; log if corrupted)
                 let domain_filters: Vec<String> =
-                    serde_json::from_str(&domain_filters_json).unwrap_or_default();
+                    serde_json::from_str(&domain_filters_json).unwrap_or_else(|e| {
+                        tracing::warn!(
+                            subscriber = %sub_pseudonym,
+                            "corrupted domain_filters_json in rtx subscription, defaulting to accept-all: {}",
+                            e
+                        );
+                        Vec::new()
+                    });
 
                 // Check domain tag match (empty filters = accept all)
                 let matches = domain_filters.is_empty()
@@ -406,7 +413,14 @@ pub async fn subscribe_handler(
                 })?;
 
             let parsed_filters: Vec<String> =
-                serde_json::from_str(&filters_back).unwrap_or_default();
+                serde_json::from_str(&filters_back).unwrap_or_else(|e| {
+                    tracing::warn!(
+                        subscriber = %pseudonym,
+                        "corrupted domain_filters_json in subscription read-back: {}",
+                        e
+                    );
+                    Vec::new()
+                });
 
             Ok(SubscriptionInfo {
                 subscriber_pseudonym: pseudonym,
@@ -502,8 +516,15 @@ pub async fn get_subscription_handler(
 
             match result {
                 Some((filters_json, accept_federated, created_at)) => {
-                    let domain_filters: Vec<String> =
-                        serde_json::from_str(&filters_json).unwrap_or_default();
+                    let domain_filters: Vec<String> = serde_json::from_str(&filters_json)
+                        .unwrap_or_else(|e| {
+                            tracing::warn!(
+                                subscriber = %pseudonym,
+                                "corrupted domain_filters_json in subscription query: {}",
+                                e
+                            );
+                            Vec::new()
+                        });
                     Ok(Some(SubscriptionInfo {
                         subscriber_pseudonym: pseudonym,
                         domain_filters,
@@ -538,10 +559,20 @@ fn parse_transfer_scope(s: &str) -> Option<VrpTransferScope> {
 ///
 /// The `redacted_topics` field may or may not be present in the stored JSON
 /// (backward compatibility with contracts created before this field existed).
+/// If the JSON is entirely unparseable (data corruption), logs a warning and
+/// returns an empty list. This is a fail-open decision: corrupted contracts
+/// lose their redaction restrictions. Operators should monitor for this warning
+/// and repair the underlying data.
 fn extract_redacted_topics(contract_json: &str) -> Vec<String> {
     serde_json::from_str::<annex_vrp::VrpCapabilitySharingContract>(contract_json)
         .map(|c| c.redacted_topics)
-        .unwrap_or_default()
+        .unwrap_or_else(|e| {
+            tracing::warn!(
+                "corrupted capability contract JSON, redacted topics unavailable: {}",
+                e
+            );
+            Vec::new()
+        })
 }
 
 /// Constructs the deterministic signing payload for an RTX relay envelope.
@@ -1041,7 +1072,22 @@ mod tests {
 
     #[test]
     fn test_extract_redacted_topics_invalid_json() {
+        // Corrupted JSON returns empty vec (fail-open) and logs a warning.
         let topics = extract_redacted_topics("not json");
+        assert!(topics.is_empty());
+    }
+
+    #[test]
+    fn test_extract_redacted_topics_truncated_json() {
+        // Simulates data corruption: truncated JSON string.
+        let topics = extract_redacted_topics(r#"{"required_capabilities":["#);
+        assert!(topics.is_empty());
+    }
+
+    #[test]
+    fn test_extract_redacted_topics_wrong_type() {
+        // JSON is valid but wrong shape — field is a string, not array.
+        let topics = extract_redacted_topics(r#"{"redacted_topics": "not_an_array"}"#);
         assert!(topics.is_empty());
     }
 

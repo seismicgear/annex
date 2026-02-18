@@ -1081,9 +1081,16 @@ pub async fn receive_federated_rtx_handler(
             let (sub_pseudonym, domain_filters_json, scope_str) =
                 row.map_err(FederationError::DbError)?;
 
-            // Parse domain filters
+            // Parse domain filters (empty = accept all; log if corrupted)
             let domain_filters: Vec<String> =
-                serde_json::from_str(&domain_filters_json).unwrap_or_default();
+                serde_json::from_str(&domain_filters_json).unwrap_or_else(|e| {
+                    tracing::warn!(
+                        subscriber = %sub_pseudonym,
+                        "corrupted domain_filters_json in federated RTX delivery, defaulting to accept-all: {}",
+                        e
+                    );
+                    Vec::new()
+                });
 
             // Check domain tag match (empty filters = accept all)
             let matches = domain_filters.is_empty()
