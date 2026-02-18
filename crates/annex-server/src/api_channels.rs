@@ -148,7 +148,10 @@ pub async fn get_channel_handler(
         let conn = state
             .pool
             .get()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            .map_err(|e| {
+                tracing::error!(error = %e, "failed to get db connection for get_channel");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
         get_channel(&conn, &channel_id).map_err(channel_err_to_status)
     })
     .await

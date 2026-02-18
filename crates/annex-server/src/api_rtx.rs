@@ -7,6 +7,7 @@
 
 use crate::api::ApiError;
 use crate::middleware::IdentityContext;
+use crate::parse_transfer_scope;
 use crate::AppState;
 use annex_federation::FederatedRtxEnvelope;
 use annex_rtx::{
@@ -555,11 +556,6 @@ pub async fn get_subscription_handler(
         ok: true,
         subscription: info,
     }))
-}
-
-/// Parses a transfer scope string from the database.
-fn parse_transfer_scope(s: &str) -> Option<VrpTransferScope> {
-    s.parse().ok()
 }
 
 /// Extracts redacted topics from a capability contract JSON string.

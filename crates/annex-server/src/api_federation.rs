@@ -1,4 +1,4 @@
-use crate::{api::GetRootResponse, api_rtx::rtx_relay_signing_payload, AppState};
+use crate::{api::GetRootResponse, api_rtx::rtx_relay_signing_payload, parse_transfer_scope, AppState};
 use annex_channels::{
     add_member, create_message, list_federated_channels, Channel, CreateMessageParams,
 };
@@ -930,11 +930,6 @@ pub async fn join_federated_channel_handler(
     .map_err(|e| FederationError::DbError(rusqlite::Error::ToSqlConversionFailure(Box::new(e))))??;
 
     Ok(Json(serde_json::json!({ "status": "joined" })))
-}
-
-/// Parses a transfer scope string from the database.
-fn parse_transfer_scope(s: &str) -> Option<VrpTransferScope> {
-    s.parse().ok()
 }
 
 /// Handler for `POST /api/federation/rtx`.

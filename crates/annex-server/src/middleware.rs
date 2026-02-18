@@ -87,12 +87,29 @@ pub enum RateLimitKey {
     Pseudonym(String),
 }
 
+/// Per-key state for the sliding window rate limiter.
+#[derive(Debug, Clone)]
+struct WindowState {
+    /// Count in the previous (completed) window.
+    prev_count: u32,
+    /// Count in the current window so far.
+    curr_count: u32,
+    /// Start of the current window.
+    window_start: Instant,
+}
+
+/// Rate limit window duration.
+const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
+
 /// In-memory rate limiter state.
 ///
-/// Uses a simple fixed window counter.
+/// Uses a sliding window counter to prevent the 2x burst that fixed-window
+/// counters allow at window boundaries. The effective count is:
+/// `prev_count * (1 - elapsed_fraction) + curr_count`, which smoothly
+/// transitions between windows.
 #[derive(Clone, Debug)]
 pub struct RateLimiter {
-    state: Arc<Mutex<HashMap<RateLimitKey, (u32, Instant)>>>,
+    state: Arc<Mutex<HashMap<RateLimitKey, WindowState>>>,
 }
 
 impl RateLimiter {
@@ -120,24 +137,38 @@ impl RateLimiter {
         let now = Instant::now();
 
         // Periodic cleanup to prevent memory leak.
-        // Instead of clearing the entire map (which resets all rate limits and
-        // allows a thundering-herd bypass), evict only entries whose window
-        // has expired. This preserves active rate limits while reclaiming memory.
+        // Evict only entries whose window has fully expired (previous + current).
         if state.len() > 10000 {
-            state.retain(|_, (_, start)| now.duration_since(*start) <= Duration::from_secs(60));
+            state.retain(|_, ws| now.duration_since(ws.window_start) <= RATE_LIMIT_WINDOW * 2);
         }
 
-        let (count, start) = state.entry(key).or_insert((0, now));
+        let ws = state.entry(key).or_insert(WindowState {
+            prev_count: 0,
+            curr_count: 0,
+            window_start: now,
+        });
 
-        if now.duration_since(*start) > Duration::from_secs(60) {
-            // Reset window
-            *count = 1;
-            *start = now;
-            true
-        } else {
-            *count += 1;
-            *count <= limit
+        let elapsed = now.duration_since(ws.window_start);
+
+        if elapsed > RATE_LIMIT_WINDOW {
+            // Rotate: current becomes previous, start a new current window.
+            ws.prev_count = ws.curr_count;
+            ws.curr_count = 0;
+            ws.window_start = now;
         }
+
+        ws.curr_count += 1;
+
+        // Sliding window estimate: weight the previous window's count by the
+        // fraction of the window that has NOT yet elapsed.
+        let elapsed_frac = now
+            .duration_since(ws.window_start)
+            .as_secs_f64()
+            / RATE_LIMIT_WINDOW.as_secs_f64();
+        let prev_weight = 1.0 - elapsed_frac.min(1.0);
+        let effective = (ws.prev_count as f64 * prev_weight) + ws.curr_count as f64;
+
+        effective <= limit as f64
     }
 }
 
