@@ -247,7 +247,7 @@ pub async fn publish_handler(
                         None
                     };
 
-                    let _ = conn.execute(
+                    if let Err(e) = conn.execute(
                         "INSERT INTO rtx_transfer_log (
                             server_id, bundle_id, source_pseudonym, destination_pseudonym,
                             transfer_scope_applied, redactions_applied
@@ -260,7 +260,14 @@ pub async fn publish_handler(
                             receiver_scope.to_string(),
                             delivery_redactions,
                         ],
-                    );
+                    ) {
+                        tracing::warn!(
+                            bundle_id = %stored_bundle.bundle_id,
+                            destination = %sub_pseudonym,
+                            "failed to write rtx transfer log: {}",
+                            e
+                        );
+                    }
 
                     deliveries.push((sub_pseudonym, json));
                 }

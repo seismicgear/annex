@@ -30,6 +30,16 @@ enum StartupError {
     IoError(#[from] std::io::Error),
     #[error("failed to parse verification key: {0}")]
     ZkError(#[from] annex_identity::zk::ZkError),
+    #[error("failed to get database connection from pool: {0}")]
+    PoolConnection(#[from] r2d2::Error),
+    #[error("database migration failed: {0}")]
+    Migration(#[from] annex_db::MigrationError),
+    #[error("database query failed: {0}")]
+    DbQuery(#[from] rusqlite::Error),
+    #[error("no server configured in 'servers' table — run initial setup first")]
+    NoServerConfigured,
+    #[error("invalid ANNEX_SIGNING_KEY: {0}")]
+    InvalidSigningKey(String),
 }
 
 fn resolve_config_path() -> (Option<String>, &'static str) {
@@ -92,10 +102,8 @@ async fn main() -> Result<(), StartupError> {
     )?;
 
     {
-        let conn = pool
-            .get()
-            .expect("failed to get database connection for migrations");
-        let applied = annex_db::run_migrations(&conn).expect("failed to run database migrations");
+        let conn = pool.get()?;
+        let applied = annex_db::run_migrations(&conn)?;
         if applied > 0 {
             tracing::info!(count = applied, "applied database migrations");
         }
@@ -108,19 +116,14 @@ async fn main() -> Result<(), StartupError> {
     ));
 
     // Initialize Merkle Tree
-    // Get a dedicated connection for tree initialization
     let tree = {
-        let conn = pool
-            .get()
-            .expect("failed to get database connection for merkle tree init");
+        let conn = pool.get()?;
         MerkleTree::restore(&conn, 20)?
     };
 
     // Get Server ID and Policy
     let (server_id, policy): (i64, ServerPolicy) = {
-        let conn = pool
-            .get()
-            .expect("failed to get database connection for server id");
+        let conn = pool.get()?;
         conn.query_row("SELECT id, policy_json FROM servers LIMIT 1", [], |row| {
             let id: i64 = row.get(0)?;
             let policy_json: String = row.get(1)?;
@@ -133,12 +136,8 @@ async fn main() -> Result<(), StartupError> {
             })?;
             Ok((id, policy))
         })
-        .optional()
-        .expect("failed to query servers table")
-        .unwrap_or_else(|| {
-            tracing::error!("no server configured in 'servers' table");
-            std::process::exit(1);
-        })
+        .optional()?
+        .ok_or(StartupError::NoServerConfigured)?
     };
 
     // Load ZK verification key
@@ -153,12 +152,12 @@ async fn main() -> Result<(), StartupError> {
 
     // Load or generate Signing Key
     let signing_key = if let Ok(hex_key) = std::env::var("ANNEX_SIGNING_KEY") {
-        let bytes = hex::decode(&hex_key).expect("ANNEX_SIGNING_KEY must be valid hex");
-        SigningKey::from_bytes(
-            &bytes
-                .try_into()
-                .expect("ANNEX_SIGNING_KEY must be 32 bytes"),
-        )
+        let bytes = hex::decode(&hex_key)
+            .map_err(|e| StartupError::InvalidSigningKey(format!("not valid hex: {}", e)))?;
+        let byte_array: [u8; 32] = bytes.try_into().map_err(|v: Vec<u8>| {
+            StartupError::InvalidSigningKey(format!("expected 32 bytes, got {}", v.len()))
+        })?;
+        SigningKey::from_bytes(&byte_array)
     } else {
         tracing::warn!("ANNEX_SIGNING_KEY not set. Generating ephemeral key. Federation signatures will change on restart.");
         SigningKey::generate(&mut OsRng)
@@ -174,13 +173,12 @@ async fn main() -> Result<(), StartupError> {
     let voice_service = annex_voice::VoiceService::new(config.livekit);
 
     // Initialize TTS Service
-    // TODO: Make these paths configurable via config.toml
-    let tts_service = annex_voice::TtsService::new("assets/voices", "assets/piper/piper");
+    let tts_service =
+        annex_voice::TtsService::new(&config.voice.tts_voices_dir, &config.voice.tts_binary_path);
 
     // Initialize STT Service
-    // TODO: Make these paths configurable via config.toml
     let stt_service =
-        annex_voice::SttService::new("assets/models/ggml-base.en.bin", "assets/whisper/whisper");
+        annex_voice::SttService::new(&config.voice.stt_model_path, &config.voice.stt_binary_path);
 
     let state = AppState {
         pool,
@@ -212,9 +210,10 @@ async fn main() -> Result<(), StartupError> {
 
     tracing::info!(%addr, "starting annex server");
 
-    let listener = TcpListener::bind(addr)
-        .await
-        .expect("failed to bind to address — is another process using this port?");
+    let listener = TcpListener::bind(addr).await.map_err(|e| {
+        tracing::error!(%addr, "failed to bind to address — is another process using this port?");
+        StartupError::IoError(e)
+    })?;
 
     // Serve with graceful shutdown
     axum::serve(
@@ -223,7 +222,10 @@ async fn main() -> Result<(), StartupError> {
     )
     .with_graceful_shutdown(shutdown_signal())
     .await
-    .expect("server error");
+    .map_err(|e| {
+        tracing::error!("server runtime error: {}", e);
+        StartupError::IoError(e)
+    })?;
 
     tracing::info!("annex server shut down");
 
@@ -235,12 +237,17 @@ async fn shutdown_signal() {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
             .await
+            // Signal handler installation is a process-level invariant. If it fails,
+            // the OS does not support signals or the runtime is broken — neither can
+            // be recovered at this layer.
             .expect("failed to install Ctrl+C handler");
     };
 
     #[cfg(unix)]
     let terminate = async {
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            // Same reasoning: if the OS cannot register SIGTERM, no graceful
+            // shutdown is possible and the process should abort immediately.
             .expect("failed to install SIGTERM handler")
             .recv()
             .await;

@@ -24,6 +24,57 @@ pub struct Config {
     /// LiveKit configuration.
     #[serde(default)]
     pub livekit: LiveKitConfig,
+
+    /// Voice pipeline paths (TTS binary, STT model, etc.).
+    #[serde(default)]
+    pub voice: VoicePathsConfig,
+}
+
+/// File-system paths for the TTS and STT voice pipelines.
+#[derive(Debug, Clone, Deserialize)]
+pub struct VoicePathsConfig {
+    /// Directory containing Piper voice model files.
+    #[serde(default = "default_tts_voices_dir")]
+    pub tts_voices_dir: String,
+
+    /// Path to the Piper TTS binary.
+    #[serde(default = "default_tts_binary_path")]
+    pub tts_binary_path: String,
+
+    /// Path to the Whisper GGML model file.
+    #[serde(default = "default_stt_model_path")]
+    pub stt_model_path: String,
+
+    /// Path to the Whisper STT binary.
+    #[serde(default = "default_stt_binary_path")]
+    pub stt_binary_path: String,
+}
+
+fn default_tts_voices_dir() -> String {
+    "assets/voices".to_string()
+}
+
+fn default_tts_binary_path() -> String {
+    "assets/piper/piper".to_string()
+}
+
+fn default_stt_model_path() -> String {
+    "assets/models/ggml-base.en.bin".to_string()
+}
+
+fn default_stt_binary_path() -> String {
+    "assets/whisper/whisper".to_string()
+}
+
+impl Default for VoicePathsConfig {
+    fn default() -> Self {
+        Self {
+            tts_voices_dir: default_tts_voices_dir(),
+            tts_binary_path: default_tts_binary_path(),
+            stt_model_path: default_stt_model_path(),
+            stt_binary_path: default_stt_binary_path(),
+        }
+    }
 }
 
 /// Network configuration for the HTTP server.
@@ -249,6 +300,10 @@ fn parse_env_bool(name: &'static str) -> Result<Option<bool>, ConfigError> {
 /// - `ANNEX_DB_POOL_MAX_SIZE` overrides `database.pool_max_size`
 /// - `ANNEX_LOG_LEVEL` overrides `logging.level`
 /// - `ANNEX_LOG_JSON` overrides `logging.json` (set to "true" to enable)
+/// - `ANNEX_TTS_VOICES_DIR` overrides `voice.tts_voices_dir`
+/// - `ANNEX_TTS_BINARY_PATH` overrides `voice.tts_binary_path`
+/// - `ANNEX_STT_MODEL_PATH` overrides `voice.stt_model_path`
+/// - `ANNEX_STT_BINARY_PATH` overrides `voice.stt_binary_path`
 ///
 /// # Errors
 ///
@@ -306,6 +361,18 @@ pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
     if let Some(api_secret) = parse_env_var("ANNEX_LIVEKIT_API_SECRET")? {
         config.livekit.api_secret = api_secret;
     }
+    if let Ok(val) = std::env::var("ANNEX_TTS_VOICES_DIR") {
+        config.voice.tts_voices_dir = val;
+    }
+    if let Ok(val) = std::env::var("ANNEX_TTS_BINARY_PATH") {
+        config.voice.tts_binary_path = val;
+    }
+    if let Ok(val) = std::env::var("ANNEX_STT_MODEL_PATH") {
+        config.voice.stt_model_path = val;
+    }
+    if let Ok(val) = std::env::var("ANNEX_STT_BINARY_PATH") {
+        config.voice.stt_binary_path = val;
+    }
 
     validate_config(&config)?;
 
@@ -332,6 +399,10 @@ mod tests {
         std::env::remove_var("ANNEX_DB_POOL_MAX_SIZE");
         std::env::remove_var("ANNEX_LOG_LEVEL");
         std::env::remove_var("ANNEX_LOG_JSON");
+        std::env::remove_var("ANNEX_TTS_VOICES_DIR");
+        std::env::remove_var("ANNEX_TTS_BINARY_PATH");
+        std::env::remove_var("ANNEX_STT_MODEL_PATH");
+        std::env::remove_var("ANNEX_STT_BINARY_PATH");
     }
 
     fn write_temp_config(contents: &str) -> String {
@@ -359,6 +430,10 @@ mod tests {
         assert_eq!(cfg.database.pool_max_size, default_db_pool_max_size());
         assert_eq!(cfg.logging.level, default_log_level());
         assert!(!cfg.logging.json);
+        assert_eq!(cfg.voice.tts_voices_dir, default_tts_voices_dir());
+        assert_eq!(cfg.voice.tts_binary_path, default_tts_binary_path());
+        assert_eq!(cfg.voice.stt_model_path, default_stt_model_path());
+        assert_eq!(cfg.voice.stt_binary_path, default_stt_binary_path());
     }
 
     #[test]
@@ -487,6 +562,76 @@ json = true
             other => panic!("unexpected error: {other}"),
         }
 
+        clear_env();
+    }
+
+    #[test]
+    fn voice_paths_env_overrides() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+
+        std::env::set_var("ANNEX_TTS_VOICES_DIR", "/opt/voices");
+        std::env::set_var("ANNEX_TTS_BINARY_PATH", "/usr/bin/piper");
+        std::env::set_var("ANNEX_STT_MODEL_PATH", "/opt/models/whisper.bin");
+        std::env::set_var("ANNEX_STT_BINARY_PATH", "/usr/bin/whisper");
+
+        let cfg = load_config(None).expect("load should succeed");
+
+        assert_eq!(cfg.voice.tts_voices_dir, "/opt/voices");
+        assert_eq!(cfg.voice.tts_binary_path, "/usr/bin/piper");
+        assert_eq!(cfg.voice.stt_model_path, "/opt/models/whisper.bin");
+        assert_eq!(cfg.voice.stt_binary_path, "/usr/bin/whisper");
+
+        clear_env();
+    }
+
+    #[test]
+    fn voice_paths_from_config_file() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+
+        let path = write_temp_config(
+            r#"
+[voice]
+tts_voices_dir = "/from/config/voices"
+tts_binary_path = "/from/config/piper"
+stt_model_path = "/from/config/ggml.bin"
+stt_binary_path = "/from/config/whisper"
+"#,
+        );
+
+        let cfg = load_config(Some(path.as_str())).expect("load should succeed");
+
+        assert_eq!(cfg.voice.tts_voices_dir, "/from/config/voices");
+        assert_eq!(cfg.voice.tts_binary_path, "/from/config/piper");
+        assert_eq!(cfg.voice.stt_model_path, "/from/config/ggml.bin");
+        assert_eq!(cfg.voice.stt_binary_path, "/from/config/whisper");
+
+        fs::remove_file(path).expect("failed to remove temp config");
+    }
+
+    #[test]
+    fn voice_paths_env_overrides_config_file() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+
+        let path = write_temp_config(
+            r#"
+[voice]
+tts_voices_dir = "/from/config/voices"
+"#,
+        );
+
+        std::env::set_var("ANNEX_TTS_VOICES_DIR", "/from/env/voices");
+
+        let cfg = load_config(Some(path.as_str())).expect("load should succeed");
+
+        // Env should override config file
+        assert_eq!(cfg.voice.tts_voices_dir, "/from/env/voices");
+        // Other fields should remain at defaults
+        assert_eq!(cfg.voice.tts_binary_path, default_tts_binary_path());
+
+        fs::remove_file(path).expect("failed to remove temp config");
         clear_env();
     }
 }
