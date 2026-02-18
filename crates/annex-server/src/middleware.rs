@@ -106,7 +106,17 @@ impl RateLimiter {
     ///
     /// Returns `true` if allowed, `false` if limit exceeded.
     pub fn check(&self, key: RateLimitKey, limit: u32) -> bool {
-        let mut state = self.state.lock().expect("rate limiter lock poisoned");
+        let mut state = match self.state.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                // Lock poisoned by a panicked thread. Recover by accepting the
+                // poisoned guard — the worst that happens is a stale counter.
+                // Refusing all requests because of a poisoned rate-limiter
+                // would be a self-inflicted denial of service.
+                tracing::error!("rate limiter lock poisoned, recovering with stale state");
+                poisoned.into_inner()
+            }
+        };
         let now = Instant::now();
 
         // Periodic cleanup to prevent memory leak
@@ -162,7 +172,13 @@ pub async fn rate_limit_middleware(req: Request<Body>, next: Next) -> Result<Res
 
     // 3. Get Policy Limit
     let limit = {
-        let policy = state.policy.read().expect("policy lock poisoned");
+        let policy = match state.policy.read() {
+            Ok(guard) => guard,
+            Err(_) => {
+                tracing::error!("server policy lock poisoned");
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        };
         let path = req.uri().path();
         if path == "/api/registry/register" {
             policy.rate_limit.registration_limit

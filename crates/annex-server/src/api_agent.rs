@@ -52,10 +52,18 @@ pub async fn get_agent_profile_handler(
             .next()
             .map_err(|e| ApiError::InternalServerError(format!("row failed: {}", e)))?
         {
-            let alignment_str: String = row.get(0).unwrap();
-            let scope_str: String = row.get(1).unwrap();
-            let contract_json: String = row.get(2).unwrap();
-            let score: f64 = row.get(3).unwrap();
+            let alignment_str: String = row.get(0).map_err(|e| {
+                ApiError::InternalServerError(format!("column 0 read error: {}", e))
+            })?;
+            let scope_str: String = row.get(1).map_err(|e| {
+                ApiError::InternalServerError(format!("column 1 read error: {}", e))
+            })?;
+            let contract_json: String = row.get(2).map_err(|e| {
+                ApiError::InternalServerError(format!("column 2 read error: {}", e))
+            })?;
+            let score: f64 = row.get(3).map_err(|e| {
+                ApiError::InternalServerError(format!("column 3 read error: {}", e))
+            })?;
 
             let alignment_status = match alignment_str.as_str() {
                 "ALIGNED" => VrpAlignmentStatus::Aligned,
@@ -146,7 +154,9 @@ pub async fn update_agent_voice_profile_handler(
                 .next()
                 .map_err(|e| ApiError::InternalServerError(format!("row failed: {}", e)))?
             {
-                let id: i64 = row.get(0).unwrap();
+                let id: i64 = row.get(0).map_err(|e| {
+                    ApiError::InternalServerError(format!("column 0 read error: {}", e))
+                })?;
                 Some(id)
             } else {
                 return Err(ApiError::BadRequest(format!(

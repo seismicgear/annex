@@ -345,23 +345,7 @@ pub async fn receive_federated_message_handler(
             .map_err(|e| FederationError::InvalidSignature(e.to_string()))?;
 
         // 3. Parse Attestation Ref to get Commitment and Topic
-        // Format: "topic:commitment_hex"
-        let parts: Vec<&str> = envelope.attestation_ref.split(':').collect();
-        if parts.len() < 2 {
-            return Err(FederationError::Forbidden(
-                "Invalid attestation ref format".to_string(),
-            ));
-        }
-        let commitment_hex = parts.last().unwrap();
-        // Topic is everything before the last colon
-        let _topic = envelope
-            .attestation_ref
-            .strip_suffix(commitment_hex)
-            .unwrap()
-            .strip_suffix(':')
-            .ok_or(FederationError::Forbidden(
-                "Invalid attestation ref format".to_string(),
-            ))?;
+        let (commitment_hex, _topic) = parse_attestation_ref(&envelope.attestation_ref)?;
 
         // 4. Verify Sender in Federated Identities
         let local_pseudonym_id: String = conn
@@ -484,7 +468,10 @@ pub async fn federation_handshake_handler(
             "Processing handshake for instance id: {}",
             remote_instance_id
         );
-        let policy = state_clone.policy.read().unwrap();
+        let policy = state_clone
+            .policy
+            .read()
+            .map_err(|_| FederationError::LockPoisoned)?;
 
         let report = process_incoming_handshake(
             &conn,
@@ -1139,7 +1126,7 @@ pub async fn receive_federated_rtx_handler(
                     None
                 };
 
-                let _ = conn.execute(
+                if let Err(e) = conn.execute(
                     "INSERT INTO rtx_transfer_log (
                         server_id, bundle_id, source_pseudonym, destination_pseudonym,
                         transfer_scope_applied, redactions_applied
@@ -1152,7 +1139,14 @@ pub async fn receive_federated_rtx_handler(
                         receiver_scope.to_string(),
                         delivery_redactions,
                     ],
-                );
+                ) {
+                    tracing::warn!(
+                        bundle_id = %scoped_bundle.bundle_id,
+                        destination = %sub_pseudonym,
+                        "failed to write federated rtx transfer log: {}",
+                        e
+                    );
+                }
 
                 deliveries.push((sub_pseudonym, json));
             }
@@ -1176,4 +1170,84 @@ pub async fn receive_federated_rtx_handler(
         "bundleId": bundle.bundle_id,
         "delivered_to": delivered_count,
     })))
+}
+
+/// Parses an attestation reference string into `(commitment_hex, topic)`.
+///
+/// The expected format is `"topic:commitment_hex"` where both parts are non-empty.
+/// Topics may contain colons (e.g., `"annex:server:v1:abc123"`), so the split
+/// happens on the *last* colon.
+///
+/// # Errors
+///
+/// Returns [`FederationError::Forbidden`] if the format is invalid.
+fn parse_attestation_ref(attestation_ref: &str) -> Result<(&str, &str), FederationError> {
+    match attestation_ref.rsplit_once(':') {
+        Some((topic, commitment)) if !topic.is_empty() && !commitment.is_empty() => {
+            Ok((commitment, topic))
+        }
+        _ => Err(FederationError::Forbidden(
+            "Invalid attestation ref format".to_string(),
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_attestation_ref_simple() {
+        let (commitment, topic) =
+            parse_attestation_ref("general:abc123").expect("should parse successfully");
+        assert_eq!(commitment, "abc123");
+        assert_eq!(topic, "general");
+    }
+
+    #[test]
+    fn parse_attestation_ref_multi_colon_topic() {
+        let (commitment, topic) =
+            parse_attestation_ref("annex:server:v1:deadbeef").expect("should parse successfully");
+        assert_eq!(commitment, "deadbeef");
+        assert_eq!(topic, "annex:server:v1");
+    }
+
+    #[test]
+    fn parse_attestation_ref_empty_string() {
+        let result = parse_attestation_ref("");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_attestation_ref_no_colon() {
+        let result = parse_attestation_ref("nodelimiter");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_attestation_ref_empty_topic() {
+        let result = parse_attestation_ref(":abc123");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_attestation_ref_empty_commitment() {
+        let result = parse_attestation_ref("topic:");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_attestation_ref_only_colon() {
+        let result = parse_attestation_ref(":");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_attestation_ref_fallback_format() {
+        // The relay_message function generates "annex:server:v1:unknown" as fallback
+        let (commitment, topic) =
+            parse_attestation_ref("annex:server:v1:unknown").expect("fallback format should parse");
+        assert_eq!(commitment, "unknown");
+        assert_eq!(topic, "annex:server:v1");
+    }
 }

@@ -96,6 +96,7 @@ async fn send_request(router: axum::Router, request: Request<Body>) -> axum::res
 }
 
 /// Helper: build a signed `FederatedMessageEnvelope`.
+#[allow(clippy::too_many_arguments)]
 fn build_signed_envelope(
     signing_key: &SigningKey,
     message_id: &str,
