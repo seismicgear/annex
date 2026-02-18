@@ -55,7 +55,7 @@ pub struct RegistrationResult {
 /// # Errors
 ///
 /// Returns [`IdentityError::InvalidCommitmentFormat`] if commitment is invalid hex.
-/// Returns [`IdentityError::DuplicateNullifier`] (reused error variant) if commitment already exists.
+/// Returns [`IdentityError::DuplicateCommitment`] if commitment already exists.
 /// Returns [`IdentityError::TreeFull`] if the tree is full.
 /// Returns [`IdentityError::DatabaseError`] if SQL fails.
 pub fn register_identity(
@@ -95,8 +95,7 @@ pub fn register_identity(
         Ok(_) => tx.last_insert_rowid(),
         Err(rusqlite::Error::SqliteFailure(err, _)) => {
             if err.code == rusqlite::ErrorCode::ConstraintViolation {
-                // Determine if it was commitment constraint
-                return Err(IdentityError::DuplicateNullifier(format!(
+                return Err(IdentityError::DuplicateCommitment(format!(
                     "commitment '{}' already registered",
                     commitment_hex
                 )));
@@ -272,10 +271,10 @@ mod tests {
         .unwrap_err();
 
         match err {
-            IdentityError::DuplicateNullifier(msg) => {
+            IdentityError::DuplicateCommitment(msg) => {
                 assert!(msg.contains("already registered"));
             }
-            _ => panic!("expected DuplicateNullifier error, got {:?}", err),
+            _ => panic!("expected DuplicateCommitment error, got {:?}", err),
         }
     }
 
@@ -328,8 +327,8 @@ mod tests {
             .expect_err("duplicate should fail");
 
         match err {
-            IdentityError::DuplicateNullifier(_) => {}
-            _ => panic!("expected DuplicateNullifier, got {:?}", err),
+            IdentityError::DuplicateCommitment(_) => {}
+            _ => panic!("expected DuplicateCommitment, got {:?}", err),
         }
     }
 }

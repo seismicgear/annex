@@ -67,6 +67,9 @@ pub enum IdentityError {
     /// Nullifier already exists for this topic.
     #[error("nullifier already exists for topic '{0}'")]
     DuplicateNullifier(String),
+    /// Commitment already registered.
+    #[error("duplicate commitment: {0}")]
+    DuplicateCommitment(String),
     /// Commitment not found in the registry.
     #[error("commitment not found: {0}")]
     CommitmentNotFound(String),
@@ -96,6 +99,7 @@ impl PartialEq for IdentityError {
             (Self::TreeFull, Self::TreeFull) => true,
             (Self::InvalidIndex(a), Self::InvalidIndex(b)) => a == b,
             (Self::DuplicateNullifier(a), Self::DuplicateNullifier(b)) => a == b,
+            (Self::DuplicateCommitment(a), Self::DuplicateCommitment(b)) => a == b,
             (Self::CommitmentNotFound(a), Self::CommitmentNotFound(b)) => a == b,
             (
                 Self::MerkleRootMismatch { stored: s1, computed: c1 },

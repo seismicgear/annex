@@ -4,6 +4,9 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 use tracing::info;
 
+/// Default capacity for the per-agent transcription broadcast channel.
+const DEFAULT_TRANSCRIPTION_BROADCAST_CAPACITY: usize = 256;
+
 /// Event emitted when an agent hears and transcribes speech.
 #[derive(Debug, Clone)]
 pub struct TranscriptionEvent {
@@ -46,7 +49,7 @@ impl AgentVoiceClient {
         // Simulate connection delay
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
-        let (tx, _) = broadcast::channel(100);
+        let (tx, _) = broadcast::channel(DEFAULT_TRANSCRIPTION_BROADCAST_CAPACITY);
 
         Ok(Self {
             room_url: url.to_string(),

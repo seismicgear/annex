@@ -92,6 +92,18 @@ async fn main() -> Result<(), StartupError> {
         "resolved startup configuration path"
     );
 
+    // Warn if the config file path is relative, since it depends on the
+    // working directory at startup and may break under process managers.
+    if let Some(p) = selected_config_path {
+        if !std::path::Path::new(p).is_absolute() {
+            tracing::warn!(
+                path = p,
+                "config file path is relative — behavior depends on working directory; \
+                 consider using an absolute path or ANNEX_CONFIG_PATH env var"
+            );
+        }
+    }
+
     // Initialize database
     let pool = annex_db::create_pool(
         &config.database.path,

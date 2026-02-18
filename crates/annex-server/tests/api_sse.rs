@@ -97,8 +97,6 @@ async fn test_sse_presence_stream() {
         .expect("Stream closed");
     let chunk_str = String::from_utf8(chunk.to_vec()).unwrap();
 
-    println!("Received chunk: {}", chunk_str);
-
     assert!(chunk_str.starts_with("data:"));
     assert!(chunk_str.contains("NodeUpdated"));
     assert!(chunk_str.contains("test-node"));

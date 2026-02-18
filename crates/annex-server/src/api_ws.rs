@@ -358,6 +358,9 @@ fn send_ws_error(tx: &mpsc::Sender<String>, message: String) {
     }
 }
 
+/// Maximum allowed length for a WebSocket message content field (64 KiB).
+const MAX_WS_MESSAGE_CONTENT_LEN: usize = 65_536;
+
 /// Minimum interval between activity updates per WebSocket connection.
 /// Prevents spawning a blocking DB task on every single message.
 const ACTIVITY_DEBOUNCE: std::time::Duration = std::time::Duration::from_secs(30);
@@ -445,6 +448,18 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                         content,
                         reply_to,
                     } => {
+                        // 0. Validate content length
+                        if content.len() > MAX_WS_MESSAGE_CONTENT_LEN {
+                            send_ws_error(
+                                &tx,
+                                format!(
+                                    "Message content exceeds maximum length of {} bytes",
+                                    MAX_WS_MESSAGE_CONTENT_LEN
+                                ),
+                            );
+                            continue;
+                        }
+
                         // 1. Validate membership (enforcing Phase 4.4 requirements)
                         match check_ws_membership(state.pool.clone(), &channel_id, &pseudonym).await
                         {
