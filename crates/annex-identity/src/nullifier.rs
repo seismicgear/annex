@@ -30,6 +30,10 @@ pub fn check_nullifier_exists(
 
 /// Inserts a nullifier into the database.
 ///
+/// `pseudonym_id` and `commitment_hex` are optional denormalized lookup columns
+/// added by migration 024. When provided, they enable O(1) pseudonym-to-commitment
+/// resolution in `find_commitment_for_pseudonym` instead of an O(N*M) full-table scan.
+///
 /// # Errors
 ///
 /// Returns [`IdentityError::DuplicateNullifier`] if the nullifier already exists for the topic.
@@ -38,10 +42,12 @@ pub fn insert_nullifier(
     conn: &Connection,
     topic: &str,
     nullifier_hex: &str,
+    pseudonym_id: Option<&str>,
+    commitment_hex: Option<&str>,
 ) -> Result<(), IdentityError> {
     let res = conn.execute(
-        "INSERT INTO zk_nullifiers (topic, nullifier_hex) VALUES (?1, ?2)",
-        [topic, nullifier_hex],
+        "INSERT INTO zk_nullifiers (topic, nullifier_hex, pseudonym_id, commitment_hex) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![topic, nullifier_hex, pseudonym_id, commitment_hex],
     );
 
     match res {

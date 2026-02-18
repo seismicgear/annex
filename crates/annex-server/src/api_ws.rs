@@ -101,6 +101,11 @@ impl ConnectionManager {
     }
 
     /// Registers a new session for a pseudonym.
+    ///
+    /// If the pseudonym already has a session, the old session's subscriptions
+    /// are cleaned up before replacement to prevent orphaned entries in
+    /// `channel_subscriptions` and `user_subscriptions`.
+    ///
     /// Returns the unique session ID.
     pub async fn add_session(
         &self,
@@ -108,6 +113,43 @@ impl ConnectionManager {
         sender: mpsc::Sender<String>,
     ) -> Uuid {
         let session_id = Uuid::new_v4();
+
+        // Check for and clean up an existing session for this pseudonym.
+        let had_previous = {
+            let sessions = self.sessions.read().await;
+            sessions.contains_key(&pseudonym)
+        };
+
+        if had_previous {
+            // Clean up old subscriptions (channel_subscriptions → user_subscriptions order).
+            let channels = {
+                let user_subs = self.user_subscriptions.read().await;
+                user_subs.get(&pseudonym).cloned()
+            };
+
+            if let Some(ref channels) = channels {
+                let mut chan_subs = self.channel_subscriptions.write().await;
+                for channel_id in channels {
+                    if let Some(listeners) = chan_subs.get_mut(channel_id) {
+                        listeners.remove(&pseudonym);
+                        if listeners.is_empty() {
+                            chan_subs.remove(channel_id);
+                        }
+                    }
+                }
+            }
+
+            if channels.is_some() {
+                let mut user_subs = self.user_subscriptions.write().await;
+                user_subs.remove(&pseudonym);
+            }
+
+            tracing::info!(
+                pseudonym = %pseudonym,
+                "replaced existing WebSocket session; cleaned up old subscriptions"
+            );
+        }
+
         self.sessions
             .write()
             .await

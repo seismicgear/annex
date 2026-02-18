@@ -15,13 +15,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 
-/// Maps a [`ChannelError`] to the correct HTTP status code.
+/// Maps a [`ChannelError`] to the correct HTTP status code, logging non-404 errors.
 ///
-/// `NotFound` → 404, everything else → 500.
+/// `NotFound` → 404, everything else → 500 (with error logged).
 fn channel_err_to_status(e: annex_channels::ChannelError) -> StatusCode {
     match e {
         annex_channels::ChannelError::NotFound(_) => StatusCode::NOT_FOUND,
-        _ => StatusCode::INTERNAL_SERVER_ERROR,
+        ref err => {
+            tracing::error!(error = %err, "channel operation failed");
+            drop(e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
     }
 }
 
@@ -119,11 +123,17 @@ pub async fn list_channels_handler(
         let conn = state
             .pool
             .get()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        list_channels(&conn, state.server_id).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+            .map_err(|e| {
+                tracing::error!(error = %e, "failed to get db connection for list_channels");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        list_channels(&conn, state.server_id).map_err(channel_err_to_status)
     })
     .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+    .map_err(|e| {
+        tracing::error!(error = %e, "list_channels task join error");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })??;
 
     Ok(Json(channels))
 }

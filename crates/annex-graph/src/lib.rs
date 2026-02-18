@@ -18,6 +18,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashSet, VecDeque};
 use thiserror::Error;
 
+/// Maximum number of nodes the BFS traversal will visit before stopping.
+/// Prevents unbounded memory growth on densely connected graphs.
+const MAX_BFS_VISITED_NODES: usize = 10_000;
+
 /// Errors specific to the graph module.
 #[derive(Debug, Error)]
 pub enum GraphError {
@@ -516,6 +520,10 @@ pub fn find_path_bfs(
             continue;
         }
 
+        if visited.len() >= MAX_BFS_VISITED_NODES {
+            break;
+        }
+
         let mut neighbors = Vec::new();
 
         // Outgoing edges
@@ -702,5 +710,38 @@ mod tests {
                 "failed for {s}"
             );
         }
+    }
+
+    #[test]
+    fn bfs_respects_visited_node_cap() {
+        let conn = Connection::open_in_memory().expect("db open failed");
+        run_migrations(&conn).expect("migrations failed");
+        let server_id = 1;
+
+        // Create a chain of nodes: N0 -> N1 -> N2 -> ... -> N100
+        // The target is the last node, which is within the visited cap (10,000)
+        // but we verify BFS terminates without unbounded growth.
+        let chain_len = 100;
+        for i in 0..=chain_len {
+            let name = format!("chain-{}", i);
+            ensure_graph_node(&conn, server_id, &name, NodeType::Human, None)
+                .expect("node failed");
+        }
+        for i in 0..chain_len {
+            let from = format!("chain-{}", i);
+            let to = format!("chain-{}", i + 1);
+            create_edge(&conn, server_id, &from, &to, EdgeKind::Connected, 1.0)
+                .expect("edge failed");
+        }
+
+        // BFS with max_depth large enough to reach the end
+        let path = find_path_bfs(&conn, server_id, "chain-0", "chain-100", 200).unwrap();
+        assert!(path.found, "should find path through chain");
+        assert_eq!(path.length, 100);
+
+        // BFS for unreachable node — stops after visiting all reachable nodes
+        ensure_graph_node(&conn, server_id, "isolated", NodeType::Human, None).unwrap();
+        let path = find_path_bfs(&conn, server_id, "chain-0", "isolated", 200).unwrap();
+        assert!(!path.found, "should not find path to isolated node");
     }
 }

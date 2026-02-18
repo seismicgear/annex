@@ -241,8 +241,24 @@ pub fn update_channel(
     Ok(())
 }
 
-/// Deletes a channel.
+/// Deletes a channel and all associated messages and members.
+///
+/// SQLite FK constraints on `messages.channel_id` and `channel_members.channel_id`
+/// lack ON DELETE CASCADE (cannot be added via ALTER TABLE). We explicitly
+/// delete child rows first within the same connection to ensure referential
+/// integrity. The caller is expected to manage transaction boundaries if
+/// atomicity with other operations is required.
 pub fn delete_channel(conn: &Connection, channel_id: &str) -> Result<(), ChannelError> {
+    // Delete child rows first to satisfy FK constraints.
+    conn.execute(
+        "DELETE FROM messages WHERE channel_id = ?1",
+        [channel_id],
+    )?;
+    conn.execute(
+        "DELETE FROM channel_members WHERE channel_id = ?1",
+        [channel_id],
+    )?;
+
     let count = conn.execute("DELETE FROM channels WHERE channel_id = ?1", [channel_id])?;
     if count == 0 {
         return Err(ChannelError::NotFound(channel_id.to_string()));
@@ -327,7 +343,9 @@ pub struct ChannelMember {
 
 /// Adds a member to a channel.
 ///
-/// Returns error if already a member.
+/// Idempotent: returns `Ok(())` if the member already exists (UNIQUE constraint
+/// on `(channel_id, pseudonym_id)`). Propagates all other constraint violations
+/// (e.g. FK violations) as errors instead of silently ignoring them.
 pub fn add_member(
     conn: &Connection,
     server_id: i64,
@@ -337,11 +355,31 @@ pub fn add_member(
     // Check if channel exists first to return proper error
     let _ = get_channel(conn, channel_id)?;
 
-    conn.execute(
-        "INSERT OR IGNORE INTO channel_members (server_id, channel_id, pseudonym_id) VALUES (?1, ?2, ?3)",
+    let result = conn.execute(
+        "INSERT INTO channel_members (server_id, channel_id, pseudonym_id) VALUES (?1, ?2, ?3)",
         params![server_id, channel_id, pseudonym_id],
-    )?;
-    Ok(())
+    );
+
+    match result {
+        Ok(_) => Ok(()),
+        Err(rusqlite::Error::SqliteFailure(err, msg)) => {
+            if err.code == rusqlite::ErrorCode::ConstraintViolation {
+                // UNIQUE(channel_id, pseudonym_id) conflict → already a member, idempotent OK.
+                // We distinguish this from FK violations by checking the extended code.
+                // SQLITE_CONSTRAINT_UNIQUE = 2067, SQLITE_CONSTRAINT_PRIMARYKEY = 1555.
+                let ext = err.extended_code;
+                if ext == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
+                    || ext == rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY
+                {
+                    return Ok(());
+                }
+            }
+            Err(ChannelError::Database(rusqlite::Error::SqliteFailure(
+                err, msg,
+            )))
+        }
+        Err(e) => Err(ChannelError::Database(e)),
+    }
 }
 
 /// Removes a member from a channel.
@@ -527,11 +565,23 @@ pub fn list_messages(
     Ok(messages)
 }
 
-/// Deletes messages that have passed their expiration time.
+/// Maximum number of messages to delete in a single retention sweep.
+/// Prevents long-running write transactions from blocking readers.
+const RETENTION_BATCH_LIMIT: usize = 5_000;
+
+/// Deletes messages that have passed their expiration time, up to
+/// [`RETENTION_BATCH_LIMIT`] rows per call. Returns the number of rows deleted.
+///
+/// The caller should loop until the return value is less than the batch limit
+/// to ensure all expired messages are eventually removed.
 pub fn delete_expired_messages(conn: &Connection) -> Result<usize, ChannelError> {
     let count = conn.execute(
-        "DELETE FROM messages WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
-        [],
+        "DELETE FROM messages WHERE rowid IN (\
+             SELECT rowid FROM messages \
+             WHERE expires_at IS NOT NULL AND expires_at < datetime('now') \
+             LIMIT ?1\
+         )",
+        [RETENTION_BATCH_LIMIT],
     )?;
     Ok(count)
 }
@@ -885,5 +935,184 @@ mod tests {
         // Untouched fields preserved
         assert_eq!(ch.vrp_topic_binding, None);
         assert_eq!(ch.required_capabilities_json, None);
+    }
+
+    #[test]
+    fn test_delete_channel_cascades_to_messages_and_members() {
+        let conn = setup_db();
+        let server_id = 1;
+
+        // Create channel
+        let params = CreateChannelParams {
+            server_id,
+            channel_id: "chan-cascade".to_string(),
+            name: "Cascade Test".to_string(),
+            channel_type: ChannelType::Text,
+            topic: None,
+            vrp_topic_binding: None,
+            required_capabilities_json: None,
+            agent_min_alignment: None,
+            retention_days: None,
+            federation_scope: FederationScope::Local,
+        };
+        create_channel(&conn, &params).expect("create failed");
+
+        // Add a message
+        let msg = CreateMessageParams {
+            channel_id: "chan-cascade".to_string(),
+            message_id: "msg-cascade-1".to_string(),
+            sender_pseudonym: "user-1".to_string(),
+            content: "will be cascaded".to_string(),
+            reply_to_message_id: None,
+        };
+        create_message(&conn, &msg).expect("create message failed");
+
+        // Add a member (need platform identity for FK)
+        conn.execute(
+            "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type) VALUES (1, 'cascade-user', 'HUMAN')",
+            [],
+        ).expect("create identity failed");
+        add_member(&conn, server_id, "chan-cascade", "cascade-user").expect("add member failed");
+
+        // Verify data exists
+        let msg_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE channel_id = 'chan-cascade'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count failed");
+        assert_eq!(msg_count, 1);
+
+        let member_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM channel_members WHERE channel_id = 'chan-cascade'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count failed");
+        assert_eq!(member_count, 1);
+
+        // Delete channel — should cascade
+        delete_channel(&conn, "chan-cascade").expect("delete failed");
+
+        // Verify messages and members are gone
+        let msg_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE channel_id = 'chan-cascade'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count failed");
+        assert_eq!(msg_count, 0, "messages should be deleted on cascade");
+
+        let member_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM channel_members WHERE channel_id = 'chan-cascade'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count failed");
+        assert_eq!(member_count, 0, "members should be deleted on cascade");
+    }
+
+    #[test]
+    fn test_add_member_idempotent() {
+        let conn = setup_db();
+        let server_id = 1;
+
+        let params = CreateChannelParams {
+            server_id,
+            channel_id: "chan-idem".to_string(),
+            name: "Idempotent".to_string(),
+            channel_type: ChannelType::Text,
+            topic: None,
+            vrp_topic_binding: None,
+            required_capabilities_json: None,
+            agent_min_alignment: None,
+            retention_days: None,
+            federation_scope: FederationScope::Local,
+        };
+        create_channel(&conn, &params).expect("create failed");
+
+        conn.execute(
+            "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type) VALUES (1, 'idem-user', 'HUMAN')",
+            [],
+        ).expect("create identity failed");
+
+        // First add succeeds
+        add_member(&conn, server_id, "chan-idem", "idem-user").expect("first add failed");
+        assert!(is_member(&conn, "chan-idem", "idem-user").expect("check failed"));
+
+        // Second add is idempotent (no error)
+        add_member(&conn, server_id, "chan-idem", "idem-user")
+            .expect("idempotent add should succeed");
+
+        // Still exactly one member
+        let members = list_members(&conn, "chan-idem").expect("list failed");
+        assert_eq!(members.len(), 1);
+    }
+
+    #[test]
+    fn test_add_member_nonexistent_channel() {
+        let conn = setup_db();
+        let server_id = 1;
+
+        let err = add_member(&conn, server_id, "nonexistent-channel", "user-1").unwrap_err();
+        match err {
+            ChannelError::NotFound(_) => {}
+            _ => panic!("expected NotFound, got {:?}", err),
+        }
+    }
+
+    #[test]
+    fn test_delete_expired_messages_batched() {
+        let conn = setup_db();
+        let server_id = 1;
+
+        let params = CreateChannelParams {
+            server_id,
+            channel_id: "chan-expire".to_string(),
+            name: "Expiring".to_string(),
+            channel_type: ChannelType::Text,
+            topic: None,
+            vrp_topic_binding: None,
+            required_capabilities_json: None,
+            agent_min_alignment: None,
+            retention_days: None,
+            federation_scope: FederationScope::Local,
+        };
+        create_channel(&conn, &params).expect("create failed");
+
+        // Insert 3 messages that are already expired
+        for i in 0..3 {
+            conn.execute(
+                "INSERT INTO messages (server_id, channel_id, message_id, sender_pseudonym, content, expires_at)
+                 VALUES (1, 'chan-expire', ?1, 'user-1', 'expired', datetime('now', '-1 day'))",
+                [format!("expired-{}", i)],
+            )
+            .expect("insert expired msg failed");
+        }
+
+        // Insert 1 message that is NOT expired
+        conn.execute(
+            "INSERT INTO messages (server_id, channel_id, message_id, sender_pseudonym, content, expires_at)
+             VALUES (1, 'chan-expire', 'not-expired', 'user-1', 'still valid', datetime('now', '+1 day'))",
+            [],
+        )
+        .expect("insert valid msg failed");
+
+        let deleted = delete_expired_messages(&conn).expect("delete failed");
+        assert_eq!(deleted, 3, "should delete only expired messages");
+
+        // Non-expired message should remain
+        let remaining: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE channel_id = 'chan-expire'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count failed");
+        assert_eq!(remaining, 1, "non-expired message should remain");
     }
 }
