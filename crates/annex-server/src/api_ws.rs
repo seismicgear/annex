@@ -542,7 +542,8 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                         // Synthesize
                         match state.tts_service.synthesize(&text, &voice_profile_id).await {
                             Ok(audio) => {
-                                // Get or create voice client
+                                // Get or create voice client.
+                                // Fast-path: read lock to check for existing session.
                                 let client_opt = match state.voice_sessions.read() {
                                     Ok(sessions) => sessions.get(&pseudonym).cloned(),
                                     Err(_) => {
@@ -554,7 +555,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                 let client = if let Some(c) = client_opt {
                                     c
                                 } else {
-                                    // Connect
+                                    // Connect a new voice client
                                     let room_name = channel_id.clone();
                                     let token = match state
                                         .voice_service
@@ -588,34 +589,55 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                         Ok(c) => {
                                             let arc = Arc::new(c);
 
-                                            // Subscribe to transcriptions
-                                            let mut rx = arc.subscribe_transcriptions();
-                                            let cm = state.connection_manager.clone();
-                                            let p_clone = pseudonym.clone();
-
-                                            tokio::spawn(async move {
-                                                while let Ok(event) = rx.recv().await {
-                                                    let msg = OutgoingMessage::Transcription {
-                                                        channel_id: event.channel_id,
-                                                        speaker_pseudonym: event.speaker_pseudonym,
-                                                        text: event.text,
-                                                    };
-
-                                                    if let Ok(json) = serde_json::to_string(&msg) {
-                                                        cm.send(&p_clone, json).await;
-                                                    }
-                                                }
-                                            });
-
+                                            // Double-check under write lock to prevent
+                                            // TOCTOU race with concurrent voice intents.
                                             match state.voice_sessions.write() {
                                                 Ok(mut sessions) => {
-                                                    sessions.insert(pseudonym.clone(), arc.clone());
+                                                    use std::collections::hash_map::Entry;
+                                                    match sessions.entry(pseudonym.clone()) {
+                                                        Entry::Vacant(entry) => {
+                                                            // Subscribe to transcriptions only for the winning insert
+                                                            let mut rx =
+                                                                arc.subscribe_transcriptions();
+                                                            let cm =
+                                                                state.connection_manager.clone();
+                                                            let p_clone = pseudonym.clone();
+
+                                                            tokio::spawn(async move {
+                                                                while let Ok(event) =
+                                                                    rx.recv().await
+                                                                {
+                                                                    let msg = OutgoingMessage::Transcription {
+                                                                        channel_id: event.channel_id,
+                                                                        speaker_pseudonym: event.speaker_pseudonym,
+                                                                        text: event.text,
+                                                                    };
+
+                                                                    if let Ok(json) =
+                                                                        serde_json::to_string(&msg)
+                                                                    {
+                                                                        cm.send(&p_clone, json)
+                                                                            .await;
+                                                                    }
+                                                                }
+                                                            });
+
+                                                            entry.insert(arc.clone());
+                                                        }
+                                                        Entry::Occupied(_) => {
+                                                            // Concurrent request won; drop our client
+                                                        }
+                                                    }
+                                                    sessions
+                                                        .get(&pseudonym)
+                                                        .cloned()
+                                                        .expect("just inserted or already present")
                                                 }
                                                 Err(_) => {
                                                     tracing::error!("voice_sessions lock poisoned");
+                                                    continue;
                                                 }
                                             }
-                                            arc
                                         }
                                         Err(e) => {
                                             send_ws_error(
@@ -651,6 +673,14 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
         .remove_session(&pseudonym, session_id)
         .await;
     send_task.abort();
+
+    // Clean up voice session for this pseudonym. Dropping the Arc will
+    // decrement the reference count; when it reaches zero the
+    // AgentVoiceClient is dropped, its internal broadcast sender closes,
+    // and the spawned transcription task will exit naturally.
+    if let Ok(mut sessions) = state.voice_sessions.write() {
+        sessions.remove(&pseudonym);
+    }
 }
 
 async fn touch_activity(state: Arc<AppState>, pseudonym: String) {

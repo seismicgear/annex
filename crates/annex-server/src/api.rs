@@ -3,9 +3,9 @@
 use crate::AppState;
 use annex_graph::{ensure_graph_node, role_code_to_node_type};
 use annex_identity::{
-    check_nullifier_exists, create_platform_identity, derive_nullifier_hex, derive_pseudonym_id,
-    get_all_roles, get_all_topics, get_path_for_commitment, get_platform_identity,
-    insert_nullifier, register_identity,
+    create_platform_identity, derive_nullifier_hex, derive_pseudonym_id, get_all_roles,
+    get_all_topics, get_path_for_commitment, get_platform_identity, insert_nullifier,
+    register_identity,
     zk::{parse_fr_from_hex, parse_proof, parse_public_signals, verify_proof},
     Capabilities, PlatformIdentity, RoleCode, VrpRoleEntry, VrpTopic,
 };
@@ -408,44 +408,12 @@ pub async fn verify_membership_handler(
         let nullifier_hex = derive_nullifier_hex(&payload.commitment, &payload.topic)
             .map_err(|e| ApiError::BadRequest(format!("failed to derive nullifier: {}", e)))?;
 
-        // 6. Check duplicate nullifier
-        let exists = check_nullifier_exists(&conn, &payload.topic, &nullifier_hex)
-            .map_err(|e| ApiError::InternalServerError(format!("db check failed: {}", e)))?;
-
-        if exists {
-            return Err(ApiError::Conflict(format!(
-                "duplicate nullifier for topic: {}",
-                payload.topic
-            )));
-        }
-
-        // 7. Insert nullifier
-        insert_nullifier(&conn, &payload.topic, &nullifier_hex).map_err(|e| match e {
-            annex_identity::IdentityError::DuplicateNullifier(_) => {
-                ApiError::Conflict(e.to_string())
-            }
-            _ => ApiError::InternalServerError(format!("failed to insert nullifier: {}", e)),
-        })?;
-
-        // 8. Derive pseudonym
+        // 6. Derive pseudonym (pure computation, no DB needed)
         let pseudonym_id = derive_pseudonym_id(&payload.topic, &nullifier_hex).map_err(|e| {
             ApiError::InternalServerError(format!("failed to derive pseudonym: {}", e))
         })?;
 
-        // 8b. Emit PSEUDONYM_DERIVED to the public event log
-        let observe_payload = EventPayload::PseudonymDerived {
-            pseudonym_id: pseudonym_id.clone(),
-            topic: payload.topic.clone(),
-        };
-        crate::emit_and_broadcast(
-            &conn,
-            state.server_id,
-            &pseudonym_id,
-            &observe_payload,
-            &state.observe_tx,
-        );
-
-        // 9. Lookup role code from vrp_identities
+        // 7. Lookup role code from vrp_identities (read-only, before transaction)
         let role_code_int: u8 = conn
             .query_row(
                 "SELECT role_code FROM vrp_identities WHERE commitment_hex = ?1",
@@ -460,22 +428,15 @@ pub async fn verify_membership_handler(
             ApiError::InternalServerError(format!("invalid role code in db: {}", role_code_int))
         })?;
 
-        // 10. Get Server ID (assuming single server for now, or taking first)
+        // 8. Get Server ID (read-only, before transaction)
         let server_id: i64 = conn
             .query_row("SELECT id FROM servers LIMIT 1", [], |row| row.get(0))
             .optional()
             .map_err(|e| ApiError::InternalServerError(format!("db query failed: {}", e)))?
             .ok_or_else(|| ApiError::InternalServerError("no server configured".to_string()))?;
 
-        // 11. Create Platform Identity
-        create_platform_identity(&conn, server_id, &pseudonym_id, role_code).map_err(|e| {
-            ApiError::InternalServerError(format!("failed to create platform identity: {}", e))
-        })?;
-
-        // 12. Create/Update Graph Node
+        // 9. Pre-fetch agent metadata if applicable (read-only, before transaction)
         let node_type = role_code_to_node_type(role_code);
-
-        // If agent, fetch metadata
         let metadata_json = if role_code == RoleCode::AiAgent {
             let agent_data: Option<(String, String, String, f64)> = conn
                 .query_row(
@@ -508,28 +469,77 @@ pub async fn verify_membership_handler(
             None
         };
 
-        ensure_graph_node(&conn, server_id, &pseudonym_id, node_type, metadata_json).map_err(|e| {
+        // 10. Wrap all mutating operations in a single transaction to ensure
+        // atomicity: nullifier insert, identity creation, graph node, and
+        // audit log entries either all succeed or all roll back.
+        //
+        // The previous code had two bugs:
+        // (a) A TOCTOU race between check_nullifier_exists and insert_nullifier
+        //     (another request could insert between the check and the insert).
+        //     Fixed by removing the redundant check and relying on insert_nullifier's
+        //     UNIQUE constraint handling which returns DuplicateNullifier on conflict.
+        // (b) create_platform_identity, ensure_graph_node, and emit_and_broadcast
+        //     were not wrapped in a transaction, so a failure partway through
+        //     could leave inconsistent state (e.g., identity exists but no graph node).
+        let mut conn = conn;
+        let tx = conn.transaction().map_err(|e| {
+            ApiError::InternalServerError(format!("failed to start transaction: {}", e))
+        })?;
+
+        // Insert nullifier (returns DuplicateNullifier on conflict via UNIQUE constraint)
+        insert_nullifier(&tx, &payload.topic, &nullifier_hex).map_err(|e| match e {
+            annex_identity::IdentityError::DuplicateNullifier(_) => {
+                ApiError::Conflict(e.to_string())
+            }
+            _ => ApiError::InternalServerError(format!("failed to insert nullifier: {}", e)),
+        })?;
+
+        // Emit PSEUDONYM_DERIVED to the public event log (inside transaction)
+        let observe_payload = EventPayload::PseudonymDerived {
+            pseudonym_id: pseudonym_id.clone(),
+            topic: payload.topic.clone(),
+        };
+        crate::emit_and_broadcast(
+            &tx,
+            state.server_id,
+            &pseudonym_id,
+            &observe_payload,
+            &state.observe_tx,
+        );
+
+        // Create Platform Identity
+        create_platform_identity(&tx, server_id, &pseudonym_id, role_code).map_err(|e| {
+            ApiError::InternalServerError(format!("failed to create platform identity: {}", e))
+        })?;
+
+        // Create/Update Graph Node
+        ensure_graph_node(&tx, server_id, &pseudonym_id, node_type, metadata_json).map_err(|e| {
             ApiError::InternalServerError(format!("failed to ensure graph node: {}", e))
         })?;
 
-        // 13. Emit Presence Event (SSE broadcast + persistent log)
-        let event = PresenceEvent::NodeUpdated {
-            pseudonym_id: pseudonym_id.clone(),
-            active: true,
-        };
-        let _ = state.presence_tx.send(event);
-
+        // Emit NodeAdded to the public event log (inside transaction)
         let observe_payload = EventPayload::NodeAdded {
             pseudonym_id: pseudonym_id.clone(),
             node_type: format!("{:?}", node_type),
         };
         crate::emit_and_broadcast(
-            &conn,
+            &tx,
             server_id,
             &pseudonym_id,
             &observe_payload,
             &state.observe_tx,
         );
+
+        tx.commit().map_err(|e| {
+            ApiError::InternalServerError(format!("failed to commit transaction: {}", e))
+        })?;
+
+        // 11. Emit Presence Event (SSE broadcast only, no DB write needed after commit)
+        let event = PresenceEvent::NodeUpdated {
+            pseudonym_id: pseudonym_id.clone(),
+            active: true,
+        };
+        let _ = state.presence_tx.send(event);
 
         Ok(pseudonym_id)
     })

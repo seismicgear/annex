@@ -327,8 +327,8 @@ pub async fn join_channel_handler(
         let pseudonym = identity.pseudonym_id.clone();
         let channel_id_clone = channel_id.clone();
 
-        // Check if session exists
-        let exists = {
+        // Fast-path: check with read lock to avoid expensive connect when session exists.
+        let already_exists = {
             let sessions = state
                 .voice_sessions
                 .read()
@@ -336,7 +336,7 @@ pub async fn join_channel_handler(
             sessions.contains_key(&pseudonym)
         };
 
-        if !exists {
+        if !already_exists {
             let token = state
                 .voice_service
                 .generate_join_token(&channel_id_clone, &pseudonym, &pseudonym)
@@ -357,30 +357,37 @@ pub async fn join_channel_handler(
 
             let client = Arc::new(client);
 
-            // Subscribe to transcriptions
-            let mut rx = client.subscribe_transcriptions();
-            let cm = state.connection_manager.clone();
-            let p_clone = pseudonym.clone();
-
-            tokio::spawn(async move {
-                while let Ok(event) = rx.recv().await {
-                    let msg = crate::api_ws::OutgoingMessage::Transcription {
-                        channel_id: event.channel_id,
-                        speaker_pseudonym: event.speaker_pseudonym,
-                        text: event.text,
-                    };
-
-                    if let Ok(json) = serde_json::to_string(&msg) {
-                        cm.send(&p_clone, json).await;
-                    }
-                }
-            });
-
-            state
+            // Double-check under write lock after the async connect gap.
+            // If a concurrent request already inserted a session, we drop our
+            // client and skip the transcription subscription to avoid duplicates.
+            let mut sessions = state
                 .voice_sessions
                 .write()
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-                .insert(pseudonym, client);
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            if let std::collections::hash_map::Entry::Vacant(entry) = sessions.entry(pseudonym) {
+                // Subscribe to transcriptions only for the winning insert
+                let mut rx = client.subscribe_transcriptions();
+                let cm = state.connection_manager.clone();
+                let p_clone = entry.key().clone();
+
+                tokio::spawn(async move {
+                    while let Ok(event) = rx.recv().await {
+                        let msg = crate::api_ws::OutgoingMessage::Transcription {
+                            channel_id: event.channel_id,
+                            speaker_pseudonym: event.speaker_pseudonym,
+                            text: event.text,
+                        };
+
+                        if let Ok(json) = serde_json::to_string(&msg) {
+                            cm.send(&p_clone, json).await;
+                        }
+                    }
+                });
+
+                entry.insert(client);
+            }
+            // else: concurrent request won the race; our client is dropped
         }
     }
 
