@@ -9,6 +9,7 @@ use annex_identity::{
     zk::{parse_fr_from_hex, parse_proof, parse_public_signals, verify_proof},
     Capabilities, PlatformIdentity, RoleCode, VrpRoleEntry, VrpTopic,
 };
+use annex_observe::EventPayload;
 use annex_types::PresenceEvent;
 use axum::{
     extract::{Extension, Json, Path},
@@ -200,7 +201,7 @@ pub async fn register_handler(
             })?;
 
             // Perform registration
-            register_identity(
+            let result = register_identity(
                 &mut tree,
                 &mut conn,
                 &payload.commitment_hex,
@@ -219,7 +220,22 @@ pub async fn register_handler(
                     ApiError::InternalServerError(e.to_string())
                 }
                 _ => ApiError::InternalServerError(e.to_string()),
-            })
+            })?;
+
+            // Emit IDENTITY_REGISTERED to the public event log
+            let observe_payload = EventPayload::IdentityRegistered {
+                commitment_hex: payload.commitment_hex.clone(),
+                role_code: role.as_u8(),
+            };
+            crate::emit_and_broadcast(
+                &conn,
+                state.server_id,
+                &payload.commitment_hex,
+                &observe_payload,
+                &state.observe_tx,
+            );
+
+            Ok(result)
         })
         .await
         .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
@@ -350,6 +366,19 @@ pub async fn verify_membership_handler(
             return Err(ApiError::Unauthorized("invalid proof".to_string()));
         }
 
+        // 3b. Emit IDENTITY_VERIFIED to the public event log
+        let observe_payload = EventPayload::IdentityVerified {
+            commitment_hex: payload.commitment.clone(),
+            topic: payload.topic.clone(),
+        };
+        crate::emit_and_broadcast(
+            &conn,
+            state.server_id,
+            &payload.commitment,
+            &observe_payload,
+            &state.observe_tx,
+        );
+
         // 4. Verify public signals match claimed root and commitment
         // membership.circom public output: [root, commitment]
         if public_signals.len() != 2 {
@@ -402,6 +431,19 @@ pub async fn verify_membership_handler(
         let pseudonym_id = derive_pseudonym_id(&payload.topic, &nullifier_hex).map_err(|e| {
             ApiError::InternalServerError(format!("failed to derive pseudonym: {}", e))
         })?;
+
+        // 8b. Emit PSEUDONYM_DERIVED to the public event log
+        let observe_payload = EventPayload::PseudonymDerived {
+            pseudonym_id: pseudonym_id.clone(),
+            topic: payload.topic.clone(),
+        };
+        crate::emit_and_broadcast(
+            &conn,
+            state.server_id,
+            &pseudonym_id,
+            &observe_payload,
+            &state.observe_tx,
+        );
 
         // 9. Lookup role code from vrp_identities
         let role_code_int: u8 = conn
@@ -470,13 +512,24 @@ pub async fn verify_membership_handler(
             ApiError::InternalServerError(format!("failed to ensure graph node: {}", e))
         })?;
 
-        // 13. Emit Presence Event
+        // 13. Emit Presence Event (SSE broadcast + persistent log)
         let event = PresenceEvent::NodeUpdated {
             pseudonym_id: pseudonym_id.clone(),
             active: true,
         };
-        // We ignore the error if there are no active subscribers
         let _ = state.presence_tx.send(event);
+
+        let observe_payload = EventPayload::NodeAdded {
+            pseudonym_id: pseudonym_id.clone(),
+            node_type: format!("{:?}", node_type),
+        };
+        crate::emit_and_broadcast(
+            &conn,
+            server_id,
+            &pseudonym_id,
+            &observe_payload,
+            &state.observe_tx,
+        );
 
         Ok(pseudonym_id)
     })

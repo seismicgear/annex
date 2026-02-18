@@ -1,6 +1,7 @@
 //! Policy management and re-evaluation logic.
 
 use crate::{api::ApiError, AppState};
+use annex_observe::EventPayload;
 use annex_types::PresenceEvent;
 use annex_vrp::{
     validate_federation_handshake, ServerPolicyRoot, VrpAlignmentConfig, VrpAlignmentStatus,
@@ -151,11 +152,39 @@ pub async fn recalculate_agent_alignments(state: Arc<AppState>) -> Result<(), Ap
                 ],
             ).map_err(|e| ApiError::InternalServerError(format!("update failed: {}", e)))?;
 
-            // Emit presence event
+            // Emit presence event (SSE)
              let _ = state_clone.presence_tx.send(PresenceEvent::NodeUpdated {
                 pseudonym_id: pseudonym.clone(),
                 active,
             });
+
+            // Emit to persistent event log
+            if active {
+                let observe_payload = EventPayload::AgentRealigned {
+                    pseudonym_id: pseudonym.clone(),
+                    alignment_status: report.alignment_status.to_string(),
+                    previous_status: "changed".to_string(),
+                };
+                crate::emit_and_broadcast(
+                    &conn,
+                    state_clone.server_id,
+                    &pseudonym,
+                    &observe_payload,
+                    &state_clone.observe_tx,
+                );
+            } else {
+                let observe_payload = EventPayload::AgentDisconnected {
+                    pseudonym_id: pseudonym.clone(),
+                    reason: "policy_conflict".to_string(),
+                };
+                crate::emit_and_broadcast(
+                    &conn,
+                    state_clone.server_id,
+                    &pseudonym,
+                    &observe_payload,
+                    &state_clone.observe_tx,
+                );
+            }
         }
 
         Ok(agents_to_disconnect)
@@ -311,15 +340,27 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
             )
             .map_err(|e| ApiError::InternalServerError(format!("update failed: {}", e)))?;
 
-            // Emit Event
+            // Emit Event (SSE broadcast + persistent log)
             if report.alignment_status == VrpAlignmentStatus::Conflict {
                 tracing::info!(
                     "Federation severed with {} due to policy conflict",
                     base_url
                 );
                 let _ = state_clone.presence_tx.send(PresenceEvent::FederationSevered {
-                    remote_base_url: base_url,
+                    remote_base_url: base_url.clone(),
                 });
+
+                let observe_payload = EventPayload::FederationSevered {
+                    remote_url: base_url.clone(),
+                    reason: "policy_conflict".to_string(),
+                };
+                crate::emit_and_broadcast(
+                    &conn,
+                    state_clone.server_id,
+                    &base_url,
+                    &observe_payload,
+                    &state_clone.observe_tx,
+                );
             } else {
                 tracing::info!(
                     "Federation realigned with {}: {}",
@@ -336,9 +377,22 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
                 let _ = state_clone
                     .presence_tx
                     .send(PresenceEvent::FederationRealigned {
-                        remote_base_url: base_url,
+                        remote_base_url: base_url.clone(),
                         alignment_status: status,
                     });
+
+                let observe_payload = EventPayload::FederationRealigned {
+                    remote_url: base_url.clone(),
+                    alignment_status: report.alignment_status.to_string(),
+                    previous_status: "changed".to_string(),
+                };
+                crate::emit_and_broadcast(
+                    &conn,
+                    state_clone.server_id,
+                    &base_url,
+                    &observe_payload,
+                    &state_clone.observe_tx,
+                );
             }
         }
 

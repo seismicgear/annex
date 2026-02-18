@@ -11,6 +11,7 @@ use annex_identity::{
     derive_nullifier_hex, derive_pseudonym_id,
     zk::{parse_fr_from_hex, parse_proof, verify_proof},
 };
+use annex_observe::EventPayload;
 use annex_rtx::{enforce_transfer_scope, validate_bundle_structure};
 use annex_types::NodeType;
 use annex_vrp::{VrpFederationHandshake, VrpTransferScope, VrpValidationReport};
@@ -182,9 +183,15 @@ pub async fn relay_message(
 
     let client = reqwest::Client::new();
 
-    for (base_url, _transfer_scope) in peers {
-        // TODO: Check transfer scope if needed (e.g., filter content).
-        // For now, we assume if federated channel, we relay.
+    for (base_url, transfer_scope) in peers {
+        // Skip peers whose transfer scope does not permit message relay.
+        if transfer_scope == "NO_TRANSFER" {
+            tracing::debug!(
+                peer = %base_url,
+                "skipping message relay: transfer scope is NO_TRANSFER"
+            );
+            continue;
+        }
 
         let url = format!("{}/api/federation/messages", base_url);
         let envelope_clone = FederatedMessageEnvelope {
@@ -479,7 +486,7 @@ pub async fn federation_handshake_handler(
         );
         let policy = state_clone.policy.read().unwrap();
 
-        process_incoming_handshake(
+        let report = process_incoming_handshake(
             &conn,
             state_clone.server_id,
             &policy,
@@ -489,7 +496,22 @@ pub async fn federation_handshake_handler(
         .map_err(|e| {
             tracing::error!("Handshake failed: {:?}", e);
             FederationError::Handshake(e)
-        })
+        })?;
+
+        // Emit FEDERATION_ESTABLISHED to persistent log
+        let observe_payload = EventPayload::FederationEstablished {
+            remote_url: payload.base_url.clone(),
+            alignment_status: report.alignment_status.to_string(),
+        };
+        crate::emit_and_broadcast(
+            &conn,
+            state_clone.server_id,
+            &payload.base_url,
+            &observe_payload,
+            &state_clone.observe_tx,
+        );
+
+        Ok::<_, FederationError>(report)
     })
     .await
     .map_err(|e| {

@@ -81,6 +81,7 @@ fn build_state(db_path: &str, initial_policy: ServerPolicy) -> (Arc<AppState>, a
         tts_service: Arc::new(annex_voice::TtsService::new("dummy", "dummy")),
         stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),
         voice_sessions: Arc::new(RwLock::new(HashMap::new())),
+        observe_tx: tokio::sync::broadcast::channel(256).0,
     };
 
     (Arc::new(state), pool)

@@ -53,6 +53,7 @@ async fn setup_app() -> axum::Router {
         tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper")),
         stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),
         voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        observe_tx: tokio::sync::broadcast::channel(256).0,
     };
 
     app(state)
@@ -159,6 +160,7 @@ async fn test_attest_membership_invalid_signature() {
         tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper")),
         stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),
         voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        observe_tx: tokio::sync::broadcast::channel(256).0,
     };
 
     let app = app(state);
@@ -244,6 +246,7 @@ async fn test_attest_membership_valid_signature_fails_network() {
         tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper")),
         stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),
         voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        observe_tx: tokio::sync::broadcast::channel(256).0,
     };
 
     let app = app(state);

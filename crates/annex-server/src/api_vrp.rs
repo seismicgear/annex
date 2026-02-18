@@ -2,6 +2,7 @@
 
 use crate::{api::ApiError, AppState};
 use annex_graph::update_node_activity;
+use annex_observe::EventPayload;
 use annex_types::PresenceEvent;
 use annex_vrp::{
     check_reputation_score, record_vrp_outcome, validate_federation_handshake, ServerPolicyRoot,
@@ -112,6 +113,18 @@ pub async fn agent_handshake_handler(
                     pseudonym_id: payload.pseudonym_id.clone(),
                     active: true,
                 });
+
+                // Emit NODE_REACTIVATED to persistent log
+                let observe_payload = EventPayload::NodeReactivated {
+                    pseudonym_id: payload.pseudonym_id.clone(),
+                };
+                crate::emit_and_broadcast(
+                    &conn,
+                    state.server_id,
+                    &payload.pseudonym_id,
+                    &observe_payload,
+                    &state.observe_tx,
+                );
             }
 
             let contract_json = serde_json::to_string(&payload.handshake.capability_contract)
@@ -154,6 +167,19 @@ pub async fn agent_handshake_handler(
             .map_err(|e| {
                 ApiError::InternalServerError(format!("failed to upsert registration: {}", e))
             })?;
+
+            // Emit AGENT_CONNECTED to persistent log
+            let observe_payload = EventPayload::AgentConnected {
+                pseudonym_id: payload.pseudonym_id.clone(),
+                alignment_status: report.alignment_status.to_string(),
+            };
+            crate::emit_and_broadcast(
+                &conn,
+                state.server_id,
+                &payload.pseudonym_id,
+                &observe_payload,
+                &state.observe_tx,
+            );
         }
         // Roadmap says: "On Conflict: reject with detailed report".
         // But if an existing agent becomes Conflict, we should probably update their status.
