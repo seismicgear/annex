@@ -239,6 +239,15 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/api/public/events", get(api_observe::get_events_handler))
         .route("/events/stream", get(api_observe::get_event_stream_handler))
+        .route(
+            "/api/public/server/summary",
+            get(api_observe::get_server_summary_handler),
+        )
+        .route(
+            "/api/public/federation/peers",
+            get(api_observe::get_federation_peers_handler),
+        )
+        .route("/api/public/agents", get(api_observe::get_agents_handler))
         .merge(protected_routes)
         .route("/ws", get(api_ws::ws_handler))
         .layer(axum::middleware::from_fn(middleware::rate_limit_middleware))

@@ -468,3 +468,319 @@ async fn event_stream_returns_sse_content_type() {
         content_type
     );
 }
+
+// ── GET /api/public/server/summary ──────────────────────────────────
+
+#[tokio::test]
+async fn server_summary_returns_aggregate_counts() {
+    let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
+    {
+        let conn = pool.get().unwrap();
+        annex_db::run_migrations(&conn).unwrap();
+
+        // Seed server
+        conn.execute(
+            "INSERT INTO servers (slug, label, policy_json) VALUES ('test', 'Test Server', '{}')",
+            [],
+        )
+        .unwrap();
+
+        // Seed graph nodes
+        conn.execute(
+            "INSERT INTO graph_nodes (server_id, pseudonym_id, node_type, active) VALUES (1, 'p1', 'Human', 1)",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO graph_nodes (server_id, pseudonym_id, node_type, active) VALUES (1, 'p2', 'Human', 1)",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO graph_nodes (server_id, pseudonym_id, node_type, active) VALUES (1, 'a1', 'AiAgent', 1)",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO graph_nodes (server_id, pseudonym_id, node_type, active) VALUES (1, 'a2', 'AiAgent', 0)",
+            [],
+        ).unwrap();
+
+        // Seed channels
+        conn.execute(
+            "INSERT INTO channels (server_id, channel_id, name, channel_type) VALUES (1, 'ch1', 'General', 'TEXT')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO channels (server_id, channel_id, name, channel_type) VALUES (1, 'ch2', 'Voice', 'VOICE')",
+            [],
+        ).unwrap();
+    }
+
+    let state = make_state(pool.clone());
+    let application = app(state);
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+
+    let mut request = Request::builder()
+        .uri("/api/public/server/summary")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
+
+    let response = application.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let resp: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    // 2 Human + 1 active AiAgent = 3 total active
+    assert_eq!(resp["total_active_members"], 3);
+    assert_eq!(resp["members_by_type"]["Human"], 2);
+    assert_eq!(resp["members_by_type"]["AiAgent"], 1);
+    assert_eq!(resp["channel_count"], 2);
+    // No federation agreements seeded
+    assert_eq!(resp["federation_peer_count"], 0);
+    assert!(!resp["slug"].as_str().unwrap().is_empty());
+    assert!(!resp["label"].as_str().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn server_summary_empty_server() {
+    let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
+    {
+        let conn = pool.get().unwrap();
+        annex_db::run_migrations(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO servers (slug, label, policy_json) VALUES ('test', 'Test Server', '{}')",
+            [],
+        )
+        .unwrap();
+    }
+
+    let state = make_state(pool.clone());
+    let application = app(state);
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+
+    let mut request = Request::builder()
+        .uri("/api/public/server/summary")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
+
+    let response = application.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let resp: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    assert_eq!(resp["total_active_members"], 0);
+    assert_eq!(resp["channel_count"], 0);
+    assert_eq!(resp["federation_peer_count"], 0);
+    assert_eq!(resp["active_agent_count"], 0);
+}
+
+// ── GET /api/public/federation/peers ────────────────────────────────
+
+#[tokio::test]
+async fn federation_peers_returns_active_agreements() {
+    let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
+    {
+        let conn = pool.get().unwrap();
+        annex_db::run_migrations(&conn).unwrap();
+
+        // Seed remote instances
+        conn.execute(
+            "INSERT INTO instances (base_url, public_key, label, status) VALUES ('https://alpha.example.com', 'key1', 'Alpha Node', 'ACTIVE')",
+            [],
+        ).unwrap();
+        let instance1_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO instances (base_url, public_key, label, status) VALUES ('https://beta.example.com', 'key2', 'Beta Node', 'ACTIVE')",
+            [],
+        ).unwrap();
+        let instance2_id = conn.last_insert_rowid();
+
+        // Seed federation agreements
+        conn.execute(
+            "INSERT INTO federation_agreements (local_server_id, remote_instance_id, alignment_status, transfer_scope, agreement_json, active)
+             VALUES (1, ?1, 'Aligned', 'FULL_KNOWLEDGE_BUNDLE', '{}', 1)",
+            rusqlite::params![instance1_id],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO federation_agreements (local_server_id, remote_instance_id, alignment_status, transfer_scope, agreement_json, active)
+             VALUES (1, ?1, 'Partial', 'REFLECTION_SUMMARIES_ONLY', '{}', 1)",
+            rusqlite::params![instance2_id],
+        ).unwrap();
+    }
+
+    let state = make_state(pool.clone());
+    let application = app(state);
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+
+    let mut request = Request::builder()
+        .uri("/api/public/federation/peers")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
+
+    let response = application.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let resp: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    assert_eq!(resp["count"], 2);
+    let peers = resp["peers"].as_array().unwrap();
+    assert_eq!(peers.len(), 2);
+
+    // Ordered by label ASC: Alpha, Beta
+    assert_eq!(peers[0]["label"], "Alpha Node");
+    assert_eq!(peers[0]["alignment_status"], "Aligned");
+    assert_eq!(peers[0]["transfer_scope"], "FULL_KNOWLEDGE_BUNDLE");
+    assert_eq!(peers[0]["active"], true);
+    assert_eq!(peers[1]["label"], "Beta Node");
+    assert_eq!(peers[1]["alignment_status"], "Partial");
+}
+
+#[tokio::test]
+async fn federation_peers_excludes_inactive() {
+    let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
+    {
+        let conn = pool.get().unwrap();
+        annex_db::run_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO instances (base_url, public_key, label, status) VALUES ('https://dead.example.com', 'key1', 'Dead Node', 'ACTIVE')",
+            [],
+        ).unwrap();
+        let instance_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO federation_agreements (local_server_id, remote_instance_id, alignment_status, transfer_scope, agreement_json, active)
+             VALUES (1, ?1, 'Conflict', 'NO_TRANSFER', '{}', 0)",
+            rusqlite::params![instance_id],
+        ).unwrap();
+    }
+
+    let state = make_state(pool.clone());
+    let application = app(state);
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+
+    let mut request = Request::builder()
+        .uri("/api/public/federation/peers")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
+
+    let response = application.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let resp: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(resp["count"], 0);
+}
+
+// ── GET /api/public/agents ──────────────────────────────────────────
+
+#[tokio::test]
+async fn agents_returns_active_agents_ordered_by_reputation() {
+    let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
+    {
+        let conn = pool.get().unwrap();
+        annex_db::run_migrations(&conn).unwrap();
+
+        // Seed server (foreign key target)
+        conn.execute(
+            "INSERT INTO servers (slug, label, policy_json) VALUES ('test', 'Test Server', '{}')",
+            [],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO agent_registrations (server_id, pseudonym_id, alignment_status, transfer_scope, capability_contract_json, reputation_score, last_handshake_at, active)
+             VALUES (1, 'agent-a', 'Aligned', 'FULL_KNOWLEDGE_BUNDLE', '{\"can_moderate\":false}', 0.8, datetime('now'), 1)",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO agent_registrations (server_id, pseudonym_id, alignment_status, transfer_scope, capability_contract_json, reputation_score, last_handshake_at, active)
+             VALUES (1, 'agent-b', 'Partial', 'REFLECTION_SUMMARIES_ONLY', '{\"can_moderate\":true}', 0.95, datetime('now'), 1)",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO agent_registrations (server_id, pseudonym_id, alignment_status, transfer_scope, capability_contract_json, reputation_score, last_handshake_at, active)
+             VALUES (1, 'agent-inactive', 'Aligned', 'FULL_KNOWLEDGE_BUNDLE', '{}', 0.5, datetime('now'), 0)",
+            [],
+        ).unwrap();
+    }
+
+    let state = make_state(pool.clone());
+    let application = app(state);
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+
+    let mut request = Request::builder()
+        .uri("/api/public/agents")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
+
+    let response = application.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let resp: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    assert_eq!(resp["count"], 2); // Only active agents
+    let agents = resp["agents"].as_array().unwrap();
+
+    // Ordered by reputation DESC: agent-b (0.95), agent-a (0.8)
+    assert_eq!(agents[0]["pseudonym_id"], "agent-b");
+    assert_eq!(agents[0]["reputation_score"], 0.95);
+    assert_eq!(agents[0]["alignment_status"], "Partial");
+    assert_eq!(agents[0]["capability_contract"]["can_moderate"], true);
+
+    assert_eq!(agents[1]["pseudonym_id"], "agent-a");
+    assert_eq!(agents[1]["reputation_score"], 0.8);
+}
+
+#[tokio::test]
+async fn agents_returns_empty_when_no_agents() {
+    let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
+    {
+        let conn = pool.get().unwrap();
+        annex_db::run_migrations(&conn).unwrap();
+    }
+
+    let state = make_state(pool.clone());
+    let application = app(state);
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+
+    let mut request = Request::builder()
+        .uri("/api/public/agents")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
+
+    let response = application.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let resp: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(resp["count"], 0);
+    assert!(resp["agents"].as_array().unwrap().is_empty());
+}

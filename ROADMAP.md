@@ -23,7 +23,7 @@ Phase 6: Agent Protocol ................ COMPLETE
 Phase 7: Voice Infrastructure .......... COMPLETE
 Phase 8: Federation .................... COMPLETE
 Phase 9: RTX Knowledge Exchange ........ COMPLETE
-Phase 10: Observability ................ IN PROGRESS
+Phase 10: Observability ................ COMPLETE
 Phase 11: Client ....................... NOT STARTED
 Phase 12: Hardening & Audit ............ NOT STARTED
 ```
@@ -988,7 +988,7 @@ Phase 9 is **COMPLETE** when:
 
 ## Phase 10: Observability
 
-**Status**: `IN PROGRESS`
+**Status**: `COMPLETE`
 **Prerequisites**: Phase 8 `COMPLETE`
 **Estimated scope**: Public event log, public APIs, SSE event streams, audit trail
 
@@ -1029,19 +1029,19 @@ The "trust as public computation" layer. After this phase, any authorized party 
 - [x] Filtered by domain, event type, entity type
 
 #### 10.4 — Public summary APIs
-- [ ] `GET /api/public/server/summary` — server metadata, member count by type, channel count, federation peer count
-- [ ] `GET /api/public/federation/peers` — list of federation peers with alignment status
-- [ ] `GET /api/public/agents` — list of active agents with alignment status and capability summaries
+- [x] `GET /api/public/server/summary` — server metadata, member count by type, channel count, federation peer count
+- [x] `GET /api/public/federation/peers` — list of federation peers with alignment status
+- [x] `GET /api/public/agents` — list of active agents with alignment status and capability summaries
 
 ### Completion Criteria
 
 Phase 10 is **COMPLETE** when:
 
-- [ ] All specified events are emitted by their respective modules
-- [ ] Event log is append-only and queryable
-- [ ] SSE stream delivers real-time events
-- [ ] Public APIs return accurate summary data
-- [ ] An external auditor can reconstruct identity operations, federation changes, and agent lifecycle from the event log alone
+- [x] All specified events are emitted by their respective modules
+- [x] Event log is append-only and queryable
+- [x] SSE stream delivers real-time events
+- [x] Public APIs return accurate summary data
+- [x] An external auditor can reconstruct identity operations, federation changes, and agent lifecycle from the event log alone
 
 ---
 
@@ -1171,6 +1171,8 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-02-18 | Phase 10 `COMPLETE`. All observability criteria met: public event log, 13 event types emitted, SSE real-time stream, public summary APIs. |
+| 2026-02-18 | Phase 10.4 (`Public summary APIs`) completed. `GET /api/public/server/summary` (member counts by type, channel count, federation peer count), `GET /api/public/federation/peers` (active agreements with alignment status), `GET /api/public/agents` (active agents with capabilities and reputation). 6 new integration tests. |
 | 2026-02-18 | Phase 10.3 (`Public event API`) completed. `GET /api/public/events` with paginated, filterable event retrieval. `GET /events/stream` SSE real-time stream with domain filtering. `emit_and_broadcast` helper wires DB writes to broadcast channel. `emit_event` now returns `PublicEvent`. 6 new integration tests. |
 | 2026-02-17 | Phase 10.2 (`Event emission integration`) completed. All 13 event types wired into server handlers: `api.rs` (IDENTITY_REGISTERED, IDENTITY_VERIFIED, PSEUDONYM_DERIVED, NODE_ADDED), `background.rs` (NODE_PRUNED), `api_vrp.rs` (NODE_REACTIVATED, AGENT_CONNECTED), `api_federation.rs` (FEDERATION_ESTABLISHED), `policy.rs` (AGENT_REALIGNED, AGENT_DISCONNECTED, FEDERATION_REALIGNED, FEDERATION_SEVERED), `api_admin.rs` (MODERATION_ACTION). 3 integration tests. |
 | 2026-02-17 | Phase 10.1 (`Public event log`) completed. Migration `022_public_event_log` with indexed table, `annex-observe` crate implemented with `EventDomain`, `EventPayload` (13 event types), `emit_event`, `query_events`, 17 unit tests. |
