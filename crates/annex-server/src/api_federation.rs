@@ -183,9 +183,15 @@ pub async fn relay_message(
 
     let client = reqwest::Client::new();
 
-    for (base_url, _transfer_scope) in peers {
-        // TODO: Check transfer scope if needed (e.g., filter content).
-        // For now, we assume if federated channel, we relay.
+    for (base_url, transfer_scope) in peers {
+        // Skip peers whose transfer scope does not permit message relay.
+        if transfer_scope == "NO_TRANSFER" {
+            tracing::debug!(
+                peer = %base_url,
+                "skipping message relay: transfer scope is NO_TRANSFER"
+            );
+            continue;
+        }
 
         let url = format!("{}/api/federation/messages", base_url);
         let envelope_clone = FederatedMessageEnvelope {

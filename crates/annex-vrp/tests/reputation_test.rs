@@ -112,3 +112,112 @@ fn test_reputation_persistence() {
 
     assert_eq!(count, 1);
 }
+
+#[test]
+fn test_reputation_adversarial_oscillation() {
+    // Adversarial pattern: alternating ALIGNED and CONFLICT.
+    // Score should not accumulate net benefit from this pattern.
+    let conn = setup_db();
+    let server_id = 1;
+    let peer = "adversarial-oscillator";
+
+    let report_aligned = VrpValidationReport {
+        alignment_status: VrpAlignmentStatus::Aligned,
+        transfer_scope: VrpTransferScope::FullKnowledgeBundle,
+        alignment_score: 1.0,
+        negotiation_notes: vec![],
+    };
+    let report_conflict = VrpValidationReport {
+        alignment_status: VrpAlignmentStatus::Conflict,
+        transfer_scope: VrpTransferScope::NoTransfer,
+        alignment_score: 0.0,
+        negotiation_notes: vec![],
+    };
+
+    // Record 10 cycles of ALIGNED, CONFLICT
+    for _ in 0..10 {
+        record_vrp_outcome(&conn, server_id, peer, "AGENT", &report_aligned).unwrap();
+        record_vrp_outcome(&conn, server_id, peer, "AGENT", &report_conflict).unwrap();
+    }
+
+    let score = check_reputation_score(&conn, server_id, peer).unwrap();
+
+    // After alternating ALIGNED/CONFLICT, score should be below neutral (0.5).
+    // Each ALIGNED adds 10% of gap-to-1, each CONFLICT removes 20%.
+    // Net effect is negative per cycle — adversarial oscillation degrades reputation.
+    assert!(
+        score < 0.5,
+        "adversarial oscillation should degrade reputation below neutral, got {}",
+        score
+    );
+}
+
+#[test]
+fn test_reputation_sustained_conflict_floors() {
+    // Sustained CONFLICT should drive score near zero but never exactly zero.
+    let conn = setup_db();
+    let server_id = 1;
+    let peer = "sustained-conflict";
+
+    let report_conflict = VrpValidationReport {
+        alignment_status: VrpAlignmentStatus::Conflict,
+        transfer_scope: VrpTransferScope::NoTransfer,
+        alignment_score: 0.0,
+        negotiation_notes: vec![],
+    };
+
+    for _ in 0..50 {
+        record_vrp_outcome(&conn, server_id, peer, "AGENT", &report_conflict).unwrap();
+    }
+
+    let score = check_reputation_score(&conn, server_id, peer).unwrap();
+
+    // After 50 CONFLICT events: 0.5 * (0.8^50) ≈ 0.0000072
+    assert!(
+        score < 0.001,
+        "sustained conflict should drive score near zero, got {}",
+        score
+    );
+    assert!(score >= 0.0, "score should never go below zero");
+}
+
+#[test]
+fn test_reputation_independent_per_pseudonym() {
+    // Reputation is scoped per pseudonym — one entity's history doesn't affect another.
+    let conn = setup_db();
+    let server_id = 1;
+
+    let report_conflict = VrpValidationReport {
+        alignment_status: VrpAlignmentStatus::Conflict,
+        transfer_scope: VrpTransferScope::NoTransfer,
+        alignment_score: 0.0,
+        negotiation_notes: vec![],
+    };
+    let report_aligned = VrpValidationReport {
+        alignment_status: VrpAlignmentStatus::Aligned,
+        transfer_scope: VrpTransferScope::FullKnowledgeBundle,
+        alignment_score: 1.0,
+        negotiation_notes: vec![],
+    };
+
+    // Bad actor gets many conflicts
+    for _ in 0..10 {
+        record_vrp_outcome(&conn, server_id, "bad-actor", "AGENT", &report_conflict).unwrap();
+    }
+
+    // Good actor gets many aligned
+    for _ in 0..10 {
+        record_vrp_outcome(&conn, server_id, "good-actor", "AGENT", &report_aligned).unwrap();
+    }
+
+    let bad_score = check_reputation_score(&conn, server_id, "bad-actor").unwrap();
+    let good_score = check_reputation_score(&conn, server_id, "good-actor").unwrap();
+    let new_score = check_reputation_score(&conn, server_id, "new-actor").unwrap();
+
+    assert!(bad_score < 0.1, "bad actor should have low reputation");
+    assert!(good_score > 0.8, "good actor should have high reputation");
+    assert!(
+        (new_score - 0.5).abs() < f32::EPSILON,
+        "new actor should start neutral"
+    );
+}
