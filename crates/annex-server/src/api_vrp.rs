@@ -30,7 +30,7 @@ pub async fn agent_handshake_handler(
 ) -> Result<Json<VrpValidationReport>, ApiError> {
     let result = tokio::task::spawn_blocking(move || {
         // 1. Get DB connection
-        let conn = state
+        let mut conn = state
             .pool
             .get()
             .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
@@ -45,8 +45,6 @@ pub async fn agent_handshake_handler(
         let local_anchor = local_root.to_anchor_snapshot();
 
         // 4. Construct Local Capability Contract from Policy
-        // Required: from policy.agent_required_capabilities
-        // Offered: derived from policy flags
         let mut offered_capabilities = Vec::new();
         if policy.voice_enabled {
             offered_capabilities.push("VOICE".to_string());
@@ -54,7 +52,6 @@ pub async fn agent_handshake_handler(
         if policy.federation_enabled {
             offered_capabilities.push("FEDERATION".to_string());
         }
-        // Add implicit capabilities? e.g. "TEXT", "VRP"
         offered_capabilities.push("TEXT".to_string());
         offered_capabilities.push("VRP".to_string());
 
@@ -71,8 +68,6 @@ pub async fn agent_handshake_handler(
         };
 
         // 6. Construct Transfer Acceptance Config
-        // Defaulting to allowing reflection summaries, but checking policy/config if available.
-        // For now, hardcode reasonable defaults for agents.
         let transfer_config = VrpTransferAcceptanceConfig {
             allow_reflection_summaries: true,
             allow_full_knowledge: false, // Conservative default
@@ -87,39 +82,43 @@ pub async fn agent_handshake_handler(
             &transfer_config,
         );
 
+        // 8-10. Record outcome, check reputation, and upsert registration atomically.
+        let tx = conn.transaction().map_err(|e| {
+            ApiError::InternalServerError(format!("failed to begin transaction: {}", e))
+        })?;
+
         // 8. Record Outcome
         record_vrp_outcome(
-            &conn,
+            &tx,
             state.server_id,
             &payload.pseudonym_id,
-            "AI_AGENT", // Peer Type
+            "AI_AGENT",
             &report,
         )
         .map_err(|e| ApiError::InternalServerError(format!("failed to log vrp outcome: {}", e)))?;
 
         // 9. Check Longitudinal Reputation
         let reputation_score =
-            check_reputation_score(&conn, state.server_id, &payload.pseudonym_id).map_err(
+            check_reputation_score(&tx, state.server_id, &payload.pseudonym_id).map_err(
                 |e| ApiError::InternalServerError(format!("failed to check reputation: {}", e)),
             )?;
 
-        // 10. Upsert Agent Registration if Aligned or Partial
+        // 10. Upsert Agent Registration
         if report.alignment_status == VrpAlignmentStatus::Aligned
             || report.alignment_status == VrpAlignmentStatus::Partial
         {
-            // Also update graph node activity if it exists
-            if let Ok(true) = update_node_activity(&conn, state.server_id, &payload.pseudonym_id) {
+            // Update graph node activity if it exists
+            if let Ok(true) = update_node_activity(&tx, state.server_id, &payload.pseudonym_id) {
                 let _ = state.presence_tx.send(PresenceEvent::NodeUpdated {
                     pseudonym_id: payload.pseudonym_id.clone(),
                     active: true,
                 });
 
-                // Emit NODE_REACTIVATED to persistent log
                 let observe_payload = EventPayload::NodeReactivated {
                     pseudonym_id: payload.pseudonym_id.clone(),
                 };
                 crate::emit_and_broadcast(
-                    &conn,
+                    &tx,
                     state.server_id,
                     &payload.pseudonym_id,
                     &observe_payload,
@@ -139,11 +138,11 @@ pub async fn agent_handshake_handler(
 
             let now = chrono::Utc::now().to_rfc3339();
 
-            conn.execute(
+            tx.execute(
                 "INSERT INTO agent_registrations (
                     server_id, pseudonym_id, alignment_status, transfer_scope,
-                    capability_contract_json, anchor_snapshot_json, reputation_score, last_handshake_at, created_at, updated_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'), datetime('now'))
+                    capability_contract_json, anchor_snapshot_json, reputation_score, last_handshake_at, active, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, datetime('now'), datetime('now'))
                 ON CONFLICT(server_id, pseudonym_id) DO UPDATE SET
                     alignment_status = excluded.alignment_status,
                     transfer_scope = excluded.transfer_scope,
@@ -151,6 +150,7 @@ pub async fn agent_handshake_handler(
                     anchor_snapshot_json = excluded.anchor_snapshot_json,
                     reputation_score = excluded.reputation_score,
                     last_handshake_at = excluded.last_handshake_at,
+                    active = 1,
                     updated_at = datetime('now')
                 ",
                 rusqlite::params![
@@ -168,7 +168,11 @@ pub async fn agent_handshake_handler(
                 ApiError::InternalServerError(format!("failed to upsert registration: {}", e))
             })?;
 
-            // Emit AGENT_CONNECTED to persistent log
+            tx.commit().map_err(|e| {
+                ApiError::InternalServerError(format!("failed to commit transaction: {}", e))
+            })?;
+
+            // Emit AGENT_CONNECTED to persistent log (after commit)
             let observe_payload = EventPayload::AgentConnected {
                 pseudonym_id: payload.pseudonym_id.clone(),
                 alignment_status: report.alignment_status.to_string(),
@@ -180,32 +184,49 @@ pub async fn agent_handshake_handler(
                 &observe_payload,
                 &state.observe_tx,
             );
+        } else if report.alignment_status == VrpAlignmentStatus::Conflict {
+            // If an existing agent re-handshakes and gets Conflict, update their
+            // status in the DB and deactivate them. New agents with Conflict are
+            // simply not inserted (they never had a row).
+            let updated = tx
+                .execute(
+                    "UPDATE agent_registrations
+                     SET alignment_status = 'Conflict',
+                         transfer_scope = 'NO_TRANSFER',
+                         active = 0,
+                         updated_at = datetime('now')
+                     WHERE server_id = ?1 AND pseudonym_id = ?2",
+                    rusqlite::params![state.server_id, payload.pseudonym_id],
+                )
+                .map_err(|e| {
+                    ApiError::InternalServerError(format!(
+                        "failed to deactivate conflict agent: {}",
+                        e
+                    ))
+                })?;
+
+            tx.commit().map_err(|e| {
+                ApiError::InternalServerError(format!("failed to commit transaction: {}", e))
+            })?;
+
+            if updated > 0 {
+                let observe_payload = EventPayload::AgentDisconnected {
+                    pseudonym_id: payload.pseudonym_id.clone(),
+                    reason: "VRP handshake resulted in Conflict alignment".to_string(),
+                };
+                crate::emit_and_broadcast(
+                    &conn,
+                    state.server_id,
+                    &payload.pseudonym_id,
+                    &observe_payload,
+                    &state.observe_tx,
+                );
+            }
+        } else {
+            tx.commit().map_err(|e| {
+                ApiError::InternalServerError(format!("failed to commit transaction: {}", e))
+            })?;
         }
-        // Roadmap says: "On Conflict: reject with detailed report".
-        // But if an existing agent becomes Conflict, we should probably update their status.
-        // Step 6.6 says "Disconnect agents that are now Conflict".
-        // If this is a *new* handshake (re-evaluation), we should update the DB.
-        // If it's a *new* agent, we don't insert.
-        // But how do we distinguish? UPSERT handles both.
-        // If I skip insert on Conflict, a new agent gets 409/Conflict report and no DB row.
-        // If an existing agent gets Conflict, their DB row remains "Aligned" (stale). This is BAD.
-        // So I *should* upsert even on Conflict if the row exists?
-        // SQLite UPSERT inserts if not exists.
-        // Maybe I should always upsert?
-        // Step 3.6 says: "On Aligned or Partial: create agent_registrations row".
-        // This implies on Conflict, do NOT create.
-        // But if it *already exists*, I should update it to Conflict.
-        // I'll implement: Check if exists. If exists, update. If not exists and Aligned/Partial, insert.
-        // OR: Use UPSERT but valid only for Aligned/Partial?
-        // Logic:
-        // If Aligned/Partial -> Upsert (Create or Update).
-        // If Conflict -> Only Update if exists?
-        // Let's keep it simple: Only upsert on Aligned/Partial as per spec.
-        // The "Re-evaluation on policy change" (Step 6.6) handles the bulk update case separately.
-        // If an existing agent re-handshakes and gets Conflict, they effectively fail to "renew" their registration.
-        // However, it's better to explicitly mark them Conflict if they exist.
-        // I'll stick to the spec "On Aligned or Partial: create...".
-        // If an agent gets Conflict, they receive the report and are rejected. They can't proceed to verify-membership anyway.
 
         Ok(report)
     })

@@ -66,7 +66,7 @@ pub async fn publish_handler(
         let state = state.clone();
         let bundle = bundle.clone();
         move || -> Result<(usize, Vec<(String, String)>), ApiError> {
-            let conn = state.pool.get().map_err(|e| {
+            let mut conn = state.pool.get().map_err(|e| {
                 ApiError::InternalServerError(format!("db connection failed: {}", e))
             })?;
 
@@ -109,7 +109,8 @@ pub async fn publish_handler(
             let stored_bundle = enforce_transfer_scope(&bundle, sender_scope)
                 .map_err(|e| ApiError::Forbidden(e.to_string()))?;
 
-            // 8. Store bundle in DB
+            // 8-9. Store bundle + log initial transfer atomically in a transaction.
+            //      If either fails, neither is persisted.
             let domain_tags_json =
                 serde_json::to_string(&stored_bundle.domain_tags).map_err(|e| {
                     ApiError::InternalServerError(format!("json serialization failed: {}", e))
@@ -118,39 +119,6 @@ pub async fn publish_handler(
                 ApiError::InternalServerError(format!("json serialization failed: {}", e))
             })?;
 
-            conn.execute(
-                "INSERT INTO rtx_bundles (
-                    server_id, bundle_id, source_pseudonym, source_server,
-                    domain_tags_json, summary, reasoning_chain, caveats_json,
-                    created_at_ms, signature, vrp_handshake_ref
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                rusqlite::params![
-                    state.server_id,
-                    stored_bundle.bundle_id,
-                    stored_bundle.source_pseudonym,
-                    stored_bundle.source_server,
-                    domain_tags_json,
-                    stored_bundle.summary,
-                    stored_bundle.reasoning_chain,
-                    caveats_json,
-                    stored_bundle.created_at as i64,
-                    stored_bundle.signature,
-                    stored_bundle.vrp_handshake_ref,
-                ],
-            )
-            .map_err(|e| {
-                if let rusqlite::Error::SqliteFailure(ref err, _) = e {
-                    if err.code == rusqlite::ErrorCode::ConstraintViolation {
-                        return ApiError::Conflict(format!(
-                            "bundle '{}' already published",
-                            stored_bundle.bundle_id
-                        ));
-                    }
-                }
-                ApiError::InternalServerError(format!("failed to store bundle: {}", e))
-            })?;
-
-            // 9. Log the publish operation
             let redactions =
                 if stored_bundle.reasoning_chain.is_none() && bundle.reasoning_chain.is_some() {
                     Some("reasoning_chain_stripped")
@@ -158,20 +126,64 @@ pub async fn publish_handler(
                     None
                 };
 
-            conn.execute(
-                "INSERT INTO rtx_transfer_log (
-                    server_id, bundle_id, source_pseudonym, destination_pseudonym,
-                    transfer_scope_applied, redactions_applied
-                ) VALUES (?1, ?2, ?3, NULL, ?4, ?5)",
-                rusqlite::params![
-                    state.server_id,
-                    stored_bundle.bundle_id,
-                    stored_bundle.source_pseudonym,
-                    sender_scope.to_string(),
-                    redactions,
-                ],
-            )
-            .map_err(|e| ApiError::InternalServerError(format!("failed to log transfer: {}", e)))?;
+            {
+                let tx = conn.transaction().map_err(|e| {
+                    ApiError::InternalServerError(format!("failed to begin transaction: {}", e))
+                })?;
+
+                tx.execute(
+                    "INSERT INTO rtx_bundles (
+                        server_id, bundle_id, source_pseudonym, source_server,
+                        domain_tags_json, summary, reasoning_chain, caveats_json,
+                        created_at_ms, signature, vrp_handshake_ref
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    rusqlite::params![
+                        state.server_id,
+                        stored_bundle.bundle_id,
+                        stored_bundle.source_pseudonym,
+                        stored_bundle.source_server,
+                        domain_tags_json,
+                        stored_bundle.summary,
+                        stored_bundle.reasoning_chain,
+                        caveats_json,
+                        stored_bundle.created_at as i64,
+                        stored_bundle.signature,
+                        stored_bundle.vrp_handshake_ref,
+                    ],
+                )
+                .map_err(|e| {
+                    if let rusqlite::Error::SqliteFailure(ref err, _) = e {
+                        if err.code == rusqlite::ErrorCode::ConstraintViolation {
+                            return ApiError::Conflict(format!(
+                                "bundle '{}' already published",
+                                stored_bundle.bundle_id
+                            ));
+                        }
+                    }
+                    ApiError::InternalServerError(format!("failed to store bundle: {}", e))
+                })?;
+
+                tx.execute(
+                    "INSERT INTO rtx_transfer_log (
+                        server_id, bundle_id, source_pseudonym, destination_pseudonym,
+                        transfer_scope_applied, redactions_applied
+                    ) VALUES (?1, ?2, ?3, NULL, ?4, ?5)",
+                    rusqlite::params![
+                        state.server_id,
+                        stored_bundle.bundle_id,
+                        stored_bundle.source_pseudonym,
+                        sender_scope.to_string(),
+                        redactions,
+                    ],
+                )
+                .map_err(|e| {
+                    ApiError::InternalServerError(format!("failed to log transfer: {}", e))
+                })?;
+
+                tx.commit().map_err(|e| {
+                    ApiError::InternalServerError(format!("failed to commit transaction: {}", e))
+                })?;
+            }
 
             // 10. Find matching subscribers and prepare deliveries
             let mut deliveries: Vec<(String, String)> = Vec::new();
@@ -577,8 +589,9 @@ fn extract_redacted_topics(contract_json: &str) -> Vec<String> {
 
 /// Constructs the deterministic signing payload for an RTX relay envelope.
 ///
-/// The signed payload is: `bundle_id + relaying_server + origin_server + relay_path_joined`,
-/// where `relay_path_joined` concatenates all relay path entries with `|` separators.
+/// The signed payload uses newline delimiters between fields to prevent
+/// ambiguity where field boundaries overlap (e.g., `"ab" + "c"` vs `"a" + "bc"`).
+/// Relay path entries are joined with `|` separators within their field.
 pub fn rtx_relay_signing_payload(
     bundle_id: &str,
     relaying_server: &str,
@@ -587,7 +600,7 @@ pub fn rtx_relay_signing_payload(
 ) -> String {
     let relay_path_joined = relay_path.join("|");
     format!(
-        "{}{}{}{}",
+        "{}\n{}\n{}\n{}",
         bundle_id, relaying_server, origin_server, relay_path_joined
     )
 }
@@ -1114,7 +1127,7 @@ mod tests {
         );
         assert_eq!(
             payload,
-            "bundle-123http://relay.comhttp://origin.comhttp://hop1.com|http://hop2.com"
+            "bundle-123\nhttp://relay.com\nhttp://origin.com\nhttp://hop1.com|http://hop2.com"
         );
     }
 }

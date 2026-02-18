@@ -535,7 +535,7 @@ async fn test_receive_federated_rtx_rejects_invalid_signature() {
     let response = app.oneshot(req).await.unwrap();
     assert_eq!(
         response.status(),
-        StatusCode::INTERNAL_SERVER_ERROR, // FederationError::InvalidSignature maps to 500
+        StatusCode::UNAUTHORIZED, // FederationError::InvalidSignature maps to 401
         "should reject invalid server signature"
     );
 }
@@ -656,5 +656,5 @@ fn test_signing_payload_empty_relay_path() {
     let payload =
         rtx_relay_signing_payload("bundle-xyz", "http://relay.com", "http://origin.com", &[]);
 
-    assert_eq!(payload, "bundle-xyzhttp://relay.comhttp://origin.com");
+    assert_eq!(payload, "bundle-xyz\nhttp://relay.com\nhttp://origin.com\n");
 }

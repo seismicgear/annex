@@ -78,6 +78,21 @@ impl axum::response::IntoResponse for FederationError {
                 (axum::http::StatusCode::NOT_FOUND, self.to_string())
             }
             FederationError::Forbidden(_) => (axum::http::StatusCode::FORBIDDEN, self.to_string()),
+            FederationError::InvalidSignature(_) => {
+                (axum::http::StatusCode::UNAUTHORIZED, self.to_string())
+            }
+            FederationError::ZkVerification(_) => {
+                (axum::http::StatusCode::BAD_REQUEST, self.to_string())
+            }
+            FederationError::IdentityDerivation(_) => {
+                (axum::http::StatusCode::BAD_REQUEST, self.to_string())
+            }
+            FederationError::Serialization(_) => {
+                (axum::http::StatusCode::BAD_REQUEST, self.to_string())
+            }
+            FederationError::Handshake(_) => {
+                (axum::http::StatusCode::BAD_REQUEST, self.to_string())
+            }
             _ => (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 self.to_string(),
@@ -170,9 +185,10 @@ pub async fn relay_message(
     }
 
     // Construct Envelope
-    // Signature: SHA256(message_id + channel_id + content + sender + originating_server + attestation_ref + created_at)
+    // Signature payload uses newline delimiters to prevent field-boundary ambiguity
+    // (e.g., message_id="ab" + channel_id="c" would collide with "a" + "bc" without delimiters).
     let signature_input = format!(
-        "{}{}{}{}{}{}{}",
+        "{}\n{}\n{}\n{}\n{}\n{}\n{}",
         message.message_id,
         channel_id,
         message.content,
@@ -331,9 +347,9 @@ pub async fn receive_federated_message_handler(
             )));
         }
 
-        // 2. Verify Signature
+        // 2. Verify Signature (newline-delimited to prevent field-boundary ambiguity)
         let signature_input = format!(
-            "{}{}{}{}{}{}{}",
+            "{}\n{}\n{}\n{}\n{}\n{}\n{}",
             envelope.message_id,
             envelope.channel_id,
             envelope.content,
@@ -603,10 +619,9 @@ pub async fn attest_membership_handler(
         FederationError::DbError(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
     })??;
 
-    // Verify Signature
-    // Message: SHA256(topic || commitment || participant_type)
+    // Verify Signature (newline-delimited to prevent field-boundary ambiguity)
     let message = format!(
-        "{}{}{}",
+        "{}\n{}\n{}",
         payload.topic, payload.commitment, payload.participant_type
     );
     let public_key_bytes = hex::decode(&public_key_hex)
@@ -666,9 +681,10 @@ pub async fn attest_membership_handler(
         return Err(FederationError::ZkVerification("Invalid proof".to_string()));
     }
 
-    // 4. Persist Attestation
+    // 4. Persist Attestation (all three writes in a single transaction to
+    //    prevent partial state if any step fails).
     let pseudonym_id = tokio::task::spawn_blocking(move || {
-        let conn = state_clone.pool.get().map_err(|e| {
+        let mut conn = state_clone.pool.get().map_err(|e| {
             FederationError::DbError(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
         })?;
 
@@ -681,8 +697,24 @@ pub async fn attest_membership_handler(
             FederationError::IdentityDerivation(format!("Failed to derive pseudonym: {}", e))
         })?;
 
+        let node_type = match payload.participant_type.as_str() {
+            "HUMAN" => NodeType::Human,
+            "AI_AGENT" => NodeType::AiAgent,
+            "COLLECTIVE" => NodeType::Collective,
+            "BRIDGE" => NodeType::Bridge,
+            "SERVICE" => NodeType::Service,
+            _ => {
+                return Err(FederationError::ZkVerification(format!(
+                    "unknown participant type: {}",
+                    payload.participant_type
+                )));
+            }
+        };
+
+        let tx = conn.transaction().map_err(FederationError::DbError)?;
+
         // Insert into federated_identities
-        conn.execute(
+        tx.execute(
             "INSERT INTO federated_identities (
                 server_id, remote_instance_id, commitment_hex, pseudonym_id, vrp_topic, attested_at
             ) VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))
@@ -702,9 +734,7 @@ pub async fn attest_membership_handler(
         .map_err(FederationError::DbError)?;
 
         // Ensure Platform Identity
-        // We set default capabilities to 0 (false) for federated users initially.
-        // They can be upgraded later based on VRP negotiation if needed.
-        conn.execute(
+        tx.execute(
             "INSERT INTO platform_identities (
                 server_id, pseudonym_id, participant_type, active
             ) VALUES (?1, ?2, ?3, 1)
@@ -721,17 +751,8 @@ pub async fn attest_membership_handler(
         .map_err(FederationError::DbError)?;
 
         // Ensure Graph Node
-        let node_type = match payload.participant_type.as_str() {
-            "HUMAN" => NodeType::Human,
-            "AI_AGENT" => NodeType::AiAgent,
-            "COLLECTIVE" => NodeType::Collective,
-            "BRIDGE" => NodeType::Bridge,
-            "SERVICE" => NodeType::Service,
-            _ => NodeType::Human, // Fallback
-        };
-
         ensure_graph_node(
-            &conn,
+            &tx,
             state_clone.server_id,
             &pseudonym_id,
             node_type,
@@ -741,6 +762,8 @@ pub async fn attest_membership_handler(
             GraphError::DatabaseError(err) => FederationError::DbError(err),
             _ => FederationError::DbError(rusqlite::Error::ToSqlConversionFailure(Box::new(e))),
         })?;
+
+        tx.commit().map_err(FederationError::DbError)?;
 
         Ok::<_, FederationError>(pseudonym_id)
     })
@@ -827,9 +850,8 @@ pub async fn join_federated_channel_handler(
             )));
         }
 
-        // 2. Verify Signature
-        // Message: SHA256(channel_id + pseudonym_id)
-        let message = format!("{}{}", channel_id_clone, payload.pseudonym_id);
+        // 2. Verify Signature (newline-delimited to prevent field-boundary ambiguity)
+        let message = format!("{}\n{}", channel_id_clone, payload.pseudonym_id);
         let public_key_bytes = hex::decode(&public_key_hex).map_err(|e| {
             FederationError::InvalidSignature(format!("Invalid public key hex: {}", e))
         })?;

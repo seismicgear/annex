@@ -108,7 +108,7 @@ fn build_signed_envelope(
     created_at: &str,
 ) -> FederatedMessageEnvelope {
     let signature_input = format!(
-        "{}{}{}{}{}{}{}",
+        "{}\n{}\n{}\n{}\n{}\n{}\n{}",
         message_id,
         channel_id,
         content,
@@ -457,7 +457,7 @@ async fn test_federation_full_lifecycle() {
     // After federation is severed, new remote users should not be able to
     // join federated channels.
     // =========================================================================
-    let join_message = format!("{}new-remote-user", channel_id);
+    let join_message = format!("{}\nnew-remote-user", channel_id);
     let join_signature = remote_signing_key.sign(join_message.as_bytes());
     let join_signature_hex = hex::encode(join_signature.to_bytes());
 

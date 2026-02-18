@@ -125,7 +125,7 @@ async fn test_receive_federated_message() {
     let created_at = "2023-01-01T00:00:00Z";
 
     let signature_input = format!(
-        "{}{}{}{}{}{}{}",
+        "{}\n{}\n{}\n{}\n{}\n{}\n{}",
         message_id,
         channel_id,
         content,
