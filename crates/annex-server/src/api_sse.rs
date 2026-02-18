@@ -31,9 +31,11 @@ pub async fn get_presence_stream_handler(
                     }
                 }
             }
-            Err(_broadcast_error) => {
-                // Lagged or closed. We can ignore lag for now or log it.
-                // BroadcastStream handles Lagged by returning an error, which we filter out here.
+            Err(broadcast_error) => {
+                tracing::warn!(
+                    error = %broadcast_error,
+                    "presence SSE stream lagged or closed; events were dropped for this subscriber"
+                );
                 None
             }
         }

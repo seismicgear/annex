@@ -150,7 +150,13 @@ pub async fn get_event_stream_handler(
                 }
             }
         }
-        Err(_broadcast_error) => None,
+        Err(broadcast_error) => {
+            tracing::warn!(
+                error = %broadcast_error,
+                "observe SSE stream lagged or closed; events were dropped for this subscriber"
+            );
+            None
+        }
     });
 
     Sse::new(mapped_stream).keep_alive(KeepAlive::default())

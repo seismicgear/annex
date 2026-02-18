@@ -501,8 +501,15 @@ pub async fn verify_membership_handler(
             ApiError::InternalServerError(format!("failed to start transaction: {}", e))
         })?;
 
-        // Insert nullifier (returns DuplicateNullifier on conflict via UNIQUE constraint)
-        insert_nullifier(&tx, &payload.topic, &nullifier_hex).map_err(|e| match e {
+        // Insert nullifier with denormalized lookup columns for O(1) pseudonym resolution
+        insert_nullifier(
+            &tx,
+            &payload.topic,
+            &nullifier_hex,
+            Some(&pseudonym_id),
+            Some(&payload.commitment),
+        )
+        .map_err(|e| match e {
             annex_identity::IdentityError::DuplicateNullifier(_) => {
                 ApiError::Conflict(e.to_string())
             }

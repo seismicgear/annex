@@ -70,6 +70,11 @@ pub fn register_identity(
         return Err(IdentityError::InvalidCommitmentFormat);
     }
 
+    // Normalize to lowercase to prevent case-mismatch bugs when the same
+    // commitment is later used for nullifier derivation (which requires lowercase).
+    let commitment_hex = commitment_hex.to_ascii_lowercase();
+    let commitment_hex = commitment_hex.as_str();
+
     // Convert commitment to Fr leaf
     let leaf_bytes = hex::decode(commitment_hex).map_err(|_| IdentityError::InvalidHex)?;
     let leaf = Fr::from_be_bytes_mod_order(&leaf_bytes);
@@ -271,6 +276,60 @@ mod tests {
                 assert!(msg.contains("already registered"));
             }
             _ => panic!("expected DuplicateNullifier error, got {:?}", err),
+        }
+    }
+
+    #[test]
+    fn test_register_identity_normalizes_uppercase_hex() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        let mut tree = MerkleTree::new(5).unwrap();
+        // Register with uppercase hex
+        let commitment_upper = "000000000000000000000000000000000000000000000000000000000000ABCD";
+        let expected_lower = commitment_upper.to_ascii_lowercase();
+
+        let result =
+            register_identity(&mut tree, &mut conn, commitment_upper, RoleCode::Human, 100)
+                .expect("registration should succeed");
+
+        assert_eq!(result.leaf_index, 0);
+
+        // Verify it was stored as lowercase (commitment_hex is the PK)
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM vrp_identities WHERE commitment_hex = ?1)",
+                params![expected_lower],
+                |row| row.get(0),
+            )
+            .expect("query failed");
+
+        assert!(
+            exists,
+            "commitment should be stored as lowercase in vrp_identities"
+        );
+    }
+
+    #[test]
+    fn test_register_identity_uppercase_is_duplicate_of_lowercase() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        let mut tree = MerkleTree::new(5).unwrap();
+
+        // Register with lowercase
+        let lower = "000000000000000000000000000000000000000000000000000000000000abcd";
+        register_identity(&mut tree, &mut conn, lower, RoleCode::Human, 100)
+            .expect("first registration should succeed");
+
+        // Try to register with uppercase (same value, different case)
+        let upper = "000000000000000000000000000000000000000000000000000000000000ABCD";
+        let err = register_identity(&mut tree, &mut conn, upper, RoleCode::Human, 101)
+            .expect_err("duplicate should fail");
+
+        match err {
+            IdentityError::DuplicateNullifier(_) => {}
+            _ => panic!("expected DuplicateNullifier, got {:?}", err),
         }
     }
 }

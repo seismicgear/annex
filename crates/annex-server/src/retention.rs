@@ -24,7 +24,10 @@ pub async fn start_retention_task(pool: DbPool, interval_seconds: u64) {
         // but maybe we want to clean up immediately? Let's sleep first to let startup settle.)
         sleep(interval).await;
 
-        // Run blocking DB operation in a separate thread
+        // Run blocking DB operation in a separate thread.
+        // delete_expired_messages is batched, so we loop until fewer rows are
+        // deleted than the batch limit, indicating all expired messages have
+        // been removed.
         let pool_clone = pool.clone();
         let result = tokio::task::spawn_blocking(move || {
             let conn = pool_clone.get().map_err(|e| {
@@ -35,7 +38,15 @@ pub async fn start_retention_task(pool: DbPool, interval_seconds: u64) {
                     Some(format!("pool connection error: {}", e)),
                 )
             })?;
-            annex_channels::delete_expired_messages(&conn)
+            let mut total: usize = 0;
+            loop {
+                let deleted = annex_channels::delete_expired_messages(&conn)?;
+                total += deleted;
+                if deleted < 5_000 {
+                    break;
+                }
+            }
+            Ok::<usize, annex_channels::ChannelError>(total)
         })
         .await;
 

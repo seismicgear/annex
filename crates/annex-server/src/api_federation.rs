@@ -254,12 +254,35 @@ pub async fn relay_message(
     }
 }
 
+/// Resolves the identity commitment associated with a pseudonym.
+///
+/// Uses the denormalized `pseudonym_id` and `commitment_hex` columns added by
+/// migration 024 for an O(1) indexed lookup. Falls back to the legacy O(N*M)
+/// scan for rows that predate the migration (where those columns are NULL).
 fn find_commitment_for_pseudonym(
     conn: &rusqlite::Connection,
     pseudonym: &str,
 ) -> Result<Option<(String, String)>, rusqlite::Error> {
-    // 1. Scan `zk_nullifiers` to find potential topic and nullifier_hex
-    let mut stmt = conn.prepare("SELECT topic, nullifier_hex FROM zk_nullifiers")?;
+    // Fast path: indexed lookup on denormalized columns (O(1)).
+    let fast_result: Option<(String, String)> = conn
+        .query_row(
+            "SELECT commitment_hex, topic FROM zk_nullifiers \
+             WHERE pseudonym_id = ?1 AND commitment_hex IS NOT NULL \
+             LIMIT 1",
+            [pseudonym],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+
+    if fast_result.is_some() {
+        return Ok(fast_result);
+    }
+
+    // Slow fallback: only scan legacy rows that lack the denormalized columns.
+    // Once all rows are backfilled this path becomes a no-op.
+    let mut stmt = conn.prepare(
+        "SELECT topic, nullifier_hex FROM zk_nullifiers WHERE pseudonym_id IS NULL",
+    )?;
     let rows = stmt.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
@@ -279,9 +302,9 @@ fn find_commitment_for_pseudonym(
         return Ok(None);
     }
 
-    // 2. Scan `vrp_identities` to find matching commitment
-    let mut stmt = conn.prepare("SELECT commitment_hex FROM vrp_identities")?;
-    let commitments: Vec<String> = stmt
+    // For legacy rows we still need to scan vrp_identities to find the commitment.
+    let mut id_stmt = conn.prepare("SELECT commitment_hex FROM vrp_identities")?;
+    let commitments: Vec<String> = id_stmt
         .query_map([], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
 
