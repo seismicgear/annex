@@ -421,7 +421,13 @@ pub async fn get_agents_handler(
             .query_map(params![server_id], |row| {
                 let contract_json: String = row.get(3)?;
                 let contract: serde_json::Value =
-                    serde_json::from_str(&contract_json).unwrap_or(serde_json::Value::Null);
+                    serde_json::from_str(&contract_json).unwrap_or_else(|e| {
+                        tracing::warn!(
+                            "corrupted capability_contract_json in agent listing, returning raw string: {}",
+                            e
+                        );
+                        serde_json::Value::String(contract_json)
+                    });
                 Ok(AgentEntry {
                     pseudonym_id: row.get(0)?,
                     alignment_status: row.get(1)?,

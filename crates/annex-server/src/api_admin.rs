@@ -65,11 +65,10 @@ pub async fn update_policy_handler(
         )
         .map_err(|e| ApiError::InternalServerError(format!("failed to insert policy version: {}", e)))?;
 
-        tx.commit().map_err(|e| {
-            ApiError::InternalServerError(format!("failed to commit transaction: {}", e))
-        })?;
-
-        // Emit MODERATION_ACTION to persistent event log
+        // Emit MODERATION_ACTION inside the transaction so the audit log entry
+        // is atomic with the policy update. Previously this was called after
+        // tx.commit(), meaning a crash between commit and emit would lose the
+        // moderation event.
         let observe_payload = EventPayload::ModerationAction {
             moderator_pseudonym: moderator_pseudonym.clone(),
             action_type: "policy_update".to_string(),
@@ -77,12 +76,16 @@ pub async fn update_policy_handler(
             description: format!("Server policy updated to version {}", version_id_clone),
         };
         crate::emit_and_broadcast(
-            &conn,
+            &tx,
             state_clone.server_id,
             &moderator_pseudonym,
             &observe_payload,
             &state_clone.observe_tx,
         );
+
+        tx.commit().map_err(|e| {
+            ApiError::InternalServerError(format!("failed to commit transaction: {}", e))
+        })?;
 
         Ok::<(), ApiError>(())
     })

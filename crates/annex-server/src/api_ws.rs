@@ -248,6 +248,47 @@ pub async fn ws_handler(
     }
 }
 
+/// Result of a WebSocket membership check.
+enum MembershipResult {
+    /// The user is a confirmed member.
+    Allowed,
+    /// The user is not a member.
+    Denied,
+    /// An internal error occurred during the check.
+    Error(String),
+}
+
+/// Checks channel membership via a blocking DB query.
+///
+/// Returns [`MembershipResult`] rather than silently swallowing errors.
+async fn check_ws_membership(
+    pool: annex_db::DbPool,
+    channel_id: &str,
+    pseudonym: &str,
+) -> MembershipResult {
+    let cid = channel_id.to_string();
+    let pid = pseudonym.to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = pool.get().map_err(|e| format!("pool error: {}", e))?;
+        is_member(&conn, &cid, &pid).map_err(|e| format!("db error: {}", e))
+    })
+    .await;
+
+    match result {
+        Ok(Ok(true)) => MembershipResult::Allowed,
+        Ok(Ok(false)) => MembershipResult::Denied,
+        Ok(Err(e)) => MembershipResult::Error(e),
+        Err(e) => MembershipResult::Error(format!("task join error: {}", e)),
+    }
+}
+
+/// Sends a JSON-serialized error message over the WebSocket sender channel.
+fn send_ws_error(tx: &mpsc::UnboundedSender<String>, message: String) {
+    if let Ok(json) = serde_json::to_string(&OutgoingMessage::Error { message }) {
+        let _ = tx.send(json);
+    }
+}
+
 /// Handles the WebSocket connection.
 async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: PlatformIdentity) {
     let pseudonym = identity.pseudonym_id.clone();
@@ -284,29 +325,32 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
             if let Ok(incoming) = serde_json::from_str::<IncomingMessage>(&text.to_string()) {
                 match incoming {
                     IncomingMessage::Subscribe { channel_id } => {
-                        // Check membership
-                        let allowed = {
-                            let pool = state.pool.clone();
-                            let cid = channel_id.clone();
-                            let pid = pseudonym.clone();
-                            tokio::task::spawn_blocking(move || {
-                                let conn = pool.get().map_err(|_| "pool error")?;
-                                is_member(&conn, &cid, &pid).map_err(|_| "db error")
-                            })
-                            .await
-                            .unwrap_or(Ok(false))
-                            .unwrap_or(false)
-                        };
-
-                        if allowed {
-                            state
-                                .connection_manager
-                                .subscribe(channel_id, pseudonym.clone())
-                                .await;
-                        } else if let Ok(json) = serde_json::to_string(&OutgoingMessage::Error {
-                            message: format!("Not a member of channel {}", channel_id),
-                        }) {
-                            let _ = tx.send(json);
+                        match check_ws_membership(state.pool.clone(), &channel_id, &pseudonym).await
+                        {
+                            MembershipResult::Allowed => {
+                                state
+                                    .connection_manager
+                                    .subscribe(channel_id, pseudonym.clone())
+                                    .await;
+                            }
+                            MembershipResult::Denied => {
+                                send_ws_error(
+                                    &tx,
+                                    format!("Not a member of channel {}", channel_id),
+                                );
+                            }
+                            MembershipResult::Error(e) => {
+                                tracing::error!(
+                                    pseudonym = %pseudonym,
+                                    channel_id = %channel_id,
+                                    "subscribe membership check failed: {}",
+                                    e
+                                );
+                                send_ws_error(
+                                    &tx,
+                                    "Internal error checking channel membership".to_string(),
+                                );
+                            }
                         }
                     }
                     IncomingMessage::Unsubscribe { channel_id } => {
@@ -321,26 +365,29 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                         reply_to,
                     } => {
                         // 1. Validate membership (enforcing Phase 4.4 requirements)
-                        let allowed = {
-                            let pool = state.pool.clone();
-                            let cid = channel_id.clone();
-                            let pid = pseudonym.clone();
-                            tokio::task::spawn_blocking(move || {
-                                let conn = pool.get().map_err(|_| "pool error")?;
-                                is_member(&conn, &cid, &pid).map_err(|_| "db error")
-                            })
-                            .await
-                            .unwrap_or(Ok(false))
-                            .unwrap_or(false)
-                        };
-
-                        if !allowed {
-                            if let Ok(json) = serde_json::to_string(&OutgoingMessage::Error {
-                                message: format!("Not a member of channel {}", channel_id),
-                            }) {
-                                let _ = tx.send(json);
+                        match check_ws_membership(state.pool.clone(), &channel_id, &pseudonym).await
+                        {
+                            MembershipResult::Allowed => {}
+                            MembershipResult::Denied => {
+                                send_ws_error(
+                                    &tx,
+                                    format!("Not a member of channel {}", channel_id),
+                                );
+                                continue;
                             }
-                            continue;
+                            MembershipResult::Error(e) => {
+                                tracing::error!(
+                                    pseudonym = %pseudonym,
+                                    channel_id = %channel_id,
+                                    "message membership check failed: {}",
+                                    e
+                                );
+                                send_ws_error(
+                                    &tx,
+                                    "Internal error checking channel membership".to_string(),
+                                );
+                                continue;
+                            }
                         }
 
                         let message_id = Uuid::new_v4().to_string();
@@ -391,45 +438,61 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                 }
                             }
                             Ok(Err(e)) => {
-                                tracing::error!("Failed to persist message: {}", e);
-                                // Ideally send error back to user
+                                tracing::error!(
+                                    pseudonym = %pseudonym,
+                                    channel_id = %channel_id,
+                                    "failed to persist message: {}",
+                                    e
+                                );
+                                send_ws_error(
+                                    &tx,
+                                    "Failed to send message: internal error".to_string(),
+                                );
                             }
                             Err(e) => {
-                                tracing::error!("Task join error: {}", e);
+                                tracing::error!(
+                                    pseudonym = %pseudonym,
+                                    channel_id = %channel_id,
+                                    "message persist task failed: {}",
+                                    e
+                                );
+                                send_ws_error(
+                                    &tx,
+                                    "Failed to send message: internal error".to_string(),
+                                );
                             }
                         }
                     }
                     IncomingMessage::VoiceIntent { channel_id, text } => {
                         if identity.participant_type != RoleCode::AiAgent {
-                            if let Ok(json) = serde_json::to_string(&OutgoingMessage::Error {
-                                message: "Only AI agents can use VoiceIntent".to_string(),
-                            }) {
-                                let _ = tx.send(json);
-                            }
+                            send_ws_error(&tx, "Only AI agents can use VoiceIntent".to_string());
                             continue;
                         }
 
                         // Check membership
-                        let allowed = {
-                            let pool = state.pool.clone();
-                            let cid = channel_id.clone();
-                            let pid = pseudonym.clone();
-                            tokio::task::spawn_blocking(move || {
-                                let conn = pool.get().map_err(|_| "pool error")?;
-                                is_member(&conn, &cid, &pid).map_err(|_| "db error")
-                            })
-                            .await
-                            .unwrap_or(Ok(false))
-                            .unwrap_or(false)
-                        };
-
-                        if !allowed {
-                            if let Ok(json) = serde_json::to_string(&OutgoingMessage::Error {
-                                message: format!("Not a member of channel {}", channel_id),
-                            }) {
-                                let _ = tx.send(json);
+                        match check_ws_membership(state.pool.clone(), &channel_id, &pseudonym).await
+                        {
+                            MembershipResult::Allowed => {}
+                            MembershipResult::Denied => {
+                                send_ws_error(
+                                    &tx,
+                                    format!("Not a member of channel {}", channel_id),
+                                );
+                                continue;
                             }
-                            continue;
+                            MembershipResult::Error(e) => {
+                                tracing::error!(
+                                    pseudonym = %pseudonym,
+                                    channel_id = %channel_id,
+                                    "voice intent membership check failed: {}",
+                                    e
+                                );
+                                send_ws_error(
+                                    &tx,
+                                    "Internal error checking channel membership".to_string(),
+                                );
+                                continue;
+                            }
                         }
 
                         // Get voice profile ID
@@ -437,8 +500,8 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                             let pool = state.pool.clone();
                             let server_id = state.server_id;
                             let pid = pseudonym.clone();
-                            tokio::task::spawn_blocking(move || {
-                                let conn = pool.get().map_err(|_| "pool error")?;
+                            let result = tokio::task::spawn_blocking(move || {
+                                let conn = pool.get().map_err(|e| format!("pool error: {}", e))?;
                                 let profile_id: Option<String> = conn
                                     .query_row(
                                         "SELECT vp.profile_id
@@ -449,19 +512,38 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                         |row| row.get(0),
                                     )
                                     .optional()
-                                    .unwrap_or(None);
+                                    .map_err(|e| format!("db error: {}", e))?;
                                 Ok::<Option<String>, String>(profile_id)
                             })
-                            .await
-                            .unwrap_or(Ok(None))
-                            .unwrap_or(None)
-                            .unwrap_or("default".to_string())
+                            .await;
+
+                            match result {
+                                Ok(Ok(Some(id))) => id,
+                                Ok(Ok(None)) => "default".to_string(),
+                                Ok(Err(e)) => {
+                                    tracing::warn!(
+                                        pseudonym = %pseudonym,
+                                        "voice profile lookup failed, using default: {}",
+                                        e
+                                    );
+                                    "default".to_string()
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        pseudonym = %pseudonym,
+                                        "voice profile lookup task failed, using default: {}",
+                                        e
+                                    );
+                                    "default".to_string()
+                                }
+                            }
                         };
 
                         // Synthesize
                         match state.tts_service.synthesize(&text, &voice_profile_id).await {
                             Ok(audio) => {
-                                // Get or create voice client
+                                // Get or create voice client.
+                                // Fast-path: read lock to check for existing session.
                                 let client_opt = match state.voice_sessions.read() {
                                     Ok(sessions) => sessions.get(&pseudonym).cloned(),
                                     Err(_) => {
@@ -473,12 +555,27 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                 let client = if let Some(c) = client_opt {
                                     c
                                 } else {
-                                    // Connect
+                                    // Connect a new voice client
                                     let room_name = channel_id.clone();
-                                    let token = state
+                                    let token = match state
                                         .voice_service
                                         .generate_join_token(&room_name, &pseudonym, &pseudonym)
-                                        .unwrap_or_default();
+                                    {
+                                        Ok(t) => t,
+                                        Err(e) => {
+                                            tracing::error!(
+                                                pseudonym = %pseudonym,
+                                                room = %room_name,
+                                                "failed to generate voice join token: {}",
+                                                e
+                                            );
+                                            send_ws_error(
+                                                &tx,
+                                                "Failed to generate voice token".to_string(),
+                                            );
+                                            continue;
+                                        }
+                                    };
                                     let url = state.voice_service.get_url();
 
                                     match annex_voice::AgentVoiceClient::connect(
@@ -492,67 +589,72 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                         Ok(c) => {
                                             let arc = Arc::new(c);
 
-                                            // Subscribe to transcriptions
-                                            let mut rx = arc.subscribe_transcriptions();
-                                            let cm = state.connection_manager.clone();
-                                            let p_clone = pseudonym.clone();
-
-                                            tokio::spawn(async move {
-                                                while let Ok(event) = rx.recv().await {
-                                                    let msg = OutgoingMessage::Transcription {
-                                                        channel_id: event.channel_id,
-                                                        speaker_pseudonym: event.speaker_pseudonym,
-                                                        text: event.text,
-                                                    };
-
-                                                    if let Ok(json) = serde_json::to_string(&msg) {
-                                                        cm.send(&p_clone, json).await;
-                                                    }
-                                                }
-                                            });
-
+                                            // Double-check under write lock to prevent
+                                            // TOCTOU race with concurrent voice intents.
                                             match state.voice_sessions.write() {
                                                 Ok(mut sessions) => {
-                                                    sessions.insert(pseudonym.clone(), arc.clone());
+                                                    use std::collections::hash_map::Entry;
+                                                    match sessions.entry(pseudonym.clone()) {
+                                                        Entry::Vacant(entry) => {
+                                                            // Subscribe to transcriptions only for the winning insert
+                                                            let mut rx =
+                                                                arc.subscribe_transcriptions();
+                                                            let cm =
+                                                                state.connection_manager.clone();
+                                                            let p_clone = pseudonym.clone();
+
+                                                            tokio::spawn(async move {
+                                                                while let Ok(event) =
+                                                                    rx.recv().await
+                                                                {
+                                                                    let msg = OutgoingMessage::Transcription {
+                                                                        channel_id: event.channel_id,
+                                                                        speaker_pseudonym: event.speaker_pseudonym,
+                                                                        text: event.text,
+                                                                    };
+
+                                                                    if let Ok(json) =
+                                                                        serde_json::to_string(&msg)
+                                                                    {
+                                                                        cm.send(&p_clone, json)
+                                                                            .await;
+                                                                    }
+                                                                }
+                                                            });
+
+                                                            entry.insert(arc.clone());
+                                                        }
+                                                        Entry::Occupied(_) => {
+                                                            // Concurrent request won; drop our client
+                                                        }
+                                                    }
+                                                    sessions
+                                                        .get(&pseudonym)
+                                                        .cloned()
+                                                        .expect("just inserted or already present")
                                                 }
                                                 Err(_) => {
                                                     tracing::error!("voice_sessions lock poisoned");
+                                                    continue;
                                                 }
                                             }
-                                            arc
                                         }
                                         Err(e) => {
-                                            if let Ok(json) =
-                                                serde_json::to_string(&OutgoingMessage::Error {
-                                                    message: format!(
-                                                        "Failed to connect voice: {}",
-                                                        e
-                                                    ),
-                                                })
-                                            {
-                                                let _ = tx.send(json);
-                                            }
+                                            send_ws_error(
+                                                &tx,
+                                                format!("Failed to connect voice: {}", e),
+                                            );
                                             continue;
                                         }
                                     }
                                 };
 
                                 if let Err(e) = client.publish_audio(&audio).await {
-                                    if let Ok(json) =
-                                        serde_json::to_string(&OutgoingMessage::Error {
-                                            message: format!("Failed to publish audio: {}", e),
-                                        })
-                                    {
-                                        let _ = tx.send(json);
-                                    }
+                                    send_ws_error(&tx, format!("Failed to publish audio: {}", e));
                                 }
                             }
                             Err(e) => {
-                                if let Ok(json) = serde_json::to_string(&OutgoingMessage::Error {
-                                    message: format!("TTS failed: {}", e),
-                                }) {
-                                    let _ = tx.send(json);
-                                }
+                                send_ws_error(&tx, format!("TTS failed: {}", e));
                             }
                         }
                     }
@@ -571,6 +673,14 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
         .remove_session(&pseudonym, session_id)
         .await;
     send_task.abort();
+
+    // Clean up voice session for this pseudonym. Dropping the Arc will
+    // decrement the reference count; when it reaches zero the
+    // AgentVoiceClient is dropped, its internal broadcast sender closes,
+    // and the spawned transcription task will exit naturally.
+    if let Ok(mut sessions) = state.voice_sessions.write() {
+        sessions.remove(&pseudonym);
+    }
 }
 
 async fn touch_activity(state: Arc<AppState>, pseudonym: String) {
