@@ -25,7 +25,7 @@ pub enum HandshakeError {
 /// 3. Validates the incoming handshake using `annex-vrp`.
 /// 4. Persists the resulting agreement in the database.
 pub fn process_incoming_handshake(
-    conn: &Connection,
+    conn: &mut Connection,
     local_server_id: i64,
     local_policy: &ServerPolicy,
     remote_instance_id: i64,
@@ -94,7 +94,7 @@ mod tests {
 
     #[test]
     fn test_process_handshake() {
-        let conn = Connection::open_in_memory().unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
         // Manually create table since migrations are in annex-db and we are in annex-federation test
         conn.execute(
             "CREATE TABLE federation_agreements (
@@ -125,7 +125,7 @@ mod tests {
             capability_contract: contract,
         };
 
-        let report = process_incoming_handshake(&conn, 1, &policy, 10, &handshake).unwrap();
+        let report = process_incoming_handshake(&mut conn, 1, &policy, 10, &handshake).unwrap();
         assert_eq!(
             report.alignment_status,
             annex_vrp::VrpAlignmentStatus::Aligned

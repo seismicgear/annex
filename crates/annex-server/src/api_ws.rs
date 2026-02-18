@@ -78,7 +78,7 @@ pub enum OutgoingMessage {
 }
 
 /// Type alias for session map to satisfy clippy complexity checks.
-type SessionMap = HashMap<String, (Uuid, mpsc::UnboundedSender<String>)>;
+type SessionMap = HashMap<String, (Uuid, mpsc::Sender<String>)>;
 
 /// Manages active WebSocket connections and subscriptions.
 #[derive(Clone, Default)]
@@ -105,7 +105,7 @@ impl ConnectionManager {
     pub async fn add_session(
         &self,
         pseudonym: String,
-        sender: mpsc::UnboundedSender<String>,
+        sender: mpsc::Sender<String>,
     ) -> Uuid {
         let session_id = Uuid::new_v4();
         self.sessions
@@ -198,7 +198,14 @@ impl ConnectionManager {
             let sessions = self.sessions.read().await;
             for pseudonym in listeners {
                 if let Some((_, sender)) = sessions.get(pseudonym) {
-                    let _ = sender.send(message_json.clone());
+                    if let Err(e) = sender.try_send(message_json.clone()) {
+                        tracing::warn!(
+                            pseudonym = %pseudonym,
+                            channel_id = %channel_id,
+                            "dropping broadcast message for slow consumer: {}",
+                            e
+                        );
+                    }
                 }
             }
         }
@@ -208,7 +215,13 @@ impl ConnectionManager {
     pub async fn send(&self, pseudonym: &str, message_json: String) {
         let sessions = self.sessions.read().await;
         if let Some((_, sender)) = sessions.get(pseudonym) {
-            let _ = sender.send(message_json);
+            if let Err(e) = sender.try_send(message_json) {
+                tracing::warn!(
+                    pseudonym = %pseudonym,
+                    "dropping direct message for slow consumer: {}",
+                    e
+                );
+            }
         }
     }
 }
@@ -283,11 +296,17 @@ async fn check_ws_membership(
 }
 
 /// Sends a JSON-serialized error message over the WebSocket sender channel.
-fn send_ws_error(tx: &mpsc::UnboundedSender<String>, message: String) {
+fn send_ws_error(tx: &mpsc::Sender<String>, message: String) {
     if let Ok(json) = serde_json::to_string(&OutgoingMessage::Error { message }) {
-        let _ = tx.send(json);
+        if let Err(e) = tx.try_send(json) {
+            tracing::warn!("failed to send WebSocket error to client: {}", e);
+        }
     }
 }
+
+/// Minimum interval between activity updates per WebSocket connection.
+/// Prevents spawning a blocking DB task on every single message.
+const ACTIVITY_DEBOUNCE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Handles the WebSocket connection.
 async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: PlatformIdentity) {
@@ -298,8 +317,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
 
     let (mut sender, mut receiver) = socket.split();
 
-    // Create a channel for this session
-    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    // Create a bounded channel for this session to prevent unbounded memory growth
+    // from slow consumers. 256 messages provides sufficient buffer for normal
+    // operation; beyond that the client is too slow and messages are dropped.
+    let (tx, mut rx) = mpsc::channel::<String>(256);
 
     // Register session
     let session_id = state
@@ -316,10 +337,16 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
         }
     });
 
+    // Track last activity update to debounce DB writes
+    let mut last_activity = std::time::Instant::now();
+
     // Handle incoming messages
     while let Some(Ok(msg)) = receiver.next().await {
-        // Update activity on any message (fire and forget)
-        tokio::spawn(touch_activity(state.clone(), pseudonym.clone()));
+        // Debounce activity updates: only spawn a DB write if enough time has passed
+        if last_activity.elapsed() >= ACTIVITY_DEBOUNCE {
+            tokio::spawn(touch_activity(state.clone(), pseudonym.clone()));
+            last_activity = std::time::Instant::now();
+        }
 
         if let AxumMessage::Text(text) = msg {
             if let Ok(incoming) = serde_json::from_str::<IncomingMessage>(&text.to_string()) {
@@ -628,10 +655,18 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                                             // Concurrent request won; drop our client
                                                         }
                                                     }
-                                                    sessions
-                                                        .get(&pseudonym)
-                                                        .cloned()
-                                                        .expect("just inserted or already present")
+                                                    match sessions.get(&pseudonym).cloned() {
+                                                        Some(s) => s,
+                                                        None => {
+                                                            // Should never happen: we either just inserted or the Occupied branch
+                                                            // guarantees presence. If it does, log and skip the voice operation.
+                                                            tracing::error!(
+                                                                pseudonym = %pseudonym,
+                                                                "voice session missing after insert; this is a bug"
+                                                            );
+                                                            continue;
+                                                        }
+                                                    }
                                                 }
                                                 Err(_) => {
                                                     tracing::error!("voice_sessions lock poisoned");

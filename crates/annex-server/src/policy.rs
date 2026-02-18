@@ -53,15 +53,19 @@ pub async fn recalculate_agent_alignments(state: Arc<AppState>) -> Result<(), Ap
 
     let state_clone = state.clone();
 
-    // 3. Process Agents in Background
+    // 3. Process Agents in Background (wrapped in a transaction for atomicity)
     let agents_to_disconnect = tokio::task::spawn_blocking(move || {
-        let conn = state_clone
+        let mut conn = state_clone
             .pool
             .get()
             .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
 
+        let tx = conn.transaction().map_err(|e| {
+            ApiError::InternalServerError(format!("failed to begin transaction: {}", e))
+        })?;
+
         let (agents_to_update, agents_to_disconnect) = {
-            let mut stmt = conn
+            let mut stmt = tx
                 .prepare(
                     "SELECT pseudonym_id, alignment_status, transfer_scope, capability_contract_json, anchor_snapshot_json
                      FROM agent_registrations
@@ -133,10 +137,10 @@ pub async fn recalculate_agent_alignments(state: Arc<AppState>) -> Result<(), Ap
             (updates, disconnects)
         };
 
-        // Apply updates
+        // Apply updates within the transaction
         for (pseudonym, report, active) in agents_to_update {
              let active_int = if active { 1 } else { 0 };
-             conn.execute(
+             tx.execute(
                 "UPDATE agent_registrations SET
                     alignment_status = ?1,
                     transfer_scope = ?2,
@@ -166,7 +170,7 @@ pub async fn recalculate_agent_alignments(state: Arc<AppState>) -> Result<(), Ap
                     previous_status: "changed".to_string(),
                 };
                 crate::emit_and_broadcast(
-                    &conn,
+                    &tx,
                     state_clone.server_id,
                     &pseudonym,
                     &observe_payload,
@@ -178,7 +182,7 @@ pub async fn recalculate_agent_alignments(state: Arc<AppState>) -> Result<(), Ap
                     reason: "policy_conflict".to_string(),
                 };
                 crate::emit_and_broadcast(
-                    &conn,
+                    &tx,
                     state_clone.server_id,
                     &pseudonym,
                     &observe_payload,
@@ -186,6 +190,10 @@ pub async fn recalculate_agent_alignments(state: Arc<AppState>) -> Result<(), Ap
                 );
             }
         }
+
+        tx.commit().map_err(|e| {
+            ApiError::InternalServerError(format!("failed to commit transaction: {}", e))
+        })?;
 
         Ok(agents_to_disconnect)
     })
@@ -239,15 +247,19 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
 
     let state_clone = state.clone();
 
-    // 3. Process in Background
+    // 3. Process in Background (wrapped in a transaction for atomicity)
     tokio::task::spawn_blocking(move || {
-        let conn = state_clone
+        let mut conn = state_clone
             .pool
             .get()
             .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
 
+        let tx = conn.transaction().map_err(|e| {
+            ApiError::InternalServerError(format!("failed to begin transaction: {}", e))
+        })?;
+
         let updates = {
-            let mut stmt = conn
+            let mut stmt = tx
                 .prepare(
                     "SELECT fa.id, i.base_url, fa.alignment_status, fa.transfer_scope, fa.remote_handshake_json
                      FROM federation_agreements fa
@@ -309,7 +321,7 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
             updates
         };
 
-        // Apply updates
+        // Apply updates within the transaction
         for (id, base_url, report) in updates {
             let active_int = if report.alignment_status == VrpAlignmentStatus::Conflict {
                 0
@@ -322,7 +334,7 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
                 ApiError::InternalServerError(format!("failed to serialize report: {}", e))
             })?;
 
-            conn.execute(
+            tx.execute(
                 "UPDATE federation_agreements SET
                     alignment_status = ?1,
                     transfer_scope = ?2,
@@ -355,7 +367,7 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
                     reason: "policy_conflict".to_string(),
                 };
                 crate::emit_and_broadcast(
-                    &conn,
+                    &tx,
                     state_clone.server_id,
                     &base_url,
                     &observe_payload,
@@ -387,7 +399,7 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
                     previous_status: "changed".to_string(),
                 };
                 crate::emit_and_broadcast(
-                    &conn,
+                    &tx,
                     state_clone.server_id,
                     &base_url,
                     &observe_payload,
@@ -395,6 +407,10 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
                 );
             }
         }
+
+        tx.commit().map_err(|e| {
+            ApiError::InternalServerError(format!("failed to commit transaction: {}", e))
+        })?;
 
         Ok::<(), ApiError>(())
     })

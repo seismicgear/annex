@@ -578,6 +578,74 @@ fn event_payload_serialises_to_tagged_json() {
     assert!(parsed["target_pseudonym"].is_null());
 }
 
+// ── Atomic sequence number tests ─────────────────────────────────────
+
+#[test]
+fn emit_event_assigns_monotonic_sequence_numbers() {
+    let conn = test_db();
+    let sid = seed_server(&conn);
+
+    let mut seqs = Vec::new();
+    for i in 0..10 {
+        let payload = EventPayload::NodeAdded {
+            pseudonym_id: format!("p{i}"),
+            node_type: "HUMAN".to_string(),
+        };
+        let event = emit_event(
+            &conn,
+            sid,
+            EventDomain::Presence,
+            payload.event_type(),
+            payload.entity_type(),
+            &format!("p{i}"),
+            &payload,
+        )
+        .expect("emit should succeed");
+        seqs.push(event.seq);
+    }
+
+    // Verify strictly monotonic increasing
+    for window in seqs.windows(2) {
+        assert_eq!(
+            window[1],
+            window[0] + 1,
+            "sequence numbers must be strictly monotonic"
+        );
+    }
+    assert_eq!(seqs[0], 1, "first sequence number must be 1");
+}
+
+#[test]
+fn emit_event_returns_correct_occurred_at() {
+    let conn = test_db();
+    let sid = seed_server(&conn);
+
+    let payload = EventPayload::NodeAdded {
+        pseudonym_id: "p".to_string(),
+        node_type: "HUMAN".to_string(),
+    };
+    let event = emit_event(
+        &conn,
+        sid,
+        EventDomain::Presence,
+        payload.event_type(),
+        payload.entity_type(),
+        "p",
+        &payload,
+    )
+    .expect("emit should succeed");
+
+    // occurred_at should be a valid datetime string
+    assert!(
+        !event.occurred_at.is_empty(),
+        "occurred_at must not be empty"
+    );
+    assert!(
+        event.occurred_at.contains('-'),
+        "occurred_at should be a datetime format"
+    );
+}
+
 // ── Error handling test ──────────────────────────────────────────────
 
 #[test]

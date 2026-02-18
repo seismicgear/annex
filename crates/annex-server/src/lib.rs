@@ -22,6 +22,7 @@ use annex_identity::zk::{Bn254, VerifyingKey};
 use annex_identity::MerkleTree;
 use annex_types::ServerPolicy;
 use axum::{
+    extract::DefaultBodyLimit,
     routing::{get, post, put},
     Extension, Json, Router,
 };
@@ -91,7 +92,14 @@ pub fn emit_and_broadcast(
         payload,
     ) {
         Ok(event) => {
-            let _ = observe_tx.send(event);
+            if let Err(e) = observe_tx.send(event) {
+                tracing::warn!(
+                    domain = domain.as_str(),
+                    event_type = payload.event_type(),
+                    "observe broadcast channel send failed (no receivers or lagged): {}",
+                    e
+                );
+            }
         }
         Err(e) => {
             tracing::warn!(
@@ -104,11 +112,14 @@ pub fn emit_and_broadcast(
     }
 }
 
+/// Maximum request body size (2 MiB). Protects against OOM from oversized payloads.
+const MAX_REQUEST_BODY_BYTES: usize = 2 * 1024 * 1024;
+
 /// Health check handler.
 async fn health() -> Json<Value> {
     Json(json!({
         "status": "ok",
-        "version": "0.0.1"
+        "version": env!("CARGO_PKG_VERSION")
     }))
 }
 
@@ -250,6 +261,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/public/agents", get(api_observe::get_agents_handler))
         .merge(protected_routes)
         .route("/ws", get(api_ws::ws_handler))
+        .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .layer(axum::middleware::from_fn(middleware::rate_limit_middleware))
         .layer(Extension(Arc::new(state)))
 }

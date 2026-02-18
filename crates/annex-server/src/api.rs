@@ -366,19 +366,6 @@ pub async fn verify_membership_handler(
             return Err(ApiError::Unauthorized("invalid proof".to_string()));
         }
 
-        // 3b. Emit IDENTITY_VERIFIED to the public event log
-        let observe_payload = EventPayload::IdentityVerified {
-            commitment_hex: payload.commitment.clone(),
-            topic: payload.topic.clone(),
-        };
-        crate::emit_and_broadcast(
-            &conn,
-            state.server_id,
-            &payload.commitment,
-            &observe_payload,
-            &state.observe_tx,
-        );
-
         // 4. Verify public signals match claimed root and commitment
         // membership.circom public output: [root, commitment]
         if public_signals.len() != 2 {
@@ -403,6 +390,22 @@ pub async fn verify_membership_handler(
                 "proof commitment does not match claimed commitment".to_string(),
             ));
         }
+
+        // 4b. Emit IDENTITY_VERIFIED to the public event log.
+        // This must happen AFTER all validation checks pass (proof verification +
+        // public signal matching) to prevent false positive audit entries that
+        // could never be corrected.
+        let observe_payload = EventPayload::IdentityVerified {
+            commitment_hex: payload.commitment.clone(),
+            topic: payload.topic.clone(),
+        };
+        crate::emit_and_broadcast(
+            &conn,
+            state.server_id,
+            &payload.commitment,
+            &observe_payload,
+            &state.observe_tx,
+        );
 
         // 5. Derive nullifier
         let nullifier_hex = derive_nullifier_hex(&payload.commitment, &payload.topic)
@@ -455,10 +458,22 @@ pub async fn verify_membership_handler(
                 .map_err(|e| ApiError::InternalServerError(format!("db query failed: {}", e)))?;
 
             if let Some((alignment, scope, contract, reputation)) = agent_data {
+                let parsed_contract: serde_json::Value = serde_json::from_str(&contract)
+                    .map_err(|e| {
+                        tracing::error!(
+                            pseudonym_id = %pseudonym_id,
+                            raw_contract = %contract,
+                            error = %e,
+                            "corrupted capability_contract_json in agent_registrations; refusing to propagate"
+                        );
+                        ApiError::InternalServerError(
+                            "corrupted agent capability contract in database".to_string()
+                        )
+                    })?;
                 let metadata = serde_json::json!({
                     "alignment_status": alignment,
                     "transfer_scope": scope,
-                    "capability_contract": serde_json::from_str::<serde_json::Value>(&contract).unwrap_or(serde_json::Value::String(contract)),
+                    "capability_contract": parsed_contract,
                     "reputation_score": reputation
                 });
                 Some(metadata.to_string())

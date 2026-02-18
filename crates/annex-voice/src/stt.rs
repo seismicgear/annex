@@ -1,7 +1,14 @@
 use crate::error::VoiceError;
 use std::path::PathBuf;
+use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
+
+/// Maximum audio input size for STT (10 MiB). Prevents OOM from oversized payloads.
+const MAX_STT_INPUT_BYTES: usize = 10 * 1024 * 1024;
+
+/// Timeout for STT process execution.
+const STT_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Clone)]
 pub struct SttService {
@@ -18,6 +25,14 @@ impl SttService {
     }
 
     pub async fn transcribe(&self, audio_data: &[u8]) -> Result<String, VoiceError> {
+        if audio_data.len() > MAX_STT_INPUT_BYTES {
+            return Err(VoiceError::Stt(format!(
+                "audio data exceeds maximum size: {} bytes (limit: {} bytes)",
+                audio_data.len(),
+                MAX_STT_INPUT_BYTES
+            )));
+        }
+
         let mut command = Command::new(&self.binary_path);
 
         // Standard whisper.cpp arguments:
@@ -51,9 +66,14 @@ impl SttService {
             .map_err(|e| VoiceError::Stt(format!("Failed to write to stdin: {}", e)))?;
         drop(stdin); // Close stdin to signal EOF
 
-        let output = child
-            .wait_with_output()
+        let output = tokio::time::timeout(STT_TIMEOUT, child.wait_with_output())
             .await
+            .map_err(|_| {
+                VoiceError::Stt(format!(
+                    "STT process timed out after {} seconds",
+                    STT_TIMEOUT.as_secs()
+                ))
+            })?
             .map_err(|e| VoiceError::Stt(format!("Failed to read stdout: {}", e)))?;
 
         if !output.status.success() {

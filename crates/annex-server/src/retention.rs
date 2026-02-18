@@ -27,13 +27,14 @@ pub async fn start_retention_task(pool: DbPool, interval_seconds: u64) {
         // Run blocking DB operation in a separate thread
         let pool_clone = pool.clone();
         let result = tokio::task::spawn_blocking(move || {
-            let conn = match pool_clone.get() {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::error!(error = %e, "failed to get database connection for retention task");
-                    return Ok(0);
-                }
-            };
+            let conn = pool_clone.get().map_err(|e| {
+                // Convert pool error to a rusqlite error so callers see
+                // this as a real failure rather than silently returning Ok(0).
+                rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                    Some(format!("pool connection error: {}", e)),
+                )
+            })?;
             annex_channels::delete_expired_messages(&conn)
         })
         .await;

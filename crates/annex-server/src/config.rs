@@ -220,6 +220,7 @@ const MIN_DB_BUSY_TIMEOUT_MS: u64 = 1;
 const MAX_DB_BUSY_TIMEOUT_MS: u64 = 60_000;
 const MIN_DB_POOL_MAX_SIZE: u32 = 1;
 const MAX_DB_POOL_MAX_SIZE: u32 = 64;
+const MIN_RETENTION_CHECK_INTERVAL_SECONDS: u64 = 1;
 
 fn validate_config(config: &Config) -> Result<(), ConfigError> {
     if !(MIN_DB_BUSY_TIMEOUT_MS..=MAX_DB_BUSY_TIMEOUT_MS).contains(&config.database.busy_timeout_ms)
@@ -239,6 +240,16 @@ fn validate_config(config: &Config) -> Result<(), ConfigError> {
             reason: format!(
                 "must be in range {MIN_DB_POOL_MAX_SIZE}..={MAX_DB_POOL_MAX_SIZE}, got {}",
                 config.database.pool_max_size
+            ),
+        });
+    }
+
+    if config.server.retention_check_interval_seconds < MIN_RETENTION_CHECK_INTERVAL_SECONDS {
+        return Err(ConfigError::InvalidValue {
+            field: "server.retention_check_interval_seconds",
+            reason: format!(
+                "must be >= {MIN_RETENTION_CHECK_INTERVAL_SECONDS}, got {}",
+                config.server.retention_check_interval_seconds
             ),
         });
     }
@@ -630,6 +641,31 @@ tts_voices_dir = "/from/config/voices"
         assert_eq!(cfg.voice.tts_voices_dir, "/from/env/voices");
         // Other fields should remain at defaults
         assert_eq!(cfg.voice.tts_binary_path, default_tts_binary_path());
+
+        fs::remove_file(path).expect("failed to remove temp config");
+        clear_env();
+    }
+
+    #[test]
+    fn zero_retention_check_interval_returns_error() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+
+        let path = write_temp_config(
+            r#"
+[server]
+retention_check_interval_seconds = 0
+"#,
+        );
+
+        let err = load_config(Some(path.as_str()))
+            .expect_err("load should fail for zero retention interval");
+        match err {
+            ConfigError::InvalidValue { field, .. } => {
+                assert_eq!(field, "server.retention_check_interval_seconds")
+            }
+            other => panic!("unexpected error: {other}"),
+        }
 
         fs::remove_file(path).expect("failed to remove temp config");
         clear_env();

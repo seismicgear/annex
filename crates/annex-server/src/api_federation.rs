@@ -23,7 +23,22 @@ use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey as EdVerifyingKey}
 use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
 use std::sync::Arc;
+use std::time::Duration;
 use thiserror::Error;
+
+/// Timeout for outbound federation HTTP requests (connect + total).
+const FEDERATION_HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const FEDERATION_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Builds a reqwest client with timeouts to prevent resource exhaustion
+/// from slow or malicious federation peers.
+pub fn federation_http_client() -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder()
+        .connect_timeout(FEDERATION_HTTP_CONNECT_TIMEOUT)
+        .timeout(FEDERATION_HTTP_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+}
 
 #[derive(Debug, Error)]
 pub enum FederationError {
@@ -181,7 +196,13 @@ pub async fn relay_message(
         created_at: message.created_at,
     };
 
-    let client = reqwest::Client::new();
+    let client = match federation_http_client() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("failed to build federation HTTP client: {}", e);
+            return;
+        }
+    };
 
     for (base_url, transfer_scope) in peers {
         // Skip peers whose transfer scope does not permit message relay.
@@ -243,8 +264,7 @@ fn find_commitment_for_pseudonym(
     let mut stmt = conn.prepare("SELECT commitment_hex FROM vrp_identities")?;
     let commitments: Vec<String> = stmt
         .query_map([], |row| row.get::<_, String>(0))?
-        .filter_map(Result::ok)
-        .collect();
+        .collect::<Result<Vec<_>, _>>()?;
 
     for (topic, nullifier) in candidate_nullifiers {
         for commitment in &commitments {
@@ -441,7 +461,7 @@ pub async fn federation_handshake_handler(
 
     // Perform database operations in blocking thread
     let result = tokio::task::spawn_blocking(move || {
-        let conn = state_clone
+        let mut conn = state_clone
             .pool
             .get()
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?; // Wrap pool error
@@ -474,7 +494,7 @@ pub async fn federation_handshake_handler(
             .map_err(|_| FederationError::LockPoisoned)?;
 
         let report = process_incoming_handshake(
-            &conn,
+            &mut conn,
             state_clone.server_id,
             &policy,
             remote_instance_id,
@@ -609,8 +629,8 @@ pub async fn attest_membership_handler(
         .verify(message.as_bytes(), &signature)
         .map_err(|e| FederationError::InvalidSignature(e.to_string()))?;
 
-    // 2. Fetch Remote Root
-    let client = reqwest::Client::new();
+    // 2. Fetch Remote Root (with timeout and redirect protection against SSRF)
+    let client = federation_http_client()?;
     let root_url = format!("{}/api/federation/vrp-root", payload.originating_server);
     let resp = client.get(&root_url).send().await?;
 

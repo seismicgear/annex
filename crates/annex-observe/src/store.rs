@@ -32,29 +32,34 @@ pub fn emit_event(
     payload: &EventPayload,
 ) -> Result<PublicEvent, ObserveError> {
     let payload_json = serde_json::to_string(payload)?;
-    let seq = next_seq(conn, server_id)?;
 
-    conn.execute(
+    // Atomically assign sequence number and insert in a single statement.
+    // The subquery computes COALESCE(MAX(seq), 0) + 1 within the same INSERT,
+    // eliminating the read-modify-write race condition where two concurrent
+    // writers could observe the same MAX(seq) and produce duplicate sequence
+    // numbers.
+    let row = conn.query_row(
         "INSERT INTO public_event_log
             (server_id, domain, event_type, entity_type, entity_id, seq, payload_json, occurred_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'))",
+         VALUES (
+            ?1, ?2, ?3, ?4, ?5,
+            (SELECT COALESCE(MAX(seq), 0) + 1 FROM public_event_log WHERE server_id = ?1),
+            ?6,
+            datetime('now')
+         )
+         RETURNING id, seq, occurred_at",
         params![
             server_id,
             domain.as_str(),
             event_type,
             entity_type,
             entity_id,
-            seq,
             payload_json,
         ],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?)),
     )?;
 
-    let id = conn.last_insert_rowid();
-    let occurred_at: String = conn.query_row(
-        "SELECT occurred_at FROM public_event_log WHERE id = ?1",
-        params![id],
-        |row| row.get(0),
-    )?;
+    let (id, seq, occurred_at) = row;
 
     Ok(PublicEvent {
         id,

@@ -119,11 +119,12 @@ impl RateLimiter {
         };
         let now = Instant::now();
 
-        // Periodic cleanup to prevent memory leak
-        // If map grows too large, clear it. This is a crude but safe way to prevent DoS.
-        // A more sophisticated approach would use an LRU cache or randomized eviction.
+        // Periodic cleanup to prevent memory leak.
+        // Instead of clearing the entire map (which resets all rate limits and
+        // allows a thundering-herd bypass), evict only entries whose window
+        // has expired. This preserves active rate limits while reclaiming memory.
         if state.len() > 10000 {
-            state.clear();
+            state.retain(|_, (_, start)| now.duration_since(*start) <= Duration::from_secs(60));
         }
 
         let (count, start) = state.entry(key).or_insert((0, now));
@@ -201,4 +202,62 @@ pub async fn rate_limit_middleware(req: Request<Body>, next: Next) -> Result<Res
     }
 
     Ok(next.run(req).await)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rate_limiter_allows_within_limit() {
+        let limiter = RateLimiter::new();
+        let key = RateLimitKey::Ip("127.0.0.1".parse().unwrap());
+        for _ in 0..5 {
+            assert!(limiter.check(key.clone(), 5));
+        }
+        // 6th request should be denied
+        assert!(!limiter.check(key, 5));
+    }
+
+    #[test]
+    fn rate_limiter_different_keys_independent() {
+        let limiter = RateLimiter::new();
+        let key_a = RateLimitKey::Ip("10.0.0.1".parse().unwrap());
+        let key_b = RateLimitKey::Ip("10.0.0.2".parse().unwrap());
+
+        // Fill up key_a
+        for _ in 0..3 {
+            assert!(limiter.check(key_a.clone(), 3));
+        }
+        assert!(!limiter.check(key_a, 3));
+
+        // key_b should still be allowed
+        assert!(limiter.check(key_b, 3));
+    }
+
+    #[test]
+    fn rate_limiter_eviction_preserves_active_limits() {
+        let limiter = RateLimiter::new();
+
+        // Fill with 10001 distinct IPs to trigger eviction
+        for i in 0..10001u32 {
+            let ip: IpAddr = std::net::Ipv4Addr::from(i.to_be_bytes()).into();
+            limiter.check(RateLimitKey::Ip(ip), 100);
+        }
+
+        // Now check that the eviction happened without blanket clear.
+        // The 10001st IP was just used (within window), so it should still be
+        // rate-limited if we check again.
+        let recent_ip: IpAddr = std::net::Ipv4Addr::from(10000u32.to_be_bytes()).into();
+        let key = RateLimitKey::Ip(recent_ip);
+        // The counter should still be 1 (not reset to 0 by blanket clear)
+        // since the entry is within its 60-second window.
+        // We can verify the limiter still tracks it by checking we can send
+        // limit-1 more requests.
+        for _ in 0..99 {
+            assert!(limiter.check(key.clone(), 100));
+        }
+        // Now at 101 total, should be denied
+        assert!(!limiter.check(key, 100));
+    }
 }

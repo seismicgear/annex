@@ -12,6 +12,10 @@ use serde::Deserialize;
 use std::sync::Arc;
 use thiserror::Error;
 
+/// Maximum allowed value for `max_depth` in BFS queries. Prevents
+/// combinatorial explosion and long-running queries.
+const MAX_BFS_DEPTH: u32 = 10;
+
 #[derive(Debug, Deserialize)]
 pub struct GetDegreesParams {
     pub from: String,
@@ -51,6 +55,13 @@ pub async fn get_degrees_handler(
     Extension(state): Extension<Arc<AppState>>,
     Query(params): Query<GetDegreesParams>,
 ) -> Result<Json<BfsPath>, GraphApiError> {
+    if params.max_depth > MAX_BFS_DEPTH {
+        return Err(GraphApiError::BadRequest(format!(
+            "max_depth must be <= {MAX_BFS_DEPTH}, got {}",
+            params.max_depth
+        )));
+    }
+
     let result = tokio::task::spawn_blocking(move || {
         let conn = state.pool.get().map_err(|e| {
             GraphApiError::InternalServerError(format!("db connection failed: {}", e))

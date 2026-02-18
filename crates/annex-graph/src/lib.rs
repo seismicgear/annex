@@ -192,14 +192,33 @@ fn edge_kind_to_str(kind: EdgeKind) -> &'static str {
     }
 }
 
-fn str_to_edge_kind(s: &str) -> EdgeKind {
+fn str_to_edge_kind(s: &str) -> Result<EdgeKind, GraphError> {
     match s {
-        "MEMBER_OF" => EdgeKind::MemberOf,
-        "CONNECTED" => EdgeKind::Connected,
-        "AGENT_SERVING" => EdgeKind::AgentServing,
-        "FEDERATED_WITH" => EdgeKind::FederatedWith,
-        "MODERATES" => EdgeKind::Moderates,
-        _ => EdgeKind::Connected, // Fallback
+        "MEMBER_OF" => Ok(EdgeKind::MemberOf),
+        "CONNECTED" => Ok(EdgeKind::Connected),
+        "AGENT_SERVING" => Ok(EdgeKind::AgentServing),
+        "FEDERATED_WITH" => Ok(EdgeKind::FederatedWith),
+        "MODERATES" => Ok(EdgeKind::Moderates),
+        other => Err(GraphError::DatabaseError(rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            format!("unknown edge kind: {}", other).into(),
+        ))),
+    }
+}
+
+fn str_to_node_type(s: &str) -> Result<NodeType, GraphError> {
+    match s {
+        "HUMAN" => Ok(NodeType::Human),
+        "AI_AGENT" => Ok(NodeType::AiAgent),
+        "COLLECTIVE" => Ok(NodeType::Collective),
+        "BRIDGE" => Ok(NodeType::Bridge),
+        "SERVICE" => Ok(NodeType::Service),
+        other => Err(GraphError::DatabaseError(rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            format!("unknown node type: {}", other).into(),
+        ))),
     }
 }
 
@@ -226,7 +245,7 @@ pub fn ensure_graph_node(
     };
 
     // Upsert logic using ON CONFLICT DO UPDATE
-    let node = conn.query_row(
+    let raw = conn.query_row(
         "INSERT INTO graph_nodes (server_id, pseudonym_id, node_type, active, last_seen_at, metadata_json)
          VALUES (?1, ?2, ?3, 1, datetime('now'), ?4)
          ON CONFLICT(server_id, pseudonym_id) DO UPDATE SET
@@ -236,28 +255,29 @@ pub fn ensure_graph_node(
          RETURNING id, server_id, pseudonym_id, node_type, active, last_seen_at, metadata_json, created_at",
         params![server_id, pseudonym_id, node_type_str, metadata_json],
         |row| {
-            let node_type_str: String = row.get(3)?;
-            let node_type = match node_type_str.as_str() {
-                "HUMAN" => NodeType::Human,
-                "AI_AGENT" => NodeType::AiAgent,
-                "COLLECTIVE" => NodeType::Collective,
-                "BRIDGE" => NodeType::Bridge,
-                "SERVICE" => NodeType::Service,
-                _ => NodeType::Human, // Default fallback
-            };
-
-            Ok(GraphNode {
-                id: row.get(0)?,
-                server_id: row.get(1)?,
-                pseudonym_id: row.get(2)?,
-                node_type,
-                active: row.get(4)?,
-                last_seen_at: row.get(5)?,
-                metadata_json: row.get(6)?,
-                created_at: row.get(7)?,
-            })
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, bool>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, String>(7)?,
+            ))
         },
     ).map_err(GraphError::DatabaseError)?;
+
+    let node = GraphNode {
+        id: raw.0,
+        server_id: raw.1,
+        pseudonym_id: raw.2,
+        node_type: str_to_node_type(&raw.3)?,
+        active: raw.4,
+        last_seen_at: raw.5,
+        metadata_json: raw.6,
+        created_at: raw.7,
+    };
 
     Ok(node)
 }
@@ -279,19 +299,26 @@ pub fn create_edge(
          RETURNING id, server_id, from_node, to_node, kind, weight, created_at",
         params![server_id, from_node, to_node, kind_str, weight],
         |row| {
-            let kind_str: String = row.get(4)?;
-            let kind = str_to_edge_kind(&kind_str);
-            Ok(GraphEdge {
-                id: row.get(0)?,
-                server_id: row.get(1)?,
-                from_node: row.get(2)?,
-                to_node: row.get(3)?,
-                kind,
-                weight: row.get(5)?,
-                created_at: row.get(6)?,
-            })
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, f64>(5)?,
+                row.get::<_, String>(6)?,
+            ))
         },
     )?;
+    let edge = GraphEdge {
+        id: edge.0,
+        server_id: edge.1,
+        from_node: edge.2,
+        to_node: edge.3,
+        kind: str_to_edge_kind(&edge.4)?,
+        weight: edge.5,
+        created_at: edge.6,
+    };
 
     Ok(edge)
 }
@@ -325,22 +352,29 @@ pub fn get_edges(
     )?;
 
     let edge_iter = stmt.query_map(params![server_id, from_node], |row| {
-        let kind_str: String = row.get(4)?;
-        let kind = str_to_edge_kind(&kind_str);
-        Ok(GraphEdge {
-            id: row.get(0)?,
-            server_id: row.get(1)?,
-            from_node: row.get(2)?,
-            to_node: row.get(3)?,
-            kind,
-            weight: row.get(5)?,
-            created_at: row.get(6)?,
-        })
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, f64>(5)?,
+            row.get::<_, String>(6)?,
+        ))
     })?;
 
     let mut edges = Vec::new();
     for edge in edge_iter {
-        edges.push(edge?);
+        let e = edge?;
+        edges.push(GraphEdge {
+            id: e.0,
+            server_id: e.1,
+            from_node: e.2,
+            to_node: e.3,
+            kind: str_to_edge_kind(&e.4)?,
+            weight: e.5,
+            created_at: e.6,
+        });
     }
 
     Ok(edges)
@@ -352,36 +386,40 @@ pub fn get_graph_node(
     server_id: i64,
     pseudonym_id: &str,
 ) -> Result<Option<GraphNode>, GraphError> {
-    conn.query_row(
+    let raw = conn.query_row(
         "SELECT id, server_id, pseudonym_id, node_type, active, last_seen_at, metadata_json, created_at
          FROM graph_nodes
          WHERE server_id = ?1 AND pseudonym_id = ?2",
         params![server_id, pseudonym_id],
         |row| {
-            let node_type_str: String = row.get(3)?;
-            let node_type = match node_type_str.as_str() {
-                "HUMAN" => NodeType::Human,
-                "AI_AGENT" => NodeType::AiAgent,
-                "COLLECTIVE" => NodeType::Collective,
-                "BRIDGE" => NodeType::Bridge,
-                "SERVICE" => NodeType::Service,
-                _ => NodeType::Human,
-            };
-
-            Ok(GraphNode {
-                id: row.get(0)?,
-                server_id: row.get(1)?,
-                pseudonym_id: row.get(2)?,
-                node_type,
-                active: row.get(4)?,
-                last_seen_at: row.get(5)?,
-                metadata_json: row.get(6)?,
-                created_at: row.get(7)?,
-            })
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, bool>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, String>(7)?,
+            ))
         },
     )
     .optional()
-    .map_err(GraphError::DatabaseError)
+    .map_err(GraphError::DatabaseError)?;
+
+    match raw {
+        Some(r) => Ok(Some(GraphNode {
+            id: r.0,
+            server_id: r.1,
+            pseudonym_id: r.2,
+            node_type: str_to_node_type(&r.3)?,
+            active: r.4,
+            last_seen_at: r.5,
+            metadata_json: r.6,
+            created_at: r.7,
+        })),
+        None => Ok(None),
+    }
 }
 
 /// Calculates the visibility level of a target node from the perspective of a viewer.
@@ -616,5 +654,53 @@ mod tests {
         assert!(path.found);
         assert_eq!(path.length, 0);
         assert_eq!(path.path, vec!["A"]);
+    }
+
+    #[test]
+    fn str_to_edge_kind_rejects_unknown_values() {
+        let result = str_to_edge_kind("NONEXISTENT_EDGE");
+        assert!(result.is_err(), "unknown edge kind should return error");
+    }
+
+    #[test]
+    fn str_to_edge_kind_accepts_known_values() {
+        let cases = vec![
+            ("MEMBER_OF", EdgeKind::MemberOf),
+            ("CONNECTED", EdgeKind::Connected),
+            ("AGENT_SERVING", EdgeKind::AgentServing),
+            ("FEDERATED_WITH", EdgeKind::FederatedWith),
+            ("MODERATES", EdgeKind::Moderates),
+        ];
+        for (s, expected) in cases {
+            assert_eq!(
+                str_to_edge_kind(s).unwrap(),
+                expected,
+                "failed for {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn str_to_node_type_rejects_unknown_values() {
+        let result = str_to_node_type("ALIEN");
+        assert!(result.is_err(), "unknown node type should return error");
+    }
+
+    #[test]
+    fn str_to_node_type_accepts_known_values() {
+        let cases = vec![
+            ("HUMAN", NodeType::Human),
+            ("AI_AGENT", NodeType::AiAgent),
+            ("COLLECTIVE", NodeType::Collective),
+            ("BRIDGE", NodeType::Bridge),
+            ("SERVICE", NodeType::Service),
+        ];
+        for (s, expected) in cases {
+            assert_eq!(
+                str_to_node_type(s).unwrap(),
+                expected,
+                "failed for {s}"
+            );
+        }
     }
 }

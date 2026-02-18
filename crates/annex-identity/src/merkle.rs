@@ -78,7 +78,11 @@ impl MerkleTree {
     /// Returns [`IdentityError::TreeFull`] if the tree is full.
     /// Returns [`IdentityError::PoseidonError`] if hashing fails.
     pub fn preview_insert(&self, leaf: Fr) -> Result<InsertionPreview, IdentityError> {
-        if self.next_index >= 1 << self.depth {
+        // Use checked shift to avoid panic on depth >= 64 (or >= 32 on 32-bit).
+        let capacity = 1usize
+            .checked_shl(self.depth as u32)
+            .unwrap_or(usize::MAX);
+        if self.next_index >= capacity {
             return Err(IdentityError::TreeFull);
         }
 
@@ -280,20 +284,30 @@ impl MerkleTree {
 
     /// Inserts a leaf and persists it to the database, managing its own transaction.
     ///
+    /// Uses `preview_insert` to calculate changes without modifying the in-memory
+    /// tree. The tree is only updated after the database transaction commits
+    /// successfully, preventing divergence between in-memory and persisted state.
+    ///
     /// # Errors
     ///
+    /// Returns [`IdentityError::TreeFull`] if the tree is full.
+    /// Returns [`IdentityError::PoseidonError`] if hashing fails.
     /// Returns [`IdentityError::DatabaseError`] if transaction or SQL fails.
     pub fn insert_and_persist(
         &mut self,
         conn: &mut Connection,
         leaf: Fr,
     ) -> Result<usize, IdentityError> {
-        let index = self.insert(leaf)?;
-        let root = self.root();
+        // Preview changes without mutating the tree
+        let (index, new_root, updates) = self.preview_insert(leaf)?;
 
+        // Persist inside a transaction
         let tx = conn.transaction().map_err(IdentityError::DatabaseError)?;
-        self.persist_leaf_and_root(&tx, index, leaf, root)?;
+        self.persist_leaf_and_root(&tx, index, leaf, new_root)?;
         tx.commit().map_err(IdentityError::DatabaseError)?;
+
+        // Only apply to in-memory tree after successful commit
+        self.apply_updates(index + 1, updates);
 
         Ok(index)
     }
@@ -370,5 +384,41 @@ mod tests {
         assert!(tree.get_proof(0).is_ok());
         assert_eq!(tree.get_proof(1), Err(IdentityError::InvalidIndex(1)));
         assert_eq!(tree.get_proof(100), Err(IdentityError::InvalidIndex(100)));
+    }
+
+    #[test]
+    fn preview_insert_does_not_mutate_tree() {
+        let tree = MerkleTree::new(3).expect("failed to create tree");
+        let root_before = tree.root();
+        let next_idx_before = tree.next_index;
+
+        let _preview = tree.preview_insert(Fr::from(42)).expect("preview should succeed");
+
+        assert_eq!(tree.root(), root_before, "preview_insert must not change root");
+        assert_eq!(tree.next_index, next_idx_before, "preview_insert must not change next_index");
+    }
+
+    #[test]
+    fn insert_and_persist_rolls_back_tree_on_db_failure() {
+        // Use a connection WITHOUT the required tables to simulate DB failure
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        let mut tree = MerkleTree::new(3).expect("failed to create tree");
+        let root_before = tree.root();
+
+        let result = tree.insert_and_persist(&mut conn, Fr::from(99));
+        assert!(result.is_err(), "should fail due to missing table");
+
+        // Tree state must remain unchanged
+        assert_eq!(tree.root(), root_before, "tree must not be modified on DB failure");
+        assert_eq!(tree.next_index, 0, "next_index must not advance on DB failure");
+    }
+
+    #[test]
+    fn checked_capacity_handles_extreme_depth() {
+        // This verifies that the checked_shl prevents panic for large depths.
+        // We can't actually create a tree with depth 64 (memory), but we can
+        // test the capacity calculation logic directly.
+        let capacity = 1usize.checked_shl(64).unwrap_or(usize::MAX);
+        assert_eq!(capacity, usize::MAX, "depth 64 should saturate to usize::MAX");
     }
 }
