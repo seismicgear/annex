@@ -217,16 +217,23 @@ pub async fn publish_handler(
                 let (sub_pseudonym, domain_filters_json, scope_str) =
                     row.map_err(|e| ApiError::InternalServerError(format!("db row error: {}", e)))?;
 
-                // Parse domain filters (empty = accept all; log if corrupted)
-                let domain_filters: Vec<String> =
-                    serde_json::from_str(&domain_filters_json).unwrap_or_else(|e| {
-                        tracing::warn!(
+                // Parse domain filters. Corrupted JSON → skip this subscriber
+                // entirely (reject) rather than defaulting to accept-all, which
+                // could cause unauthorized knowledge transfer.
+                let domain_filters: Vec<String> = match serde_json::from_str(&domain_filters_json)
+                {
+                    Ok(f) => f,
+                    Err(e) => {
+                        tracing::error!(
                             subscriber = %sub_pseudonym,
-                            "corrupted domain_filters_json in rtx subscription, defaulting to accept-all: {}",
+                            bundle_id = %stored_bundle.bundle_id,
+                            raw_json = %domain_filters_json,
+                            "corrupted domain_filters_json in rtx subscription; skipping delivery to protect against unauthorized transfer: {}",
                             e
                         );
-                        Vec::new()
-                    });
+                        continue;
+                    }
+                };
 
                 // Check domain tag match (empty filters = accept all)
                 let matches = domain_filters.is_empty()
@@ -242,13 +249,30 @@ pub async fn publish_handler(
                 // Parse receiver's transfer scope
                 let receiver_scope = match parse_transfer_scope(&scope_str) {
                     Some(s) if s >= VrpTransferScope::ReflectionSummariesOnly => s,
-                    _ => continue,
+                    _ => {
+                        tracing::warn!(
+                            subscriber = %sub_pseudonym,
+                            bundle_id = %stored_bundle.bundle_id,
+                            scope = %scope_str,
+                            "skipping RTX delivery: transfer scope is NoTransfer or unparseable"
+                        );
+                        continue;
+                    }
                 };
 
                 // Apply receiver's transfer scope enforcement
                 let scoped = match enforce_transfer_scope(&stored_bundle, receiver_scope) {
                     Ok(b) => b,
-                    Err(_) => continue,
+                    Err(e) => {
+                        tracing::error!(
+                            subscriber = %sub_pseudonym,
+                            bundle_id = %stored_bundle.bundle_id,
+                            scope = %receiver_scope.to_string(),
+                            "transfer scope enforcement failed; skipping delivery: {}",
+                            e
+                        );
+                        continue;
+                    }
                 };
 
                 let payload = serde_json::json!({
@@ -435,14 +459,17 @@ pub async fn subscribe_handler(
                 })?;
 
             let parsed_filters: Vec<String> =
-                serde_json::from_str(&filters_back).unwrap_or_else(|e| {
-                    tracing::warn!(
+                serde_json::from_str(&filters_back).map_err(|e| {
+                    tracing::error!(
                         subscriber = %pseudonym,
+                        raw_json = %filters_back,
                         "corrupted domain_filters_json in subscription read-back: {}",
                         e
                     );
-                    Vec::new()
-                });
+                    ApiError::InternalServerError(
+                        "corrupted domain filter data in subscription".to_string(),
+                    )
+                })?;
 
             Ok(SubscriptionInfo {
                 subscriber_pseudonym: pseudonym,
@@ -675,13 +702,30 @@ pub async fn relay_rtx_bundles(state: Arc<AppState>, bundle: ReflectionSummaryBu
     for (base_url, transfer_scope_str) in peers {
         let scope = match parse_transfer_scope(&transfer_scope_str) {
             Some(s) if s >= VrpTransferScope::ReflectionSummariesOnly => s,
-            _ => continue, // Skip NoTransfer or unknown peers
+            _ => {
+                tracing::warn!(
+                    peer = %base_url,
+                    bundle_id = %bundle.bundle_id,
+                    scope = %transfer_scope_str,
+                    "skipping RTX federation relay: transfer scope is NoTransfer or unparseable"
+                );
+                continue;
+            }
         };
 
         // Apply federation transfer scope to the bundle
         let scoped_bundle = match enforce_transfer_scope(&bundle, scope) {
             Ok(b) => b,
-            Err(_) => continue,
+            Err(e) => {
+                tracing::error!(
+                    peer = %base_url,
+                    bundle_id = %bundle.bundle_id,
+                    scope = %scope.to_string(),
+                    "federation RTX scope enforcement failed; skipping relay: {}",
+                    e
+                );
+                continue;
+            }
         };
 
         // Build provenance (this server is the first relay hop)
