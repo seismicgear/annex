@@ -536,12 +536,12 @@ These functionalities have **zero or minimal test coverage**:
 | Policy re-evaluation | `policy.rs` | Multi-agent alignment recalculation -- has integration test coverage via `policy_test.rs` and `federation_policy_test.rs` |
 | Channel join alignment restrictions | `api_channels.rs` | Agent alignment checks tested via `api_channels_agent.rs` |
 | Federation message relay | `api_federation.rs` | Outbound relay tested via `api_federation_relay.rs` |
-| Background pruning task | `background.rs` | Node pruning loop -- untested |
-| Rate limiter overflow | `middleware.rs` | Sliding window with retain -- tested via unit tests in `middleware.rs` |
+| Background pruning task | `background.rs` | Tested via `background_pruning_test.rs`: lifecycle, interval calculation, event emission, selective pruning, multi-node pruning |
+| Rate limiter overflow | `middleware.rs` | Sliding window with retain -- tested via unit tests in `middleware.rs` and concurrency tests in `concurrency_rate_limiter.rs` |
 | `find_commitment_for_pseudonym` | `api_federation.rs` | Now O(1) indexed path; tested via federation integration tests |
 | Bearer token auth path | `middleware.rs` | `Authorization: Bearer` header path -- tested via `api_auth.rs` |
 | History cursor pagination | `api_channels.rs` | `before` parameter -- tested via `api_channel_history.rs` |
-| Concurrency scenarios | (all) | Zero concurrency tests for any race condition, deadlock, or TOCTOU |
+| Concurrency scenarios | ConnectionManager, RateLimiter | Tested via `concurrency_connection_manager.rs` (8 tests: deadlock, orphan, replacement, broadcast) and `concurrency_rate_limiter.rs` (5 tests: same-key, distinct-key, high-volume, eviction) |
 
 ---
 
