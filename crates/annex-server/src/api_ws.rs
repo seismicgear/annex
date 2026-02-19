@@ -351,9 +351,14 @@ async fn check_ws_membership(
 
 /// Sends a JSON-serialized error message over the WebSocket sender channel.
 fn send_ws_error(tx: &mpsc::Sender<String>, message: String) {
-    if let Ok(json) = serde_json::to_string(&OutgoingMessage::Error { message }) {
-        if let Err(e) = tx.try_send(json) {
-            tracing::warn!("failed to send WebSocket error to client: {}", e);
+    match serde_json::to_string(&OutgoingMessage::Error { message }) {
+        Ok(json) => {
+            if let Err(e) = tx.try_send(json) {
+                tracing::warn!("failed to send WebSocket error to client: {}", e);
+            }
+        }
+        Err(e) => {
+            tracing::error!("failed to serialize WebSocket error message: {}", e);
         }
     }
 }
@@ -517,11 +522,19 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                             Ok(Ok((message, is_federated))) => {
                                 // Broadcast
                                 let out = OutgoingMessage::Message(message.clone());
-                                if let Ok(json) = serde_json::to_string(&out) {
-                                    state
-                                        .connection_manager
-                                        .broadcast(&message.channel_id, json)
-                                        .await;
+                                match serde_json::to_string(&out) {
+                                    Ok(json) => {
+                                        state
+                                            .connection_manager
+                                            .broadcast(&message.channel_id, json)
+                                            .await;
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            channel_id = %message.channel_id,
+                                            "failed to serialize outgoing message for broadcast: {}", e
+                                        );
+                                    }
                                 }
 
                                 // Relay if federated
@@ -709,11 +722,16 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                                                         text: event.text,
                                                                     };
 
-                                                                    if let Ok(json) =
-                                                                        serde_json::to_string(&msg)
-                                                                    {
-                                                                        cm.send(&p_clone, json)
-                                                                            .await;
+                                                                    match serde_json::to_string(&msg) {
+                                                                        Ok(json) => {
+                                                                            cm.send(&p_clone, json)
+                                                                                .await;
+                                                                        }
+                                                                        Err(e) => {
+                                                                            tracing::error!(
+                                                                                "failed to serialize transcription message: {}", e
+                                                                            );
+                                                                        }
                                                                     }
                                                                 }
                                                             });
@@ -764,7 +782,8 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                     }
                 }
             } else {
-                tracing::warn!("Failed to parse incoming WebSocket message");
+                tracing::warn!(pseudonym = %pseudonym, "failed to parse incoming WebSocket message");
+                send_ws_error(&tx, "invalid message format".to_string());
             }
         } else if let AxumMessage::Close(_) = msg {
             break;
@@ -782,8 +801,16 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
     // decrement the reference count; when it reaches zero the
     // AgentVoiceClient is dropped, its internal broadcast sender closes,
     // and the spawned transcription task will exit naturally.
-    if let Ok(mut sessions) = state.voice_sessions.write() {
-        sessions.remove(&pseudonym);
+    match state.voice_sessions.write() {
+        Ok(mut sessions) => {
+            sessions.remove(&pseudonym);
+        }
+        Err(e) => {
+            tracing::error!(
+                pseudonym = %pseudonym,
+                "voice_sessions RwLock poisoned during cleanup: {}", e
+            );
+        }
     }
 }
 

@@ -220,3 +220,86 @@ async fn test_ws_unauthenticated_user_rejected() {
         "expected WebSocket upgrade to fail for unknown pseudonym"
     );
 }
+
+/// Sending malformed (non-JSON) text over the WebSocket must return an error
+/// message to the client instead of silently dropping the input.
+#[tokio::test]
+async fn test_ws_malformed_message_returns_error() {
+    let (addr, _pool) = setup_test_server().await;
+
+    let ws_url = format!("ws://{}/ws?pseudonym=user-1", addr);
+    let (mut ws_stream, _) = connect_async(ws_url).await.expect("failed to connect");
+
+    // Send invalid JSON
+    ws_stream
+        .send(Message::Text("this is not json".into()))
+        .await
+        .expect("failed to send malformed message");
+
+    // Expect an error response
+    let response = tokio::time::timeout(std::time::Duration::from_secs(5), ws_stream.next())
+        .await
+        .expect("timeout waiting for response")
+        .expect("connection closed")
+        .expect("frame error");
+
+    if let Message::Text(text) = response {
+        let parsed: serde_json::Value =
+            serde_json::from_str(&text).expect("failed to parse response JSON");
+        assert_eq!(
+            parsed["type"], "error",
+            "expected error message, got: {}",
+            parsed
+        );
+        let msg = parsed["message"].as_str().expect("missing message field");
+        assert!(
+            msg.contains("invalid message format"),
+            "error message should indicate invalid format, got: {}",
+            msg
+        );
+    } else {
+        panic!("expected text message, got: {:?}", response);
+    }
+}
+
+/// Sending valid JSON that doesn't match the IncomingMessage schema must
+/// return an error to the client.
+#[tokio::test]
+async fn test_ws_unknown_message_type_returns_error() {
+    let (addr, _pool) = setup_test_server().await;
+
+    let ws_url = format!("ws://{}/ws?pseudonym=user-1", addr);
+    let (mut ws_stream, _) = connect_async(ws_url).await.expect("failed to connect");
+
+    // Send valid JSON with unknown type
+    let msg = json!({"type": "nonexistent_type", "data": 42});
+    ws_stream
+        .send(Message::Text(msg.to_string().into()))
+        .await
+        .expect("failed to send unknown type message");
+
+    // Expect an error response because the type doesn't match IncomingMessage variants
+    let response = tokio::time::timeout(std::time::Duration::from_secs(5), ws_stream.next())
+        .await
+        .expect("timeout waiting for response")
+        .expect("connection closed")
+        .expect("frame error");
+
+    if let Message::Text(text) = response {
+        let parsed: serde_json::Value =
+            serde_json::from_str(&text).expect("failed to parse response JSON");
+        assert_eq!(
+            parsed["type"], "error",
+            "expected error message for unknown type, got: {}",
+            parsed
+        );
+        let msg = parsed["message"].as_str().expect("missing message field");
+        assert!(
+            msg.contains("invalid message format"),
+            "error message should indicate invalid format, got: {}",
+            msg
+        );
+    } else {
+        panic!("expected text message, got: {:?}", response);
+    }
+}

@@ -2,7 +2,7 @@
 
 **Standard**: System must run correctly for 100 years unattended.
 **Date**: 2026-02-18
-**Last Audit**: 2026-02-18
+**Last Audit**: 2026-02-19
 **Codebase**: ~14,500 lines of Rust across 11 crates
 **Method**: Line-by-line audit of every `.rs` file, every SQL migration, every test, every `Cargo.toml`
 
@@ -14,10 +14,10 @@
 |----------|-------|-------|--------------|------|
 | CRITICAL | 14 | 12 | 2 | 0 |
 | HIGH     | 28 | 24 | 4 | 0 |
-| MODERATE | 37 | 28 | 9 | 0 |
+| MODERATE | 48 | 39 | 9 | 0 |
 | LOW      | 28 | 12 | 16 | 0 |
 | NITPICK  | 11 | 0 | 11 | 0 |
-| **Total** | **118** | **76** | **42** | **0** |
+| **Total** | **129** | **87** | **42** | **0** |
 
 Legend: **Fixed** = code change applied. **Acknowledged** = known limitation, design decision, or deferred to future phase.
 
@@ -204,7 +204,7 @@ These will cause outages, data loss, or exploitable behavior under load or over 
 
 ---
 
-## MODERATE (37) — 28 Fixed, 9 Acknowledged
+## MODERATE (48) — 39 Fixed, 9 Acknowledged
 
 These cause degraded behavior, confusing errors, or performance cliffs.
 
@@ -355,6 +355,50 @@ These cause degraded behavior, confusing errors, or performance cliffs.
 ### M-37: Missing index on `messages(expires_at)` for retention cleanup — FIXED
 - **File**: `crates/annex-db/src/migrations/023_production_indexes.sql`
 - **Fix**: Added partial index `idx_messages_expires_at(expires_at) WHERE expires_at IS NOT NULL`.
+
+### M-38: `send_ws_error` silently drops serialization failures — FIXED
+- **File**: `crates/annex-server/src/api_ws.rs:353-359`
+- **Fix**: Replaced `if let Ok(json)` with explicit `match` that logs serialization failures at error level.
+
+### M-39: Malformed WebSocket messages ignored without client notification — FIXED
+- **File**: `crates/annex-server/src/api_ws.rs:409,771`
+- **Fix**: The `else` branch now sends an `"invalid message format"` error back to the client via `send_ws_error()` and includes the pseudonym in the warning log for diagnostics.
+
+### M-40: Message broadcast serialization failure silently drops messages — FIXED
+- **File**: `crates/annex-server/src/api_ws.rs:525`
+- **Fix**: Replaced `if let Ok(json)` with `match` that logs the channel_id and error at error level when serialization fails.
+
+### M-41: VoiceIntent transcription serialization failure silently drops events — FIXED
+- **File**: `crates/annex-server/src/api_ws.rs:725`
+- **Fix**: Replaced `if let Ok(json)` with `match` that logs serialization failures at error level.
+
+### M-42: RwLock poison on `voice_sessions` silently skips cleanup — FIXED
+- **File**: `crates/annex-server/src/api_ws.rs:804`
+- **Fix**: Replaced `if let Ok(mut sessions)` with `match` that logs the poisoned lock at error level with the affected pseudonym.
+
+### M-43: `find_commitment_for_pseudonym` DB error silently falls back to unknown — FIXED
+- **File**: `crates/annex-server/src/api_federation.rs:168`
+- **Fix**: Replaced `if let Ok(Some(...))` with three-arm `match` that logs DB errors at warn level and missing commitments at debug level.
+
+### M-44: Federation broadcast serialization failure silently drops messages — FIXED
+- **File**: `crates/annex-server/src/api_federation.rs:512`
+- **Fix**: Replaced `if let Ok(json)` with `match` that logs the channel_id and error at error level.
+
+### M-45: Channel transcription serialization failure silently drops events — FIXED
+- **File**: `crates/annex-server/src/api_channels.rs:434`
+- **Fix**: Replaced `if let Ok(json)` with `match` that logs serialization failures at error level.
+
+### M-46: RTX bundle serialization failure silently drops delivery — FIXED
+- **File**: `crates/annex-server/src/api_rtx.rs:259`
+- **Fix**: Replaced `if let Ok(json)` with `match` that logs bundle_id, destination, and error. Transfer log is only written on successful serialization.
+
+### M-47: Federated RTX bundle serialization failure silently drops delivery — FIXED
+- **File**: `crates/annex-server/src/api_federation.rs:1230`
+- **Fix**: Replaced `if let Ok(json)` with `match` that logs bundle_id, destination, and error at error level.
+
+### M-48: VRP handshake `update_node_activity` error silently skipped — FIXED
+- **File**: `crates/annex-server/src/api_vrp.rs:111`
+- **Fix**: Replaced `if let Ok(true)` with three-arm `match` that logs DB errors at warn level and handles `Ok(false)` (no-op) explicitly.
 
 ---
 
@@ -542,6 +586,7 @@ These functionalities have **zero or minimal test coverage**:
 | Bearer token auth path | `middleware.rs` | `Authorization: Bearer` header path -- tested via `api_auth.rs` |
 | History cursor pagination | `api_channels.rs` | `before` parameter -- tested via `api_channel_history.rs` |
 | Concurrency scenarios | ConnectionManager, RateLimiter | Tested via `concurrency_connection_manager.rs` (8 tests: deadlock, orphan, replacement, broadcast) and `concurrency_rate_limiter.rs` (5 tests: same-key, distinct-key, high-volume, eviction) |
+| WebSocket malformed input handling | `api_ws.rs` | Tested via `ws_error_handling.rs`: malformed JSON returns error, unknown message type returns error |
 
 ---
 

@@ -256,40 +256,49 @@ pub async fn publish_handler(
                     "bundle": scoped,
                 });
 
-                if let Ok(json) = serde_json::to_string(&payload) {
-                    // Log delivery
-                    let delivery_redactions = if receiver_scope
-                        == VrpTransferScope::ReflectionSummariesOnly
-                        && stored_bundle.reasoning_chain.is_some()
-                    {
-                        Some("reasoning_chain_stripped")
-                    } else {
-                        None
-                    };
+                match serde_json::to_string(&payload) {
+                    Ok(json) => {
+                        // Log delivery
+                        let delivery_redactions = if receiver_scope
+                            == VrpTransferScope::ReflectionSummariesOnly
+                            && stored_bundle.reasoning_chain.is_some()
+                        {
+                            Some("reasoning_chain_stripped")
+                        } else {
+                            None
+                        };
 
-                    if let Err(e) = conn.execute(
-                        "INSERT INTO rtx_transfer_log (
-                            server_id, bundle_id, source_pseudonym, destination_pseudonym,
-                            transfer_scope_applied, redactions_applied
-                        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                        rusqlite::params![
-                            state.server_id,
-                            stored_bundle.bundle_id,
-                            stored_bundle.source_pseudonym,
-                            sub_pseudonym,
-                            receiver_scope.to_string(),
-                            delivery_redactions,
-                        ],
-                    ) {
-                        tracing::warn!(
+                        if let Err(e) = conn.execute(
+                            "INSERT INTO rtx_transfer_log (
+                                server_id, bundle_id, source_pseudonym, destination_pseudonym,
+                                transfer_scope_applied, redactions_applied
+                            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                            rusqlite::params![
+                                state.server_id,
+                                stored_bundle.bundle_id,
+                                stored_bundle.source_pseudonym,
+                                sub_pseudonym,
+                                receiver_scope.to_string(),
+                                delivery_redactions,
+                            ],
+                        ) {
+                            tracing::warn!(
+                                bundle_id = %stored_bundle.bundle_id,
+                                destination = %sub_pseudonym,
+                                "failed to write rtx transfer log: {}",
+                                e
+                            );
+                        }
+
+                        deliveries.push((sub_pseudonym, json));
+                    }
+                    Err(e) => {
+                        tracing::error!(
                             bundle_id = %stored_bundle.bundle_id,
                             destination = %sub_pseudonym,
-                            "failed to write rtx transfer log: {}",
-                            e
+                            "failed to serialize rtx bundle for delivery: {}", e
                         );
                     }
-
-                    deliveries.push((sub_pseudonym, json));
                 }
             }
 

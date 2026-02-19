@@ -431,8 +431,15 @@ pub async fn join_channel_handler(
                             text: event.text,
                         };
 
-                        if let Ok(json) = serde_json::to_string(&msg) {
-                            cm.send(&p_clone, json).await;
+                        match serde_json::to_string(&msg) {
+                            Ok(json) => {
+                                cm.send(&p_clone, json).await;
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    "failed to serialize transcription message: {}", e
+                                );
+                            }
                         }
                     }
                 });
