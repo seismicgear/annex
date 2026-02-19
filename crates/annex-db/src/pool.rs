@@ -73,8 +73,19 @@ pub fn create_pool(db_path: &str, settings: DbRuntimeSettings) -> Result<DbPool,
             ))
         });
 
+    // In-memory databases (:memory:) create a separate, empty database for
+    // each connection. With pool_max_size > 1, a background task could grab
+    // a second connection that points to a different (empty) database,
+    // causing queries to fail or return stale results. Clamping to 1
+    // ensures all operations share the single in-memory database.
+    let effective_max_size = if db_path == ":memory:" {
+        1
+    } else {
+        settings.pool_max_size
+    };
+
     let pool = Pool::builder()
-        .max_size(settings.pool_max_size)
+        .max_size(effective_max_size)
         .build(manager)?;
 
     Ok(pool)
@@ -116,7 +127,31 @@ mod tests {
             .expect("should query busy_timeout");
         assert_eq!(busy_timeout, 2_500, "busy timeout should match settings");
 
-        // Verify pool max size is configured
-        assert_eq!(pool.max_size(), 3, "pool max size should match settings");
+        // In-memory databases are clamped to pool_max_size=1 because each
+        // connection opens a separate empty database.
+        assert_eq!(
+            pool.max_size(),
+            1,
+            "in-memory pool should be clamped to max_size=1"
+        );
+    }
+
+    #[test]
+    fn file_pool_uses_configured_max_size() {
+        let dir = tempfile::tempdir().expect("should create temp dir");
+        let db_path = dir.path().join("test.db");
+        let db_path_str = db_path.to_str().expect("valid utf-8 path");
+
+        let settings = DbRuntimeSettings {
+            busy_timeout_ms: 5_000,
+            pool_max_size: 4,
+        };
+
+        let pool = create_pool(db_path_str, settings).expect("pool creation should succeed");
+        assert_eq!(
+            pool.max_size(),
+            4,
+            "file-backed pool should use configured max_size"
+        );
     }
 }

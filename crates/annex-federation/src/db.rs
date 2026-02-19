@@ -74,6 +74,62 @@ pub fn create_agreement(
     Ok(id)
 }
 
+/// Retrieves the active federation agreement for a remote instance.
+pub fn get_agreement(
+    conn: &Connection,
+    remote_instance_id: i64,
+) -> Result<Option<FederationAgreement>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, local_server_id, remote_instance_id, alignment_status, transfer_scope, agreement_json, remote_handshake_json, active, created_at, updated_at
+         FROM federation_agreements
+         WHERE remote_instance_id = ?1 AND active = 1",
+    )?;
+
+    let mut rows = stmt.query(params![remote_instance_id])?;
+
+    if let Some(row) = rows.next()? {
+        let agreement_json_str: String = row.get(5)?;
+        let agreement_json: VrpValidationReport = serde_json::from_str(&agreement_json_str)
+            .map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    5,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?;
+
+        let handshake_json_str: Option<String> = row.get(6)?;
+        let remote_handshake_json: Option<VrpFederationHandshake> =
+            if let Some(s) = handshake_json_str {
+                Some(serde_json::from_str(&s).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        6,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?)
+            } else {
+                None
+            };
+
+        // We use the values from the deserialized report to ensure consistency
+        Ok(Some(FederationAgreement {
+            id: row.get(0)?,
+            local_server_id: row.get(1)?,
+            remote_instance_id: row.get(2)?,
+            alignment_status: agreement_json.alignment_status,
+            transfer_scope: agreement_json.transfer_scope,
+            agreement_json,
+            remote_handshake_json,
+            active: row.get(7)?,
+            created_at: row.get(8)?,
+            updated_at: row.get(9)?,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,61 +227,5 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 2, "agreements from different servers should coexist");
-    }
-}
-
-/// Retrieves the active federation agreement for a remote instance.
-pub fn get_agreement(
-    conn: &Connection,
-    remote_instance_id: i64,
-) -> Result<Option<FederationAgreement>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, local_server_id, remote_instance_id, alignment_status, transfer_scope, agreement_json, remote_handshake_json, active, created_at, updated_at
-         FROM federation_agreements
-         WHERE remote_instance_id = ?1 AND active = 1",
-    )?;
-
-    let mut rows = stmt.query(params![remote_instance_id])?;
-
-    if let Some(row) = rows.next()? {
-        let agreement_json_str: String = row.get(5)?;
-        let agreement_json: VrpValidationReport = serde_json::from_str(&agreement_json_str)
-            .map_err(|e| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    5,
-                    rusqlite::types::Type::Text,
-                    Box::new(e),
-                )
-            })?;
-
-        let handshake_json_str: Option<String> = row.get(6)?;
-        let remote_handshake_json: Option<VrpFederationHandshake> =
-            if let Some(s) = handshake_json_str {
-                Some(serde_json::from_str(&s).map_err(|e| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        6,
-                        rusqlite::types::Type::Text,
-                        Box::new(e),
-                    )
-                })?)
-            } else {
-                None
-            };
-
-        // We use the values from the deserialized report to ensure consistency
-        Ok(Some(FederationAgreement {
-            id: row.get(0)?,
-            local_server_id: row.get(1)?,
-            remote_instance_id: row.get(2)?,
-            alignment_status: agreement_json.alignment_status,
-            transfer_scope: agreement_json.transfer_scope,
-            agreement_json,
-            remote_handshake_json,
-            active: row.get(7)?,
-            created_at: row.get(8)?,
-            updated_at: row.get(9)?,
-        }))
-    } else {
-        Ok(None)
     }
 }
