@@ -108,22 +108,33 @@ pub async fn agent_handshake_handler(
             || report.alignment_status == VrpAlignmentStatus::Partial
         {
             // Update graph node activity if it exists
-            if let Ok(true) = update_node_activity(&tx, state.server_id, &payload.pseudonym_id) {
-                let _ = state.presence_tx.send(PresenceEvent::NodeUpdated {
-                    pseudonym_id: payload.pseudonym_id.clone(),
-                    active: true,
-                });
+            match update_node_activity(&tx, state.server_id, &payload.pseudonym_id) {
+                Ok(true) => {
+                    let _ = state.presence_tx.send(PresenceEvent::NodeUpdated {
+                        pseudonym_id: payload.pseudonym_id.clone(),
+                        active: true,
+                    });
 
-                let observe_payload = EventPayload::NodeReactivated {
-                    pseudonym_id: payload.pseudonym_id.clone(),
-                };
-                crate::emit_and_broadcast(
-                    &tx,
-                    state.server_id,
-                    &payload.pseudonym_id,
-                    &observe_payload,
-                    &state.observe_tx,
-                );
+                    let observe_payload = EventPayload::NodeReactivated {
+                        pseudonym_id: payload.pseudonym_id.clone(),
+                    };
+                    crate::emit_and_broadcast(
+                        &tx,
+                        state.server_id,
+                        &payload.pseudonym_id,
+                        &observe_payload,
+                        &state.observe_tx,
+                    );
+                }
+                Ok(false) => {
+                    // Node does not exist or was already active; no action needed
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        pseudonym_id = %payload.pseudonym_id,
+                        "failed to update graph node activity during VRP handshake: {}", e
+                    );
+                }
             }
 
             let contract_json = serde_json::to_string(&payload.handshake.capability_contract)

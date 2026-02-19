@@ -162,11 +162,19 @@ pub async fn relay_message(
                 peers.push(row.map_err(|e| e.to_string())?);
             }
 
-            // 2. Find Commitment and Topic for Sender (Brute force lookup fallback)
+            // 2. Find Commitment and Topic for Sender (indexed lookup with legacy fallback)
             let mut attestation_ref = "annex:server:v1:unknown".to_string();
 
-            if let Ok(Some((commitment, topic))) = find_commitment_for_pseudonym(&conn, &sender) {
-                attestation_ref = format!("{}:{}", topic, commitment);
+            match find_commitment_for_pseudonym(&conn, &sender) {
+                Ok(Some((commitment, topic))) => {
+                    attestation_ref = format!("{}:{}", topic, commitment);
+                }
+                Ok(None) => {
+                    tracing::debug!(sender = %sender, "no commitment found for pseudonym, using unknown attestation ref");
+                }
+                Err(e) => {
+                    tracing::warn!(sender = %sender, "failed to look up commitment for pseudonym: {}", e);
+                }
             }
 
             Ok::<_, String>((peers, attestation_ref))
@@ -291,9 +299,17 @@ fn find_commitment_for_pseudonym(
 
     for row in rows {
         let (topic, nullifier_hex) = row?;
-        if let Ok(p) = annex_identity::derive_pseudonym_id(&topic, &nullifier_hex) {
-            if p == pseudonym {
-                candidate_nullifiers.push((topic, nullifier_hex));
+        match annex_identity::derive_pseudonym_id(&topic, &nullifier_hex) {
+            Ok(p) => {
+                if p == pseudonym {
+                    candidate_nullifiers.push((topic, nullifier_hex));
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    topic = %topic,
+                    "failed to derive pseudonym_id from legacy nullifier row: {}", e
+                );
             }
         }
     }
@@ -310,9 +326,18 @@ fn find_commitment_for_pseudonym(
 
     for (topic, nullifier) in candidate_nullifiers {
         for commitment in &commitments {
-            if let Ok(n) = annex_identity::derive_nullifier_hex(commitment, &topic) {
-                if n == nullifier {
-                    return Ok(Some((commitment.clone(), topic)));
+            match annex_identity::derive_nullifier_hex(commitment, &topic) {
+                Ok(n) => {
+                    if n == nullifier {
+                        return Ok(Some((commitment.clone(), topic)));
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        commitment = %commitment,
+                        topic = %topic,
+                        "failed to derive nullifier hex in legacy commitment scan: {}", e
+                    );
                 }
             }
         }
@@ -484,11 +509,19 @@ pub async fn receive_federated_message_handler(
     // 8. Broadcast
     if let Some(msg) = inserted {
         let out = crate::api_ws::OutgoingMessage::Message(msg);
-        if let Ok(json) = serde_json::to_string(&out) {
-            state
-                .connection_manager
-                .broadcast(&channel_id_clone, json)
-                .await;
+        match serde_json::to_string(&out) {
+            Ok(json) => {
+                state
+                    .connection_manager
+                    .broadcast(&channel_id_clone, json)
+                    .await;
+            }
+            Err(e) => {
+                tracing::error!(
+                    channel_id = %channel_id_clone,
+                    "failed to serialize federated message for broadcast: {}", e
+                );
+            }
         }
     }
 
@@ -1194,40 +1227,49 @@ pub async fn receive_federated_rtx_handler(
                 "provenance": envelope.provenance,
             });
 
-            if let Ok(json) = serde_json::to_string(&payload) {
-                // Log delivery
-                let delivery_redactions = if receiver_scope
-                    == VrpTransferScope::ReflectionSummariesOnly
-                    && scoped_bundle.reasoning_chain.is_some()
-                {
-                    Some("reasoning_chain_stripped")
-                } else {
-                    None
-                };
+            match serde_json::to_string(&payload) {
+                Ok(json) => {
+                    // Log delivery
+                    let delivery_redactions = if receiver_scope
+                        == VrpTransferScope::ReflectionSummariesOnly
+                        && scoped_bundle.reasoning_chain.is_some()
+                    {
+                        Some("reasoning_chain_stripped")
+                    } else {
+                        None
+                    };
 
-                if let Err(e) = tx.execute(
-                    "INSERT INTO rtx_transfer_log (
-                        server_id, bundle_id, source_pseudonym, destination_pseudonym,
-                        transfer_scope_applied, redactions_applied
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![
-                        state_clone.server_id,
-                        scoped_bundle.bundle_id,
-                        scoped_bundle.source_pseudonym,
-                        sub_pseudonym,
-                        receiver_scope.to_string(),
-                        delivery_redactions,
-                    ],
-                ) {
-                    tracing::warn!(
+                    if let Err(e) = tx.execute(
+                        "INSERT INTO rtx_transfer_log (
+                            server_id, bundle_id, source_pseudonym, destination_pseudonym,
+                            transfer_scope_applied, redactions_applied
+                        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                        params![
+                            state_clone.server_id,
+                            scoped_bundle.bundle_id,
+                            scoped_bundle.source_pseudonym,
+                            sub_pseudonym,
+                            receiver_scope.to_string(),
+                            delivery_redactions,
+                        ],
+                    ) {
+                        tracing::warn!(
+                            bundle_id = %scoped_bundle.bundle_id,
+                            destination = %sub_pseudonym,
+                            "failed to write federated rtx transfer log: {}",
+                            e
+                        );
+                    }
+
+                    deliveries.push((sub_pseudonym, json));
+                }
+                Err(e) => {
+                    tracing::error!(
                         bundle_id = %scoped_bundle.bundle_id,
                         destination = %sub_pseudonym,
-                        "failed to write federated rtx transfer log: {}",
-                        e
+                        "failed to serialize federated rtx bundle for delivery: {}", e
                     );
                 }
-
-                deliveries.push((sub_pseudonym, json));
             }
         }
 
