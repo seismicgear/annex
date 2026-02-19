@@ -12,6 +12,163 @@ Built on the same identity substrate, federation protocol, and trust negotiation
 
 ---
 
+## Quick Start
+
+### Docker (fastest)
+
+```bash
+git clone https://github.com/seismicgear/annex.git && cd annex
+docker compose up -d
+```
+
+Server runs at `http://localhost:3000`. LiveKit dev server at `ws://localhost:7880`.
+
+### From source
+
+```bash
+git clone https://github.com/seismicgear/annex.git && cd annex
+./deploy.sh --mode source
+```
+
+Or on Windows (PowerShell):
+
+```powershell
+git clone https://github.com/seismicgear/annex.git; cd annex
+./deploy.ps1 -Mode source
+```
+
+The deploy scripts handle building, database migration, server seeding, and startup. See [Deployment](#deployment) for full options.
+
+### Prerequisites
+
+| Requirement | Version | Notes |
+|-------------|---------|-------|
+| **Rust** | 1.82+ | Only for source builds. Install from [rustup.rs](https://rustup.rs) |
+| **Docker** | 20+ | Only for Docker deploys |
+| **sqlite3** | Any | Optional. Used by deploy scripts to seed the database |
+| **Node.js** | 22+ | Only for client builds (Docker handles this automatically) |
+
+---
+
+## Deployment
+
+Annex ships with deploy scripts for Linux/macOS (`deploy.sh`) and Windows (`deploy.ps1`). Both support Docker and source builds with identical options.
+
+### Deploy script options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--mode` | `docker` | `docker` or `source` |
+| `--host` | `0.0.0.0` | Bind address |
+| `--port` | `3000` | Bind port |
+| `--data-dir` | `./data` | Persistent data (database, generated config) |
+| `--server-label` | `Annex Server` | Display name for this instance |
+| `--server-slug` | `default` | URL-safe identifier |
+| `--public-url` | `http://localhost:<port>` | Public URL (required for federation) |
+| `--signing-key` | *(ephemeral)* | Ed25519 key as 64-char hex. Generate with `openssl rand -hex 32` |
+| `--log-level` | `info` | `trace`, `debug`, `info`, `warn`, `error` |
+| `--log-json` | `false` | Structured JSON logs (recommended for production) |
+| `--skip-build` | `false` | Use existing binary |
+| `--livekit-url` | *(none)* | LiveKit WebSocket URL for voice |
+| `--livekit-api-key` | *(none)* | LiveKit API key |
+| `--livekit-api-secret` | *(none)* | LiveKit API secret |
+
+PowerShell uses `-Mode`, `-Host`, `-Port`, etc. (same names, dash-prefix style).
+
+### Production deployment
+
+```bash
+# Generate a persistent signing key
+export SIGNING_KEY=$(openssl rand -hex 32)
+
+./deploy.sh \
+  --mode source \
+  --public-url https://annex.example.com \
+  --signing-key "$SIGNING_KEY" \
+  --log-json \
+  --data-dir /var/lib/annex \
+  --livekit-url wss://livekit.example.com \
+  --livekit-api-key "$LIVEKIT_KEY" \
+  --livekit-api-secret "$LIVEKIT_SECRET"
+```
+
+Run behind a TLS reverse proxy (nginx, Caddy, etc.). The server itself binds HTTP only.
+
+### Production checklist
+
+- [ ] Set a persistent `--signing-key` (ephemeral keys break federation on restart)
+- [ ] Set `--public-url` to your real domain (required for federation signatures)
+- [ ] Enable `--log-json` for log aggregation
+- [ ] Run behind TLS reverse proxy
+- [ ] Mount persistent volume for `--data-dir`
+- [ ] Back up the SQLite database regularly
+- [ ] Configure LiveKit if voice features are needed
+
+### Configuration
+
+The server reads configuration from three sources in priority order:
+
+1. **Environment variables** (highest priority)
+2. **TOML config file** (`config.toml` or `ANNEX_CONFIG_PATH`)
+3. **Built-in defaults** (lowest priority)
+
+The deploy scripts generate a `config.toml` in your data directory. You can also configure everything via environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ANNEX_HOST` | `127.0.0.1` | Bind address |
+| `ANNEX_PORT` | `3000` | Bind port |
+| `ANNEX_PUBLIC_URL` | `http://localhost:3000` | Public URL for federation |
+| `ANNEX_DB_PATH` | `annex.db` | SQLite database file path |
+| `ANNEX_DB_BUSY_TIMEOUT_MS` | `5000` | SQLite busy timeout (1-60000) |
+| `ANNEX_DB_POOL_MAX_SIZE` | `8` | Connection pool size (1-64) |
+| `ANNEX_LOG_LEVEL` | `info` | Log level or tracing directive |
+| `ANNEX_LOG_JSON` | `false` | Structured JSON output |
+| `ANNEX_SIGNING_KEY` | *(ephemeral)* | Ed25519 secret key (hex) |
+| `ANNEX_ZK_KEY_PATH` | `zk/keys/membership_vkey.json` | Groth16 verification key |
+| `ANNEX_CONFIG_PATH` | `config.toml` | Config file path |
+| `ANNEX_MERKLE_TREE_DEPTH` | `20` | Merkle tree depth (1-30) |
+| `ANNEX_LIVEKIT_URL` | *(none)* | LiveKit WebSocket URL |
+| `ANNEX_LIVEKIT_API_KEY` | *(none)* | LiveKit API key |
+| `ANNEX_LIVEKIT_API_SECRET` | *(none)* | LiveKit API secret |
+| `ANNEX_TTS_VOICES_DIR` | `assets/voices` | Piper voice model directory |
+| `ANNEX_TTS_BINARY_PATH` | `assets/piper/piper` | Piper binary path |
+| `ANNEX_STT_MODEL_PATH` | `assets/models/ggml-base.en.bin` | Whisper model path |
+| `ANNEX_STT_BINARY_PATH` | `assets/whisper/whisper` | Whisper binary path |
+| `ANNEX_RETENTION_CHECK_INTERVAL_SECONDS` | `3600` | Message retention sweep interval |
+| `ANNEX_INACTIVITY_THRESHOLD_SECONDS` | `300` | Presence pruning threshold |
+| `ANNEX_PRESENCE_BROADCAST_CAPACITY` | `256` | Broadcast channel buffer (16-10000) |
+
+### What the server needs at startup
+
+| Requirement | Required? | Notes |
+|-------------|-----------|-------|
+| Writable directory for SQLite DB | Yes | Created automatically |
+| `zk/keys/membership_vkey.json` | Yes | Included in repo; Groth16 verification key |
+| Row in `servers` table | Yes | Deploy scripts handle this automatically |
+| LiveKit server | No | Only for voice channels |
+| Piper / Whisper binaries | No | Only for agent voice synthesis / transcription |
+
+Database migrations run automatically on startup. No manual migration step required.
+
+### Manual setup (without deploy scripts)
+
+```bash
+# Build
+cargo build --release --bin annex-server
+
+# Create database and run migrations (server exits because no server row exists yet)
+ANNEX_DB_PATH=annex.db ./target/release/annex-server || true
+
+# Seed the server
+sqlite3 annex.db "INSERT INTO servers (slug, label, policy_json) VALUES ('default', 'My Server', '{}');"
+
+# Run
+ANNEX_HOST=0.0.0.0 ./target/release/annex-server
+```
+
+---
+
 ## Architecture
 
 Annex implements five architectural planes, each enforcing sovereignty at a different layer of the stack.
