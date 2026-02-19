@@ -501,3 +501,104 @@ async fn test_publish_respects_subscriber_domain_filters() {
         "should not deliver to subscriber whose filters don't match"
     );
 }
+
+// ============================================================================
+// Corrupted Data Safety Tests
+// ============================================================================
+
+/// When a subscriber has corrupted `domain_filters_json` in the DB, the system
+/// must skip delivery to that subscriber (reject) rather than defaulting to
+/// accept-all, which could cause unauthorized knowledge transfer.
+#[tokio::test]
+async fn test_publish_skips_subscriber_with_corrupted_domain_filters() {
+    let (app, pool) = setup_app().await;
+    register_agent(&pool, "agent-pub-corrupt", "FULL_KNOWLEDGE_BUNDLE");
+    register_agent(&pool, "agent-sub-corrupt", "REFLECTION_SUMMARIES_ONLY");
+    register_agent(&pool, "agent-sub-good", "REFLECTION_SUMMARIES_ONLY");
+
+    // Insert one subscription with corrupted JSON and one with valid JSON
+    let conn = pool.get().unwrap();
+    conn.execute(
+        "INSERT INTO rtx_subscriptions (server_id, subscriber_pseudonym, domain_filters_json)
+         VALUES (1, 'agent-sub-corrupt', 'NOT_VALID_JSON{{{}')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO rtx_subscriptions (server_id, subscriber_pseudonym, domain_filters_json)
+         VALUES (1, 'agent-sub-good', '[]')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let bundle = make_bundle("agent-pub-corrupt");
+    let req = build_publish_request("agent-pub-corrupt", &bundle);
+
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+
+    // Only the good subscriber should receive delivery; the corrupted one is skipped
+    assert_eq!(
+        body["delivered_to"], 1,
+        "corrupted domain_filters_json must cause skip (reject), not accept-all"
+    );
+}
+
+/// When a subscriber has a transfer scope that cannot be enforced, the system
+/// must skip that subscriber and log the failure rather than silently dropping it.
+#[tokio::test]
+async fn test_publish_skips_subscriber_with_unparseable_scope() {
+    let (app, pool) = setup_app().await;
+    register_agent(&pool, "agent-pub-scope", "FULL_KNOWLEDGE_BUNDLE");
+
+    // Create a subscriber identity + registration with a corrupted transfer_scope
+    let conn = pool.get().unwrap();
+    conn.execute(
+        "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active)
+         VALUES (1, 'agent-sub-badscope', 'AI_AGENT', 1)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO agent_registrations (
+            server_id, pseudonym_id, alignment_status, transfer_scope,
+            capability_contract_json, reputation_score, last_handshake_at
+        ) VALUES (1, 'agent-sub-badscope', 'ALIGNED', 'INVALID_SCOPE_VALUE', '{}', 1.0, datetime('now'))",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO rtx_subscriptions (server_id, subscriber_pseudonym, domain_filters_json)
+         VALUES (1, 'agent-sub-badscope', '[]')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let bundle = make_bundle("agent-pub-scope");
+    let req = build_publish_request("agent-pub-scope", &bundle);
+
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+
+    // Invalid scope → subscriber is skipped, not crashed
+    assert_eq!(
+        body["delivered_to"], 0,
+        "subscriber with unparseable transfer scope must be skipped"
+    );
+}

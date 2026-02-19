@@ -12,8 +12,8 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - ANNEX_SERVER_HOST=0.0.0.0
-      - ANNEX_SERVER_PORT=3000
+      - ANNEX_HOST=0.0.0.0
+      - ANNEX_PORT=3000
       - ANNEX_DB_PATH=/app/data/annex.db
       - ANNEX_LIVEKIT_URL=ws://livekit:7880
       - ANNEX_LIVEKIT_API_KEY=devkey

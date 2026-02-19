@@ -1189,16 +1189,22 @@ pub async fn receive_federated_rtx_handler(
         };
 
         for (sub_pseudonym, domain_filters_json, scope_str) in subscribers {
-            // Parse domain filters (empty = accept all; log if corrupted)
-            let domain_filters: Vec<String> =
-                serde_json::from_str(&domain_filters_json).unwrap_or_else(|e| {
-                    tracing::warn!(
+            // Parse domain filters. Corrupted JSON → skip this subscriber
+            // entirely (reject) rather than defaulting to accept-all, which
+            // could cause unauthorized knowledge transfer.
+            let domain_filters: Vec<String> = match serde_json::from_str(&domain_filters_json) {
+                Ok(f) => f,
+                Err(e) => {
+                    tracing::error!(
                         subscriber = %sub_pseudonym,
-                        "corrupted domain_filters_json in federated RTX delivery, defaulting to accept-all: {}",
+                        bundle_id = %scoped_bundle.bundle_id,
+                        raw_json = %domain_filters_json,
+                        "corrupted domain_filters_json in federated RTX delivery; skipping to protect against unauthorized transfer: {}",
                         e
                     );
-                    Vec::new()
-                });
+                    continue;
+                }
+            };
 
             // Check domain tag match (empty filters = accept all)
             let matches = domain_filters.is_empty()
@@ -1214,13 +1220,30 @@ pub async fn receive_federated_rtx_handler(
             // Parse receiver's transfer scope
             let receiver_scope = match parse_transfer_scope(&scope_str) {
                 Some(s) if s >= VrpTransferScope::ReflectionSummariesOnly => s,
-                _ => continue,
+                _ => {
+                    tracing::warn!(
+                        subscriber = %sub_pseudonym,
+                        bundle_id = %scoped_bundle.bundle_id,
+                        scope = %scope_str,
+                        "skipping federated RTX delivery: transfer scope is NoTransfer or unparseable"
+                    );
+                    continue;
+                }
             };
 
             // Apply receiver's transfer scope enforcement
             let receiver_bundle = match enforce_transfer_scope(&scoped_bundle, receiver_scope) {
                 Ok(b) => b,
-                Err(_) => continue,
+                Err(e) => {
+                    tracing::error!(
+                        subscriber = %sub_pseudonym,
+                        bundle_id = %scoped_bundle.bundle_id,
+                        scope = %receiver_scope.to_string(),
+                        "federated transfer scope enforcement failed; skipping delivery: {}",
+                        e
+                    );
+                    continue;
+                }
             };
 
             let payload = serde_json::json!({

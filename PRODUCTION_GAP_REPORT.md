@@ -2,7 +2,7 @@
 
 **Standard**: System must run correctly for 100 years unattended.
 **Date**: 2026-02-18
-**Last Audit**: 2026-02-19 (updated 2026-02-19: H-29 added and fixed)
+**Last Audit**: 2026-02-19 (updated 2026-02-19: H-29 added and fixed, RTX domain filter accept-all fallback fixed)
 **Codebase**: ~14,500 lines of Rust across 11 crates
 **Method**: Line-by-line audit of every `.rs` file, every SQL migration, every test, every `Cargo.toml`
 
@@ -13,11 +13,11 @@
 | Severity | Total | Fixed | Acknowledged | Open |
 |----------|-------|-------|--------------|------|
 | CRITICAL | 14 | 12 | 2 | 0 |
-| HIGH     | 29 | 25 | 4 | 0 |
+| HIGH     | 32 | 28 | 4 | 0 |
 | MODERATE | 48 | 39 | 9 | 0 |
 | LOW      | 28 | 12 | 16 | 0 |
 | NITPICK  | 11 | 0 | 11 | 0 |
-| **Total** | **130** | **88** | **42** | **0** |
+| **Total** | **133** | **91** | **42** | **0** |
 
 Legend: **Fixed** = code change applied. **Acknowledged** = known limitation, design decision, or deferred to future phase.
 
@@ -86,7 +86,7 @@ These will cause data corruption, security breaches, or system failure.
 
 ---
 
-## HIGH (29) — 25 Fixed, 4 Acknowledged
+## HIGH (32) — 28 Fixed, 4 Acknowledged
 
 These will cause outages, data loss, or exploitable behavior under load or over time.
 
@@ -205,6 +205,21 @@ These will cause outages, data loss, or exploitable behavior under load or over 
 ### H-29: `unwrap_or_default()` on SystemTime silently produces timestamp 0 — FIXED
 - **File**: `crates/annex-vrp/src/lib.rs:52-64`
 - **Fix**: `VrpAnchorSnapshot::new()` now returns `Result<Self, VrpError>` and propagates `SystemClockInvalid` error instead of silently defaulting to timestamp 0. `ServerPolicyRoot::to_anchor_snapshot()` returns `Result`. All 4 production callers (federation handshake, agent VRP handshake, agent policy re-evaluation, federation policy re-evaluation) propagate the error with appropriate HTTP status codes. Tests added for happy path and error display.
+
+### H-30: Corrupted `domain_filters_json` defaults to accept-all in RTX delivery — FIXED
+- **Files**: `crates/annex-server/src/api_rtx.rs:220-229`, `crates/annex-server/src/api_federation.rs:1192-1201`
+- **Problem**: When `domain_filters_json` in `rtx_subscriptions` is corrupted (unparseable JSON), the code used `unwrap_or_else` to default to `Vec::new()`, which means "accept all domain tags". This could cause unauthorized knowledge transfer if the database is corrupted.
+- **Fix**: Changed to `match` with explicit `Err` arm that logs at `error` level with full context (subscriber, bundle_id, raw JSON) and `continue`s (skips delivery). Corrupted filters now result in **reject** (skip), not **accept-all**. Also fixed the subscription read-back path to return `ApiError::InternalServerError` instead of silently falling back. Tests: `test_publish_skips_subscriber_with_corrupted_domain_filters`.
+
+### H-31: RTX scope enforcement failure silently drops delivery — FIXED
+- **Files**: `crates/annex-server/src/api_rtx.rs:242-252, 675-684`, `crates/annex-server/src/api_federation.rs:1214-1224`
+- **Problem**: When `parse_transfer_scope` returned `None` or `enforce_transfer_scope` returned `Err`, the code silently `continue`d with zero logging. No audit trail for skipped deliveries.
+- **Fix**: Added `tracing::warn!` for unparseable scopes and `tracing::error!` for enforcement failures, both with subscriber/peer, bundle_id, and scope context. Same fix applied in the federation relay path. Tests: `test_publish_skips_subscriber_with_unparseable_scope`.
+
+### H-32: Federation RTX relay scope errors silently dropped — FIXED
+- **File**: `crates/annex-server/src/api_rtx.rs:675-684`
+- **Problem**: Same pattern as H-31 but in the federation relay loop (`relay_bundle_to_federation_peers`). Unparseable peer scope or enforcement failure → silent `continue`.
+- **Fix**: Added structured logging with peer URL, bundle_id, and scope string for both the parse failure and the enforcement failure paths.
 
 ---
 
