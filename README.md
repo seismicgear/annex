@@ -73,7 +73,7 @@ Annex ships with deploy scripts for Linux/macOS (`deploy.sh`) and Windows (`depl
 | `--livekit-api-key` | *(none)* | LiveKit API key |
 | `--livekit-api-secret` | *(none)* | LiveKit API secret |
 
-PowerShell uses `-Mode`, `-Host`, `-Port`, etc. (same names, dash-prefix style).
+PowerShell uses `-Mode`, `-BindAddress`, `-Port`, etc. (same names, dash-prefix style). Note: the bash `--host` flag is `-BindAddress` in PowerShell to avoid conflicting with PowerShell's built-in `$Host` variable.
 
 ### Production deployment
 

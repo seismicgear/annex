@@ -92,6 +92,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+[[ "$MODE" != "docker" && "$MODE" != "source" ]] && fail "Invalid --mode '$MODE'. Must be 'docker' or 'source'."
 [[ -z "$PUBLIC_URL" ]] && PUBLIC_URL="http://localhost:$PORT"
 
 mkdir -p "$DATA_DIR"
@@ -116,10 +117,12 @@ if [[ "$MODE" == "docker" ]]; then
     step "Checking Docker"
     has docker || fail "Docker not found. Install from https://docker.com"
 
-    if has docker-compose; then
+    if docker compose version >/dev/null 2>&1; then
+        COMPOSE="docker compose"
+    elif has docker-compose; then
         COMPOSE="docker-compose"
     else
-        COMPOSE="docker compose"
+        fail "Neither 'docker compose' (v2) nor 'docker-compose' (v1) found"
     fi
     ok "Docker found"
 
@@ -204,13 +207,16 @@ if [[ "$NEEDS_SEED" == "true" ]]; then
     "$BINARY" 2>/dev/null || true
 
     if [[ "$HAS_SQLITE" == "true" ]]; then
-        sqlite3 "$DB_PATH" "INSERT OR IGNORE INTO servers (slug, label, policy_json) VALUES ('$SERVER_SLUG', '$SERVER_LABEL', '{}');" \
+        # Escape single quotes for SQL (double them)
+        SAFE_SLUG="${SERVER_SLUG//\'/\'\'}"
+        SAFE_LABEL="${SERVER_LABEL//\'/\'\'}"
+        sqlite3 "$DB_PATH" "INSERT OR IGNORE INTO servers (slug, label, policy_json) VALUES ('$SAFE_SLUG', '$SAFE_LABEL', '{}');" \
             || fail "Failed to seed server row"
         ok "Database seeded: slug='$SERVER_SLUG', label='$SERVER_LABEL'"
     else
         warn "Cannot seed database without sqlite3 CLI."
         echo "   Run this manually:"
-        echo "   sqlite3 $DB_PATH \"INSERT INTO servers (slug, label, policy_json) VALUES ('$SERVER_SLUG', '$SERVER_LABEL', '{}');\""
+        echo "   sqlite3 $DB_PATH \"INSERT INTO servers (slug, label, policy_json) VALUES ('<slug>', '<label>', '{}');\""
         echo ""
         echo "   Or install sqlite3:"
         echo "     Debian/Ubuntu: sudo apt install sqlite3"
