@@ -86,7 +86,7 @@ async fn test_agent_handshake_aligned() {
     // 1. Create Handshake Payload (Aligned)
     // ServerPolicy default has empty principles/prohibitions.
     // We match that for Aligned status.
-    let anchor = VrpAnchorSnapshot::new(&[], &[]);
+    let anchor = VrpAnchorSnapshot::new(&[], &[]).unwrap();
 
     let contract = VrpCapabilitySharingContract {
         required_capabilities: vec![],
@@ -162,7 +162,7 @@ async fn test_agent_handshake_conflict() {
     // 1. Create Handshake Payload (Conflict)
     // Server has empty principles. Agent has conflicting principles.
     // Wait, simple comparison: if hashes differ -> Conflict.
-    let anchor = VrpAnchorSnapshot::new(&["some-principle".to_string()], &[]);
+    let anchor = VrpAnchorSnapshot::new(&["some-principle".to_string()], &[]).unwrap();
 
     let contract = VrpCapabilitySharingContract {
         required_capabilities: vec![],

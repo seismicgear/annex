@@ -90,6 +90,9 @@ impl axum::response::IntoResponse for FederationError {
             FederationError::Serialization(_) => {
                 (axum::http::StatusCode::BAD_REQUEST, self.to_string())
             }
+            FederationError::Handshake(HandshakeError::Vrp(_)) => {
+                (axum::http::StatusCode::INTERNAL_SERVER_ERROR, self.to_string())
+            }
             FederationError::Handshake(_) => {
                 (axum::http::StatusCode::BAD_REQUEST, self.to_string())
             }

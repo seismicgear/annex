@@ -42,7 +42,9 @@ pub async fn agent_handshake_handler(
 
         // 3. Construct Local Anchor from Policy
         let local_root = ServerPolicyRoot::from_policy(&policy);
-        let local_anchor = local_root.to_anchor_snapshot();
+        let local_anchor = local_root.to_anchor_snapshot().map_err(|e| {
+            ApiError::InternalServerError(format!("failed to create anchor snapshot: {}", e))
+        })?;
 
         // 4. Construct Local Capability Contract from Policy
         let mut offered_capabilities = Vec::new();

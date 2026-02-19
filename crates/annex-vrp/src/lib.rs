@@ -29,7 +29,7 @@ pub use reputation::{check_reputation_score, record_vrp_outcome, ReputationError
 pub use server_root::ServerPolicyRoot;
 pub use types::{
     VrpAlignmentConfig, VrpAlignmentStatus, VrpAnchorSnapshot, VrpCapabilitySharingContract,
-    VrpFederationHandshake, VrpTransferAcceptanceConfig, VrpTransferAcceptanceError,
+    VrpError, VrpFederationHandshake, VrpTransferAcceptanceConfig, VrpTransferAcceptanceError,
     VrpTransferScope, VrpValidationReport,
 };
 
@@ -51,15 +51,20 @@ fn hash_list(items: &[String]) -> String {
 
 impl VrpAnchorSnapshot {
     /// Creates a new snapshot from principles and prohibited actions.
-    pub fn new(principles: &[String], prohibited_actions: &[String]) -> Self {
-        Self {
+    ///
+    /// Returns `VrpError::SystemClockInvalid` if the system clock is before
+    /// the UNIX epoch, which would produce an invalid timestamp.
+    pub fn new(principles: &[String], prohibited_actions: &[String]) -> Result<Self, VrpError> {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| VrpError::SystemClockInvalid)?
+            .as_secs();
+
+        Ok(Self {
             principles_hash: hash_list(principles),
             prohibited_actions_hash: hash_list(prohibited_actions),
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
-        }
+            timestamp,
+        })
     }
 }
 

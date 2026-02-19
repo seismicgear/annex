@@ -85,8 +85,8 @@ fn test_anchor_snapshot_determinism() {
     let p2 = vec!["principle B".to_string(), "principle A".to_string()];
     let prohibited = vec!["bad action".to_string()];
 
-    let snap1 = VrpAnchorSnapshot::new(&p1, &prohibited);
-    let snap2 = VrpAnchorSnapshot::new(&p2, &prohibited);
+    let snap1 = VrpAnchorSnapshot::new(&p1, &prohibited).unwrap();
+    let snap2 = VrpAnchorSnapshot::new(&p2, &prohibited).unwrap();
 
     assert_eq!(snap1.principles_hash, snap2.principles_hash);
     assert_eq!(snap1.prohibited_actions_hash, snap2.prohibited_actions_hash);
@@ -97,7 +97,7 @@ fn test_anchor_snapshot_determinism() {
 fn test_compare_peer_anchor_aligned() {
     let principles = vec!["p1".to_string()];
     let prohibited = vec!["no1".to_string()];
-    let snap1 = VrpAnchorSnapshot::new(&principles, &prohibited);
+    let snap1 = VrpAnchorSnapshot::new(&principles, &prohibited).unwrap();
     // Clone via serialize/deserialize to simulate remote
     let snap2 = snap1.clone();
 
@@ -112,8 +112,8 @@ fn test_compare_peer_anchor_aligned() {
 
 #[test]
 fn test_compare_peer_anchor_conflict() {
-    let snap1 = VrpAnchorSnapshot::new(&["p1".to_string()], &[]);
-    let snap2 = VrpAnchorSnapshot::new(&["p2".to_string()], &[]); // different
+    let snap1 = VrpAnchorSnapshot::new(&["p1".to_string()], &[]).unwrap();
+    let snap2 = VrpAnchorSnapshot::new(&["p2".to_string()], &[]).unwrap(); // different
 
     let config = VrpAlignmentConfig {
         semantic_alignment_required: false,
@@ -194,7 +194,7 @@ fn test_resolve_transfer_scope() {
 fn test_validate_federation_handshake_success() {
     let principles = vec!["p1".to_string()];
     let prohibited = vec!["no1".to_string()];
-    let local_anchor = VrpAnchorSnapshot::new(&principles, &prohibited);
+    let local_anchor = VrpAnchorSnapshot::new(&principles, &prohibited).unwrap();
     let local_contract = VrpCapabilitySharingContract {
         required_capabilities: vec![],
         offered_capabilities: vec![],
@@ -230,8 +230,8 @@ fn test_validate_federation_handshake_success() {
 
 #[test]
 fn test_validate_federation_handshake_conflict_principles() {
-    let local_anchor = VrpAnchorSnapshot::new(&["A".to_string()], &[]);
-    let remote_anchor = VrpAnchorSnapshot::new(&["B".to_string()], &[]);
+    let local_anchor = VrpAnchorSnapshot::new(&["A".to_string()], &[]).unwrap();
+    let remote_anchor = VrpAnchorSnapshot::new(&["B".to_string()], &[]).unwrap();
     let local_contract = VrpCapabilitySharingContract {
         required_capabilities: vec![],
         offered_capabilities: vec![],
@@ -266,7 +266,7 @@ fn test_validate_federation_handshake_conflict_principles() {
 
 #[test]
 fn test_validate_federation_handshake_contract_fail() {
-    let local_anchor = VrpAnchorSnapshot::new(&["A".to_string()], &[]);
+    let local_anchor = VrpAnchorSnapshot::new(&["A".to_string()], &[]).unwrap();
     let local_contract = VrpCapabilitySharingContract {
         required_capabilities: vec!["MustHave".to_string()],
         offered_capabilities: vec![],
@@ -377,4 +377,37 @@ fn test_redacted_topics_round_trip() {
     let json = serde_json::to_string(&contract).unwrap();
     let deserialized: VrpCapabilitySharingContract = serde_json::from_str(&json).unwrap();
     assert_eq!(deserialized.redacted_topics, vec!["politics", "finance"]);
+}
+
+#[test]
+fn test_anchor_snapshot_new_returns_ok_with_valid_system_clock() {
+    // On any correctly configured system, new() should succeed and produce
+    // a non-zero timestamp.
+    let result = VrpAnchorSnapshot::new(&["p1".to_string()], &[]);
+    assert!(result.is_ok(), "VrpAnchorSnapshot::new() should succeed on a valid system");
+    let snapshot = result.unwrap();
+    assert!(snapshot.timestamp > 0, "timestamp should be non-zero");
+    assert!(!snapshot.principles_hash.is_empty());
+    assert!(!snapshot.prohibited_actions_hash.is_empty());
+}
+
+#[test]
+fn test_anchor_snapshot_new_returns_ok_with_empty_inputs() {
+    let result = VrpAnchorSnapshot::new(&[], &[]);
+    assert!(result.is_ok());
+    let snapshot = result.unwrap();
+    // Even with empty inputs, hashes should be deterministic non-empty strings
+    assert!(!snapshot.principles_hash.is_empty());
+    assert!(!snapshot.prohibited_actions_hash.is_empty());
+}
+
+#[test]
+fn test_vrp_error_display() {
+    let err = VrpError::SystemClockInvalid;
+    let msg = err.to_string();
+    assert!(
+        msg.contains("UNIX epoch"),
+        "Error message should mention UNIX epoch, got: {}",
+        msg
+    );
 }

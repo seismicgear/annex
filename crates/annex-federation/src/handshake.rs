@@ -2,8 +2,8 @@ use crate::db::create_agreement;
 use annex_types::ServerPolicy;
 use annex_vrp::{
     validate_federation_handshake, ServerPolicyRoot, VrpAlignmentConfig,
-    VrpCapabilitySharingContract, VrpFederationHandshake, VrpTransferAcceptanceConfig,
-    VrpValidationReport,
+    VrpCapabilitySharingContract, VrpError, VrpFederationHandshake,
+    VrpTransferAcceptanceConfig, VrpValidationReport,
 };
 use rusqlite::Connection;
 use thiserror::Error;
@@ -15,6 +15,8 @@ pub enum HandshakeError {
     DbError(#[from] rusqlite::Error),
     #[error("Unknown remote instance")]
     UnknownRemoteInstance,
+    #[error("VRP error: {0}")]
+    Vrp(#[from] VrpError),
 }
 
 /// Processes an incoming federation handshake from a peer server.
@@ -33,7 +35,7 @@ pub fn process_incoming_handshake(
 ) -> Result<VrpValidationReport, HandshakeError> {
     // 1. Derive local policy root and anchor
     let local_policy_root = ServerPolicyRoot::from_policy(local_policy);
-    let local_anchor = local_policy_root.to_anchor_snapshot();
+    let local_anchor = local_policy_root.to_anchor_snapshot()?;
 
     // 2. Define local capability contract
     // In a real implementation, this would be more granular based on policy.
@@ -114,7 +116,7 @@ mod tests {
         .unwrap();
 
         let policy = ServerPolicy::default();
-        let anchor = VrpAnchorSnapshot::new(&[], &[]);
+        let anchor = VrpAnchorSnapshot::new(&[], &[]).unwrap();
         let contract = VrpCapabilitySharingContract {
             required_capabilities: vec![],
             offered_capabilities: vec![],

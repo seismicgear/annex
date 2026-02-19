@@ -111,7 +111,7 @@ async fn test_agent_connection_flow_end_to_end() {
 
     // 3. Step 1: VRP Handshake
     println!("--- Step 1: VRP Handshake ---");
-    let anchor = VrpAnchorSnapshot::new(&[], &[]); // Empty anchor matches default empty policy (Aligned)
+    let anchor = VrpAnchorSnapshot::new(&[], &[]).unwrap(); // Empty anchor matches default empty policy (Aligned)
     let contract = VrpCapabilitySharingContract {
         required_capabilities: vec![],
         offered_capabilities: vec!["TEXT".to_string()],

@@ -136,6 +136,17 @@ pub struct VrpValidationReport {
     pub negotiation_notes: Vec<String>,
 }
 
+/// Errors that can occur during VRP operations.
+#[derive(thiserror::Error, Debug)]
+pub enum VrpError {
+    /// The system clock returned a time before the UNIX epoch, making it
+    /// impossible to generate a valid timestamp for the anchor snapshot.
+    /// This indicates a fundamentally misconfigured host and cannot be
+    /// recovered at the application layer.
+    #[error("system clock returned a time before the UNIX epoch")]
+    SystemClockInvalid,
+}
+
 /// Errors that can occur during transfer acceptance validation.
 #[derive(thiserror::Error, Debug)]
 pub enum VrpTransferAcceptanceError {
