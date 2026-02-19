@@ -580,7 +580,7 @@ These functionalities have **zero or minimal test coverage**:
 
 | Area | File | Status |
 |------|------|--------|
-| WebSocket VoiceIntent handler | `api_ws.rs` | ~200 lines of TTS, voice client, TOCTOU protection -- untested |
+| WebSocket VoiceIntent handler | `api_ws.rs` | Tested via `voice_intent_test.rs`: non-agent rejection, non-member rejection, TTS success full pipeline, TTS profile-not-found error, default profile fallback, session reuse, session cleanup on disconnect (7 tests) |
 | Policy re-evaluation | `policy.rs` | Multi-agent alignment recalculation -- has integration test coverage via `policy_test.rs` and `federation_policy_test.rs` |
 | Channel join alignment restrictions | `api_channels.rs` | Agent alignment checks tested via `api_channels_agent.rs` |
 | Federation message relay | `api_federation.rs` | Outbound relay tested via `api_federation_relay.rs` |
