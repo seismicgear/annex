@@ -128,7 +128,19 @@ pub async fn get_event_stream_handler(
     Extension(state): Extension<Arc<AppState>>,
     Query(params): Query<StreamQuery>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let domain_filter: Option<EventDomain> = params.domain.as_deref().and_then(|d| d.parse().ok());
+    let domain_filter: Option<EventDomain> = params.domain.as_deref().and_then(|d| {
+        match d.parse() {
+            Ok(domain) => Some(domain),
+            Err(_) => {
+                tracing::warn!(
+                    domain = %d,
+                    "ignoring unrecognized domain filter on SSE stream; \
+                     expected one of: IDENTITY, PRESENCE, FEDERATION, AGENT, MODERATION"
+                );
+                None
+            }
+        }
+    });
 
     let rx = state.observe_tx.subscribe();
     let stream = BroadcastStream::new(rx);

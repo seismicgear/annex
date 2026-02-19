@@ -792,16 +792,31 @@ async fn touch_activity(state: Arc<AppState>, pseudonym: String) {
     let server_id = state.server_id;
     let tx = state.presence_tx.clone();
 
-    tokio::task::spawn_blocking(move || {
-        if let Ok(conn) = pool.get() {
-            if let Ok(true) = annex_graph::update_node_activity(&conn, server_id, &pseudonym) {
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = pool.get().map_err(|e| {
+            tracing::warn!("touch_activity: failed to get db connection: {}", e);
+        })?;
+        match annex_graph::update_node_activity(&conn, server_id, &pseudonym) {
+            Ok(true) => {
                 let _ = tx.send(annex_types::PresenceEvent::NodeUpdated {
                     pseudonym_id: pseudonym,
                     active: true,
                 });
             }
+            Ok(false) => { /* Node was already active, no broadcast needed */ }
+            Err(e) => {
+                tracing::warn!(
+                    pseudonym = %pseudonym,
+                    "touch_activity: failed to update node activity: {}",
+                    e
+                );
+            }
         }
+        Ok::<(), ()>(())
     })
-    .await
-    .ok();
+    .await;
+
+    if let Err(e) = result {
+        tracing::error!("touch_activity: blocking task panicked or was cancelled: {}", e);
+    }
 }
