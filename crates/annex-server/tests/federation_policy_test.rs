@@ -51,7 +51,7 @@ async fn test_recalculate_federation_agreements() {
     .unwrap();
 
     // 2. Prepare Initial State (Aligned)
-    let anchor = VrpAnchorSnapshot::new(&[], &[]); // Matches default policy (empty)
+    let anchor = VrpAnchorSnapshot::new(&[], &[]).unwrap(); // Matches default policy (empty)
     let contract = VrpCapabilitySharingContract {
         required_capabilities: vec![],
         offered_capabilities: vec!["federation".to_string()],

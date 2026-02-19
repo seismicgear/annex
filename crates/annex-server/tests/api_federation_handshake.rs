@@ -73,7 +73,7 @@ async fn test_federation_handshake_success() {
     let (app, pool) = setup_app().await;
 
     // 1. Prepare Payload
-    let anchor = VrpAnchorSnapshot::new(&[], &[]); // Matches default policy
+    let anchor = VrpAnchorSnapshot::new(&[], &[]).unwrap(); // Matches default policy
     let contract = VrpCapabilitySharingContract {
         required_capabilities: vec![],
         offered_capabilities: vec![],
@@ -129,7 +129,7 @@ async fn test_federation_handshake_unknown_instance() {
     let (app, _) = setup_app().await;
 
     // 1. Prepare Payload with unknown URL
-    let anchor = VrpAnchorSnapshot::new(&[], &[]);
+    let anchor = VrpAnchorSnapshot::new(&[], &[]).unwrap();
     let contract = VrpCapabilitySharingContract {
         required_capabilities: vec![],
         offered_capabilities: vec![],

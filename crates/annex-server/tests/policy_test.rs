@@ -72,7 +72,7 @@ async fn test_recalculate_agent_alignments() {
     });
 
     // 2. Register an Agent (Aligned)
-    let anchor = VrpAnchorSnapshot::new(&[], &[]);
+    let anchor = VrpAnchorSnapshot::new(&[], &[]).unwrap();
     let contract = VrpCapabilitySharingContract {
         required_capabilities: vec![],
         offered_capabilities: vec!["TEXT".to_string(), "VRP".to_string()],

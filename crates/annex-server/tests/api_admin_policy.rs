@@ -61,7 +61,7 @@ async fn test_update_policy_and_recalculate() {
     ).unwrap();
 
     // Insert Federation Agreement (ALIGNED initially)
-    let anchor = VrpAnchorSnapshot::new(&[], &[]);
+    let anchor = VrpAnchorSnapshot::new(&[], &[]).unwrap();
     let contract = VrpCapabilitySharingContract {
         required_capabilities: vec![],
         offered_capabilities: vec!["federation".to_string()],

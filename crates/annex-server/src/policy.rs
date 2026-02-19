@@ -23,7 +23,9 @@ pub async fn recalculate_agent_alignments(state: Arc<AppState>) -> Result<(), Ap
 
     // 2. Prepare Validation Context
     let local_root = ServerPolicyRoot::from_policy(&policy);
-    let local_anchor = local_root.to_anchor_snapshot();
+    let local_anchor = local_root.to_anchor_snapshot().map_err(|e| {
+        ApiError::InternalServerError(format!("failed to create anchor snapshot: {}", e))
+    })?;
 
     let mut offered_capabilities = Vec::new();
     if policy.voice_enabled {
@@ -219,7 +221,9 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
 
     // 2. Prepare Validation Context
     let local_root = ServerPolicyRoot::from_policy(&policy);
-    let local_anchor = local_root.to_anchor_snapshot();
+    let local_anchor = local_root.to_anchor_snapshot().map_err(|e| {
+        ApiError::InternalServerError(format!("failed to create anchor snapshot: {}", e))
+    })?;
 
     let mut offered_capabilities = Vec::new();
     if policy.voice_enabled {

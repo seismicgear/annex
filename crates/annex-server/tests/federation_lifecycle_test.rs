@@ -170,7 +170,7 @@ async fn test_federation_full_lifecycle() {
     // =========================================================================
     // STEP 1: Federation handshake (Server A -> Server B)
     // =========================================================================
-    let anchor = VrpAnchorSnapshot::new(&[], &[]); // Matches empty default policy
+    let anchor = VrpAnchorSnapshot::new(&[], &[]).unwrap(); // Matches empty default policy
     let contract = VrpCapabilitySharingContract {
         required_capabilities: vec![],
         offered_capabilities: vec!["federation".to_string()],

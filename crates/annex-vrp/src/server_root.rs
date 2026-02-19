@@ -1,4 +1,4 @@
-use crate::VrpAnchorSnapshot;
+use crate::{VrpAnchorSnapshot, VrpError};
 use annex_types::ServerPolicy;
 use serde::{Deserialize, Serialize};
 
@@ -32,7 +32,9 @@ impl ServerPolicyRoot {
     }
 
     /// Converts the policy root into an anchor snapshot for VRP comparison.
-    pub fn to_anchor_snapshot(&self) -> VrpAnchorSnapshot {
+    ///
+    /// Returns `VrpError::SystemClockInvalid` if the system clock is misconfigured.
+    pub fn to_anchor_snapshot(&self) -> Result<VrpAnchorSnapshot, VrpError> {
         VrpAnchorSnapshot::new(&self.principles, &self.prohibited_actions)
     }
 }

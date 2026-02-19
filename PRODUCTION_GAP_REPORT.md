@@ -2,7 +2,7 @@
 
 **Standard**: System must run correctly for 100 years unattended.
 **Date**: 2026-02-18
-**Last Audit**: 2026-02-19
+**Last Audit**: 2026-02-19 (updated 2026-02-19: H-29 added and fixed)
 **Codebase**: ~14,500 lines of Rust across 11 crates
 **Method**: Line-by-line audit of every `.rs` file, every SQL migration, every test, every `Cargo.toml`
 
@@ -13,11 +13,11 @@
 | Severity | Total | Fixed | Acknowledged | Open |
 |----------|-------|-------|--------------|------|
 | CRITICAL | 14 | 12 | 2 | 0 |
-| HIGH     | 28 | 24 | 4 | 0 |
+| HIGH     | 29 | 25 | 4 | 0 |
 | MODERATE | 48 | 39 | 9 | 0 |
 | LOW      | 28 | 12 | 16 | 0 |
 | NITPICK  | 11 | 0 | 11 | 0 |
-| **Total** | **129** | **87** | **42** | **0** |
+| **Total** | **130** | **88** | **42** | **0** |
 
 Legend: **Fixed** = code change applied. **Acknowledged** = known limitation, design decision, or deferred to future phase.
 
@@ -86,7 +86,7 @@ These will cause data corruption, security breaches, or system failure.
 
 ---
 
-## HIGH (28) — 24 Fixed, 4 Acknowledged
+## HIGH (29) — 25 Fixed, 4 Acknowledged
 
 These will cause outages, data loss, or exploitable behavior under load or over time.
 
@@ -201,6 +201,10 @@ These will cause outages, data loss, or exploitable behavior under load or over 
 ### H-28: Missing index on `graph_edges` table — FIXED
 - **File**: `crates/annex-db/src/migrations/023_production_indexes.sql`
 - **Fix**: Added indexes `idx_graph_edges_from(server_id, from_node)`, `idx_graph_edges_to(server_id, to_node)`, and `idx_graph_edges_unique_triple(server_id, from_node, to_node, kind)` UNIQUE constraint.
+
+### H-29: `unwrap_or_default()` on SystemTime silently produces timestamp 0 — FIXED
+- **File**: `crates/annex-vrp/src/lib.rs:52-64`
+- **Fix**: `VrpAnchorSnapshot::new()` now returns `Result<Self, VrpError>` and propagates `SystemClockInvalid` error instead of silently defaulting to timestamp 0. `ServerPolicyRoot::to_anchor_snapshot()` returns `Result`. All 4 production callers (federation handshake, agent VRP handshake, agent policy re-evaluation, federation policy re-evaluation) propagate the error with appropriate HTTP status codes. Tests added for happy path and error display.
 
 ---
 
