@@ -565,15 +565,18 @@ pub async fn get_subscription_handler(
 
             match result {
                 Some((filters_json, accept_federated, created_at)) => {
-                    let domain_filters: Vec<String> = serde_json::from_str(&filters_json)
-                        .unwrap_or_else(|e| {
-                            tracing::warn!(
+                    let domain_filters: Vec<String> =
+                        serde_json::from_str(&filters_json).map_err(|e| {
+                            tracing::error!(
                                 subscriber = %pseudonym,
+                                raw_json = %filters_json,
                                 "corrupted domain_filters_json in subscription query: {}",
                                 e
                             );
-                            Vec::new()
-                        });
+                            ApiError::InternalServerError(
+                                "corrupted domain filter data in subscription".to_string(),
+                            )
+                        })?;
                     Ok(Some(SubscriptionInfo {
                         subscriber_pseudonym: pseudonym,
                         domain_filters,
