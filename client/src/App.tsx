@@ -141,7 +141,7 @@ export default function App() {
             Events
           </button>
         </nav>
-        {permissions?.can_moderate && (
+        {permissions?.capabilities.can_moderate && (
           <div className="admin-menu" ref={adminMenuRef}>
             <button
               className={`admin-menu-btn ${activeView.startsWith('admin') ? 'active' : ''}`}

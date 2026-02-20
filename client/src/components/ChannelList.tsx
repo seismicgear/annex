@@ -125,7 +125,7 @@ export function ChannelList() {
     <nav className="channel-list">
       <div className="channel-list-header">
         <h3>Channels</h3>
-        {permissions?.can_moderate && (
+        {permissions?.capabilities.can_moderate && (
           <button
             className="create-channel-btn"
             onClick={() => setShowCreate(true)}
