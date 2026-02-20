@@ -171,7 +171,10 @@ export async function getPublicEvents(
   if (since) params.set('since', since.toString());
   if (limit) params.set('limit', limit.toString());
   const qs = params.toString();
-  return request<PublicEvent[]>(`/api/public/events${qs ? '?' + qs : ''}`);
+  const resp = await request<{ events: PublicEvent[]; count: number }>(
+    `/api/public/events${qs ? '?' + qs : ''}`,
+  );
+  return resp.events;
 }
 
 // ── Admin ──

@@ -53,6 +53,73 @@
   color: #fff;
 }
 
+/* ── Admin Menu (gear dropdown) ── */
+
+.admin-menu {
+  position: relative;
+  margin-left: auto;
+}
+
+.admin-menu-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: #888;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.15s, color 0.15s;
+}
+
+.admin-menu-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #ddd;
+}
+
+.admin-menu-btn.active {
+  color: #646cff;
+}
+
+.admin-dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  min-width: 180px;
+  background: #1a1a2e;
+  border: 1px solid #444;
+  border-radius: 6px;
+  padding: 4px 0;
+  z-index: 200;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.admin-dropdown-item {
+  display: block;
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  background: transparent;
+  border: none;
+  color: #ccc;
+  cursor: pointer;
+  font-size: 0.8rem;
+  text-align: left;
+  transition: background 0.1s;
+}
+
+.admin-dropdown-item:hover {
+  background: rgba(100, 108, 255, 0.15);
+  color: #fff;
+}
+
+.admin-dropdown-item.active {
+  color: #646cff;
+}
+
 /* Setup screen */
 .app-main.setup {
   flex: 1;
