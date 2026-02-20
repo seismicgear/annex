@@ -42,6 +42,12 @@ export async function fetchLinkPreview(
   const cached = previewCache.get(url);
   if (cached && !cached.loading) return cached;
 
+  // Evict oldest entry before inserting to keep cache within bounds
+  if (previewCache.size >= MAX_CACHE_SIZE) {
+    const firstKey = previewCache.keys().next().value;
+    if (firstKey !== undefined) previewCache.delete(firstKey);
+  }
+
   const loading: LinkPreviewData = {
     url,
     title: null,
@@ -52,12 +58,6 @@ export async function fetchLinkPreview(
     error: null,
   };
   previewCache.set(url, loading);
-
-  // Evict oldest entries if cache exceeds max size
-  if (previewCache.size > MAX_CACHE_SIZE) {
-    const firstKey = previewCache.keys().next().value;
-    if (firstKey !== undefined) previewCache.delete(firstKey);
-  }
 
   try {
     // Use API base URL so link previews route to the active server

@@ -117,7 +117,9 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
         pathIndexBits: reg.pathIndexBits,
       });
 
-      // Phase 4: Verify membership
+      // Phase 4: Verify membership — the VRP topic scopes pseudonym derivation
+      // to this specific server. The resulting pseudonymId is stored in IndexedDB
+      // and never re-derived, so changing this format only affects new identities.
       set({ phase: 'verifying' });
       const vrpTopic = `annex:server:${serverSlug}:v1`;
       const verification = await api.verifyMembership(
