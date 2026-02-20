@@ -197,6 +197,24 @@ if (-not (Test-Path $vkeyPath)) {
 }
 Write-Ok "ZK verification keys verified"
 
+# Piper TTS — bootstrap if missing
+$piperBinary = Join-Path $ProjectRoot "assets" "piper" "piper"
+if ($IsWindows -or ($env:OS -eq "Windows_NT")) { $piperBinary += ".exe" }
+$voiceModel = Join-Path $ProjectRoot "assets" "voices" "en_US-lessac-medium.onnx"
+
+if (-not (Test-Path $piperBinary) -or -not (Test-Path $voiceModel)) {
+    Write-Step "Bootstrapping Piper TTS voice model"
+    $setupScript = Join-Path $ProjectRoot "scripts" "setup-piper.ps1"
+    if (Test-Path $setupScript) {
+        & $setupScript
+        if ($LASTEXITCODE -ne 0) { Write-Warn "Piper setup failed (voice features will be unavailable)" }
+    } else {
+        Write-Warn "scripts/setup-piper.ps1 not found — run it manually for voice features"
+    }
+} else {
+    Write-Ok "Piper TTS binary and voice model present"
+}
+
 # ── Build ──
 
 # On Windows cargo produces .exe; on Linux/macOS no extension

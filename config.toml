@@ -14,3 +14,9 @@ pool_max_size = 8
 [logging]
 level = "info"
 json = false
+
+[voice]
+tts_voices_dir = "assets/voices"
+tts_binary_path = "assets/piper/piper"
+stt_model_path = "assets/models/ggml-base.en.bin"
+stt_binary_path = "assets/whisper/whisper"

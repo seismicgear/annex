@@ -43,7 +43,7 @@ The deploy scripts handle building, database migration, server seeding, and star
 
 | Requirement | Version | Notes |
 |-------------|---------|-------|
-| **Rust** | 1.82+ | Only for source builds. Install from [rustup.rs](https://rustup.rs) |
+| **Rust** | 1.85+ | Only for source builds. Install from [rustup.rs](https://rustup.rs) |
 | **Docker** | 20+ | Only for Docker deploys |
 | **sqlite3** | Any | Optional. Used by deploy scripts to seed the database |
 | **Node.js** | 22+ | Only for client builds (Docker handles this automatically) |
@@ -150,6 +150,25 @@ The deploy scripts generate a `config.toml` in your data directory. You can also
 | Piper / Whisper binaries | No | Only for agent voice synthesis / transcription |
 
 Database migrations run automatically on startup. No manual migration step required.
+
+### Voice (Piper TTS) setup
+
+The deploy scripts automatically download the Piper binary and the default voice model (`en_US-lessac-medium`) on first run. To set up manually:
+
+```bash
+# Linux/macOS
+./scripts/setup-piper.sh
+
+# Windows (PowerShell)
+./scripts/setup-piper.ps1
+```
+
+This downloads:
+- **Piper binary** → `assets/piper/piper`
+- **Voice model** → `assets/voices/en_US-lessac-medium.onnx`
+- **Model config** → `assets/voices/en_US-lessac-medium.onnx.json`
+
+Docker builds include Piper and the voice model automatically. No manual step needed.
 
 ### Manual setup (without deploy scripts)
 
