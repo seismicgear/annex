@@ -26,6 +26,10 @@ SKIP_BUILD="false"
 LIVEKIT_URL=""
 LIVEKIT_API_KEY=""
 LIVEKIT_API_SECRET=""
+SKIP_CLIENT="false"
+
+# Default server policy matching ServerPolicy::default() in Rust
+DEFAULT_POLICY='{"agent_min_alignment_score":0.8,"agent_required_capabilities":[],"federation_enabled":true,"default_retention_days":30,"voice_enabled":true,"max_members":1000}'
 
 # ── Helpers ──
 
@@ -57,6 +61,7 @@ Options:
   --log-level <level>       Log level: trace|debug|info|warn|error (default: info)
   --log-json                Output structured JSON logs
   --skip-build              Skip cargo build (use existing binary)
+  --skip-client             Skip client frontend build (use existing dist)
   --livekit-url <url>       LiveKit server WebSocket URL (optional)
   --livekit-api-key <key>   LiveKit API key (optional)
   --livekit-api-secret <s>  LiveKit API secret (optional)
@@ -84,6 +89,7 @@ while [[ $# -gt 0 ]]; do
         --log-level)      LOG_LEVEL="$2"; shift 2 ;;
         --log-json)       LOG_JSON="true"; shift ;;
         --skip-build)     SKIP_BUILD="true"; shift ;;
+        --skip-client)    SKIP_CLIENT="true"; shift ;;
         --livekit-url)    LIVEKIT_URL="$2"; shift 2 ;;
         --livekit-api-key)    LIVEKIT_API_KEY="$2"; shift 2 ;;
         --livekit-api-secret) LIVEKIT_API_SECRET="$2"; shift 2 ;;
@@ -199,6 +205,37 @@ else
     ok "Built $BINARY"
 fi
 
+# ── Build client frontend ──
+
+CLIENT_DIR="$SCRIPT_DIR/client/dist"
+
+if [[ "$SKIP_CLIENT" == "true" ]]; then
+    step "Skipping client build (--skip-client)"
+    if [[ ! -f "$CLIENT_DIR/index.html" ]]; then
+        warn "Client dist not found at $CLIENT_DIR. Server will run in API-only mode."
+    fi
+else
+    step "Building client frontend"
+    has npm || { warn "Node.js (npm) not found — skipping client build. Server will run in API-only mode."; SKIP_CLIENT="true"; }
+
+    if [[ "$SKIP_CLIENT" != "true" ]]; then
+        # Copy ZK artifacts into client public dir for the WASM prover
+        ZK_WASM="$SCRIPT_DIR/zk/build/membership_js/membership.wasm"
+        ZK_ZKEY="$SCRIPT_DIR/zk/keys/membership_final.zkey"
+        if [[ -f "$ZK_WASM" ]] && [[ -f "$ZK_ZKEY" ]]; then
+            mkdir -p "$SCRIPT_DIR/client/public/zk"
+            cp "$ZK_WASM" "$SCRIPT_DIR/client/public/zk/"
+            cp "$ZK_ZKEY" "$SCRIPT_DIR/client/public/zk/"
+            ok "ZK artifacts copied to client/public/zk/"
+        else
+            warn "ZK wasm/zkey not found — client ZK proofs may not work"
+        fi
+
+        (cd "$SCRIPT_DIR/client" && npm ci && npm run build) || fail "Client build failed"
+        ok "Client built at $CLIENT_DIR"
+    fi
+fi
+
 # ── Initialize database ──
 
 step "Initializing database at $DB_PATH"
@@ -230,13 +267,15 @@ if [[ "$NEEDS_SEED" == "true" ]]; then
         # Escape single quotes for SQL (double them)
         SAFE_SLUG="${SERVER_SLUG//\'/\'\'}"
         SAFE_LABEL="${SERVER_LABEL//\'/\'\'}"
-        sqlite3 "$DB_PATH" "INSERT OR IGNORE INTO servers (slug, label, policy_json) VALUES ('$SAFE_SLUG', '$SAFE_LABEL', '{}');" \
+        sqlite3 "$DB_PATH" "INSERT OR IGNORE INTO servers (slug, label, policy_json) VALUES ('$SAFE_SLUG', '$SAFE_LABEL', '$DEFAULT_POLICY');" \
             || fail "Failed to seed server row"
+        # Fix any previously seeded rows with empty policy_json
+        sqlite3 "$DB_PATH" "UPDATE servers SET policy_json = '$DEFAULT_POLICY' WHERE policy_json = '{}';" 2>/dev/null || true
         ok "Database seeded: slug='$SERVER_SLUG', label='$SERVER_LABEL'"
     else
         warn "Cannot seed database without sqlite3 CLI."
         echo "   Run this manually:"
-        echo "   sqlite3 $DB_PATH \"INSERT INTO servers (slug, label, policy_json) VALUES ('<slug>', '<label>', '{}');\""
+        echo "   sqlite3 $DB_PATH \"INSERT INTO servers (slug, label, policy_json) VALUES ('<slug>', '<label>', '$DEFAULT_POLICY');\""
         echo ""
         echo "   Or install sqlite3:"
         echo "     Debian/Ubuntu: sudo apt install sqlite3"
@@ -247,10 +286,28 @@ fi
 
 # ── Signing key ──
 
+KEY_FILE="$DATA_DIR/signing.key"
+
 if [[ -z "$SIGNING_KEY" ]]; then
-    warn "No --signing-key provided. Server will use an ephemeral key."
-    echo "   This is fine for development but NOT for production."
-    echo "   Generate a permanent key: openssl rand -hex 32"
+    # Persist a signing key on the data volume so it survives restarts
+    if [[ -f "$KEY_FILE" ]]; then
+        SIGNING_KEY="$(cat "$KEY_FILE")"
+        ok "Loaded signing key from $KEY_FILE"
+    elif has openssl; then
+        SIGNING_KEY="$(openssl rand -hex 32)"
+        echo "$SIGNING_KEY" > "$KEY_FILE"
+        chmod 600 "$KEY_FILE"
+        ok "Generated and persisted signing key at $KEY_FILE"
+    elif has head; then
+        SIGNING_KEY="$(head -c 32 /dev/urandom | od -A n -t x1 | tr -d ' \n')"
+        echo "$SIGNING_KEY" > "$KEY_FILE"
+        chmod 600 "$KEY_FILE"
+        ok "Generated and persisted signing key at $KEY_FILE"
+    else
+        warn "No --signing-key provided and cannot generate one."
+        echo "   Server will use an ephemeral key (NOT suitable for production)."
+        echo "   Generate a permanent key: openssl rand -hex 32"
+    fi
 fi
 
 # ── Write runtime config ──
@@ -297,9 +354,14 @@ export ANNEX_HOST="$HOST"
 export ANNEX_PORT="$PORT"
 export ANNEX_LOG_LEVEL="$LOG_LEVEL"
 export ANNEX_PUBLIC_URL="$PUBLIC_URL"
+export ANNEX_CLIENT_DIR="$CLIENT_DIR"
 
 [[ -n "$SIGNING_KEY" ]]  && export ANNEX_SIGNING_KEY="$SIGNING_KEY"
 [[ "$LOG_JSON" == "true" ]] && export ANNEX_LOG_JSON="true"
+
+# TTS/STT paths (if assets are present)
+[[ -x "$SCRIPT_DIR/assets/piper/piper" ]] && export ANNEX_TTS_BINARY_PATH="$SCRIPT_DIR/assets/piper/piper"
+[[ -d "$SCRIPT_DIR/assets/voices" ]]      && export ANNEX_TTS_VOICES_DIR="$SCRIPT_DIR/assets/voices"
 
 echo ""
 echo "  Server starting at http://$HOST:$PORT"
