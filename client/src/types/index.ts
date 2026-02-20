@@ -7,11 +7,11 @@ export type AlignmentStatus = 'Aligned' | 'Partial' | 'Conflict';
 /** VRP transfer scope from negotiation. */
 export type TransferScope = 'NoTransfer' | 'ReflectionSummariesOnly' | 'FullKnowledgeBundle';
 
-/** Channel types matching server enum. */
-export type ChannelType = 'TEXT' | 'VOICE' | 'HYBRID' | 'AGENT' | 'BROADCAST';
+/** Channel types matching server enum (PascalCase from Rust serde). */
+export type ChannelType = 'Text' | 'Voice' | 'Hybrid' | 'Agent' | 'Broadcast';
 
-/** Federation scope for channels. */
-export type FederationScope = 'LOCAL' | 'FEDERATED';
+/** Federation scope for channels (PascalCase from Rust serde). */
+export type FederationScope = 'Local' | 'Federated';
 
 /** Stored identity keys in IndexedDB. */
 export interface StoredIdentity {
@@ -97,13 +97,19 @@ export interface WsSendFrame {
 /** WebSocket frame received from server. */
 export interface WsReceiveFrame {
   type: 'message' | 'rtx_bundle' | 'transcription' | 'error';
+  // Message fields (camelCase from WsMessagePayload)
   channelId?: string;
   messageId?: string;
   senderPseudonym?: string;
   content?: string;
   replyToMessageId?: string | null;
   createdAt?: string;
+  // Transcription fields
+  speakerPseudonym?: string;
+  text?: string;
+  // Error fields
   error?: string;
+  message?: string;
 }
 
 /** Agent info from GET /api/public/agents or /api/agents/:id. */

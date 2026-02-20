@@ -51,7 +51,7 @@ export function VoicePanel() {
 
   const activeChannel = channels.find((c) => c.channel_id === activeChannelId);
   const isVoiceCapable =
-    activeChannel?.channel_type === 'VOICE' || activeChannel?.channel_type === 'HYBRID';
+    activeChannel?.channel_type === 'Voice' || activeChannel?.channel_type === 'Hybrid';
 
   const handleJoin = useCallback(async () => {
     if (!identity?.pseudonymId || !activeChannelId) return;

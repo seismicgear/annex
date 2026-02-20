@@ -59,12 +59,40 @@ pub enum IncomingMessage {
     },
 }
 
+/// Outgoing WebSocket message payload with camelCase field names.
+///
+/// The inner `Message` struct uses snake_case for HTTP API responses.
+/// WebSocket messages use camelCase to match the frontend `WsReceiveFrame` type.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WsMessagePayload {
+    pub channel_id: String,
+    pub message_id: String,
+    pub sender_pseudonym: String,
+    pub content: String,
+    pub reply_to_message_id: Option<String>,
+    pub created_at: String,
+}
+
+impl From<Message> for WsMessagePayload {
+    fn from(m: Message) -> Self {
+        Self {
+            channel_id: m.channel_id,
+            message_id: m.message_id,
+            sender_pseudonym: m.sender_pseudonym,
+            content: m.content,
+            reply_to_message_id: m.reply_to_message_id,
+            created_at: m.created_at,
+        }
+    }
+}
+
 /// Outgoing WebSocket message wrapper (for broadcast).
 #[derive(Debug, Serialize)]
 #[serde(tag = "type")]
 pub enum OutgoingMessage {
     #[serde(rename = "message")]
-    Message(Message),
+    Message(WsMessagePayload),
     #[serde(rename = "transcription")]
     Transcription {
         #[serde(rename = "channelId")]
@@ -520,18 +548,20 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
 
                         match res {
                             Ok(Ok((message, is_federated))) => {
-                                // Broadcast
-                                let out = OutgoingMessage::Message(message.clone());
+                                // Broadcast via WebSocket (camelCase payload)
+                                let ws_payload: WsMessagePayload = message.clone().into();
+                                let broadcast_channel_id = message.channel_id.clone();
+                                let out = OutgoingMessage::Message(ws_payload);
                                 match serde_json::to_string(&out) {
                                     Ok(json) => {
                                         state
                                             .connection_manager
-                                            .broadcast(&message.channel_id, json)
+                                            .broadcast(&broadcast_channel_id, json)
                                             .await;
                                     }
                                     Err(e) => {
                                         tracing::error!(
-                                            channel_id = %message.channel_id,
+                                            channel_id = %broadcast_channel_id,
                                             "failed to serialize outgoing message for broadcast: {}", e
                                         );
                                     }

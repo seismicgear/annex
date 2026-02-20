@@ -511,7 +511,7 @@ pub async fn receive_federated_message_handler(
 
     // 8. Broadcast
     if let Some(msg) = inserted {
-        let out = crate::api_ws::OutgoingMessage::Message(msg);
+        let out = crate::api_ws::OutgoingMessage::Message(msg.into());
         match serde_json::to_string(&out) {
             Ok(json) => {
                 state

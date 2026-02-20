@@ -11,11 +11,11 @@ import { useIdentityStore } from '@/stores/identity';
 import type { ChannelType } from '@/types';
 
 const CHANNEL_TYPES: { value: ChannelType; label: string }[] = [
-  { value: 'TEXT', label: 'Text' },
-  { value: 'VOICE', label: 'Voice' },
-  { value: 'HYBRID', label: 'Hybrid (Text + Voice)' },
-  { value: 'AGENT', label: 'Agent' },
-  { value: 'BROADCAST', label: 'Broadcast' },
+  { value: 'Text', label: 'Text' },
+  { value: 'Voice', label: 'Voice' },
+  { value: 'Hybrid', label: 'Hybrid (Text + Voice)' },
+  { value: 'Agent', label: 'Agent' },
+  { value: 'Broadcast', label: 'Broadcast' },
 ];
 
 export function CreateChannelDialog({ onClose }: { onClose: () => void }) {
@@ -23,7 +23,7 @@ export function CreateChannelDialog({ onClose }: { onClose: () => void }) {
   const { createChannel, loadChannels } = useChannelsStore();
 
   const [name, setName] = useState('');
-  const [channelType, setChannelType] = useState<ChannelType>('TEXT');
+  const [channelType, setChannelType] = useState<ChannelType>('Text');
   const [topic, setTopic] = useState('');
   const [federated, setFederated] = useState(false);
   const [submitting, setSubmitting] = useState(false);

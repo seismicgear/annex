@@ -12,11 +12,11 @@ import { CreateChannelDialog } from '@/components/CreateChannelDialog';
 import type { Channel, ChannelType } from '@/types';
 
 const CHANNEL_TYPE_ICONS: Record<ChannelType, string> = {
-  TEXT: '#',
-  VOICE: '🔊',
-  HYBRID: '#🔊',
-  AGENT: '🤖',
-  BROADCAST: '📢',
+  Text: '#',
+  Voice: '🔊',
+  Hybrid: '#🔊',
+  Agent: '🤖',
+  Broadcast: '📢',
 };
 
 function ChannelItem({
@@ -62,7 +62,7 @@ function ChannelItem({
           {CHANNEL_TYPE_ICONS[channel.channel_type]}
         </span>
         <span className="channel-name">{channel.name}</span>
-        {channel.federation_scope === 'FEDERATED' && (
+        {channel.federation_scope === 'Federated' && (
           <span className="federation-badge" title="Federated channel">
             F
           </span>
