@@ -72,7 +72,8 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
       const info = await api.getIdentityInfo(identity.pseudonymId);
       set({ permissions: info });
     } catch {
-      // Non-fatal: permissions just won't gate admin UI
+      // Non-fatal: permissions won't gate admin UI. Expected when the
+      // server is unreachable or the identity session has expired.
     }
   },
 
@@ -116,12 +117,15 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
         pathIndexBits: reg.pathIndexBits,
       });
 
-      // Phase 4: Verify membership
+      // Phase 4: Verify membership — the VRP topic scopes pseudonym derivation
+      // to this specific server. The resulting pseudonymId is stored in IndexedDB
+      // and never re-derived, so changing this format only affects new identities.
       set({ phase: 'verifying' });
+      const vrpTopic = `annex:server:${serverSlug}:v1`;
       const verification = await api.verifyMembership(
         reg.rootHex,
         commitmentHex,
-        'annex:server:v1',
+        vrpTopic,
         proof,
         publicSignals,
       );

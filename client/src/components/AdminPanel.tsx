@@ -26,7 +26,7 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
     api
       .getPolicy(pseudonymId)
       .then(setPolicy)
-      .catch((err) => setError(err.message))
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setLoading(false));
   }, [pseudonymId]);
 
@@ -61,9 +61,12 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
             min="0"
             max="1"
             value={policy.agent_min_alignment_score}
-            onChange={(e) =>
-              setPolicy({ ...policy, agent_min_alignment_score: parseFloat(e.target.value) })
-            }
+            onChange={(e) => {
+              const val = parseFloat(e.target.value);
+              if (!Number.isNaN(val)) {
+                setPolicy({ ...policy, agent_min_alignment_score: Math.min(1, Math.max(0, val)) });
+              }
+            }}
           />
         </label>
 

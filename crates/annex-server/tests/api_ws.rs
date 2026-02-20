@@ -147,13 +147,13 @@ async fn test_ws_lifecycle() {
                 // Let's assume flattening.
                 if !received["content"].is_null() {
                     assert_eq!(received["content"], content);
-                    assert_eq!(received["sender_pseudonym"], "user-1");
+                    assert_eq!(received["senderPseudonym"], "user-1");
                 } else {
                     // Maybe it IS wrapped?
                     // If it's wrapped in "message" key despite my assumption:
                     if !received["message"].is_null() {
                         assert_eq!(received["message"]["content"], content);
-                        assert_eq!(received["message"]["sender_pseudonym"], "user-1");
+                        assert_eq!(received["message"]["senderPseudonym"], "user-1");
                     } else {
                         // Fallback to error
                         panic!("Missing content or message field in: {}", received);

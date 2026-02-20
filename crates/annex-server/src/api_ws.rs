@@ -59,12 +59,40 @@ pub enum IncomingMessage {
     },
 }
 
+/// Outgoing WebSocket message payload with camelCase field names.
+///
+/// The inner `Message` struct uses snake_case for HTTP API responses.
+/// WebSocket messages use camelCase to match the frontend `WsReceiveFrame` type.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WsMessagePayload {
+    pub channel_id: String,
+    pub message_id: String,
+    pub sender_pseudonym: String,
+    pub content: String,
+    pub reply_to_message_id: Option<String>,
+    pub created_at: String,
+}
+
+impl From<Message> for WsMessagePayload {
+    fn from(m: Message) -> Self {
+        Self {
+            channel_id: m.channel_id,
+            message_id: m.message_id,
+            sender_pseudonym: m.sender_pseudonym,
+            content: m.content,
+            reply_to_message_id: m.reply_to_message_id,
+            created_at: m.created_at,
+        }
+    }
+}
+
 /// Outgoing WebSocket message wrapper (for broadcast).
 #[derive(Debug, Serialize)]
 #[serde(tag = "type")]
 pub enum OutgoingMessage {
     #[serde(rename = "message")]
-    Message(Message),
+    Message(WsMessagePayload),
     #[serde(rename = "transcription")]
     Transcription {
         #[serde(rename = "channelId")]
@@ -520,18 +548,20 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
 
                         match res {
                             Ok(Ok((message, is_federated))) => {
-                                // Broadcast
-                                let out = OutgoingMessage::Message(message.clone());
+                                // Broadcast via WebSocket (camelCase payload)
+                                let ws_payload: WsMessagePayload = message.clone().into();
+                                let broadcast_channel_id = message.channel_id.clone();
+                                let out = OutgoingMessage::Message(ws_payload);
                                 match serde_json::to_string(&out) {
                                     Ok(json) => {
                                         state
                                             .connection_manager
-                                            .broadcast(&message.channel_id, json)
+                                            .broadcast(&broadcast_channel_id, json)
                                             .await;
                                     }
                                     Err(e) => {
                                         tracing::error!(
-                                            channel_id = %message.channel_id,
+                                            channel_id = %broadcast_channel_id,
                                             "failed to serialize outgoing message for broadcast: {}", e
                                         );
                                     }
@@ -845,5 +875,72 @@ async fn touch_activity(state: Arc<AppState>, pseudonym: String) {
 
     if let Err(e) = result {
         tracing::error!("touch_activity: blocking task panicked or was cancelled: {}", e);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ws_message_payload_serializes_camel_case() {
+        let payload = WsMessagePayload {
+            channel_id: "ch-1".to_string(),
+            message_id: "msg-1".to_string(),
+            sender_pseudonym: "alice".to_string(),
+            content: "hello".to_string(),
+            reply_to_message_id: Some("msg-0".to_string()),
+            created_at: "2025-01-01T00:00:00Z".to_string(),
+        };
+
+        let json = serde_json::to_value(&payload).expect("serialization should not fail");
+        assert!(json.get("channelId").is_some(), "expected camelCase channelId");
+        assert!(json.get("messageId").is_some(), "expected camelCase messageId");
+        assert!(json.get("senderPseudonym").is_some(), "expected camelCase senderPseudonym");
+        assert!(json.get("replyToMessageId").is_some(), "expected camelCase replyToMessageId");
+        assert!(json.get("createdAt").is_some(), "expected camelCase createdAt");
+
+        // Verify snake_case keys are NOT present
+        assert!(json.get("channel_id").is_none(), "snake_case channel_id should not be present");
+        assert!(json.get("message_id").is_none(), "snake_case message_id should not be present");
+    }
+
+    #[test]
+    fn ws_message_payload_from_message() {
+        let msg = Message {
+            id: 0,
+            server_id: 0,
+            channel_id: "ch-2".to_string(),
+            message_id: "msg-2".to_string(),
+            sender_pseudonym: "bob".to_string(),
+            content: "world".to_string(),
+            reply_to_message_id: None,
+            created_at: "2025-01-01T00:00:00Z".to_string(),
+            expires_at: None,
+        };
+
+        let payload: WsMessagePayload = msg.into();
+        assert_eq!(payload.channel_id, "ch-2");
+        assert_eq!(payload.message_id, "msg-2");
+        assert_eq!(payload.sender_pseudonym, "bob");
+        assert_eq!(payload.content, "world");
+        assert!(payload.reply_to_message_id.is_none());
+    }
+
+    #[test]
+    fn outgoing_message_wraps_with_type_tag() {
+        let payload = WsMessagePayload {
+            channel_id: "ch-1".to_string(),
+            message_id: "msg-1".to_string(),
+            sender_pseudonym: "alice".to_string(),
+            content: "test".to_string(),
+            reply_to_message_id: None,
+            created_at: "2025-01-01T00:00:00Z".to_string(),
+        };
+
+        let out = OutgoingMessage::Message(payload);
+        let json = serde_json::to_value(&out).expect("serialization should not fail");
+        assert_eq!(json.get("type").and_then(|v| v.as_str()), Some("message"));
+        assert!(json.get("channelId").is_some());
     }
 }

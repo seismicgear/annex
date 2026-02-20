@@ -1,8 +1,14 @@
 /**
- * Voice panel component — integrates LiveKit for voice channels.
+ * Media panel — integrates LiveKit for voice, video, and screen sharing.
  *
- * Shows join/leave controls and a participant list when connected.
- * Uses @livekit/components-react for audio rendering.
+ * Supports:
+ * - Voice calls (microphone audio)
+ * - Video calls (camera feed with participant grid)
+ * - Screen sharing / game sharing (prominent overlay)
+ *
+ * Uses @livekit/components-react for WebRTC transport.
+ * LiveKit's can_publish grant covers all track sources (mic, camera, screen).
+ * Video starts disabled; the user toggles camera/screen via control buttons.
  */
 
 import { useState, useCallback } from 'react';
@@ -11,32 +17,189 @@ import {
   RoomAudioRenderer,
   useParticipants,
   useTracks,
+  VideoTrack,
+  useLocalParticipant,
 } from '@livekit/components-react';
 import '@livekit/components-styles';
-import { Track } from 'livekit-client';
+import { Track, type LocalParticipant } from 'livekit-client';
 import { useIdentityStore } from '@/stores/identity';
 import { useChannelsStore } from '@/stores/channels';
 import * as api from '@/lib/api';
 
-function VoiceParticipants() {
-  const participants = useParticipants();
-  const tracks = useTracks([Track.Source.Microphone]);
-  const speakingIds = new Set(
-    tracks.filter((t) => t.publication?.isMuted === false).map((t) => t.participant.identity),
-  );
+/** Controls bar rendered inside the LiveKit room context. */
+function MediaControls({ onLeave }: { onLeave: () => void }) {
+  const { localParticipant } = useLocalParticipant();
+  const lp = localParticipant as LocalParticipant;
+
+  const micEnabled = lp.isMicrophoneEnabled;
+  const camEnabled = lp.isCameraEnabled;
+  const screenEnabled = lp.isScreenShareEnabled;
+
+  const toggleMic = useCallback(async () => {
+    await lp.setMicrophoneEnabled(!micEnabled);
+  }, [lp, micEnabled]);
+
+  const toggleCamera = useCallback(async () => {
+    await lp.setCameraEnabled(!camEnabled);
+  }, [lp, camEnabled]);
+
+  const toggleScreen = useCallback(async () => {
+    await lp.setScreenShareEnabled(!screenEnabled);
+  }, [lp, screenEnabled]);
 
   return (
-    <div className="voice-participants">
-      {participants.map((p) => (
-        <div
-          key={p.identity}
-          className={`voice-participant ${speakingIds.has(p.identity) ? 'speaking' : ''}`}
-        >
-          <span className="participant-name">{p.identity.slice(0, 12)}...</span>
-          {speakingIds.has(p.identity) && <span className="speaking-indicator" />}
-        </div>
-      ))}
+    <div className="media-controls">
+      <button
+        className={`media-control-btn ${micEnabled ? 'active' : 'muted'}`}
+        onClick={toggleMic}
+        title={micEnabled ? 'Mute microphone' : 'Unmute microphone'}
+      >
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+          {micEnabled ? (
+            <path d="M8 11a3 3 0 003-3V4a3 3 0 10-6 0v4a3 3 0 003 3zm5-3a5 5 0 01-4.5 4.975V15h-1v-2.025A5 5 0 013 8h1a4 4 0 108 0h1z"/>
+          ) : (
+            <>
+              <path d="M8 11a3 3 0 003-3V4a3 3 0 10-6 0v4a3 3 0 003 3zm5-3a5 5 0 01-4.5 4.975V15h-1v-2.025A5 5 0 013 8h1a4 4 0 108 0h1z" opacity="0.3"/>
+              <line x1="2" y1="2" x2="14" y2="14" stroke="currentColor" strokeWidth="1.5"/>
+            </>
+          )}
+        </svg>
+      </button>
+
+      <button
+        className={`media-control-btn ${camEnabled ? 'active' : 'muted'}`}
+        onClick={toggleCamera}
+        title={camEnabled ? 'Turn off camera' : 'Turn on camera'}
+      >
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+          {camEnabled ? (
+            <path d="M0 4.5A1.5 1.5 0 011.5 3h8A1.5 1.5 0 0111 4.5v1.05l3.15-1.8A.5.5 0 0115 4.2v7.6a.5.5 0 01-.85.35L11 10.35v1.15a1.5 1.5 0 01-1.5 1.5h-8A1.5 1.5 0 010 11.5v-7z"/>
+          ) : (
+            <>
+              <path d="M0 4.5A1.5 1.5 0 011.5 3h8A1.5 1.5 0 0111 4.5v1.05l3.15-1.8A.5.5 0 0115 4.2v7.6a.5.5 0 01-.85.35L11 10.35v1.15a1.5 1.5 0 01-1.5 1.5h-8A1.5 1.5 0 010 11.5v-7z" opacity="0.3"/>
+              <line x1="1" y1="2" x2="14" y2="14" stroke="currentColor" strokeWidth="1.5"/>
+            </>
+          )}
+        </svg>
+      </button>
+
+      <button
+        className={`media-control-btn screen-btn ${screenEnabled ? 'active sharing' : ''}`}
+        onClick={toggleScreen}
+        title={screenEnabled ? 'Stop sharing' : 'Share screen'}
+      >
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M0 3.5A1.5 1.5 0 011.5 2h13A1.5 1.5 0 0116 3.5v7a1.5 1.5 0 01-1.5 1.5H10v1h2v1H4v-1h2v-1H1.5A1.5 1.5 0 010 10.5v-7zM1.5 3a.5.5 0 00-.5.5v7a.5.5 0 00.5.5h13a.5.5 0 00.5-.5v-7a.5.5 0 00-.5-.5h-13z"/>
+          {screenEnabled && (
+            <path d="M6 6h4v3H6z" opacity="0.5"/>
+          )}
+        </svg>
+      </button>
+
+      <div className="media-controls-divider" />
+
+      <button onClick={onLeave} className="media-control-btn leave-call-btn" title="Leave call">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M3.654 1.328a.678.678 0 00-1.015-.063L1.605 2.3c-.483.484-.661 1.169-.45 1.77a17.568 17.568 0 004.168 6.608 17.569 17.569 0 006.608 4.168c.601.211 1.286.033 1.77-.45l1.034-1.034a.678.678 0 00-.063-1.015l-2.307-1.794a.678.678 0 00-.58-.122l-2.19.547a1.745 1.745 0 01-1.657-.459L5.482 8.062a1.745 1.745 0 01-.46-1.657l.548-2.19a.678.678 0 00-.122-.58L3.654 1.328z"/>
+        </svg>
+      </button>
     </div>
+  );
+}
+
+/** Prominent screen share display when someone is sharing. */
+function ScreenShareView() {
+  const screenTracks = useTracks([Track.Source.ScreenShare]);
+  const activeShare = screenTracks.find(
+    (t) => t.publication && !t.publication.isMuted && t.publication.track,
+  );
+
+  if (!activeShare) return null;
+
+  return (
+    <div className="screen-share-view">
+      <div className="screen-share-header">
+        <span className="screen-share-badge">LIVE</span>
+        <span className="screen-share-label">
+          {activeShare.participant.identity.slice(0, 12)}... is sharing
+        </span>
+      </div>
+      <div className="screen-share-content">
+        <VideoTrack trackRef={activeShare} />
+      </div>
+    </div>
+  );
+}
+
+/** Participant grid with video tiles or audio-only avatars. */
+function ParticipantGrid() {
+  const participants = useParticipants();
+  const micTracks = useTracks([Track.Source.Microphone]);
+  const camTracks = useTracks([Track.Source.Camera]);
+
+  const speakingIds = new Set(
+    micTracks
+      .filter((t) => t.publication?.isMuted === false)
+      .map((t) => t.participant.identity),
+  );
+
+  const cameraByIdentity = new Map(
+    camTracks
+      .filter((t) => t.publication && !t.publication.isMuted)
+      .map((t) => [t.participant.identity, t]),
+  );
+
+  const hasAnyVideo = cameraByIdentity.size > 0;
+
+  return (
+    <div className={`participant-grid ${hasAnyVideo ? 'has-video' : 'audio-only'}`}>
+      {participants.map((p) => {
+        const camTrack = cameraByIdentity.get(p.identity);
+        const isSpeaking = speakingIds.has(p.identity);
+
+        if (camTrack?.publication?.track) {
+          return (
+            <div
+              key={p.identity}
+              className={`participant-tile video ${isSpeaking ? 'speaking' : ''}`}
+            >
+              <VideoTrack trackRef={camTrack} />
+              <span className="participant-label">
+                {p.identity.slice(0, 12)}...
+                {isSpeaking && <span className="speaking-indicator" />}
+              </span>
+            </div>
+          );
+        }
+
+        return (
+          <div
+            key={p.identity}
+            className={`participant-tile audio-tile ${isSpeaking ? 'speaking' : ''}`}
+          >
+            <div className="participant-avatar-circle">
+              {p.identity.charAt(0).toUpperCase()}
+            </div>
+            <span className="participant-label">
+              {p.identity.slice(0, 12)}...
+              {isSpeaking && <span className="speaking-indicator" />}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Room content rendered inside the LiveKitRoom context. */
+function RoomContent({ onLeave }: { onLeave: () => void }) {
+  return (
+    <>
+      <RoomAudioRenderer />
+      <ScreenShareView />
+      <ParticipantGrid />
+      <MediaControls onLeave={onLeave} />
+    </>
   );
 }
 
@@ -51,7 +214,7 @@ export function VoicePanel() {
 
   const activeChannel = channels.find((c) => c.channel_id === activeChannelId);
   const isVoiceCapable =
-    activeChannel?.channel_type === 'VOICE' || activeChannel?.channel_type === 'HYBRID';
+    activeChannel?.channel_type === 'Voice' || activeChannel?.channel_type === 'Hybrid';
 
   const handleJoin = useCallback(async () => {
     if (!identity?.pseudonymId || !activeChannelId) return;
@@ -60,8 +223,8 @@ export function VoicePanel() {
       const { token, url } = await api.joinVoice(identity.pseudonymId, activeChannelId);
       setVoiceToken(token);
       setLivekitUrl(url);
-    } catch (e) {
-      console.error('Failed to join voice:', e);
+    } catch {
+      // Join failed — user can retry
     } finally {
       setJoining(false);
     }
@@ -72,7 +235,8 @@ export function VoicePanel() {
     try {
       await api.leaveVoice(identity.pseudonymId, activeChannelId);
     } catch {
-      // Best effort
+      // Best effort — the room UI is cleared regardless so the user sees
+      // a consistent disconnected state even if the server didn't ack.
     }
     setVoiceToken(null);
     setLivekitUrl(null);
@@ -90,11 +254,7 @@ export function VoicePanel() {
           audio={true}
           video={false}
         >
-          <RoomAudioRenderer />
-          <VoiceParticipants />
-          <button onClick={handleLeave} className="voice-leave-btn">
-            Leave Voice
-          </button>
+          <RoomContent onLeave={handleLeave} />
         </LiveKitRoom>
       </div>
     );
@@ -103,7 +263,7 @@ export function VoicePanel() {
   return (
     <div className="voice-panel disconnected">
       <button onClick={handleJoin} disabled={joining} className="voice-join-btn">
-        {joining ? 'Joining...' : 'Join Voice'}
+        {joining ? 'Joining...' : 'Join Call'}
       </button>
     </div>
   );

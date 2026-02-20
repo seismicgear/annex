@@ -48,30 +48,24 @@ pub fn create_platform_identity(
     pseudonym_id: &str,
     participant_type: RoleCode,
 ) -> Result<PlatformIdentity, IdentityError> {
-    // The first identity on a server becomes the founder and gets full capabilities.
-    let existing_count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM platform_identities WHERE server_id = ?1",
-            params![server_id],
-            |row| row.get(0),
-        )
-        .map_err(IdentityError::DatabaseError)?;
-
-    let is_founder = existing_count == 0;
-
+    // The first identity on a server becomes the founder and gets core capabilities
+    // (voice, moderate, invite, federate). The founder check and insert are combined
+    // into a single SQL statement to eliminate the TOCTOU race between SELECT COUNT(*)
+    // and INSERT that would allow concurrent registrations to both become founders.
     conn.execute(
         "INSERT INTO platform_identities (
             server_id, pseudonym_id, participant_type,
             can_voice, can_moderate, can_invite, can_federate
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        ) VALUES (?1, ?2, ?3,
+            (SELECT CASE WHEN COUNT(*) = 0 THEN 1 ELSE 0 END FROM platform_identities WHERE server_id = ?1),
+            (SELECT CASE WHEN COUNT(*) = 0 THEN 1 ELSE 0 END FROM platform_identities WHERE server_id = ?1),
+            (SELECT CASE WHEN COUNT(*) = 0 THEN 1 ELSE 0 END FROM platform_identities WHERE server_id = ?1),
+            (SELECT CASE WHEN COUNT(*) = 0 THEN 1 ELSE 0 END FROM platform_identities WHERE server_id = ?1)
+        )",
         params![
             server_id,
             pseudonym_id,
             participant_type.label(),
-            is_founder,
-            is_founder,
-            is_founder,
-            is_founder,
         ],
     )?;
 
@@ -158,14 +152,6 @@ pub fn update_capabilities(
     )?;
 
     if changed == 0 {
-        // We could return a specific error here, but for now we'll just return Ok(())
-        // or maybe strict error if not found?
-        // Let's check if it exists first? No, extra query.
-        // If changed == 0, it means the identity wasn't found (or no change needed, but we always update updated_at).
-        // Let's assume caller checks existence if needed, or we rely on logic.
-        // Actually, for "update", usually we want to know if it succeeded.
-        // But rusqlite execute returns count.
-        // Let's return QueryReturnedNoRows if 0.
         return Err(IdentityError::DatabaseError(
             rusqlite::Error::QueryReturnedNoRows,
         ));

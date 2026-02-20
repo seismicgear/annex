@@ -87,6 +87,42 @@ fn test_duplicate_pseudonym_per_server() {
 }
 
 #[test]
+fn test_second_identity_is_not_founder() {
+    let conn = Connection::open_in_memory().expect("failed to open in-memory db");
+    run_migrations(&conn).expect("failed to run migrations");
+
+    let server_id = 1;
+
+    // First identity is the founder
+    let founder = create_platform_identity(&conn, server_id, "founder-id", RoleCode::Human)
+        .expect("failed to create founder");
+    assert!(founder.can_voice, "founder should have can_voice");
+    assert!(founder.can_moderate, "founder should have can_moderate");
+    assert!(founder.can_invite, "founder should have can_invite");
+    assert!(founder.can_federate, "founder should have can_federate");
+
+    // Second identity should NOT have founder capabilities
+    let regular = create_platform_identity(&conn, server_id, "regular-id", RoleCode::Human)
+        .expect("failed to create second identity");
+    assert!(
+        !regular.can_voice,
+        "second identity should NOT have can_voice"
+    );
+    assert!(
+        !regular.can_moderate,
+        "second identity should NOT have can_moderate"
+    );
+    assert!(
+        !regular.can_invite,
+        "second identity should NOT have can_invite"
+    );
+    assert!(
+        !regular.can_federate,
+        "second identity should NOT have can_federate"
+    );
+}
+
+#[test]
 fn test_same_pseudonym_different_servers() {
     let conn = Connection::open_in_memory().expect("failed to open in-memory db");
     run_migrations(&conn).expect("failed to run migrations");

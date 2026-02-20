@@ -1,12 +1,15 @@
 /**
- * Identity setup component — handles new identity creation and existing identity selection.
+ * Identity setup component — handles new identity creation, existing identity
+ * selection, and device-to-device identity transfer.
  *
  * Displayed when no active identity is available. Guides the user through
  * key generation, registration, proof generation, and verification.
+ * Supports invite links by pre-filling the server slug.
  */
 
 import { useState, useRef, type FormEvent } from 'react';
 import { useIdentityStore, type IdentityPhase } from '@/stores/identity';
+import { DeviceLinkDialog } from '@/components/DeviceLinkDialog';
 
 const PHASE_LABELS: Record<IdentityPhase, string> = {
   uninitialized: 'Ready to create identity',
@@ -18,7 +21,11 @@ const PHASE_LABELS: Record<IdentityPhase, string> = {
   error: 'Error',
 };
 
-export function IdentitySetup() {
+interface Props {
+  inviteServerSlug?: string;
+}
+
+export function IdentitySetup({ inviteServerSlug }: Props) {
   const {
     phase,
     error,
@@ -28,9 +35,10 @@ export function IdentitySetup() {
     importBackup,
   } = useIdentityStore();
 
-  const [serverSlug, setServerSlug] = useState('default');
+  const [serverSlug, setServerSlug] = useState(inviteServerSlug ?? 'default');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const isWorking = ['generating', 'registering', 'proving', 'verifying'].includes(phase);
+  const [showDeviceLink, setShowDeviceLink] = useState(false);
 
   const handleCreate = async (e: FormEvent) => {
     e.preventDefault();
@@ -74,6 +82,21 @@ export function IdentitySetup() {
         </form>
       )}
 
+      {/* Device linking — transfer identity from another device */}
+      {!isWorking && (
+        <div className="setup-divider">
+          <span>or</span>
+        </div>
+      )}
+      {!isWorking && (
+        <button
+          className="device-link-setup-btn"
+          onClick={() => setShowDeviceLink(true)}
+        >
+          Link from Another Device
+        </button>
+      )}
+
       {/* Select existing identity */}
       {readyIdentities.length > 0 && !isWorking && (
         <div className="existing-identities">
@@ -98,6 +121,10 @@ export function IdentitySetup() {
           <input type="file" ref={fileInputRef} accept=".json" />
           <button onClick={handleImport}>Import</button>
         </div>
+      )}
+
+      {showDeviceLink && (
+        <DeviceLinkDialog onClose={() => setShowDeviceLink(false)} />
       )}
     </div>
   );

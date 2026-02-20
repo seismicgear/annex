@@ -27,8 +27,10 @@ pub enum ChannelError {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Channel {
     /// Internal database ID.
+    #[serde(skip_serializing, default)]
     pub id: i64,
     /// ID of the server this channel belongs to.
+    #[serde(skip_serializing, default)]
     pub server_id: i64,
     /// Unique public ID for the channel (e.g. UUID).
     pub channel_id: String,
@@ -306,8 +308,10 @@ fn map_row_to_channel(row: &Row) -> rusqlite::Result<Channel> {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Message {
     /// Internal database ID.
+    #[serde(skip_serializing, default)]
     pub id: i64,
     /// ID of the server.
+    #[serde(skip_serializing, default)]
     pub server_id: i64,
     /// Public ID of the channel.
     pub channel_id: String,
@@ -322,6 +326,7 @@ pub struct Message {
     /// Creation timestamp (ISO 8601).
     pub created_at: String,
     /// Expiration timestamp (ISO 8601), if retention applies.
+    #[serde(skip_serializing, default)]
     pub expires_at: Option<String>,
 }
 

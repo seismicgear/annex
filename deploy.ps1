@@ -85,6 +85,9 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+# Default server policy matching ServerPolicy::default() in Rust
+$DefaultPolicy = '{"agent_min_alignment_score":0.8,"agent_required_capabilities":[],"federation_enabled":true,"default_retention_days":30,"voice_enabled":true,"max_members":1000}'
+
 # ── Helpers ──
 
 function Write-Step { param([string]$msg) Write-Host "`n:: $msg" -ForegroundColor Cyan }
@@ -287,13 +290,15 @@ if ($needsSeed) {
         # Escape single quotes for SQL (double them)
         $safeSlug = $ServerSlug -replace "'", "''"
         $safeLabel = $ServerLabel -replace "'", "''"
-        sqlite3 $DbPath "INSERT OR IGNORE INTO servers (slug, label, policy_json) VALUES ('$safeSlug', '$safeLabel', '{}');"
+        sqlite3 $DbPath "INSERT OR IGNORE INTO servers (slug, label, policy_json) VALUES ('$safeSlug', '$safeLabel', '$DefaultPolicy');"
         if ($LASTEXITCODE -ne 0) { Write-Fail "Failed to seed server row" }
+        # Fix any previously seeded rows with empty policy_json
+        sqlite3 $DbPath "UPDATE servers SET policy_json = '$DefaultPolicy' WHERE policy_json = '{}';" 2>$null
         Write-Ok "Database seeded: slug='$ServerSlug', label='$ServerLabel'"
     } else {
         Write-Warn "Cannot seed database without sqlite3 CLI."
         Write-Host "   Run this manually:"
-        Write-Host "   sqlite3 `"$DbPath`" `"INSERT INTO servers (slug, label, policy_json) VALUES ('<slug>', '<label>', '{}');`""
+        Write-Host "   sqlite3 `"$DbPath`" `"INSERT INTO servers (slug, label, policy_json) VALUES ('<slug>', '<label>', '$DefaultPolicy');`""
         Write-Host ""
         Write-Host "   Or install sqlite3:"
         Write-Host "     Debian/Ubuntu: sudo apt install sqlite3"
@@ -302,13 +307,27 @@ if ($needsSeed) {
     }
 }
 
-# ── Generate signing key if needed ──
+# ── Signing key persistence ──
+
+$keyFile = Join-Path $DataDir "signing.key"
 
 if (-not $SigningKey) {
-    Write-Warn "No -SigningKey provided. Server will use an ephemeral key."
-    Write-Host "   This is fine for development but NOT for production."
-    Write-Host "   Generate a permanent key:"
-    Write-Host "   openssl rand -hex 32"
+    if (Test-Path $keyFile) {
+        $SigningKey = (Get-Content -Path $keyFile -Raw).Trim()
+        Write-Ok "Loaded signing key from $keyFile"
+    } elseif (Test-Command "openssl") {
+        $SigningKey = (openssl rand -hex 32).Trim()
+        Set-Content -Path $keyFile -Value $SigningKey -NoNewline -Encoding ASCII
+        Write-Ok "Generated and persisted signing key at $keyFile"
+    } else {
+        # Generate using .NET as fallback
+        $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+        $bytes = New-Object byte[] 32
+        $rng.GetBytes($bytes)
+        $SigningKey = -join ($bytes | ForEach-Object { $_.ToString("x2") })
+        Set-Content -Path $keyFile -Value $SigningKey -NoNewline -Encoding ASCII
+        Write-Ok "Generated and persisted signing key at $keyFile"
+    }
 }
 
 # ── Write runtime config ──
@@ -352,6 +371,8 @@ Write-Ok "Config written to $configPath"
 
 Write-Step "Starting Annex server"
 
+$clientDir = Join-Path $ProjectRoot "client" "dist"
+
 $envVars = @{
     ANNEX_CONFIG_PATH  = $configPath
     ANNEX_ZK_KEY_PATH  = $vkeyPath
@@ -360,10 +381,17 @@ $envVars = @{
     ANNEX_PORT         = $Port
     ANNEX_LOG_LEVEL    = $LogLevel
     ANNEX_PUBLIC_URL   = $PublicUrl
+    ANNEX_CLIENT_DIR   = $clientDir
 }
 
 if ($SigningKey) { $envVars["ANNEX_SIGNING_KEY"] = $SigningKey }
 if ($LogJson)    { $envVars["ANNEX_LOG_JSON"] = "true" }
+
+# TTS/STT paths (if assets are present)
+$piperPath = Join-Path $ProjectRoot "assets" "piper" "piper"
+$voicesDir = Join-Path $ProjectRoot "assets" "voices"
+if (Test-Path $piperPath) { $envVars["ANNEX_TTS_BINARY_PATH"] = $piperPath }
+if (Test-Path $voicesDir) { $envVars["ANNEX_TTS_VOICES_DIR"] = $voicesDir }
 
 foreach ($kv in $envVars.GetEnumerator()) {
     [Environment]::SetEnvironmentVariable($kv.Key, $kv.Value, "Process")

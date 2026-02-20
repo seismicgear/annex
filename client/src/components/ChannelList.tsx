@@ -9,29 +9,33 @@ import { useEffect, useState } from 'react';
 import { useChannelsStore } from '@/stores/channels';
 import { useIdentityStore } from '@/stores/identity';
 import { CreateChannelDialog } from '@/components/CreateChannelDialog';
+import { generateInviteLink } from '@/lib/invite';
 import type { Channel, ChannelType } from '@/types';
 
 const CHANNEL_TYPE_ICONS: Record<ChannelType, string> = {
-  TEXT: '#',
-  VOICE: '🔊',
-  HYBRID: '#🔊',
-  AGENT: '🤖',
-  BROADCAST: '📢',
+  Text: '#',
+  Voice: '🔊',
+  Hybrid: '#🔊',
+  Agent: '🤖',
+  Broadcast: '📢',
 };
 
 function ChannelItem({
   channel,
   active,
   pseudonymId,
+  serverSlug,
   onSelect,
 }: {
   channel: Channel;
   active: boolean;
   pseudonymId: string;
+  serverSlug: string;
   onSelect: () => void;
 }) {
   const { joinChannel, leaveChannel, loadChannels } = useChannelsStore();
   const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   const handleJoin = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -39,6 +43,8 @@ function ChannelItem({
     try {
       await joinChannel(pseudonymId, channel.channel_id);
       await loadChannels(pseudonymId);
+    } catch {
+      // Join failed — user can retry
     } finally {
       setBusy(false);
     }
@@ -50,8 +56,22 @@ function ChannelItem({
     try {
       await leaveChannel(pseudonymId, channel.channel_id);
       await loadChannels(pseudonymId);
+    } catch {
+      // Leave failed — user can retry
     } finally {
       setBusy(false);
+    }
+  };
+
+  const handleCopyInvite = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      const link = generateInviteLink(channel.channel_id, serverSlug, channel.name);
+      await navigator.clipboard.writeText(link);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard access denied or insecure context
     }
   };
 
@@ -62,13 +82,20 @@ function ChannelItem({
           {CHANNEL_TYPE_ICONS[channel.channel_type]}
         </span>
         <span className="channel-name">{channel.name}</span>
-        {channel.federation_scope === 'FEDERATED' && (
+        {channel.federation_scope === 'Federated' && (
           <span className="federation-badge" title="Federated channel">
             F
           </span>
         )}
       </button>
       <div className="channel-actions">
+        <button
+          className="channel-action-btn invite-btn"
+          onClick={handleCopyInvite}
+          title={copied ? 'Copied!' : 'Copy invite link'}
+        >
+          {copied ? '!' : 'i'}
+        </button>
         {active ? (
           <button
             className="channel-action-btn leave-btn"
@@ -144,6 +171,7 @@ export function ChannelList() {
           channel={ch}
           active={activeChannelId === ch.channel_id}
           pseudonymId={identity.pseudonymId!}
+          serverSlug={identity.serverSlug}
           onSelect={() => handleSelect(ch.channel_id)}
         />
       ))}

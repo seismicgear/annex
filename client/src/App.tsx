@@ -4,12 +4,21 @@
  * Orchestrates the identity flow, view navigation, and layout.
  * Shows IdentitySetup when no identity is active, otherwise shows
  * a tabbed layout with Chat, Federation, and Events views.
+ *
+ * The ServerHub sidebar renders the user's local database of established
+ * Merkle tree insertions — click-to-connect with immediate UI transitions
+ * and async crypto in the background. Persona isolation dynamically
+ * shifts the color palette based on the active server context.
+ *
  * Admin features are accessible via a gear-icon dropdown menu.
+ * Supports invite link routing: if the URL contains /invite/<channelId>,
+ * the app will auto-join the channel after identity setup completes.
  */
 
 import { useEffect, useState, useRef } from 'react';
 import { useIdentityStore } from '@/stores/identity';
 import { useChannelsStore } from '@/stores/channels';
+import { useServersStore } from '@/stores/servers';
 import { IdentitySetup } from '@/components/IdentitySetup';
 import { ChannelList } from '@/components/ChannelList';
 import { MessageView } from '@/components/MessageView';
@@ -20,21 +29,33 @@ import { StatusBar } from '@/components/StatusBar';
 import { FederationPanel } from '@/components/FederationPanel';
 import { EventLog } from '@/components/EventLog';
 import { AdminPanel } from '@/components/AdminPanel';
+import { ServerHub } from '@/components/ServerHub';
+import { parseInviteFromUrl, clearInviteFromUrl } from '@/lib/invite';
+import { getPersonasForIdentity } from '@/lib/personas';
+import type { InvitePayload } from '@/types';
 import './App.css';
 
 type AppView = 'chat' | 'federation' | 'events' | 'admin-policy' | 'admin-channels';
 
 export default function App() {
   const { phase, identity, loadIdentities, loadPermissions, permissions } = useIdentityStore();
-  const { connectWs, disconnectWs } = useChannelsStore();
+  const { connectWs, disconnectWs, selectChannel, joinChannel, loadChannels } = useChannelsStore();
+  const { servers, loadServers, saveCurrentServer } = useServersStore();
+  const activeServer = useServersStore((s) => s.getActiveServer());
   const [activeView, setActiveView] = useState<AppView>('chat');
   const [adminMenuOpen, setAdminMenuOpen] = useState(false);
   const adminMenuRef = useRef<HTMLDivElement>(null);
+  const [pendingInvite, setPendingInvite] = useState<InvitePayload | null>(
+    () => parseInviteFromUrl(),
+  );
+  const inviteProcessed = useRef(false);
+  const serverSaved = useRef(false);
 
-  // Load identities on mount
+  // Load identities and saved servers on mount
   useEffect(() => {
     loadIdentities();
-  }, [loadIdentities]);
+    loadServers();
+  }, [loadIdentities, loadServers]);
 
   // Connect WebSocket and load permissions when identity is ready
   useEffect(() => {
@@ -44,6 +65,81 @@ export default function App() {
       return () => disconnectWs();
     }
   }, [phase, identity?.pseudonymId, connectWs, disconnectWs, loadPermissions]);
+
+  // Auto-save current server to the node hub on first identity ready
+  useEffect(() => {
+    if (phase === 'ready' && identity?.pseudonymId && identity.id && !serverSaved.current) {
+      serverSaved.current = true;
+      // Save this server to the local hub (idempotent — skips if already saved)
+      saveCurrentServer(identity.id, identity.serverSlug, identity.serverSlug)
+        .then(() =>
+          getPersonasForIdentity(identity.id).then((personas) => {
+            if (personas.length > 0) {
+              const server = useServersStore.getState().getActiveServer();
+              if (server && !server.personaId) {
+                useServersStore.getState().setServerPersona(
+                  server.id,
+                  personas[0].id,
+                  personas[0].accentColor,
+                );
+              }
+            }
+          }),
+        )
+        .catch(() => {
+          // Non-fatal: server hub entry may not be saved on first load
+        });
+    }
+  }, [phase, identity?.pseudonymId, identity?.id, identity?.serverSlug, saveCurrentServer]);
+
+  // Apply persona isolation — dynamic CSS custom properties per server context
+  useEffect(() => {
+    const raw = activeServer?.accentColor ?? '#646cff';
+    // Validate hex color format; fall back to default if malformed
+    const accentColor = /^#[0-9a-fA-F]{6}$/.test(raw) ? raw : '#646cff';
+    document.documentElement.style.setProperty('--persona-accent', accentColor);
+
+    // Derive tint colors from the accent
+    const r = parseInt(accentColor.slice(1, 3), 16);
+    const g = parseInt(accentColor.slice(3, 5), 16);
+    const b = parseInt(accentColor.slice(5, 7), 16);
+    document.documentElement.style.setProperty(
+      '--persona-bg-tint',
+      `rgba(${r}, ${g}, ${b}, 0.06)`,
+    );
+    document.documentElement.style.setProperty(
+      '--persona-border-tint',
+      `rgba(${r}, ${g}, ${b}, 0.3)`,
+    );
+  }, [activeServer?.accentColor]);
+
+  // Process invite after identity is ready
+  useEffect(() => {
+    if (
+      phase === 'ready' &&
+      identity?.pseudonymId &&
+      pendingInvite &&
+      !inviteProcessed.current
+    ) {
+      inviteProcessed.current = true;
+      const processInvite = async () => {
+        try {
+          await joinChannel(identity.pseudonymId!, pendingInvite.channelId).catch(() => {
+            // Expected: channel might already be joined
+          });
+          await loadChannels(identity.pseudonymId!);
+          selectChannel(identity.pseudonymId!, pendingInvite.channelId);
+        } finally {
+          clearInviteFromUrl();
+          setActiveView('chat');
+          setPendingInvite(null);
+        }
+      };
+      processInvite().catch(() => {
+        // Non-fatal: invite processing failed, user lands on chat view
+      });
+    }
+  }, [phase, identity?.pseudonymId, pendingInvite, joinChannel, loadChannels, selectChannel]);
 
   // Close admin menu on outside click
   useEffect(() => {
@@ -63,9 +159,14 @@ export default function App() {
       <div className="app">
         <header className="app-header">
           <h1>Annex</h1>
+          {pendingInvite && (
+            <span className="invite-banner">
+              Joining {pendingInvite.label ?? pendingInvite.channelId}...
+            </span>
+          )}
         </header>
         <main className="app-main setup">
-          <IdentitySetup />
+          <IdentitySetup inviteServerSlug={pendingInvite?.serverSlug} />
         </main>
       </div>
     );
@@ -141,6 +242,20 @@ export default function App() {
             Events
           </button>
         </nav>
+
+        {/* Persona context indicator — shows which mask is active */}
+        {activeServer && (
+          <div className="persona-context-indicator">
+            <span className="persona-context-dot" />
+            <span className="persona-context-name">
+              {activeServer.label}
+            </span>
+            <span className="persona-context-server">
+              {activeServer.slug}
+            </span>
+          </div>
+        )}
+
         {permissions?.capabilities.can_moderate && (
           <div className="admin-menu" ref={adminMenuRef}>
             <button
@@ -172,7 +287,17 @@ export default function App() {
           </div>
         )}
       </header>
-      {renderView()}
+
+      <div className="app-with-hub">
+        {/* Server Hub — the leftmost icon sidebar showing saved Merkle insertions */}
+        {servers.length > 0 && <ServerHub />}
+
+        {/* Main content area — shifts color palette per active persona */}
+        <div className="app-main-content" key={activeServer?.id ?? 'default'}>
+          {renderView()}
+        </div>
+      </div>
+
       <StatusBar />
     </div>
   );

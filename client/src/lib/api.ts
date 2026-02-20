@@ -28,8 +28,49 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Active base URL for multi-server connections.
+ * Empty string = current origin (relative paths). Otherwise, full URL prefix.
+ */
+let _apiBaseUrl = '';
+
+/** Set the API base URL for cross-server requests. Empty string for current origin. */
+export function setApiBaseUrl(baseUrl: string): void {
+  _apiBaseUrl = baseUrl.replace(/\/+$/, '');
+}
+
+/** Get the current API base URL. */
+export function getApiBaseUrl(): string {
+  return _apiBaseUrl;
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
+  const url = _apiBaseUrl ? `${_apiBaseUrl}${path}` : path;
+  const res = await fetch(url, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...options?.headers,
+    },
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new ApiError(res.status, body);
+  }
+  return res.json() as Promise<T>;
+}
+
+/**
+ * Fetch from a specific remote server (for federation hopping / discovery).
+ * Does NOT use the global _apiBaseUrl — targets the given URL directly.
+ */
+export async function requestRemote<T>(
+  baseUrl: string,
+  path: string,
+  options?: RequestInit,
+): Promise<T> {
+  const url = `${baseUrl.replace(/\/+$/, '')}${path}`;
+  const res = await fetch(url, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
@@ -103,11 +144,25 @@ export async function createChannel(
   name: string,
   channelType: string,
   topic?: string,
+  federated?: boolean,
 ): Promise<Channel> {
+  // Generate a channel_id from the name (lowercase, alphanumeric + hyphens)
+  const channel_id = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    || `ch-${Date.now()}`;
   return request<Channel>('/api/channels', {
     method: 'POST',
     headers: authHeaders(pseudonymId),
-    body: JSON.stringify({ name, channel_type: channelType, topic }),
+    body: JSON.stringify({
+      channel_id,
+      name,
+      channel_type: channelType,
+      topic,
+      federation_scope: federated ? 'Federated' : 'Local',
+    }),
   });
 }
 
@@ -206,6 +261,20 @@ export async function deleteChannel(
     method: 'DELETE',
     headers: authHeaders(pseudonymId),
   });
+}
+
+// ── Remote Server Discovery (federation hopping) ──
+
+export async function getRemoteServerSummary(
+  baseUrl: string,
+): Promise<ServerSummary> {
+  return requestRemote<ServerSummary>(baseUrl, '/api/public/server/summary');
+}
+
+export async function getRemoteFederationPeers(
+  baseUrl: string,
+): Promise<{ peers: FederationPeer[] }> {
+  return requestRemote<{ peers: FederationPeer[] }>(baseUrl, '/api/public/federation/peers');
 }
 
 // ── Voice ──

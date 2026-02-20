@@ -159,7 +159,7 @@ async fn test_agent_websocket_behavior() {
             }
             assert_eq!(received["type"], "message");
             assert_eq!(received["content"], content);
-            assert_eq!(received["sender_pseudonym"], "agent-007");
+            assert_eq!(received["senderPseudonym"], "agent-007");
         } else {
             panic!("expected text message");
         }
