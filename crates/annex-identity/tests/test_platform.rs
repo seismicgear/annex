@@ -25,7 +25,11 @@ fn test_platform_identity_lifecycle() {
     assert_eq!(created.pseudonym_id, pseudonym_id);
     assert_eq!(created.participant_type, role);
     assert!(created.active);
-    assert!(!created.can_voice); // Default 0
+    // First identity on a server is the founder and gets full capabilities
+    assert!(created.can_voice);
+    assert!(created.can_moderate);
+    assert!(created.can_invite);
+    assert!(created.can_federate);
 
     // 3. Read Identity
     let fetched =

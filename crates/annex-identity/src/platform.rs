@@ -48,15 +48,31 @@ pub fn create_platform_identity(
     pseudonym_id: &str,
     participant_type: RoleCode,
 ) -> Result<PlatformIdentity, IdentityError> {
-    // SQLite doesn't return the inserted row directly, so we insert then fetch.
-    // Or we use RETURNING if sqlite version supports it. Let's assume standard sqlite.
+    // The first identity on a server becomes the founder and gets full capabilities.
+    let existing_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM platform_identities WHERE server_id = ?1",
+            params![server_id],
+            |row| row.get(0),
+        )
+        .map_err(IdentityError::DatabaseError)?;
 
-    // Actually, we should let SQLite generate timestamps.
+    let is_founder = existing_count == 0;
+
     conn.execute(
         "INSERT INTO platform_identities (
-            server_id, pseudonym_id, participant_type
-        ) VALUES (?1, ?2, ?3)",
-        params![server_id, pseudonym_id, participant_type.label()],
+            server_id, pseudonym_id, participant_type,
+            can_voice, can_moderate, can_invite, can_federate
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            server_id,
+            pseudonym_id,
+            participant_type.label(),
+            is_founder,
+            is_founder,
+            is_founder,
+            is_founder,
+        ],
     )?;
 
     get_platform_identity(conn, server_id, pseudonym_id)

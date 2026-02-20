@@ -70,13 +70,8 @@ async fn test_get_identity_endpoints() {
 
     {
         let conn = pool.get().unwrap();
+        // First identity on this server becomes founder with full capabilities
         create_platform_identity(&conn, server_id, pseudonym_id, role).unwrap();
-
-        // Update capabilities to something non-default to verify
-        conn.execute(
-            "UPDATE platform_identities SET can_voice = 1, can_moderate = 1 WHERE pseudonym_id = ?1",
-            [pseudonym_id],
-        ).unwrap();
     }
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
@@ -101,7 +96,7 @@ async fn test_get_identity_endpoints() {
     assert!(identity.active);
     assert!(identity.capabilities.can_voice);
     assert!(identity.capabilities.can_moderate);
-    assert!(!identity.capabilities.can_invite); // Default
+    assert!(identity.capabilities.can_invite); // Founder gets full capabilities
 
     // 4. Test GET /api/identity/:pseudonymId/capabilities
     let mut req_caps = Request::builder()
@@ -120,7 +115,7 @@ async fn test_get_identity_endpoints() {
 
     assert!(caps_resp.capabilities.can_voice);
     assert!(caps_resp.capabilities.can_moderate);
-    assert!(!caps_resp.capabilities.can_invite);
+    assert!(caps_resp.capabilities.can_invite);
 
     // 5. Test Not Found
     let mut req_nf = Request::builder()
