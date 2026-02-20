@@ -347,16 +347,19 @@ function ChannelManager({ pseudonymId }: { pseudonymId: string }) {
   );
 }
 
-export function AdminPanel() {
+export function AdminPanel({ section }: { section?: 'policy' | 'channels' }) {
   const identity = useIdentityStore((s) => s.identity);
 
   if (!identity?.pseudonymId) return null;
 
   return (
     <div className="admin-panel">
-      <h2>Server Administration</h2>
-      <PolicyEditor pseudonymId={identity.pseudonymId} />
-      <ChannelManager pseudonymId={identity.pseudonymId} />
+      <h2>{section === 'channels' ? 'Channel Management' : 'Server Policy'}</h2>
+      {section === 'channels' ? (
+        <ChannelManager pseudonymId={identity.pseudonymId} />
+      ) : (
+        <PolicyEditor pseudonymId={identity.pseudonymId} />
+      )}
     </div>
   );
 }
