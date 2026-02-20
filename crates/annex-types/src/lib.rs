@@ -95,14 +95,19 @@ pub enum TransferScope {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChannelType {
     /// Text-only channel.
+    #[serde(alias = "TEXT")]
     Text,
     /// Voice-only channel.
+    #[serde(alias = "VOICE")]
     Voice,
     /// Combined text and voice channel.
+    #[serde(alias = "HYBRID")]
     Hybrid,
     /// Agent-dedicated channel (RTX delivery, agent coordination).
+    #[serde(alias = "AGENT")]
     Agent,
     /// One-way broadcast channel.
+    #[serde(alias = "BROADCAST")]
     Broadcast,
 }
 
