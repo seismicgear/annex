@@ -70,7 +70,7 @@ export function MemberList() {
         <div className="server-summary">
           <h3>{summary.label}</h3>
           <div className="member-counts">
-            {Object.entries(summary.members).map(([type, count]) => (
+            {Object.entries(summary.members_by_type).map(([type, count]) => (
               <div key={type} className="member-count">
                 <span className="type-label">{TYPE_LABELS[type as ParticipantType] ?? type}</span>
                 <span className="count">{count}</span>

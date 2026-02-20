@@ -124,11 +124,11 @@ export interface FederationPeer {
 export interface ServerSummary {
   slug: string;
   label: string;
-  members: Record<string, number>;
-  total_members: number;
+  members_by_type: Record<string, number>;
+  total_active_members: number;
   channel_count: number;
   federation_peer_count: number;
-  agent_count: number;
+  active_agent_count: number;
 }
 
 /** Graph node for presence. */
