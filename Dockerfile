@@ -13,6 +13,11 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 
+# Install build dependencies for openssl-sys
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 # Build release binary
 RUN cargo build --release --bin annex-server \
     && strip target/release/annex-server
