@@ -51,6 +51,7 @@ impl VoiceService {
                 room: room_name.to_string(),
                 can_publish: true,
                 can_subscribe: true,
+                can_publish_data: true,
                 ..Default::default()
             })
             .with_ttl(Duration::from_secs(self.config.token_ttl_seconds));
