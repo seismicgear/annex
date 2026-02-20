@@ -20,6 +20,8 @@ services:
       - ANNEX_LIVEKIT_API_SECRET=secret
       - ANNEX_LOG_LEVEL=info
       - ANNEX_LOG_JSON=true
+      - ANNEX_TTS_BINARY_PATH=/app/assets/piper/piper
+      - ANNEX_TTS_VOICES_DIR=/app/assets/voices
     volumes:
       - annex-data:/app/data
     depends_on:

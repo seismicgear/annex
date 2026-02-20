@@ -161,10 +161,30 @@ else
     warn "sqlite3 not found (will guide manual seeding)"
 fi
 
-# ZK verification key
+# ZK verification keys — bootstrap if missing
 VKEY_PATH="$SCRIPT_DIR/zk/keys/membership_vkey.json"
-[[ -f "$VKEY_PATH" ]] || fail "ZK verification key not found at $VKEY_PATH"
-ok "ZK verification key found"
+if [[ ! -f "$VKEY_PATH" ]]; then
+    step "Bootstrapping ZK circuits and keys"
+    has npm || fail "Node.js (npm) is required to build ZK circuits. Install from https://nodejs.org"
+    (cd "$SCRIPT_DIR/zk" && npm ci && node scripts/build-circuits.js && node scripts/setup-groth16.js) \
+        || fail "ZK circuit build failed"
+fi
+ok "ZK verification keys verified"
+
+# Piper TTS — bootstrap if missing
+PIPER_BIN="$SCRIPT_DIR/assets/piper/piper"
+VOICE_MODEL="$SCRIPT_DIR/assets/voices/en_US-lessac-medium.onnx"
+if [[ ! -x "$PIPER_BIN" ]] || [[ ! -f "$VOICE_MODEL" ]]; then
+    SETUP_PIPER="$SCRIPT_DIR/scripts/setup-piper.sh"
+    if [[ -x "$SETUP_PIPER" ]]; then
+        step "Bootstrapping Piper TTS voice model"
+        "$SETUP_PIPER" || warn "Piper setup failed (voice features will be unavailable)"
+    else
+        warn "Piper TTS not found — run scripts/setup-piper.sh for voice features"
+    fi
+else
+    ok "Piper TTS binary and voice model present"
+fi
 
 # ── Build ──
 

@@ -12,6 +12,12 @@ zk/build/*
 zk/keys/*
 !zk/keys/.gitkeep
 
+# Piper TTS binary and voice model files (downloaded at deploy time)
+assets/piper/
+assets/voices/
+assets/models/
+assets/whisper/
+
 # Node modules (ZK toolchain)
 node_modules/
 
