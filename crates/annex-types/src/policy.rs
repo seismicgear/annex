@@ -44,8 +44,8 @@ pub struct RateLimitConfig {
 impl Default for RateLimitConfig {
     fn default() -> Self {
         Self {
-            registration_limit: 5,
-            verification_limit: 5,
+            registration_limit: 20,
+            verification_limit: 20,
             default_limit: 60,
         }
     }
@@ -80,8 +80,8 @@ mod tests {
         assert_eq!(policy.default_retention_days, 30);
         assert!(policy.voice_enabled);
         assert_eq!(policy.max_members, 1000);
-        assert_eq!(policy.rate_limit.registration_limit, 5);
-        assert_eq!(policy.rate_limit.verification_limit, 5);
+        assert_eq!(policy.rate_limit.registration_limit, 20);
+        assert_eq!(policy.rate_limit.verification_limit, 20);
         assert_eq!(policy.rate_limit.default_limit, 60);
         assert!(policy.principles.is_empty());
         assert!(policy.prohibited_actions.is_empty());
