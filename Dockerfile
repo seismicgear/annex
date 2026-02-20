@@ -1,8 +1,9 @@
 # Annex server multi-stage Docker build.
 #
 # Stage 1: Build Rust server binary
-# Stage 2: Build client static files
-# Stage 3: Minimal runtime image
+# Stage 2: Compile ZK circuits and generate proving/verification keys
+# Stage 3: Build client static files (consumes ZK wasm/zkey)
+# Stage 4: Minimal runtime image
 
 # ── Build server ──
 FROM rust:1.82-slim-bookworm AS server-builder
@@ -15,6 +16,15 @@ COPY crates/ crates/
 RUN cargo build --release --bin annex-server \
     && strip target/release/annex-server
 
+# ── Build ZK artifacts ──
+FROM node:22-slim AS zk-builder
+
+WORKDIR /build/zk
+COPY zk/ ./
+RUN npm ci
+RUN node scripts/build-circuits.js
+RUN node scripts/setup-groth16.js
+
 # ── Build client ──
 FROM node:22-slim AS client-builder
 
@@ -23,8 +33,8 @@ COPY client/package.json client/package-lock.json ./
 RUN npm ci
 
 COPY client/ ./
-COPY zk/build/membership_js/membership.wasm public/zk/
-COPY zk/keys/membership_final.zkey public/zk/
+COPY --from=zk-builder /build/zk/build/membership_js/membership.wasm public/zk/
+COPY --from=zk-builder /build/zk/keys/membership_final.zkey public/zk/
 RUN npm run build
 
 # ── Runtime ──
@@ -43,8 +53,8 @@ COPY --from=server-builder /build/target/release/annex-server /app/annex-server
 COPY --from=client-builder /build/client/dist /app/client/dist
 
 # ZK verification keys
-COPY zk/keys/membership_vkey.json /app/zk/keys/
-COPY zk/keys/identity_vkey.json /app/zk/keys/
+COPY --from=zk-builder /build/zk/keys/membership_vkey.json /app/zk/keys/
+COPY --from=zk-builder /build/zk/keys/identity_vkey.json /app/zk/keys/
 
 # Default config
 COPY config.toml /app/config.toml
