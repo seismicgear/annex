@@ -71,7 +71,7 @@ RUN npm run build
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
+    ca-certificates sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -95,6 +95,9 @@ COPY --from=piper-downloader /voices/ /app/assets/voices/
 # Default config
 COPY config.toml /app/config.toml
 
+# Entrypoint script (runs migrations + seeds server row on first start)
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+
 # Create data directory for SQLite
 RUN mkdir -p /app/data
 
@@ -106,4 +109,4 @@ ENV ANNEX_TTS_VOICES_DIR=/app/assets/voices
 
 EXPOSE 3000
 
-CMD ["/app/annex-server"]
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
