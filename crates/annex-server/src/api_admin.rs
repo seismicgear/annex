@@ -13,6 +13,28 @@ use axum::{
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// Handler for `GET /api/admin/policy`.
+///
+/// Returns the current server policy. Requires `can_moderate` permission.
+pub async fn get_policy_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(IdentityContext(identity)): Extension<IdentityContext>,
+) -> Result<Response, ApiError> {
+    if !identity.can_moderate {
+        return Err(ApiError::Forbidden(
+            "insufficient permissions to view policy".to_string(),
+        ));
+    }
+
+    let policy = state
+        .policy
+        .read()
+        .map_err(|_| ApiError::InternalServerError("policy lock poisoned".to_string()))?
+        .clone();
+
+    Ok(AxumJson(policy).into_response())
+}
+
 /// Handler for `PUT /api/admin/policy`.
 ///
 /// Updates the server's policy, persists it to the database, logs the version,

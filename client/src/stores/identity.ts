@@ -6,7 +6,7 @@
  */
 
 import { create } from 'zustand';
-import type { StoredIdentity } from '@/types';
+import type { StoredIdentity, IdentityInfo } from '@/types';
 import * as db from '@/lib/db';
 import * as zk from '@/lib/zk';
 import * as api from '@/lib/api';
@@ -29,9 +29,13 @@ interface IdentityState {
   error: string | null;
   /** All stored identities from IndexedDB. */
   storedIdentities: StoredIdentity[];
+  /** Server-side permissions for the current identity. */
+  permissions: IdentityInfo | null;
 
   /** Load stored identities and auto-select the most recent ready one. */
   loadIdentities: () => Promise<void>;
+  /** Fetch permissions from the server for the current identity. */
+  loadPermissions: () => Promise<void>;
   /** Run the full registration flow: generate keys -> register -> prove -> verify. */
   createIdentity: (roleCode: number, serverSlug: string) => Promise<void>;
   /** Select an existing identity (must already have pseudonymId). */
@@ -49,6 +53,7 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
   identity: null,
   error: null,
   storedIdentities: [],
+  permissions: null,
 
   loadIdentities: async () => {
     const identities = await db.listIdentities();
@@ -58,6 +63,17 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
       identity: ready ?? null,
       phase: ready ? 'ready' : 'uninitialized',
     });
+  },
+
+  loadPermissions: async () => {
+    const { identity } = get();
+    if (!identity?.pseudonymId) return;
+    try {
+      const info = await api.getIdentityInfo(identity.pseudonymId);
+      set({ permissions: info });
+    } catch {
+      // Non-fatal: permissions just won't gate admin UI
+    }
   },
 
   createIdentity: async (roleCode: number, serverSlug: string) => {
@@ -146,6 +162,6 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
   },
 
   logout: () => {
-    set({ identity: null, phase: 'uninitialized', error: null });
+    set({ identity: null, phase: 'uninitialized', error: null, permissions: null });
   },
 }));

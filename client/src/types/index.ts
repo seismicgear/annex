@@ -150,3 +150,23 @@ export interface PublicEvent {
   payload_json: string;
   occurred_at: string;
 }
+
+/** Rate limiting configuration (matches server RateLimitConfig). */
+export interface RateLimitConfig {
+  registration_limit: number;
+  verification_limit: number;
+  default_limit: number;
+}
+
+/** Server policy (matches server ServerPolicy). */
+export interface ServerPolicy {
+  agent_min_alignment_score: number;
+  agent_required_capabilities: string[];
+  federation_enabled: boolean;
+  default_retention_days: number;
+  voice_enabled: boolean;
+  max_members: number;
+  rate_limit: RateLimitConfig;
+  principles: string[];
+  prohibited_actions: string[];
+}
