@@ -50,16 +50,21 @@ export interface VerifyMembershipResponse {
   pseudonymId: string;
 }
 
-/** Identity info from GET /api/identity/:pseudonymId. */
-export interface IdentityInfo {
-  pseudonym_id: string;
-  participant_type: ParticipantType;
+/** Capability flags from server. */
+export interface Capabilities {
   can_voice: boolean;
   can_moderate: boolean;
   can_invite: boolean;
   can_federate: boolean;
   can_bridge: boolean;
+}
+
+/** Identity info from GET /api/identity/:pseudonymId. */
+export interface IdentityInfo {
+  pseudonymId: string;
+  participantType: ParticipantType;
   active: boolean;
+  capabilities: Capabilities;
 }
 
 /** Channel metadata from API. */
