@@ -222,6 +222,7 @@ pub async fn rate_limit_middleware(req: Request<Body>, next: Next) -> Result<Res
     } else if let Some(ConnectInfo(addr)) = req.extensions().get::<ConnectInfo<SocketAddr>>() {
         RateLimitKey::Ip(addr.ip(), category)
     } else {
+        tracing::error!("rate_limit_middleware: request has neither IdentityContext nor ConnectInfo<SocketAddr>");
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     };
 

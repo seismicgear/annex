@@ -24,8 +24,8 @@ export function EventLog() {
         100,
       );
       setEvents(result);
-    } catch (err) {
-      console.error('Failed to load events:', err);
+    } catch {
+      // Fetch failed — keep existing events visible
     } finally {
       setLoading(false);
     }
@@ -94,8 +94,8 @@ export function EventLog() {
                 {evt.domain}
               </span>
               <span className="event-col-type">{evt.event_type}</span>
-              <span className="event-col-entity" title={evt.entity_id}>
-                {evt.entity_id.slice(0, 12)}...
+              <span className="event-col-entity" title={evt.entity_id ?? ''}>
+                {evt.entity_id ? `${evt.entity_id.slice(0, 12)}...` : '—'}
               </span>
               <span className="event-col-detail" title={detail}>
                 {detail}

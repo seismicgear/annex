@@ -223,8 +223,8 @@ export function VoicePanel() {
       const { token, url } = await api.joinVoice(identity.pseudonymId, activeChannelId);
       setVoiceToken(token);
       setLivekitUrl(url);
-    } catch (e) {
-      console.error('Failed to join call:', e);
+    } catch {
+      // Join failed — user can retry
     } finally {
       setJoining(false);
     }
@@ -235,7 +235,8 @@ export function VoicePanel() {
     try {
       await api.leaveVoice(identity.pseudonymId, activeChannelId);
     } catch {
-      // Best effort
+      // Best effort — the room UI is cleared regardless so the user sees
+      // a consistent disconnected state even if the server didn't ack.
     }
     setVoiceToken(null);
     setLivekitUrl(null);

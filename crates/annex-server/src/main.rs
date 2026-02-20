@@ -36,8 +36,6 @@ enum StartupError {
     Migration(#[from] annex_db::MigrationError),
     #[error("database query failed: {0}")]
     DbQuery(#[from] rusqlite::Error),
-    #[error("no server configured in 'servers' table — run initial setup first")]
-    NoServerConfigured,
     #[error("invalid ANNEX_SIGNING_KEY: {0}")]
     InvalidSigningKey(String),
 }
@@ -160,12 +158,18 @@ async fn main() -> Result<(), StartupError> {
             Some(row) => row,
             None => {
                 tracing::info!("no server configured — seeding default server record");
+                let slug = std::env::var("ANNEX_SERVER_SLUG")
+                    .unwrap_or_else(|_| "default".to_string());
+                let label = std::env::var("ANNEX_SERVER_LABEL")
+                    .unwrap_or_else(|_| "Annex Server".to_string());
                 let default_policy = ServerPolicy::default();
+                // ServerPolicy contains only primitive types (f64, bool, u32, Vec<String>),
+                // so serde_json serialization is infallible for this struct.
                 let policy_json = serde_json::to_string(&default_policy)
-                    .expect("default policy should serialize");
+                    .expect("ServerPolicy::default() contains only primitive types and cannot fail serialization");
                 conn.execute(
                     "INSERT INTO servers (slug, label, policy_json) VALUES (?1, ?2, ?3)",
-                    rusqlite::params!["default", "Annex Server", &policy_json],
+                    rusqlite::params![slug, label, &policy_json],
                 )?;
                 let id = conn.last_insert_rowid();
                 (id, default_policy)

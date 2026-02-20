@@ -71,27 +71,32 @@ export default function App() {
     if (phase === 'ready' && identity?.pseudonymId && identity.id && !serverSaved.current) {
       serverSaved.current = true;
       // Save this server to the local hub (idempotent — skips if already saved)
-      saveCurrentServer(identity.id, identity.serverSlug, identity.serverSlug).then(() => {
-        // Try to map the persona for this server
-        getPersonasForIdentity(identity.id).then((personas) => {
-          if (personas.length > 0) {
-            const server = useServersStore.getState().getActiveServer();
-            if (server && !server.personaId) {
-              useServersStore.getState().setServerPersona(
-                server.id,
-                personas[0].id,
-                personas[0].accentColor,
-              );
+      saveCurrentServer(identity.id, identity.serverSlug, identity.serverSlug)
+        .then(() =>
+          getPersonasForIdentity(identity.id).then((personas) => {
+            if (personas.length > 0) {
+              const server = useServersStore.getState().getActiveServer();
+              if (server && !server.personaId) {
+                useServersStore.getState().setServerPersona(
+                  server.id,
+                  personas[0].id,
+                  personas[0].accentColor,
+                );
+              }
             }
-          }
+          }),
+        )
+        .catch(() => {
+          // Non-fatal: server hub entry may not be saved on first load
         });
-      });
     }
   }, [phase, identity?.pseudonymId, identity?.id, identity?.serverSlug, saveCurrentServer]);
 
   // Apply persona isolation — dynamic CSS custom properties per server context
   useEffect(() => {
-    const accentColor = activeServer?.accentColor ?? '#646cff';
+    const raw = activeServer?.accentColor ?? '#646cff';
+    // Validate hex color format; fall back to default if malformed
+    const accentColor = /^#[0-9a-fA-F]{6}$/.test(raw) ? raw : '#646cff';
     document.documentElement.style.setProperty('--persona-accent', accentColor);
 
     // Derive tint colors from the accent
@@ -119,17 +124,20 @@ export default function App() {
       inviteProcessed.current = true;
       const processInvite = async () => {
         try {
-          await joinChannel(identity.pseudonymId!, pendingInvite.channelId);
-        } catch {
-          // Channel might already be joined
+          await joinChannel(identity.pseudonymId!, pendingInvite.channelId).catch(() => {
+            // Expected: channel might already be joined
+          });
+          await loadChannels(identity.pseudonymId!);
+          selectChannel(identity.pseudonymId!, pendingInvite.channelId);
+        } finally {
+          clearInviteFromUrl();
+          setActiveView('chat');
+          setPendingInvite(null);
         }
-        await loadChannels(identity.pseudonymId!);
-        selectChannel(identity.pseudonymId!, pendingInvite.channelId);
-        clearInviteFromUrl();
-        setActiveView('chat');
-        setPendingInvite(null);
       };
-      processInvite();
+      processInvite().catch(() => {
+        // Non-fatal: invite processing failed, user lands on chat view
+      });
     }
   }, [phase, identity?.pseudonymId, pendingInvite, joinChannel, loadChannels, selectChannel]);
 

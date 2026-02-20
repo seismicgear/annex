@@ -99,6 +99,17 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ "$MODE" != "docker" && "$MODE" != "source" ]] && fail "Invalid --mode '$MODE'. Must be 'docker' or 'source'."
+
+# Validate port is numeric and in range
+if ! [[ "$PORT" =~ ^[0-9]+$ ]] || [[ "$PORT" -lt 1 ]] || [[ "$PORT" -gt 65535 ]]; then
+    fail "Invalid --port '$PORT'. Must be a number between 1 and 65535."
+fi
+
+# Validate signing key format if provided
+if [[ -n "$SIGNING_KEY" ]] && ! [[ "$SIGNING_KEY" =~ ^[0-9a-fA-F]{64}$ ]]; then
+    fail "Invalid --signing-key. Must be exactly 64 hex characters (32 bytes)."
+fi
+
 [[ -z "$PUBLIC_URL" ]] && PUBLIC_URL="http://localhost:$PORT"
 
 mkdir -p "$DATA_DIR"
@@ -254,14 +265,31 @@ if [[ "$NEEDS_SEED" == "true" ]]; then
         echo "   Database will be created on first startup"
     fi
 
-    # Run server briefly to trigger migrations (exits with error — expected)
+    # Run server briefly to trigger migrations. The server auto-seeds a default
+    # server record and then attempts to bind a port. We use timeout to prevent
+    # hangs if the server starts serving instead of exiting.
     echo "   Running migrations..."
-    ANNEX_DB_PATH="$DB_PATH" \
-    ANNEX_HOST="127.0.0.1" \
-    ANNEX_PORT="0" \
-    ANNEX_ZK_KEY_PATH="$VKEY_PATH" \
-    ANNEX_LOG_LEVEL="warn" \
-    "$BINARY" 2>/dev/null || true
+    MIGRATION_LOG="$(mktemp)"
+    if has timeout; then
+        ANNEX_DB_PATH="$DB_PATH" \
+        ANNEX_HOST="127.0.0.1" \
+        ANNEX_PORT="0" \
+        ANNEX_ZK_KEY_PATH="$VKEY_PATH" \
+        ANNEX_LOG_LEVEL="warn" \
+        timeout 30 "$BINARY" >/dev/null 2>"$MIGRATION_LOG" || true
+    else
+        ANNEX_DB_PATH="$DB_PATH" \
+        ANNEX_HOST="127.0.0.1" \
+        ANNEX_PORT="0" \
+        ANNEX_ZK_KEY_PATH="$VKEY_PATH" \
+        ANNEX_LOG_LEVEL="warn" \
+        "$BINARY" >/dev/null 2>"$MIGRATION_LOG" || true
+    fi
+    if [[ -s "$MIGRATION_LOG" ]]; then
+        warn "Migration run produced output (may be expected):"
+        head -5 "$MIGRATION_LOG" >&2
+    fi
+    rm -f "$MIGRATION_LOG"
 
     if [[ "$HAS_SQLITE" == "true" ]]; then
         # Escape single quotes for SQL (double them)
@@ -295,12 +323,12 @@ if [[ -z "$SIGNING_KEY" ]]; then
         ok "Loaded signing key from $KEY_FILE"
     elif has openssl; then
         SIGNING_KEY="$(openssl rand -hex 32)"
-        echo "$SIGNING_KEY" > "$KEY_FILE"
+        printf '%s' "$SIGNING_KEY" > "$KEY_FILE"
         chmod 600 "$KEY_FILE"
         ok "Generated and persisted signing key at $KEY_FILE"
     elif has head; then
         SIGNING_KEY="$(head -c 32 /dev/urandom | od -A n -t x1 | tr -d ' \n')"
-        echo "$SIGNING_KEY" > "$KEY_FILE"
+        printf '%s' "$SIGNING_KEY" > "$KEY_FILE"
         chmod 600 "$KEY_FILE"
         ok "Generated and persisted signing key at $KEY_FILE"
     else
@@ -341,6 +369,7 @@ api_secret = "$LIVEKIT_API_SECRET"
 TOML
 fi
 
+chmod 600 "$CONFIG_PATH"
 ok "Config written to $CONFIG_PATH"
 
 # ── Start server ──

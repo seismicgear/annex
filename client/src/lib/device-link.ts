@@ -121,28 +121,34 @@ export function decodePayload(raw: string): DeviceLinkPayload {
  * Returns an SVG string.
  */
 export function generateQrSvg(data: string, size = 256): string {
-  // Encode data into a binary matrix using a simple QR-like visual representation.
-  // For production, this would use a full QR encoder. Here we create a visual
-  // data matrix that encodes the data as a grid of modules.
+  // Encode data into a binary matrix for a visual data representation.
+  // NOTE: This is NOT a standards-compliant QR code and cannot be scanned
+  // by QR reader apps. It is a visual encoding used alongside the paste-based
+  // import flow. The "receive" tab allows manual paste of the encoded payload.
   const modules = encodeToMatrix(data);
   const moduleCount = modules.length;
+  // All SVG attribute values below are derived from numeric computations
+  // (no user-controlled strings), so XSS injection via attribute values is
+  // not possible. The `size` and coordinates are always finite numbers.
   const moduleSize = size / moduleCount;
 
-  let svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}">`;
-  svg += `<rect width="${size}" height="${size}" fill="white"/>`;
+  const parts: string[] = [
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}">`,
+    `<rect width="${size}" height="${size}" fill="white"/>`,
+  ];
 
   for (let row = 0; row < moduleCount; row++) {
     for (let col = 0; col < moduleCount; col++) {
       if (modules[row][col]) {
         const x = col * moduleSize;
         const y = row * moduleSize;
-        svg += `<rect x="${x}" y="${y}" width="${moduleSize}" height="${moduleSize}" fill="black"/>`;
+        parts.push(`<rect x="${x}" y="${y}" width="${moduleSize}" height="${moduleSize}" fill="black"/>`);
       }
     }
   }
 
-  svg += '</svg>';
-  return svg;
+  parts.push('</svg>');
+  return parts.join('');
 }
 
 /**

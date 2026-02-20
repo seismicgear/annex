@@ -279,8 +279,16 @@ pub fn app(state: AppState) -> Router {
         .route("/ws", get(api_ws::ws_handler));
 
     // Serve client static files if the directory exists.
+    // Configured via ANNEX_CLIENT_DIR env var; defaults to "client/dist".
     let client_dir = std::env::var("ANNEX_CLIENT_DIR")
         .unwrap_or_else(|_| "client/dist".to_string());
+    if !std::path::Path::new(&client_dir).is_absolute() {
+        tracing::warn!(
+            path = %client_dir,
+            "ANNEX_CLIENT_DIR is relative — static file serving depends on working directory; \
+             consider using an absolute path"
+        );
+    }
     let router = if std::path::Path::new(&client_dir).join("index.html").exists() {
         tracing::info!(path = %client_dir, "serving client static files");
         let index = format!("{}/index.html", client_dir);

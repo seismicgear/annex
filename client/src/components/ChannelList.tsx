@@ -43,6 +43,8 @@ function ChannelItem({
     try {
       await joinChannel(pseudonymId, channel.channel_id);
       await loadChannels(pseudonymId);
+    } catch {
+      // Join failed — user can retry
     } finally {
       setBusy(false);
     }
@@ -54,6 +56,8 @@ function ChannelItem({
     try {
       await leaveChannel(pseudonymId, channel.channel_id);
       await loadChannels(pseudonymId);
+    } catch {
+      // Leave failed — user can retry
     } finally {
       setBusy(false);
     }
@@ -61,10 +65,14 @@ function ChannelItem({
 
   const handleCopyInvite = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    const link = generateInviteLink(channel.channel_id, serverSlug, channel.name);
-    await navigator.clipboard.writeText(link);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    try {
+      const link = generateInviteLink(channel.channel_id, serverSlug, channel.name);
+      await navigator.clipboard.writeText(link);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard access denied or insecure context
+    }
   };
 
   return (

@@ -258,8 +258,18 @@ pub async fn relay_message(
 
         let client_clone = client.clone();
         tokio::spawn(async move {
-            if let Err(e) = client_clone.post(&url).json(&envelope_clone).send().await {
-                tracing::warn!("Failed to relay message to {}: {}", url, e);
+            match client_clone.post(&url).json(&envelope_clone).send().await {
+                Ok(resp) if !resp.status().is_success() => {
+                    tracing::warn!(
+                        peer = %url,
+                        status = %resp.status(),
+                        "federation message relay received non-success response"
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(peer = %url, "failed to relay message: {}", e);
+                }
             }
         });
     }

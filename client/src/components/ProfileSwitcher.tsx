@@ -54,34 +54,44 @@ export function ProfileSwitcher({ onClose }: Props) {
   const handleCreate = async (e: FormEvent) => {
     e.preventDefault();
     if (!identity || !displayName.trim()) return;
-
-    await personas.createPersona(
-      displayName.trim(),
-      identity.id,
-      identity.serverSlug,
-      bio.trim(),
-    );
-    resetForm();
-    await loadPersonas();
+    try {
+      await personas.createPersona(
+        displayName.trim(),
+        identity.id,
+        identity.serverSlug,
+        bio.trim(),
+      );
+      resetForm();
+      await loadPersonas();
+    } catch {
+      // Creation failed — form stays open for retry
+    }
   };
 
   const handleEdit = async (e: FormEvent) => {
     e.preventDefault();
     if (!editing) return;
-
-    await personas.updatePersona({
-      ...editing,
-      displayName: displayName.trim() || editing.displayName,
-      bio: bio.trim(),
-      accentColor,
-    });
-    resetForm();
-    await loadPersonas();
+    try {
+      await personas.updatePersona({
+        ...editing,
+        displayName: displayName.trim() || editing.displayName,
+        bio: bio.trim(),
+        accentColor,
+      });
+      resetForm();
+      await loadPersonas();
+    } catch {
+      // Update failed — form stays open for retry
+    }
   };
 
   const handleDelete = async (id: string) => {
-    await personas.deletePersona(id);
-    await loadPersonas();
+    try {
+      await personas.deletePersona(id);
+      await loadPersonas();
+    } catch {
+      // Delete failed — list remains unchanged
+    }
   };
 
   const startEdit = (persona: Persona) => {
@@ -104,7 +114,7 @@ export function ProfileSwitcher({ onClose }: Props) {
         {identity && (
           <div className="current-identity-ref">
             <span className="label">Cryptographic ID:</span>
-            <span className="pseudonym">{identity.pseudonymId?.slice(0, 16)}...</span>
+            <span className="pseudonym">{identity.pseudonymId ? `${identity.pseudonymId.slice(0, 16)}...` : 'pending'}</span>
             <span className="server-badge">{identity.serverSlug}</span>
           </div>
         )}

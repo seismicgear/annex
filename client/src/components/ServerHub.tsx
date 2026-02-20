@@ -28,10 +28,21 @@ function AddServerDialog({ onClose, onAdd }: AddServerDialogProps) {
     const trimmed = url.trim();
     if (!trimmed) return;
 
-    // Normalize URL
+    // Normalize and validate URL
     let baseUrl = trimmed;
     if (!/^https?:\/\//i.test(baseUrl)) {
       baseUrl = `https://${baseUrl}`;
+    }
+    try {
+      const parsed = new URL(baseUrl);
+      // Block non-HTTP protocols that could have been injected
+      if (!['http:', 'https:'].includes(parsed.protocol)) {
+        setError('Only http and https URLs are supported.');
+        return;
+      }
+    } catch {
+      setError('Invalid URL format.');
+      return;
     }
 
     setAdding(true);

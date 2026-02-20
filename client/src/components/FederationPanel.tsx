@@ -43,6 +43,8 @@ function PeerDetail({ peer, onClose }: PeerDetailProps) {
     try {
       const server = await addRemoteServer(peer.base_url);
       if (server) setJoined(true);
+    } catch {
+      // Join failed — user can retry via the Explore button
     } finally {
       setJoining(false);
     }
@@ -119,7 +121,7 @@ export function FederationPanel() {
     api
       .getFederationPeers()
       .then((r) => setPeers(r.peers))
-      .catch(console.error)
+      .catch(() => { /* fetch failed — empty peers list displayed */ })
       .finally(() => setLoading(false));
   }, []);
 

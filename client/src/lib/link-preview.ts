@@ -13,11 +13,14 @@
  */
 
 import type { LinkPreviewData } from '@/types';
+import { getApiBaseUrl } from '@/lib/api';
 
 // Match URLs in message text
 const URL_REGEX = /https?:\/\/[^\s<>'")\]]+/gi;
 
-// In-memory cache to avoid duplicate requests per session
+// In-memory cache to avoid duplicate requests per session.
+// Bounded to prevent unbounded growth during long sessions.
+const MAX_CACHE_SIZE = 500;
 const previewCache = new Map<string, LinkPreviewData>();
 
 /** Extract all URLs from a message string. */
@@ -50,8 +53,17 @@ export async function fetchLinkPreview(
   };
   previewCache.set(url, loading);
 
+  // Evict oldest entries if cache exceeds max size
+  if (previewCache.size > MAX_CACHE_SIZE) {
+    const firstKey = previewCache.keys().next().value;
+    if (firstKey !== undefined) previewCache.delete(firstKey);
+  }
+
   try {
-    const res = await fetch('/api/link-preview?' + new URLSearchParams({ url }), {
+    // Use API base URL so link previews route to the active server
+    const base = getApiBaseUrl();
+    const endpoint = `${base}/api/link-preview?` + new URLSearchParams({ url });
+    const res = await fetch(endpoint, {
       headers: { 'X-Annex-Pseudonym': pseudonymId },
     });
 

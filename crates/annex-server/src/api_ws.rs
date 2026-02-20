@@ -877,3 +877,70 @@ async fn touch_activity(state: Arc<AppState>, pseudonym: String) {
         tracing::error!("touch_activity: blocking task panicked or was cancelled: {}", e);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ws_message_payload_serializes_camel_case() {
+        let payload = WsMessagePayload {
+            channel_id: "ch-1".to_string(),
+            message_id: "msg-1".to_string(),
+            sender_pseudonym: "alice".to_string(),
+            content: "hello".to_string(),
+            reply_to_message_id: Some("msg-0".to_string()),
+            created_at: "2025-01-01T00:00:00Z".to_string(),
+        };
+
+        let json = serde_json::to_value(&payload).expect("serialization should not fail");
+        assert!(json.get("channelId").is_some(), "expected camelCase channelId");
+        assert!(json.get("messageId").is_some(), "expected camelCase messageId");
+        assert!(json.get("senderPseudonym").is_some(), "expected camelCase senderPseudonym");
+        assert!(json.get("replyToMessageId").is_some(), "expected camelCase replyToMessageId");
+        assert!(json.get("createdAt").is_some(), "expected camelCase createdAt");
+
+        // Verify snake_case keys are NOT present
+        assert!(json.get("channel_id").is_none(), "snake_case channel_id should not be present");
+        assert!(json.get("message_id").is_none(), "snake_case message_id should not be present");
+    }
+
+    #[test]
+    fn ws_message_payload_from_message() {
+        let msg = Message {
+            id: 0,
+            server_id: 0,
+            channel_id: "ch-2".to_string(),
+            message_id: "msg-2".to_string(),
+            sender_pseudonym: "bob".to_string(),
+            content: "world".to_string(),
+            reply_to_message_id: None,
+            created_at: "2025-01-01T00:00:00Z".to_string(),
+            expires_at: None,
+        };
+
+        let payload: WsMessagePayload = msg.into();
+        assert_eq!(payload.channel_id, "ch-2");
+        assert_eq!(payload.message_id, "msg-2");
+        assert_eq!(payload.sender_pseudonym, "bob");
+        assert_eq!(payload.content, "world");
+        assert!(payload.reply_to_message_id.is_none());
+    }
+
+    #[test]
+    fn outgoing_message_wraps_with_type_tag() {
+        let payload = WsMessagePayload {
+            channel_id: "ch-1".to_string(),
+            message_id: "msg-1".to_string(),
+            sender_pseudonym: "alice".to_string(),
+            content: "test".to_string(),
+            reply_to_message_id: None,
+            created_at: "2025-01-01T00:00:00Z".to_string(),
+        };
+
+        let out = OutgoingMessage::Message(payload);
+        let json = serde_json::to_value(&out).expect("serialization should not fail");
+        assert_eq!(json.get("type").and_then(|v| v.as_str()), Some("message"));
+        assert!(json.get("channelId").is_some());
+    }
+}

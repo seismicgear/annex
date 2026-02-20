@@ -84,10 +84,11 @@ export const useServersStore = create<ServersState>((set, get) => ({
       server.lastConnectedAt = new Date().toISOString();
       await serversDb.saveServer(server);
 
-      // Refresh cached summary in background
+      // Refresh cached summary in background (failures are non-fatal;
+      // the stale cached summary remains until the next successful fetch)
       api.getServerSummary()
         .then((summary) => serversDb.updateCachedSummary(serverId, summary))
-        .catch(() => {/* non-fatal */});
+        .catch(() => { /* stale summary retained */ });
 
     } finally {
       set({ switching: false });
@@ -110,7 +111,7 @@ export const useServersStore = create<ServersState>((set, get) => ({
       server.cachedSummary = summary;
       server.label = summary.label || label;
     } catch {
-      // Non-fatal
+      // Non-fatal: server summary unavailable; label falls back to slug
     }
 
     await serversDb.saveServer(server);
@@ -142,8 +143,7 @@ export const useServersStore = create<ServersState>((set, get) => ({
       set({ servers: allServers });
 
       return server;
-    } catch (e) {
-      console.error('Failed to add remote server:', e);
+    } catch {
       return null;
     }
   },

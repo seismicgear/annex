@@ -70,7 +70,8 @@ export class AnnexWebSocket {
         const frame: WsReceiveFrame = JSON.parse(event.data as string);
         this.messageHandlers.forEach((h) => h(frame));
       } catch {
-        // Ignore malformed frames
+        // Malformed frame — drop silently. This can happen during protocol
+        // version mismatches or if the server sends a non-JSON control frame.
       }
     };
   }
