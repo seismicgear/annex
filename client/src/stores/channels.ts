@@ -32,7 +32,7 @@ interface ChannelsState {
   /** Load older messages (pagination). */
   loadOlderMessages: (pseudonymId: string) => Promise<void>;
   /** Create a new channel. */
-  createChannel: (pseudonymId: string, name: string, channelType: string, topic?: string) => Promise<Channel>;
+  createChannel: (pseudonymId: string, name: string, channelType: string, topic?: string, federated?: boolean) => Promise<Channel>;
   /** Join a channel. */
   joinChannel: (pseudonymId: string, channelId: string) => Promise<void>;
   /** Leave a channel. */
@@ -101,8 +101,8 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     set({ messages: [...older.reverse(), ...messages] });
   },
 
-  createChannel: async (pseudonymId, name, channelType, topic) => {
-    const channel = await api.createChannel(pseudonymId, name, channelType, topic);
+  createChannel: async (pseudonymId, name, channelType, topic, federated) => {
+    const channel = await api.createChannel(pseudonymId, name, channelType, topic, federated);
     set((state) => ({ channels: [...state.channels, channel] }));
     return channel;
   },

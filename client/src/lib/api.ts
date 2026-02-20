@@ -103,11 +103,25 @@ export async function createChannel(
   name: string,
   channelType: string,
   topic?: string,
+  federated?: boolean,
 ): Promise<Channel> {
+  // Generate a channel_id from the name (lowercase, alphanumeric + hyphens)
+  const channel_id = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    || `ch-${Date.now()}`;
   return request<Channel>('/api/channels', {
     method: 'POST',
     headers: authHeaders(pseudonymId),
-    body: JSON.stringify({ name, channel_type: channelType, topic }),
+    body: JSON.stringify({
+      channel_id,
+      name,
+      channel_type: channelType,
+      topic,
+      federation_scope: federated ? 'Federated' : 'Local',
+    }),
   });
 }
 

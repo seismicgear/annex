@@ -36,7 +36,7 @@ export function CreateChannelDialog({ onClose }: { onClose: () => void }) {
     setSubmitting(true);
     setError(null);
     try {
-      await createChannel(identity.pseudonymId, name.trim(), channelType, topic || undefined);
+      await createChannel(identity.pseudonymId, name.trim(), channelType, topic || undefined, federated);
       await loadChannels(identity.pseudonymId);
       onClose();
     } catch (err) {
