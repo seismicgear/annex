@@ -5,6 +5,9 @@
  * Shows IdentitySetup when no identity is active, otherwise shows
  * a tabbed layout with Chat, Federation, and Events views.
  * Admin features are accessible via a gear-icon dropdown menu.
+ *
+ * Supports invite link routing: if the URL contains /invite/<channelId>,
+ * the app will auto-join the channel after identity setup completes.
  */
 
 import { useEffect, useState, useRef } from 'react';
@@ -20,16 +23,22 @@ import { StatusBar } from '@/components/StatusBar';
 import { FederationPanel } from '@/components/FederationPanel';
 import { EventLog } from '@/components/EventLog';
 import { AdminPanel } from '@/components/AdminPanel';
+import { parseInviteFromUrl, clearInviteFromUrl } from '@/lib/invite';
+import type { InvitePayload } from '@/types';
 import './App.css';
 
 type AppView = 'chat' | 'federation' | 'events' | 'admin-policy' | 'admin-channels';
 
 export default function App() {
   const { phase, identity, loadIdentities, loadPermissions, permissions } = useIdentityStore();
-  const { connectWs, disconnectWs } = useChannelsStore();
+  const { connectWs, disconnectWs, selectChannel, joinChannel, loadChannels } = useChannelsStore();
   const [activeView, setActiveView] = useState<AppView>('chat');
   const [adminMenuOpen, setAdminMenuOpen] = useState(false);
   const adminMenuRef = useRef<HTMLDivElement>(null);
+  const [pendingInvite, setPendingInvite] = useState<InvitePayload | null>(
+    () => parseInviteFromUrl(),
+  );
+  const inviteProcessed = useRef(false);
 
   // Load identities on mount
   useEffect(() => {
@@ -44,6 +53,31 @@ export default function App() {
       return () => disconnectWs();
     }
   }, [phase, identity?.pseudonymId, connectWs, disconnectWs, loadPermissions]);
+
+  // Process invite after identity is ready
+  useEffect(() => {
+    if (
+      phase === 'ready' &&
+      identity?.pseudonymId &&
+      pendingInvite &&
+      !inviteProcessed.current
+    ) {
+      inviteProcessed.current = true;
+      const processInvite = async () => {
+        try {
+          await joinChannel(identity.pseudonymId!, pendingInvite.channelId);
+        } catch {
+          // Channel might already be joined
+        }
+        await loadChannels(identity.pseudonymId!);
+        selectChannel(identity.pseudonymId!, pendingInvite.channelId);
+        clearInviteFromUrl();
+        setActiveView('chat');
+        setPendingInvite(null);
+      };
+      processInvite();
+    }
+  }, [phase, identity?.pseudonymId, pendingInvite, joinChannel, loadChannels, selectChannel]);
 
   // Close admin menu on outside click
   useEffect(() => {
@@ -63,9 +97,14 @@ export default function App() {
       <div className="app">
         <header className="app-header">
           <h1>Annex</h1>
+          {pendingInvite && (
+            <span className="invite-banner">
+              Joining {pendingInvite.label ?? pendingInvite.channelId}...
+            </span>
+          )}
         </header>
         <main className="app-main setup">
-          <IdentitySetup />
+          <IdentitySetup inviteServerSlug={pendingInvite?.serverSlug} />
         </main>
       </div>
     );

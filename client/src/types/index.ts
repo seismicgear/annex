@@ -181,3 +181,101 @@ export interface ServerPolicy {
   principles: string[];
   prohibited_actions: string[];
 }
+
+// ── Device Linking ──
+
+/** Payload encoded in QR code for device-to-device identity transfer. */
+export interface DeviceLinkPayload {
+  /** Protocol version. */
+  v: 1;
+  /** Encrypted identity bundle (base64). */
+  data: string;
+  /** Initialization vector for AES-GCM (base64). */
+  iv: string;
+  /** Salt used to derive AES key from pairing code (base64). */
+  salt: string;
+}
+
+// ── Invite Routing ──
+
+/** State carried by an invite link for instant channel routing. */
+export interface InvitePayload {
+  /** Target server host (e.g. "annex.example.com"). */
+  server: string;
+  /** Channel ID to join after identity is ready. */
+  channelId: string;
+  /** Server slug for registration. */
+  serverSlug: string;
+  /** Optional human-readable server label. */
+  label?: string;
+}
+
+// ── Persona Management ──
+
+/** A user-defined persona that maps to a server-scoped pseudonym. */
+export interface Persona {
+  /** Unique local ID. */
+  id: string;
+  /** User-chosen display name (e.g. "seismicgear", "Jane Doe"). */
+  displayName: string;
+  /** Optional avatar data URL. */
+  avatarUrl: string | null;
+  /** The identity ID this persona is bound to. */
+  identityId: string;
+  /** Server slug scope. */
+  serverSlug: string;
+  /** Optional bio / status text. */
+  bio: string;
+  /** Color accent for this persona (hex). */
+  accentColor: string;
+  /** Timestamp of creation. */
+  createdAt: string;
+}
+
+// ── Link Preview ──
+
+/** Extracted OpenGraph / meta data from a URL. */
+export interface LinkPreviewData {
+  /** The original URL. */
+  url: string;
+  /** Page title from og:title or <title>. */
+  title: string | null;
+  /** Description from og:description or meta description. */
+  description: string | null;
+  /** Image URL from og:image. */
+  imageUrl: string | null;
+  /** Site name from og:site_name. */
+  siteName: string | null;
+  /** Whether the fetch is still loading. */
+  loading: boolean;
+  /** Error message if fetch failed. */
+  error: string | null;
+}
+
+// ── Social Recovery ──
+
+/** A shard of a Shamir-split secret key, held by a trusted peer. */
+export interface RecoveryShard {
+  /** Shard index (1-based). */
+  index: number;
+  /** The shard data (hex-encoded). */
+  data: string;
+  /** Pseudonym ID of the peer holding this shard. */
+  holderPseudonymId: string;
+  /** User-friendly label for the holder. */
+  holderLabel: string;
+}
+
+/** Configuration for a social recovery setup. */
+export interface RecoveryConfig {
+  /** Identity ID this recovery config protects. */
+  identityId: string;
+  /** Total number of shards distributed. */
+  totalShards: number;
+  /** Minimum shards needed to reconstruct. */
+  threshold: number;
+  /** Metadata about each shard holder. */
+  shards: RecoveryShard[];
+  /** When the recovery was set up. */
+  createdAt: string;
+}
