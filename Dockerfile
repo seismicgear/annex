@@ -97,6 +97,7 @@ COPY config.toml /app/config.toml
 
 # Entrypoint script (runs migrations + seeds server row on first start)
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN sed -i 's/\r$//' /app/docker-entrypoint.sh && chmod +x /app/docker-entrypoint.sh
 
 # Create data directory for SQLite
 RUN mkdir -p /app/data
