@@ -177,10 +177,25 @@ $hasSqlite = Test-Command "sqlite3"
 if ($hasSqlite) { Write-Ok "sqlite3 found" }
 else { Write-Warn "sqlite3 not found (will guide manual seeding)" }
 
-# ZK verification key
+# ZK verification keys — bootstrap if missing
 $vkeyPath = Join-Path $ProjectRoot "zk" "keys" "membership_vkey.json"
-if (-not (Test-Path $vkeyPath)) { Write-Fail "ZK verification key not found at $vkeyPath" }
-Write-Ok "ZK verification key found"
+if (-not (Test-Path $vkeyPath)) {
+    Write-Step "Bootstrapping ZK circuits and keys"
+    if (-not (Test-Command "npm")) { Write-Fail "Node.js (npm) is required to build ZK circuits. Install from https://nodejs.org" }
+
+    Push-Location (Join-Path $ProjectRoot "zk")
+    try {
+        npm ci
+        if ($LASTEXITCODE -ne 0) { Write-Fail "npm ci failed in zk/" }
+        node scripts/build-circuits.js
+        if ($LASTEXITCODE -ne 0) { Write-Fail "ZK circuit compilation failed" }
+        node scripts/setup-groth16.js
+        if ($LASTEXITCODE -ne 0) { Write-Fail "ZK Groth16 setup failed" }
+    } finally {
+        Pop-Location
+    }
+}
+Write-Ok "ZK verification keys verified"
 
 # ── Build ──
 
