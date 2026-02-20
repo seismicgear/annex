@@ -96,7 +96,7 @@ export async function generateMembershipProof(
     roleCode: input.roleCode.toString(),
     nodeId: input.nodeId.toString(),
     leafIndex: input.leafIndex.toString(),
-    pathElements: input.pathElements,
+    pathElements: input.pathElements.map((s) => '0x' + s),
     pathIndexBits: input.pathIndexBits.map(String),
   };
 
