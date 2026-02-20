@@ -182,6 +182,32 @@ export interface ServerPolicy {
   prohibited_actions: string[];
 }
 
+// ── Multi-Server Hub ──
+
+/** A saved server connection in the user's local node hub. */
+export interface SavedServer {
+  /** Unique local ID. */
+  id: string;
+  /** Server's public base URL (e.g. "https://annex.example.com"). */
+  baseUrl: string;
+  /** Server slug identifier. */
+  slug: string;
+  /** Human-readable server label. */
+  label: string;
+  /** The StoredIdentity.id registered on this server. */
+  identityId: string;
+  /** The Persona.id mapped to this server (if set). */
+  personaId: string | null;
+  /** Accent color for this server context (hex). */
+  accentColor: string;
+  /** VRP topic binding for this server. */
+  vrpTopic: string;
+  /** Last successful connection timestamp. */
+  lastConnectedAt: string;
+  /** Cached server summary for instant display. */
+  cachedSummary: ServerSummary | null;
+}
+
 // ── Device Linking ──
 
 /** Payload encoded in QR code for device-to-device identity transfer. */

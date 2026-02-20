@@ -16,22 +16,36 @@ const INITIAL_RECONNECT_DELAY_MS = 1_000;
 export class AnnexWebSocket {
   private ws: WebSocket | null = null;
   private pseudonymId: string;
+  private baseUrl: string;
   private messageHandlers: Set<WsMessageHandler> = new Set();
   private statusHandlers: Set<WsStatusHandler> = new Set();
   private reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private intentionalClose = false;
 
-  constructor(pseudonymId: string) {
+  /**
+   * @param pseudonymId — identity pseudonym for auth
+   * @param baseUrl — server base URL (e.g. "https://annex.example.com"). Empty for current origin.
+   */
+  constructor(pseudonymId: string, baseUrl = '') {
     this.pseudonymId = pseudonymId;
+    this.baseUrl = baseUrl.replace(/\/+$/, '');
   }
 
   /** Connect to the WebSocket server. */
   connect(): void {
     this.intentionalClose = false;
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.host;
-    const url = `${protocol}//${host}/ws?pseudonym=${encodeURIComponent(this.pseudonymId)}`;
+
+    let url: string;
+    if (this.baseUrl) {
+      // Cross-server: convert http(s) URL to ws(s) URL
+      const wsBase = this.baseUrl.replace(/^http/, 'ws');
+      url = `${wsBase}/ws?pseudonym=${encodeURIComponent(this.pseudonymId)}`;
+    } else {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const host = window.location.host;
+      url = `${protocol}//${host}/ws?pseudonym=${encodeURIComponent(this.pseudonymId)}`;
+    }
 
     this.ws = new WebSocket(url);
 

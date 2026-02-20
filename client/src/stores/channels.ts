@@ -25,8 +25,8 @@ interface ChannelsState {
   loadChannels: (pseudonymId: string) => Promise<void>;
   /** Select a channel and load its history. */
   selectChannel: (pseudonymId: string, channelId: string) => Promise<void>;
-  /** Connect WebSocket for real-time messages. */
-  connectWs: (pseudonymId: string) => void;
+  /** Connect WebSocket for real-time messages. Optional baseUrl for cross-server. */
+  connectWs: (pseudonymId: string, baseUrl?: string) => void;
   /** Send a message to the active channel. */
   sendMessage: (content: string, replyTo?: string | null) => void;
   /** Load older messages (pagination). */
@@ -61,11 +61,11 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     set({ messages: messages.reverse() });
   },
 
-  connectWs: (pseudonymId: string) => {
+  connectWs: (pseudonymId: string, baseUrl?: string) => {
     const existing = get().ws;
     if (existing) existing.disconnect();
 
-    const ws = new AnnexWebSocket(pseudonymId);
+    const ws = new AnnexWebSocket(pseudonymId, baseUrl);
 
     ws.onStatus((connected) => set({ wsConnected: connected }));
 
