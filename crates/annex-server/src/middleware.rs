@@ -78,13 +78,22 @@ pub async fn auth_middleware(mut req: Request<Body>, next: Next) -> Result<Respo
     Ok(next.run(req).await)
 }
 
-/// Rate limiting key.
+/// Rate limit endpoint category — each category has its own counter.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum RateLimitCategory {
+    Registration,
+    Verification,
+    Default,
+}
+
+/// Rate limiting key — combines identity (IP or pseudonym) with endpoint category
+/// so that static file requests don't consume the registration budget.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum RateLimitKey {
-    /// Rate limit by IP address.
-    Ip(IpAddr),
-    /// Rate limit by pseudonym.
-    Pseudonym(String),
+    /// Rate limit by IP address and category.
+    Ip(IpAddr, RateLimitCategory),
+    /// Rate limit by pseudonym and category.
+    Pseudonym(String, RateLimitCategory),
 }
 
 /// Per-key state for the sliding window rate limiter.
@@ -187,23 +196,8 @@ pub async fn rate_limit_middleware(req: Request<Body>, next: Next) -> Result<Res
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?
         .clone();
 
-    // 2. Identify Key
-    // Check IdentityContext first (Pseudonym), then ConnectInfo (IP)
-    // Note: IdentityContext is only available if auth_middleware runs *before* this middleware.
-    // Currently, auth_middleware is not applied globally, so this usually falls back to IP.
-    let key = if let Some(identity) = req.extensions().get::<IdentityContext>() {
-        RateLimitKey::Pseudonym(identity.0.pseudonym_id.clone())
-    } else if let Some(ConnectInfo(addr)) = req.extensions().get::<ConnectInfo<SocketAddr>>() {
-        RateLimitKey::Ip(addr.ip())
-    } else {
-        // In test environments, ConnectInfo might be missing if not injected manually.
-        // We log a warning (if we could) and fail safe or allow?
-        // Safe default: Fail. Misconfiguration should be fixed.
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
-    };
-
-    // 3. Get Policy Limit
-    let limit = {
+    // 2. Classify endpoint and get limit
+    let (category, limit) = {
         let policy = match state.policy.read() {
             Ok(guard) => guard,
             Err(_) => {
@@ -213,12 +207,22 @@ pub async fn rate_limit_middleware(req: Request<Body>, next: Next) -> Result<Res
         };
         let path = req.uri().path();
         if path == "/api/registry/register" {
-            policy.rate_limit.registration_limit
+            (RateLimitCategory::Registration, policy.rate_limit.registration_limit)
         } else if path == "/api/zk/verify-membership" {
-            policy.rate_limit.verification_limit
+            (RateLimitCategory::Verification, policy.rate_limit.verification_limit)
         } else {
-            policy.rate_limit.default_limit
+            (RateLimitCategory::Default, policy.rate_limit.default_limit)
         }
+    };
+
+    // 3. Identify Key (IP or pseudonym) combined with endpoint category
+    // so that e.g. static file requests don't consume the registration budget.
+    let key = if let Some(identity) = req.extensions().get::<IdentityContext>() {
+        RateLimitKey::Pseudonym(identity.0.pseudonym_id.clone(), category)
+    } else if let Some(ConnectInfo(addr)) = req.extensions().get::<ConnectInfo<SocketAddr>>() {
+        RateLimitKey::Ip(addr.ip(), category)
+    } else {
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
     };
 
     // 4. Check Limit
@@ -242,7 +246,7 @@ mod tests {
     #[test]
     fn rate_limiter_allows_within_limit() {
         let limiter = RateLimiter::new();
-        let key = RateLimitKey::Ip("127.0.0.1".parse().unwrap());
+        let key = RateLimitKey::Ip("127.0.0.1".parse().unwrap(), RateLimitCategory::Default);
         for _ in 0..5 {
             assert!(limiter.check(key.clone(), 5));
         }
@@ -253,8 +257,8 @@ mod tests {
     #[test]
     fn rate_limiter_different_keys_independent() {
         let limiter = RateLimiter::new();
-        let key_a = RateLimitKey::Ip("10.0.0.1".parse().unwrap());
-        let key_b = RateLimitKey::Ip("10.0.0.2".parse().unwrap());
+        let key_a = RateLimitKey::Ip("10.0.0.1".parse().unwrap(), RateLimitCategory::Default);
+        let key_b = RateLimitKey::Ip("10.0.0.2".parse().unwrap(), RateLimitCategory::Default);
 
         // Fill up key_a
         for _ in 0..3 {
@@ -267,20 +271,37 @@ mod tests {
     }
 
     #[test]
+    fn rate_limiter_categories_independent() {
+        let limiter = RateLimiter::new();
+        let ip: IpAddr = "10.0.0.1".parse().unwrap();
+        let default_key = RateLimitKey::Ip(ip, RateLimitCategory::Default);
+        let reg_key = RateLimitKey::Ip(ip, RateLimitCategory::Registration);
+
+        // Exhaust default limit
+        for _ in 0..60 {
+            assert!(limiter.check(default_key.clone(), 60));
+        }
+        assert!(!limiter.check(default_key, 60));
+
+        // Registration counter should be unaffected
+        assert!(limiter.check(reg_key, 20));
+    }
+
+    #[test]
     fn rate_limiter_eviction_preserves_active_limits() {
         let limiter = RateLimiter::new();
 
         // Fill with 10001 distinct IPs to trigger eviction
         for i in 0..10001u32 {
             let ip: IpAddr = std::net::Ipv4Addr::from(i.to_be_bytes()).into();
-            limiter.check(RateLimitKey::Ip(ip), 100);
+            limiter.check(RateLimitKey::Ip(ip, RateLimitCategory::Default), 100);
         }
 
         // Now check that the eviction happened without blanket clear.
         // The 10001st IP was just used (within window), so it should still be
         // rate-limited if we check again.
         let recent_ip: IpAddr = std::net::Ipv4Addr::from(10000u32.to_be_bytes()).into();
-        let key = RateLimitKey::Ip(recent_ip);
+        let key = RateLimitKey::Ip(recent_ip, RateLimitCategory::Default);
         // The counter should still be 1 (not reset to 0 by blanket clear)
         // since the entry is within its 60-second window.
         // We can verify the limiter still tracks it by checking we can send
