@@ -139,10 +139,10 @@ async fn main() -> Result<(), StartupError> {
         MerkleTree::restore(&conn, config.server.merkle_tree_depth)?
     };
 
-    // Get Server ID and Policy
+    // Get Server ID and Policy (auto-seed if no server row exists)
     let (server_id, policy): (i64, ServerPolicy) = {
         let conn = pool.get()?;
-        conn.query_row("SELECT id, policy_json FROM servers LIMIT 1", [], |row| {
+        let existing = conn.query_row("SELECT id, policy_json FROM servers LIMIT 1", [], |row| {
             let id: i64 = row.get(0)?;
             let policy_json: String = row.get(1)?;
             let policy: ServerPolicy = serde_json::from_str(&policy_json).map_err(|e| {
@@ -154,8 +154,23 @@ async fn main() -> Result<(), StartupError> {
             })?;
             Ok((id, policy))
         })
-        .optional()?
-        .ok_or(StartupError::NoServerConfigured)?
+        .optional()?;
+
+        match existing {
+            Some(row) => row,
+            None => {
+                tracing::info!("no server configured — seeding default server record");
+                let default_policy = ServerPolicy::default();
+                let policy_json = serde_json::to_string(&default_policy)
+                    .expect("default policy should serialize");
+                conn.execute(
+                    "INSERT INTO servers (slug, label, policy_json) VALUES (?1, ?2, ?3)",
+                    rusqlite::params!["default", "Annex Server", &policy_json],
+                )?;
+                let id = conn.last_insert_rowid();
+                (id, default_policy)
+            }
+        }
     };
 
     // Load ZK verification key
