@@ -6,7 +6,7 @@
 //! - No panics, deadlocks, or poisoned mutex recovery failures
 //! - Limits are enforced even under contention
 
-use annex_server::middleware::{RateLimitKey, RateLimiter};
+use annex_server::middleware::{RateLimitCategory, RateLimitKey, RateLimiter};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -26,7 +26,7 @@ async fn test_rate_limiter_concurrent_same_key() {
         let allowed = allowed_count.clone();
         let denied = denied_count.clone();
         handles.push(tokio::task::spawn_blocking(move || {
-            let key = RateLimitKey::Ip("10.0.0.1".parse().unwrap());
+            let key = RateLimitKey::Ip("10.0.0.1".parse().unwrap(), RateLimitCategory::Default);
             if limiter.check(key, limit) {
                 allowed.fetch_add(1, Ordering::Relaxed);
             } else {
@@ -74,7 +74,7 @@ async fn test_rate_limiter_concurrent_distinct_keys() {
             let limiter = limiter.clone();
             handles.push(tokio::task::spawn_blocking(move || {
                 let ip: IpAddr = std::net::Ipv4Addr::from(ip_idx.to_be_bytes()).into();
-                let key = RateLimitKey::Ip(ip);
+                let key = RateLimitKey::Ip(ip, RateLimitCategory::Default);
                 limiter.check(key, limit)
             }));
         }
@@ -106,7 +106,7 @@ async fn test_rate_limiter_concurrent_high_volume_no_panic() {
         handles.push(tokio::task::spawn_blocking(move || {
             let ip_idx = i % 100;
             let ip: IpAddr = std::net::Ipv4Addr::from(ip_idx.to_be_bytes()).into();
-            let key = RateLimitKey::Ip(ip);
+            let key = RateLimitKey::Ip(ip, RateLimitCategory::Default);
             let _ = limiter.check(key, 10);
         }));
     }
@@ -129,7 +129,7 @@ async fn test_rate_limiter_pseudonym_key_concurrent() {
         let limiter = limiter.clone();
         let allowed = allowed.clone();
         handles.push(tokio::task::spawn_blocking(move || {
-            let key = RateLimitKey::Pseudonym("agent_alpha".to_string());
+            let key = RateLimitKey::Pseudonym("agent_alpha".to_string(), RateLimitCategory::Default);
             if limiter.check(key, limit) {
                 allowed.fetch_add(1, Ordering::Relaxed);
             }
@@ -162,7 +162,7 @@ async fn test_rate_limiter_eviction_under_concurrent_load() {
         let limiter = limiter.clone();
         handles.push(tokio::task::spawn_blocking(move || {
             let ip: IpAddr = std::net::Ipv4Addr::from(i.to_be_bytes()).into();
-            let key = RateLimitKey::Ip(ip);
+            let key = RateLimitKey::Ip(ip, RateLimitCategory::Default);
             let _ = limiter.check(key, 100);
         }));
     }
@@ -172,7 +172,7 @@ async fn test_rate_limiter_eviction_under_concurrent_load() {
     }
 
     // Verify a recently-used key still works
-    let key = RateLimitKey::Ip("0.0.39.115".parse::<IpAddr>().unwrap()); // IP from index 10099
+    let key = RateLimitKey::Ip("0.0.39.115".parse::<IpAddr>().unwrap(), RateLimitCategory::Default); // IP from index 10099
     assert!(
         limiter.check(key, 100),
         "recently-used key should still be tracked after eviction"
