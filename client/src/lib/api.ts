@@ -12,6 +12,7 @@ import type {
   Channel,
   Message,
   ServerSummary,
+  ServerPolicy,
   FederationPeer,
   AgentInfo,
   PublicEvent,
@@ -171,6 +172,37 @@ export async function getPublicEvents(
   if (limit) params.set('limit', limit.toString());
   const qs = params.toString();
   return request<PublicEvent[]>(`/api/public/events${qs ? '?' + qs : ''}`);
+}
+
+// ── Admin ──
+
+export async function getPolicy(
+  pseudonymId: string,
+): Promise<ServerPolicy> {
+  return request<ServerPolicy>('/api/admin/policy', {
+    headers: authHeaders(pseudonymId),
+  });
+}
+
+export async function updatePolicy(
+  pseudonymId: string,
+  policy: ServerPolicy,
+): Promise<{ status: string; version_id: string }> {
+  return request<{ status: string; version_id: string }>('/api/admin/policy', {
+    method: 'PUT',
+    headers: authHeaders(pseudonymId),
+    body: JSON.stringify(policy),
+  });
+}
+
+export async function deleteChannel(
+  pseudonymId: string,
+  channelId: string,
+): Promise<void> {
+  await request<unknown>(`/api/channels/${channelId}`, {
+    method: 'DELETE',
+    headers: authHeaders(pseudonymId),
+  });
 }
 
 // ── Voice ──

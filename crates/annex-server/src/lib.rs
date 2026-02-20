@@ -192,7 +192,10 @@ pub fn app(state: AppState) -> Router {
             "/api/rtx/governance/summary",
             get(api_rtx::governance_summary_handler),
         )
-        .route("/api/admin/policy", put(api_admin::update_policy_handler))
+        .route(
+            "/api/admin/policy",
+            get(api_admin::get_policy_handler).put(api_admin::update_policy_handler),
+        )
         .layer(axum::middleware::from_fn(middleware::auth_middleware));
 
     let router = Router::new()
