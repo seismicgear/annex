@@ -107,6 +107,7 @@ ENV ANNEX_ZK_KEY_PATH=/app/zk/keys/membership_vkey.json
 ENV ANNEX_DB_PATH=/app/data/annex.db
 ENV ANNEX_TTS_BINARY_PATH=/app/assets/piper/piper
 ENV ANNEX_TTS_VOICES_DIR=/app/assets/voices
+ENV ANNEX_CLIENT_DIR=/app/client/dist
 
 EXPOSE 3000
 

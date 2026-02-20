@@ -29,6 +29,7 @@ use axum::{
 use ed25519_dalek::SigningKey;
 use middleware::RateLimiter;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::services::{ServeDir, ServeFile};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::broadcast;
@@ -194,7 +195,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/admin/policy", put(api_admin::update_policy_handler))
         .layer(axum::middleware::from_fn(middleware::auth_middleware));
 
-    Router::new()
+    let router = Router::new()
         .route("/health", get(health))
         .route("/api/registry/register", post(api::register_handler))
         .route(
@@ -272,7 +273,23 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/api/public/agents", get(api_observe::get_agents_handler))
         .merge(protected_routes)
-        .route("/ws", get(api_ws::ws_handler))
+        .route("/ws", get(api_ws::ws_handler));
+
+    // Serve client static files if the directory exists.
+    let client_dir = std::env::var("ANNEX_CLIENT_DIR")
+        .unwrap_or_else(|_| "client/dist".to_string());
+    let router = if std::path::Path::new(&client_dir).join("index.html").exists() {
+        tracing::info!(path = %client_dir, "serving client static files");
+        let index = format!("{}/index.html", client_dir);
+        router.fallback_service(
+            ServeDir::new(&client_dir).fallback(ServeFile::new(index)),
+        )
+    } else {
+        tracing::info!(path = %client_dir, "client directory not found, skipping static file serving");
+        router
+    };
+
+    router
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .layer(axum::middleware::from_fn(middleware::rate_limit_middleware))
         .layer(
