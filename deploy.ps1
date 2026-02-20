@@ -177,7 +177,7 @@ $hasSqlite = Test-Command "sqlite3"
 if ($hasSqlite) { Write-Ok "sqlite3 found" }
 else { Write-Warn "sqlite3 not found (will guide manual seeding)" }
 
-# ZK verification keys — bootstrap if missing
+# ZK verification keys -- bootstrap if missing
 $vkeyPath = Join-Path $ProjectRoot "zk" "keys" "membership_vkey.json"
 if (-not (Test-Path $vkeyPath)) {
     Write-Step "Bootstrapping ZK circuits and keys"
@@ -197,7 +197,7 @@ if (-not (Test-Path $vkeyPath)) {
 }
 Write-Ok "ZK verification keys verified"
 
-# Piper TTS — bootstrap if missing
+# Piper TTS -- bootstrap if missing
 $piperBinary = Join-Path $ProjectRoot "assets" "piper" "piper"
 if ($IsWindows -or ($env:OS -eq "Windows_NT")) { $piperBinary += ".exe" }
 $voiceModel = Join-Path $ProjectRoot "assets" "voices" "en_US-lessac-medium.onnx"
@@ -209,7 +209,7 @@ if (-not (Test-Path $piperBinary) -or -not (Test-Path $voiceModel)) {
         & $setupScript
         if ($LASTEXITCODE -ne 0) { Write-Warn "Piper setup failed (voice features will be unavailable)" }
     } else {
-        Write-Warn "scripts/setup-piper.ps1 not found — run it manually for voice features"
+        Write-Warn "scripts/setup-piper.ps1 not found -- run it manually for voice features"
     }
 } else {
     Write-Ok "Piper TTS binary and voice model present"
@@ -249,11 +249,11 @@ if ((Test-Path $DbPath) -and $hasSqlite) {
     try {
         $count = sqlite3 $DbPath "SELECT COUNT(*) FROM servers;" 2>$null
         if ($count -and [int]$count -gt 0) {
-            Write-Ok "Database already seeded ($count server(s))"
+            Write-Ok "Database already seeded ($count server[s])"
             $needsSeed = $false
         }
     } catch {
-        # Table might not exist yet — that's fine, we need to seed
+        # Table might not exist yet -- that is fine, we need to seed
     }
 }
 
@@ -263,7 +263,7 @@ if ($needsSeed) {
     }
 
     # Run the server briefly to trigger migrations, then seed.
-    # The server will exit with NoServerConfigured — that's expected.
+    # The server will exit with NoServerConfigured -- that is expected.
     Write-Host "   Running migrations..."
     $env:ANNEX_DB_PATH = $DbPath
     $env:ANNEX_HOST = "127.0.0.1"
@@ -278,7 +278,7 @@ if ($needsSeed) {
         $ErrorActionPreference = "Continue"
         & $binary 2>$null
     } catch {
-        # Expected — server exits with error because no server row exists
+        # Expected -- server exits with error because no server row exists
     } finally {
         $ErrorActionPreference = $savedEAP
     }
