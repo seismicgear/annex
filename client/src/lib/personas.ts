@@ -49,6 +49,7 @@ export async function createPersona(
   serverSlug: string,
   bio = '',
   avatarUrl: string | null = null,
+  accentColor?: string,
 ): Promise<Persona> {
   const persona: Persona = {
     id: crypto.randomUUID(),
@@ -57,7 +58,7 @@ export async function createPersona(
     identityId,
     serverSlug,
     bio,
-    accentColor: randomAccentColor(),
+    accentColor: accentColor ?? randomAccentColor(),
     createdAt: new Date().toISOString(),
   };
   const db = await getDb();
