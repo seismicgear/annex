@@ -191,11 +191,12 @@ function MessageBubble({
 
 export function MessageView() {
   const identity = useIdentityStore((s) => s.identity);
-  const { messages, activeChannelId, loadOlderMessages } = useChannelsStore();
+  const { messages, activeChannelId, loadOlderMessages, loadingOlder, hasMoreMessages } = useChannelsStore();
   const loadVisibleUsernames = useUsernameStore((s) => s.loadVisibleUsernames);
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const prevMessageCount = useRef(0);
+  const prevScrollHeight = useRef(0);
   const [selfPersona, setSelfPersona] = useState<Persona | null>(null);
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
 
@@ -213,12 +214,27 @@ export function MessageView() {
     loadVisibleUsernames(identity.pseudonymId);
   }, [identity?.pseudonymId, loadVisibleUsernames]);
 
-  // Auto-scroll to bottom on new messages
+  // Auto-scroll to bottom on new messages; preserve scroll position on prepend
   useEffect(() => {
+    const el = containerRef.current;
+    if (!el) {
+      prevMessageCount.current = messages.length;
+      return;
+    }
     if (messages.length > prevMessageCount.current) {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+      const added = messages.length - prevMessageCount.current;
+      // If scroll was at the top and we added messages at the top (older messages loaded),
+      // preserve the user's reading position by restoring the scroll offset.
+      if (prevScrollHeight.current > 0 && el.scrollTop < 10) {
+        const newScrollTop = el.scrollHeight - prevScrollHeight.current;
+        el.scrollTop = newScrollTop;
+      } else {
+        // New messages appended at bottom — auto-scroll down
+        bottomRef.current?.scrollIntoView({ behavior: added > 10 ? 'auto' : 'smooth' });
+      }
     }
     prevMessageCount.current = messages.length;
+    prevScrollHeight.current = 0;
   }, [messages.length]);
 
   // Load older messages on scroll to top
@@ -227,7 +243,9 @@ export function MessageView() {
   const handleScroll = () => {
     const el = containerRef.current;
     if (!el || !pseudonymId) return;
-    if (el.scrollTop === 0 && messageCount > 0) {
+    if (el.scrollTop === 0 && messageCount > 0 && !loadingOlder && hasMoreMessages) {
+      // Save scroll height so the effect can restore position after prepend
+      prevScrollHeight.current = el.scrollHeight;
       loadOlderMessages(pseudonymId);
     }
   };

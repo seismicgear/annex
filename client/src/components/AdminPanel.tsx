@@ -7,6 +7,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useIdentityStore } from '@/stores/identity';
 import { useChannelsStore } from '@/stores/channels';
+import { useServersStore } from '@/stores/servers';
 import * as api from '@/lib/api';
 import type { ServerPolicy, AccessMode } from '@/types';
 import type { MemberInfo } from '@/lib/api';
@@ -23,8 +24,9 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
-  // Server image state
-  const [serverImageUrl, setServerImageUrl] = useState<string | null>(null);
+  // Server image state — shared via servers store so sidebar icon updates too
+  const serverImageUrl = useServersStore((s) => s.serverImageUrl);
+  const setServerImageUrl = useServersStore((s) => s.setServerImageUrl);
   const [uploadingImage, setUploadingImage] = useState(false);
   const imageInputRef = useRef<HTMLInputElement>(null);
 
@@ -38,11 +40,6 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
       })
       .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setLoading(false));
-
-    // Load current server image
-    api.getServerImage()
-      .then((resp) => setServerImageUrl(resp.image_url))
-      .catch(() => { /* no image set */ });
   }, [pseudonymId]);
 
   const handleRename = async () => {

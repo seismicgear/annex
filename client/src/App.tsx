@@ -32,7 +32,6 @@ import { AdminPanel } from '@/components/AdminPanel';
 import { ServerHub } from '@/components/ServerHub';
 import { parseInviteFromUrl, clearInviteFromUrl } from '@/lib/invite';
 import { getPersonasForIdentity } from '@/lib/personas';
-import * as api from '@/lib/api';
 import type { InvitePayload } from '@/types';
 import './App.css';
 
@@ -41,8 +40,9 @@ type AppView = 'chat' | 'federation' | 'events' | 'admin-policy' | 'admin-channe
 export default function App() {
   const { phase, identity, loadIdentities, loadPermissions, permissions } = useIdentityStore();
   const { connectWs, disconnectWs, selectChannel, joinChannel, loadChannels } = useChannelsStore();
-  const { servers, loadServers, saveCurrentServer } = useServersStore();
+  const { servers, loadServers, saveCurrentServer, fetchServerImage } = useServersStore();
   const activeServer = useServersStore((s) => s.getActiveServer());
+  const serverImageUrl = useServersStore((s) => s.serverImageUrl);
   const [activeView, setActiveView] = useState<AppView>('chat');
   const [adminMenuOpen, setAdminMenuOpen] = useState(false);
   const adminMenuRef = useRef<HTMLDivElement>(null);
@@ -51,7 +51,6 @@ export default function App() {
   );
   const inviteProcessed = useRef(false);
   const serverSaved = useRef(false);
-  const [serverImageUrl, setServerImageUrl] = useState<string | null>(null);
 
   // Load identities and saved servers on mount
   useEffect(() => {
@@ -64,13 +63,10 @@ export default function App() {
     if (phase === 'ready' && identity?.pseudonymId) {
       connectWs(identity.pseudonymId);
       loadPermissions();
-      // Load server image
-      api.getServerImage()
-        .then((resp) => setServerImageUrl(resp.image_url))
-        .catch(() => { /* no image set */ });
+      fetchServerImage();
       return () => disconnectWs();
     }
-  }, [phase, identity?.pseudonymId, connectWs, disconnectWs, loadPermissions]);
+  }, [phase, identity?.pseudonymId, connectWs, disconnectWs, loadPermissions, fetchServerImage]);
 
   // Auto-save current server to the node hub on first identity ready
   useEffect(() => {

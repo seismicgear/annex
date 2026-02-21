@@ -20,6 +20,8 @@ interface ServersState {
   activeServerId: string | null;
   /** Whether a server switch is in progress. */
   switching: boolean;
+  /** Image URL for the active server (not persisted). */
+  serverImageUrl: string | null;
 
   /** Load saved servers from IndexedDB. */
   loadServers: () => Promise<void>;
@@ -35,12 +37,17 @@ interface ServersState {
   setServerPersona: (serverId: string, personaId: string | null, accentColor?: string) => Promise<void>;
   /** Get the active server entry. */
   getActiveServer: () => SavedServer | null;
+  /** Set the active server's image URL (called after upload or fetch). */
+  setServerImageUrl: (url: string | null) => void;
+  /** Fetch and cache the active server's image URL. */
+  fetchServerImage: () => Promise<void>;
 }
 
 export const useServersStore = create<ServersState>((set, get) => ({
   servers: [],
   activeServerId: null,
   switching: false,
+  serverImageUrl: null,
 
   loadServers: async () => {
     const servers = await serversDb.listServers();
@@ -84,11 +91,11 @@ export const useServersStore = create<ServersState>((set, get) => ({
       server.lastConnectedAt = new Date().toISOString();
       await serversDb.saveServer(server);
 
-      // Refresh cached summary in background (failures are non-fatal;
-      // the stale cached summary remains until the next successful fetch)
+      // Refresh cached summary and server image in background
       api.getServerSummary()
         .then((summary) => serversDb.updateCachedSummary(serverId, summary))
         .catch(() => { /* stale summary retained */ });
+      get().fetchServerImage();
 
     } finally {
       set({ switching: false });
@@ -185,5 +192,18 @@ export const useServersStore = create<ServersState>((set, get) => ({
   getActiveServer: () => {
     const { servers, activeServerId } = get();
     return servers.find((s) => s.id === activeServerId) ?? null;
+  },
+
+  setServerImageUrl: (url: string | null) => {
+    set({ serverImageUrl: url });
+  },
+
+  fetchServerImage: async () => {
+    try {
+      const resp = await api.getServerImage();
+      set({ serverImageUrl: resp.image_url });
+    } catch {
+      // No image set — leave as null
+    }
   },
 }));
