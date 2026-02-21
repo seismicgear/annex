@@ -16,6 +16,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useChannelsStore } from '@/stores/channels';
 import { useIdentityStore } from '@/stores/identity';
+import { useServersStore } from '@/stores/servers';
 import { useUsernameStore } from '@/stores/usernames';
 import { LinkPreview } from '@/components/LinkPreview';
 import { extractUrls } from '@/lib/link-preview';
@@ -201,6 +202,8 @@ export function MessageView() {
   const prevScrollHeight = useRef(0);
   const [selfPersona, setSelfPersona] = useState<Persona | null>(null);
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  // Subscribe to server accent color so persona reloads when user changes color
+  const serverAccentColor = useServersStore((s) => s.getActiveServer()?.accentColor);
 
   // Load the local user's persona for display name / avatar
   useEffect(() => {
@@ -208,7 +211,7 @@ export function MessageView() {
     getPersonasForIdentity(identity.id).then((list) => {
       setSelfPersona(list[0] ?? null);
     });
-  }, [identity]);
+  }, [identity, serverAccentColor]);
 
   // Load visible usernames from server
   useEffect(() => {

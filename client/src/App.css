@@ -1873,6 +1873,10 @@
 
 /* StatusBar persona indicator */
 
+.persona-indicator-wrapper {
+  position: relative;
+}
+
 .persona-indicator {
   width: 20px;
   height: 20px;
@@ -1884,6 +1888,44 @@
   font-weight: bold;
   color: #fff;
   flex-shrink: 0;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  transition: transform 0.1s, box-shadow 0.1s;
+}
+
+.persona-indicator:hover {
+  transform: scale(1.15);
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.25);
+}
+
+/* Quick color picker popover */
+
+.quick-color-picker {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  background: #1a1a2e;
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 0.6rem;
+  z-index: 1000;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  min-width: 170px;
+}
+
+.quick-color-picker-label {
+  display: block;
+  font-size: 0.7rem;
+  color: #999;
+  margin-bottom: 0.4rem;
+  white-space: nowrap;
+}
+
+.quick-color-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 0.3rem;
 }
 
 .pseudonym-btn {

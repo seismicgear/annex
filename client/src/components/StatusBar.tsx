@@ -8,8 +8,9 @@
  * social recovery setup, identity export, audio settings, and logout.
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useIdentityStore } from '@/stores/identity';
+import { useServersStore } from '@/stores/servers';
 import { useChannelsStore } from '@/stores/channels';
 import { useVoiceStore } from '@/stores/voice';
 import { DeviceLinkDialog } from '@/components/DeviceLinkDialog';
@@ -17,7 +18,7 @@ import { ProfileSwitcher } from '@/components/ProfileSwitcher';
 import { SocialRecoveryDialog } from '@/components/SocialRecoveryDialog';
 import { AudioSettings } from '@/components/AudioSettings';
 import { UsernameSettings } from '@/components/UsernameSettings';
-import { getPersonasForIdentity } from '@/lib/personas';
+import { getPersonasForIdentity, updatePersona, ACCENT_COLORS } from '@/lib/personas';
 import type { Persona } from '@/types';
 
 export function StatusBar() {
@@ -40,6 +41,8 @@ export function StatusBar() {
   const [showRecovery, setShowRecovery] = useState(false);
   const [showAudioSettings, setShowAudioSettings] = useState(false);
   const [showUsernameSettings, setShowUsernameSettings] = useState(false);
+  const [showColorPicker, setShowColorPicker] = useState(false);
+  const colorPickerRef = useRef<HTMLDivElement>(null);
   const [activePersona, setActivePersona] = useState<Persona | null>(null);
   // Local mic muted state — tracks whether the user toggled mute from the status bar.
   // The actual LiveKit mute is handled inside VoicePanel's MediaControls; this is
@@ -71,6 +74,31 @@ export function StatusBar() {
       await leaveCall(identity.pseudonymId);
     }
   }, [identity?.pseudonymId, leaveCall]);
+
+  // Close color picker on outside click
+  useEffect(() => {
+    if (!showColorPicker) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (colorPickerRef.current && !colorPickerRef.current.contains(e.target as Node)) {
+        setShowColorPicker(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showColorPicker]);
+
+  const handleColorChange = useCallback(async (color: string) => {
+    if (!activePersona) return;
+    const updated = { ...activePersona, accentColor: color };
+    await updatePersona(updated);
+    setActivePersona(updated);
+    // Update the server's accent color too so the whole UI theme changes
+    const server = useServersStore.getState().getActiveServer();
+    if (server) {
+      await useServersStore.getState().setServerPersona(server.id, activePersona.id, color);
+    }
+    setShowColorPicker(false);
+  }, [activePersona]);
 
   if (!identity) return null;
 
@@ -145,13 +173,31 @@ export function StatusBar() {
           <span className={`ws-indicator ${wsConnected ? 'connected' : 'disconnected'}`}
                 title={wsConnected ? 'Connected to server' : 'Disconnected from server'} />
           {activePersona && (
-            <span
-              className="persona-indicator"
-              style={{ background: activePersona.accentColor }}
-              title={`Persona: ${activePersona.displayName}`}
-            >
-              {activePersona.displayName.charAt(0).toUpperCase()}
-            </span>
+            <div className="persona-indicator-wrapper" ref={colorPickerRef}>
+              <button
+                className="persona-indicator"
+                style={{ background: activePersona.accentColor }}
+                title="Click to change your color"
+                onClick={() => setShowColorPicker((v) => !v)}
+              >
+                {activePersona.displayName.charAt(0).toUpperCase()}
+              </button>
+              {showColorPicker && (
+                <div className="quick-color-picker">
+                  <span className="quick-color-picker-label">Choose your color</span>
+                  <div className="quick-color-picker-grid">
+                    {ACCENT_COLORS.map((color) => (
+                      <button
+                        key={color}
+                        className={`color-swatch ${activePersona.accentColor === color ? 'active' : ''}`}
+                        style={{ background: color }}
+                        onClick={() => handleColorChange(color)}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
           )}
           <button
             className="pseudonym-btn"
