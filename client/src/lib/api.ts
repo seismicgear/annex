@@ -263,6 +263,68 @@ export async function deleteChannel(
   });
 }
 
+// ── Server Settings ──
+
+export async function getServer(
+  pseudonymId: string,
+): Promise<{ slug: string; label: string; public_url: string }> {
+  return request<{ slug: string; label: string; public_url: string }>('/api/admin/server', {
+    headers: authHeaders(pseudonymId),
+  });
+}
+
+export async function renameServer(
+  pseudonymId: string,
+  label: string,
+): Promise<{ status: string; label: string }> {
+  return request<{ status: string; label: string }>('/api/admin/server', {
+    method: 'PATCH',
+    headers: authHeaders(pseudonymId),
+    body: JSON.stringify({ label }),
+  });
+}
+
+// ── Member Management ──
+
+export interface MemberInfo {
+  pseudonym_id: string;
+  participant_type: string;
+  can_voice: boolean;
+  can_moderate: boolean;
+  can_invite: boolean;
+  can_federate: boolean;
+  can_bridge: boolean;
+  active: boolean;
+  created_at: string;
+}
+
+export async function listMembers(
+  pseudonymId: string,
+): Promise<MemberInfo[]> {
+  const resp = await request<{ members: MemberInfo[] }>('/api/admin/members', {
+    headers: authHeaders(pseudonymId),
+  });
+  return resp.members;
+}
+
+export async function updateMemberCapabilities(
+  pseudonymId: string,
+  targetPseudonym: string,
+  caps: {
+    can_voice: boolean;
+    can_moderate: boolean;
+    can_invite: boolean;
+    can_federate: boolean;
+    can_bridge: boolean;
+  },
+): Promise<void> {
+  await request<unknown>(`/api/admin/members/${targetPseudonym}/capabilities`, {
+    method: 'PATCH',
+    headers: authHeaders(pseudonymId),
+    body: JSON.stringify(caps),
+  });
+}
+
 // ── Remote Server Discovery (federation hopping) ──
 
 export async function getRemoteServerSummary(

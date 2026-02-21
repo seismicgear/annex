@@ -35,7 +35,7 @@ import { getPersonasForIdentity } from '@/lib/personas';
 import type { InvitePayload } from '@/types';
 import './App.css';
 
-type AppView = 'chat' | 'federation' | 'events' | 'admin-policy' | 'admin-channels';
+type AppView = 'chat' | 'federation' | 'events' | 'admin-policy' | 'admin-channels' | 'admin-members' | 'admin-server';
 
 export default function App() {
   const { phase, identity, loadIdentities, loadPermissions, permissions } = useIdentityStore();
@@ -194,11 +194,20 @@ export default function App() {
         );
       case 'admin-policy':
       case 'admin-channels':
+      case 'admin-members':
+      case 'admin-server': {
+        const sectionMap: Record<string, 'policy' | 'channels' | 'members' | 'server'> = {
+          'admin-policy': 'policy',
+          'admin-channels': 'channels',
+          'admin-members': 'members',
+          'admin-server': 'server',
+        };
         return (
           <main className="view-content">
-            <AdminPanel section={activeView === 'admin-policy' ? 'policy' : 'channels'} />
+            <AdminPanel section={sectionMap[activeView]} />
           </main>
         );
+      }
       default:
         return (
           <div className="app-layout">
@@ -270,10 +279,22 @@ export default function App() {
             {adminMenuOpen && (
               <div className="admin-dropdown">
                 <button
+                  className={`admin-dropdown-item ${activeView === 'admin-server' ? 'active' : ''}`}
+                  onClick={() => navigateAdmin('admin-server')}
+                >
+                  Server Settings
+                </button>
+                <button
                   className={`admin-dropdown-item ${activeView === 'admin-policy' ? 'active' : ''}`}
                   onClick={() => navigateAdmin('admin-policy')}
                 >
                   Server Policy
+                </button>
+                <button
+                  className={`admin-dropdown-item ${activeView === 'admin-members' ? 'active' : ''}`}
+                  onClick={() => navigateAdmin('admin-members')}
+                >
+                  Member Management
                 </button>
                 <button
                   className={`admin-dropdown-item ${activeView === 'admin-channels' ? 'active' : ''}`}

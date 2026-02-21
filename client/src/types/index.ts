@@ -169,6 +169,9 @@ export interface RateLimitConfig {
   default_limit: number;
 }
 
+/** Server access mode. */
+export type AccessMode = 'public' | 'invite_only' | 'password';
+
 /** Server policy (matches server ServerPolicy). */
 export interface ServerPolicy {
   agent_min_alignment_score: number;
@@ -180,6 +183,8 @@ export interface ServerPolicy {
   rate_limit: RateLimitConfig;
   principles: string[];
   prohibited_actions: string[];
+  access_mode: AccessMode;
+  access_password: string;
 }
 
 // ── Multi-Server Hub ──

@@ -1,14 +1,118 @@
 /**
- * Admin panel — server policy editor and channel management.
+ * Admin panel — server settings, policy editor, member management, and channel management.
  *
  * Only accessible to users with can_moderate permission.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useIdentityStore } from '@/stores/identity';
 import { useChannelsStore } from '@/stores/channels';
 import * as api from '@/lib/api';
-import type { ServerPolicy } from '@/types';
+import type { ServerPolicy, AccessMode } from '@/types';
+import type { MemberInfo } from '@/lib/api';
+
+// ── Server Settings ──
+
+function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
+  const [label, setLabel] = useState('');
+  const [slug, setSlug] = useState('');
+  const [publicUrl, setPublicUrl] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+
+  useEffect(() => {
+    api
+      .getServer(pseudonymId)
+      .then((s) => {
+        setLabel(s.label);
+        setSlug(s.slug);
+        setPublicUrl(s.public_url);
+      })
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setLoading(false));
+  }, [pseudonymId]);
+
+  const handleRename = async () => {
+    if (!label.trim()) return;
+    setSaving(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      await api.renameServer(pseudonymId, label.trim());
+      setSuccess('Server renamed.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const shareUrl = publicUrl
+    ? `${publicUrl}/#/invite?server=${encodeURIComponent(slug)}&label=${encodeURIComponent(label)}`
+    : `${window.location.origin}/#/invite?server=${encodeURIComponent(slug)}&label=${encodeURIComponent(label)}`;
+
+  const handleCopyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch { /* clipboard denied */ }
+  };
+
+  if (loading) return <p>Loading server settings...</p>;
+
+  return (
+    <div className="policy-editor">
+      <h3>Server Settings</h3>
+
+      <label title="The display name of your server visible to members and federation peers.">
+        Server Name
+        <input
+          type="text"
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+          maxLength={128}
+        />
+        <span className="field-hint">The public display name of this server.</span>
+      </label>
+
+      <label>
+        Server Slug
+        <input type="text" value={slug} disabled />
+        <span className="field-hint">Unique identifier — cannot be changed after creation.</span>
+      </label>
+
+      <div className="policy-section">
+        <h4>Share Server</h4>
+        <p className="field-hint">Send this link to invite people to your server.</p>
+        <div className="share-link-row">
+          <input type="text" value={shareUrl} readOnly className="share-link-input" />
+          <button className="primary-btn" onClick={handleCopyLink}>
+            {copied ? 'Copied!' : 'Copy Link'}
+          </button>
+        </div>
+      </div>
+
+      {error && <div className="error-message">{error}</div>}
+      {success && <div className="success-message">{success}</div>}
+
+      <button className="primary-btn save-policy-btn" onClick={handleRename} disabled={saving || !label.trim()}>
+        {saving ? 'Saving...' : 'Save Name'}
+      </button>
+    </div>
+  );
+}
+
+// ── Policy Editor ──
+
+const ACCESS_MODES: { value: AccessMode; label: string; description: string }[] = [
+  { value: 'public', label: 'Public', description: 'Anyone can register and join freely.' },
+  { value: 'invite_only', label: 'Invite Only', description: 'Only users with a share link can join. Registration is blocked otherwise.' },
+  { value: 'password', label: 'Password Protected', description: 'Users must enter a server password to register.' },
+];
 
 function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
   const [policy, setPolicy] = useState<ServerPolicy | null>(null);
@@ -17,7 +121,6 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
-  // Editable fields for list items
   const [newPrinciple, setNewPrinciple] = useState('');
   const [newProhibited, setNewProhibited] = useState('');
   const [newCapability, setNewCapability] = useState('');
@@ -51,6 +154,40 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
   return (
     <div className="policy-editor">
       <h3>Server Policy</h3>
+
+      <div className="policy-section">
+        <h4>Access Control</h4>
+        <p className="field-hint" style={{ marginTop: 0 }}>Determines who can register on this server.</p>
+        <label title="Controls how new users can join this server.">
+          Access Mode
+          <select
+            value={policy.access_mode}
+            onChange={(e) => setPolicy({ ...policy, access_mode: e.target.value as AccessMode })}
+          >
+            {ACCESS_MODES.map((m) => (
+              <option key={m.value} value={m.value} title={m.description}>
+                {m.label}
+              </option>
+            ))}
+          </select>
+          <span className="field-hint">
+            {ACCESS_MODES.find((m) => m.value === policy.access_mode)?.description}
+          </span>
+        </label>
+
+        {policy.access_mode === 'password' && (
+          <label title="Users must enter this password when joining the server.">
+            Server Password
+            <input
+              type="text"
+              value={policy.access_password}
+              onChange={(e) => setPolicy({ ...policy, access_password: e.target.value })}
+              placeholder="Enter server password..."
+            />
+            <span className="field-hint">Required for users to register when access mode is password-protected.</span>
+          </label>
+        )}
+      </div>
 
       <div className="policy-grid">
         <label title="Minimum VRP alignment score (0.0–1.0) required for AI agents to join this server. Higher values require stronger value alignment.">
@@ -308,6 +445,103 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
   );
 }
 
+// ── Member Manager ──
+
+const CAP_LABELS: { key: keyof Omit<MemberInfo, 'pseudonym_id' | 'participant_type' | 'active' | 'created_at'>; label: string; hint: string }[] = [
+  { key: 'can_moderate', label: 'Moderator', hint: 'Can edit server policy, manage channels, and promote/demote members.' },
+  { key: 'can_voice', label: 'Voice', hint: 'Can join voice and video channels.' },
+  { key: 'can_invite', label: 'Invite', hint: 'Can generate invite links.' },
+  { key: 'can_federate', label: 'Federate', hint: 'Can initiate federation handshakes with other servers.' },
+  { key: 'can_bridge', label: 'Bridge', hint: 'Can operate as a protocol bridge.' },
+];
+
+function MemberManager({ pseudonymId }: { pseudonymId: string }) {
+  const [members, setMembers] = useState<MemberInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [updating, setUpdating] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const list = await api.listMembers(pseudonymId);
+      setMembers(list);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [pseudonymId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const toggleCap = async (member: MemberInfo, cap: string) => {
+    setUpdating(member.pseudonym_id);
+    const updated = {
+      can_voice: member.can_voice,
+      can_moderate: member.can_moderate,
+      can_invite: member.can_invite,
+      can_federate: member.can_federate,
+      can_bridge: member.can_bridge,
+      [cap]: !(member as unknown as Record<string, boolean>)[cap],
+    };
+    try {
+      await api.updateMemberCapabilities(pseudonymId, member.pseudonym_id, updated);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setUpdating(null);
+    }
+  };
+
+  if (loading) return <p>Loading members...</p>;
+
+  return (
+    <div className="policy-editor">
+      <h3>Member Management</h3>
+      <p className="field-hint" style={{ marginBottom: '0.75rem' }}>
+        Toggle capabilities for each member. The first member (founder) has all permissions by default.
+      </p>
+
+      {error && <div className="error-message">{error}</div>}
+
+      <div className="member-list">
+        {members.map((m) => (
+          <div key={m.pseudonym_id} className="member-row">
+            <div className="member-identity">
+              <span className="member-pseudonym" title={m.pseudonym_id}>
+                {m.pseudonym_id.slice(0, 16)}...
+              </span>
+              <span className="member-meta">
+                {m.participant_type} | {m.active ? 'Active' : 'Inactive'}
+              </span>
+            </div>
+            <div className="member-caps">
+              {CAP_LABELS.map(({ key, label, hint }) => (
+                <label
+                  key={key}
+                  className="cap-toggle"
+                  title={hint}
+                >
+                  <input
+                    type="checkbox"
+                    checked={(m as unknown as Record<string, boolean>)[key]}
+                    onChange={() => toggleCap(m, key)}
+                    disabled={updating === m.pseudonym_id}
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Channel Manager ──
+
 function ChannelManager({ pseudonymId }: { pseudonymId: string }) {
   const { channels, loadChannels } = useChannelsStore();
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -356,19 +590,29 @@ function ChannelManager({ pseudonymId }: { pseudonymId: string }) {
   );
 }
 
-export function AdminPanel({ section }: { section?: 'policy' | 'channels' }) {
+// ── Main AdminPanel ──
+
+export function AdminPanel({ section }: { section?: 'policy' | 'channels' | 'members' | 'server' }) {
   const identity = useIdentityStore((s) => s.identity);
 
   if (!identity?.pseudonymId) return null;
 
+  const titles: Record<string, string> = {
+    server: 'Server Settings',
+    policy: 'Server Policy',
+    members: 'Member Management',
+    channels: 'Channel Management',
+  };
+
+  const active = section ?? 'policy';
+
   return (
     <div className="admin-panel">
-      <h2>{section === 'channels' ? 'Channel Management' : 'Server Policy'}</h2>
-      {section === 'channels' ? (
-        <ChannelManager pseudonymId={identity.pseudonymId} />
-      ) : (
-        <PolicyEditor pseudonymId={identity.pseudonymId} />
-      )}
+      <h2>{titles[active] ?? 'Server Policy'}</h2>
+      {active === 'server' && <ServerSettings pseudonymId={identity.pseudonymId} />}
+      {active === 'policy' && <PolicyEditor pseudonymId={identity.pseudonymId} />}
+      {active === 'members' && <MemberManager pseudonymId={identity.pseudonymId} />}
+      {active === 'channels' && <ChannelManager pseudonymId={identity.pseudonymId} />}
     </div>
   );
 }

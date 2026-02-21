@@ -23,7 +23,7 @@ use annex_identity::MerkleTree;
 use annex_types::ServerPolicy;
 use axum::{
     extract::DefaultBodyLimit,
-    routing::{get, post, put},
+    routing::{get, patch, post, put},
     Extension, Json, Router,
 };
 use ed25519_dalek::SigningKey;
@@ -199,6 +199,18 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/api/admin/policy",
             get(api_admin::get_policy_handler).put(api_admin::update_policy_handler),
+        )
+        .route(
+            "/api/admin/server",
+            get(api_admin::get_server_handler).patch(api_admin::rename_server_handler),
+        )
+        .route(
+            "/api/admin/members",
+            get(api_admin::list_members_handler),
+        )
+        .route(
+            "/api/admin/members/{pseudonymId}/capabilities",
+            patch(api_admin::update_member_capabilities_handler),
         )
         .layer(axum::middleware::from_fn(middleware::auth_middleware));
 
