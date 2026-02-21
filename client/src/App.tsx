@@ -96,9 +96,12 @@ export default function App() {
 
   // Apply persona isolation — dynamic CSS custom properties per server context
   useEffect(() => {
-    const raw = activeServer?.accentColor ?? '#646cff';
+    const raw = activeServer?.accentColor ?? '#e63946';
+    // Migrate legacy green accents to cyberpunk red
+    const LEGACY_GREENS: Record<string, string> = { '#4ade80': '#e63946', '#10b981': '#c42836' };
+    const migrated = LEGACY_GREENS[raw] ?? raw;
     // Validate hex color format; fall back to default if malformed
-    const accentColor = /^#[0-9a-fA-F]{6}$/.test(raw) ? raw : '#646cff';
+    const accentColor = /^#[0-9a-fA-F]{6}$/.test(migrated) ? migrated : '#e63946';
     document.documentElement.style.setProperty('--persona-accent', accentColor);
 
     // Derive tint colors from the accent

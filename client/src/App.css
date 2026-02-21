@@ -2244,9 +2244,9 @@
 
 /* Persona-isolation CSS custom properties — dynamically set per server context */
 :root {
-  --persona-accent: #fff;
-  --persona-bg-tint: rgba(255, 255, 255, 0.04);
-  --persona-border-tint: rgba(255, 255, 255, 0.15);
+  --persona-accent: #e63946;
+  --persona-bg-tint: rgba(230, 57, 70, 0.06);
+  --persona-border-tint: rgba(230, 57, 70, 0.3);
 }
 
 .server-hub {
@@ -2397,12 +2397,12 @@
 }
 
 .app-header h1 {
-  color: var(--persona-accent, #fff);
+  color: var(--persona-accent, #e63946);
 }
 
 .tab-btn.active {
   background: var(--persona-bg-tint, rgba(255, 255, 255, 0.2));
-  color: var(--persona-accent, #fff);
+  color: var(--persona-accent, #e63946);
 }
 
 /* Active persona context indicator in the header */
@@ -2423,7 +2423,7 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--persona-accent, #fff);
+  background: var(--persona-accent, #e63946);
 }
 
 .persona-context-name {
