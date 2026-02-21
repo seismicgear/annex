@@ -2,7 +2,10 @@
 
 use crate::api_federation::relay_message;
 use crate::AppState;
-use annex_channels::{create_message, get_channel, is_member, CreateMessageParams, Message};
+use annex_channels::{
+    create_message, delete_message, edit_message, get_channel, is_member, CreateMessageParams,
+    Message,
+};
 use annex_identity::{get_platform_identity, PlatformIdentity};
 use annex_types::{FederationScope, RoleCode};
 use axum::{
@@ -51,6 +54,21 @@ pub enum IncomingMessage {
         #[serde(rename = "replyTo")]
         reply_to: Option<String>,
     },
+    #[serde(rename = "edit_message")]
+    EditMessage {
+        #[serde(rename = "channelId")]
+        channel_id: String,
+        #[serde(rename = "messageId")]
+        message_id: String,
+        content: String,
+    },
+    #[serde(rename = "delete_message")]
+    DeleteMessage {
+        #[serde(rename = "channelId")]
+        channel_id: String,
+        #[serde(rename = "messageId")]
+        message_id: String,
+    },
     #[serde(rename = "voice_intent")]
     VoiceIntent {
         #[serde(rename = "channelId")]
@@ -72,6 +90,10 @@ pub struct WsMessagePayload {
     pub content: String,
     pub reply_to_message_id: Option<String>,
     pub created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edited_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<String>,
 }
 
 impl From<Message> for WsMessagePayload {
@@ -83,6 +105,8 @@ impl From<Message> for WsMessagePayload {
             content: m.content,
             reply_to_message_id: m.reply_to_message_id,
             created_at: m.created_at,
+            edited_at: m.edited_at,
+            deleted_at: m.deleted_at,
         }
     }
 }
@@ -93,6 +117,10 @@ impl From<Message> for WsMessagePayload {
 pub enum OutgoingMessage {
     #[serde(rename = "message")]
     Message(WsMessagePayload),
+    #[serde(rename = "message_edited")]
+    MessageEdited(WsMessagePayload),
+    #[serde(rename = "message_deleted")]
+    MessageDeleted(WsMessagePayload),
     #[serde(rename = "transcription")]
     Transcription {
         #[serde(rename = "channelId")]
@@ -599,6 +627,101 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                     &tx,
                                     "Failed to send message: internal error".to_string(),
                                 );
+                            }
+                        }
+                    }
+                    IncomingMessage::EditMessage {
+                        channel_id,
+                        message_id,
+                        content,
+                    } => {
+                        if content.len() > MAX_WS_MESSAGE_CONTENT_LEN {
+                            send_ws_error(
+                                &tx,
+                                format!(
+                                    "Message content exceeds maximum length of {} bytes",
+                                    MAX_WS_MESSAGE_CONTENT_LEN
+                                ),
+                            );
+                            continue;
+                        }
+
+                        let state_clone = state.clone();
+                        let pseudonym_clone = pseudonym.clone();
+                        let channel_id_clone = channel_id.clone();
+
+                        let res = tokio::task::spawn_blocking(move || {
+                            let conn = state_clone.pool.get().map_err(|e| e.to_string())?;
+                            edit_message(&conn, &message_id, &pseudonym_clone, &content)
+                                .map_err(|e| e.to_string())
+                        })
+                        .await;
+
+                        match res {
+                            Ok(Ok(updated)) => {
+                                let ws_payload: WsMessagePayload = updated.into();
+                                let out = OutgoingMessage::MessageEdited(ws_payload);
+                                match serde_json::to_string(&out) {
+                                    Ok(json) => {
+                                        state
+                                            .connection_manager
+                                            .broadcast(&channel_id_clone, json)
+                                            .await;
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("failed to serialize edit broadcast: {}", e);
+                                    }
+                                }
+                            }
+                            Ok(Err(e)) => {
+                                send_ws_error(&tx, format!("Edit failed: {}", e));
+                            }
+                            Err(e) => {
+                                tracing::error!("edit message task failed: {}", e);
+                                send_ws_error(&tx, "Edit failed: internal error".to_string());
+                            }
+                        }
+                    }
+                    IncomingMessage::DeleteMessage {
+                        channel_id,
+                        message_id,
+                    } => {
+                        let state_clone = state.clone();
+                        let pseudonym_clone = pseudonym.clone();
+                        let channel_id_clone = channel_id.clone();
+
+                        let res = tokio::task::spawn_blocking(move || {
+                            let conn = state_clone.pool.get().map_err(|e| e.to_string())?;
+                            delete_message(&conn, &message_id, &pseudonym_clone)
+                                .map_err(|e| e.to_string())
+                        })
+                        .await;
+
+                        match res {
+                            Ok(Ok(updated)) => {
+                                let ws_payload: WsMessagePayload = updated.into();
+                                let out = OutgoingMessage::MessageDeleted(ws_payload);
+                                match serde_json::to_string(&out) {
+                                    Ok(json) => {
+                                        state
+                                            .connection_manager
+                                            .broadcast(&channel_id_clone, json)
+                                            .await;
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "failed to serialize delete broadcast: {}",
+                                            e
+                                        );
+                                    }
+                                }
+                            }
+                            Ok(Err(e)) => {
+                                send_ws_error(&tx, format!("Delete failed: {}", e));
+                            }
+                            Err(e) => {
+                                tracing::error!("delete message task failed: {}", e);
+                                send_ws_error(&tx, "Delete failed: internal error".to_string());
                             }
                         }
                     }

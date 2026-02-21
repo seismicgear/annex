@@ -84,19 +84,30 @@ export interface Message {
   content: string;
   reply_to_message_id: string | null;
   created_at: string;
+  edited_at?: string | null;
+  deleted_at?: string | null;
+}
+
+/** A historical edit of a message. */
+export interface MessageEdit {
+  id: number;
+  message_id: string;
+  old_content: string;
+  edited_at: string;
 }
 
 /** WebSocket frame for sending messages. */
 export interface WsSendFrame {
-  type: 'message';
+  type: 'message' | 'edit_message' | 'delete_message';
   channelId: string;
-  content: string;
-  replyTo: string | null;
+  content?: string;
+  replyTo?: string | null;
+  messageId?: string;
 }
 
 /** WebSocket frame received from server. */
 export interface WsReceiveFrame {
-  type: 'message' | 'rtx_bundle' | 'transcription' | 'error';
+  type: 'message' | 'message_edited' | 'message_deleted' | 'rtx_bundle' | 'transcription' | 'error';
   // Message fields (camelCase from WsMessagePayload)
   channelId?: string;
   messageId?: string;
@@ -104,6 +115,8 @@ export interface WsReceiveFrame {
   content?: string;
   replyToMessageId?: string | null;
   createdAt?: string;
+  editedAt?: string | null;
+  deletedAt?: string | null;
   // Transcription fields
   speakerPseudonym?: string;
   text?: string;

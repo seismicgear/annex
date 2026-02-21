@@ -110,6 +110,33 @@ export class AnnexWebSocket {
     this.ws.send(JSON.stringify(frame));
   }
 
+  /** Edit a message in a channel. */
+  editMessage(channelId: string, messageId: string, content: string): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      throw new Error('WebSocket is not connected');
+    }
+    const frame: WsSendFrame = {
+      type: 'edit_message',
+      channelId,
+      messageId,
+      content,
+    };
+    this.ws.send(JSON.stringify(frame));
+  }
+
+  /** Delete a message in a channel. */
+  deleteMessage(channelId: string, messageId: string): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      throw new Error('WebSocket is not connected');
+    }
+    const frame: WsSendFrame = {
+      type: 'delete_message',
+      channelId,
+      messageId,
+    };
+    this.ws.send(JSON.stringify(frame));
+  }
+
   /** Register a handler for incoming messages. */
   onMessage(handler: WsMessageHandler): () => void {
     this.messageHandlers.add(handler);

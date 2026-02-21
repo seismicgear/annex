@@ -36,6 +36,10 @@ interface ChannelsState {
   connectWs: (pseudonymId: string, baseUrl?: string) => void;
   /** Send a message to the active channel. */
   sendMessage: (content: string, replyTo?: string | null) => void;
+  /** Edit a message in the active channel. */
+  editMessage: (messageId: string, content: string) => void;
+  /** Delete a message in the active channel. */
+  deleteMessage: (messageId: string) => void;
   /** Load older messages (pagination). */
   loadOlderMessages: (pseudonymId: string) => Promise<void>;
   /** Create a new channel. */
@@ -101,7 +105,9 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     ws.onStatus((connected) => set({ wsConnected: connected }));
 
     ws.onMessage((frame: WsReceiveFrame) => {
-      if (frame.type === 'message' && frame.channelId === get().activeChannelId) {
+      if (frame.channelId !== get().activeChannelId) return;
+
+      if (frame.type === 'message') {
         const msg: Message = {
           message_id: frame.messageId ?? '',
           channel_id: frame.channelId,
@@ -109,8 +115,26 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
           content: frame.content ?? '',
           reply_to_message_id: frame.replyToMessageId ?? null,
           created_at: frame.createdAt ?? new Date().toISOString(),
+          edited_at: frame.editedAt ?? null,
+          deleted_at: frame.deletedAt ?? null,
         };
         set((state) => ({ messages: [...state.messages, msg] }));
+      } else if (frame.type === 'message_edited') {
+        set((state) => ({
+          messages: state.messages.map((m) =>
+            m.message_id === frame.messageId
+              ? { ...m, content: frame.content ?? m.content, edited_at: frame.editedAt ?? null }
+              : m,
+          ),
+        }));
+      } else if (frame.type === 'message_deleted') {
+        set((state) => ({
+          messages: state.messages.map((m) =>
+            m.message_id === frame.messageId
+              ? { ...m, content: '', deleted_at: frame.deletedAt ?? null }
+              : m,
+          ),
+        }));
       }
     });
 
@@ -122,6 +146,18 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     const { ws, activeChannelId } = get();
     if (!ws || !activeChannelId) return;
     ws.send(activeChannelId, content, replyTo);
+  },
+
+  editMessage: (messageId: string, content: string) => {
+    const { ws, activeChannelId } = get();
+    if (!ws || !activeChannelId) return;
+    ws.editMessage(activeChannelId, messageId, content);
+  },
+
+  deleteMessage: (messageId: string) => {
+    const { ws, activeChannelId } = get();
+    if (!ws || !activeChannelId) return;
+    ws.deleteMessage(activeChannelId, messageId);
   },
 
   loadOlderMessages: async (pseudonymId: string) => {

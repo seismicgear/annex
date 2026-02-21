@@ -176,6 +176,10 @@ pub fn app(state: AppState) -> Router {
             get(api_channels::get_channel_history_handler),
         )
         .route(
+            "/api/channels/{channelId}/messages/{messageId}/edits",
+            get(api_channels::get_message_edits_handler),
+        )
+        .route(
             "/api/agents/{pseudonymId}",
             get(api_agent::get_agent_profile_handler),
         )
