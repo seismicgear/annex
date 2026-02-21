@@ -48,6 +48,7 @@ async fn test_register_identity_success() {
         stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),
         voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
         observe_tx: tokio::sync::broadcast::channel(256).0,
+        upload_dir: std::env::temp_dir().to_string_lossy().into_owned(),
     };
     let app = app(state);
 
@@ -113,6 +114,7 @@ async fn test_register_duplicate_failure() {
         stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),
         voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
         observe_tx: tokio::sync::broadcast::channel(256).0,
+        upload_dir: std::env::temp_dir().to_string_lossy().into_owned(),
     };
     let app = app(state);
 
@@ -179,6 +181,7 @@ async fn test_register_invalid_role_failure() {
         stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),
         voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
         observe_tx: tokio::sync::broadcast::channel(256).0,
+        upload_dir: std::env::temp_dir().to_string_lossy().into_owned(),
     };
     let app = app(state);
 

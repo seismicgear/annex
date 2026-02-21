@@ -325,6 +325,65 @@ export async function updateMemberCapabilities(
   });
 }
 
+// ── Image Uploads ──
+
+export interface UploadResponse {
+  status: string;
+  upload_id: string;
+  url: string;
+  filename?: string;
+  content_type?: string;
+  size?: number;
+  metadata_stripped_bytes?: number;
+}
+
+export async function uploadServerImage(
+  pseudonymId: string,
+  file: File,
+): Promise<UploadResponse> {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const url = _apiBaseUrl ? `${_apiBaseUrl}/api/admin/server/image` : '/api/admin/server/image';
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'X-Annex-Pseudonym': pseudonymId },
+    body: formData,
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new ApiError(res.status, body);
+  }
+  return res.json() as Promise<UploadResponse>;
+}
+
+export async function getServerImage(): Promise<{ image_url: string | null }> {
+  return request<{ image_url: string | null }>('/api/public/server/image');
+}
+
+export async function uploadChatImage(
+  pseudonymId: string,
+  channelId: string,
+  file: File,
+): Promise<UploadResponse> {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const url = _apiBaseUrl
+    ? `${_apiBaseUrl}/api/channels/${channelId}/upload`
+    : `/api/channels/${channelId}/upload`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'X-Annex-Pseudonym': pseudonymId },
+    body: formData,
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new ApiError(res.status, body);
+  }
+  return res.json() as Promise<UploadResponse>;
+}
+
 // ── Remote Server Discovery (federation hopping) ──
 
 export async function getRemoteServerSummary(

@@ -125,6 +125,7 @@ async fn setup_app_with_mock_tts(
         stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),
         voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
         observe_tx: tokio::sync::broadcast::channel(256).0,
+        upload_dir: std::env::temp_dir().to_string_lossy().into_owned(),
     };
 
     (app(state.clone()), pool, Arc::new(state))
@@ -438,6 +439,7 @@ async fn test_voice_intent_tts_profile_not_found() {
         stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),
         voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
         observe_tx: tokio::sync::broadcast::channel(256).0,
+        upload_dir: std::env::temp_dir().to_string_lossy().into_owned(),
     };
 
     // Seed agent and channel

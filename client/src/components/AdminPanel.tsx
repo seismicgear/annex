@@ -4,7 +4,7 @@
  * Only accessible to users with can_moderate permission.
  */
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useIdentityStore } from '@/stores/identity';
 import { useChannelsStore } from '@/stores/channels';
 import * as api from '@/lib/api';
@@ -23,6 +23,11 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
+  // Server image state
+  const [serverImageUrl, setServerImageUrl] = useState<string | null>(null);
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+
   useEffect(() => {
     api
       .getServer(pseudonymId)
@@ -33,6 +38,11 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
       })
       .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setLoading(false));
+
+    // Load current server image
+    api.getServerImage()
+      .then((resp) => setServerImageUrl(resp.image_url))
+      .catch(() => { /* no image set */ });
   }, [pseudonymId]);
 
   const handleRename = async () => {
@@ -47,6 +57,27 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+    if (!allowed.includes(file.type)) return;
+    if (file.size > 10 * 1024 * 1024) return;
+
+    setUploadingImage(true);
+    setError(null);
+    try {
+      const resp = await api.uploadServerImage(pseudonymId, file);
+      setServerImageUrl(resp.url);
+      setSuccess('Server image updated.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setUploadingImage(false);
+      e.target.value = '';
     }
   };
 
@@ -67,6 +98,32 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
   return (
     <div className="policy-editor">
       <h3>Server Settings</h3>
+
+      <div className="policy-section">
+        <h4>Server Image</h4>
+        <p className="field-hint" style={{ marginTop: 0 }}>Upload a logo or icon for your server. Metadata (EXIF, GPS) is stripped automatically.</p>
+        <div className="server-image-section">
+          {serverImageUrl ? (
+            <img src={serverImageUrl} alt="Server" className="server-image-preview" />
+          ) : (
+            <div className="server-image-placeholder">No image set</div>
+          )}
+          <input
+            ref={imageInputRef}
+            type="file"
+            accept="image/jpeg,image/png,image/gif,image/webp"
+            onChange={handleImageUpload}
+            style={{ display: 'none' }}
+          />
+          <button
+            className="primary-btn"
+            onClick={() => imageInputRef.current?.click()}
+            disabled={uploadingImage}
+          >
+            {uploadingImage ? 'Uploading...' : serverImageUrl ? 'Change Image' : 'Upload Image'}
+          </button>
+        </div>
+      </div>
 
       <label title="The display name of your server visible to members and federation peers.">
         Server Name

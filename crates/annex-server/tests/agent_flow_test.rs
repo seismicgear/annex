@@ -86,6 +86,7 @@ async fn test_agent_connection_flow_end_to_end() {
         stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),
         voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
         observe_tx: tokio::sync::broadcast::channel(256).0,
+        upload_dir: std::env::temp_dir().to_string_lossy().into_owned(),
     };
     let app = app(state);
     let addr = SocketAddr::from(([127, 0, 0, 1], 12345));

@@ -32,6 +32,7 @@ import { AdminPanel } from '@/components/AdminPanel';
 import { ServerHub } from '@/components/ServerHub';
 import { parseInviteFromUrl, clearInviteFromUrl } from '@/lib/invite';
 import { getPersonasForIdentity } from '@/lib/personas';
+import * as api from '@/lib/api';
 import type { InvitePayload } from '@/types';
 import './App.css';
 
@@ -50,6 +51,7 @@ export default function App() {
   );
   const inviteProcessed = useRef(false);
   const serverSaved = useRef(false);
+  const [serverImageUrl, setServerImageUrl] = useState<string | null>(null);
 
   // Load identities and saved servers on mount
   useEffect(() => {
@@ -62,6 +64,10 @@ export default function App() {
     if (phase === 'ready' && identity?.pseudonymId) {
       connectWs(identity.pseudonymId);
       loadPermissions();
+      // Load server image
+      api.getServerImage()
+        .then((resp) => setServerImageUrl(resp.image_url))
+        .catch(() => { /* no image set */ });
       return () => disconnectWs();
     }
   }, [phase, identity?.pseudonymId, connectWs, disconnectWs, loadPermissions]);
@@ -229,6 +235,9 @@ export default function App() {
   return (
     <div className="app">
       <header className="app-header">
+        {serverImageUrl && (
+          <img src={serverImageUrl} alt="" className="header-server-image" />
+        )}
         <h1>Annex</h1>
         <nav className="header-tabs">
           <button

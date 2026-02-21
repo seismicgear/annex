@@ -217,6 +217,15 @@ async fn main() -> Result<(), StartupError> {
     let stt_service =
         annex_voice::SttService::new(&config.voice.stt_model_path, &config.voice.stt_binary_path);
 
+    // Resolve upload directory
+    let upload_dir = std::env::var("ANNEX_UPLOAD_DIR")
+        .unwrap_or_else(|_| "data/uploads".to_string());
+    if let Err(e) = std::fs::create_dir_all(&upload_dir) {
+        tracing::warn!(path = %upload_dir, "failed to create upload directory: {}", e);
+    } else {
+        tracing::info!(path = %upload_dir, "upload directory ready");
+    }
+
     let state = AppState {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
@@ -233,6 +242,7 @@ async fn main() -> Result<(), StartupError> {
         stt_service: Arc::new(stt_service),
         voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
         observe_tx,
+        upload_dir,
     };
 
     // Start background pruning task. Monitor for panics.
