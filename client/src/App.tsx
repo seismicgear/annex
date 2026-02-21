@@ -32,10 +32,11 @@ import { AdminPanel } from '@/components/AdminPanel';
 import { ServerHub } from '@/components/ServerHub';
 import { parseInviteFromUrl, clearInviteFromUrl } from '@/lib/invite';
 import { getPersonasForIdentity } from '@/lib/personas';
+import * as api from '@/lib/api';
 import type { InvitePayload } from '@/types';
 import './App.css';
 
-type AppView = 'chat' | 'federation' | 'events' | 'admin-policy' | 'admin-channels';
+type AppView = 'chat' | 'federation' | 'events' | 'admin-policy' | 'admin-channels' | 'admin-members' | 'admin-server';
 
 export default function App() {
   const { phase, identity, loadIdentities, loadPermissions, permissions } = useIdentityStore();
@@ -50,6 +51,7 @@ export default function App() {
   );
   const inviteProcessed = useRef(false);
   const serverSaved = useRef(false);
+  const [serverImageUrl, setServerImageUrl] = useState<string | null>(null);
 
   // Load identities and saved servers on mount
   useEffect(() => {
@@ -62,6 +64,10 @@ export default function App() {
     if (phase === 'ready' && identity?.pseudonymId) {
       connectWs(identity.pseudonymId);
       loadPermissions();
+      // Load server image
+      api.getServerImage()
+        .then((resp) => setServerImageUrl(resp.image_url))
+        .catch(() => { /* no image set */ });
       return () => disconnectWs();
     }
   }, [phase, identity?.pseudonymId, connectWs, disconnectWs, loadPermissions]);
@@ -194,11 +200,20 @@ export default function App() {
         );
       case 'admin-policy':
       case 'admin-channels':
+      case 'admin-members':
+      case 'admin-server': {
+        const sectionMap: Record<string, 'policy' | 'channels' | 'members' | 'server'> = {
+          'admin-policy': 'policy',
+          'admin-channels': 'channels',
+          'admin-members': 'members',
+          'admin-server': 'server',
+        };
         return (
           <main className="view-content">
-            <AdminPanel section={activeView === 'admin-policy' ? 'policy' : 'channels'} />
+            <AdminPanel section={sectionMap[activeView]} />
           </main>
         );
+      }
       default:
         return (
           <div className="app-layout">
@@ -220,6 +235,9 @@ export default function App() {
   return (
     <div className="app">
       <header className="app-header">
+        {serverImageUrl && (
+          <img src={serverImageUrl} alt="" className="header-server-image" />
+        )}
         <h1>Annex</h1>
         <nav className="header-tabs">
           <button
@@ -270,10 +288,22 @@ export default function App() {
             {adminMenuOpen && (
               <div className="admin-dropdown">
                 <button
+                  className={`admin-dropdown-item ${activeView === 'admin-server' ? 'active' : ''}`}
+                  onClick={() => navigateAdmin('admin-server')}
+                >
+                  Server Settings
+                </button>
+                <button
                   className={`admin-dropdown-item ${activeView === 'admin-policy' ? 'active' : ''}`}
                   onClick={() => navigateAdmin('admin-policy')}
                 >
                   Server Policy
+                </button>
+                <button
+                  className={`admin-dropdown-item ${activeView === 'admin-members' ? 'active' : ''}`}
+                  onClick={() => navigateAdmin('admin-members')}
+                >
+                  Member Management
                 </button>
                 <button
                   className={`admin-dropdown-item ${activeView === 'admin-channels' ? 'active' : ''}`}

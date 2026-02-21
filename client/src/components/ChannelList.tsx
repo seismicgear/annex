@@ -12,12 +12,12 @@ import { CreateChannelDialog } from '@/components/CreateChannelDialog';
 import { generateInviteLink } from '@/lib/invite';
 import type { Channel, ChannelType } from '@/types';
 
-const CHANNEL_TYPE_ICONS: Record<ChannelType, string> = {
-  Text: '#',
-  Voice: '🔊',
-  Hybrid: '#🔊',
-  Agent: '🤖',
-  Broadcast: '📢',
+const CHANNEL_TYPE_ICONS: Record<ChannelType, { icon: string; tooltip: string }> = {
+  Text: { icon: '#', tooltip: 'Text channel — chat with messages' },
+  Voice: { icon: '🔊', tooltip: 'Voice channel — real-time audio and video calls' },
+  Hybrid: { icon: '#🔊', tooltip: 'Hybrid channel — text chat combined with voice/video' },
+  Agent: { icon: '🤖', tooltip: 'Agent channel — AI agents can participate here' },
+  Broadcast: { icon: '📢', tooltip: 'Broadcast channel — announcements from moderators' },
 };
 
 function ChannelItem({
@@ -78,12 +78,12 @@ function ChannelItem({
   return (
     <div className={`channel-item ${active ? 'active' : ''}`}>
       <button className="channel-select" onClick={onSelect}>
-        <span className="channel-icon">
-          {CHANNEL_TYPE_ICONS[channel.channel_type]}
+        <span className="channel-icon" title={CHANNEL_TYPE_ICONS[channel.channel_type].tooltip}>
+          {CHANNEL_TYPE_ICONS[channel.channel_type].icon}
         </span>
         <span className="channel-name">{channel.name}</span>
         {channel.federation_scope === 'Federated' && (
-          <span className="federation-badge" title="Federated channel">
+          <span className="federation-badge" title="Federated — messages in this channel are shared with connected partner servers">
             F
           </span>
         )}

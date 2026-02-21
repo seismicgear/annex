@@ -81,6 +81,7 @@ async fn setup_app() -> (axum::Router, Arc<AppState>, TempDir) {
         stt_service: Arc::new(stt_service),
         voice_sessions: Arc::new(RwLock::new(HashMap::new())),
         observe_tx: tokio::sync::broadcast::channel(256).0,
+        upload_dir: std::env::temp_dir().to_string_lossy().into_owned(),
     };
 
     let router = app(state.clone());

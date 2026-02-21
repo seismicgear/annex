@@ -9,6 +9,7 @@ pub mod api_graph;
 pub mod api_observe;
 pub mod api_rtx;
 pub mod api_sse;
+pub mod api_upload;
 pub mod api_vrp;
 pub mod api_ws;
 pub mod background;
@@ -23,7 +24,7 @@ use annex_identity::MerkleTree;
 use annex_types::ServerPolicy;
 use axum::{
     extract::DefaultBodyLimit,
-    routing::{get, post, put},
+    routing::{get, patch, post, put},
     Extension, Json, Router,
 };
 use ed25519_dalek::SigningKey;
@@ -72,6 +73,8 @@ pub struct AppState {
         Arc<RwLock<std::collections::HashMap<String, Arc<annex_voice::AgentVoiceClient>>>>,
     /// Broadcast channel for public observe events (SSE stream).
     pub observe_tx: broadcast::Sender<annex_observe::PublicEvent>,
+    /// Directory for uploaded files (images, etc.).
+    pub upload_dir: String,
 }
 
 /// Emits an observe event to the database and broadcasts it to the SSE stream.
@@ -200,6 +203,31 @@ pub fn app(state: AppState) -> Router {
             "/api/admin/policy",
             get(api_admin::get_policy_handler).put(api_admin::update_policy_handler),
         )
+        .route(
+            "/api/admin/server",
+            get(api_admin::get_server_handler).patch(api_admin::rename_server_handler),
+        )
+        .route(
+            "/api/admin/members",
+            get(api_admin::list_members_handler),
+        )
+        .route(
+            "/api/admin/members/{pseudonymId}/capabilities",
+            patch(api_admin::update_member_capabilities_handler),
+        )
+        .layer(axum::middleware::from_fn(middleware::auth_middleware));
+
+    // Upload routes need a larger body limit (10 MiB) for image uploads
+    let upload_routes = Router::new()
+        .route(
+            "/api/admin/server/image",
+            post(api_upload::upload_server_image_handler),
+        )
+        .route(
+            "/api/channels/{channelId}/upload",
+            post(api_upload::upload_chat_image_handler),
+        )
+        .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
         .layer(axum::middleware::from_fn(middleware::auth_middleware));
 
     let router = Router::new()
@@ -279,8 +307,23 @@ pub fn app(state: AppState) -> Router {
             get(api_observe::get_federation_peers_handler),
         )
         .route("/api/public/agents", get(api_observe::get_agents_handler))
+        .route(
+            "/api/public/server/image",
+            get(api_upload::get_server_image_handler),
+        )
         .merge(protected_routes)
+        .merge(upload_routes)
         .route("/ws", get(api_ws::ws_handler));
+
+    // Serve uploaded files (images, etc.) under /uploads/*
+    let upload_dir = state.upload_dir.clone();
+    let router = if std::path::Path::new(&upload_dir).exists() {
+        tracing::info!(path = %upload_dir, "serving uploaded files at /uploads");
+        router.nest_service("/uploads", ServeDir::new(&upload_dir))
+    } else {
+        tracing::info!(path = %upload_dir, "uploads directory not found yet (will be created on first upload)");
+        router
+    };
 
     // Serve client static files if the directory exists.
     // Configured via ANNEX_CLIENT_DIR env var; defaults to "client/dist".

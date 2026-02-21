@@ -25,7 +25,7 @@ repository = "https://github.com/seismicgear/annex"
 tokio = { version = "1", features = ["full"] }
 
 # Web framework
-axum = { version = "0.8", features = ["ws"] }
+axum = { version = "0.8", features = ["ws", "multipart"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
 

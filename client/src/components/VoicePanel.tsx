@@ -10,9 +10,12 @@
  * Uses @livekit/components-react for WebRTC transport.
  * LiveKit's can_publish grant covers all track sources (mic, camera, screen).
  * Video starts disabled; the user toggles camera/screen via control buttons.
+ *
+ * Call state lives in the voice store so the call persists across
+ * tab and channel switches (like Discord).
  */
 
-import { useState, useCallback, useEffect } from 'react';
+import { useCallback, useEffect } from 'react';
 import {
   LiveKitRoom,
   RoomAudioRenderer,
@@ -25,7 +28,7 @@ import '@livekit/components-styles';
 import { Track, type LocalParticipant } from 'livekit-client';
 import { useIdentityStore } from '@/stores/identity';
 import { useChannelsStore } from '@/stores/channels';
-import * as api from '@/lib/api';
+import { useVoiceStore } from '@/stores/voice';
 
 /** Local media status bar shown above the controls. */
 function LocalMediaStatus() {
@@ -286,10 +289,16 @@ export function VoicePanel() {
   const activeChannelId = useChannelsStore((s) => s.activeChannelId);
   const channels = useChannelsStore((s) => s.channels);
 
-  const [voiceToken, setVoiceToken] = useState<string | null>(null);
-  const [livekitUrl, setLivekitUrl] = useState<string | null>(null);
-  const [joining, setJoining] = useState(false);
-  const [callActive, setCallActive] = useState(false);
+  const {
+    voiceToken,
+    livekitUrl,
+    connectedChannelId,
+    joining,
+    callActive,
+    joinCall,
+    leaveCall,
+    checkCallActive,
+  } = useVoiceStore();
 
   const activeChannel = channels.find((c) => c.channel_id === activeChannelId);
   const isVoiceCapable =
@@ -299,51 +308,35 @@ export function VoicePanel() {
   useEffect(() => {
     if (!isVoiceCapable || !activeChannelId || !identity?.pseudonymId || voiceToken) return;
 
-    let cancelled = false;
-    const check = async () => {
-      try {
-        const status = await api.getVoiceStatus(identity.pseudonymId!, activeChannelId);
-        if (!cancelled) setCallActive(status.active);
-      } catch {
-        if (!cancelled) setCallActive(false);
-      }
-    };
-    check();
-    const interval = setInterval(check, 10_000);
-    return () => { cancelled = true; clearInterval(interval); };
-  }, [isVoiceCapable, activeChannelId, identity?.pseudonymId, voiceToken]);
+    checkCallActive(identity.pseudonymId!, activeChannelId);
+    const interval = setInterval(
+      () => checkCallActive(identity.pseudonymId!, activeChannelId),
+      10_000,
+    );
+    return () => clearInterval(interval);
+  }, [isVoiceCapable, activeChannelId, identity?.pseudonymId, voiceToken, checkCallActive]);
 
   const handleJoin = useCallback(async () => {
     if (!identity?.pseudonymId || !activeChannelId) return;
-    setJoining(true);
-    try {
-      const { token, url } = await api.joinVoice(identity.pseudonymId, activeChannelId);
-      setVoiceToken(token);
-      setLivekitUrl(url);
-    } catch {
-      // Join failed — user can retry
-    } finally {
-      setJoining(false);
-    }
-  }, [identity?.pseudonymId, activeChannelId]);
+    await joinCall(identity.pseudonymId, activeChannelId);
+  }, [identity?.pseudonymId, activeChannelId, joinCall]);
 
   const handleLeave = useCallback(async () => {
-    if (!identity?.pseudonymId || !activeChannelId) return;
-    try {
-      await api.leaveVoice(identity.pseudonymId, activeChannelId);
-    } catch {
-      // Best effort — the room UI is cleared regardless so the user sees
-      // a consistent disconnected state even if the server didn't ack.
-    }
-    setVoiceToken(null);
-    setLivekitUrl(null);
-  }, [identity?.pseudonymId, activeChannelId]);
+    if (!identity?.pseudonymId) return;
+    await leaveCall(identity.pseudonymId);
+  }, [identity?.pseudonymId, leaveCall]);
 
-  if (!isVoiceCapable || !activeChannelId) return null;
+  // If connected to a call, always show the LiveKitRoom (even on non-voice channels).
+  if (voiceToken && livekitUrl && connectedChannelId) {
+    // Find the channel name for the connected call
+    const connectedChannel = channels.find((c) => c.channel_id === connectedChannelId);
+    const channelLabel = connectedChannel?.name ?? connectedChannelId.slice(0, 12);
 
-  if (voiceToken && livekitUrl) {
     return (
       <div className="voice-panel connected">
+        <div className="voice-connected-header">
+          Voice Connected — <strong>{channelLabel}</strong>
+        </div>
         <LiveKitRoom
           serverUrl={livekitUrl}
           token={voiceToken}
@@ -356,6 +349,9 @@ export function VoicePanel() {
       </div>
     );
   }
+
+  // Only show the join button on voice-capable channels
+  if (!isVoiceCapable || !activeChannelId) return null;
 
   const buttonText = joining
     ? 'Joining...'

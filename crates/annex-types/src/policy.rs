@@ -28,6 +28,16 @@ pub struct ServerPolicy {
     /// Actions prohibited by the server (for VRP alignment).
     #[serde(default)]
     pub prohibited_actions: Vec<String>,
+    /// Server access mode: "public", "invite_only", or "password".
+    #[serde(default = "default_access_mode")]
+    pub access_mode: String,
+    /// Password required to join when access_mode is "password".
+    #[serde(default)]
+    pub access_password: String,
+}
+
+fn default_access_mode() -> String {
+    "public".to_string()
 }
 
 /// Configuration for API rate limiting.
@@ -63,6 +73,8 @@ impl Default for ServerPolicy {
             rate_limit: RateLimitConfig::default(),
             principles: Vec::new(),
             prohibited_actions: Vec::new(),
+            access_mode: "public".to_string(),
+            access_password: String::new(),
         }
     }
 }
@@ -85,6 +97,8 @@ mod tests {
         assert_eq!(policy.rate_limit.default_limit, 60);
         assert!(policy.principles.is_empty());
         assert!(policy.prohibited_actions.is_empty());
+        assert_eq!(policy.access_mode, "public");
+        assert!(policy.access_password.is_empty());
     }
 
     #[test]
