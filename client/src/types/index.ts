@@ -185,6 +185,13 @@ export interface ServerPolicy {
   prohibited_actions: string[];
   access_mode: AccessMode;
   access_password: string;
+  images_enabled: boolean;
+  videos_enabled: boolean;
+  files_enabled: boolean;
+  max_image_size_mb: number;
+  max_video_size_mb: number;
+  max_file_size_mb: number;
+  usernames_enabled: boolean;
 }
 
 // ── Multi-Server Hub ──

@@ -7,6 +7,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import * as api from '@/lib/api';
+import { useUsernameStore } from '@/stores/usernames';
 import type { AgentInfo, ServerSummary, ParticipantType } from '@/types';
 
 const TYPE_LABELS: Record<ParticipantType, string> = {
@@ -18,10 +19,13 @@ const TYPE_LABELS: Record<ParticipantType, string> = {
 };
 
 function AgentDetail({ agent, onClose }: { agent: AgentInfo; onClose: () => void }) {
+  const getDisplayName = useUsernameStore((s) => s.getDisplayName);
+  const displayName = getDisplayName(agent.pseudonym_id);
+
   return (
     <div className="agent-detail-overlay" onClick={onClose}>
       <div className="agent-detail" onClick={(e) => e.stopPropagation()}>
-        <h3>Agent: {agent.pseudonym_id.slice(0, 16)}...</h3>
+        <h3>Agent: {displayName ?? agent.pseudonym_id.slice(0, 16) + '...'}</h3>
         <dl>
           <dt>Alignment</dt>
           <dd className={`alignment-${agent.alignment_status.toLowerCase()}`}>
@@ -87,16 +91,19 @@ export function MemberList() {
       {agents.length > 0 && (
         <div className="agent-list">
           <h4>Active Agents</h4>
-          {agents.map((agent) => (
-            <button
-              key={agent.pseudonym_id}
-              className={`agent-item alignment-${agent.alignment_status.toLowerCase()}`}
-              onClick={() => handleAgentClick(agent)}
-            >
-              <span className="agent-name">{agent.pseudonym_id.slice(0, 12)}...</span>
-              <span className="agent-badge">{agent.alignment_status}</span>
-            </button>
-          ))}
+          {agents.map((agent) => {
+            const name = useUsernameStore.getState().getDisplayName(agent.pseudonym_id);
+            return (
+              <button
+                key={agent.pseudonym_id}
+                className={`agent-item alignment-${agent.alignment_status.toLowerCase()}`}
+                onClick={() => handleAgentClick(agent)}
+              >
+                <span className="agent-name">{name ?? agent.pseudonym_id.slice(0, 12) + '...'}</span>
+                <span className="agent-badge">{agent.alignment_status}</span>
+              </button>
+            );
+          })}
         </div>
       )}
 

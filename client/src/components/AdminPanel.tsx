@@ -310,6 +310,88 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
           Voice Enabled
           <span className="field-hint">Allow voice and video calls on this server.</span>
         </label>
+
+        <label className="checkbox-label" title="When enabled, users can set a display name visible to specific people they grant access to. Usernames are encrypted at rest and never shared with federation peers.">
+          <input
+            type="checkbox"
+            checked={policy.usernames_enabled}
+            onChange={(e) => setPolicy({ ...policy, usernames_enabled: e.target.checked })}
+          />
+          Usernames Enabled
+          <span className="field-hint">Allow users to set encrypted display names with per-user visibility grants.</span>
+        </label>
+      </div>
+
+      <div className="policy-section">
+        <h4>Media & File Uploads</h4>
+        <p className="field-hint" style={{ marginTop: 0 }}>Control which upload types are allowed and their size limits. MIME types are verified server-side.</p>
+        <div className="policy-grid">
+          <label className="checkbox-label" title="Allow image uploads (JPEG, PNG, GIF, WebP). EXIF metadata is automatically stripped.">
+            <input
+              type="checkbox"
+              checked={policy.images_enabled}
+              onChange={(e) => setPolicy({ ...policy, images_enabled: e.target.checked })}
+            />
+            Images Enabled
+          </label>
+          <label title="Maximum image upload size in megabytes.">
+            Max Image Size (MB)
+            <input
+              type="number"
+              min="1"
+              max="100"
+              value={policy.max_image_size_mb}
+              onChange={(e) =>
+                setPolicy({ ...policy, max_image_size_mb: parseInt(e.target.value) || 1 })
+              }
+              disabled={!policy.images_enabled}
+            />
+          </label>
+
+          <label className="checkbox-label" title="Allow video uploads (MP4, WebM, MOV). MIME types are verified via magic bytes.">
+            <input
+              type="checkbox"
+              checked={policy.videos_enabled}
+              onChange={(e) => setPolicy({ ...policy, videos_enabled: e.target.checked })}
+            />
+            Videos Enabled
+          </label>
+          <label title="Maximum video upload size in megabytes.">
+            Max Video Size (MB)
+            <input
+              type="number"
+              min="1"
+              max="100"
+              value={policy.max_video_size_mb}
+              onChange={(e) =>
+                setPolicy({ ...policy, max_video_size_mb: parseInt(e.target.value) || 1 })
+              }
+              disabled={!policy.videos_enabled}
+            />
+          </label>
+
+          <label className="checkbox-label" title="Allow generic file uploads (PDF, ZIP, TXT, etc.). MIME types are verified to block executables.">
+            <input
+              type="checkbox"
+              checked={policy.files_enabled}
+              onChange={(e) => setPolicy({ ...policy, files_enabled: e.target.checked })}
+            />
+            Files Enabled
+          </label>
+          <label title="Maximum file upload size in megabytes.">
+            Max File Size (MB)
+            <input
+              type="number"
+              min="1"
+              max="100"
+              value={policy.max_file_size_mb}
+              onChange={(e) =>
+                setPolicy({ ...policy, max_file_size_mb: parseInt(e.target.value) || 1 })
+              }
+              disabled={!policy.files_enabled}
+            />
+          </label>
+        </div>
       </div>
 
       <div className="policy-section">

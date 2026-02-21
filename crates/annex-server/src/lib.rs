@@ -10,6 +10,7 @@ pub mod api_observe;
 pub mod api_rtx;
 pub mod api_sse;
 pub mod api_upload;
+pub mod api_usernames;
 pub mod api_vrp;
 pub mod api_ws;
 pub mod background;
@@ -24,7 +25,7 @@ use annex_identity::MerkleTree;
 use annex_types::ServerPolicy;
 use axum::{
     extract::DefaultBodyLimit,
-    routing::{get, patch, post, put},
+    routing::{delete, get, patch, post, put},
     Extension, Json, Router,
 };
 use ed25519_dalek::SigningKey;
@@ -215,9 +216,31 @@ pub fn app(state: AppState) -> Router {
             "/api/admin/members/{pseudonymId}/capabilities",
             patch(api_admin::update_member_capabilities_handler),
         )
+        .route(
+            "/api/profile/username",
+            put(api_usernames::set_username_handler)
+                .delete(api_usernames::delete_username_handler),
+        )
+        .route(
+            "/api/profile/username/grant",
+            post(api_usernames::grant_username_handler),
+        )
+        .route(
+            "/api/profile/username/grant/{granteePseudonym}",
+            delete(api_usernames::revoke_grant_handler),
+        )
+        .route(
+            "/api/profile/username/grants",
+            get(api_usernames::list_grants_handler),
+        )
+        .route(
+            "/api/usernames/visible",
+            get(api_usernames::get_visible_usernames_handler),
+        )
         .layer(axum::middleware::from_fn(middleware::auth_middleware));
 
-    // Upload routes need a larger body limit (10 MiB) for image uploads
+    // Upload routes need a larger body limit for media uploads.
+    // The hard ceiling is 50 MiB; the handler enforces per-category limits from policy.
     let upload_routes = Router::new()
         .route(
             "/api/admin/server/image",
@@ -225,9 +248,9 @@ pub fn app(state: AppState) -> Router {
         )
         .route(
             "/api/channels/{channelId}/upload",
-            post(api_upload::upload_chat_image_handler),
+            post(api_upload::upload_chat_handler),
         )
-        .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
+        .layer(DefaultBodyLimit::max(50 * 1024 * 1024))
         .layer(axum::middleware::from_fn(middleware::auth_middleware));
 
     let router = Router::new()

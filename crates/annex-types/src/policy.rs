@@ -34,10 +34,39 @@ pub struct ServerPolicy {
     /// Password required to join when access_mode is "password".
     #[serde(default)]
     pub access_password: String,
+    /// Whether image uploads are enabled.
+    #[serde(default = "default_true")]
+    pub images_enabled: bool,
+    /// Whether video uploads are enabled.
+    #[serde(default = "default_true")]
+    pub videos_enabled: bool,
+    /// Whether generic file uploads are enabled.
+    #[serde(default = "default_true")]
+    pub files_enabled: bool,
+    /// Maximum image upload size in megabytes.
+    #[serde(default = "default_max_upload_mb")]
+    pub max_image_size_mb: u32,
+    /// Maximum video upload size in megabytes.
+    #[serde(default = "default_max_upload_mb")]
+    pub max_video_size_mb: u32,
+    /// Maximum file upload size in megabytes.
+    #[serde(default = "default_max_upload_mb")]
+    pub max_file_size_mb: u32,
+    /// Whether server-scoped usernames are enabled.
+    #[serde(default)]
+    pub usernames_enabled: bool,
 }
 
 fn default_access_mode() -> String {
     "public".to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_max_upload_mb() -> u32 {
+    5
 }
 
 /// Configuration for API rate limiting.
@@ -75,6 +104,13 @@ impl Default for ServerPolicy {
             prohibited_actions: Vec::new(),
             access_mode: "public".to_string(),
             access_password: String::new(),
+            images_enabled: true,
+            videos_enabled: true,
+            files_enabled: true,
+            max_image_size_mb: 5,
+            max_video_size_mb: 5,
+            max_file_size_mb: 5,
+            usernames_enabled: false,
         }
     }
 }
@@ -99,6 +135,13 @@ mod tests {
         assert!(policy.prohibited_actions.is_empty());
         assert_eq!(policy.access_mode, "public");
         assert!(policy.access_password.is_empty());
+        assert!(policy.images_enabled);
+        assert!(policy.videos_enabled);
+        assert!(policy.files_enabled);
+        assert_eq!(policy.max_image_size_mb, 5);
+        assert_eq!(policy.max_video_size_mb, 5);
+        assert_eq!(policy.max_file_size_mb, 5);
+        assert!(!policy.usernames_enabled);
     }
 
     #[test]
