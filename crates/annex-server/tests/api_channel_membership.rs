@@ -71,6 +71,7 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool) {
         voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
         observe_tx: tokio::sync::broadcast::channel(256).0,
         upload_dir: std::env::temp_dir().to_string_lossy().into_owned(),
+        preview_cache: annex_server::api_link_preview::PreviewCache::new(),
     };
 
     (app(state), pool)
@@ -304,6 +305,7 @@ async fn test_ws_subscription_enforcement() {
         voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
         observe_tx: tokio::sync::broadcast::channel(256).0,
         upload_dir: std::env::temp_dir().to_string_lossy().into_owned(),
+        preview_cache: annex_server::api_link_preview::PreviewCache::new(),
     };
 
     let app = app(state);
@@ -449,6 +451,7 @@ async fn test_ws_message_enforcement() {
         voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
         observe_tx: tokio::sync::broadcast::channel(256).0,
         upload_dir: std::env::temp_dir().to_string_lossy().into_owned(),
+        preview_cache: annex_server::api_link_preview::PreviewCache::new(),
     };
 
     let app = app(state);

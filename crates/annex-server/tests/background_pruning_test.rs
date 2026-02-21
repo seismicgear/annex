@@ -59,6 +59,7 @@ fn setup_state() -> (Arc<AppState>, annex_db::DbPool) {
         voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
         observe_tx,
         upload_dir: std::env::temp_dir().to_string_lossy().into_owned(),
+        preview_cache: annex_server::api_link_preview::PreviewCache::new(),
     });
 
     (state, pool)

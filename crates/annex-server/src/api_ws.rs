@@ -1014,6 +1014,8 @@ mod tests {
             content: "hello".to_string(),
             reply_to_message_id: Some("msg-0".to_string()),
             created_at: "2025-01-01T00:00:00Z".to_string(),
+            edited_at: None,
+            deleted_at: None,
         };
 
         let json = serde_json::to_value(&payload).expect("serialization should not fail");
@@ -1040,6 +1042,8 @@ mod tests {
             reply_to_message_id: None,
             created_at: "2025-01-01T00:00:00Z".to_string(),
             expires_at: None,
+            edited_at: None,
+            deleted_at: None,
         };
 
         let payload: WsMessagePayload = msg.into();
@@ -1059,6 +1063,8 @@ mod tests {
             content: "test".to_string(),
             reply_to_message_id: None,
             created_at: "2025-01-01T00:00:00Z".to_string(),
+            edited_at: None,
+            deleted_at: None,
         };
 
         let out = OutgoingMessage::Message(payload);
