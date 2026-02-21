@@ -58,7 +58,7 @@
 }
 
 .tab-btn.active {
-  background: rgba(59, 130, 246, 0.2);
+  background: rgba(255, 255, 255, 0.2);
   color: #fff;
 }
 
@@ -90,7 +90,7 @@
 }
 
 .admin-menu-btn.active {
-  color: #3b82f6;
+  color: #fff;
 }
 
 .admin-dropdown {
@@ -121,12 +121,12 @@
 }
 
 .admin-dropdown-item:hover {
-  background: rgba(59, 130, 246, 0.15);
+  background: rgba(255, 255, 255, 0.15);
   color: #fff;
 }
 
 .admin-dropdown-item.active {
-  color: #3b82f6;
+  color: #fff;
 }
 
 /* Setup screen */
@@ -192,7 +192,7 @@
 .phase-proving,
 .phase-verifying {
   background: #0a1520;
-  color: #7eb8da;
+  color: #aaa;
 }
 
 .phase-ready {
@@ -301,9 +301,9 @@
 }
 
 .create-channel-btn:hover {
-  background: rgba(59, 130, 246, 0.2);
+  background: rgba(255, 255, 255, 0.2);
   color: #fff;
-  border-color: #3b82f6;
+  border-color: #fff;
 }
 
 .channel-item {
@@ -320,7 +320,7 @@
 }
 
 .channel-item.active {
-  background: rgba(59, 130, 246, 0.15);
+  background: rgba(255, 255, 255, 0.15);
 }
 
 .channel-select {
@@ -356,7 +356,7 @@
   font-size: 0.65rem;
   padding: 0.1em 0.35em;
   background: #0f0a1a;
-  color: #a78bfa;
+  color: #ccc;
   border-radius: 2px;
 }
 
@@ -504,7 +504,7 @@
 
 .message-input textarea:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: #fff;
 }
 
 .message-input button {
@@ -571,9 +571,9 @@
 }
 
 .media-control-btn.active {
-  background: rgba(59, 130, 246, 0.2);
-  border-color: #3b82f6;
-  color: #93c5fd;
+  background: rgba(255, 255, 255, 0.2);
+  border-color: #fff;
+  color: #ddd;
 }
 
 .media-control-btn.muted {
@@ -804,7 +804,7 @@
   justify-content: center;
   font-size: 0.75rem;
   font-weight: bold;
-  color: #7eb8da;
+  color: #aaa;
   flex-shrink: 0;
 }
 
@@ -1142,7 +1142,7 @@
 .dialog input[type='text']:focus,
 .dialog select:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: #fff;
 }
 
 .checkbox-label {
@@ -1159,8 +1159,8 @@
 }
 
 .primary-btn {
-  background: #3b82f6;
-  color: #fff;
+  background: #fff;
+  color: #000;
   border: none;
   padding: 0.5rem 1rem;
   border-radius: 4px;
@@ -1169,7 +1169,7 @@
 }
 
 .primary-btn:hover {
-  background: #2563eb;
+  background: #ccc;
 }
 
 .primary-btn:disabled {
@@ -1261,9 +1261,9 @@
   font-weight: 500;
 }
 
-.domain-identity { color: #7eb8da; }
+.domain-identity { color: #aaa; }
 .domain-presence { color: #4ade80; }
-.domain-federation { color: #a78bfa; }
+.domain-federation { color: #ccc; }
 .domain-agent { color: #fbbf24; }
 .domain-moderation { color: #f87171; }
 
@@ -1338,7 +1338,7 @@
 
 .policy-grid input[type='number']:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: #fff;
 }
 
 .policy-section {
@@ -1369,10 +1369,10 @@
   align-items: center;
   gap: 0.25rem;
   padding: 0.2rem 0.5rem;
-  background: rgba(59, 130, 246, 0.15);
+  background: rgba(255, 255, 255, 0.15);
   border-radius: 3px;
   font-size: 0.8rem;
-  color: #93c5fd;
+  color: #ddd;
 }
 
 .tag-item button {
@@ -1402,7 +1402,7 @@
 
 .tag-input input:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: #fff;
 }
 
 .save-policy-btn {
@@ -1473,8 +1473,8 @@
 .invite-banner {
   margin-left: 1rem;
   padding: 0.2rem 0.6rem;
-  background: rgba(59, 130, 246, 0.2);
-  color: #93c5fd;
+  background: rgba(255, 255, 255, 0.2);
+  color: #ddd;
   border-radius: 4px;
   font-size: 0.75rem;
   animation: fadeIn 0.3s ease;
@@ -1488,9 +1488,9 @@
 /* ── Invite Button in Channel List ── */
 
 .channel-action-btn.invite-btn:hover {
-  background: rgba(59, 130, 246, 0.15);
-  color: #3b82f6;
-  border-color: #3b82f6;
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+  border-color: #fff;
 }
 
 /* ── Device Link Dialog ── */
@@ -1527,8 +1527,8 @@
 }
 
 .device-link-option:hover {
-  border-color: #3b82f6;
-  background: rgba(59, 130, 246, 0.05);
+  border-color: #fff;
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .device-link-option:disabled {
@@ -1594,7 +1594,7 @@
   font-size: 2rem;
   font-weight: bold;
   letter-spacing: 0.3em;
-  color: #3b82f6;
+  color: #fff;
 }
 
 .pairing-code-hint {
@@ -1679,7 +1679,7 @@
 }
 
 .device-link-setup-btn:hover {
-  border-color: #3b82f6;
+  border-color: #fff;
   color: #fff;
 }
 
@@ -1713,13 +1713,13 @@
 
 .current-identity-ref .pseudonym {
   font-family: monospace;
-  color: #7eb8da;
+  color: #aaa;
 }
 
 .server-badge {
   padding: 0.1em 0.35em;
-  background: rgba(59, 130, 246, 0.15);
-  color: #93c5fd;
+  background: rgba(255, 255, 255, 0.15);
+  color: #ddd;
   border-radius: 2px;
   font-size: 0.7rem;
 }
@@ -1803,8 +1803,8 @@
 }
 
 .persona-edit-btn:hover {
-  border-color: #3b82f6;
-  color: #3b82f6;
+  border-color: #fff;
+  color: #fff;
 }
 
 .persona-delete-btn:hover {
@@ -1841,7 +1841,7 @@
 
 .persona-form input[type='text']:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: #fff;
 }
 
 /* Color Picker */
@@ -1961,7 +1961,7 @@
 
 .link-preview-url {
   font-size: 0.75rem;
-  color: #7eb8da;
+  color: #aaa;
   word-break: break-all;
 }
 
@@ -1978,7 +1978,7 @@
 }
 
 .link-preview-card:hover {
-  border-color: #3b82f6;
+  border-color: #fff;
 }
 
 .link-preview-image {
@@ -2011,7 +2011,7 @@
 .link-preview-title {
   font-size: 0.8rem;
   font-weight: 500;
-  color: #7eb8da;
+  color: #aaa;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -2075,7 +2075,7 @@
 
 .recovery-params input:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: #fff;
 }
 
 .recovery-hint {
@@ -2116,7 +2116,7 @@
 
 .guardian-entry input:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: #fff;
 }
 
 .guardian-pseudo {
@@ -2162,8 +2162,8 @@
 }
 
 .shard-copy-btn:hover {
-  border-color: #3b82f6;
-  color: #3b82f6;
+  border-color: #fff;
+  color: #fff;
 }
 
 .shard-data {
@@ -2212,7 +2212,7 @@
 .recovery-shard-index:focus,
 .recovery-shard-data:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: #fff;
 }
 
 .add-shard-btn {
@@ -2226,8 +2226,8 @@
 }
 
 .add-shard-btn:hover {
-  border-color: #3b82f6;
-  color: #3b82f6;
+  border-color: #fff;
+  color: #fff;
 }
 
 .recovery-result {
@@ -2244,9 +2244,9 @@
 
 /* Persona-isolation CSS custom properties — dynamically set per server context */
 :root {
-  --persona-accent: #3b82f6;
-  --persona-bg-tint: rgba(59, 130, 246, 0.06);
-  --persona-border-tint: rgba(59, 130, 246, 0.3);
+  --persona-accent: #fff;
+  --persona-bg-tint: rgba(255, 255, 255, 0.04);
+  --persona-border-tint: rgba(255, 255, 255, 0.15);
 }
 
 .server-hub {
@@ -2323,13 +2323,13 @@
 
 .server-hub-icon:hover {
   border-radius: 35%;
-  background: var(--server-accent, #3b82f6);
+  background: var(--server-accent, #222);
   color: #fff;
 }
 
 .server-hub-icon.active {
   border-radius: 35%;
-  background: var(--server-accent, #3b82f6);
+  background: var(--server-accent, #222);
   color: #fff;
   border-color: rgba(255, 255, 255, 0.2);
 }
@@ -2401,7 +2401,7 @@
 }
 
 .tab-btn.active {
-  background: var(--persona-bg-tint, rgba(59, 130, 246, 0.2));
+  background: var(--persona-bg-tint, rgba(255, 255, 255, 0.2));
   color: var(--persona-accent, #fff);
 }
 
@@ -2423,7 +2423,7 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--persona-accent, #3b82f6);
+  background: var(--persona-accent, #fff);
 }
 
 .persona-context-name {
@@ -2479,7 +2479,7 @@
 
 .add-server-dialog input:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: #fff;
 }
 
 .form-error {
@@ -2527,9 +2527,9 @@
 
 .peer-explore-btn {
   padding: 0.3rem 0.6rem;
-  background: rgba(59, 130, 246, 0.15);
-  border: 1px solid rgba(59, 130, 246, 0.3);
-  color: #3b82f6;
+  background: rgba(255, 255, 255, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  color: #fff;
   border-radius: 4px;
   font-size: 0.75rem;
   cursor: pointer;
@@ -2538,7 +2538,7 @@
 }
 
 .peer-explore-btn:hover {
-  background: rgba(59, 130, 246, 0.25);
+  background: rgba(255, 255, 255, 0.25);
 }
 
 /* ── Peer Detail Dialog (federation hopping) ── */
@@ -2629,8 +2629,8 @@
   padding: 0.2rem 0.5rem;
   border-radius: 3px;
   font-size: 0.75rem;
-  background: rgba(59, 130, 246, 0.1);
-  color: #60a5fa;
+  background: rgba(255, 255, 255, 0.1);
+  color: #ccc;
 }
 
 .joined-badge {
@@ -2801,7 +2801,7 @@
 .volume-slider {
   flex: 1;
   height: 4px;
-  accent-color: #3b82f6;
+  accent-color: #fff;
   cursor: pointer;
 }
 
@@ -2991,8 +2991,8 @@
 }
 
 .image-upload-btn:hover:not(:disabled) {
-  color: #3b82f6;
-  background: rgba(59, 130, 246, 0.1);
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .image-upload-btn:disabled {
