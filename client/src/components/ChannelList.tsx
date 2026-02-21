@@ -10,15 +10,17 @@ import { useChannelsStore } from '@/stores/channels';
 import { useIdentityStore } from '@/stores/identity';
 import { CreateChannelDialog } from '@/components/CreateChannelDialog';
 import { generateInviteLink } from '@/lib/invite';
-import type { Channel, ChannelType } from '@/types';
+import type { Channel } from '@/types';
 
-const CHANNEL_TYPE_ICONS: Record<ChannelType, { icon: string; tooltip: string }> = {
+const CHANNEL_TYPE_ICONS: Record<string, { icon: string; tooltip: string }> = {
   Text: { icon: '#', tooltip: 'Text channel — chat with messages' },
-  Voice: { icon: '🔊', tooltip: 'Voice channel — real-time audio and video calls' },
-  Hybrid: { icon: '#🔊', tooltip: 'Hybrid channel — text chat combined with voice/video' },
+  Voice: { icon: '🔊', tooltip: 'Voice channel — real-time audio/video with text chat' },
+  Hybrid: { icon: '🔊', tooltip: 'Voice channel — real-time audio/video with text chat' },
   Agent: { icon: '🤖', tooltip: 'Agent channel — AI agents can participate here' },
   Broadcast: { icon: '📢', tooltip: 'Broadcast channel — announcements from moderators' },
 };
+
+const DEFAULT_CHANNEL_ICON = { icon: '#', tooltip: 'Channel' };
 
 function ChannelItem({
   channel,
@@ -78,8 +80,8 @@ function ChannelItem({
   return (
     <div className={`channel-item ${active ? 'active' : ''}`}>
       <button className="channel-select" onClick={onSelect}>
-        <span className="channel-icon" title={CHANNEL_TYPE_ICONS[channel.channel_type].tooltip}>
-          {CHANNEL_TYPE_ICONS[channel.channel_type].icon}
+        <span className="channel-icon" title={(CHANNEL_TYPE_ICONS[channel.channel_type] ?? DEFAULT_CHANNEL_ICON).tooltip}>
+          {(CHANNEL_TYPE_ICONS[channel.channel_type] ?? DEFAULT_CHANNEL_ICON).icon}
         </span>
         <span className="channel-name">{channel.name}</span>
         {channel.federation_scope === 'Federated' && (

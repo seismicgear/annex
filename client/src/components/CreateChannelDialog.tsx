@@ -1,7 +1,7 @@
 /**
  * Create channel dialog — modal form for creating new channels.
  *
- * Only accessible to moderators. Supports TEXT, VOICE, HYBRID, AGENT,
+ * Only accessible to moderators. Supports TEXT, VOICE, AGENT,
  * and BROADCAST channel types with optional topic and federation scope.
  */
 
@@ -12,8 +12,7 @@ import type { ChannelType } from '@/types';
 
 const CHANNEL_TYPES: { value: ChannelType; label: string; description: string }[] = [
   { value: 'Text', label: 'Text', description: 'A text-only chat channel for messages' },
-  { value: 'Voice', label: 'Voice', description: 'A voice-only channel for real-time audio/video calls' },
-  { value: 'Hybrid', label: 'Hybrid (Text + Voice)', description: 'Combines text chat with voice/video calls in one channel' },
+  { value: 'Voice', label: 'Voice', description: 'A voice/video channel with built-in text chat' },
   { value: 'Agent', label: 'Agent', description: 'A channel where AI agents can participate and respond' },
   { value: 'Broadcast', label: 'Broadcast', description: 'One-to-many announcements — only moderators can post' },
 ];

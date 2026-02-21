@@ -39,7 +39,7 @@ interface ChannelsState {
   /** Load older messages (pagination). */
   loadOlderMessages: (pseudonymId: string) => Promise<void>;
   /** Create a new channel. */
-  createChannel: (pseudonymId: string, name: string, channelType: string, topic?: string, federated?: boolean) => Promise<Channel>;
+  createChannel: (pseudonymId: string, name: string, channelType: string, topic?: string, federated?: boolean) => Promise<void>;
   /** Join a channel. */
   joinChannel: (pseudonymId: string, channelId: string) => Promise<void>;
   /** Leave a channel. */
@@ -142,9 +142,10 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
   },
 
   createChannel: async (pseudonymId, name, channelType, topic, federated) => {
-    const channel = await api.createChannel(pseudonymId, name, channelType, topic, federated);
-    set((state) => ({ channels: [...state.channels, channel] }));
-    return channel;
+    // The server returns {"status": "created"}, not a Channel object,
+    // so we don't optimistically add to the list. The caller should
+    // call loadChannels() after to refresh the full list.
+    await api.createChannel(pseudonymId, name, channelType, topic, federated);
   },
 
   joinChannel: async (pseudonymId, channelId) => {
