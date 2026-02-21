@@ -301,3 +301,13 @@ export async function leaveVoice(
     headers: authHeaders(pseudonymId),
   });
 }
+
+export async function getVoiceStatus(
+  pseudonymId: string,
+  channelId: string,
+): Promise<{ participants: number; active: boolean }> {
+  return request<{ participants: number; active: boolean }>(
+    `/api/channels/${channelId}/voice/status`,
+    { headers: authHeaders(pseudonymId) },
+  );
+}

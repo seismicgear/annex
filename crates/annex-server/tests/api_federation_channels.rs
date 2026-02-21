@@ -54,6 +54,7 @@ async fn setup_app() -> (axum::Router, Arc<AppState>, TempDir) {
 
     let voice_config = LiveKitConfig {
         url: "http://localhost:7880".to_string(),
+        public_url: String::new(),
         api_key: "devkey".to_string(),
         api_secret: "secret".to_string(),
         token_ttl_seconds: 3600,

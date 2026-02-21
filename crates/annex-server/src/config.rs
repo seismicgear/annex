@@ -412,6 +412,9 @@ pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
     if let Some(url) = parse_env_var("ANNEX_LIVEKIT_URL")? {
         config.livekit.url = url;
     }
+    if let Some(public_url) = parse_env_var::<String>("ANNEX_LIVEKIT_PUBLIC_URL")? {
+        config.livekit.public_url = public_url;
+    }
     if let Some(api_key) = parse_env_var("ANNEX_LIVEKIT_API_KEY")? {
         config.livekit.api_key = api_key;
     }

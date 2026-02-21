@@ -576,7 +576,7 @@ pub async fn join_voice_channel_handler(
 
     Ok(Json(JoinVoiceResponse {
         token,
-        url: state.voice_service.get_url().to_string(),
+        url: state.voice_service.get_public_url().to_string(),
     }))
 }
 
@@ -638,4 +638,40 @@ pub async fn leave_voice_channel_handler(
     }
 
     Ok(Json(json!({"status": "left"})))
+}
+
+/// GET /api/channels/:channelId/voice/status
+/// Returns the number of participants currently in the voice room.
+pub async fn voice_status_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(IdentityContext(identity)): Extension<IdentityContext>,
+    Path(channel_id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    // Verify membership
+    let is_member_val = tokio::task::spawn_blocking({
+        let pool = state.pool.clone();
+        let cid = channel_id.clone();
+        let pid = identity.pseudonym_id.clone();
+        move || {
+            let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            is_member(&conn, &cid, &pid).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+
+    if !is_member_val {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let count = state
+        .voice_service
+        .participant_count(&channel_id)
+        .await
+        .unwrap_or(0);
+
+    Ok(Json(json!({
+        "participants": count,
+        "active": count > 0,
+    })))
 }

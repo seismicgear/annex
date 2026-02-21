@@ -28,6 +28,16 @@ impl VoiceService {
         &self.config.url
     }
 
+    /// Returns the browser-facing URL. Falls back to the internal URL if no
+    /// public URL is configured.
+    pub fn get_public_url(&self) -> &str {
+        if self.config.public_url.is_empty() {
+            &self.config.url
+        } else {
+            &self.config.public_url
+        }
+    }
+
     pub async fn create_room(&self, name: &str) -> Result<Room, VoiceError> {
         let options = CreateRoomOptions::default();
 
@@ -64,5 +74,14 @@ impl VoiceService {
             .remove_participant(room, identity)
             .await
             .map_err(|e| VoiceError::RoomService(e.to_string()))
+    }
+
+    /// Returns the number of participants currently in a room.
+    /// Returns 0 if the room does not exist.
+    pub async fn participant_count(&self, room_name: &str) -> Result<u32, VoiceError> {
+        match self.room_client.list_participants(room_name).await {
+            Ok(participants) => Ok(participants.len() as u32),
+            Err(_) => Ok(0), // Room doesn't exist yet
+        }
     }
 }
