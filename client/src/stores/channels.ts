@@ -7,6 +7,9 @@ import type { Channel, Message, WsReceiveFrame } from '@/types';
 import * as api from '@/lib/api';
 import { AnnexWebSocket } from '@/lib/ws';
 
+/** Number of messages per pagination page. */
+const PAGE_SIZE = 50;
+
 interface ChannelsState {
   /** All available channels. */
   channels: Channel[];
@@ -18,6 +21,10 @@ interface ChannelsState {
   wsConnected: boolean;
   /** Loading state for channel list. */
   loading: boolean;
+  /** Whether older messages are currently being fetched. */
+  loadingOlder: boolean;
+  /** Whether there are more older messages to load. */
+  hasMoreMessages: boolean;
   /** The WebSocket instance (internal). */
   ws: AnnexWebSocket | null;
 
@@ -47,6 +54,8 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
   messages: [],
   wsConnected: false,
   loading: false,
+  loadingOlder: false,
+  hasMoreMessages: true,
   ws: null,
 
   loadChannels: async (pseudonymId: string) => {
@@ -63,7 +72,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       ws.unsubscribe(prevChannelId);
     }
 
-    set({ activeChannelId: channelId, messages: [] });
+    set({ activeChannelId: channelId, messages: [], loadingOlder: false, hasMoreMessages: true });
 
     // Auto-join the channel (idempotent — no-op if already a member).
     // Must be a member before fetching messages or joining voice.
@@ -79,8 +88,8 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       ws.subscribe(channelId);
     }
 
-    const messages = await api.getMessages(pseudonymId, channelId, undefined, 50);
-    set({ messages: messages.reverse() });
+    const messages = await api.getMessages(pseudonymId, channelId, undefined, PAGE_SIZE);
+    set({ messages: messages.reverse(), hasMoreMessages: messages.length >= PAGE_SIZE });
   },
 
   connectWs: (pseudonymId: string, baseUrl?: string) => {
@@ -116,11 +125,20 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
   },
 
   loadOlderMessages: async (pseudonymId: string) => {
-    const { activeChannelId, messages } = get();
-    if (!activeChannelId || messages.length === 0) return;
-    const oldest = messages[0];
-    const older = await api.getMessages(pseudonymId, activeChannelId, oldest.message_id, 50);
-    set({ messages: [...older.reverse(), ...messages] });
+    const { activeChannelId, messages, loadingOlder, hasMoreMessages } = get();
+    if (!activeChannelId || messages.length === 0 || loadingOlder || !hasMoreMessages) return;
+
+    set({ loadingOlder: true });
+    try {
+      const oldest = messages[0];
+      const older = await api.getMessages(pseudonymId, activeChannelId, oldest.message_id, PAGE_SIZE);
+      set((state) => ({
+        messages: [...older.reverse(), ...state.messages],
+        hasMoreMessages: older.length >= PAGE_SIZE,
+      }));
+    } finally {
+      set({ loadingOlder: false });
+    }
   },
 
   createChannel: async (pseudonymId, name, channelType, topic, federated) => {

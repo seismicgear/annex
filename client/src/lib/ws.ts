@@ -22,6 +22,8 @@ export class AnnexWebSocket {
   private reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private intentionalClose = false;
+  /** Channels we should be subscribed to — re-sent on (re)connect. */
+  private subscribedChannels: Set<string> = new Set();
 
   /**
    * @param pseudonymId — identity pseudonym for auth
@@ -51,6 +53,10 @@ export class AnnexWebSocket {
 
     this.ws.onopen = () => {
       this.reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
+      // Re-subscribe to all tracked channels on (re)connect
+      for (const channelId of this.subscribedChannels) {
+        this.ws!.send(JSON.stringify({ type: 'subscribe', channelId }));
+      }
       this.notifyStatus(true);
     };
 
@@ -78,12 +84,14 @@ export class AnnexWebSocket {
 
   /** Subscribe to real-time messages for a channel. */
   subscribe(channelId: string): void {
+    this.subscribedChannels.add(channelId);
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     this.ws.send(JSON.stringify({ type: 'subscribe', channelId }));
   }
 
   /** Unsubscribe from a channel's real-time messages. */
   unsubscribe(channelId: string): void {
+    this.subscribedChannels.delete(channelId);
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     this.ws.send(JSON.stringify({ type: 'unsubscribe', channelId }));
   }
@@ -117,6 +125,7 @@ export class AnnexWebSocket {
   /** Close the connection intentionally. */
   disconnect(): void {
     this.intentionalClose = true;
+    this.subscribedChannels.clear();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;

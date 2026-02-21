@@ -88,9 +88,10 @@ function AddServerDialog({ onClose, onAdd }: AddServerDialogProps) {
   );
 }
 
-function ServerIcon({ server, isActive, onClick }: {
+function ServerIcon({ server, isActive, imageUrl, onClick }: {
   server: SavedServer;
   isActive: boolean;
+  imageUrl?: string | null;
   onClick: () => void;
 }) {
   const initial = server.label.charAt(0).toUpperCase();
@@ -100,14 +101,18 @@ function ServerIcon({ server, isActive, onClick }: {
     <div className="server-hub-item-wrapper">
       <div className={`server-hub-pill ${isActive ? 'active' : ''}`} />
       <button
-        className={`server-hub-icon ${isActive ? 'active' : ''}`}
+        className={`server-hub-icon ${isActive ? 'active' : ''} ${imageUrl ? 'has-image' : ''}`}
         style={{
           '--server-accent': server.accentColor,
         } as React.CSSProperties}
         onClick={onClick}
         title={`${server.label}${server.slug ? ` (${server.slug})` : ''}${memberCount ? ` — ${memberCount} online` : ''}`}
       >
-        <span className="server-hub-initial">{initial}</span>
+        {imageUrl ? (
+          <img src={imageUrl} alt={server.label} className="server-hub-image" />
+        ) : (
+          <span className="server-hub-initial">{initial}</span>
+        )}
       </button>
     </div>
   );
@@ -119,6 +124,7 @@ export function ServerHub() {
   const switching = useServersStore((s) => s.switching);
   const switchServer = useServersStore((s) => s.switchServer);
   const addRemoteServer = useServersStore((s) => s.addRemoteServer);
+  const serverImageUrl = useServersStore((s) => s.serverImageUrl);
   const [showAddDialog, setShowAddDialog] = useState(false);
 
   const handleAdd = useCallback(async (baseUrl: string) => {
@@ -137,6 +143,7 @@ export function ServerHub() {
               key={server.id}
               server={server}
               isActive={server.id === activeServerId}
+              imageUrl={server.id === activeServerId ? serverImageUrl : null}
               onClick={() => switchServer(server.id)}
             />
           ))}
