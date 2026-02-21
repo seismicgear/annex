@@ -16,6 +16,7 @@ import { DeviceLinkDialog } from '@/components/DeviceLinkDialog';
 import { ProfileSwitcher } from '@/components/ProfileSwitcher';
 import { SocialRecoveryDialog } from '@/components/SocialRecoveryDialog';
 import { AudioSettings } from '@/components/AudioSettings';
+import { UsernameSettings } from '@/components/UsernameSettings';
 import { getPersonasForIdentity } from '@/lib/personas';
 import type { Persona } from '@/types';
 
@@ -38,6 +39,7 @@ export function StatusBar() {
   const [showProfile, setShowProfile] = useState(false);
   const [showRecovery, setShowRecovery] = useState(false);
   const [showAudioSettings, setShowAudioSettings] = useState(false);
+  const [showUsernameSettings, setShowUsernameSettings] = useState(false);
   const [activePersona, setActivePersona] = useState<Persona | null>(null);
   // Local mic muted state — tracks whether the user toggled mute from the status bar.
   // The actual LiveKit mute is handled inside VoicePanel's MediaControls; this is
@@ -181,6 +183,9 @@ export function StatusBar() {
           <button onClick={handleExport} title="Export identity backup — download a JSON file of your cryptographic identity for safekeeping">
             Export
           </button>
+          <button onClick={() => setShowUsernameSettings(true)} title="Username — set your encrypted display name and manage visibility grants">
+            Username
+          </button>
           <button onClick={logout} title="Switch identity — log out and choose or create a different identity">
             Logout
           </button>
@@ -198,6 +203,9 @@ export function StatusBar() {
       )}
       {showAudioSettings && (
         <AudioSettings onClose={() => setShowAudioSettings(false)} />
+      )}
+      {showUsernameSettings && (
+        <UsernameSettings onClose={() => setShowUsernameSettings(false)} />
       )}
     </>
   );

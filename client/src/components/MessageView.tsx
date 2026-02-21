@@ -5,33 +5,64 @@
  * Supports loading older messages on scroll-up.
  * Renders privacy-preserving link previews for URLs.
  * Renders uploaded images inline with lightbox support.
+ * Renders uploaded videos with playback controls.
+ * Renders uploaded files as download links.
  *
  * For the local user's own messages, the persona display name and avatar
- * are shown (if set). Other users' messages show truncated pseudonyms
- * because display names are client-local and never sent to the server.
+ * are shown (if set). Other users' messages show their granted username
+ * (if available) or truncated pseudonyms.
  */
 
 import { useEffect, useRef, useState } from 'react';
 import { useChannelsStore } from '@/stores/channels';
 import { useIdentityStore } from '@/stores/identity';
+import { useUsernameStore } from '@/stores/usernames';
 import { LinkPreview } from '@/components/LinkPreview';
 import { extractUrls } from '@/lib/link-preview';
 import { getPersonasForIdentity } from '@/lib/personas';
 import type { Message, Persona } from '@/types';
 
 /** Matches URLs pointing to uploaded images on this server. */
-const UPLOAD_URL_PATTERN = /\/uploads\/chat\/[a-f0-9-]+\.(jpg|jpeg|png|gif|webp)/i;
+const IMAGE_URL_PATTERN = /\/uploads\/chat\/images\/[a-f0-9-]+\.(jpg|jpeg|png|gif|webp)/i;
 
-/** Splits message content into text lines and inline image URLs. */
-function parseMessageContent(content: string): { text: string; imageUrls: string[] } {
+/** Matches URLs pointing to uploaded videos on this server. */
+const VIDEO_URL_PATTERN = /\/uploads\/chat\/videos\/[a-f0-9-]+\.(mp4|webm|mov)/i;
+
+/** Matches URLs pointing to uploaded files on this server. */
+const FILE_URL_PATTERN = /\/uploads\/chat\/files\/[a-f0-9-]+\.\w+/i;
+
+/** Legacy image URL pattern (pre-category-subdirectory uploads). */
+const LEGACY_IMAGE_URL_PATTERN = /\/uploads\/chat\/[a-f0-9-]+\.(jpg|jpeg|png|gif|webp)/i;
+
+/** All upload URL patterns. */
+function isUploadUrl(url: string): boolean {
+  return IMAGE_URL_PATTERN.test(url) || VIDEO_URL_PATTERN.test(url) || FILE_URL_PATTERN.test(url) || LEGACY_IMAGE_URL_PATTERN.test(url);
+}
+
+/** Parsed message content with text, images, videos, and file links. */
+interface ParsedContent {
+  text: string;
+  imageUrls: string[];
+  videoUrls: string[];
+  fileUrls: string[];
+}
+
+/** Splits message content into text lines, image URLs, video URLs, and file URLs. */
+function parseMessageContent(content: string): ParsedContent {
   const lines = content.split('\n');
   const textLines: string[] = [];
   const imageUrls: string[] = [];
+  const videoUrls: string[] = [];
+  const fileUrls: string[] = [];
 
   for (const line of lines) {
     const trimmed = line.trim();
-    if (UPLOAD_URL_PATTERN.test(trimmed)) {
+    if (IMAGE_URL_PATTERN.test(trimmed) || LEGACY_IMAGE_URL_PATTERN.test(trimmed)) {
       imageUrls.push(trimmed);
+    } else if (VIDEO_URL_PATTERN.test(trimmed)) {
+      videoUrls.push(trimmed);
+    } else if (FILE_URL_PATTERN.test(trimmed)) {
+      fileUrls.push(trimmed);
     } else {
       textLines.push(line);
     }
@@ -40,7 +71,15 @@ function parseMessageContent(content: string): { text: string; imageUrls: string
   return {
     text: textLines.join('\n').trim(),
     imageUrls,
+    videoUrls,
+    fileUrls,
   };
+}
+
+/** Extract filename from upload URL. */
+function filenameFromUrl(url: string): string {
+  const parts = url.split('/');
+  return parts[parts.length - 1] || 'download';
 }
 
 function MessageBubble({
@@ -57,17 +96,20 @@ function MessageBubble({
   onImageClick: (url: string) => void;
 }) {
   const time = new Date(message.created_at).toLocaleTimeString();
-  const { text, imageUrls } = parseMessageContent(message.content);
+  const { text, imageUrls, videoUrls, fileUrls } = parseMessageContent(message.content);
+  const getDisplayName = useUsernameStore((s) => s.getDisplayName);
 
-  // Extract external URLs from the text portion only (not uploaded images)
-  const externalUrls = extractUrls(text).filter(
-    (u) => !UPLOAD_URL_PATTERN.test(u),
-  );
+  // Extract external URLs from the text portion only (not uploaded media)
+  const externalUrls = extractUrls(text).filter((u) => !isUploadUrl(u));
 
-  // Show persona display name for own messages; truncated pseudonym for others.
-  const displayName = isSelf && selfPersona?.displayName
-    ? selfPersona.displayName
-    : message.sender_pseudonym.slice(0, 12) + '...';
+  // Show persona display name for own messages; granted username or truncated pseudonym for others.
+  let displayName: string;
+  if (isSelf && selfPersona?.displayName) {
+    displayName = selfPersona.displayName;
+  } else {
+    const grantedName = getDisplayName(message.sender_pseudonym);
+    displayName = grantedName ?? message.sender_pseudonym.slice(0, 12) + '...';
+  }
 
   const avatar = isSelf && selfPersona?.avatarUrl ? selfPersona.avatarUrl : null;
 
@@ -102,6 +144,40 @@ function MessageBubble({
           ))}
         </div>
       )}
+      {videoUrls.length > 0 && (
+        <div className="message-videos">
+          {videoUrls.map((url) => (
+            <video
+              key={url}
+              src={url}
+              className="message-inline-video"
+              controls
+              preload="metadata"
+              playsInline
+            />
+          ))}
+        </div>
+      )}
+      {fileUrls.length > 0 && (
+        <div className="message-files">
+          {fileUrls.map((url) => (
+            <a
+              key={url}
+              href={url}
+              className="message-file-link"
+              download
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
+              </svg>
+              <span>{filenameFromUrl(url)}</span>
+            </a>
+          ))}
+        </div>
+      )}
       {externalUrls.length > 0 && (
         <div className="message-previews">
           {externalUrls.slice(0, 3).map((url) => (
@@ -116,6 +192,7 @@ function MessageBubble({
 export function MessageView() {
   const identity = useIdentityStore((s) => s.identity);
   const { messages, activeChannelId, loadOlderMessages } = useChannelsStore();
+  const loadVisibleUsernames = useUsernameStore((s) => s.loadVisibleUsernames);
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const prevMessageCount = useRef(0);
@@ -129,6 +206,12 @@ export function MessageView() {
       setSelfPersona(list[0] ?? null);
     });
   }, [identity]);
+
+  // Load visible usernames from server
+  useEffect(() => {
+    if (!identity?.pseudonymId) return;
+    loadVisibleUsernames(identity.pseudonymId);
+  }, [identity?.pseudonymId, loadVisibleUsernames]);
 
   // Auto-scroll to bottom on new messages
   useEffect(() => {

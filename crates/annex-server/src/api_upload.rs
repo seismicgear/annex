@@ -1,7 +1,10 @@
-//! Upload API handlers for images with automatic metadata stripping.
+//! Upload API handlers for images, videos, and files with automatic
+//! metadata stripping and MIME type verification.
 //!
-//! Supports server image uploads (admin) and chat image uploads (members).
+//! Supports server image uploads (admin) and chat uploads (members).
 //! All uploaded images have EXIF and other metadata stripped for privacy.
+//! Video and file types are verified via magic-byte detection to prevent
+//! type spoofing (e.g. zip bombs disguised as images).
 
 use crate::{api::ApiError, middleware::IdentityContext, AppState};
 use annex_channels::is_member;
@@ -14,11 +17,55 @@ use axum::{
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// Maximum upload file size: 10 MiB.
-const MAX_UPLOAD_SIZE: usize = 10 * 1024 * 1024;
+// ── Upload Categories ──
 
-/// Allowed MIME types for image uploads.
-const ALLOWED_CONTENT_TYPES: &[&str] = &["image/jpeg", "image/png", "image/gif", "image/webp"];
+/// Categorizes an upload by its detected content type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UploadCategory {
+    Image,
+    Video,
+    File,
+}
+
+impl UploadCategory {
+    /// Returns the string label for database storage.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Image => "image",
+            Self::Video => "video",
+            Self::File => "file",
+        }
+    }
+
+    /// Returns the subdirectory name for file storage.
+    fn subdir(self) -> &'static str {
+        match self {
+            Self::Image => "images",
+            Self::Video => "videos",
+            Self::File => "files",
+        }
+    }
+}
+
+// ── Allowed Content Types ──
+
+/// Allowed image MIME types.
+const ALLOWED_IMAGE_TYPES: &[&str] = &["image/jpeg", "image/png", "image/gif", "image/webp"];
+
+/// Allowed video MIME types.
+const ALLOWED_VIDEO_TYPES: &[&str] = &["video/mp4", "video/webm", "video/quicktime"];
+
+/// Blocked MIME types that are never allowed (executables, etc.).
+const BLOCKED_TYPES: &[&str] = &[
+    "application/x-executable",
+    "application/x-dosexec",
+    "application/x-sharedlib",
+];
+
+/// Maximum upload file size for server images: 10 MiB (not configurable).
+const MAX_SERVER_IMAGE_SIZE: usize = 10 * 1024 * 1024;
+
+// ── Content Type Detection ──
 
 /// Determines file extension from content type.
 fn ext_from_content_type(ct: &str) -> &str {
@@ -27,22 +74,100 @@ fn ext_from_content_type(ct: &str) -> &str {
         "image/png" => "png",
         "image/gif" => "gif",
         "image/webp" => "webp",
+        "video/mp4" => "mp4",
+        "video/webm" => "webm",
+        "video/quicktime" => "mov",
+        "application/pdf" => "pdf",
+        "application/zip" => "zip",
+        "text/plain" => "txt",
         _ => "bin",
     }
 }
 
-/// Detects content type from the first bytes of a file.
-fn detect_content_type(data: &[u8]) -> Option<&'static str> {
+/// Detects content type from the first bytes of a file (magic-byte detection).
+///
+/// Returns `(mime_type, category)` if recognized, or `None` for unknown formats.
+fn detect_content_type(data: &[u8]) -> Option<(&'static str, UploadCategory)> {
+    // Images
     if data.len() >= 2 && data[0] == 0xFF && data[1] == 0xD8 {
-        Some("image/jpeg")
-    } else if data.len() >= 8 && data[..8] == [137, 80, 78, 71, 13, 10, 26, 10] {
-        Some("image/png")
-    } else if data.len() >= 4 && &data[..4] == b"GIF8" {
-        Some("image/gif")
-    } else if data.len() >= 12 && &data[..4] == b"RIFF" && &data[8..12] == b"WEBP" {
-        Some("image/webp")
+        return Some(("image/jpeg", UploadCategory::Image));
+    }
+    if data.len() >= 8 && data[..8] == [137, 80, 78, 71, 13, 10, 26, 10] {
+        return Some(("image/png", UploadCategory::Image));
+    }
+    if data.len() >= 4 && &data[..4] == b"GIF8" {
+        return Some(("image/gif", UploadCategory::Image));
+    }
+    if data.len() >= 12 && &data[..4] == b"RIFF" && &data[8..12] == b"WEBP" {
+        return Some(("image/webp", UploadCategory::Image));
+    }
+
+    // Videos — MP4/MOV (ISO Base Media File Format: ftyp box)
+    if data.len() >= 12 && &data[4..8] == b"ftyp" {
+        // Check for MOV-specific brands
+        let brand = &data[8..12];
+        if brand == b"qt  " {
+            return Some(("video/quicktime", UploadCategory::Video));
+        }
+        // All other ftyp-based formats are MP4
+        return Some(("video/mp4", UploadCategory::Video));
+    }
+
+    // Videos — WebM/MKV (EBML header)
+    if data.len() >= 4 && data[..4] == [0x1A, 0x45, 0xDF, 0xA3] {
+        return Some(("video/webm", UploadCategory::Video));
+    }
+
+    // Files — PDF
+    if data.len() >= 4 && &data[..4] == b"%PDF" {
+        return Some(("application/pdf", UploadCategory::File));
+    }
+
+    // Files — ZIP (also covers docx, xlsx, etc.)
+    if data.len() >= 4 && data[..4] == [0x50, 0x4B, 0x03, 0x04] {
+        return Some(("application/zip", UploadCategory::File));
+    }
+
+    // Files — ELF executable (blocked)
+    if data.len() >= 4 && data[..4] == [0x7F, 0x45, 0x4C, 0x46] {
+        return Some(("application/x-executable", UploadCategory::File));
+    }
+
+    // Files — PE/DOS executable (blocked)
+    if data.len() >= 2 && data[..2] == [0x4D, 0x5A] {
+        return Some(("application/x-dosexec", UploadCategory::File));
+    }
+
+    None
+}
+
+/// Classifies a content type string into an upload category.
+fn classify_content_type(ct: &str) -> UploadCategory {
+    if ALLOWED_IMAGE_TYPES.contains(&ct) {
+        UploadCategory::Image
+    } else if ALLOWED_VIDEO_TYPES.contains(&ct) {
+        UploadCategory::Video
     } else {
-        None
+        UploadCategory::File
+    }
+}
+
+/// Returns the maximum upload size in bytes for a given category based on server policy.
+fn max_size_for_category(policy: &annex_types::ServerPolicy, category: UploadCategory) -> usize {
+    let mb = match category {
+        UploadCategory::Image => policy.max_image_size_mb,
+        UploadCategory::Video => policy.max_video_size_mb,
+        UploadCategory::File => policy.max_file_size_mb,
+    };
+    mb as usize * 1024 * 1024
+}
+
+/// Checks whether a given upload category is enabled in the server policy.
+fn is_category_enabled(policy: &annex_types::ServerPolicy, category: UploadCategory) -> bool {
+    match category {
+        UploadCategory::Image => policy.images_enabled,
+        UploadCategory::Video => policy.videos_enabled,
+        UploadCategory::File => policy.files_enabled,
     }
 }
 
@@ -161,11 +286,12 @@ fn strip_png_metadata(data: &[u8]) -> Vec<u8> {
 }
 
 /// Strips metadata from an image based on its content type.
+/// Non-image types are returned as-is.
 fn strip_metadata(data: &[u8], content_type: &str) -> Vec<u8> {
     match content_type {
         "image/jpeg" => strip_jpeg_metadata(data),
         "image/png" => strip_png_metadata(data),
-        // GIF and WebP: pass through (no standard EXIF location)
+        // GIF, WebP, videos, files: pass through
         _ => data.to_vec(),
     }
 }
@@ -208,23 +334,22 @@ pub async fn upload_server_image_handler(
         .await
         .map_err(|e| ApiError::BadRequest(format!("failed to read upload: {}", e)))?;
 
-    if data.len() > MAX_UPLOAD_SIZE {
+    if data.len() > MAX_SERVER_IMAGE_SIZE {
         return Err(ApiError::BadRequest(format!(
             "file too large: {} bytes (max {})",
             data.len(),
-            MAX_UPLOAD_SIZE
+            MAX_SERVER_IMAGE_SIZE
         )));
     }
 
-    // Detect actual content type from magic bytes
-    let detected_ct = detect_content_type(&data)
-        .ok_or_else(|| ApiError::BadRequest("unsupported image format".to_string()))?;
+    // Detect actual content type from magic bytes (server images must be images)
+    let (detected_ct, category) = detect_content_type(&data)
+        .ok_or_else(|| ApiError::BadRequest("unsupported file format".to_string()))?;
 
-    if !ALLOWED_CONTENT_TYPES.contains(&detected_ct) {
-        return Err(ApiError::BadRequest(format!(
-            "unsupported content type: {}",
-            detected_ct
-        )));
+    if category != UploadCategory::Image || !ALLOWED_IMAGE_TYPES.contains(&detected_ct) {
+        return Err(ApiError::BadRequest(
+            "server image must be JPEG, PNG, GIF, or WebP".to_string(),
+        ));
     }
 
     // Strip metadata
@@ -271,8 +396,8 @@ pub async fn upload_server_image_handler(
 
         // Record upload
         conn.execute(
-            "INSERT INTO uploads (server_id, upload_id, uploader_pseudonym, original_filename, content_type, size_bytes, purpose)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'server_image')",
+            "INSERT INTO uploads (server_id, upload_id, uploader_pseudonym, original_filename, content_type, size_bytes, purpose, category)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'server_image', 'image')",
             rusqlite::params![
                 state_clone.server_id,
                 upload_id_clone,
@@ -313,9 +438,10 @@ pub async fn upload_server_image_handler(
 
 /// Handler for `POST /api/channels/{channelId}/upload`.
 ///
-/// Uploads an image to a channel. Requires channel membership.
-/// Automatically strips EXIF and other metadata for privacy.
-pub async fn upload_chat_image_handler(
+/// Uploads an image, video, or file to a channel. Requires channel membership.
+/// Automatically strips EXIF and other metadata from images for privacy.
+/// Enforces per-category size limits and enabled/disabled toggles from server policy.
+pub async fn upload_chat_handler(
     Extension(state): Extension<Arc<AppState>>,
     Extension(IdentityContext(identity)): Extension<IdentityContext>,
     Path(channel_id): Path<String>,
@@ -342,6 +468,13 @@ pub async fn upload_chat_image_handler(
         ));
     }
 
+    // Read current server policy for limits
+    let policy = state
+        .policy
+        .read()
+        .map_err(|_| ApiError::InternalServerError("policy lock poisoned".to_string()))?
+        .clone();
+
     // Extract file field
     let field = multipart
         .next_field()
@@ -349,9 +482,14 @@ pub async fn upload_chat_image_handler(
         .map_err(|e| ApiError::BadRequest(format!("multipart error: {}", e)))?
         .ok_or_else(|| ApiError::BadRequest("no file provided".to_string()))?;
 
+    let declared_ct = field
+        .content_type()
+        .unwrap_or("application/octet-stream")
+        .to_string();
+
     let original_filename = field
         .file_name()
-        .unwrap_or("image")
+        .unwrap_or("upload")
         .to_string();
 
     let data = field
@@ -359,35 +497,69 @@ pub async fn upload_chat_image_handler(
         .await
         .map_err(|e| ApiError::BadRequest(format!("failed to read upload: {}", e)))?;
 
-    if data.len() > MAX_UPLOAD_SIZE {
-        return Err(ApiError::BadRequest(format!(
-            "file too large: {} bytes (max {})",
-            data.len(),
-            MAX_UPLOAD_SIZE
-        )));
-    }
-
     // Detect actual content type from magic bytes
-    let detected_ct = detect_content_type(&data)
-        .ok_or_else(|| ApiError::BadRequest("unsupported image format".to_string()))?;
+    let (detected_ct, category) = detect_content_type(&data).unwrap_or_else(|| {
+        // Unknown magic bytes — classify based on declared content type
+        let cat = classify_content_type(&declared_ct);
+        // For unrecognized files, use the declared type but classify as File
+        if cat == UploadCategory::File {
+            ("application/octet-stream", UploadCategory::File)
+        } else {
+            (&*Box::leak(declared_ct.clone().into_boxed_str()), cat)
+        }
+    });
 
-    if !ALLOWED_CONTENT_TYPES.contains(&detected_ct) {
+    // Check for blocked types
+    if BLOCKED_TYPES.contains(&detected_ct) {
         return Err(ApiError::BadRequest(format!(
-            "unsupported content type: {}",
+            "file type not allowed: {}",
             detected_ct
         )));
     }
 
-    // Strip metadata for privacy
+    // Check if this category is enabled
+    if !is_category_enabled(&policy, category) {
+        return Err(ApiError::BadRequest(format!(
+            "{} uploads are disabled on this server",
+            category.as_str()
+        )));
+    }
+
+    // Enforce per-category size limit
+    let max_size = max_size_for_category(&policy, category);
+    if data.len() > max_size {
+        return Err(ApiError::BadRequest(format!(
+            "file too large: {} bytes (max {} bytes for {})",
+            data.len(),
+            max_size,
+            category.as_str()
+        )));
+    }
+
+    // Validate specific types within categories
+    if category == UploadCategory::Image && !ALLOWED_IMAGE_TYPES.contains(&detected_ct) {
+        return Err(ApiError::BadRequest(format!(
+            "unsupported image type: {}",
+            detected_ct
+        )));
+    }
+    if category == UploadCategory::Video && !ALLOWED_VIDEO_TYPES.contains(&detected_ct) {
+        return Err(ApiError::BadRequest(format!(
+            "unsupported video type: {}",
+            detected_ct
+        )));
+    }
+
+    // Strip metadata for images; videos and files pass through
     let cleaned = strip_metadata(&data, detected_ct);
     let stripped_bytes = data.len() - cleaned.len();
 
-    // Save to disk
+    // Save to disk (category-specific subdirectory)
     let ext = ext_from_content_type(detected_ct);
     let upload_id = Uuid::new_v4().to_string();
     let safe_filename = format!("{}.{}", upload_id, ext);
     let upload_dir = state.upload_dir.clone();
-    let chat_dir = format!("{}/chat", upload_dir);
+    let chat_dir = format!("{}/chat/{}", upload_dir, category.subdir());
 
     tokio::fs::create_dir_all(&chat_dir)
         .await
@@ -398,13 +570,14 @@ pub async fn upload_chat_image_handler(
         .await
         .map_err(|e| ApiError::InternalServerError(format!("failed to write file: {}", e)))?;
 
-    let image_url = format!("/uploads/chat/{}", safe_filename);
+    let upload_url = format!("/uploads/chat/{}/{}", category.subdir(), safe_filename);
 
     // Record in database
     let state_clone = state.clone();
     let upload_id_clone = upload_id.clone();
     let original_filename_clone = original_filename.clone();
     let detected_ct_str = detected_ct.to_string();
+    let category_str = category.as_str().to_string();
     let size = cleaned.len() as i64;
     let uploader = identity.pseudonym_id.clone();
     let channel_id_db = channel_id.clone();
@@ -415,8 +588,8 @@ pub async fn upload_chat_image_handler(
         })?;
 
         conn.execute(
-            "INSERT INTO uploads (server_id, upload_id, uploader_pseudonym, original_filename, content_type, size_bytes, purpose, channel_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'chat', ?7)",
+            "INSERT INTO uploads (server_id, upload_id, uploader_pseudonym, original_filename, content_type, size_bytes, purpose, channel_id, category)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'chat', ?7, ?8)",
             rusqlite::params![
                 state_clone.server_id,
                 upload_id_clone,
@@ -425,6 +598,7 @@ pub async fn upload_chat_image_handler(
                 detected_ct_str,
                 size,
                 channel_id_db,
+                category_str,
             ],
         )
         .map_err(|e| ApiError::InternalServerError(format!("failed to record upload: {}", e)))?;
@@ -440,17 +614,19 @@ pub async fn upload_chat_image_handler(
         uploader = %identity.pseudonym_id,
         original_filename = %original_filename,
         content_type = %detected_ct,
+        category = %category.as_str(),
         size_bytes = size,
         metadata_stripped_bytes = stripped_bytes,
-        "chat image uploaded with metadata stripped"
+        "chat upload completed"
     );
 
     Ok(AxumJson(serde_json::json!({
         "status": "ok",
         "upload_id": upload_id,
-        "url": image_url,
+        "url": upload_url,
         "filename": original_filename,
         "content_type": detected_ct,
+        "category": category.as_str(),
         "size": size,
         "metadata_stripped_bytes": stripped_bytes,
     }))
@@ -558,24 +734,115 @@ mod tests {
 
     #[test]
     fn detect_jpeg() {
-        assert_eq!(detect_content_type(&[0xFF, 0xD8, 0xFF]), Some("image/jpeg"));
+        let (ct, cat) = detect_content_type(&[0xFF, 0xD8, 0xFF]).unwrap();
+        assert_eq!(ct, "image/jpeg");
+        assert_eq!(cat, UploadCategory::Image);
     }
 
     #[test]
     fn detect_png() {
-        assert_eq!(
-            detect_content_type(&[137, 80, 78, 71, 13, 10, 26, 10]),
-            Some("image/png")
-        );
+        let (ct, cat) = detect_content_type(&[137, 80, 78, 71, 13, 10, 26, 10]).unwrap();
+        assert_eq!(ct, "image/png");
+        assert_eq!(cat, UploadCategory::Image);
     }
 
     #[test]
     fn detect_gif() {
-        assert_eq!(detect_content_type(b"GIF89a"), Some("image/gif"));
+        let (ct, cat) = detect_content_type(b"GIF89a__").unwrap();
+        assert_eq!(ct, "image/gif");
+        assert_eq!(cat, UploadCategory::Image);
+    }
+
+    #[test]
+    fn detect_mp4() {
+        // ftyp box: size(4) + "ftyp" + brand
+        let mut data = vec![0x00, 0x00, 0x00, 0x14]; // size
+        data.extend_from_slice(b"ftyp");
+        data.extend_from_slice(b"isom"); // brand
+        let (ct, cat) = detect_content_type(&data).unwrap();
+        assert_eq!(ct, "video/mp4");
+        assert_eq!(cat, UploadCategory::Video);
+    }
+
+    #[test]
+    fn detect_mov() {
+        let mut data = vec![0x00, 0x00, 0x00, 0x14];
+        data.extend_from_slice(b"ftyp");
+        data.extend_from_slice(b"qt  ");
+        let (ct, cat) = detect_content_type(&data).unwrap();
+        assert_eq!(ct, "video/quicktime");
+        assert_eq!(cat, UploadCategory::Video);
+    }
+
+    #[test]
+    fn detect_webm() {
+        let (ct, cat) = detect_content_type(&[0x1A, 0x45, 0xDF, 0xA3]).unwrap();
+        assert_eq!(ct, "video/webm");
+        assert_eq!(cat, UploadCategory::Video);
+    }
+
+    #[test]
+    fn detect_pdf() {
+        let (ct, cat) = detect_content_type(b"%PDF-1.4").unwrap();
+        assert_eq!(ct, "application/pdf");
+        assert_eq!(cat, UploadCategory::File);
+    }
+
+    #[test]
+    fn detect_zip() {
+        let (ct, cat) = detect_content_type(&[0x50, 0x4B, 0x03, 0x04]).unwrap();
+        assert_eq!(ct, "application/zip");
+        assert_eq!(cat, UploadCategory::File);
+    }
+
+    #[test]
+    fn detect_elf_executable() {
+        let (ct, cat) = detect_content_type(&[0x7F, 0x45, 0x4C, 0x46]).unwrap();
+        assert_eq!(ct, "application/x-executable");
+        assert_eq!(cat, UploadCategory::File);
+    }
+
+    #[test]
+    fn detect_pe_executable() {
+        let (ct, cat) = detect_content_type(&[0x4D, 0x5A, 0x90, 0x00]).unwrap();
+        assert_eq!(ct, "application/x-dosexec");
+        assert_eq!(cat, UploadCategory::File);
     }
 
     #[test]
     fn detect_unknown() {
         assert_eq!(detect_content_type(&[0, 0, 0, 0]), None);
+    }
+
+    #[test]
+    fn blocked_types_are_rejected() {
+        assert!(BLOCKED_TYPES.contains(&"application/x-executable"));
+        assert!(BLOCKED_TYPES.contains(&"application/x-dosexec"));
+    }
+
+    #[test]
+    fn category_size_limits() {
+        let policy = annex_types::ServerPolicy {
+            max_image_size_mb: 5,
+            max_video_size_mb: 10,
+            max_file_size_mb: 3,
+            ..Default::default()
+        };
+        assert_eq!(max_size_for_category(&policy, UploadCategory::Image), 5 * 1024 * 1024);
+        assert_eq!(max_size_for_category(&policy, UploadCategory::Video), 10 * 1024 * 1024);
+        assert_eq!(max_size_for_category(&policy, UploadCategory::File), 3 * 1024 * 1024);
+    }
+
+    #[test]
+    fn category_enabled_checks() {
+        let policy = annex_types::ServerPolicy {
+            images_enabled: true,
+            videos_enabled: false,
+            files_enabled: true,
+            ..Default::default()
+        };
+        assert!(is_category_enabled(&policy, UploadCategory::Image));
+        assert!(!is_category_enabled(&policy, UploadCategory::Video));
+        assert!(is_category_enabled(&policy, UploadCategory::File));
     }
 }
