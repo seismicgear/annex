@@ -196,8 +196,8 @@
 }
 
 .phase-ready {
-  background: #0a200a;
-  color: #7eda7e;
+  background: #200a0a;
+  color: #e63946;
 }
 
 .phase-error {
@@ -384,9 +384,9 @@
 }
 
 .channel-action-btn.join-btn:hover {
-  background: rgba(74, 222, 128, 0.15);
-  color: #4ade80;
-  border-color: #4ade80;
+  background: rgba(230, 57, 70, 0.15);
+  color: #e63946;
+  border-color: #e63946;
 }
 
 .channel-action-btn.leave-btn:hover {
@@ -428,7 +428,7 @@
 
 .message.self {
   align-self: flex-end;
-  background: #0a150a;
+  background: #150a0a;
   border-top-left-radius: 8px;
   border-top-right-radius: 2px;
 }
@@ -534,8 +534,8 @@
 }
 
 .voice-join-btn {
-  background: #0a200a;
-  color: #7eda7e;
+  background: #200a0a;
+  color: #e63946;
 }
 
 /* ── Media Controls ── */
@@ -587,15 +587,15 @@
 }
 
 .media-control-btn.screen-btn.sharing {
-  background: rgba(74, 222, 128, 0.2);
-  border-color: #4ade80;
-  color: #4ade80;
+  background: rgba(230, 57, 70, 0.2);
+  border-color: #e63946;
+  color: #e63946;
   animation: screen-share-pulse 2s infinite;
 }
 
 @keyframes screen-share-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.3); }
-  50% { box-shadow: 0 0 0 4px rgba(74, 222, 128, 0); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(230, 57, 70, 0.3); }
+  50% { box-shadow: 0 0 0 4px rgba(230, 57, 70, 0); }
 }
 
 .media-control-btn.leave-call-btn {
@@ -937,7 +937,7 @@
 
 .alignment-aligned .agent-badge,
 .alignment-aligned {
-  color: #4ade80;
+  color: #e63946;
 }
 
 .alignment-partial .agent-badge,
@@ -1178,7 +1178,7 @@
 }
 
 .success-message {
-  color: #4ade80;
+  color: #e63946;
   margin-bottom: 0.5rem;
   font-size: 0.85rem;
 }
@@ -1262,7 +1262,7 @@
 }
 
 .domain-identity { color: #aaa; }
-.domain-presence { color: #4ade80; }
+.domain-presence { color: #e63946; }
 .domain-federation { color: #ccc; }
 .domain-agent { color: #fbbf24; }
 .domain-moderation { color: #f87171; }
@@ -2364,12 +2364,12 @@
 .server-hub-icon.add-server-btn {
   background: transparent;
   border: 2px dashed #222;
-  color: #4ade80;
+  color: #e63946;
 }
 
 .server-hub-icon.add-server-btn:hover {
-  background: rgba(74, 222, 128, 0.1);
-  border-color: #4ade80;
+  background: rgba(230, 57, 70, 0.1);
+  border-color: #e63946;
   border-style: solid;
   border-radius: 35%;
 }
@@ -2611,8 +2611,8 @@
 }
 
 .alignment-badge.alignment-aligned {
-  background: rgba(74, 222, 128, 0.15);
-  color: #4ade80;
+  background: rgba(230, 57, 70, 0.15);
+  color: #e63946;
 }
 
 .alignment-badge.alignment-partial {
@@ -2635,7 +2635,7 @@
 
 .joined-badge {
   font-size: 0.8rem;
-  color: #4ade80;
+  color: #e63946;
   padding: 0.35rem 0.75rem;
 }
 
