@@ -4,21 +4,19 @@
  * When a voice call is active, a persistent "Voice Connected" strip appears
  * above the main status row — similar to Discord's bottom-left voice panel.
  *
- * Provides quick access to: device linking, profile switching,
+ * Provides quick access to: device linking, identity settings,
  * social recovery setup, identity export, audio settings, and logout.
  */
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useIdentityStore } from '@/stores/identity';
-import { useServersStore } from '@/stores/servers';
 import { useChannelsStore } from '@/stores/channels';
 import { useVoiceStore } from '@/stores/voice';
 import { DeviceLinkDialog } from '@/components/DeviceLinkDialog';
-import { ProfileSwitcher } from '@/components/ProfileSwitcher';
+import { IdentitySettings } from '@/components/IdentitySettings';
 import { SocialRecoveryDialog } from '@/components/SocialRecoveryDialog';
 import { AudioSettings } from '@/components/AudioSettings';
-import { UsernameSettings } from '@/components/UsernameSettings';
-import { getPersonasForIdentity, updatePersona, ACCENT_COLORS } from '@/lib/personas';
+import { getPersonasForIdentity } from '@/lib/personas';
 import type { Persona } from '@/types';
 
 export function StatusBar() {
@@ -37,12 +35,9 @@ export function StatusBar() {
   } = useVoiceStore();
 
   const [showDeviceLink, setShowDeviceLink] = useState(false);
-  const [showProfile, setShowProfile] = useState(false);
+  const [showIdentity, setShowIdentity] = useState(false);
   const [showRecovery, setShowRecovery] = useState(false);
   const [showAudioSettings, setShowAudioSettings] = useState(false);
-  const [showUsernameSettings, setShowUsernameSettings] = useState(false);
-  const [showColorPicker, setShowColorPicker] = useState(false);
-  const colorPickerRef = useRef<HTMLDivElement>(null);
   const [activePersona, setActivePersona] = useState<Persona | null>(null);
   // Local mic muted state — tracks whether the user toggled mute from the status bar.
   // The actual LiveKit mute is handled inside VoicePanel's MediaControls; this is
@@ -55,7 +50,7 @@ export function StatusBar() {
     getPersonasForIdentity(identity.id).then((list) => {
       setActivePersona(list[0] ?? null);
     });
-  }, [identity, showProfile]);
+  }, [identity, showIdentity]);
 
   const handleExport = () => {
     const json = exportCurrent();
@@ -74,31 +69,6 @@ export function StatusBar() {
       await leaveCall(identity.pseudonymId);
     }
   }, [identity?.pseudonymId, leaveCall]);
-
-  // Close color picker on outside click
-  useEffect(() => {
-    if (!showColorPicker) return;
-    const handleClickOutside = (e: MouseEvent) => {
-      if (colorPickerRef.current && !colorPickerRef.current.contains(e.target as Node)) {
-        setShowColorPicker(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [showColorPicker]);
-
-  const handleColorChange = useCallback(async (color: string) => {
-    if (!activePersona) return;
-    const updated = { ...activePersona, accentColor: color };
-    await updatePersona(updated);
-    setActivePersona(updated);
-    // Update the server's accent color too so the whole UI theme changes
-    const server = useServersStore.getState().getActiveServer();
-    if (server) {
-      await useServersStore.getState().setServerPersona(server.id, activePersona.id, color);
-    }
-    setShowColorPicker(false);
-  }, [activePersona]);
 
   if (!identity) return null;
 
@@ -173,42 +143,18 @@ export function StatusBar() {
           <span className={`ws-indicator ${wsConnected ? 'connected' : 'disconnected'}`}
                 title={wsConnected ? 'Connected to server' : 'Disconnected from server'} />
           {activePersona && (
-            <div className="persona-indicator-wrapper" ref={colorPickerRef}>
-              <button
-                className="persona-indicator"
-                style={{ background: activePersona.accentColor }}
-                title="Click to change your color"
-                onClick={() => setShowColorPicker((v) => !v)}
-              >
-                {activePersona.displayName.charAt(0).toUpperCase()}
-              </button>
-              {showColorPicker && (
-                <div className="quick-color-picker">
-                  <span className="quick-color-picker-label">Choose your color</span>
-                  <div className="quick-color-picker-grid">
-                    {ACCENT_COLORS.map((color) => (
-                      <button
-                        key={color}
-                        className={`color-swatch ${activePersona.accentColor === color ? 'active' : ''}`}
-                        style={{ background: color }}
-                        onClick={() => handleColorChange(color)}
-                      />
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
+            <span
+              className="persona-indicator"
+              style={{ background: activePersona.accentColor }}
+              title={`Persona: ${activePersona.displayName}`}
+            >
+              {activePersona.displayName.charAt(0).toUpperCase()}
+            </span>
           )}
-          <button
-            className="pseudonym-btn"
-            onClick={() => setShowProfile(true)}
-            title="Manage personas"
-          >
-            <span className="pseudonym">{displayName}</span>
-            {identity.serverSlug && (
-              <span className="server-slug">{identity.serverSlug}</span>
-            )}
-          </button>
+          <span className="pseudonym">{displayName}</span>
+          {identity.serverSlug && (
+            <span className="server-slug">{identity.serverSlug}</span>
+          )}
         </div>
         <div className="status-actions">
           <button
@@ -229,8 +175,8 @@ export function StatusBar() {
           <button onClick={handleExport} title="Export identity backup — download a JSON file of your cryptographic identity for safekeeping">
             Export
           </button>
-          <button onClick={() => setShowUsernameSettings(true)} title="Username — set your encrypted display name and manage visibility grants">
-            Username
+          <button onClick={() => setShowIdentity(true)} title="Identity — manage your persona, color, username, and visibility">
+            Identity
           </button>
           <button onClick={logout} title="Switch identity — log out and choose or create a different identity">
             Logout
@@ -241,17 +187,14 @@ export function StatusBar() {
       {showDeviceLink && (
         <DeviceLinkDialog onClose={() => setShowDeviceLink(false)} />
       )}
-      {showProfile && (
-        <ProfileSwitcher onClose={() => setShowProfile(false)} />
+      {showIdentity && (
+        <IdentitySettings onClose={() => setShowIdentity(false)} />
       )}
       {showRecovery && (
         <SocialRecoveryDialog onClose={() => setShowRecovery(false)} />
       )}
       {showAudioSettings && (
         <AudioSettings onClose={() => setShowAudioSettings(false)} />
-      )}
-      {showUsernameSettings && (
-        <UsernameSettings onClose={() => setShowUsernameSettings(false)} />
       )}
     </>
   );
