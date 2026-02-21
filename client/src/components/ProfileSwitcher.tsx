@@ -191,8 +191,8 @@ export function ProfileSwitcher({ onClose }: Props) {
               Accent Color
               <div className="color-picker">
                 {[
-                  '#646cff', '#e63946', '#f87171', '#fbbf24', '#7eb8da',
-                  '#b87eda', '#ff6b9d', '#c42836', '#6366f1', '#ec4899',
+                  '#e63946', '#646cff', '#4ade80', '#f87171', '#fbbf24', '#7eb8da',
+                  '#b87eda', '#ff6b9d', '#c42836', '#10b981', '#6366f1', '#ec4899',
                 ].map((color) => (
                   <button
                     key={color}
