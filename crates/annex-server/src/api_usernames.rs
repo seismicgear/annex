@@ -321,8 +321,9 @@ pub async fn list_grants_handler(
 
 /// Handler for `GET /api/usernames/visible`.
 ///
-/// Returns all usernames visible to the authenticated user (i.e., users who
-/// have granted them visibility). Decrypts usernames server-side before returning.
+/// Returns all usernames visible to the authenticated user: their own username
+/// (if set) plus usernames of users who have granted them visibility.
+/// Decrypts usernames server-side before returning.
 pub async fn get_visible_usernames_handler(
     Extension(state): Extension<Arc<AppState>>,
     Extension(IdentityContext(identity)): Extension<IdentityContext>,
@@ -350,6 +351,23 @@ pub async fn get_visible_usernames_handler(
             ApiError::InternalServerError(format!("db connection failed: {}", e))
         })?;
 
+        let mut usernames = serde_json::Map::new();
+
+        // Include the user's own username if they have one set
+        let own_username: Option<String> = conn
+            .query_row(
+                "SELECT encrypted_username FROM user_profiles WHERE server_id = ?1 AND pseudonym_id = ?2",
+                rusqlite::params![server_id, grantee],
+                |row| row.get(0),
+            )
+            .ok();
+        if let Some(encrypted) = own_username {
+            if let Some(decrypted) = decrypt_username(&signing_key, &grantee, &encrypted) {
+                usernames.insert(grantee.clone(), serde_json::Value::String(decrypted));
+            }
+        }
+
+        // Include usernames of users who granted visibility to us
         let mut stmt = conn
             .prepare(
                 "SELECT up.pseudonym_id, up.encrypted_username
@@ -365,7 +383,6 @@ pub async fn get_visible_usernames_handler(
             })
             .map_err(|e| ApiError::InternalServerError(format!("query failed: {}", e)))?;
 
-        let mut usernames = serde_json::Map::new();
         for row in rows {
             let (pseudonym_id, encrypted) =
                 row.map_err(|e| ApiError::InternalServerError(format!("row read failed: {}", e)))?;

@@ -9,6 +9,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useIdentityStore } from '@/stores/identity';
+import { useUsernameStore } from '@/stores/usernames';
 import * as api from '@/lib/api';
 import type { MemberInfo } from '@/lib/api';
 
@@ -18,6 +19,7 @@ interface Props {
 
 export function UsernameSettings({ onClose }: Props) {
   const identity = useIdentityStore((s) => s.identity);
+  const loadVisibleUsernames = useUsernameStore((s) => s.loadVisibleUsernames);
   const pseudonymId = identity?.pseudonymId ?? '';
 
   const [username, setUsername] = useState('');
@@ -65,6 +67,7 @@ export function UsernameSettings({ onClose }: Props) {
     setSuccess(null);
     try {
       await api.setUsername(pseudonymId, username.trim());
+      await loadVisibleUsernames(pseudonymId);
       setSuccess('Username saved.');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -82,6 +85,7 @@ export function UsernameSettings({ onClose }: Props) {
       await api.deleteUsername(pseudonymId);
       setUsername('');
       setGrantees([]);
+      await loadVisibleUsernames(pseudonymId);
       setSuccess('Username removed.');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

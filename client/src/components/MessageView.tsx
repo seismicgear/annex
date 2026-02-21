@@ -102,13 +102,15 @@ function MessageBubble({
   // Extract external URLs from the text portion only (not uploaded media)
   const externalUrls = extractUrls(text).filter((u) => !isUploadUrl(u));
 
-  // Show persona display name for own messages; granted username or truncated pseudonym for others.
+  // Show server username if available, then persona display name for own messages, then truncated pseudonym.
   let displayName: string;
-  if (isSelf && selfPersona?.displayName) {
+  const cachedName = getDisplayName(message.sender_pseudonym);
+  if (cachedName) {
+    displayName = cachedName;
+  } else if (isSelf && selfPersona?.displayName) {
     displayName = selfPersona.displayName;
   } else {
-    const grantedName = getDisplayName(message.sender_pseudonym);
-    displayName = grantedName ?? message.sender_pseudonym.slice(0, 12) + '...';
+    displayName = message.sender_pseudonym.slice(0, 12) + '...';
   }
 
   const avatar = isSelf && selfPersona?.avatarUrl ? selfPersona.avatarUrl : null;
