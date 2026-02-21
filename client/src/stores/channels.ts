@@ -56,7 +56,15 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
   },
 
   selectChannel: async (pseudonymId: string, channelId: string) => {
+    const { ws, activeChannelId: prevChannelId } = get();
+
+    // Unsubscribe from the previous channel's real-time updates.
+    if (ws && prevChannelId && prevChannelId !== channelId) {
+      ws.unsubscribe(prevChannelId);
+    }
+
     set({ activeChannelId: channelId, messages: [] });
+
     // Auto-join the channel (idempotent — no-op if already a member).
     // Must be a member before fetching messages or joining voice.
     try {
@@ -65,6 +73,12 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       // May fail for capability restrictions; still try to load messages
       // in case the user is already a member from a previous session.
     }
+
+    // Subscribe to real-time updates for this channel via WebSocket.
+    if (ws) {
+      ws.subscribe(channelId);
+    }
+
     const messages = await api.getMessages(pseudonymId, channelId, undefined, 50);
     set({ messages: messages.reverse() });
   },
