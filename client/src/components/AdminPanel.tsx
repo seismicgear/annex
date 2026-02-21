@@ -53,7 +53,7 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
       <h3>Server Policy</h3>
 
       <div className="policy-grid">
-        <label>
+        <label title="Minimum VRP alignment score (0.0–1.0) required for AI agents to join this server. Higher values require stronger value alignment.">
           Min Alignment Score
           <input
             type="number"
@@ -68,9 +68,10 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
               }
             }}
           />
+          <span className="field-hint">AI agents must meet this alignment threshold to participate.</span>
         </label>
 
-        <label>
+        <label title="Maximum number of members allowed on this server.">
           Max Members
           <input
             type="number"
@@ -80,9 +81,10 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
               setPolicy({ ...policy, max_members: parseInt(e.target.value) || 1 })
             }
           />
+          <span className="field-hint">Limits how many users can register on this server.</span>
         </label>
 
-        <label>
+        <label title="How many days messages are kept before automatic deletion. Older messages are purged to save storage.">
           Retention (days)
           <input
             type="number"
@@ -92,31 +94,35 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
               setPolicy({ ...policy, default_retention_days: parseInt(e.target.value) || 1 })
             }
           />
+          <span className="field-hint">Messages older than this are automatically deleted.</span>
         </label>
 
-        <label className="checkbox-label">
+        <label className="checkbox-label" title="When enabled, this server can connect to and exchange messages with other Annex servers. Disable to keep this server completely isolated.">
           <input
             type="checkbox"
             checked={policy.federation_enabled}
             onChange={(e) => setPolicy({ ...policy, federation_enabled: e.target.checked })}
           />
           Federation Enabled
+          <span className="field-hint">Allow connecting to other Annex servers to share channels and messages.</span>
         </label>
 
-        <label className="checkbox-label">
+        <label className="checkbox-label" title="When enabled, users can create voice/video channels and make real-time calls. Disable to restrict the server to text-only communication.">
           <input
             type="checkbox"
             checked={policy.voice_enabled}
             onChange={(e) => setPolicy({ ...policy, voice_enabled: e.target.checked })}
           />
           Voice Enabled
+          <span className="field-hint">Allow voice and video calls on this server.</span>
         </label>
       </div>
 
       <div className="policy-section">
         <h4>Rate Limits (per minute)</h4>
+        <p className="field-hint" style={{ marginTop: 0 }}>Controls how many requests a single user can make per minute. Lower values protect against abuse but may slow down legitimate usage.</p>
         <div className="policy-grid">
-          <label>
+          <label title="Maximum identity registrations allowed per minute from a single source.">
             Registration
             <input
               type="number"

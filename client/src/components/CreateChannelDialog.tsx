@@ -10,12 +10,12 @@ import { useChannelsStore } from '@/stores/channels';
 import { useIdentityStore } from '@/stores/identity';
 import type { ChannelType } from '@/types';
 
-const CHANNEL_TYPES: { value: ChannelType; label: string }[] = [
-  { value: 'Text', label: 'Text' },
-  { value: 'Voice', label: 'Voice' },
-  { value: 'Hybrid', label: 'Hybrid (Text + Voice)' },
-  { value: 'Agent', label: 'Agent' },
-  { value: 'Broadcast', label: 'Broadcast' },
+const CHANNEL_TYPES: { value: ChannelType; label: string; description: string }[] = [
+  { value: 'Text', label: 'Text', description: 'A text-only chat channel for messages' },
+  { value: 'Voice', label: 'Voice', description: 'A voice-only channel for real-time audio/video calls' },
+  { value: 'Hybrid', label: 'Hybrid (Text + Voice)', description: 'Combines text chat with voice/video calls in one channel' },
+  { value: 'Agent', label: 'Agent', description: 'A channel where AI agents can participate and respond' },
+  { value: 'Broadcast', label: 'Broadcast', description: 'One-to-many announcements — only moderators can post' },
 ];
 
 export function CreateChannelDialog({ onClose }: { onClose: () => void }) {
@@ -67,13 +67,17 @@ export function CreateChannelDialog({ onClose }: { onClose: () => void }) {
             <select
               value={channelType}
               onChange={(e) => setChannelType(e.target.value as ChannelType)}
+              title={CHANNEL_TYPES.find((t) => t.value === channelType)?.description}
             >
               {CHANNEL_TYPES.map((t) => (
-                <option key={t.value} value={t.value}>
+                <option key={t.value} value={t.value} title={t.description}>
                   {t.label}
                 </option>
               ))}
             </select>
+            <span className="field-hint">
+              {CHANNEL_TYPES.find((t) => t.value === channelType)?.description}
+            </span>
           </label>
           <label>
             Topic (optional)
@@ -84,13 +88,18 @@ export function CreateChannelDialog({ onClose }: { onClose: () => void }) {
               placeholder="What this channel is about"
             />
           </label>
-          <label className="checkbox-label">
+          <label className="checkbox-label" title="When enabled, messages in this channel are shared with connected partner servers. Leave off to keep conversations local to this server only.">
             <input
               type="checkbox"
               checked={federated}
               onChange={(e) => setFederated(e.target.checked)}
             />
             Federated
+            <span className="field-hint">
+              {federated
+                ? 'Messages will be shared with connected partner servers.'
+                : 'Messages stay on this server only.'}
+            </span>
           </label>
           {error && <div className="error-message">{error}</div>}
           <div className="dialog-actions">
