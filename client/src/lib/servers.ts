@@ -30,8 +30,8 @@ function getDb(): Promise<IDBPDatabase> {
 }
 
 const ACCENT_COLORS = [
-  '#646cff', '#4ade80', '#f87171', '#fbbf24', '#7eb8da',
-  '#b87eda', '#ff6b9d', '#10b981', '#6366f1', '#ec4899',
+  '#e63946', '#646cff', '#4ade80', '#f87171', '#fbbf24', '#7eb8da',
+  '#b87eda', '#ff6b9d', '#c42836', '#10b981', '#6366f1', '#ec4899',
 ];
 
 /** Pick a random accent color for a new server entry. */

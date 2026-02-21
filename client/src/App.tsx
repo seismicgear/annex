@@ -96,9 +96,9 @@ export default function App() {
 
   // Apply persona isolation — dynamic CSS custom properties per server context
   useEffect(() => {
-    const raw = activeServer?.accentColor ?? '#646cff';
+    const raw = activeServer?.accentColor ?? '#e63946';
     // Validate hex color format; fall back to default if malformed
-    const accentColor = /^#[0-9a-fA-F]{6}$/.test(raw) ? raw : '#646cff';
+    const accentColor = /^#[0-9a-fA-F]{6}$/.test(raw) ? raw : '#e63946';
     document.documentElement.style.setProperty('--persona-accent', accentColor);
 
     // Derive tint colors from the accent

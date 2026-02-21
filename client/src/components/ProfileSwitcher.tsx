@@ -8,6 +8,7 @@
 
 import { useState, useEffect, useCallback, type FormEvent } from 'react';
 import { useIdentityStore } from '@/stores/identity';
+import { useServersStore } from '@/stores/servers';
 import type { Persona } from '@/types';
 import * as personas from '@/lib/personas';
 
@@ -55,12 +56,19 @@ export function ProfileSwitcher({ onClose }: Props) {
     e.preventDefault();
     if (!identity || !displayName.trim()) return;
     try {
-      await personas.createPersona(
+      const created = await personas.createPersona(
         displayName.trim(),
         identity.id,
         identity.serverSlug,
         bio.trim(),
+        null,
+        accentColor,
       );
+      // Activate the new persona on the current server
+      const server = useServersStore.getState().getActiveServer();
+      if (server) {
+        await useServersStore.getState().setServerPersona(server.id, created.id, created.accentColor);
+      }
       resetForm();
       await loadPersonas();
     } catch {
@@ -78,6 +86,11 @@ export function ProfileSwitcher({ onClose }: Props) {
         bio: bio.trim(),
         accentColor,
       });
+      // Update the server's accent color if this persona is active
+      const server = useServersStore.getState().getActiveServer();
+      if (server && server.personaId === editing.id) {
+        await useServersStore.getState().setServerPersona(server.id, editing.id, accentColor);
+      }
       resetForm();
       await loadPersonas();
     } catch {
@@ -126,8 +139,20 @@ export function ProfileSwitcher({ onClose }: Props) {
               No personas defined. Create one to customize your display name.
             </p>
           )}
-          {personaList.map((p) => (
-            <div key={p.id} className="persona-item">
+          {personaList.map((p) => {
+            const server = useServersStore.getState().getActiveServer();
+            const isActive = server?.personaId === p.id;
+            return (
+            <div
+              key={p.id}
+              className={`persona-item ${isActive ? 'active' : ''}`}
+              onClick={async () => {
+                if (server && !isActive) {
+                  await useServersStore.getState().setServerPersona(server.id, p.id, p.accentColor);
+                }
+              }}
+              style={{ cursor: isActive ? 'default' : 'pointer' }}
+            >
               <div
                 className="persona-avatar"
                 style={{ background: p.accentColor }}
@@ -135,7 +160,7 @@ export function ProfileSwitcher({ onClose }: Props) {
                 {p.displayName.charAt(0).toUpperCase()}
               </div>
               <div className="persona-info">
-                <span className="persona-name">{p.displayName}</span>
+                <span className="persona-name">{p.displayName}{isActive ? ' (active)' : ''}</span>
                 <span className="persona-meta">
                   {p.serverSlug} {p.bio && `— ${p.bio}`}
                 </span>
@@ -143,21 +168,22 @@ export function ProfileSwitcher({ onClose }: Props) {
               <div className="persona-actions">
                 <button
                   className="persona-edit-btn"
-                  onClick={() => startEdit(p)}
+                  onClick={(e) => { e.stopPropagation(); startEdit(p); }}
                   title="Edit"
                 >
                   Edit
                 </button>
                 <button
                   className="persona-delete-btn"
-                  onClick={() => handleDelete(p.id)}
+                  onClick={(e) => { e.stopPropagation(); handleDelete(p.id); }}
                   title="Delete"
                 >
                   Del
                 </button>
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
 
         {/* Create / Edit form */}
@@ -191,8 +217,8 @@ export function ProfileSwitcher({ onClose }: Props) {
               Accent Color
               <div className="color-picker">
                 {[
-                  '#646cff', '#4ade80', '#f87171', '#fbbf24', '#7eb8da',
-                  '#b87eda', '#ff6b9d', '#10b981', '#6366f1', '#ec4899',
+                  '#e63946', '#646cff', '#4ade80', '#f87171', '#fbbf24', '#7eb8da',
+                  '#b87eda', '#ff6b9d', '#c42836', '#10b981', '#6366f1', '#ec4899',
                 ].map((color) => (
                   <button
                     key={color}
