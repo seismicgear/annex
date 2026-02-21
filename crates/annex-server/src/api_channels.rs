@@ -1,7 +1,8 @@
 use crate::{middleware::IdentityContext, AppState};
 use annex_channels::{
-    add_member, create_channel, delete_channel, get_channel, is_member, list_channels,
-    list_messages, remove_member, Channel, CreateChannelParams, Message,
+    add_member, create_channel, delete_channel, get_channel, get_edit_history, is_member,
+    list_channels, list_messages, remove_member, Channel, CreateChannelParams, Message,
+    MessageEdit,
 };
 use annex_graph::{create_edge, delete_edge};
 use annex_types::{AlignmentStatus, ChannelType, EdgeKind, FederationScope, RoleCode};
@@ -674,4 +675,41 @@ pub async fn voice_status_handler(
         "participants": count,
         "active": count > 0,
     })))
+}
+
+/// GET /api/channels/:channelId/messages/:messageId/edits
+/// Returns the edit history for a message.
+pub async fn get_message_edits_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(IdentityContext(identity)): Extension<IdentityContext>,
+    Path((channel_id, message_id)): Path<(String, String)>,
+) -> Result<Json<Vec<MessageEdit>>, StatusCode> {
+    // Verify membership
+    let is_member_val = tokio::task::spawn_blocking({
+        let pool = state.pool.clone();
+        let cid = channel_id.clone();
+        let pid = identity.pseudonym_id.clone();
+        move || {
+            let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            is_member(&conn, &cid, &pid).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+
+    if !is_member_val {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let edits = tokio::task::spawn_blocking({
+        let pool = state.pool.clone();
+        move || {
+            let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            get_edit_history(&conn, &message_id).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+
+    Ok(Json(edits))
 }

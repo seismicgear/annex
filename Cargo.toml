@@ -52,6 +52,9 @@ uuid = { version = "1", features = ["v4", "serde"] }
 # Testing
 tempfile = "3"
 
+# Date/time
+chrono = "0.4"
+
 # Configuration
 toml = "0.8"
 

@@ -11,6 +11,7 @@ import type {
   IdentityInfo,
   Channel,
   Message,
+  MessageEdit,
   ServerSummary,
   ServerPolicy,
   FederationPeer,
@@ -198,6 +199,19 @@ export async function getMessages(
   const qs = params.toString();
   return request<Message[]>(
     `/api/channels/${channelId}/messages${qs ? '?' + qs : ''}`,
+    { headers: authHeaders(pseudonymId) },
+  );
+}
+
+// ── Message Edit History ──
+
+export async function getMessageEdits(
+  pseudonymId: string,
+  channelId: string,
+  messageId: string,
+): Promise<MessageEdit[]> {
+  return request<MessageEdit[]>(
+    `/api/channels/${channelId}/messages/${messageId}/edits`,
     { headers: authHeaders(pseudonymId) },
   );
 }

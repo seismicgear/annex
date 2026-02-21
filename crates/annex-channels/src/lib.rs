@@ -328,6 +328,21 @@ pub struct Message {
     /// Expiration timestamp (ISO 8601), if retention applies.
     #[serde(skip_serializing, default)]
     pub expires_at: Option<String>,
+    /// Timestamp of last edit (ISO 8601), if ever edited.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edited_at: Option<String>,
+    /// Timestamp of soft deletion (ISO 8601), if deleted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<String>,
+}
+
+/// A historical edit of a message.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MessageEdit {
+    pub id: i64,
+    pub message_id: String,
+    pub old_content: String,
+    pub edited_at: String,
 }
 
 /// A member of a channel.
@@ -486,7 +501,7 @@ pub fn create_message(
             server_id, channel_id, message_id, sender_pseudonym, content,
             reply_to_message_id, expires_at
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, {})
-        RETURNING id, server_id, channel_id, message_id, sender_pseudonym, content, reply_to_message_id, created_at, expires_at",
+        RETURNING id, server_id, channel_id, message_id, sender_pseudonym, content, reply_to_message_id, created_at, expires_at, edited_at, deleted_at",
         expires_expr
     );
 
@@ -511,7 +526,7 @@ pub fn get_message(conn: &Connection, message_id: &str) -> Result<Message, Chann
     conn.query_row(
         "SELECT
             id, server_id, channel_id, message_id, sender_pseudonym, content,
-            reply_to_message_id, created_at, expires_at
+            reply_to_message_id, created_at, expires_at, edited_at, deleted_at
         FROM messages WHERE message_id = ?1",
         [message_id],
         map_row_to_message,
@@ -537,7 +552,7 @@ pub fn list_messages(
         format!(
             "SELECT
                 id, server_id, channel_id, message_id, sender_pseudonym, content,
-                reply_to_message_id, created_at, expires_at
+                reply_to_message_id, created_at, expires_at, edited_at, deleted_at
             FROM messages
             WHERE channel_id = ?1 AND created_at < ?2
             ORDER BY created_at DESC
@@ -548,7 +563,7 @@ pub fn list_messages(
         format!(
             "SELECT
                 id, server_id, channel_id, message_id, sender_pseudonym, content,
-                reply_to_message_id, created_at, expires_at
+                reply_to_message_id, created_at, expires_at, edited_at, deleted_at
             FROM messages
             WHERE channel_id = ?1
             ORDER BY created_at DESC
@@ -570,6 +585,138 @@ pub fn list_messages(
         messages.push(row?);
     }
     Ok(messages)
+}
+
+/// Maximum age (in seconds) for a message to be editable or deletable by its author.
+pub const EDIT_WINDOW_SECONDS: i64 = 60;
+
+/// Edits a message's content, enforcing ownership and the edit time window.
+///
+/// Saves the old content to the `message_edits` table before overwriting.
+/// Returns the updated message.
+pub fn edit_message(
+    conn: &Connection,
+    message_id: &str,
+    sender_pseudonym: &str,
+    new_content: &str,
+) -> Result<Message, ChannelError> {
+    let msg = get_message(conn, message_id)?;
+
+    // Ownership check
+    if msg.sender_pseudonym != sender_pseudonym {
+        return Err(ChannelError::NotFound(format!(
+            "message {} not owned by {}",
+            message_id, sender_pseudonym
+        )));
+    }
+
+    // Already deleted
+    if msg.deleted_at.is_some() {
+        return Err(ChannelError::NotFound(format!(
+            "message {} has been deleted",
+            message_id
+        )));
+    }
+
+    // Time window check
+    let created =
+        chrono::NaiveDateTime::parse_from_str(&msg.created_at, "%Y-%m-%d %H:%M:%S")
+            .map_err(|_| ChannelError::NotFound("invalid created_at timestamp".to_string()))?;
+    let now = chrono::Utc::now().naive_utc();
+    if (now - created).num_seconds() > EDIT_WINDOW_SECONDS {
+        return Err(ChannelError::NotFound(
+            "edit window has expired".to_string(),
+        ));
+    }
+
+    // Save old content to edit history
+    conn.execute(
+        "INSERT INTO message_edits (message_id, old_content) VALUES (?1, ?2)",
+        params![message_id, msg.content],
+    )?;
+
+    // Update message content and set edited_at
+    conn.execute(
+        "UPDATE messages SET content = ?1, edited_at = datetime('now') WHERE message_id = ?2",
+        params![new_content, message_id],
+    )?;
+
+    get_message(conn, message_id)
+}
+
+/// Soft-deletes a message, enforcing ownership and the edit time window.
+///
+/// Sets `deleted_at` and replaces content with an empty string.
+/// Returns the updated message.
+pub fn delete_message(
+    conn: &Connection,
+    message_id: &str,
+    sender_pseudonym: &str,
+) -> Result<Message, ChannelError> {
+    let msg = get_message(conn, message_id)?;
+
+    // Ownership check
+    if msg.sender_pseudonym != sender_pseudonym {
+        return Err(ChannelError::NotFound(format!(
+            "message {} not owned by {}",
+            message_id, sender_pseudonym
+        )));
+    }
+
+    // Already deleted
+    if msg.deleted_at.is_some() {
+        return Err(ChannelError::NotFound(format!(
+            "message {} already deleted",
+            message_id
+        )));
+    }
+
+    // Time window check
+    let created =
+        chrono::NaiveDateTime::parse_from_str(&msg.created_at, "%Y-%m-%d %H:%M:%S")
+            .map_err(|_| ChannelError::NotFound("invalid created_at timestamp".to_string()))?;
+    let now = chrono::Utc::now().naive_utc();
+    if (now - created).num_seconds() > EDIT_WINDOW_SECONDS {
+        return Err(ChannelError::NotFound(
+            "delete window has expired".to_string(),
+        ));
+    }
+
+    // Soft-delete: set deleted_at and clear content
+    conn.execute(
+        "UPDATE messages SET content = '', deleted_at = datetime('now') WHERE message_id = ?1",
+        params![message_id],
+    )?;
+
+    get_message(conn, message_id)
+}
+
+/// Returns the edit history for a message (oldest first).
+pub fn get_edit_history(
+    conn: &Connection,
+    message_id: &str,
+) -> Result<Vec<MessageEdit>, ChannelError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, message_id, old_content, edited_at
+         FROM message_edits
+         WHERE message_id = ?1
+         ORDER BY edited_at ASC",
+    )?;
+
+    let rows = stmt.query_map([message_id], |row| {
+        Ok(MessageEdit {
+            id: row.get(0)?,
+            message_id: row.get(1)?,
+            old_content: row.get(2)?,
+            edited_at: row.get(3)?,
+        })
+    })?;
+
+    let mut edits = Vec::new();
+    for row in rows {
+        edits.push(row?);
+    }
+    Ok(edits)
 }
 
 /// Maximum number of messages to delete in a single retention sweep.
@@ -646,6 +793,8 @@ fn map_row_to_message(row: &Row) -> rusqlite::Result<Message> {
         reply_to_message_id: row.get(6)?,
         created_at: row.get(7)?,
         expires_at: row.get(8)?,
+        edited_at: row.get(9)?,
+        deleted_at: row.get(10)?,
     })
 }
 
@@ -1130,5 +1279,159 @@ mod tests {
             )
             .expect("count failed");
         assert_eq!(remaining, 1, "non-expired message should remain");
+    }
+
+    /// Helper: create a channel and message for edit/delete tests.
+    fn setup_editable_message(conn: &Connection) -> Message {
+        let server_id = 1;
+        let params = CreateChannelParams {
+            server_id,
+            channel_id: "chan-edit".to_string(),
+            name: "Edit Test".to_string(),
+            channel_type: ChannelType::Text,
+            topic: None,
+            vrp_topic_binding: None,
+            required_capabilities_json: None,
+            agent_min_alignment: None,
+            retention_days: None,
+            federation_scope: FederationScope::Local,
+        };
+        create_channel(conn, &params).expect("create channel failed");
+
+        let msg_params = CreateMessageParams {
+            channel_id: "chan-edit".to_string(),
+            message_id: "msg-edit-1".to_string(),
+            sender_pseudonym: "user-a".to_string(),
+            content: "Original content".to_string(),
+            reply_to_message_id: None,
+        };
+        create_message(conn, &msg_params).expect("create message failed")
+    }
+
+    #[test]
+    fn test_edit_message_success() {
+        let conn = setup_db();
+        let msg = setup_editable_message(&conn);
+
+        let updated = edit_message(&conn, &msg.message_id, "user-a", "Edited content")
+            .expect("edit should succeed");
+        assert_eq!(updated.content, "Edited content");
+        assert!(updated.edited_at.is_some());
+
+        // Check edit history
+        let history = get_edit_history(&conn, &msg.message_id).expect("history should succeed");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].old_content, "Original content");
+    }
+
+    #[test]
+    fn test_edit_message_wrong_sender() {
+        let conn = setup_db();
+        let msg = setup_editable_message(&conn);
+
+        let err = edit_message(&conn, &msg.message_id, "user-b", "Hacked")
+            .expect_err("edit by wrong sender should fail");
+        match err {
+            ChannelError::NotFound(_) => (),
+            _ => panic!("expected NotFound, got {:?}", err),
+        }
+    }
+
+    #[test]
+    fn test_edit_message_expired_window() {
+        let conn = setup_db();
+        let msg = setup_editable_message(&conn);
+
+        // Manually backdate the message to 2 minutes ago
+        conn.execute(
+            "UPDATE messages SET created_at = datetime('now', '-2 minutes') WHERE message_id = ?1",
+            [&msg.message_id],
+        )
+        .expect("backdate failed");
+
+        let err = edit_message(&conn, &msg.message_id, "user-a", "Too late")
+            .expect_err("edit after window should fail");
+        match err {
+            ChannelError::NotFound(s) => assert!(s.contains("expired"), "expected 'expired' in: {}", s),
+            _ => panic!("expected NotFound, got {:?}", err),
+        }
+    }
+
+    #[test]
+    fn test_delete_message_success() {
+        let conn = setup_db();
+        let msg = setup_editable_message(&conn);
+
+        let deleted = delete_message(&conn, &msg.message_id, "user-a")
+            .expect("delete should succeed");
+        assert!(deleted.deleted_at.is_some());
+        assert_eq!(deleted.content, "");
+    }
+
+    #[test]
+    fn test_delete_message_wrong_sender() {
+        let conn = setup_db();
+        let msg = setup_editable_message(&conn);
+
+        let err = delete_message(&conn, &msg.message_id, "user-b")
+            .expect_err("delete by wrong sender should fail");
+        match err {
+            ChannelError::NotFound(_) => (),
+            _ => panic!("expected NotFound, got {:?}", err),
+        }
+    }
+
+    #[test]
+    fn test_delete_message_expired_window() {
+        let conn = setup_db();
+        let msg = setup_editable_message(&conn);
+
+        // Manually backdate the message to 2 minutes ago
+        conn.execute(
+            "UPDATE messages SET created_at = datetime('now', '-2 minutes') WHERE message_id = ?1",
+            [&msg.message_id],
+        )
+        .expect("backdate failed");
+
+        let err = delete_message(&conn, &msg.message_id, "user-a")
+            .expect_err("delete after window should fail");
+        match err {
+            ChannelError::NotFound(s) => assert!(s.contains("expired"), "expected 'expired' in: {}", s),
+            _ => panic!("expected NotFound, got {:?}", err),
+        }
+    }
+
+    #[test]
+    fn test_edit_deleted_message_fails() {
+        let conn = setup_db();
+        let msg = setup_editable_message(&conn);
+
+        delete_message(&conn, &msg.message_id, "user-a").expect("delete should succeed");
+
+        let err = edit_message(&conn, &msg.message_id, "user-a", "Revive")
+            .expect_err("editing deleted message should fail");
+        match err {
+            ChannelError::NotFound(_) => (),
+            _ => panic!("expected NotFound, got {:?}", err),
+        }
+    }
+
+    #[test]
+    fn test_multiple_edits_preserve_history() {
+        let conn = setup_db();
+        let msg = setup_editable_message(&conn);
+
+        edit_message(&conn, &msg.message_id, "user-a", "Edit 1").expect("edit 1 failed");
+        edit_message(&conn, &msg.message_id, "user-a", "Edit 2").expect("edit 2 failed");
+        edit_message(&conn, &msg.message_id, "user-a", "Edit 3").expect("edit 3 failed");
+
+        let history = get_edit_history(&conn, &msg.message_id).expect("history failed");
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[0].old_content, "Original content");
+        assert_eq!(history[1].old_content, "Edit 1");
+        assert_eq!(history[2].old_content, "Edit 2");
+
+        let current = get_message(&conn, &msg.message_id).expect("get msg failed");
+        assert_eq!(current.content, "Edit 3");
     }
 }
