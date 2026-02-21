@@ -206,7 +206,6 @@ export default function App() {
               <ChannelList />
             </aside>
             <main className="chat-area">
-              <VoicePanel />
               <MessageView />
               <MessageInput />
             </main>
@@ -294,6 +293,9 @@ export default function App() {
 
         {/* Main content area — shifts color palette per active persona */}
         <div className="app-main-content" key={activeServer?.id ?? 'default'}>
+          {/* VoicePanel is rendered outside the view switch so the call
+              stays connected when the user navigates to Federation/Events. */}
+          <VoicePanel />
           {renderView()}
         </div>
       </div>

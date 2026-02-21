@@ -76,6 +76,18 @@ export class AnnexWebSocket {
     };
   }
 
+  /** Subscribe to real-time messages for a channel. */
+  subscribe(channelId: string): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({ type: 'subscribe', channelId }));
+  }
+
+  /** Unsubscribe from a channel's real-time messages. */
+  unsubscribe(channelId: string): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({ type: 'unsubscribe', channelId }));
+  }
+
   /** Send a message to a channel. */
   send(channelId: string, content: string, replyTo: string | null = null): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
