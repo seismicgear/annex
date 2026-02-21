@@ -4,6 +4,7 @@ pub mod api;
 pub mod api_admin;
 pub mod api_agent;
 pub mod api_channels;
+pub mod api_link_preview;
 pub mod api_federation;
 pub mod api_graph;
 pub mod api_observe;
@@ -76,6 +77,8 @@ pub struct AppState {
     pub observe_tx: broadcast::Sender<annex_observe::PublicEvent>,
     /// Directory for uploaded files (images, etc.).
     pub upload_dir: String,
+    /// In-memory cache for link preview metadata and proxied images.
+    pub preview_cache: api_link_preview::PreviewCache,
 }
 
 /// Emits an observe event to the database and broadcasts it to the SSE stream.
@@ -240,6 +243,14 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/api/usernames/visible",
             get(api_usernames::get_visible_usernames_handler),
+        )
+        .route(
+            "/api/link-preview",
+            get(api_link_preview::link_preview_handler),
+        )
+        .route(
+            "/api/link-preview/image",
+            get(api_link_preview::image_proxy_handler),
         )
         .layer(axum::middleware::from_fn(middleware::auth_middleware));
 

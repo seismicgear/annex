@@ -76,6 +76,7 @@ async fn test_auth_middleware_flow() {
         voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
         observe_tx: tokio::sync::broadcast::channel(256).0,
         upload_dir: std::env::temp_dir().to_string_lossy().into_owned(),
+        preview_cache: annex_server::api_link_preview::PreviewCache::new(),
     };
 
     // 5. Setup Router with middleware

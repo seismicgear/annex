@@ -42,6 +42,8 @@ ed25519-dalek = { version = "2", features = ["rand_core", "serde"] }
 hex = "0.4"
 rand = "0.8"
 sha2.workspace = true
+scraper = "0.22"
+url = "2"
 
 [dev-dependencies]
 annex-voice = { workspace = true }

@@ -83,11 +83,17 @@ export async function fetchLinkPreview(
     }
 
     const data = await res.json();
+    // Route OG images through the server-side proxy so the user's IP
+    // is never exposed to the third-party image host.
+    const rawImageUrl: string | null = data.image_url ?? null;
+    const proxiedImageUrl = rawImageUrl
+      ? `${base}/api/link-preview/image?` + new URLSearchParams({ url: rawImageUrl })
+      : null;
     const preview: LinkPreviewData = {
       url,
       title: data.title ?? null,
       description: data.description ?? null,
-      imageUrl: data.image_url ?? null,
+      imageUrl: proxiedImageUrl,
       siteName: data.site_name ?? extractDomain(url),
       loading: false,
       error: null,

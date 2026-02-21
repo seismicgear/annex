@@ -89,6 +89,7 @@ async fn test_ws_lifecycle() {
         voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
         observe_tx: tokio::sync::broadcast::channel(256).0,
         upload_dir: std::env::temp_dir().to_string_lossy().into_owned(),
+        preview_cache: annex_server::api_link_preview::PreviewCache::new(),
     };
 
     // 3. Start Server

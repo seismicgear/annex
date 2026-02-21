@@ -243,6 +243,7 @@ async fn main() -> Result<(), StartupError> {
         voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
         observe_tx,
         upload_dir,
+        preview_cache: annex_server::api_link_preview::PreviewCache::new(),
     };
 
     // Start background pruning task. Monitor for panics.
