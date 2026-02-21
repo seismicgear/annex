@@ -5,13 +5,14 @@
  * - Voice calls (microphone audio)
  * - Video calls (camera feed with participant grid)
  * - Screen sharing / game sharing (prominent overlay)
+ * - Local self-view for camera, screen share, and mic status
  *
  * Uses @livekit/components-react for WebRTC transport.
  * LiveKit's can_publish grant covers all track sources (mic, camera, screen).
  * Video starts disabled; the user toggles camera/screen via control buttons.
  */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import {
   LiveKitRoom,
   RoomAudioRenderer,
@@ -25,6 +26,30 @@ import { Track, type LocalParticipant } from 'livekit-client';
 import { useIdentityStore } from '@/stores/identity';
 import { useChannelsStore } from '@/stores/channels';
 import * as api from '@/lib/api';
+
+/** Local media status bar shown above the controls. */
+function LocalMediaStatus() {
+  const { localParticipant } = useLocalParticipant();
+  const lp = localParticipant as LocalParticipant;
+
+  const micEnabled = lp.isMicrophoneEnabled;
+  const camEnabled = lp.isCameraEnabled;
+  const screenEnabled = lp.isScreenShareEnabled;
+
+  return (
+    <div className="local-media-status">
+      <span className={`status-pill ${micEnabled ? 'on' : 'off'}`}>
+        {micEnabled ? 'Mic ON' : 'Mic OFF'}
+      </span>
+      <span className={`status-pill ${camEnabled ? 'on' : 'off'}`}>
+        {camEnabled ? 'Cam ON' : 'Cam OFF'}
+      </span>
+      {screenEnabled && (
+        <span className="status-pill sharing">Sharing Screen</span>
+      )}
+    </div>
+  );
+}
 
 /** Controls bar rendered inside the LiveKit room context. */
 function MediaControls({ onLeave }: { onLeave: () => void }) {
@@ -107,14 +132,65 @@ function MediaControls({ onLeave }: { onLeave: () => void }) {
   );
 }
 
-/** Prominent screen share display when someone is sharing. */
-function ScreenShareView() {
+/** Local self-view: shows your own camera and screen share. */
+function LocalSelfView() {
+  const camTracks = useTracks([Track.Source.Camera]);
   const screenTracks = useTracks([Track.Source.ScreenShare]);
-  const activeShare = screenTracks.find(
-    (t) => t.publication && !t.publication.isMuted && t.publication.track,
+  const { localParticipant } = useLocalParticipant();
+
+  const localCam = camTracks.find(
+    (t) =>
+      t.participant.identity === localParticipant.identity &&
+      t.publication &&
+      !t.publication.isMuted &&
+      t.publication.track,
   );
 
-  if (!activeShare) return null;
+  const localScreen = screenTracks.find(
+    (t) =>
+      t.participant.identity === localParticipant.identity &&
+      t.publication &&
+      !t.publication.isMuted &&
+      t.publication.track,
+  );
+
+  if (!localCam && !localScreen) return null;
+
+  return (
+    <div className="local-self-view">
+      {localCam && (
+        <div className="self-view-tile">
+          <VideoTrack trackRef={localCam} />
+          <span className="self-view-label">You (camera)</span>
+        </div>
+      )}
+      {localScreen && (
+        <div className="self-view-tile screen">
+          <VideoTrack trackRef={localScreen} />
+          <span className="self-view-label">You (screen)</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Prominent screen share display when someone else is sharing. */
+function ScreenShareView() {
+  const screenTracks = useTracks([Track.Source.ScreenShare]);
+  const { localParticipant } = useLocalParticipant();
+
+  // Show remote screen shares prominently; local is shown in LocalSelfView.
+  const remoteShares = screenTracks.filter(
+    (t) =>
+      t.participant.identity !== localParticipant.identity &&
+      t.publication &&
+      !t.publication.isMuted &&
+      t.publication.track,
+  );
+
+  if (remoteShares.length === 0) return null;
+
+  const activeShare = remoteShares[0];
 
   return (
     <div className="screen-share-view">
@@ -196,6 +272,8 @@ function RoomContent({ onLeave }: { onLeave: () => void }) {
   return (
     <>
       <RoomAudioRenderer />
+      <LocalMediaStatus />
+      <LocalSelfView />
       <ScreenShareView />
       <ParticipantGrid />
       <MediaControls onLeave={onLeave} />
@@ -211,10 +289,29 @@ export function VoicePanel() {
   const [voiceToken, setVoiceToken] = useState<string | null>(null);
   const [livekitUrl, setLivekitUrl] = useState<string | null>(null);
   const [joining, setJoining] = useState(false);
+  const [callActive, setCallActive] = useState(false);
 
   const activeChannel = channels.find((c) => c.channel_id === activeChannelId);
   const isVoiceCapable =
     activeChannel?.channel_type === 'Voice' || activeChannel?.channel_type === 'Hybrid';
+
+  // Poll voice status to determine if a call is active (Create vs Join).
+  useEffect(() => {
+    if (!isVoiceCapable || !activeChannelId || !identity?.pseudonymId || voiceToken) return;
+
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const status = await api.getVoiceStatus(identity.pseudonymId!, activeChannelId);
+        if (!cancelled) setCallActive(status.active);
+      } catch {
+        if (!cancelled) setCallActive(false);
+      }
+    };
+    check();
+    const interval = setInterval(check, 10_000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [isVoiceCapable, activeChannelId, identity?.pseudonymId, voiceToken]);
 
   const handleJoin = useCallback(async () => {
     if (!identity?.pseudonymId || !activeChannelId) return;
@@ -260,10 +357,16 @@ export function VoicePanel() {
     );
   }
 
+  const buttonText = joining
+    ? 'Joining...'
+    : callActive
+      ? 'Join Call'
+      : 'Create Call';
+
   return (
     <div className="voice-panel disconnected">
       <button onClick={handleJoin} disabled={joining} className="voice-join-btn">
-        {joining ? 'Joining...' : 'Join Call'}
+        {buttonText}
       </button>
     </div>
   );

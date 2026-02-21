@@ -57,6 +57,14 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
 
   selectChannel: async (pseudonymId: string, channelId: string) => {
     set({ activeChannelId: channelId, messages: [] });
+    // Auto-join the channel (idempotent — no-op if already a member).
+    // Must be a member before fetching messages or joining voice.
+    try {
+      await api.joinChannel(pseudonymId, channelId);
+    } catch {
+      // May fail for capability restrictions; still try to load messages
+      // in case the user is already a member from a previous session.
+    }
     const messages = await api.getMessages(pseudonymId, channelId, undefined, 50);
     set({ messages: messages.reverse() });
   },

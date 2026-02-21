@@ -16,6 +16,7 @@ services:
       - ANNEX_PORT=3000
       - ANNEX_DB_PATH=/app/data/annex.db
       - ANNEX_LIVEKIT_URL=ws://livekit:7880
+      - ANNEX_LIVEKIT_PUBLIC_URL=ws://localhost:7880
       - ANNEX_LIVEKIT_API_KEY=devkey
       - ANNEX_LIVEKIT_API_SECRET=secret
       - ANNEX_LOG_LEVEL=info

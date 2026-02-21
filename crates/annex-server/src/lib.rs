@@ -160,6 +160,10 @@ pub fn app(state: AppState) -> Router {
             post(api_channels::leave_voice_channel_handler),
         )
         .route(
+            "/api/channels/{channelId}/voice/status",
+            get(api_channels::voice_status_handler),
+        )
+        .route(
             "/api/channels/{channelId}/leave",
             post(api_channels::leave_channel_handler),
         )
