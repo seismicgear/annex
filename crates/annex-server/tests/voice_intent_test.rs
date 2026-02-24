@@ -127,6 +127,7 @@ async fn setup_app_with_mock_tts(
         observe_tx: tokio::sync::broadcast::channel(256).0,
         upload_dir: std::env::temp_dir().to_string_lossy().into_owned(),
         preview_cache: annex_server::api_link_preview::PreviewCache::new(),
+        cors_origins: vec![],
     };
 
     (app(state.clone()), pool, Arc::new(state))
@@ -442,6 +443,7 @@ async fn test_voice_intent_tts_profile_not_found() {
         observe_tx: tokio::sync::broadcast::channel(256).0,
         upload_dir: std::env::temp_dir().to_string_lossy().into_owned(),
         preview_cache: annex_server::api_link_preview::PreviewCache::new(),
+        cors_origins: vec![],
     };
 
     // Seed agent and channel

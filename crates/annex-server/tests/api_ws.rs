@@ -90,6 +90,7 @@ async fn test_ws_lifecycle() {
         observe_tx: tokio::sync::broadcast::channel(256).0,
         upload_dir: std::env::temp_dir().to_string_lossy().into_owned(),
         preview_cache: annex_server::api_link_preview::PreviewCache::new(),
+        cors_origins: vec![],
     };
 
     // 3. Start Server

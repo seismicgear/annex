@@ -141,17 +141,6 @@ fn detect_content_type(data: &[u8]) -> Option<(&'static str, UploadCategory)> {
     None
 }
 
-/// Classifies a content type string into an upload category.
-fn classify_content_type(ct: &str) -> UploadCategory {
-    if ALLOWED_IMAGE_TYPES.contains(&ct) {
-        UploadCategory::Image
-    } else if ALLOWED_VIDEO_TYPES.contains(&ct) {
-        UploadCategory::Video
-    } else {
-        UploadCategory::File
-    }
-}
-
 /// Returns the maximum upload size in bytes for a given category based on server policy.
 fn max_size_for_category(policy: &annex_types::ServerPolicy, category: UploadCategory) -> usize {
     let mb = match category {
@@ -482,7 +471,7 @@ pub async fn upload_chat_handler(
         .map_err(|e| ApiError::BadRequest(format!("multipart error: {}", e)))?
         .ok_or_else(|| ApiError::BadRequest("no file provided".to_string()))?;
 
-    let declared_ct = field
+    let _declared_ct = field
         .content_type()
         .unwrap_or("application/octet-stream")
         .to_string();
@@ -497,17 +486,13 @@ pub async fn upload_chat_handler(
         .await
         .map_err(|e| ApiError::BadRequest(format!("failed to read upload: {}", e)))?;
 
-    // Detect actual content type from magic bytes
-    let (detected_ct, category) = detect_content_type(&data).unwrap_or_else(|| {
-        // Unknown magic bytes — classify based on declared content type
-        let cat = classify_content_type(&declared_ct);
-        // For unrecognized files, use the declared type but classify as File
-        if cat == UploadCategory::File {
-            ("application/octet-stream", UploadCategory::File)
-        } else {
-            (&*Box::leak(declared_ct.clone().into_boxed_str()), cat)
-        }
-    });
+    // Detect actual content type from magic bytes.
+    // When magic bytes are unrecognized, treat the file as a generic binary
+    // regardless of the declared Content-Type header. This prevents:
+    // (1) memory leaks from the previous Box::leak approach, and
+    // (2) declared-MIME bypass of magic byte verification.
+    let (detected_ct, category) = detect_content_type(&data)
+        .unwrap_or(("application/octet-stream", UploadCategory::File));
 
     // Check for blocked types
     if BLOCKED_TYPES.contains(&detected_ct) {

@@ -11,7 +11,7 @@ use annex_types::{FederationScope, RoleCode};
 use axum::{
     extract::{
         ws::{Message as AxumMessage, WebSocket},
-        Extension, Query, WebSocketUpgrade,
+        ConnectInfo, Extension, Query, WebSocketUpgrade,
     },
     http::StatusCode,
     response::IntoResponse,
@@ -21,6 +21,7 @@ use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
+    net::SocketAddr,
     sync::Arc,
 };
 use tokio::sync::{mpsc, RwLock};
@@ -337,8 +338,19 @@ impl ConnectionManager {
 }
 
 /// WebSocket handler: `GET /ws?pseudonym=...`
+///
+/// # Security Note
+///
+/// Authentication currently relies on the pseudonym acting as a bearer token.
+/// There is no per-request cryptographic signature verification. This is a
+/// known Phase 2 limitation; future hardening phases will introduce signed
+/// requests or session tokens.
+///
+/// All auth attempts (success and failure) are logged with the remote address
+/// for security monitoring.
 pub async fn ws_handler(
     Extension(state): Extension<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     ws: WebSocketUpgrade,
     Query(params): Query<WsConnectParams>,
 ) -> impl IntoResponse {
@@ -363,11 +375,30 @@ pub async fn ws_handler(
 
     match auth_result {
         Ok(Ok(identity)) => {
-            // Success
+            tracing::info!(
+                pseudonym = %params.pseudonym,
+                remote_addr = %addr,
+                "websocket auth success"
+            );
             ws.on_upgrade(move |socket| handle_socket(socket, state, identity))
         }
-        Ok(Err(code)) => code.into_response(),
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Ok(Err(code)) => {
+            tracing::warn!(
+                pseudonym = %params.pseudonym,
+                remote_addr = %addr,
+                status = %code,
+                "websocket auth failed"
+            );
+            code.into_response()
+        }
+        Err(_) => {
+            tracing::warn!(
+                pseudonym = %params.pseudonym,
+                remote_addr = %addr,
+                "websocket auth internal error"
+            );
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
     }
 }
 

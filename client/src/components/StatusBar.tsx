@@ -19,7 +19,11 @@ import { AudioSettings } from '@/components/AudioSettings';
 import { getPersonasForIdentity } from '@/lib/personas';
 import type { Persona } from '@/types';
 
-export function StatusBar() {
+interface StatusBarProps {
+  tunnelUrl?: string | null;
+}
+
+export function StatusBar({ tunnelUrl }: StatusBarProps) {
   const identity = useIdentityStore((s) => s.identity);
   const logout = useIdentityStore((s) => s.logout);
   const exportCurrent = useIdentityStore((s) => s.exportCurrent);
@@ -43,6 +47,7 @@ export function StatusBar() {
   // The actual LiveKit mute is handled inside VoicePanel's MediaControls; this is
   // a secondary quick-toggle that mirrors the intent.
   const [micMuted, setMicMuted] = useState(false);
+  const [tunnelCopied, setTunnelCopied] = useState(false);
 
   // Load active persona for display
   useEffect(() => {
@@ -156,6 +161,24 @@ export function StatusBar() {
             <span className="server-slug">{identity.serverSlug}</span>
           )}
         </div>
+        {tunnelUrl && (
+          <div className="tunnel-status">
+            <span className="tunnel-label">Public:</span>
+            <span className="tunnel-url" title={tunnelUrl}>{tunnelUrl.replace('https://', '')}</span>
+            <button
+              className="tunnel-copy-btn"
+              onClick={() => {
+                navigator.clipboard.writeText(tunnelUrl).then(() => {
+                  setTunnelCopied(true);
+                  setTimeout(() => setTunnelCopied(false), 2000);
+                }).catch(() => {});
+              }}
+              title="Copy public URL to clipboard"
+            >
+              {tunnelCopied ? 'Copied' : 'Copy'}
+            </button>
+          </div>
+        )}
         <div className="status-actions">
           <button
             onClick={() => setShowAudioSettings(true)}

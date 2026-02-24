@@ -1064,6 +1064,42 @@
   color: #aaa;
 }
 
+.tunnel-status {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.7rem;
+  color: #aaa;
+  margin-left: auto;
+  margin-right: 0.75rem;
+}
+
+.tunnel-label {
+  color: #6c9;
+  font-weight: 500;
+}
+
+.tunnel-url {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tunnel-copy-btn {
+  padding: 0.1rem 0.4rem;
+  font-size: 0.65rem;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+  color: #ccc;
+  cursor: pointer;
+}
+
+.tunnel-copy-btn:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
 .status-actions {
   display: flex;
   gap: 0.5rem;

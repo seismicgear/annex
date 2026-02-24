@@ -3,6 +3,9 @@ set -eu
 
 DATA_DIR="$(dirname "${ANNEX_DB_PATH:-/app/data/annex.db}")"
 DB_PATH="${ANNEX_DB_PATH:-/app/data/annex.db}"
+
+# Ensure the data directory exists (needed if ANNEX_DB_PATH is customized).
+mkdir -p "$DATA_DIR" 2>/dev/null || true
 SLUG="${ANNEX_SERVER_SLUG:-default}"
 LABEL="${ANNEX_SERVER_LABEL:-Annex Server}"
 DEFAULT_POLICY='{"agent_min_alignment_score":0.8,"agent_required_capabilities":[],"federation_enabled":true,"default_retention_days":30,"voice_enabled":true,"max_members":1000}'

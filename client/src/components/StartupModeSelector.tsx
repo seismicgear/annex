@@ -21,7 +21,7 @@ interface WebPrefs {
 }
 
 interface Props {
-  onReady: () => void;
+  onReady: (tunnelUrl?: string) => void;
 }
 
 type Phase =
@@ -86,7 +86,9 @@ export function StartupModeSelector({ onReady }: Props) {
         try {
           const pubUrl = await startTunnel();
           setTunnelUrl(pubUrl);
-          setPhase('tunnel_ready');
+          // Auto-continue to the main UI — tunnel URL is surfaced
+          // in the StatusBar so the user can copy/share it later.
+          onReady(pubUrl);
         } catch (tunnelErr) {
           console.warn('Tunnel creation failed:', tunnelErr);
           onReady();

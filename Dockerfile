@@ -99,8 +99,11 @@ COPY config.toml /app/config.toml
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN sed -i 's/\r$//' /app/docker-entrypoint.sh && chmod +x /app/docker-entrypoint.sh
 
-# Create data directory for SQLite
-RUN mkdir -p /app/data
+# Create non-root user for runtime
+RUN groupadd --system annex && useradd --system --gid annex --no-create-home annex
+
+# Create data directory for SQLite (owned by runtime user)
+RUN mkdir -p /app/data && chown annex:annex /app/data
 
 ENV ANNEX_CONFIG_PATH=/app/config.toml
 ENV ANNEX_ZK_KEY_PATH=/app/zk/keys/membership_vkey.json
@@ -108,7 +111,11 @@ ENV ANNEX_DB_PATH=/app/data/annex.db
 ENV ANNEX_TTS_BINARY_PATH=/app/assets/piper/piper
 ENV ANNEX_TTS_VOICES_DIR=/app/assets/voices
 ENV ANNEX_CLIENT_DIR=/app/client/dist
+ENV ANNEX_CORS_ORIGINS=*
 
 EXPOSE 3000
+
+# Run as non-root user
+USER annex
 
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
