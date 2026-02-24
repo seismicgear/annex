@@ -188,6 +188,11 @@ impl Default for RateLimiter {
 }
 
 /// Rate limiting middleware.
+///
+/// Also performs one-time auto-detection of the server's public URL when no
+/// explicit `ANNEX_PUBLIC_URL` is configured. Uses `X-Forwarded-Host` /
+/// `X-Forwarded-Proto` headers (for reverse-proxy deployments) with a
+/// fallback to the standard `Host` header.
 pub async fn rate_limit_middleware(req: Request<Body>, next: Next) -> Result<Response, StatusCode> {
     // 1. Get AppState
     let state = req
@@ -195,6 +200,41 @@ pub async fn rate_limit_middleware(req: Request<Body>, next: Next) -> Result<Res
         .get::<Arc<AppState>>()
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?
         .clone();
+
+    // Auto-detect public URL from request headers if not yet configured.
+    {
+        let needs_detection = state
+            .public_url
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_empty();
+
+        if needs_detection {
+            let proto = req
+                .headers()
+                .get("x-forwarded-proto")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("http");
+
+            let host = req
+                .headers()
+                .get("x-forwarded-host")
+                .or_else(|| req.headers().get("host"))
+                .and_then(|v| v.to_str().ok());
+
+            if let Some(host) = host {
+                let detected = format!("{proto}://{host}");
+                let mut url = state
+                    .public_url
+                    .write()
+                    .unwrap_or_else(|p| p.into_inner());
+                if url.is_empty() {
+                    tracing::info!(public_url = %detected, "auto-detected server public URL from request headers");
+                    *url = detected;
+                }
+            }
+        }
+    }
 
     // 2. Classify endpoint and get limit
     let (category, limit) = {

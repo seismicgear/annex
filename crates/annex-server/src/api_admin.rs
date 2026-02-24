@@ -222,7 +222,7 @@ pub async fn get_server_handler(
     Ok(AxumJson(serde_json::json!({
         "slug": slug,
         "label": label,
-        "public_url": state.public_url,
+        "public_url": state.get_public_url(),
     }))
     .into_response())
 }

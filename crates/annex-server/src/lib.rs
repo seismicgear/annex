@@ -57,7 +57,11 @@ pub struct AppState {
     /// The local server signing key (Ed25519).
     pub signing_key: Arc<SigningKey>,
     /// The public URL of the server.
-    pub public_url: String,
+    ///
+    /// Wrapped in `Arc<RwLock<_>>` so that when no explicit URL is configured,
+    /// the server can auto-detect it from the first incoming HTTP request's
+    /// `Host` / `X-Forwarded-Host` headers.
+    pub public_url: Arc<RwLock<String>>,
     /// Server policy configuration.
     pub policy: Arc<RwLock<ServerPolicy>>,
     /// Rate limiter state.
@@ -85,6 +89,16 @@ pub struct AppState {
     pub upload_dir: String,
     /// In-memory cache for link preview metadata and proxied images.
     pub preview_cache: api_link_preview::PreviewCache,
+}
+
+impl AppState {
+    /// Returns the current public URL, or an empty string if not yet detected.
+    pub fn get_public_url(&self) -> String {
+        self.public_url
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
 }
 
 /// Emits an observe event to the database and broadcasts it to the SSE stream.
@@ -329,7 +343,7 @@ pub async fn prepare_server(
         membership_vkey: Arc::new(membership_vkey),
         server_id,
         signing_key: Arc::new(signing_key),
-        public_url: config.server.public_url.clone(),
+        public_url: Arc::new(RwLock::new(config.server.public_url.clone())),
         policy: Arc::new(RwLock::new(policy)),
         rate_limiter: RateLimiter::new(),
         connection_manager: api_ws::ConnectionManager::new(),
@@ -621,6 +635,7 @@ pub fn app(state: AppState) -> Router {
         router
     };
 
+    let shared_state = Arc::new(state);
     router
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .layer(axum::middleware::from_fn(middleware::rate_limit_middleware))
@@ -630,5 +645,5 @@ pub fn app(state: AppState) -> Router {
                 .allow_methods(Any)
                 .allow_headers(Any),
         )
-        .layer(Extension(Arc::new(state)))
+        .layer(Extension(shared_state))
 }

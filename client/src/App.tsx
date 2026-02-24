@@ -30,11 +30,10 @@ import { FederationPanel } from '@/components/FederationPanel';
 import { EventLog } from '@/components/EventLog';
 import { AdminPanel } from '@/components/AdminPanel';
 import { ServerHub } from '@/components/ServerHub';
-import { StartupModeSelector } from '@/components/StartupModeSelector';
+import { StartupModeSelector, clearWebStartupMode } from '@/components/StartupModeSelector';
 import { parseInviteFromUrl, clearInviteFromUrl } from '@/lib/invite';
 import { getPersonasForIdentity } from '@/lib/personas';
 import { getApiBaseUrl } from '@/lib/api';
-import { isTauri } from '@/lib/tauri';
 import type { InvitePayload } from '@/types';
 import './App.css';
 
@@ -46,7 +45,7 @@ export default function App() {
   const { servers, loadServers, saveCurrentServer, fetchServerImage } = useServersStore();
   const activeServer = useServersStore((s) => s.getActiveServer());
   const serverImageUrl = useServersStore((s) => s.serverImageUrl);
-  const [serverReady, setServerReady] = useState(() => !isTauri());
+  const [serverReady, setServerReady] = useState(false);
   const [activeView, setActiveView] = useState<AppView>('chat');
   const [adminMenuOpen, setAdminMenuOpen] = useState(false);
   const adminMenuRef = useRef<HTMLDivElement>(null);
@@ -61,6 +60,17 @@ export default function App() {
     loadIdentities();
     loadServers();
   }, [loadIdentities, loadServers]);
+
+  // When the user logs out, return to the mode selector
+  useEffect(() => {
+    if (phase === 'uninitialized' && serverReady) {
+      // Identity was cleared (logout) — reset to mode selector.
+      // Also clear the persisted preference so user can re-choose.
+      clearWebStartupMode();
+      setServerReady(false);
+      serverSaved.current = false;
+    }
+  }, [phase, serverReady]);
 
   // Connect WebSocket and load permissions when identity is ready
   useEffect(() => {
