@@ -30,8 +30,11 @@ import { FederationPanel } from '@/components/FederationPanel';
 import { EventLog } from '@/components/EventLog';
 import { AdminPanel } from '@/components/AdminPanel';
 import { ServerHub } from '@/components/ServerHub';
+import { StartupModeSelector } from '@/components/StartupModeSelector';
 import { parseInviteFromUrl, clearInviteFromUrl } from '@/lib/invite';
 import { getPersonasForIdentity } from '@/lib/personas';
+import { getApiBaseUrl } from '@/lib/api';
+import { isTauri } from '@/lib/tauri';
 import type { InvitePayload } from '@/types';
 import './App.css';
 
@@ -43,6 +46,7 @@ export default function App() {
   const { servers, loadServers, saveCurrentServer, fetchServerImage } = useServersStore();
   const activeServer = useServersStore((s) => s.getActiveServer());
   const serverImageUrl = useServersStore((s) => s.serverImageUrl);
+  const [serverReady, setServerReady] = useState(() => !isTauri());
   const [activeView, setActiveView] = useState<AppView>('chat');
   const [adminMenuOpen, setAdminMenuOpen] = useState(false);
   const adminMenuRef = useRef<HTMLDivElement>(null);
@@ -61,7 +65,8 @@ export default function App() {
   // Connect WebSocket and load permissions when identity is ready
   useEffect(() => {
     if (phase === 'ready' && identity?.pseudonymId) {
-      connectWs(identity.pseudonymId);
+      const baseUrl = getApiBaseUrl();
+      connectWs(identity.pseudonymId, baseUrl || undefined);
       loadPermissions();
       fetchServerImage();
       return () => disconnectWs();
@@ -154,6 +159,17 @@ export default function App() {
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [adminMenuOpen]);
+
+  // Show startup mode selector when running inside Tauri
+  if (!serverReady) {
+    return (
+      <div className="app">
+        <main className="app-main setup">
+          <StartupModeSelector onReady={() => setServerReady(true)} />
+        </main>
+      </div>
+    );
+  }
 
   // Show identity setup if not ready
   if (phase !== 'ready' || !identity?.pseudonymId) {

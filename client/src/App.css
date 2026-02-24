@@ -3233,3 +3233,115 @@
   color: #666;
   padding: 0.25rem 0;
 }
+
+/* ── Startup Mode Selector (Tauri) ── */
+
+.startup-mode-selector {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 60vh;
+  padding: 2rem;
+  text-align: center;
+  max-width: 520px;
+  margin: 0 auto;
+}
+
+.startup-mode-selector h2 {
+  font-size: 1.6rem;
+  margin: 0 0 0.5rem;
+  color: #eee;
+}
+
+.startup-description {
+  color: #888;
+  margin: 0 0 1.5rem;
+  font-size: 0.9rem;
+}
+
+.startup-loading {
+  color: #888;
+  font-size: 0.9rem;
+  padding: 2rem 0;
+}
+
+.startup-options {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  width: 100%;
+}
+
+.startup-option {
+  background: #1a1a1a;
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 1.25rem;
+  text-align: left;
+}
+
+.startup-option h3 {
+  margin: 0 0 0.4rem;
+  font-size: 1rem;
+  color: #eee;
+}
+
+.startup-option p {
+  margin: 0 0 0.75rem;
+  font-size: 0.85rem;
+  color: #888;
+  line-height: 1.4;
+}
+
+.startup-option form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.startup-option input[type="text"] {
+  background: #111;
+  border: 1px solid #444;
+  border-radius: 4px;
+  padding: 0.5rem 0.6rem;
+  color: #eee;
+  font-size: 0.85rem;
+  outline: none;
+}
+
+.startup-option input[type="text"]:focus {
+  border-color: #e63946;
+}
+
+.startup-option input[type="text"]::placeholder {
+  color: #555;
+}
+
+.startup-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: #555;
+  font-size: 0.8rem;
+}
+
+.startup-divider::before,
+.startup-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: #333;
+}
+
+.startup-mode-selector .error-message {
+  color: #e63946;
+  font-size: 0.85rem;
+  margin-bottom: 0.75rem;
+}
+
+.startup-mode-selector .form-error {
+  color: #e63946;
+  font-size: 0.8rem;
+  margin: 0;
+}
