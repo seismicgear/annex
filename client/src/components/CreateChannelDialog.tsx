@@ -8,6 +8,7 @@
 import { useState, type FormEvent } from 'react';
 import { useChannelsStore } from '@/stores/channels';
 import { useIdentityStore } from '@/stores/identity';
+import { InfoTip } from '@/components/InfoTip';
 import type { ChannelType } from '@/types';
 
 const CHANNEL_TYPES: { value: ChannelType; label: string; description: string }[] = [
@@ -93,7 +94,7 @@ export function CreateChannelDialog({ onClose }: { onClose: () => void }) {
               checked={federated}
               onChange={(e) => setFederated(e.target.checked)}
             />
-            Federated
+            Federated<InfoTip text="When on, messages in this channel are shared with partner servers your admin has connected to. Turn off to keep conversations private to this server." />
             <span className="field-hint">
               {federated
                 ? 'Messages will be shared with connected partner servers.'

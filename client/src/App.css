@@ -2827,6 +2827,83 @@
   font-weight: normal;
 }
 
+/* ── InfoTip (i) icon tooltip ── */
+
+.info-tip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  margin-left: 0.35rem;
+  vertical-align: middle;
+  color: #666;
+  cursor: help;
+  outline: none;
+}
+
+.info-tip:hover,
+.info-tip:focus {
+  color: #aaa;
+}
+
+.info-tip-icon {
+  flex-shrink: 0;
+}
+
+.info-tip-popup {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1a1a1a;
+  color: #ccc;
+  border: 1px solid #333;
+  border-radius: 6px;
+  padding: 0.5rem 0.65rem;
+  font-size: 0.75rem;
+  font-weight: normal;
+  line-height: 1.4;
+  max-width: 280px;
+  min-width: 180px;
+  width: max-content;
+  white-space: normal;
+  z-index: 1000;
+  pointer-events: none;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.info-tip-popup::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: #333;
+}
+
+/* ── Share Link Warning ── */
+
+.share-link-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.5rem 0.65rem;
+  background: rgba(255, 180, 50, 0.08);
+  border: 1px solid rgba(255, 180, 50, 0.25);
+  border-radius: 6px;
+  font-size: 0.75rem;
+  color: #cc9944;
+  line-height: 1.4;
+}
+
+.share-link-warning code {
+  background: rgba(255, 255, 255, 0.06);
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px;
+  font-size: 0.7rem;
+}
+
 /* ── Share Link ── */
 
 .share-link-row {
