@@ -46,6 +46,7 @@ export default function App() {
   const activeServer = useServersStore((s) => s.getActiveServer());
   const serverImageUrl = useServersStore((s) => s.serverImageUrl);
   const [serverReady, setServerReady] = useState(false);
+  const [tunnelUrl, setTunnelUrl] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<AppView>('chat');
   const [adminMenuOpen, setAdminMenuOpen] = useState(false);
   const adminMenuRef = useRef<HTMLDivElement>(null);
@@ -180,7 +181,7 @@ export default function App() {
     return (
       <div className="app">
         <main className="app-main setup">
-          <StartupModeSelector onReady={() => setServerReady(true)} />
+          <StartupModeSelector onReady={(url) => { setTunnelUrl(url ?? null); setServerReady(true); }} />
         </main>
       </div>
     );
@@ -357,7 +358,7 @@ export default function App() {
         </div>
       </div>
 
-      <StatusBar />
+      <StatusBar tunnelUrl={tunnelUrl} />
     </div>
   );
 }

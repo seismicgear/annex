@@ -33,7 +33,7 @@ use ed25519_dalek::SigningKey;
 use middleware::RateLimiter;
 use rand::rngs::OsRng;
 use rusqlite::OptionalExtension;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use serde_json::{json, Value};
 use std::net::SocketAddr;
@@ -89,6 +89,8 @@ pub struct AppState {
     pub upload_dir: String,
     /// In-memory cache for link preview metadata and proxied images.
     pub preview_cache: api_link_preview::PreviewCache,
+    /// Configured CORS allowed origins (empty = same-origin only, ["*"] = permissive).
+    pub cors_origins: Vec<String>,
 }
 
 impl AppState {
@@ -212,6 +214,79 @@ pub fn init_tracing(logging: &config::LoggingConfig) -> Result<(), StartupError>
 /// Prepares the server: loads database, initializes state, starts background
 /// tasks, and binds the TCP listener.
 ///
+/// Resolve the Ed25519 signing key for federation identity.
+///
+/// Priority:
+/// 1. `ANNEX_SIGNING_KEY` environment variable (64-char hex)
+/// 2. Persistent key file at `{data_dir}/signing.key`
+/// 3. Generate a new key and write it to `{data_dir}/signing.key`
+///
+/// Falls back to an ephemeral key (with warning) only if the file cannot be written.
+fn resolve_signing_key(db_path: &str) -> Result<SigningKey, StartupError> {
+    // 1. Check environment variable
+    if let Ok(hex_key) = std::env::var("ANNEX_SIGNING_KEY") {
+        let bytes = hex::decode(&hex_key)
+            .map_err(|e| StartupError::InvalidSigningKey(format!("not valid hex: {}", e)))?;
+        let byte_array: [u8; 32] = bytes.try_into().map_err(|v: Vec<u8>| {
+            StartupError::InvalidSigningKey(format!("expected 32 bytes, got {}", v.len()))
+        })?;
+        tracing::info!("loaded signing key from ANNEX_SIGNING_KEY environment variable");
+        return Ok(SigningKey::from_bytes(&byte_array));
+    }
+
+    // 2. Check persistent key file
+    let data_dir = std::path::Path::new(db_path)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let key_file = data_dir.join("signing.key");
+
+    if key_file.exists() {
+        match std::fs::read_to_string(&key_file) {
+            Ok(hex_key) => {
+                let hex_key = hex_key.trim();
+                match hex::decode(hex_key) {
+                    Ok(bytes) if bytes.len() == 32 => {
+                        let byte_array: [u8; 32] = bytes.try_into().unwrap();
+                        tracing::info!(path = %key_file.display(), "loaded signing key from persistent file");
+                        return Ok(SigningKey::from_bytes(&byte_array));
+                    }
+                    _ => {
+                        tracing::warn!(path = %key_file.display(), "signing key file exists but is malformed — generating new key");
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(path = %key_file.display(), error = %e, "could not read signing key file — generating new key");
+            }
+        }
+    }
+
+    // 3. Generate a new key and persist it
+    let key = SigningKey::generate(&mut OsRng);
+    let hex_key = hex::encode(key.to_bytes());
+
+    match std::fs::write(&key_file, &hex_key) {
+        Ok(()) => {
+            // Set file permissions to owner-only (0600) on Unix
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&key_file, std::fs::Permissions::from_mode(0o600));
+            }
+            tracing::info!(path = %key_file.display(), "generated and persisted new signing key");
+        }
+        Err(e) => {
+            tracing::warn!(
+                path = %key_file.display(),
+                error = %e,
+                "could not persist signing key — using ephemeral key (federation identity will change on restart)"
+            );
+        }
+    }
+
+    Ok(key)
+}
+
 /// Returns a bound [`TcpListener`] and a fully-configured [`Router`]. The
 /// caller is responsible for driving `axum::serve(listener, app)`.
 ///
@@ -303,18 +378,9 @@ pub async fn prepare_server(
     let membership_vkey =
         annex_identity::zk::parse_verification_key(&vkey_json).map_err(StartupError::ZkError)?;
 
-    // Load or generate Signing Key
-    let signing_key = if let Ok(hex_key) = std::env::var("ANNEX_SIGNING_KEY") {
-        let bytes = hex::decode(&hex_key)
-            .map_err(|e| StartupError::InvalidSigningKey(format!("not valid hex: {}", e)))?;
-        let byte_array: [u8; 32] = bytes.try_into().map_err(|v: Vec<u8>| {
-            StartupError::InvalidSigningKey(format!("expected 32 bytes, got {}", v.len()))
-        })?;
-        SigningKey::from_bytes(&byte_array)
-    } else {
-        tracing::warn!("ANNEX_SIGNING_KEY not set. Generating ephemeral key. Federation signatures will change on restart.");
-        SigningKey::generate(&mut OsRng)
-    };
+    // Load or generate Signing Key.
+    // Priority: (1) ANNEX_SIGNING_KEY env var, (2) persistent file on disk, (3) generate + persist.
+    let signing_key = resolve_signing_key(&config.database.path)?;
 
     // Create broadcast channels
     let (presence_tx, _) =
@@ -355,6 +421,7 @@ pub async fn prepare_server(
         observe_tx,
         upload_dir,
         preview_cache: api_link_preview::PreviewCache::new(),
+        cors_origins: config.cors.allowed_origins.clone(),
     };
 
     // Start background pruning task
@@ -367,6 +434,11 @@ pub async fn prepare_server(
             tracing::error!("pruning background task panicked: {}", e);
         }
     });
+
+    // Start rate limiter cleanup task
+    tokio::spawn(background::start_rate_limit_cleanup_task(
+        state.rate_limiter.clone(),
+    ));
 
     // Build application
     let router = app(state);
@@ -617,13 +689,23 @@ pub fn app(state: AppState) -> Router {
     // Configured via ANNEX_CLIENT_DIR env var; defaults to "client/dist".
     let client_dir = std::env::var("ANNEX_CLIENT_DIR")
         .unwrap_or_else(|_| "client/dist".to_string());
-    if !std::path::Path::new(&client_dir).is_absolute() {
-        tracing::warn!(
-            path = %client_dir,
-            "ANNEX_CLIENT_DIR is relative — static file serving depends on working directory; \
-             consider using an absolute path"
-        );
-    }
+    let client_dir = match std::fs::canonicalize(&client_dir) {
+        Ok(abs) => {
+            let s = abs.to_string_lossy().to_string();
+            tracing::info!(original = %client_dir, resolved = %s, "canonicalized client directory path");
+            s
+        }
+        Err(_) => {
+            if !std::path::Path::new(&client_dir).is_absolute() {
+                tracing::warn!(
+                    path = %client_dir,
+                    "ANNEX_CLIENT_DIR is relative and could not be canonicalized — \
+                     static file serving depends on working directory"
+                );
+            }
+            client_dir
+        }
+    };
     let router = if std::path::Path::new(&client_dir).join("index.html").exists() {
         tracing::info!(path = %client_dir, "serving client static files");
         let index = format!("{}/index.html", client_dir);
@@ -635,15 +717,51 @@ pub fn app(state: AppState) -> Router {
         router
     };
 
+    let cors_origins = state.cors_origins.clone();
     let shared_state = Arc::new(state);
+
+    // Build CORS layer from configuration.
+    // Default (empty origins): restrictive (same-origin only, no CORS headers).
+    // "*": permissive (any origin). Explicit list: only those origins.
+    let cors_layer = {
+        let origins = &cors_origins;
+        let is_permissive = origins.iter().any(|o| o == "*");
+        let base = CorsLayer::new()
+            .allow_methods([
+                axum::http::Method::GET,
+                axum::http::Method::POST,
+                axum::http::Method::PUT,
+                axum::http::Method::DELETE,
+                axum::http::Method::PATCH,
+                axum::http::Method::OPTIONS,
+            ])
+            .allow_headers([
+                axum::http::header::CONTENT_TYPE,
+                axum::http::header::AUTHORIZATION,
+                axum::http::HeaderName::from_static("x-annex-pseudonym"),
+            ]);
+
+        if is_permissive {
+            tracing::info!("CORS: permissive mode (allow all origins)");
+            base.allow_origin(Any)
+        } else if origins.is_empty() {
+            tracing::info!("CORS: restrictive mode (same-origin only)");
+            // No Access-Control-Allow-Origin header → browsers block cross-origin requests
+            base.allow_origin(AllowOrigin::list(std::iter::empty::<axum::http::HeaderValue>()))
+        } else {
+            let parsed: Vec<axum::http::HeaderValue> = origins
+                .iter()
+                .filter_map(|o| o.parse::<axum::http::HeaderValue>().ok())
+                .collect();
+            tracing::info!(origins = ?origins, "CORS: restricted to configured origins");
+            base.allow_origin(AllowOrigin::list(parsed))
+        }
+    };
+
     router
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
+        .layer(axum::middleware::from_fn(middleware::security_headers_middleware))
         .layer(axum::middleware::from_fn(middleware::rate_limit_middleware))
-        .layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods(Any)
-                .allow_headers(Any),
-        )
+        .layer(cors_layer)
         .layer(Extension(shared_state))
 }

@@ -2,7 +2,9 @@
 //!
 //! Includes:
 //! - Pruning inactive graph nodes.
+//! - Periodic rate limiter cleanup.
 
+use crate::middleware::RateLimiter;
 use crate::AppState;
 use annex_graph::prune_inactive_nodes;
 use annex_observe::EventPayload;
@@ -77,5 +79,19 @@ pub async fn start_pruning_task(state: Arc<AppState>, threshold_seconds: u64) {
                 tracing::error!("pruning task join error: {}", e);
             }
         }
+    }
+}
+
+/// Periodically evicts expired entries from the in-memory rate limiter.
+///
+/// This prevents unbounded memory growth from many unique IPs/pseudonyms
+/// sending requests. Runs every 120 seconds.
+pub async fn start_rate_limit_cleanup_task(rate_limiter: RateLimiter) {
+    let interval = Duration::from_secs(120);
+    tracing::info!("starting rate limiter cleanup task (every 120s)");
+
+    loop {
+        sleep(interval).await;
+        rate_limiter.cleanup_expired();
     }
 }

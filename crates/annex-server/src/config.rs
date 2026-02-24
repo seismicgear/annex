@@ -28,6 +28,22 @@ pub struct Config {
     /// Voice pipeline paths (TTS binary, STT model, etc.).
     #[serde(default)]
     pub voice: VoicePathsConfig,
+
+    /// CORS configuration.
+    #[serde(default)]
+    pub cors: CorsConfig,
+}
+
+/// CORS (Cross-Origin Resource Sharing) configuration.
+///
+/// By default, CORS is **restrictive** (same-origin only). To allow cross-origin
+/// requests, set `allowed_origins` to a list of origin URLs or `["*"]` for
+/// permissive mode.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct CorsConfig {
+    /// List of allowed origins. Empty = same-origin only. `["*"]` = allow all.
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
 }
 
 /// File-system paths for the TTS and STT voice pipelines.
@@ -432,6 +448,13 @@ pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
     }
     if let Some(val) = parse_env_var::<String>("ANNEX_STT_BINARY_PATH")? {
         config.voice.stt_binary_path = val;
+    }
+    if let Ok(origins) = std::env::var("ANNEX_CORS_ORIGINS") {
+        config.cors.allowed_origins = origins
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
     }
 
     validate_config(&config)?;

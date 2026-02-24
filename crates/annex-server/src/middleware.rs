@@ -2,7 +2,7 @@ use annex_identity::{get_platform_identity, PlatformIdentity};
 use axum::{
     body::Body,
     extract::ConnectInfo,
-    http::{Request, StatusCode},
+    http::{header, Request, StatusCode},
     middleware::Next,
     response::Response,
 };
@@ -128,6 +128,22 @@ impl RateLimiter {
         }
     }
 
+    /// Evicts all expired rate limit entries. Called periodically from a
+    /// background task to prevent unbounded memory growth.
+    pub fn cleanup_expired(&self) {
+        let mut state = match self.state.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let now = Instant::now();
+        let before = state.len();
+        state.retain(|_, ws| now.duration_since(ws.window_start) <= RATE_LIMIT_WINDOW * 2);
+        let evicted = before.saturating_sub(state.len());
+        if evicted > 0 {
+            tracing::debug!(evicted, remaining = state.len(), "rate limiter cleanup");
+        }
+    }
+
     /// Check if the request is allowed.
     ///
     /// Returns `true` if allowed, `false` if limit exceeded.
@@ -145,9 +161,9 @@ impl RateLimiter {
         };
         let now = Instant::now();
 
-        // Periodic cleanup to prevent memory leak.
-        // Evict only entries whose window has fully expired (previous + current).
-        if state.len() > 10000 {
+        // Inline cleanup as belt-and-suspenders alongside the background task.
+        // Threshold lowered from 10,000 to 5,000.
+        if state.len() > 5000 {
             state.retain(|_, ws| now.duration_since(ws.window_start) <= RATE_LIMIT_WINDOW * 2);
         }
 
@@ -185,6 +201,50 @@ impl Default for RateLimiter {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Security headers middleware.
+///
+/// Sets standard security response headers on every response to prevent
+/// common web attacks (XSS, clickjacking, MIME sniffing, etc.).
+pub async fn security_headers_middleware(req: Request<Body>, next: Next) -> Response {
+    let mut response = next.run(req).await;
+    let headers = response.headers_mut();
+
+    headers.insert(
+        header::HeaderName::from_static("x-content-type-options"),
+        header::HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::HeaderName::from_static("x-frame-options"),
+        header::HeaderValue::from_static("DENY"),
+    );
+    headers.insert(
+        header::HeaderName::from_static("referrer-policy"),
+        header::HeaderValue::from_static("no-referrer"),
+    );
+    headers.insert(
+        header::HeaderName::from_static("x-xss-protection"),
+        header::HeaderValue::from_static("1; mode=block"),
+    );
+    headers.insert(
+        header::HeaderName::from_static("permissions-policy"),
+        header::HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
+    );
+    headers.insert(
+        header::HeaderName::from_static("content-security-policy"),
+        header::HeaderValue::from_static(
+            "default-src 'self'; \
+             script-src 'self' 'wasm-unsafe-eval'; \
+             connect-src 'self' ws: wss:; \
+             img-src 'self' data: blob:; \
+             style-src 'self' 'unsafe-inline'; \
+             frame-ancestors 'none'; \
+             object-src 'none'"
+        ),
+    );
+
+    response
 }
 
 /// Rate limiting middleware.

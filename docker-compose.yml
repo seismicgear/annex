@@ -17,8 +17,9 @@ services:
       - ANNEX_DB_PATH=/app/data/annex.db
       - ANNEX_LIVEKIT_URL=ws://livekit:7880
       - ANNEX_LIVEKIT_PUBLIC_URL=ws://localhost:7880
-      - ANNEX_LIVEKIT_API_KEY=devkey
-      - ANNEX_LIVEKIT_API_SECRET=secret
+      - ANNEX_LIVEKIT_API_KEY=${ANNEX_LIVEKIT_API_KEY:-devkey}
+      - ANNEX_LIVEKIT_API_SECRET=${ANNEX_LIVEKIT_API_SECRET:-secret}
+      - ANNEX_CORS_ORIGINS=*
       - ANNEX_LOG_LEVEL=info
       - ANNEX_LOG_JSON=true
       - ANNEX_TTS_BINARY_PATH=/app/assets/piper/piper
@@ -37,7 +38,7 @@ services:
       - "7881:7881"
       - "7882:7882/udp"
     environment:
-      - "LIVEKIT_KEYS=devkey: secret"
+      - "LIVEKIT_KEYS=${ANNEX_LIVEKIT_API_KEY:-devkey}: ${ANNEX_LIVEKIT_API_SECRET:-secret}"
     restart: unless-stopped
 
 volumes:

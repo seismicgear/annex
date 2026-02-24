@@ -132,6 +132,41 @@ fn is_private_or_reserved(url: &str) -> bool {
     false
 }
 
+/// Performs DNS resolution and checks if **any** resolved IP is private/reserved.
+///
+/// This prevents DNS rebinding SSRF attacks where a hostname initially resolves
+/// to a public IP during `is_private_or_reserved()` but then resolves to an
+/// internal IP when the actual HTTP request is made (TOCTOU).
+async fn resolves_to_private_ip(host: &str) -> bool {
+    // Append a dummy port — `lookup_host` requires a socket address string.
+    let lookup_target = if host.contains(':') {
+        // IPv6 literal or already has port
+        host.to_string()
+    } else {
+        format!("{}:443", host)
+    };
+
+    let addrs = match tokio::net::lookup_host(&lookup_target).await {
+        Ok(addrs) => addrs.collect::<Vec<_>>(),
+        Err(e) => {
+            tracing::debug!(host = %host, error = %e, "DNS resolution failed — blocking request");
+            return true; // fail-closed: if we can't resolve, don't allow
+        }
+    };
+
+    for addr in addrs {
+        if is_private_ip(addr.ip()) {
+            tracing::warn!(
+                host = %host,
+                resolved_ip = %addr.ip(),
+                "DNS resolved to private/reserved IP — blocking request"
+            );
+            return true;
+        }
+    }
+    false
+}
+
 fn is_private_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
@@ -257,6 +292,15 @@ pub async fn link_preview_handler(
         return Err(StatusCode::FORBIDDEN);
     }
 
+    // DNS rebinding protection: resolve the hostname and verify all IPs are public.
+    if let Ok(parsed) = url::Url::parse(&url) {
+        if let Some(host) = parsed.host_str() {
+            if host.parse::<IpAddr>().is_err() && resolves_to_private_ip(host).await {
+                return Err(StatusCode::FORBIDDEN);
+            }
+        }
+    }
+
     // Check cache
     {
         let cache = state.preview_cache.previews.lock().unwrap_or_else(|e| e.into_inner());
@@ -372,6 +416,15 @@ pub async fn image_proxy_handler(
     }
     if is_private_or_reserved(&url) {
         return Err(StatusCode::FORBIDDEN);
+    }
+
+    // DNS rebinding protection: resolve the hostname and verify all IPs are public.
+    if let Ok(parsed) = url::Url::parse(&url) {
+        if let Some(host) = parsed.host_str() {
+            if host.parse::<IpAddr>().is_err() && resolves_to_private_ip(host).await {
+                return Err(StatusCode::FORBIDDEN);
+            }
+        }
     }
 
     // Check cache

@@ -15,6 +15,14 @@ pool_max_size = 8
 level = "info"
 json = false
 
+# CORS: Cross-Origin Resource Sharing.
+# Default (empty): restrictive, same-origin only — no cross-origin requests allowed.
+# Set to ["*"] for permissive mode (development/Docker).
+# Or list specific origins: ["https://app.example.com", "https://admin.example.com"]
+# Override with env var: ANNEX_CORS_ORIGINS (comma-separated)
+[cors]
+# allowed_origins = []
+
 [voice]
 tts_voices_dir = "assets/voices"
 tts_binary_path = "assets/piper/piper"

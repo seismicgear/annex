@@ -21,7 +21,7 @@ interface WebPrefs {
 }
 
 interface Props {
-  onReady: () => void;
+  onReady: (tunnelUrl?: string) => void;
 }
 
 type Phase =
@@ -86,7 +86,9 @@ export function StartupModeSelector({ onReady }: Props) {
         try {
           const pubUrl = await startTunnel();
           setTunnelUrl(pubUrl);
-          setPhase('tunnel_ready');
+          // Auto-continue to the main UI — tunnel URL is surfaced
+          // in the StatusBar so the user can copy/share it later.
+          onReady(pubUrl);
         } catch (tunnelErr) {
           console.warn('Tunnel creation failed:', tunnelErr);
           onReady();
@@ -169,7 +171,10 @@ export function StartupModeSelector({ onReady }: Props) {
           const prefs = await getStartupMode();
           if (cancelled) return;
           if (!prefs) {
-            setPhase('choose');
+            // Auto-default to Host mode on first launch in Tauri —
+            // start the embedded server immediately without showing
+            // the mode selection dialog.
+            applyHost(false);
             return;
           }
           if (prefs.startup_mode.mode === 'host') {
