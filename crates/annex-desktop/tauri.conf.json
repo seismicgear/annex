@@ -28,9 +28,11 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "resources": {
-      "../../zk/keys/membership_vkey.json": "zk/keys/membership_vkey.json"
-    },
+    "resources": [
+      "../../zk/keys/membership_vkey.json",
+      "../../assets/piper",
+      "../../assets/voices"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -33,6 +33,10 @@ fn ensure_config(data_dir: &std::path::Path) -> PathBuf {
     if !config_path.exists() {
         let db_path = data_dir.join("annex.db");
         let upload_dir = data_dir.join("uploads");
+        // Use forward slashes for the database path — Windows APIs accept
+        // them, and TOML double-quoted strings treat backslashes as escape
+        // sequences (e.g. \U → unicode escape), which breaks parsing.
+        let db_path_safe = db_path.display().to_string().replace('\\', "/");
         let contents = format!(
             r#"# Annex desktop configuration (auto-generated).
 
@@ -54,7 +58,7 @@ json = false
 # Override with ANNEX_CORS_ORIGINS env var if needed.
 allowed_origins = ["tauri://localhost", "https://tauri.localhost"]
 "#,
-            db_path = db_path.display(),
+            db_path = db_path_safe,
         );
         let _ = std::fs::write(&config_path, contents);
 
@@ -491,16 +495,39 @@ fn main() {
     //   3. Workspace root (development builds)
     // The server falls back to a dummy vkey if none is found (see lib.rs).
     let vkey_candidates = [
-        // Tauri bundle resources (macOS: ../Resources/, Linux/Windows: beside exe)
+        // Tauri bundle resources (beside exe on Windows/Linux)
+        exe_dir.join("membership_vkey.json"),
+        // Legacy object-map layout
         exe_dir.join("zk").join("keys").join("membership_vkey.json"),
         // macOS .app bundle Resources directory
         exe_dir.parent()
-            .map(|p| p.join("Resources").join("zk").join("keys").join("membership_vkey.json"))
+            .map(|p| p.join("Resources").join("membership_vkey.json"))
             .unwrap_or_default(),
         // Workspace root (development)
         resource_base.join("zk").join("keys").join("membership_vkey.json"),
     ];
     let zk_vkey = vkey_candidates.iter().find(|p| p.exists());
+
+    // Resolve Piper TTS binary from bundled resources or dev workspace.
+    let piper_bin_name = if cfg!(target_os = "windows") { "piper.exe" } else { "piper" };
+    let piper_candidates = [
+        exe_dir.join("piper").join(piper_bin_name),
+        exe_dir.parent()
+            .map(|p| p.join("Resources").join("piper").join(piper_bin_name))
+            .unwrap_or_default(),
+        resource_base.join("assets").join("piper").join(piper_bin_name),
+    ];
+    let piper_binary = piper_candidates.iter().find(|p| p.exists());
+
+    // Resolve voice models directory.
+    let voices_candidates = [
+        exe_dir.join("voices"),
+        exe_dir.parent()
+            .map(|p| p.join("Resources").join("voices"))
+            .unwrap_or_default(),
+        resource_base.join("assets").join("voices"),
+    ];
+    let voices_dir = voices_candidates.iter().find(|p| p.is_dir());
 
     // Set environment variables so the embedded server picks up the right paths.
     // SAFETY: Called before any threads are spawned, so this is single-threaded.
@@ -508,6 +535,12 @@ fn main() {
         std::env::set_var("ANNEX_CLIENT_DIR", &client_dir);
         if let Some(vkey_path) = zk_vkey {
             std::env::set_var("ANNEX_ZK_KEY_PATH", vkey_path);
+        }
+        if let Some(piper_path) = piper_binary {
+            std::env::set_var("ANNEX_TTS_BINARY_PATH", piper_path);
+        }
+        if let Some(voices_path) = voices_dir {
+            std::env::set_var("ANNEX_TTS_VOICES_DIR", voices_path);
         }
         std::env::set_var("ANNEX_UPLOAD_DIR", &upload_dir);
 

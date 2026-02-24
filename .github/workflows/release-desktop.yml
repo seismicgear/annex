@@ -56,19 +56,17 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: client/package-lock.json
-
-      - name: Install frontend dependencies
-        working-directory: client
-        run: npm ci
-
-      - name: Build frontend
-        working-directory: client
-        run: npm run build
+          cache-dependency-path: |
+            client/package-lock.json
+            zk/package-lock.json
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli@2 --locked
 
+      # beforeBuildCommand (build-desktop.js) handles everything:
+      #   1. ZK circuit compilation + Groth16 setup
+      #   2. Piper TTS binary + voice model download
+      #   3. Client npm ci + vite build
       - name: Build Tauri app
         working-directory: crates/annex-desktop
         run: cargo tauri build --target ${{ matrix.target }}
