@@ -56,7 +56,7 @@ Options:
   --data-dir <path>         Persistent data directory (default: ./data)
   --server-label <name>     Server display name (default: "Annex Server")
   --server-slug <slug>      URL-safe server identifier (default: "default")
-  --public-url <url>        Public URL for federation (default: http://localhost:<port>)
+  --public-url <url>        Public URL for federation (default: auto-detected from requests)
   --signing-key <hex>       Ed25519 signing key (64-char hex; omit for ephemeral)
   --log-level <level>       Log level: trace|debug|info|warn|error (default: info)
   --log-json                Output structured JSON logs
@@ -109,8 +109,6 @@ fi
 if [[ -n "$SIGNING_KEY" ]] && ! [[ "$SIGNING_KEY" =~ ^[0-9a-fA-F]{64}$ ]]; then
     fail "Invalid --signing-key. Must be exactly 64 hex characters (32 bytes)."
 fi
-
-[[ -z "$PUBLIC_URL" ]] && PUBLIC_URL="http://localhost:$PORT"
 
 mkdir -p "$DATA_DIR"
 DATA_DIR="$(cd "$DATA_DIR" && pwd)"

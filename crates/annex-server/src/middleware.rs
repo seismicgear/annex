@@ -202,9 +202,6 @@ pub async fn rate_limit_middleware(req: Request<Body>, next: Next) -> Result<Res
         .clone();
 
     // Auto-detect public URL from request headers if not yet configured.
-    // Skips localhost/loopback addresses so the first real public request
-    // sets the URL correctly (useful when the admin hits the server locally
-    // before any external traffic arrives).
     {
         let needs_detection = state
             .public_url
@@ -226,23 +223,14 @@ pub async fn rate_limit_middleware(req: Request<Body>, next: Next) -> Result<Res
                 .and_then(|v| v.to_str().ok());
 
             if let Some(host) = host {
-                // Extract hostname without port for the loopback check
-                let hostname = host.split(':').next().unwrap_or(host);
-                let is_loopback = matches!(
-                    hostname,
-                    "localhost" | "127.0.0.1" | "0.0.0.0" | "::1" | "[::1]"
-                );
-
-                if !is_loopback {
-                    let detected = format!("{proto}://{host}");
-                    let mut url = state
-                        .public_url
-                        .write()
-                        .unwrap_or_else(|p| p.into_inner());
-                    if url.is_empty() {
-                        tracing::info!(public_url = %detected, "auto-detected server public URL from request headers");
-                        *url = detected;
-                    }
+                let detected = format!("{proto}://{host}");
+                let mut url = state
+                    .public_url
+                    .write()
+                    .unwrap_or_else(|p| p.into_inner());
+                if url.is_empty() {
+                    tracing::info!(public_url = %detected, "auto-detected server public URL from request headers");
+                    *url = detected;
                 }
             }
         }

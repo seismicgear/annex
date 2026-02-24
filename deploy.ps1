@@ -27,7 +27,7 @@
     URL-safe identifier for this server. Default: "default"
 
 .PARAMETER PublicUrl
-    Public URL for federation. Default: http://localhost:<Port>
+    Public URL for federation. Default: auto-detected from incoming requests
 
 .PARAMETER SigningKey
     Ed25519 signing key (64-char hex). If omitted, generates ephemeral key.
@@ -98,8 +98,6 @@ function Write-Fail { param([string]$msg) Write-Host "   FAIL: $msg" -Foreground
 function Test-Command { param([string]$cmd) return [bool](Get-Command $cmd -ErrorAction SilentlyContinue) }
 
 # ── Resolve defaults ──
-
-if (-not $PublicUrl) { $PublicUrl = "http://localhost:$Port" }
 
 # PS 5.1-compatible directory resolution (no ?. operator)
 $resolvedDir = Resolve-Path -Path $DataDir -ErrorAction SilentlyContinue

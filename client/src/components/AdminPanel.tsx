@@ -79,19 +79,7 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
     }
   };
 
-  const isLocalUrl = (url: string) =>
-    /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:\d+)?$/i.test(url);
-  const origin = window.location.origin;
-  // Prefer server-configured public_url when it's a real address; fall back
-  // to the browser's origin (which is already public if the user reached the
-  // app over a public domain).  Only show a warning when both are localhost.
-  const effectiveBase =
-    (publicUrl && !isLocalUrl(publicUrl) ? publicUrl : null)
-    ?? (!isLocalUrl(origin) ? origin : null)
-    ?? '';
-  const shareUrl = effectiveBase
-    ? `${effectiveBase}/#/invite?server=${encodeURIComponent(slug)}&label=${encodeURIComponent(label)}`
-    : '';
+  const shareUrl = `${publicUrl || window.location.origin}/#/invite?server=${encodeURIComponent(slug)}&label=${encodeURIComponent(label)}`;
 
   const handleCopyLink = async () => {
     try {
@@ -153,18 +141,12 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
       <div className="policy-section">
         <h4>Share Server</h4>
         <p className="field-hint">Send this link to invite people to your server.</p>
-        {shareUrl ? (
-          <div className="share-link-row">
-            <input type="text" value={shareUrl} readOnly className="share-link-input" />
-            <button className="primary-btn" onClick={handleCopyLink}>
-              {copied ? 'Copied!' : 'Copy Link'}
-            </button>
-          </div>
-        ) : (
-          <div className="share-link-warning">
-            Your server is running on localhost. Set a public URL via the <code>ANNEX_PUBLIC_URL</code> environment variable so invite links work for others.
-          </div>
-        )}
+        <div className="share-link-row">
+          <input type="text" value={shareUrl} readOnly className="share-link-input" />
+          <button className="primary-btn" onClick={handleCopyLink}>
+            {copied ? 'Copied!' : 'Copy Link'}
+          </button>
+        </div>
       </div>
 
       {error && <div className="error-message">{error}</div>}
