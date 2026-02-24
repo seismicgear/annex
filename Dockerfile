@@ -85,7 +85,7 @@ RUN npm run build
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates sqlite3 \
+    ca-certificates sqlite3 gosu \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -134,7 +134,6 @@ ENV ANNEX_CORS_ORIGINS=*
 
 EXPOSE 3000
 
-# Run as non-root user
-USER annex
-
+# The entrypoint starts as root to fix data-volume ownership, then
+# drops to the non-root "annex" user via gosu before exec-ing the server.
 ENTRYPOINT ["/app/docker-entrypoint.sh"]

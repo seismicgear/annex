@@ -4,8 +4,11 @@ set -eu
 DATA_DIR="$(dirname "${ANNEX_DB_PATH:-/app/data/annex.db}")"
 DB_PATH="${ANNEX_DB_PATH:-/app/data/annex.db}"
 
-# Ensure the data directory exists (needed if ANNEX_DB_PATH is customized).
-mkdir -p "$DATA_DIR" 2>/dev/null || true
+# Ensure the data directory exists and is owned by the runtime user.
+# The container starts as root so it can fix volume ownership from prior
+# runs, then drops to "annex" via gosu before exec-ing the server.
+mkdir -p "$DATA_DIR"
+chown -R annex:annex "$DATA_DIR"
 SLUG="${ANNEX_SERVER_SLUG:-default}"
 LABEL="${ANNEX_SERVER_LABEL:-Annex Server}"
 DEFAULT_POLICY='{"agent_min_alignment_score":0.8,"agent_required_capabilities":[],"federation_enabled":true,"default_retention_days":30,"voice_enabled":true,"max_members":1000}'
@@ -19,29 +22,24 @@ SAFE_LABEL="$(printf '%s' "$LABEL" | sed "s/'/''/g")"
 # If ANNEX_SIGNING_KEY is not set, generate a persistent key on the data
 # volume so it survives container restarts.
 if [ -z "${ANNEX_SIGNING_KEY:-}" ]; then
-    if [ -f "$KEY_FILE" ] && ANNEX_SIGNING_KEY="$(cat "$KEY_FILE" 2>/dev/null)"; then
+    if [ -f "$KEY_FILE" ]; then
+        ANNEX_SIGNING_KEY="$(cat "$KEY_FILE")"
         export ANNEX_SIGNING_KEY
     else
-        if [ -f "$KEY_FILE" ]; then
-            echo "WARN: signing key file exists but is unreadable; regenerating" >&2
-        fi
         ANNEX_SIGNING_KEY="$(head -c 32 /dev/urandom | od -A n -t x1 | tr -d ' \n')"
         export ANNEX_SIGNING_KEY
-        if printf '%s' "$ANNEX_SIGNING_KEY" > "$KEY_FILE" 2>/dev/null; then
-            chmod 600 "$KEY_FILE"
-            echo "Generated signing key at $KEY_FILE"
-        else
-            echo "WARN: could not persist signing key — using ephemeral key" >&2
-        fi
+        printf '%s' "$ANNEX_SIGNING_KEY" > "$KEY_FILE"
+        chmod 600 "$KEY_FILE"
+        chown annex:annex "$KEY_FILE"
+        echo "Generated signing key at $KEY_FILE"
     fi
 fi
 
 # ── Database migrations + seeding ──
-# Run the server briefly with a timeout to trigger migrations. It exits
-# after seeding a default server record or encountering a startup error.
-# Stderr is captured to a temp file so migration errors are not silently lost.
+# Run the server briefly as the runtime user to trigger migrations.
+# Stderr is captured so migration errors are not silently lost.
 MIGRATION_LOG="$(mktemp)"
-if timeout 30 /app/annex-server > /dev/null 2>"$MIGRATION_LOG"; then
+if timeout 30 gosu annex /app/annex-server > /dev/null 2>"$MIGRATION_LOG"; then
     : # Server ran and exited cleanly (auto-seeds since commit 0301646)
 else
     EXIT_CODE=$?
@@ -66,4 +64,4 @@ else
     sqlite3 "$DB_PATH" "UPDATE servers SET policy_json = '$DEFAULT_POLICY' WHERE policy_json = '{}';" || true
 fi
 
-exec /app/annex-server
+exec gosu annex /app/annex-server
