@@ -12,6 +12,7 @@
   "dependencies": {
     "@livekit/components-react": "^2.9.19",
     "@livekit/components-styles": "^1.2.0",
+    "@tauri-apps/api": "^2.10.1",
     "buffer": "^6.0.3",
     "circomlibjs": "^0.1.7",
     "idb": "^8.0.3",

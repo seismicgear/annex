@@ -1,0 +1,221 @@
+/**
+ * Startup mode selector — shown when the app is running inside Tauri.
+ *
+ * Lets the user choose between hosting their own server (embedded Axum)
+ * or connecting to an existing remote Annex server as a client.
+ *
+ * The choice is persisted to disk so subsequent launches skip this screen.
+ * A "Change Mode" option allows resetting the preference.
+ */
+
+import { useState, useEffect, useCallback } from 'react';
+import {
+  getStartupMode,
+  saveStartupMode,
+  clearStartupMode,
+  startEmbeddedServer,
+  type StartupPrefs,
+} from '@/lib/tauri';
+import { setApiBaseUrl } from '@/lib/api';
+
+interface Props {
+  onReady: () => void;
+}
+
+type Phase = 'loading' | 'choose' | 'starting_server' | 'connecting' | 'error';
+
+export function StartupModeSelector({ onReady }: Props) {
+  const [phase, setPhase] = useState<Phase>('loading');
+  const [remoteUrl, setRemoteUrl] = useState('');
+  const [error, setError] = useState('');
+
+  const applyHost = useCallback(
+    async (skipSave: boolean) => {
+      setPhase('starting_server');
+      setError('');
+      try {
+        const url = await startEmbeddedServer();
+        setApiBaseUrl(url);
+        if (!skipSave) {
+          await saveStartupMode({ startup_mode: { mode: 'host' } });
+        }
+        onReady();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+        setPhase('error');
+      }
+    },
+    [onReady],
+  );
+
+  const applyClient = useCallback(
+    async (url: string, skipSave: boolean) => {
+      setError('');
+      let normalized = url.trim();
+      if (!/^https?:\/\//i.test(normalized)) {
+        normalized = `https://${normalized}`;
+      }
+
+      // Validate URL format
+      try {
+        const parsed = new URL(normalized);
+        if (!['http:', 'https:'].includes(parsed.protocol)) {
+          setError('Only http and https URLs are supported.');
+          return;
+        }
+      } catch {
+        setError('Invalid URL format.');
+        return;
+      }
+
+      setPhase('connecting');
+
+      // Probe server to verify it's reachable
+      try {
+        const resp = await fetch(`${normalized}/api/public/server/summary`);
+        if (!resp.ok) throw new Error(`Server responded with ${resp.status}`);
+      } catch {
+        setError('Could not reach server. Check the URL and try again.');
+        setPhase('choose');
+        return;
+      }
+
+      setApiBaseUrl(normalized);
+      if (!skipSave) {
+        await saveStartupMode({
+          startup_mode: { mode: 'client', server_url: normalized },
+        });
+      }
+      onReady();
+    },
+    [onReady],
+  );
+
+  // On mount, check for saved preference
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const prefs: StartupPrefs | null = await getStartupMode();
+        if (cancelled) return;
+
+        if (!prefs) {
+          setPhase('choose');
+          return;
+        }
+
+        if (prefs.startup_mode.mode === 'host') {
+          await applyHost(true);
+        } else {
+          const url = prefs.startup_mode.server_url;
+          setRemoteUrl(url);
+          await applyClient(url, true);
+          // If applyClient failed (set phase to 'choose'), that's fine —
+          // user will see the choice screen with the pre-filled URL.
+        }
+      } catch {
+        if (!cancelled) setPhase('choose');
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [applyHost, applyClient]);
+
+  const handleReset = async () => {
+    await clearStartupMode().catch(() => {});
+    setPhase('choose');
+    setError('');
+  };
+
+  const handleClientSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    applyClient(remoteUrl, false);
+  };
+
+  if (phase === 'loading') {
+    return (
+      <div className="startup-mode-selector">
+        <div className="startup-loading">Loading...</div>
+      </div>
+    );
+  }
+
+  if (phase === 'starting_server') {
+    return (
+      <div className="startup-mode-selector">
+        <h2>Annex</h2>
+        <div className="startup-loading">Starting server...</div>
+      </div>
+    );
+  }
+
+  if (phase === 'connecting') {
+    return (
+      <div className="startup-mode-selector">
+        <h2>Annex</h2>
+        <div className="startup-loading">Connecting to server...</div>
+      </div>
+    );
+  }
+
+  if (phase === 'error') {
+    return (
+      <div className="startup-mode-selector">
+        <h2>Annex</h2>
+        <div className="error-message">{error}</div>
+        <button onClick={handleReset}>Try Again</button>
+      </div>
+    );
+  }
+
+  // phase === 'choose'
+  return (
+    <div className="startup-mode-selector">
+      <h2>Annex</h2>
+      <p className="startup-description">
+        Choose how to use Annex on this device.
+      </p>
+
+      <div className="startup-options">
+        <div className="startup-option">
+          <h3>Host a Server</h3>
+          <p>
+            Run your own Annex server on this device. Other users can connect to
+            you.
+          </p>
+          <button className="primary-btn" onClick={() => applyHost(false)}>
+            Start Hosting
+          </button>
+        </div>
+
+        <div className="startup-divider">
+          <span>or</span>
+        </div>
+
+        <div className="startup-option">
+          <h3>Connect to a Server</h3>
+          <p>Join an existing Annex server as a client.</p>
+          <form onSubmit={handleClientSubmit}>
+            <input
+              type="text"
+              value={remoteUrl}
+              onChange={(e) => setRemoteUrl(e.target.value)}
+              placeholder="annex.example.com"
+            />
+            {error && <div className="form-error">{error}</div>}
+            <button
+              type="submit"
+              className="primary-btn"
+              disabled={!remoteUrl.trim()}
+            >
+              Connect
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+}

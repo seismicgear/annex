@@ -45,6 +45,22 @@ export function getApiBaseUrl(): string {
   return _apiBaseUrl;
 }
 
+/**
+ * Resolve a relative path against the API base URL.
+ *
+ * When the app is loaded from a Tauri bundle (`tauri://localhost`), relative
+ * paths like `/uploads/abc.png` would resolve against the Tauri origin and
+ * fail. This helper ensures they resolve against the server instead.
+ *
+ * Absolute URLs (http/https) are returned unchanged.
+ */
+export function resolveUrl(path: string): string {
+  if (!path || path.startsWith('http://') || path.startsWith('https://')) {
+    return path;
+  }
+  return _apiBaseUrl ? `${_apiBaseUrl}${path}` : path;
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const url = _apiBaseUrl ? `${_apiBaseUrl}${path}` : path;
   const res = await fetch(url, {

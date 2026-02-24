@@ -1,15 +1,18 @@
-//! Annex desktop application — a Tauri wrapper that embeds the Annex server
-//! and displays the React client in a native window.
+//! Annex desktop application — a Tauri wrapper that can either embed the Annex
+//! server or connect to a remote server as a client-only instance.
 //!
-//! On startup the embedded Axum server binds to a free port on localhost,
-//! then the Tauri webview navigates to that address.
+//! The bundled React frontend loads immediately and presents a startup mode
+//! selector. In **Host** mode the embedded Axum server binds to a free port on
+//! localhost and the client connects to it. In **Client** mode the webview
+//! connects directly to a user-supplied remote server URL.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use annex_server::{config, init_tracing, prepare_server};
+use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use tauri::Manager;
+use std::sync::Mutex;
 
 /// Resolve the application data directory.
 ///
@@ -56,6 +59,126 @@ json = false
     config_path
 }
 
+// ── Startup mode preference types ──
+
+/// Persisted startup mode choice.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "mode")]
+enum StartupMode {
+    #[serde(rename = "host")]
+    Host,
+    #[serde(rename = "client")]
+    Client { server_url: String },
+}
+
+/// Wrapper for the preference file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StartupPrefs {
+    startup_mode: StartupMode,
+}
+
+/// Tracks whether the embedded server is running.
+struct ServerState {
+    url: String,
+}
+
+/// Tauri-managed application state.
+struct AppManagedState {
+    data_dir: PathBuf,
+    config_path: PathBuf,
+    server: Mutex<Option<ServerState>>,
+}
+
+// ── Tauri commands ──
+
+/// Read saved startup mode preference. Returns `null` if none saved.
+#[tauri::command]
+fn get_startup_mode(state: tauri::State<'_, AppManagedState>) -> Option<StartupPrefs> {
+    let prefs_path = state.data_dir.join("startup_prefs.json");
+    std::fs::read_to_string(&prefs_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+}
+
+/// Save startup mode preference to disk.
+#[tauri::command]
+fn save_startup_mode(
+    state: tauri::State<'_, AppManagedState>,
+    prefs: StartupPrefs,
+) -> Result<(), String> {
+    let prefs_path = state.data_dir.join("startup_prefs.json");
+    let json =
+        serde_json::to_string_pretty(&prefs).map_err(|e| format!("serialize error: {e}"))?;
+    std::fs::write(&prefs_path, json).map_err(|e| format!("write error: {e}"))?;
+    Ok(())
+}
+
+/// Clear saved startup mode preference (reset).
+#[tauri::command]
+fn clear_startup_mode(state: tauri::State<'_, AppManagedState>) -> Result<(), String> {
+    let prefs_path = state.data_dir.join("startup_prefs.json");
+    if prefs_path.exists() {
+        std::fs::remove_file(&prefs_path).map_err(|e| format!("remove error: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Start the embedded Axum server. Returns the server URL on success.
+/// Idempotent — returns existing URL if already running.
+#[tauri::command]
+async fn start_embedded_server(
+    state: tauri::State<'_, AppManagedState>,
+) -> Result<String, String> {
+    // Check if server is already running.
+    {
+        let guard = state.server.lock().map_err(|e| e.to_string())?;
+        if let Some(ref srv) = *guard {
+            return Ok(srv.url.clone());
+        }
+    }
+
+    let config_path_str = state.config_path.to_string_lossy().to_string();
+
+    // Load configuration.
+    let cfg =
+        config::load_config(Some(&config_path_str)).map_err(|e| format!("config error: {e}"))?;
+
+    // Initialize tracing (ignore if already initialized).
+    let _ = init_tracing(&cfg.logging);
+
+    // Prepare the server (DB, state, listener).
+    let (listener, router) = prepare_server(cfg)
+        .await
+        .map_err(|e| format!("server startup failed: {e}"))?;
+
+    let addr = listener
+        .local_addr()
+        .map_err(|e| format!("no local addr: {e}"))?;
+    let url = format!("http://127.0.0.1:{}", addr.port());
+
+    tracing::info!(%url, "embedded server ready");
+
+    // Store the server URL.
+    {
+        let mut guard = state.server.lock().map_err(|e| e.to_string())?;
+        *guard = Some(ServerState { url: url.clone() });
+    }
+
+    // Spawn the Axum server to run until the process exits.
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        {
+            tracing::error!("server error: {e}");
+        }
+    });
+
+    Ok(url)
+}
+
 fn main() {
     let data_dir = resolve_data_dir();
     std::fs::create_dir_all(&data_dir).expect("failed to create Annex data directory");
@@ -91,72 +214,27 @@ fn main() {
     let upload_dir = data_dir.join("uploads");
 
     // Set environment variables so the embedded server picks up the right paths.
-    std::env::set_var("ANNEX_CLIENT_DIR", &client_dir);
-    if zk_vkey.exists() {
-        std::env::set_var("ANNEX_ZK_KEY_PATH", &zk_vkey);
+    // SAFETY: Called before any threads are spawned, so this is single-threaded.
+    unsafe {
+        std::env::set_var("ANNEX_CLIENT_DIR", &client_dir);
+        if zk_vkey.exists() {
+            std::env::set_var("ANNEX_ZK_KEY_PATH", &zk_vkey);
+        }
+        std::env::set_var("ANNEX_UPLOAD_DIR", &upload_dir);
     }
-    std::env::set_var("ANNEX_UPLOAD_DIR", &upload_dir);
 
     tauri::Builder::default()
-        .setup(move |app| {
-            let config_path_str = config_path.to_string_lossy().to_string();
-            let main_window = app
-                .get_webview_window("main")
-                .expect("main window not found");
-
-            // Start the embedded Axum server in a background task.
-            tauri::async_runtime::spawn(async move {
-                // Load configuration.
-                let config = match config::load_config(Some(&config_path_str)) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        eprintln!("failed to load config: {e}");
-                        return;
-                    }
-                };
-
-                // Initialize tracing (once per process).
-                if let Err(e) = init_tracing(&config.logging) {
-                    eprintln!("failed to init tracing: {e}");
-                    // Non-fatal — continue without structured logging.
-                }
-
-                // Prepare the server (DB, state, listener).
-                let (listener, router) = match prepare_server(config).await {
-                    Ok(pair) => pair,
-                    Err(e) => {
-                        tracing::error!("server startup failed: {e}");
-                        eprintln!("server startup failed: {e}");
-                        return;
-                    }
-                };
-
-                let addr = listener
-                    .local_addr()
-                    .expect("listener should have a local address");
-                let url = format!("http://127.0.0.1:{}", addr.port());
-
-                tracing::info!(%url, "embedded server ready — navigating window");
-
-                // Navigate the webview to the server.
-                let target_url: tauri::Url = url.parse().expect("valid URL");
-                if let Err(e) = main_window.navigate(target_url) {
-                    tracing::error!("failed to navigate window: {e}");
-                }
-
-                // Drive the Axum server until the process exits.
-                if let Err(e) = axum::serve(
-                    listener,
-                    router.into_make_service_with_connect_info::<SocketAddr>(),
-                )
-                .await
-                {
-                    tracing::error!("server error: {e}");
-                }
-            });
-
-            Ok(())
+        .manage(AppManagedState {
+            data_dir,
+            config_path,
+            server: Mutex::new(None),
         })
+        .invoke_handler(tauri::generate_handler![
+            get_startup_mode,
+            save_startup_mode,
+            clear_startup_mode,
+            start_embedded_server,
+        ])
         .run(tauri::generate_context!())
         .expect("error running Annex desktop");
 }
