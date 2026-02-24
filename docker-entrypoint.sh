@@ -63,4 +63,53 @@ else
     sqlite3 "$DB_PATH" "UPDATE servers SET policy_json = '$DEFAULT_POLICY' WHERE policy_json = '{}';" || true
 fi
 
+# ── Automatic public tunnel via cloudflared ──
+# Creates a free Cloudflare Quick Tunnel (*.trycloudflare.com) so the
+# server is reachable from anywhere without port-forwarding or DNS setup.
+# Disable with ANNEX_TUNNEL=false. Skipped if ANNEX_PUBLIC_URL is already set.
+TUNNEL_ENABLED="${ANNEX_TUNNEL:-true}"
+TUNNEL_ENABLED="$(printf '%s' "$TUNNEL_ENABLED" | tr '[:upper:]' '[:lower:]')"
+
+if [ "$TUNNEL_ENABLED" != "false" ] && [ "$TUNNEL_ENABLED" != "0" ] && [ "$TUNNEL_ENABLED" != "no" ] \
+   && [ -z "${ANNEX_PUBLIC_URL:-}" ] \
+   && command -v cloudflared >/dev/null 2>&1; then
+
+    ANNEX_PORT="${ANNEX_PORT:-3000}"
+    TUNNEL_LOG="$(mktemp)"
+
+    echo "Starting cloudflared tunnel..."
+    cloudflared tunnel --url "http://127.0.0.1:${ANNEX_PORT}" \
+        --no-autoupdate 2>"$TUNNEL_LOG" &
+    TUNNEL_PID=$!
+
+    # Wait up to 30 seconds for the tunnel URL to appear in stderr.
+    TUNNEL_URL=""
+    TRIES=0
+    while [ $TRIES -lt 60 ]; do
+        TUNNEL_URL="$(grep -oE 'https://[a-zA-Z0-9_-]+\.trycloudflare\.com' "$TUNNEL_LOG" | head -1)" || true
+        if [ -n "$TUNNEL_URL" ]; then
+            break
+        fi
+        sleep 0.5
+        TRIES=$((TRIES + 1))
+    done
+
+    if [ -n "$TUNNEL_URL" ]; then
+        export ANNEX_PUBLIC_URL="$TUNNEL_URL"
+        echo ""
+        echo "============================================"
+        echo "  Public URL: $TUNNEL_URL"
+        echo "============================================"
+        echo ""
+        echo "  Share this URL — anyone in the world can"
+        echo "  connect as long as this container is running."
+        echo ""
+    else
+        echo "WARN: cloudflared started but no tunnel URL detected after 30s" >&2
+        # Kill the tunnel process if it didn't produce a URL
+        kill "$TUNNEL_PID" 2>/dev/null || true
+    fi
+    rm -f "$TUNNEL_LOG"
+fi
+
 exec gosu annex /app/annex-server

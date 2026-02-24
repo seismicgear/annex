@@ -69,6 +69,17 @@ RUN git clone --depth 1 https://github.com/ggerganov/whisper.cpp.git /tmp/whispe
     cp /tmp/whisper/build/bin/main /whisper/bin/whisper && \
     rm -rf /tmp/whisper
 
+# ── Download cloudflared for automatic tunneling ──
+FROM debian:bookworm-slim AS cloudflared-downloader
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" \
+    -o /usr/local/bin/cloudflared \
+    && chmod +x /usr/local/bin/cloudflared
+
 # ── Build client ──
 FROM node:22-slim AS client-builder
 
@@ -108,6 +119,9 @@ COPY --from=piper-downloader /voices/ /app/assets/voices/
 
 # Whisper STT binary
 COPY --from=whisper-builder /whisper/bin/whisper /app/assets/whisper/whisper
+
+# cloudflared for automatic public tunnel
+COPY --from=cloudflared-downloader /usr/local/bin/cloudflared /usr/local/bin/cloudflared
 
 # Default config
 COPY config.toml /app/config.toml
