@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "identifier": "com.annex.desktop",
   "build": {
-    "beforeBuildCommand": "npm run build:desktop",
+    "beforeBuildCommand": "node ../scripts/build-desktop.js",
     "beforeDevCommand": "npm run dev",
     "frontendDist": "../../client/dist",
     "devUrl": "http://localhost:5173"
