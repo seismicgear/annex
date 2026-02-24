@@ -1,0 +1,32 @@
+# Rust build artifacts (can be multiple GB)
+target/
+
+# Node modules (rebuilt in Docker)
+node_modules/
+client/node_modules/
+zk/node_modules/
+
+# Git history
+.git/
+.gitignore
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Local data / runtime
+data/
+*.db
+*.db-journal
+*.db-wal
+
+# CI / docs
+.github/
+*.md
+LICENSE*
