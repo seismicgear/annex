@@ -35,7 +35,7 @@ if (!fs.existsSync(binPath)) {
     try {
         if (isWindows) {
             execSync(
-                `powershell -Command "Invoke-WebRequest -Uri '${url}' -OutFile '${binPath}'"`,
+                `powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -UseBasicParsing -Uri '${url}' -OutFile '${binPath}'"`,
                 { stdio: 'inherit' }
             );
         } else {
