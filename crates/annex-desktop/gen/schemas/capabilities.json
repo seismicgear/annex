@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Default capability set for the Annex desktop application.","local":true,"windows":["main"],"permissions":["core:default"]}}
