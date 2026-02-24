@@ -37,10 +37,11 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.0", features = ["v4"] }
 annex-graph = { version = "0.0.1", path = "../annex-graph" }
 tokio-stream = { version = "0.1.18", features = ["sync"] }
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "blocking"] }
 ed25519-dalek = { version = "2", features = ["rand_core", "serde"] }
 hex = "0.4"
 rand = "0.8"
+base64 = "0.22"
 sha2.workspace = true
 scraper = "0.22"
 url = "2"

@@ -132,6 +132,77 @@ pub async fn update_policy_handler(
     .into_response())
 }
 
+/// Handler for `DELETE /api/admin/federation/:id`.
+///
+/// Revokes a federation agreement by ID, emitting a `FederationSevered` event.
+/// Requires `can_moderate` permission.
+pub async fn revoke_federation_handler(
+    Path(agreement_id): Path<i64>,
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(IdentityContext(identity)): Extension<IdentityContext>,
+) -> Result<Response, ApiError> {
+    if !identity.can_moderate {
+        return Err(ApiError::Forbidden(
+            "insufficient permissions to revoke federation agreement".to_string(),
+        ));
+    }
+
+    let state_clone = state.clone();
+    let moderator = identity.pseudonym_id.clone();
+
+    let remote_url = tokio::task::spawn_blocking(move || {
+        let conn = state_clone.pool.get().map_err(|e| {
+            ApiError::InternalServerError(format!("db connection failed: {}", e))
+        })?;
+
+        // Look up the remote instance base_url before revoking so we can emit the event.
+        let remote_url: Option<String> = conn
+            .query_row(
+                "SELECT i.base_url FROM federation_agreements fa
+                 JOIN instances i ON fa.remote_instance_id = i.id
+                 WHERE fa.id = ?1 AND fa.local_server_id = ?2 AND fa.active = 1",
+                rusqlite::params![agreement_id, state_clone.server_id],
+                |row| row.get(0),
+            )
+            .ok();
+
+        let revoked = annex_federation::revoke_agreement(&conn, agreement_id, state_clone.server_id)
+            .map_err(|e| ApiError::InternalServerError(format!("failed to revoke agreement: {}", e)))?;
+
+        if !revoked {
+            return Err(ApiError::NotFound(
+                "federation agreement not found or already revoked".to_string(),
+            ));
+        }
+
+        // Emit FederationSevered event
+        if let Some(ref url) = remote_url {
+            let observe_payload = annex_observe::EventPayload::FederationSevered {
+                remote_url: url.clone(),
+                reason: format!("revoked by moderator {}", moderator),
+            };
+            crate::emit_and_broadcast(
+                &conn,
+                state_clone.server_id,
+                &moderator,
+                &observe_payload,
+                &state_clone.observe_tx,
+            );
+        }
+
+        Ok::<Option<String>, ApiError>(remote_url)
+    })
+    .await
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+
+    Ok(AxumJson(serde_json::json!({
+        "status": "ok",
+        "agreement_id": agreement_id,
+        "remote_url": remote_url,
+    }))
+    .into_response())
+}
+
 // ── Server Settings ──
 
 #[derive(Debug, Deserialize)]

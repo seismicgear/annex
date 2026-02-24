@@ -24,6 +24,8 @@ services:
       - ANNEX_LOG_JSON=true
       - ANNEX_TTS_BINARY_PATH=/app/assets/piper/piper
       - ANNEX_TTS_VOICES_DIR=/app/assets/voices
+      - ANNEX_STT_BINARY_PATH=/app/assets/whisper/whisper
+      - ANNEX_STT_MODEL_PATH=/app/assets/models/ggml-base.en.bin
     volumes:
       - annex-data:/app/data
     depends_on:

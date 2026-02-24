@@ -43,7 +43,7 @@ First packaged release. Developer preview — not all features are production-re
 
 ### Known Gaps
 
-- Federation: `process_incoming_handshake` is stubbed; RTX cross-server delivery is local-only; policy changes don't trigger automatic re-handshakes
-- Agent VRP: semantic alignment defaults to Conflict (no real embedder); ZK proofs load but aren't enforced at channel access points
-- Voice: agent voice pipeline is file-based, not real-time WebRTC; Bark/System TTS return "not implemented"
+- Federation: RTX multi-hop chains lack origin validation; policy changes trigger local re-evaluation but don't proactively notify peers; agreement lifecycle lacks manual revocation/expiration
+- Agent VRP: semantic alignment uses bag-of-words similarity (Partial tier reachable); ZK proof enforcement at channel access is opt-in (`enforce_zk_proofs` config)
+- Voice: agent voice connects to LiveKit rooms; Bark TTS uses Python subprocess; System TTS uses platform-native commands
 - See [release_v0.1.md](release_v0.1.md) for complete details

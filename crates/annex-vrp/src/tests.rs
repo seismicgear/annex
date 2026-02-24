@@ -24,6 +24,8 @@ fn test_vrp_anchor_snapshot_serialization() {
         principles_hash: "0x123".to_string(),
         prohibited_actions_hash: "0x456".to_string(),
         timestamp: 1234567890,
+        principles: vec![],
+        prohibited_actions: vec![],
     };
     let json = serde_json::to_string(&snapshot).unwrap();
     let deserialized: VrpAnchorSnapshot = serde_json::from_str(&json).unwrap();
@@ -37,6 +39,8 @@ fn test_vrp_federation_handshake_serialization() {
             principles_hash: "0xabc".to_string(),
             prohibited_actions_hash: "0xdef".to_string(),
             timestamp: 100,
+            principles: vec![],
+            prohibited_actions: vec![],
         },
         capability_contract: VrpCapabilitySharingContract {
             required_capabilities: vec!["cap1".to_string()],
@@ -122,6 +126,52 @@ fn test_compare_peer_anchor_conflict() {
 
     let status = compare_peer_anchor(&snap1, &snap2, &config);
     assert_eq!(status, VrpAlignmentStatus::Conflict);
+}
+
+#[test]
+fn test_compare_peer_anchor_prohibited_action_mismatch_forces_conflict() {
+    // Even with identical principles, differing prohibited actions must yield Conflict.
+    let snap1 = VrpAnchorSnapshot::new(
+        &["shared principle".to_string()],
+        &["no violence".to_string()],
+    )
+    .unwrap();
+    let snap2 = VrpAnchorSnapshot::new(
+        &["shared principle".to_string()],
+        &["no hate speech".to_string()], // different prohibition
+    )
+    .unwrap();
+
+    let config = VrpAlignmentConfig {
+        semantic_alignment_required: true,
+        min_alignment_score: 0.1, // very low threshold — should still be Conflict
+    };
+
+    let status = compare_peer_anchor(&snap1, &snap2, &config);
+    assert_eq!(status, VrpAlignmentStatus::Conflict);
+}
+
+#[test]
+fn test_compare_peer_anchor_partial_when_prohibited_actions_match() {
+    // Similar principles with matching prohibited actions should reach Partial.
+    let snap1 = VrpAnchorSnapshot::new(
+        &["free speech".to_string(), "privacy".to_string()],
+        &["no doxxing".to_string()],
+    )
+    .unwrap();
+    let snap2 = VrpAnchorSnapshot::new(
+        &["free speech".to_string(), "transparency".to_string()],
+        &["no doxxing".to_string()], // same prohibition
+    )
+    .unwrap();
+
+    let config = VrpAlignmentConfig {
+        semantic_alignment_required: true,
+        min_alignment_score: 0.3,
+    };
+
+    let status = compare_peer_anchor(&snap1, &snap2, &config);
+    assert_eq!(status, VrpAlignmentStatus::Partial);
 }
 
 #[test]

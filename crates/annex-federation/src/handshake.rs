@@ -57,7 +57,7 @@ pub fn process_incoming_handshake(
 
     // 3. Define alignment config
     let alignment_config = VrpAlignmentConfig {
-        semantic_alignment_required: false, // Not enabled yet
+        semantic_alignment_required: true,
         min_alignment_score: local_policy.agent_min_alignment_score,
     };
 

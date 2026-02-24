@@ -60,7 +60,7 @@ async fn setup_app() -> (axum::Router, Arc<AppState>, TempDir) {
         token_ttl_seconds: 3600,
     };
     let voice_service = VoiceService::new(voice_config);
-    let tts_service = TtsService::new("dummy/voices", "dummy/piper");
+    let tts_service = TtsService::new("dummy/voices", "dummy/piper", "dummy/bark");
     let stt_service = SttService::new("dummy/model.bin", "dummy/whisper");
 
     let state = AppState {
@@ -84,6 +84,7 @@ async fn setup_app() -> (axum::Router, Arc<AppState>, TempDir) {
         upload_dir: std::env::temp_dir().to_string_lossy().into_owned(),
         preview_cache: annex_server::api_link_preview::PreviewCache::new(),
         cors_origins: vec![],
+        enforce_zk_proofs: false,
     };
 
     let router = app(state.clone());

@@ -49,7 +49,7 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool, Arc<AppState>) {
         annex_voice::LiveKitConfig::new("http://localhost:7880", "devkey", "devsecret");
     let voice_service = annex_voice::VoiceService::new(livekit_config);
     // Use dummy paths for TTS
-    let tts_service = annex_voice::TtsService::new("assets/voices", "assets/piper/piper");
+    let tts_service = annex_voice::TtsService::new("assets/voices", "assets/piper/piper", "assets/bark/bark_tts.py");
 
     let state = AppState {
         pool: pool.clone(),
@@ -72,6 +72,7 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool, Arc<AppState>) {
         upload_dir: std::env::temp_dir().to_string_lossy().into_owned(),
         preview_cache: annex_server::api_link_preview::PreviewCache::new(),
         cors_origins: vec![],
+        enforce_zk_proofs: false,
     };
 
     (app(state.clone()), pool, Arc::new(state))

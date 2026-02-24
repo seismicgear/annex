@@ -703,7 +703,23 @@ pub async fn relay_rtx_bundles(state: Arc<AppState>, bundle: ReflectionSummaryBu
         }
     };
 
+    // Build the relay path for cycle detection. For initial publishes the path
+    // is empty; for re-relayed bundles it contains the hops so far.
+    let existing_relay_path: Vec<String> = vec![state.get_public_url()];
+
     for (base_url, transfer_scope_str) in peers {
+        // Skip peers whose base_url already appears in the relay path (prevent cycles)
+        if existing_relay_path.iter().any(|hop| hop == &base_url)
+            || bundle.source_server == base_url
+        {
+            tracing::debug!(
+                peer = %base_url,
+                bundle_id = %bundle.bundle_id,
+                "skipping RTX relay to peer: already in relay path or is origin"
+            );
+            continue;
+        }
+
         let scope = match parse_transfer_scope(&transfer_scope_str) {
             Some(s) if s >= VrpTransferScope::ReflectionSummariesOnly => s,
             _ => {

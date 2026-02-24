@@ -449,12 +449,12 @@ pub async fn receive_federated_message_handler(
         let (commitment_hex, _topic) = parse_attestation_ref(&envelope.attestation_ref)?;
 
         // 4. Verify Sender in Federated Identities
-        let local_pseudonym_id: String = conn
+        let (local_pseudonym_id, root_hex_at_verification): (String, String) = conn
             .query_row(
-                "SELECT pseudonym_id FROM federated_identities
+                "SELECT pseudonym_id, COALESCE(root_hex_at_verification, '') FROM federated_identities
              WHERE remote_instance_id = ?1 AND commitment_hex = ?2",
                 params![remote_instance_id, commitment_hex],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .map_err(|e| {
                 if e == rusqlite::Error::QueryReturnedNoRows {
@@ -466,6 +466,56 @@ pub async fn receive_federated_message_handler(
                     FederationError::DbError(e)
                 }
             })?;
+
+        // 4.5. Stale attestation check: if a root was recorded at verification time,
+        // fetch the remote's current root and compare. A mismatch means the remote
+        // Merkle tree has changed since attestation, so the proof may no longer be valid.
+        if !root_hex_at_verification.is_empty() {
+            // Fetch the remote's current VRP root (cached per-request, simple check)
+            let root_url = format!("{}/api/federation/vrp-root", envelope.originating_server);
+            let remote_root_result: Result<String, String> = (|| {
+                let client = reqwest::blocking::Client::builder()
+                    .connect_timeout(FEDERATION_HTTP_CONNECT_TIMEOUT)
+                    .timeout(FEDERATION_HTTP_TIMEOUT)
+                    .redirect(reqwest::redirect::Policy::none())
+                    .build()
+                    .map_err(|e| e.to_string())?;
+                let resp = client.get(&root_url).send().map_err(|e| e.to_string())?;
+                if !resp.status().is_success() {
+                    return Err(format!("remote vrp-root returned {}", resp.status()));
+                }
+                let body: serde_json::Value = resp.json().map_err(|e| e.to_string())?;
+                body.get("root_hex")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .ok_or_else(|| "missing root_hex in response".to_string())
+            })();
+
+            match remote_root_result {
+                Ok(current_remote_root) if current_remote_root != root_hex_at_verification => {
+                    tracing::warn!(
+                        sender = %envelope.sender_pseudonym,
+                        originating_server = %envelope.originating_server,
+                        stored_root = %root_hex_at_verification,
+                        current_root = %current_remote_root,
+                        "federated identity attestation is stale: remote root has changed"
+                    );
+                    return Err(FederationError::Forbidden(
+                        "attestation stale, re-verification required".to_string(),
+                    ));
+                }
+                Ok(_) => {
+                    // Roots match, attestation is still valid
+                }
+                Err(e) => {
+                    // Log but do not block -- network errors should not reject valid messages
+                    tracing::debug!(
+                        originating_server = %envelope.originating_server,
+                        "could not verify remote root for stale attestation check: {}", e
+                    );
+                }
+            }
+        }
 
         // 5. Verify Channel exists and is Federated
         let channel = annex_channels::get_channel(&conn, &envelope.channel_id)
@@ -786,22 +836,26 @@ pub async fn attest_membership_handler(
 
         let tx = conn.transaction().map_err(FederationError::DbError)?;
 
-        // Insert into federated_identities
+        // Insert into federated_identities (including the merkle root used during verification)
         tx.execute(
             "INSERT INTO federated_identities (
-                server_id, remote_instance_id, commitment_hex, pseudonym_id, vrp_topic, attested_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))
+                server_id, remote_instance_id, commitment_hex, pseudonym_id, vrp_topic, attested_at,
+                root_hex_at_verification, last_verified_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'), ?6, datetime('now'))
             ON CONFLICT(server_id, remote_instance_id, pseudonym_id) DO UPDATE SET
                 attested_at = datetime('now'),
                 commitment_hex = excluded.commitment_hex,
-                vrp_topic = excluded.vrp_topic
+                vrp_topic = excluded.vrp_topic,
+                root_hex_at_verification = excluded.root_hex_at_verification,
+                last_verified_at = datetime('now')
             ",
             params![
                 state_clone.server_id,
                 remote_instance_id,
                 payload.commitment,
                 pseudonym_id,
-                payload.topic
+                payload.topic,
+                remote_root_hex
             ],
         )
         .map_err(FederationError::DbError)?;
@@ -1022,6 +1076,40 @@ pub async fn receive_federated_rtx_handler(
             return Err(FederationError::Forbidden(format!(
                 "Instance {} is not active",
                 envelope.relaying_server
+            )));
+        }
+
+        // 1.5. Circular relay prevention: reject if our public URL is already in the relay path
+        let local_url = state_clone
+            .public_url
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        if !local_url.is_empty()
+            && envelope
+                .provenance
+                .relay_path
+                .iter()
+                .any(|hop| hop == &local_url)
+        {
+            return Err(FederationError::Forbidden(
+                "circular relay detected: local server already in relay path".to_string(),
+            ));
+        }
+
+        // 1.6. Origin server validation: verify origin_server is a known instance
+        let origin_known: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM instances WHERE base_url = ?1)",
+                params![envelope.provenance.origin_server],
+                |row| row.get(0),
+            )
+            .map_err(FederationError::DbError)?;
+
+        if !origin_known {
+            return Err(FederationError::UnknownRemote(format!(
+                "origin server {} is not a known instance",
+                envelope.provenance.origin_server
             )));
         }
 

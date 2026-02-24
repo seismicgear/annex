@@ -22,15 +22,22 @@ pub struct TtsService {
     profiles: Arc<RwLock<HashMap<String, VoiceProfile>>>,
     voices_dir: PathBuf,
     piper_binary: PathBuf,
+    bark_binary: PathBuf,
 }
 
 impl TtsService {
-    /// Creates a new `TtsService` with the given voices directory and piper binary path.
-    pub fn new(voices_dir: impl AsRef<Path>, piper_binary: impl AsRef<Path>) -> Self {
+    /// Creates a new `TtsService` with the given voices directory, piper binary path,
+    /// and bark binary path.
+    pub fn new(
+        voices_dir: impl AsRef<Path>,
+        piper_binary: impl AsRef<Path>,
+        bark_binary: impl AsRef<Path>,
+    ) -> Self {
         Self {
             profiles: Arc::new(RwLock::new(HashMap::new())),
             voices_dir: voices_dir.as_ref().to_path_buf(),
             piper_binary: piper_binary.as_ref().to_path_buf(),
+            bark_binary: bark_binary.as_ref().to_path_buf(),
         }
     }
 
@@ -58,8 +65,8 @@ impl TtsService {
 
         match profile.model {
             VoiceModel::Piper => self.synthesize_piper(text, &profile).await,
-            VoiceModel::Bark => Err(VoiceError::Tts("Bark not implemented".to_string())),
-            VoiceModel::System => Err(VoiceError::Tts("System TTS not implemented".to_string())),
+            VoiceModel::Bark => self.synthesize_bark(text, &profile).await,
+            VoiceModel::System => self.synthesize_system(text, &profile).await,
         }
     }
 
@@ -162,5 +169,122 @@ impl TtsService {
         }
 
         Ok(output.stdout)
+    }
+
+    /// Synthesizes speech using Bark (Python-based neural TTS).
+    ///
+    /// Expects `bark_binary` to point to a Python wrapper script that accepts
+    /// `--text <text> --output_raw` and writes raw PCM (s16le) to stdout.
+    async fn synthesize_bark(
+        &self,
+        text: &str,
+        _profile: &VoiceProfile,
+    ) -> Result<Vec<u8>, VoiceError> {
+        if text.len() > MAX_TTS_INPUT_BYTES {
+            return Err(VoiceError::Tts(format!(
+                "text exceeds maximum size: {} bytes (limit: {} bytes)",
+                text.len(),
+                MAX_TTS_INPUT_BYTES
+            )));
+        }
+
+        if self.bark_binary.as_os_str().is_empty() {
+            return Err(VoiceError::Tts(
+                "Bark TTS binary path is not configured. Set bark_binary_path in config \
+                 or ANNEX_BARK_BINARY_PATH environment variable."
+                    .to_string(),
+            ));
+        }
+
+        if !self.bark_binary.exists() {
+            return Err(VoiceError::Tts(format!(
+                "Bark TTS binary not found: {:?}",
+                self.bark_binary
+            )));
+        }
+
+        let mut command = Command::new(&self.bark_binary);
+        command
+            .arg("--text")
+            .arg(text)
+            .arg("--output_raw")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let child = command
+            .spawn()
+            .map_err(|e| VoiceError::Tts(format!("Failed to spawn bark: {}", e)))?;
+
+        let output = tokio::time::timeout(TTS_TIMEOUT, child.wait_with_output())
+            .await
+            .map_err(|_| {
+                VoiceError::Tts(format!(
+                    "Bark TTS process timed out after {} seconds",
+                    TTS_TIMEOUT.as_secs()
+                ))
+            })?
+            .map_err(|e| VoiceError::Tts(format!("Failed to wait for bark: {}", e)))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(VoiceError::Tts(format!("Bark failed: {}", stderr)));
+        }
+
+        Ok(output.stdout)
+    }
+
+    /// Synthesizes speech using the system's native TTS engine.
+    ///
+    /// Uses `espeak-ng` as the cross-platform fallback. On Linux, `espeak-ng`
+    /// outputs WAV to stdout via `--stdout`; the 44-byte WAV header is stripped
+    /// to return raw PCM data.
+    async fn synthesize_system(
+        &self,
+        text: &str,
+        _profile: &VoiceProfile,
+    ) -> Result<Vec<u8>, VoiceError> {
+        if text.len() > MAX_TTS_INPUT_BYTES {
+            return Err(VoiceError::Tts(format!(
+                "text exceeds maximum size: {} bytes (limit: {} bytes)",
+                text.len(),
+                MAX_TTS_INPUT_BYTES
+            )));
+        }
+
+        // Use espeak-ng as the cross-platform fallback. It outputs WAV to stdout
+        // via --stdout; we strip the 44-byte WAV header to get raw PCM.
+        let mut command = Command::new("espeak-ng");
+        command
+            .arg("--stdout")
+            .arg(text)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let child = command
+            .spawn()
+            .map_err(|e| VoiceError::Tts(format!("Failed to spawn espeak-ng: {}", e)))?;
+
+        let output = tokio::time::timeout(TTS_TIMEOUT, child.wait_with_output())
+            .await
+            .map_err(|_| {
+                VoiceError::Tts(format!(
+                    "System TTS process timed out after {} seconds",
+                    TTS_TIMEOUT.as_secs()
+                ))
+            })?
+            .map_err(|e| VoiceError::Tts(format!("Failed to wait for espeak-ng: {}", e)))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(VoiceError::Tts(format!("espeak-ng failed: {}", stderr)));
+        }
+
+        // Strip the 44-byte WAV header to return raw PCM data.
+        let wav_data = output.stdout;
+        if wav_data.len() > 44 {
+            Ok(wav_data[44..].to_vec())
+        } else {
+            Ok(wav_data)
+        }
     }
 }

@@ -1,4 +1,5 @@
-use crate::{middleware::IdentityContext, AppState};
+use crate::middleware::{verify_zk_membership_header, IdentityContext};
+use crate::AppState;
 use annex_channels::{
     add_member, create_channel, delete_channel, get_channel, get_edit_history, is_member,
     list_channels, list_messages, remove_member, Channel, CreateChannelParams, Message,
@@ -217,9 +218,13 @@ pub async fn delete_channel_handler(
 pub async fn get_channel_history_handler(
     Extension(state): Extension<Arc<AppState>>,
     Extension(IdentityContext(identity)): Extension<IdentityContext>,
+    headers: axum::http::HeaderMap,
     Path(channel_id): Path<String>,
     Query(params): Query<HistoryParams>,
 ) -> Result<Json<Vec<Message>>, StatusCode> {
+    // 0. ZK proof enforcement (when enabled)
+    verify_zk_membership_header(&state, &headers)?;
+
     // 1. Verify Membership
     let is_member = tokio::task::spawn_blocking({
         let pool = state.pool.clone();
@@ -258,8 +263,12 @@ pub async fn get_channel_history_handler(
 pub async fn join_channel_handler(
     Extension(state): Extension<Arc<AppState>>,
     Extension(IdentityContext(identity)): Extension<IdentityContext>,
+    headers: axum::http::HeaderMap,
     Path(channel_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    // 0. ZK proof enforcement (when enabled)
+    verify_zk_membership_header(&state, &headers)?;
+
     // 1. Fetch Channel
     let channel = {
         let pool = state.pool.clone();
@@ -401,6 +410,8 @@ pub async fn join_channel_handler(
                 &token,
                 &channel_id_clone,
                 state.stt_service.clone(),
+                state.voice_service.api_key(),
+                state.voice_service.api_secret(),
             )
             .await
             .map_err(|e| {
@@ -530,8 +541,12 @@ pub async fn leave_channel_handler(
 pub async fn join_voice_channel_handler(
     Extension(state): Extension<Arc<AppState>>,
     Extension(IdentityContext(identity)): Extension<IdentityContext>,
+    headers: axum::http::HeaderMap,
     Path(channel_id): Path<String>,
 ) -> Result<Json<JoinVoiceResponse>, StatusCode> {
+    // 0. ZK proof enforcement (when enabled)
+    verify_zk_membership_header(&state, &headers)?;
+
     // 1. Check if user is a member of the channel
     let is_member = tokio::task::spawn_blocking({
         let pool = state.pool.clone();

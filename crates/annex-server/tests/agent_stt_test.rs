@@ -35,7 +35,7 @@ async fn setup_app_with_mock_stt(
     let livekit_config =
         annex_voice::LiveKitConfig::new("http://localhost:7880", "devkey", "devsecret");
     let voice_service = annex_voice::VoiceService::new(livekit_config);
-    let tts_service = annex_voice::TtsService::new("assets/voices", "assets/piper/piper");
+    let tts_service = annex_voice::TtsService::new("assets/voices", "assets/piper/piper", "assets/bark/bark_tts.py");
     let stt_service = annex_voice::SttService::new("dummy_model", mock_stt_path);
 
     let state = AppState {
@@ -59,6 +59,7 @@ async fn setup_app_with_mock_stt(
         upload_dir: std::env::temp_dir().to_string_lossy().into_owned(),
         preview_cache: annex_server::api_link_preview::PreviewCache::new(),
         cors_origins: vec![],
+        enforce_zk_proofs: false,
     };
 
     (app(state.clone()), pool, Arc::new(state))

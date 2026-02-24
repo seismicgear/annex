@@ -876,6 +876,8 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                         &token,
                                         &room_name,
                                         state.stt_service.clone(),
+                                        state.voice_service.api_key(),
+                                        state.voice_service.api_secret(),
                                     )
                                     .await
                                     {
