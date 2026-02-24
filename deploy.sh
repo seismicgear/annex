@@ -386,6 +386,9 @@ export ANNEX_CLIENT_DIR="$CLIENT_DIR"
 [[ -n "$SIGNING_KEY" ]]  && export ANNEX_SIGNING_KEY="$SIGNING_KEY"
 [[ "$LOG_JSON" == "true" ]] && export ANNEX_LOG_JSON="true"
 
+# Auto-open browser for source deployments (unless explicitly suppressed)
+export ANNEX_OPEN_BROWSER="${ANNEX_OPEN_BROWSER:-true}"
+
 # TTS/STT paths (if assets are present)
 [[ -x "$SCRIPT_DIR/assets/piper/piper" ]] && export ANNEX_TTS_BINARY_PATH="$SCRIPT_DIR/assets/piper/piper"
 [[ -d "$SCRIPT_DIR/assets/voices" ]]      && export ANNEX_TTS_VOICES_DIR="$SCRIPT_DIR/assets/voices"

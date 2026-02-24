@@ -55,6 +55,10 @@ async fn main() -> Result<(), StartupError> {
     // Prepare and start the server
     let (listener, app) = prepare_server(config).await?;
 
+    // Auto-open browser unless suppressed or running in Docker.
+    // ANNEX_OPEN_BROWSER: "true" → force open, "false" → suppress, absent → auto-detect.
+    maybe_open_browser(&listener);
+
     // Serve with graceful shutdown
     axum::serve(
         listener,
@@ -70,6 +74,53 @@ async fn main() -> Result<(), StartupError> {
     tracing::info!("annex server shut down");
 
     Ok(())
+}
+
+/// Opens the default browser to the server's address unless suppressed.
+///
+/// Controlled by `ANNEX_OPEN_BROWSER`:
+///   - `"true"` → always open
+///   - `"false"` → never open
+///   - absent → open unless running inside Docker (detected via `/.dockerenv`)
+fn maybe_open_browser(listener: &tokio::net::TcpListener) {
+    let env_val = std::env::var("ANNEX_OPEN_BROWSER")
+        .unwrap_or_default()
+        .to_lowercase();
+
+    let should_open = match env_val.as_str() {
+        "true" | "1" | "yes" => true,
+        "false" | "0" | "no" => false,
+        _ => {
+            // Auto-detect: don't open in Docker containers
+            !std::path::Path::new("/.dockerenv").exists()
+        }
+    };
+
+    if !should_open {
+        return;
+    }
+
+    let addr = match listener.local_addr() {
+        Ok(addr) => addr,
+        Err(_) => return,
+    };
+
+    // Use 127.0.0.1 when bound to 0.0.0.0 (unspecified) since browsers can't
+    // connect to the "all interfaces" address.
+    let host = if addr.ip().is_unspecified() {
+        std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+    } else {
+        addr.ip()
+    };
+
+    open_browser_with_addr(&format!("http://{}:{}", host, addr.port()));
+}
+
+fn open_browser_with_addr(url: &str) {
+    tracing::info!(url = %url, "opening browser");
+    if let Err(e) = open::that(url) {
+        tracing::warn!(url = %url, error = %e, "failed to open browser (set ANNEX_OPEN_BROWSER=false to suppress)");
+    }
 }
 
 /// Waits for a SIGINT (Ctrl+C) or SIGTERM signal for graceful shutdown.
