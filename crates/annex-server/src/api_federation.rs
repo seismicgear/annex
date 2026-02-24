@@ -201,13 +201,14 @@ pub async fn relay_message(
     // Construct Envelope
     // Signature payload uses newline delimiters to prevent field-boundary ambiguity
     // (e.g., message_id="ab" + channel_id="c" would collide with "a" + "bc" without delimiters).
+    let pub_url = state.get_public_url();
     let signature_input = format!(
         "{}\n{}\n{}\n{}\n{}\n{}\n{}",
         message.message_id,
         channel_id,
         message.content,
         message.sender_pseudonym,
-        state.public_url,
+        pub_url,
         attestation_ref,
         message.created_at
     );
@@ -220,7 +221,7 @@ pub async fn relay_message(
         channel_id: channel_id.clone(),
         content: message.content,
         sender_pseudonym: message.sender_pseudonym,
-        originating_server: state.public_url.clone(),
+        originating_server: pub_url,
         attestation_ref: attestation_ref.clone(),
         signature: signature_hex,
         created_at: message.created_at,

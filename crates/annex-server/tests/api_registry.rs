@@ -36,7 +36,7 @@ async fn test_register_identity_success() {
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,
         )),
-        public_url: "http://localhost:3000".to_string(),
+        public_url: std::sync::Arc::new(std::sync::RwLock::new("http://localhost:3000".to_string())),
         policy: Arc::new(RwLock::new(ServerPolicy::default())),
         rate_limiter: RateLimiter::new(),
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
@@ -103,7 +103,7 @@ async fn test_register_duplicate_failure() {
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,
         )),
-        public_url: "http://localhost:3000".to_string(),
+        public_url: std::sync::Arc::new(std::sync::RwLock::new("http://localhost:3000".to_string())),
         policy: Arc::new(RwLock::new(ServerPolicy::default())),
         rate_limiter: RateLimiter::new(),
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
@@ -171,7 +171,7 @@ async fn test_register_invalid_role_failure() {
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,
         )),
-        public_url: "http://localhost:3000".to_string(),
+        public_url: std::sync::Arc::new(std::sync::RwLock::new("http://localhost:3000".to_string())),
         policy: Arc::new(RwLock::new(ServerPolicy::default())),
         rate_limiter: RateLimiter::new(),
         connection_manager: annex_server::api_ws::ConnectionManager::new(),

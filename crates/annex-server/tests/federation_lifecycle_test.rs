@@ -70,7 +70,7 @@ fn build_state(db_path: &str, initial_policy: ServerPolicy) -> (Arc<AppState>, a
         membership_vkey: Arc::new(annex_identity::zk::generate_dummy_vkey()),
         server_id: 1,
         signing_key: Arc::new(SigningKey::generate(&mut OsRng)),
-        public_url: "http://server-b.local".to_string(),
+        public_url: std::sync::Arc::new(std::sync::RwLock::new("http://server-b.local".to_string())),
         policy: Arc::new(RwLock::new(initial_policy)),
         rate_limiter: RateLimiter::new(),
         connection_manager: ConnectionManager::new(),

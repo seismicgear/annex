@@ -193,6 +193,8 @@ pub struct ServerSummaryResponse {
     pub slug: String,
     /// The server's display label.
     pub label: String,
+    /// The server's public URL (may be auto-detected from request headers).
+    pub public_url: String,
     /// Member counts by node type (e.g., `{"Human": 5, "AiAgent": 3}`).
     pub members_by_type: serde_json::Value,
     /// Total number of active members.
@@ -279,15 +281,7 @@ pub async fn get_server_summary_handler(
             )
             .map_err(|e| format!("failed to count agents: {}", e))?;
 
-        Ok::<_, String>(ServerSummaryResponse {
-            slug,
-            label,
-            members_by_type: serde_json::Value::Object(members_map),
-            total_active_members: total_active,
-            channel_count,
-            federation_peer_count,
-            active_agent_count,
-        })
+        Ok::<_, String>((slug, label, members_map, total_active, channel_count, federation_peer_count, active_agent_count))
     })
     .await
     .map_err(|e| {
@@ -305,7 +299,18 @@ pub async fn get_server_summary_handler(
             .into_response()
     })?;
 
-    Ok(Json(summary))
+    let (slug, label, members_map, total_active, channel_count, federation_peer_count, active_agent_count) = summary;
+
+    Ok(Json(ServerSummaryResponse {
+        slug,
+        label,
+        public_url: state.get_public_url(),
+        members_by_type: serde_json::Value::Object(members_map),
+        total_active_members: total_active,
+        channel_count,
+        federation_peer_count,
+        active_agent_count,
+    }))
 }
 
 // ── Federation Peers ────────────────────────────────────────────────

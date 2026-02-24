@@ -1,26 +1,24 @@
 /**
- * Startup mode selector — shown when the app is running inside Tauri.
+ * Startup mode selector — shown on every deployment type (Tauri, web, Docker).
  *
- * Lets the user choose between hosting their own server (embedded Axum)
- * or connecting to an existing remote Annex server as a client.
+ * Lets the user choose between:
+ *   - Tauri: "Host a Server" (embedded Axum + cloudflared tunnel) or "Connect to a Server"
+ *   - Web/Docker: "Use this server" (current origin) or "Connect to another server"
  *
- * When hosting, a cloudflared tunnel is automatically created to generate
- * a public URL that others can use to connect to the server.
- *
- * The choice is persisted to disk so subsequent launches skip this screen.
- * A "Change Mode" option allows resetting the preference.
+ * The choice is persisted (Tauri: disk via IPC, Web: localStorage) so
+ * subsequent visits skip this screen. Logout clears the preference.
  */
 
 import { useState, useEffect, useCallback } from 'react';
-import {
-  getStartupMode,
-  saveStartupMode,
-  clearStartupMode,
-  startEmbeddedServer,
-  startTunnel,
-  type StartupPrefs,
-} from '@/lib/tauri';
+import { isTauri } from '@/lib/tauri';
 import { setApiBaseUrl } from '@/lib/api';
+
+const STORAGE_KEY = 'annex:startup-mode';
+
+interface WebPrefs {
+  mode: 'local' | 'remote';
+  server_url?: string;
+}
 
 interface Props {
   onReady: () => void;
@@ -35,15 +33,47 @@ type Phase =
   | 'connecting'
   | 'error';
 
+// ── localStorage helpers (web/Docker) ──
+
+function loadWebPrefs(): WebPrefs | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? (JSON.parse(raw) as WebPrefs) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveWebPrefs(prefs: WebPrefs): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs));
+  } catch {
+    // Storage full or blocked — non-fatal.
+  }
+}
+
+/** Clear the saved startup preference (called on logout). */
+export function clearWebStartupMode(): void {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // non-fatal
+  }
+}
+
 export function StartupModeSelector({ onReady }: Props) {
   const [phase, setPhase] = useState<Phase>('loading');
   const [remoteUrl, setRemoteUrl] = useState('');
   const [tunnelUrl, setTunnelUrl] = useState('');
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState('');
+  const inTauri = isTauri();
 
+  // ── Tauri host mode ──
   const applyHost = useCallback(
     async (skipSave: boolean) => {
+      if (!inTauri) return;
+      const { startEmbeddedServer, startTunnel, saveStartupMode } = await import('@/lib/tauri');
       setPhase('starting_server');
       setError('');
       try {
@@ -52,16 +82,12 @@ export function StartupModeSelector({ onReady }: Props) {
         if (!skipSave) {
           await saveStartupMode({ startup_mode: { mode: 'host' } });
         }
-
-        // Now create the tunnel for a public URL
         setPhase('creating_tunnel');
         try {
           const pubUrl = await startTunnel();
           setTunnelUrl(pubUrl);
           setPhase('tunnel_ready');
         } catch (tunnelErr) {
-          // Tunnel failure is non-fatal — the server still works locally.
-          // Proceed to the app but show the error briefly.
           console.warn('Tunnel creation failed:', tunnelErr);
           onReady();
         }
@@ -70,18 +96,17 @@ export function StartupModeSelector({ onReady }: Props) {
         setPhase('error');
       }
     },
-    [onReady],
+    [onReady, inTauri],
   );
 
-  const applyClient = useCallback(
+  // ── Connect to a remote server (shared by Tauri + web) ──
+  const applyRemote = useCallback(
     async (url: string, skipSave: boolean) => {
       setError('');
       let normalized = url.trim();
       if (!/^https?:\/\//i.test(normalized)) {
         normalized = `https://${normalized}`;
       }
-
-      // Validate URL format
       try {
         const parsed = new URL(normalized);
         if (!['http:', 'https:'].includes(parsed.protocol)) {
@@ -95,7 +120,6 @@ export function StartupModeSelector({ onReady }: Props) {
 
       setPhase('connecting');
 
-      // Probe server to verify it's reachable
       try {
         const resp = await fetch(`${normalized}/api/public/server/summary`);
         if (!resp.ok) throw new Error(`Server responded with ${resp.status}`);
@@ -107,9 +131,27 @@ export function StartupModeSelector({ onReady }: Props) {
 
       setApiBaseUrl(normalized);
       if (!skipSave) {
-        await saveStartupMode({
-          startup_mode: { mode: 'client', server_url: normalized },
-        });
+        if (inTauri) {
+          const { saveStartupMode } = await import('@/lib/tauri');
+          await saveStartupMode({
+            startup_mode: { mode: 'client', server_url: normalized },
+          });
+        } else {
+          saveWebPrefs({ mode: 'remote', server_url: normalized });
+        }
+      }
+      onReady();
+    },
+    [onReady, inTauri],
+  );
+
+  // ── Use this server (web/Docker — current origin) ──
+  const applyLocal = useCallback(
+    (skipSave: boolean) => {
+      // Empty base URL = relative paths = current origin
+      setApiBaseUrl('');
+      if (!skipSave) {
+        saveWebPrefs({ mode: 'local' });
       }
       onReady();
     },
@@ -122,22 +164,37 @@ export function StartupModeSelector({ onReady }: Props) {
 
     (async () => {
       try {
-        const prefs: StartupPrefs | null = await getStartupMode();
-        if (cancelled) return;
-
-        if (!prefs) {
-          setPhase('choose');
-          return;
-        }
-
-        if (prefs.startup_mode.mode === 'host') {
-          await applyHost(true);
+        if (inTauri) {
+          const { getStartupMode } = await import('@/lib/tauri');
+          const prefs = await getStartupMode();
+          if (cancelled) return;
+          if (!prefs) {
+            setPhase('choose');
+            return;
+          }
+          if (prefs.startup_mode.mode === 'host') {
+            await applyHost(true);
+          } else {
+            const url = prefs.startup_mode.server_url;
+            setRemoteUrl(url);
+            await applyRemote(url, true);
+          }
         } else {
-          const url = prefs.startup_mode.server_url;
-          setRemoteUrl(url);
-          await applyClient(url, true);
-          // If applyClient failed (set phase to 'choose'), that's fine —
-          // user will see the choice screen with the pre-filled URL.
+          // Web/Docker
+          const prefs = loadWebPrefs();
+          if (cancelled) return;
+          if (!prefs) {
+            setPhase('choose');
+            return;
+          }
+          if (prefs.mode === 'local') {
+            applyLocal(true);
+          } else if (prefs.server_url) {
+            setRemoteUrl(prefs.server_url);
+            await applyRemote(prefs.server_url, true);
+          } else {
+            setPhase('choose');
+          }
         }
       } catch {
         if (!cancelled) setPhase('choose');
@@ -147,10 +204,15 @@ export function StartupModeSelector({ onReady }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [applyHost, applyClient]);
+  }, [applyHost, applyRemote, applyLocal, inTauri]);
 
   const handleReset = async () => {
-    await clearStartupMode().catch(() => {});
+    if (inTauri) {
+      const { clearStartupMode } = await import('@/lib/tauri');
+      await clearStartupMode().catch(() => {});
+    } else {
+      clearWebStartupMode();
+    }
     setPhase('choose');
     setError('');
     setTunnelUrl('');
@@ -158,7 +220,7 @@ export function StartupModeSelector({ onReady }: Props) {
 
   const handleClientSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    applyClient(remoteUrl, false);
+    applyRemote(remoteUrl, false);
   };
 
   const handleCopyUrl = async () => {
@@ -170,6 +232,8 @@ export function StartupModeSelector({ onReady }: Props) {
       // Fallback: select the input text
     }
   };
+
+  // ── Render phases ──
 
   if (phase === 'loading') {
     return (
@@ -262,27 +326,41 @@ export function StartupModeSelector({ onReady }: Props) {
     <div className="startup-mode-selector">
       <h2>Annex</h2>
       <p className="startup-description">
-        Choose how to use Annex on this device.
+        Choose how to use Annex.
       </p>
 
       <div className="startup-options">
-        <div className="startup-option">
-          <h3>Host a Server</h3>
-          <p>
-            Run your own Annex server on this device. A public URL will be
-            generated automatically so others can connect to you.
-          </p>
-          <button className="primary-btn" onClick={() => applyHost(false)}>
-            Start Hosting
-          </button>
-        </div>
+        {inTauri ? (
+          /* Tauri: Host a Server */
+          <div className="startup-option">
+            <h3>Host a Server</h3>
+            <p>
+              Run your own Annex server on this device. A public URL will be
+              generated automatically so others can connect to you.
+            </p>
+            <button className="primary-btn" onClick={() => applyHost(false)}>
+              Start Hosting
+            </button>
+          </div>
+        ) : (
+          /* Web/Docker: Use this server */
+          <div className="startup-option">
+            <h3>Use This Server</h3>
+            <p>
+              Connect to the Annex server at the current address.
+            </p>
+            <button className="primary-btn" onClick={() => applyLocal(false)}>
+              Continue
+            </button>
+          </div>
+        )}
 
         <div className="startup-divider">
           <span>or</span>
         </div>
 
         <div className="startup-option">
-          <h3>Connect to a Server</h3>
+          <h3>Connect to {inTauri ? 'a' : 'Another'} Server</h3>
           <p>Join an existing Annex server as a client.</p>
           <form onSubmit={handleClientSubmit}>
             <input

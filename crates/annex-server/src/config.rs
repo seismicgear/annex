@@ -156,7 +156,7 @@ fn default_inactivity_threshold_seconds() -> u64 {
 }
 
 fn default_public_url() -> String {
-    "http://localhost:3000".to_string()
+    String::new()
 }
 
 fn default_db_path() -> String {

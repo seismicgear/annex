@@ -54,10 +54,11 @@ pub async fn publish_handler(
     }
 
     // 3. Verify source_server matches this server
-    if bundle.source_server != state.public_url {
+    let pub_url = state.get_public_url();
+    if bundle.source_server != pub_url {
         return Err(ApiError::BadRequest(format!(
             "source_server '{}' does not match this server '{}'",
-            bundle.source_server, state.public_url,
+            bundle.source_server, pub_url,
         )));
     }
 
@@ -732,16 +733,17 @@ pub async fn relay_rtx_bundles(state: Arc<AppState>, bundle: ReflectionSummaryBu
         };
 
         // Build provenance (this server is the first relay hop)
+        let pub_url = state.get_public_url();
         let provenance = BundleProvenance {
             origin_server: bundle.source_server.clone(),
-            relay_path: vec![state.public_url.clone()],
+            relay_path: vec![pub_url.clone()],
             bundle_id: bundle.bundle_id.clone(),
         };
 
         // Sign the relay envelope
         let signing_payload = rtx_relay_signing_payload(
             &bundle.bundle_id,
-            &state.public_url,
+            &pub_url,
             &bundle.source_server,
             &provenance.relay_path,
         );
@@ -751,7 +753,7 @@ pub async fn relay_rtx_bundles(state: Arc<AppState>, bundle: ReflectionSummaryBu
         let envelope = FederatedRtxEnvelope {
             bundle: scoped_bundle,
             provenance,
-            relaying_server: state.public_url.clone(),
+            relaying_server: pub_url,
             signature: signature_hex,
         };
 
