@@ -264,12 +264,17 @@ pub async fn rate_limit_middleware(req: Request<Body>, next: Next) -> Result<Res
         .clone();
 
     // Auto-detect public URL from request headers if not yet configured.
+    // Skips localhost/127.0.0.1 since those are never valid public URLs
+    // — keeps retrying until a real host arrives (e.g. via reverse proxy)
+    // or the admin sets one explicitly via PUT /api/admin/public-url.
     {
-        let needs_detection = state
+        let current = state
             .public_url
             .read()
             .unwrap_or_else(|p| p.into_inner())
-            .is_empty();
+            .clone();
+
+        let needs_detection = current.is_empty();
 
         if needs_detection {
             let proto = req
@@ -285,14 +290,23 @@ pub async fn rate_limit_middleware(req: Request<Body>, next: Next) -> Result<Res
                 .and_then(|v| v.to_str().ok());
 
             if let Some(host) = host {
-                let detected = format!("{proto}://{host}");
-                let mut url = state
-                    .public_url
-                    .write()
-                    .unwrap_or_else(|p| p.into_inner());
-                if url.is_empty() {
-                    tracing::info!(public_url = %detected, "auto-detected server public URL from request headers");
-                    *url = detected;
+                // Strip port for the loopback check
+                let host_name = host.split(':').next().unwrap_or(host);
+                let is_loopback = host_name == "localhost"
+                    || host_name == "127.0.0.1"
+                    || host_name == "[::1]"
+                    || host_name == "0.0.0.0";
+
+                if !is_loopback {
+                    let detected = format!("{proto}://{host}");
+                    let mut url = state
+                        .public_url
+                        .write()
+                        .unwrap_or_else(|p| p.into_inner());
+                    if url.is_empty() {
+                        tracing::info!(public_url = %detected, "auto-detected server public URL from request headers");
+                        *url = detected;
+                    }
                 }
             }
         }
