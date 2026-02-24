@@ -161,6 +161,13 @@ if ($Mode -eq "docker") {
     Write-Host "  Stop:    $composeLabel down"
     Write-Host "  Restart: $composeLabel restart annex"
     Write-Host ""
+
+    # Auto-open browser on the host (the server inside Docker cannot do this).
+    $openEnv = if ($env:ANNEX_OPEN_BROWSER) { $env:ANNEX_OPEN_BROWSER.ToLower() } else { "true" }
+    if ($openEnv -notin @("false", "0", "no")) {
+        Start-Process "http://localhost:$Port"
+    }
+
     exit 0
 }
 

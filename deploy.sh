@@ -155,6 +155,21 @@ if [[ "$MODE" == "docker" ]]; then
     echo "  Stop:    $COMPOSE down"
     echo "  Restart: $COMPOSE restart annex"
     echo ""
+
+    # Auto-open browser on the host (the server inside Docker cannot do this).
+    OPEN_ENV="${ANNEX_OPEN_BROWSER:-true}"
+    OPEN_ENV="$(echo "$OPEN_ENV" | tr '[:upper:]' '[:lower:]')"
+    if [[ "$OPEN_ENV" != "false" && "$OPEN_ENV" != "0" && "$OPEN_ENV" != "no" ]]; then
+        URL="http://localhost:$PORT"
+        if has xdg-open; then
+            xdg-open "$URL" 2>/dev/null &
+        elif has open; then
+            open "$URL" 2>/dev/null &
+        elif [[ -n "${BROWSER:-}" ]]; then
+            "$BROWSER" "$URL" 2>/dev/null &
+        fi
+    fi
+
     exit 0
 fi
 
