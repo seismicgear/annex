@@ -31,11 +31,17 @@ use axum::{
 };
 use ed25519_dalek::SigningKey;
 use middleware::RateLimiter;
+use rand::rngs::OsRng;
+use rusqlite::OptionalExtension;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use serde_json::{json, Value};
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, RwLock};
+use thiserror::Error;
+use tokio::net::TcpListener;
 use tokio::sync::broadcast;
+use tracing_subscriber::EnvFilter;
 
 /// Application state shared across all request handlers.
 #[derive(Clone)]
@@ -130,6 +136,236 @@ pub fn emit_and_broadcast(
 /// Returns `None` for unrecognized strings.
 pub(crate) fn parse_transfer_scope(s: &str) -> Option<annex_vrp::VrpTransferScope> {
     s.parse().ok()
+}
+
+/// Errors that can occur during server startup.
+#[derive(Debug, Error)]
+pub enum StartupError {
+    /// The configured logging level filter string was invalid.
+    #[error("invalid logging.level '{value}': {reason}")]
+    InvalidLoggingLevel { value: String, reason: String },
+    /// Failed to load configuration from file or environment.
+    #[error("failed to load configuration: {0}")]
+    ConfigError(#[from] config::ConfigError),
+    /// Failed to initialize the database connection pool.
+    #[error("failed to initialize database pool: {0}")]
+    DatabaseError(#[from] annex_db::PoolError),
+    /// Failed to initialize or restore the Merkle tree.
+    #[error("failed to initialize merkle tree: {0}")]
+    IdentityError(#[from] annex_identity::IdentityError),
+    /// Failed to read a file from disk (e.g. verification key).
+    #[error("failed to read verification key: {0}")]
+    IoError(#[from] std::io::Error),
+    /// Failed to parse the ZK verification key JSON.
+    #[error("failed to parse verification key: {0}")]
+    ZkError(#[from] annex_identity::zk::ZkError),
+    /// Failed to get a database connection from the pool.
+    #[error("failed to get database connection from pool: {0}")]
+    PoolConnection(#[from] r2d2::Error),
+    /// A database migration failed.
+    #[error("database migration failed: {0}")]
+    Migration(#[from] annex_db::MigrationError),
+    /// A database query failed during initialization.
+    #[error("database query failed: {0}")]
+    DbQuery(#[from] rusqlite::Error),
+    /// The `ANNEX_SIGNING_KEY` environment variable was malformed.
+    #[error("invalid ANNEX_SIGNING_KEY: {0}")]
+    InvalidSigningKey(String),
+}
+
+/// Initializes the tracing subscriber based on logging configuration.
+///
+/// Must be called exactly once per process, before any tracing macros are used.
+pub fn init_tracing(logging: &config::LoggingConfig) -> Result<(), StartupError> {
+    let filter =
+        EnvFilter::try_new(&logging.level).map_err(|err| StartupError::InvalidLoggingLevel {
+            value: logging.level.clone(),
+            reason: err.to_string(),
+        })?;
+
+    if logging.json {
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .json()
+            .init();
+    } else {
+        tracing_subscriber::fmt().with_env_filter(filter).init();
+    }
+
+    Ok(())
+}
+
+/// Prepares the server: loads database, initializes state, starts background
+/// tasks, and binds the TCP listener.
+///
+/// Returns a bound [`TcpListener`] and a fully-configured [`Router`]. The
+/// caller is responsible for driving `axum::serve(listener, app)`.
+///
+/// Tracing must be initialized before calling this function (see [`init_tracing`]).
+pub async fn prepare_server(
+    config: config::Config,
+) -> Result<(TcpListener, Router), StartupError> {
+    // Initialize database
+    let pool = annex_db::create_pool(
+        &config.database.path,
+        annex_db::DbRuntimeSettings {
+            busy_timeout_ms: config.database.busy_timeout_ms,
+            pool_max_size: config.database.pool_max_size,
+        },
+    )?;
+
+    {
+        let conn = pool.get()?;
+        let applied = annex_db::run_migrations(&conn)?;
+        if applied > 0 {
+            tracing::info!(count = applied, "applied database migrations");
+        }
+    }
+
+    // Start background retention task
+    let retention_handle = tokio::spawn(retention::start_retention_task(
+        pool.clone(),
+        config.server.retention_check_interval_seconds,
+    ));
+    tokio::spawn(async move {
+        if let Err(e) = retention_handle.await {
+            tracing::error!("retention background task panicked: {}", e);
+        }
+    });
+
+    // Initialize Merkle Tree
+    let tree = {
+        let conn = pool.get()?;
+        MerkleTree::restore(&conn, config.server.merkle_tree_depth)?
+    };
+
+    // Get Server ID and Policy (auto-seed if no server row exists)
+    let (server_id, policy): (i64, ServerPolicy) = {
+        let conn = pool.get()?;
+        let existing = conn
+            .query_row("SELECT id, policy_json FROM servers LIMIT 1", [], |row| {
+                let id: i64 = row.get(0)?;
+                let policy_json: String = row.get(1)?;
+                let policy: ServerPolicy =
+                    serde_json::from_str(&policy_json).map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            1,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?;
+                Ok((id, policy))
+            })
+            .optional()?;
+
+        match existing {
+            Some(row) => row,
+            None => {
+                tracing::info!("no server configured — seeding default server record");
+                let slug = std::env::var("ANNEX_SERVER_SLUG")
+                    .unwrap_or_else(|_| "default".to_string());
+                let label = std::env::var("ANNEX_SERVER_LABEL")
+                    .unwrap_or_else(|_| "Annex Server".to_string());
+                let default_policy = ServerPolicy::default();
+                let policy_json = serde_json::to_string(&default_policy)
+                    .expect("ServerPolicy::default() contains only primitive types and cannot fail serialization");
+                conn.execute(
+                    "INSERT INTO servers (slug, label, policy_json) VALUES (?1, ?2, ?3)",
+                    rusqlite::params![slug, label, &policy_json],
+                )?;
+                let id = conn.last_insert_rowid();
+                (id, default_policy)
+            }
+        }
+    };
+
+    // Load ZK verification key
+    let vkey_path = std::env::var("ANNEX_ZK_KEY_PATH")
+        .unwrap_or_else(|_| "zk/keys/membership_vkey.json".to_string());
+    let vkey_json = std::fs::read_to_string(&vkey_path).map_err(|e| {
+        tracing::error!(path = %vkey_path, "failed to read verification key");
+        StartupError::IoError(e)
+    })?;
+    let membership_vkey =
+        annex_identity::zk::parse_verification_key(&vkey_json).map_err(StartupError::ZkError)?;
+
+    // Load or generate Signing Key
+    let signing_key = if let Ok(hex_key) = std::env::var("ANNEX_SIGNING_KEY") {
+        let bytes = hex::decode(&hex_key)
+            .map_err(|e| StartupError::InvalidSigningKey(format!("not valid hex: {}", e)))?;
+        let byte_array: [u8; 32] = bytes.try_into().map_err(|v: Vec<u8>| {
+            StartupError::InvalidSigningKey(format!("expected 32 bytes, got {}", v.len()))
+        })?;
+        SigningKey::from_bytes(&byte_array)
+    } else {
+        tracing::warn!("ANNEX_SIGNING_KEY not set. Generating ephemeral key. Federation signatures will change on restart.");
+        SigningKey::generate(&mut OsRng)
+    };
+
+    // Create broadcast channels
+    let (presence_tx, _) =
+        tokio::sync::broadcast::channel(config.server.presence_broadcast_capacity);
+    let (observe_tx, _) = tokio::sync::broadcast::channel(256);
+
+    // Initialize Voice / TTS / STT services
+    let voice_service = annex_voice::VoiceService::new(config.livekit);
+    let tts_service =
+        annex_voice::TtsService::new(&config.voice.tts_voices_dir, &config.voice.tts_binary_path);
+    let stt_service =
+        annex_voice::SttService::new(&config.voice.stt_model_path, &config.voice.stt_binary_path);
+
+    // Resolve upload directory
+    let upload_dir =
+        std::env::var("ANNEX_UPLOAD_DIR").unwrap_or_else(|_| "data/uploads".to_string());
+    if let Err(e) = std::fs::create_dir_all(&upload_dir) {
+        tracing::warn!(path = %upload_dir, "failed to create upload directory: {}", e);
+    } else {
+        tracing::info!(path = %upload_dir, "upload directory ready");
+    }
+
+    let state = AppState {
+        pool,
+        merkle_tree: Arc::new(Mutex::new(tree)),
+        membership_vkey: Arc::new(membership_vkey),
+        server_id,
+        signing_key: Arc::new(signing_key),
+        public_url: config.server.public_url.clone(),
+        policy: Arc::new(RwLock::new(policy)),
+        rate_limiter: RateLimiter::new(),
+        connection_manager: api_ws::ConnectionManager::new(),
+        presence_tx,
+        voice_service: Arc::new(voice_service),
+        tts_service: Arc::new(tts_service),
+        stt_service: Arc::new(stt_service),
+        voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        observe_tx,
+        upload_dir,
+        preview_cache: api_link_preview::PreviewCache::new(),
+    };
+
+    // Start background pruning task
+    let pruning_handle = tokio::spawn(background::start_pruning_task(
+        Arc::new(state.clone()),
+        config.server.inactivity_threshold_seconds,
+    ));
+    tokio::spawn(async move {
+        if let Err(e) = pruning_handle.await {
+            tracing::error!("pruning background task panicked: {}", e);
+        }
+    });
+
+    // Build application
+    let router = app(state);
+    let addr = SocketAddr::new(config.server.host, config.server.port);
+
+    tracing::info!(%addr, "starting annex server");
+
+    let listener = TcpListener::bind(addr).await.map_err(|e| {
+        tracing::error!(%addr, "failed to bind to address — is another process using this port?");
+        StartupError::IoError(e)
+    })?;
+
+    Ok((listener, router))
 }
 
 /// Maximum request body size (2 MiB). Protects against OOM from oversized payloads.

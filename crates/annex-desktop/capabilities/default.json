@@ -1,0 +1,8 @@
+{
+  "identifier": "default",
+  "description": "Default capability set for the Annex desktop application.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default"
+  ]
+}

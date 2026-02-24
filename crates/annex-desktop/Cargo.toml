@@ -1,0 +1,18 @@
+[package]
+name = "annex-desktop"
+version.workspace = true
+edition.workspace = true
+description = "Annex desktop application — Tauri wrapper for the Annex server and client."
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+annex-server = { path = "../annex-server" }
+axum = { workspace = true }
+tauri = { version = "2", features = [] }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+dirs = "6"

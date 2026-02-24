@@ -12,6 +12,7 @@ members = [
     "crates/annex-observe",
     "crates/annex-db",
     "crates/annex-types",
+    "crates/annex-desktop",
 ]
 
 [workspace.package]
