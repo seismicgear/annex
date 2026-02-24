@@ -579,10 +579,6 @@ pub fn app(state: AppState) -> Router {
             "/api/link-preview",
             get(api_link_preview::link_preview_handler),
         )
-        .route(
-            "/api/link-preview/image",
-            get(api_link_preview::image_proxy_handler),
-        )
         .layer(axum::middleware::from_fn(middleware::auth_middleware));
 
     // Upload routes need a larger body limit for media uploads.
@@ -679,6 +675,13 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/api/public/server/image",
             get(api_upload::get_server_image_handler),
+        )
+        // Image proxy lives outside auth — browsers load <img src="..."> without
+        // custom headers.  The handler already validates URLs (SSRF, DNS rebinding,
+        // content-type, size) and only proxies public images.
+        .route(
+            "/api/link-preview/image",
+            get(api_link_preview::image_proxy_handler),
         )
         .merge(protected_routes)
         .merge(upload_routes)
