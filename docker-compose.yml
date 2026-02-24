@@ -22,6 +22,7 @@ services:
       - ANNEX_CORS_ORIGINS=*
       - ANNEX_LOG_LEVEL=info
       - ANNEX_LOG_JSON=true
+      - ANNEX_OPEN_BROWSER=false
       - ANNEX_TTS_BINARY_PATH=/app/assets/piper/piper
       - ANNEX_TTS_VOICES_DIR=/app/assets/voices
       - ANNEX_STT_BINARY_PATH=/app/assets/whisper/whisper

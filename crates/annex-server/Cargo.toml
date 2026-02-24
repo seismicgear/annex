@@ -45,6 +45,7 @@ base64 = "0.22"
 sha2.workspace = true
 scraper = "0.22"
 url = "2"
+open = "5"
 
 [dev-dependencies]
 annex-voice = { workspace = true }

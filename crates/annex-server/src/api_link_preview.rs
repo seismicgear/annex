@@ -249,7 +249,35 @@ fn parse_og_metadata(html: &str) -> PreviewResponse {
             .filter(|s| !s.is_empty())
     });
 
-    let image_url = og("image");
+    // Image: og:image → twitter:image → <link rel="image_src"> → <meta itemprop="image">
+    let image_url = og("image").or_else(|| {
+        // Twitter card image
+        let sel = Selector::parse(r#"meta[name="twitter:image"]"#).ok()?;
+        document
+            .select(&sel)
+            .next()
+            .and_then(|el| el.value().attr("content"))
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }).or_else(|| {
+        // <link rel="image_src">
+        let sel = Selector::parse(r#"link[rel="image_src"]"#).ok()?;
+        document
+            .select(&sel)
+            .next()
+            .and_then(|el| el.value().attr("href"))
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }).or_else(|| {
+        // Schema.org itemprop="image"
+        let sel = Selector::parse(r#"meta[itemprop="image"]"#).ok()?;
+        document
+            .select(&sel)
+            .next()
+            .and_then(|el| el.value().attr("content"))
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    });
     let site_name = og("site_name");
 
     PreviewResponse {
@@ -269,6 +297,19 @@ fn build_http_client() -> reqwest::Client {
         .timeout(FETCH_TIMEOUT)
         .redirect(reqwest::redirect::Policy::limited(5))
         .user_agent("AnnexBot/1.0 (link-preview)")
+        .build()
+        .unwrap_or_default()
+}
+
+/// Build a client with a browser-like user-agent for image fetching.
+/// Many CDNs and image hosts block non-browser user agents.
+fn build_image_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(FETCH_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .user_agent(
+            "Mozilla/5.0 (compatible; AnnexImageProxy/1.0; +https://annex.chat)",
+        )
         .build()
         .unwrap_or_default()
 }
@@ -444,8 +485,8 @@ pub async fn image_proxy_handler(
         }
     }
 
-    // Fetch the image
-    let client = build_http_client();
+    // Fetch the image — use browser-like UA to avoid CDN blocks
+    let client = build_image_http_client();
     let resp = client
         .get(&url)
         .header(header::ACCEPT, "image/*")
@@ -457,10 +498,13 @@ pub async fn image_proxy_handler(
         })?;
 
     if !resp.status().is_success() {
+        tracing::debug!(url = %url, status = %resp.status(), "image proxy: upstream returned error");
         return Err(StatusCode::BAD_GATEWAY);
     }
 
-    // Validate content type — only proxy images
+    // Validate content type — only proxy images.
+    // Accept application/octet-stream as fallback when the URL has an image extension
+    // (many object-storage backends return octet-stream for images).
     let content_type = resp
         .headers()
         .get(header::CONTENT_TYPE)
@@ -468,9 +512,24 @@ pub async fn image_proxy_handler(
         .unwrap_or("application/octet-stream")
         .to_string();
 
-    if !content_type.starts_with("image/") {
+    let is_image_content = content_type.starts_with("image/");
+    let is_octet_stream_with_image_ext = content_type == "application/octet-stream"
+        && url_has_image_extension(&url);
+
+    if !is_image_content && !is_octet_stream_with_image_ext {
+        tracing::debug!(
+            url = %url, content_type = %content_type,
+            "image proxy: rejected non-image content type"
+        );
         return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
     }
+
+    // Use the actual content type if it's an image, otherwise infer from extension
+    let content_type = if is_image_content {
+        content_type
+    } else {
+        infer_image_content_type(&url)
+    };
 
     // Read body with size limit
     let bytes = resp.bytes().await.map_err(|_| StatusCode::BAD_GATEWAY)?;
@@ -505,6 +564,41 @@ pub async fn image_proxy_handler(
     }
 
     Ok(build_image_response(&content_type, body))
+}
+
+/// Check if a URL's path ends with a known image file extension.
+fn url_has_image_extension(url: &str) -> bool {
+    let path = url::Url::parse(url)
+        .map(|u| u.path().to_lowercase())
+        .unwrap_or_default();
+    [".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".ico", ".bmp", ".avif"]
+        .iter()
+        .any(|ext| path.ends_with(ext))
+}
+
+/// Infer an image content-type from the URL file extension.
+fn infer_image_content_type(url: &str) -> String {
+    let path = url::Url::parse(url)
+        .map(|u| u.path().to_lowercase())
+        .unwrap_or_default();
+    if path.ends_with(".png") {
+        "image/png"
+    } else if path.ends_with(".gif") {
+        "image/gif"
+    } else if path.ends_with(".webp") {
+        "image/webp"
+    } else if path.ends_with(".svg") {
+        "image/svg+xml"
+    } else if path.ends_with(".ico") {
+        "image/x-icon"
+    } else if path.ends_with(".bmp") {
+        "image/bmp"
+    } else if path.ends_with(".avif") {
+        "image/avif"
+    } else {
+        "image/jpeg"
+    }
+    .to_string()
 }
 
 fn build_image_response(content_type: &str, body: Vec<u8>) -> Response {
@@ -596,6 +690,106 @@ mod tests {
         assert_eq!(
             result.description.as_deref(),
             Some("Meta description fallback")
+        );
+    }
+
+    #[test]
+    fn falls_back_to_twitter_image() {
+        let html = r#"
+            <html>
+            <head>
+                <meta name="twitter:image" content="https://example.com/twitter.jpg">
+                <title>Twitter Card Page</title>
+            </head>
+            <body></body>
+            </html>
+        "#;
+
+        let result = parse_og_metadata(html);
+        assert_eq!(
+            result.image_url.as_deref(),
+            Some("https://example.com/twitter.jpg")
+        );
+    }
+
+    #[test]
+    fn falls_back_to_link_image_src() {
+        let html = r#"
+            <html>
+            <head>
+                <link rel="image_src" href="https://example.com/link-image.png">
+            </head>
+            <body></body>
+            </html>
+        "#;
+
+        let result = parse_og_metadata(html);
+        assert_eq!(
+            result.image_url.as_deref(),
+            Some("https://example.com/link-image.png")
+        );
+    }
+
+    #[test]
+    fn falls_back_to_itemprop_image() {
+        let html = r#"
+            <html>
+            <head>
+                <meta itemprop="image" content="https://example.com/schema.jpg">
+            </head>
+            <body></body>
+            </html>
+        "#;
+
+        let result = parse_og_metadata(html);
+        assert_eq!(
+            result.image_url.as_deref(),
+            Some("https://example.com/schema.jpg")
+        );
+    }
+
+    #[test]
+    fn og_image_takes_priority_over_twitter() {
+        let html = r#"
+            <html>
+            <head>
+                <meta property="og:image" content="https://example.com/og.jpg">
+                <meta name="twitter:image" content="https://example.com/twitter.jpg">
+            </head>
+            <body></body>
+            </html>
+        "#;
+
+        let result = parse_og_metadata(html);
+        assert_eq!(
+            result.image_url.as_deref(),
+            Some("https://example.com/og.jpg")
+        );
+    }
+
+    #[test]
+    fn url_image_extension_detection() {
+        assert!(url_has_image_extension("https://cdn.example.com/photo.jpg"));
+        assert!(url_has_image_extension("https://cdn.example.com/photo.PNG"));
+        assert!(url_has_image_extension("https://cdn.example.com/img.webp"));
+        assert!(!url_has_image_extension("https://example.com/page.html"));
+        assert!(!url_has_image_extension("https://example.com/api/image"));
+    }
+
+    #[test]
+    fn image_content_type_inference() {
+        assert_eq!(
+            infer_image_content_type("https://example.com/photo.png"),
+            "image/png"
+        );
+        assert_eq!(
+            infer_image_content_type("https://example.com/photo.webp"),
+            "image/webp"
+        );
+        // Default to jpeg for unknown/jpg
+        assert_eq!(
+            infer_image_content_type("https://example.com/photo.jpg"),
+            "image/jpeg"
         );
     }
 }

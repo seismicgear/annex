@@ -391,6 +391,10 @@ $voicesDir = Join-Path $ProjectRoot "assets" "voices"
 if (Test-Path $piperPath) { $envVars["ANNEX_TTS_BINARY_PATH"] = $piperPath }
 if (Test-Path $voicesDir) { $envVars["ANNEX_TTS_VOICES_DIR"] = $voicesDir }
 
+# Auto-open browser for source deployments (unless explicitly suppressed)
+if (-not $env:ANNEX_OPEN_BROWSER) { $envVars["ANNEX_OPEN_BROWSER"] = "true" }
+else { $envVars["ANNEX_OPEN_BROWSER"] = $env:ANNEX_OPEN_BROWSER }
+
 foreach ($kv in $envVars.GetEnumerator()) {
     [Environment]::SetEnvironmentVariable($kv.Key, $kv.Value, "Process")
 }
