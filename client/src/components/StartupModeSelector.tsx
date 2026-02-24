@@ -171,10 +171,7 @@ export function StartupModeSelector({ onReady }: Props) {
           const prefs = await getStartupMode();
           if (cancelled) return;
           if (!prefs) {
-            // Auto-default to Host mode on first launch in Tauri —
-            // start the embedded server immediately without showing
-            // the mode selection dialog.
-            applyHost(false);
+            setPhase('choose');
             return;
           }
           if (prefs.startup_mode.mode === 'host') {
