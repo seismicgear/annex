@@ -37,17 +37,16 @@ fi
 
 # ── Database migrations + seeding ──
 # Run the server briefly as the runtime user to trigger migrations.
-# Stderr is captured so migration errors are not silently lost.
+# Bind to an ephemeral port (port 0) so it doesn't conflict with the
+# real server that starts later. Timeout kills it once migrations are done.
 MIGRATION_LOG="$(mktemp)"
-if timeout 30 gosu annex /app/annex-server > /dev/null 2>"$MIGRATION_LOG"; then
-    : # Server ran and exited cleanly (auto-seeds since commit 0301646)
+if ANNEX_HOST=127.0.0.1 ANNEX_PORT=0 ANNEX_LOG_LEVEL=warn \
+   timeout 10 gosu annex /app/annex-server > /dev/null 2>"$MIGRATION_LOG"; then
+    : # Server ran and exited cleanly
 else
     EXIT_CODE=$?
-    # Exit code 124 = timeout (server started serving instead of exiting).
-    # Any other non-zero is expected (server exits after migrations).
-    if [ "$EXIT_CODE" = "124" ]; then
-        echo "WARN: migration run timed out after 30s" >&2
-    elif [ -s "$MIGRATION_LOG" ]; then
+    # Exit code 124 = timeout (expected: server started serving after migrations).
+    if [ "$EXIT_CODE" != "124" ] && [ -s "$MIGRATION_LOG" ]; then
         echo "Migration run output:" >&2
         cat "$MIGRATION_LOG" >&2
     fi

@@ -298,6 +298,49 @@ pub async fn get_server_handler(
     .into_response())
 }
 
+// ── Public URL ──
+
+#[derive(Debug, Deserialize)]
+pub struct SetPublicUrlRequest {
+    pub public_url: String,
+}
+
+/// Handler for `PUT /api/admin/public-url`.
+///
+/// Allows an admin to explicitly set the server's public URL so that invite
+/// links, federation handshakes, and relay paths use a globally-reachable
+/// address instead of an auto-detected localhost.
+pub async fn set_public_url_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(IdentityContext(identity)): Extension<IdentityContext>,
+    Json(body): Json<SetPublicUrlRequest>,
+) -> Result<Response, ApiError> {
+    if !identity.can_moderate {
+        return Err(ApiError::Forbidden(
+            "insufficient permissions".to_string(),
+        ));
+    }
+
+    let url = body.public_url.trim().trim_end_matches('/').to_string();
+    if !url.is_empty() && !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err(ApiError::BadRequest(
+            "public_url must start with http:// or https://".to_string(),
+        ));
+    }
+
+    {
+        let mut current = state
+            .public_url
+            .write()
+            .unwrap_or_else(|p| p.into_inner());
+        *current = url.clone();
+    }
+
+    tracing::info!(public_url = %url, "public URL updated via admin API");
+
+    Ok(AxumJson(serde_json::json!({ "status": "ok", "public_url": url })).into_response())
+}
+
 // ── Member Management ──
 
 #[derive(Debug, Serialize)]

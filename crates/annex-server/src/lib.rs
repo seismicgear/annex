@@ -554,6 +554,10 @@ pub fn app(state: AppState) -> Router {
             get(api_admin::get_server_handler).patch(api_admin::rename_server_handler),
         )
         .route(
+            "/api/admin/public-url",
+            put(api_admin::set_public_url_handler),
+        )
+        .route(
             "/api/admin/federation/{id}",
             delete(api_admin::revoke_federation_handler),
         )

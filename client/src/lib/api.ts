@@ -314,6 +314,17 @@ export async function renameServer(
   });
 }
 
+export async function setPublicUrl(
+  pseudonymId: string,
+  publicUrl: string,
+): Promise<{ status: string; public_url: string }> {
+  return request<{ status: string; public_url: string }>('/api/admin/public-url', {
+    method: 'PUT',
+    headers: authHeaders(pseudonymId),
+    body: JSON.stringify({ public_url: publicUrl }),
+  });
+}
+
 // ── Member Management ──
 
 export interface MemberInfo {

@@ -33,7 +33,7 @@ import { ServerHub } from '@/components/ServerHub';
 import { StartupModeSelector, clearWebStartupMode } from '@/components/StartupModeSelector';
 import { parseInviteFromUrl, clearInviteFromUrl } from '@/lib/invite';
 import { getPersonasForIdentity } from '@/lib/personas';
-import { getApiBaseUrl } from '@/lib/api';
+import { getApiBaseUrl, setPublicUrl } from '@/lib/api';
 import type { InvitePayload } from '@/types';
 import './App.css';
 
@@ -88,6 +88,16 @@ export default function App() {
       return () => disconnectWs();
     }
   }, [phase, identity?.pseudonymId, connectWs, disconnectWs, loadPermissions, fetchServerImage]);
+
+  // Push tunnel URL to the server so invite links, federation, and relay
+  // paths use the globally-reachable address instead of localhost.
+  useEffect(() => {
+    if (tunnelUrl && phase === 'ready' && identity?.pseudonymId && permissions?.capabilities.can_moderate) {
+      setPublicUrl(identity.pseudonymId, tunnelUrl).catch(() => {
+        // Non-fatal: admin-only endpoint — will fail for non-admins silently
+      });
+    }
+  }, [tunnelUrl, phase, identity?.pseudonymId, permissions?.capabilities.can_moderate]);
 
   // Auto-save current server to the node hub on first identity ready
   useEffect(() => {
