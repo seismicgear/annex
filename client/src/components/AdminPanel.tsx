@@ -19,6 +19,8 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
   const [label, setLabel] = useState('');
   const [slug, setSlug] = useState('');
   const [publicUrl, setPublicUrl] = useState('');
+  const [publicUrlInput, setPublicUrlInput] = useState('');
+  const [savingUrl, setSavingUrl] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -38,6 +40,7 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
         setLabel(s.label);
         setSlug(s.slug);
         setPublicUrl(s.public_url);
+        setPublicUrlInput(s.public_url);
       })
       .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setLoading(false));
@@ -55,6 +58,27 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleSavePublicUrl = async () => {
+    const trimmed = publicUrlInput.trim().replace(/\/+$/, '');
+    if (trimmed && !/^https?:\/\//i.test(trimmed)) {
+      setError('Public URL must start with http:// or https://');
+      return;
+    }
+    setSavingUrl(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const resp = await api.setPublicUrl(pseudonymId, trimmed);
+      setPublicUrl(resp.public_url);
+      setPublicUrlInput(resp.public_url);
+      setSuccess('Public URL saved.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingUrl(false);
     }
   };
 
@@ -79,9 +103,13 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
     }
   };
 
-  const shareUrl = `${publicUrl || window.location.origin}/#/invite?server=${encodeURIComponent(slug)}&label=${encodeURIComponent(label)}`;
+  const hasPublicUrl = !!publicUrl;
+  const shareUrl = hasPublicUrl
+    ? `${publicUrl}/#/invite?server=${encodeURIComponent(slug)}&label=${encodeURIComponent(label)}`
+    : '';
 
   const handleCopyLink = async () => {
+    if (!shareUrl) return;
     try {
       await navigator.clipboard.writeText(shareUrl);
       setCopied(true);
@@ -139,14 +167,45 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
       </label>
 
       <div className="policy-section">
-        <h4>Share Server</h4>
-        <p className="field-hint">Send this link to invite people to your server.</p>
+        <h4>Public URL</h4>
+        <p className="field-hint">
+          The publicly-reachable address of this server (e.g. your domain or tunnel URL).
+          Invite links and federation use this so anyone in the world can connect.
+        </p>
         <div className="share-link-row">
-          <input type="text" value={shareUrl} readOnly className="share-link-input" />
-          <button className="primary-btn" onClick={handleCopyLink}>
-            {copied ? 'Copied!' : 'Copy Link'}
+          <input
+            type="text"
+            value={publicUrlInput}
+            onChange={(e) => setPublicUrlInput(e.target.value)}
+            placeholder="https://your-server.example.com"
+          />
+          <button
+            className="primary-btn"
+            onClick={handleSavePublicUrl}
+            disabled={savingUrl || publicUrlInput === publicUrl}
+          >
+            {savingUrl ? 'Saving...' : 'Save'}
           </button>
         </div>
+      </div>
+
+      <div className="policy-section">
+        <h4>Share Server</h4>
+        {hasPublicUrl ? (
+          <p className="field-hint">Send this link to invite people to your server.</p>
+        ) : (
+          <p className="field-hint" style={{ color: 'var(--warning-color, #f0ad4e)' }}>
+            Set a Public URL above to generate a shareable invite link.
+          </p>
+        )}
+        {hasPublicUrl && (
+          <div className="share-link-row">
+            <input type="text" value={shareUrl} readOnly className="share-link-input" />
+            <button className="primary-btn" onClick={handleCopyLink}>
+              {copied ? 'Copied!' : 'Copy Link'}
+            </button>
+          </div>
+        )}
       </div>
 
       {error && <div className="error-message">{error}</div>}
