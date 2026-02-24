@@ -1,16 +1,20 @@
 #!/usr/bin/env node
-// build-desktop.js — Builds ZK artifacts and the client for Tauri desktop packaging.
+// build-desktop.js — Builds ZK artifacts, Piper TTS, and the client for Tauri
+// desktop packaging.
 //
 // Cross-platform replacement for build-desktop.sh.
 // Invoked by `tauri.conf.json`'s `beforeBuildCommand`.
 //
 // Usage:
-//   node scripts/build-desktop.js            # full build (ZK + client)
-//   SKIP_ZK=1 node scripts/build-desktop.js  # skip ZK, client build only
+//   node scripts/build-desktop.js                      # full build
+//   SKIP_ZK=1 node scripts/build-desktop.js            # skip ZK
+//   SKIP_PIPER=1 node scripts/build-desktop.js         # skip Piper setup
 
 const { execSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
+
+const isWindows = process.platform === "win32";
 
 const ROOT_DIR = path.resolve(__dirname, "..");
 const ZK_DIR = path.join(ROOT_DIR, "zk");
@@ -18,6 +22,12 @@ const CLIENT_DIR = path.join(ROOT_DIR, "client");
 const ZK_KEYS_DIR = path.join(ZK_DIR, "keys");
 const ZK_BUILD_DIR = path.join(ZK_DIR, "build");
 const CLIENT_PUBLIC_ZK = path.join(CLIENT_DIR, "public", "zk");
+
+const ASSETS_DIR = path.join(ROOT_DIR, "assets");
+const PIPER_DIR = path.join(ASSETS_DIR, "piper");
+const VOICES_DIR = path.join(ASSETS_DIR, "voices");
+const PIPER_BIN = path.join(PIPER_DIR, isWindows ? "piper.exe" : "piper");
+const VOICE_MODEL = path.join(VOICES_DIR, "en_US-lessac-medium.onnx");
 
 function run(cmd, cwd) {
   console.log(`[build-desktop]   $ ${cmd}`);
@@ -85,7 +95,29 @@ if (fs.existsSync(zkeySrc)) {
   );
 }
 
-// ── Step 3: Build the client ──
+// ── Step 3: Setup Piper TTS (download binary + voice model if missing) ──
+
+if (process.env.SKIP_PIPER === "1") {
+  log("Skipping Piper setup (SKIP_PIPER=1)");
+} else if (fs.existsSync(PIPER_BIN) && fs.existsSync(VOICE_MODEL)) {
+  log("Piper binary and voice model already exist — skipping setup");
+} else {
+  log("Setting up Piper TTS...");
+  if (isWindows) {
+    run(
+      `powershell -ExecutionPolicy Bypass -File "${path.join(ROOT_DIR, "scripts", "setup-piper.ps1")}"`,
+      ROOT_DIR
+    );
+  } else {
+    run(
+      `bash "${path.join(ROOT_DIR, "scripts", "setup-piper.sh")}"`,
+      ROOT_DIR
+    );
+  }
+  log("Piper setup complete.");
+}
+
+// ── Step 4: Build the client ──
 
 log("Building client...");
 
