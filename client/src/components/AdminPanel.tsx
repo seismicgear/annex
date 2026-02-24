@@ -79,9 +79,16 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
     }
   };
 
+  const isLocalUrl = (url: string) =>
+    /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:\d+)?$/i.test(url);
   const origin = window.location.origin;
-  const isLocal = /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:\d+)?$/i.test(origin);
-  const effectiveBase = publicUrl || (!isLocal ? origin : '');
+  // Prefer server-configured public_url when it's a real address; fall back
+  // to the browser's origin (which is already public if the user reached the
+  // app over a public domain).  Only show a warning when both are localhost.
+  const effectiveBase =
+    (publicUrl && !isLocalUrl(publicUrl) ? publicUrl : null)
+    ?? (!isLocalUrl(origin) ? origin : null)
+    ?? '';
   const shareUrl = effectiveBase
     ? `${effectiveBase}/#/invite?server=${encodeURIComponent(slug)}&label=${encodeURIComponent(label)}`
     : '';
