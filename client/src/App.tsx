@@ -54,6 +54,7 @@ export default function App() {
   );
   const inviteProcessed = useRef(false);
   const serverSaved = useRef(false);
+  const prevPhaseRef = useRef(phase);
 
   // Load identities and saved servers on mount
   useEffect(() => {
@@ -61,11 +62,15 @@ export default function App() {
     loadServers();
   }, [loadIdentities, loadServers]);
 
-  // When the user logs out, return to the mode selector
+  // When the user logs out, return to the mode selector.
+  // We track the previous phase so we only reset when phase *transitions*
+  // to 'uninitialized' (a real logout), not when it was already 'uninitialized'
+  // (e.g. user just picked a server and hasn't created an identity yet).
   useEffect(() => {
-    if (phase === 'uninitialized' && serverReady) {
-      // Identity was cleared (logout) — reset to mode selector.
-      // Also clear the persisted preference so user can re-choose.
+    const prevPhase = prevPhaseRef.current;
+    prevPhaseRef.current = phase;
+
+    if (phase === 'uninitialized' && prevPhase !== 'uninitialized' && serverReady) {
       clearWebStartupMode();
       setServerReady(false);
       serverSaved.current = false;
