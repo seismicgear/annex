@@ -141,17 +141,6 @@ fn detect_content_type(data: &[u8]) -> Option<(&'static str, UploadCategory)> {
     None
 }
 
-/// Classifies a content type string into an upload category.
-fn classify_content_type(ct: &str) -> UploadCategory {
-    if ALLOWED_IMAGE_TYPES.contains(&ct) {
-        UploadCategory::Image
-    } else if ALLOWED_VIDEO_TYPES.contains(&ct) {
-        UploadCategory::Video
-    } else {
-        UploadCategory::File
-    }
-}
-
 /// Returns the maximum upload size in bytes for a given category based on server policy.
 fn max_size_for_category(policy: &annex_types::ServerPolicy, category: UploadCategory) -> usize {
     let mb = match category {

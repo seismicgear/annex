@@ -265,6 +265,15 @@ fn resolve_signing_key(db_path: &str) -> Result<SigningKey, StartupError> {
     let key = SigningKey::generate(&mut OsRng);
     let hex_key = hex::encode(key.to_bytes());
 
+    // Ensure the parent directory exists before writing.
+    if let Err(e) = std::fs::create_dir_all(data_dir) {
+        tracing::warn!(
+            path = %data_dir.display(),
+            error = %e,
+            "could not create data directory for signing key"
+        );
+    }
+
     match std::fs::write(&key_file, &hex_key) {
         Ok(()) => {
             // Set file permissions to owner-only (0600) on Unix

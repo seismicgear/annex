@@ -292,21 +292,23 @@ pub async fn link_preview_handler(
         return Err(StatusCode::FORBIDDEN);
     }
 
-    // DNS rebinding protection: resolve the hostname and verify all IPs are public.
-    if let Ok(parsed) = url::Url::parse(&url) {
-        if let Some(host) = parsed.host_str() {
-            if host.parse::<IpAddr>().is_err() && resolves_to_private_ip(host).await {
-                return Err(StatusCode::FORBIDDEN);
-            }
-        }
-    }
-
-    // Check cache
+    // Check cache before expensive DNS resolution — cached results are safe
+    // because they were already validated on the original fetch.
     {
         let cache = state.preview_cache.previews.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(entry) = cache.get(&url) {
             if entry.fetched_at.elapsed() < CACHE_TTL {
                 return Ok(Json(entry.data.clone()));
+            }
+        }
+    }
+
+    // DNS rebinding protection: resolve the hostname and verify all IPs are public.
+    // Only runs for cache misses — avoids unnecessary DNS lookups on cached hits.
+    if let Ok(parsed) = url::Url::parse(&url) {
+        if let Some(host) = parsed.host_str() {
+            if host.parse::<IpAddr>().is_err() && resolves_to_private_ip(host).await {
+                return Err(StatusCode::FORBIDDEN);
             }
         }
     }
@@ -418,16 +420,8 @@ pub async fn image_proxy_handler(
         return Err(StatusCode::FORBIDDEN);
     }
 
-    // DNS rebinding protection: resolve the hostname and verify all IPs are public.
-    if let Ok(parsed) = url::Url::parse(&url) {
-        if let Some(host) = parsed.host_str() {
-            if host.parse::<IpAddr>().is_err() && resolves_to_private_ip(host).await {
-                return Err(StatusCode::FORBIDDEN);
-            }
-        }
-    }
-
-    // Check cache
+    // Check cache before expensive DNS resolution — cached results are safe
+    // because they were already validated on the original fetch.
     {
         let cache = state.preview_cache.images.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(entry) = cache.get(&url) {
@@ -436,6 +430,16 @@ pub async fn image_proxy_handler(
                     &entry.content_type,
                     entry.bytes.clone(),
                 ));
+            }
+        }
+    }
+
+    // DNS rebinding protection: resolve the hostname and verify all IPs are public.
+    // Only runs for cache misses — avoids unnecessary DNS lookups on cached hits.
+    if let Ok(parsed) = url::Url::parse(&url) {
+        if let Some(host) = parsed.host_str() {
+            if host.parse::<IpAddr>().is_err() && resolves_to_private_ip(host).await {
+                return Err(StatusCode::FORBIDDEN);
             }
         }
     }
