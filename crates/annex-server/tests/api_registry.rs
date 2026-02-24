@@ -44,13 +44,14 @@ async fn test_register_identity_success() {
         voice_service: Arc::new(annex_voice::VoiceService::new(
             annex_voice::LiveKitConfig::default(),
         )),
-        tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper")),
+        tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper", "bark")),
         stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),
         voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
         observe_tx: tokio::sync::broadcast::channel(256).0,
         upload_dir: std::env::temp_dir().to_string_lossy().into_owned(),
         preview_cache: annex_server::api_link_preview::PreviewCache::new(),
         cors_origins: vec![],
+        enforce_zk_proofs: false,
     };
     let app = app(state);
 
@@ -112,13 +113,14 @@ async fn test_register_duplicate_failure() {
         voice_service: Arc::new(annex_voice::VoiceService::new(
             annex_voice::LiveKitConfig::default(),
         )),
-        tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper")),
+        tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper", "bark")),
         stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),
         voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
         observe_tx: tokio::sync::broadcast::channel(256).0,
         upload_dir: std::env::temp_dir().to_string_lossy().into_owned(),
         preview_cache: annex_server::api_link_preview::PreviewCache::new(),
         cors_origins: vec![],
+        enforce_zk_proofs: false,
     };
     let app = app(state);
 
@@ -181,13 +183,14 @@ async fn test_register_invalid_role_failure() {
         voice_service: Arc::new(annex_voice::VoiceService::new(
             annex_voice::LiveKitConfig::default(),
         )),
-        tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper")),
+        tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper", "bark")),
         stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),
         voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
         observe_tx: tokio::sync::broadcast::channel(256).0,
         upload_dir: std::env::temp_dir().to_string_lossy().into_owned(),
         preview_cache: annex_server::api_link_preview::PreviewCache::new(),
         cors_origins: vec![],
+        enforce_zk_proofs: false,
     };
     let app = app(state);
 

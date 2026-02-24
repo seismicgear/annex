@@ -24,6 +24,8 @@ fn test_vrp_anchor_snapshot_serialization() {
         principles_hash: "0x123".to_string(),
         prohibited_actions_hash: "0x456".to_string(),
         timestamp: 1234567890,
+        principles: vec![],
+        prohibited_actions: vec![],
     };
     let json = serde_json::to_string(&snapshot).unwrap();
     let deserialized: VrpAnchorSnapshot = serde_json::from_str(&json).unwrap();
@@ -37,6 +39,8 @@ fn test_vrp_federation_handshake_serialization() {
             principles_hash: "0xabc".to_string(),
             prohibited_actions_hash: "0xdef".to_string(),
             timestamp: 100,
+            principles: vec![],
+            prohibited_actions: vec![],
         },
         capability_contract: VrpCapabilitySharingContract {
             required_capabilities: vec!["cap1".to_string()],

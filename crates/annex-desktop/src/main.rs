@@ -48,6 +48,11 @@ pool_max_size = 8
 [logging]
 level = "info"
 json = false
+
+[cors]
+# Desktop defaults: allow Tauri webview origins (macOS/Linux + Windows).
+# Override with ANNEX_CORS_ORIGINS env var if needed.
+allowed_origins = ["tauri://localhost", "https://tauri.localhost"]
 "#,
             db_path = db_path.display(),
         );
@@ -491,6 +496,18 @@ fn main() {
             std::env::set_var("ANNEX_ZK_KEY_PATH", &zk_vkey);
         }
         std::env::set_var("ANNEX_UPLOAD_DIR", &upload_dir);
+
+        // Set desktop-safe CORS origins if not already configured by the user.
+        // Tauri webview origins vary by platform:
+        //   macOS/Linux: tauri://localhost
+        //   Windows:     https://tauri.localhost
+        // Both are included so the desktop app works on all platforms.
+        if std::env::var("ANNEX_CORS_ORIGINS").is_err() {
+            std::env::set_var(
+                "ANNEX_CORS_ORIGINS",
+                "tauri://localhost,https://tauri.localhost",
+            );
+        }
     }
 
     tauri::Builder::default()

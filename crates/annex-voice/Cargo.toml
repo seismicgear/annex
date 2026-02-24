@@ -11,6 +11,7 @@ tracing = { workspace = true }
 
 livekit-api = "0.4"
 livekit-protocol = "0.7"
+reqwest = { version = "0.12", features = ["json"] }
 tokio = { workspace = true, features = ["process", "io-util", "sync"] }
 
 [dev-dependencies]

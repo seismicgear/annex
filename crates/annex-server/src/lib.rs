@@ -91,6 +91,9 @@ pub struct AppState {
     pub preview_cache: api_link_preview::PreviewCache,
     /// Configured CORS allowed origins (empty = same-origin only, ["*"] = permissive).
     pub cors_origins: Vec<String>,
+    /// When true, channel access endpoints require ZK membership proof via
+    /// the `x-annex-zk-proof` header.
+    pub enforce_zk_proofs: bool,
 }
 
 impl AppState {
@@ -398,8 +401,11 @@ pub async fn prepare_server(
 
     // Initialize Voice / TTS / STT services
     let voice_service = annex_voice::VoiceService::new(config.livekit);
-    let tts_service =
-        annex_voice::TtsService::new(&config.voice.tts_voices_dir, &config.voice.tts_binary_path);
+    let tts_service = annex_voice::TtsService::new(
+        &config.voice.tts_voices_dir,
+        &config.voice.tts_binary_path,
+        &config.voice.bark_binary_path,
+    );
     let stt_service =
         annex_voice::SttService::new(&config.voice.stt_model_path, &config.voice.stt_binary_path);
 
@@ -431,6 +437,7 @@ pub async fn prepare_server(
         upload_dir,
         preview_cache: api_link_preview::PreviewCache::new(),
         cors_origins: config.cors.allowed_origins.clone(),
+        enforce_zk_proofs: config.security.enforce_zk_proofs,
     };
 
     // Start background pruning task
@@ -545,6 +552,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/api/admin/server",
             get(api_admin::get_server_handler).patch(api_admin::rename_server_handler),
+        )
+        .route(
+            "/api/admin/federation/{id}",
+            delete(api_admin::revoke_federation_handler),
         )
         .route(
             "/api/admin/members",

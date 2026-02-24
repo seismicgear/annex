@@ -1,9 +1,79 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 /// A trait for text embedding models.
 pub trait SemanticEmbedder {
     /// Embeds a text string into a vector of floats.
     fn embed(&self, text: &str) -> Result<Vec<f32>, String>;
+}
+
+/// A bag-of-words embedder that creates sparse TF vectors from text.
+///
+/// No external dependencies — tokenizes on whitespace and punctuation,
+/// lowercases, and builds a vector in a shared vocabulary space.
+/// Suitable for principle-level text comparison without an ML model.
+pub struct BagOfWordsEmbedder {
+    /// Vocabulary → dimension index mapping built from all texts seen.
+    vocab: HashMap<String, usize>,
+}
+
+impl BagOfWordsEmbedder {
+    pub fn new() -> Self {
+        Self {
+            vocab: HashMap::new(),
+        }
+    }
+
+    /// Pre-builds vocabulary from all principle texts before embedding.
+    pub fn build_vocab(&mut self, texts: &[String]) {
+        let mut sorted_words = BTreeSet::new();
+        for text in texts {
+            for word in tokenize(text) {
+                sorted_words.insert(word);
+            }
+        }
+        self.vocab.clear();
+        for (idx, word) in sorted_words.into_iter().enumerate() {
+            self.vocab.insert(word, idx);
+        }
+    }
+}
+
+impl Default for BagOfWordsEmbedder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SemanticEmbedder for BagOfWordsEmbedder {
+    fn embed(&self, text: &str) -> Result<Vec<f32>, String> {
+        if self.vocab.is_empty() {
+            return Err("Vocabulary not built — call build_vocab first".to_string());
+        }
+        let dim = self.vocab.len();
+        let mut vec = vec![0.0f32; dim];
+        for word in tokenize(text) {
+            if let Some(&idx) = self.vocab.get(&word) {
+                vec[idx] += 1.0;
+            }
+        }
+        // L2 normalize
+        let norm: f32 = vec.iter().map(|v| v * v).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            for v in &mut vec {
+                *v /= norm;
+            }
+        }
+        Ok(vec)
+    }
+}
+
+/// Tokenizes text into lowercase words, stripping punctuation.
+fn tokenize(text: &str) -> Vec<String> {
+    text.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() >= 2) // Skip single-char tokens
+        .map(|w| w.to_string())
+        .collect()
 }
 
 /// A mock embedder for testing purposes.

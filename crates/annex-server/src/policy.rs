@@ -44,7 +44,7 @@ pub async fn recalculate_agent_alignments(state: Arc<AppState>) -> Result<(), Ap
     };
 
     let alignment_config = VrpAlignmentConfig {
-        semantic_alignment_required: false, // Deferred in Phase 3.3
+        semantic_alignment_required: true,
         min_alignment_score: policy.agent_min_alignment_score,
     };
 
@@ -242,7 +242,7 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
     };
 
     let alignment_config = VrpAlignmentConfig {
-        semantic_alignment_required: false,
+        semantic_alignment_required: true,
         min_alignment_score: policy.agent_min_alignment_score,
     };
 
@@ -254,7 +254,7 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
     let state_clone = state.clone();
 
     // 3. Process in Background (wrapped in a transaction for atomicity)
-    tokio::task::spawn_blocking(move || {
+    let affected_peers = tokio::task::spawn_blocking(move || {
         let mut conn = state_clone
             .pool
             .get()
@@ -267,7 +267,7 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
         let updates = {
             let mut stmt = tx
                 .prepare(
-                    "SELECT fa.id, i.base_url, fa.alignment_status, fa.transfer_scope, fa.remote_handshake_json
+                    "SELECT fa.id, i.base_url, fa.alignment_status, fa.transfer_scope, fa.remote_handshake_json, fa.remote_instance_id
                      FROM federation_agreements fa
                      JOIN instances i ON fa.remote_instance_id = i.id
                      WHERE fa.active = 1",
@@ -282,6 +282,7 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
                         row.get::<_, String>(2)?,
                         row.get::<_, String>(3)?,
                         row.get::<_, Option<String>>(4)?,
+                        row.get::<_, i64>(5)?,
                     ))
                 })
                 .map_err(|e| ApiError::InternalServerError(format!("query failed: {}", e)))?;
@@ -289,7 +290,7 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
             let mut updates = Vec::new();
 
             for row in iter {
-                let (id, base_url, old_alignment_str, old_scope_str, handshake_json) =
+                let (id, base_url, old_alignment_str, old_scope_str, handshake_json, remote_instance_id) =
                     row.map_err(|e| ApiError::InternalServerError(format!("row error: {}", e)))?;
 
                 let handshake_json = match handshake_json {
@@ -321,14 +322,15 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
                 let new_scope_str = report.transfer_scope.to_string();
 
                 if new_alignment_str != old_alignment_str || new_scope_str != old_scope_str {
-                    updates.push((id, base_url, old_alignment_str, report));
+                    updates.push((id, base_url, old_alignment_str, report, remote_instance_id));
                 }
             }
             updates
         };
 
         // Apply updates within the transaction
-        for (id, base_url, previous_status, report) in updates {
+        let mut affected_peers: Vec<(String, i64)> = Vec::new();
+        for (id, base_url, previous_status, report, remote_instance_id) in updates {
             let active_int = if report.alignment_status == VrpAlignmentStatus::Conflict {
                 0
             } else {
@@ -412,18 +414,127 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
                     &state_clone.observe_tx,
                 );
             }
+
+            // Track this peer for outbound re-handshake notification
+            affected_peers.push((base_url, remote_instance_id));
         }
 
         tx.commit().map_err(|e| {
             ApiError::InternalServerError(format!("failed to commit transaction: {}", e))
         })?;
 
-        Ok::<(), ApiError>(())
+        Ok::<Vec<(String, i64)>, ApiError>(affected_peers)
     })
     .await
     .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
 
+    // Initiate outbound re-handshakes to peers whose alignment changed
+    if !affected_peers.is_empty() {
+        let state_for_notify = state.clone();
+        tokio::spawn(async move {
+            notify_federation_peers_of_policy_change(state_for_notify, affected_peers).await;
+        });
+    }
+
     Ok(())
+}
+
+/// Notifies federation peers of a policy change by initiating outbound re-handshakes.
+///
+/// For each affected peer, constructs a new VRP handshake from the current server
+/// policy and POSTs it to the peer's `/api/federation/handshake` endpoint.
+/// Failures are logged but do not propagate -- this is a best-effort notification.
+pub async fn notify_federation_peers_of_policy_change(
+    state: Arc<AppState>,
+    peers: Vec<(String, i64)>,
+) {
+    // Build the local handshake from the current policy
+    let (local_handshake, public_url) = {
+        let policy = match state.policy.read() {
+            Ok(p) => p.clone(),
+            Err(_) => {
+                tracing::error!("policy lock poisoned during peer re-handshake notification");
+                return;
+            }
+        };
+
+        let local_root = ServerPolicyRoot::from_policy(&policy);
+        let local_anchor = match local_root.to_anchor_snapshot() {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::error!("failed to create anchor snapshot for re-handshake: {}", e);
+                return;
+            }
+        };
+
+        let mut offered_capabilities = Vec::new();
+        if policy.voice_enabled {
+            offered_capabilities.push("VOICE".to_string());
+        }
+        if policy.federation_enabled {
+            offered_capabilities.push("FEDERATION".to_string());
+        }
+        offered_capabilities.push("TEXT".to_string());
+        offered_capabilities.push("VRP".to_string());
+
+        let local_contract = VrpCapabilitySharingContract {
+            required_capabilities: policy.agent_required_capabilities.clone(),
+            offered_capabilities,
+            redacted_topics: vec![],
+        };
+
+        let handshake = VrpFederationHandshake {
+            anchor_snapshot: local_anchor,
+            capability_contract: local_contract,
+        };
+
+        (handshake, state.get_public_url())
+    };
+
+    let client = match crate::api_federation::federation_http_client() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("failed to build federation HTTP client for re-handshake: {}", e);
+            return;
+        }
+    };
+
+    for (base_url, remote_instance_id) in peers {
+        let url = format!("{}/api/federation/handshake", base_url);
+        let payload = serde_json::json!({
+            "base_url": public_url,
+            "anchor_snapshot": local_handshake.anchor_snapshot,
+            "capability_contract": local_handshake.capability_contract,
+        });
+
+        let client_clone = client.clone();
+        tokio::spawn(async move {
+            match client_clone.post(&url).json(&payload).send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    tracing::info!(
+                        peer = %base_url,
+                        remote_instance_id = remote_instance_id,
+                        "policy re-handshake succeeded"
+                    );
+                }
+                Ok(resp) => {
+                    tracing::warn!(
+                        peer = %base_url,
+                        remote_instance_id = remote_instance_id,
+                        status = %resp.status(),
+                        "policy re-handshake received non-success response"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        peer = %base_url,
+                        remote_instance_id = remote_instance_id,
+                        "failed to send policy re-handshake: {}", e
+                    );
+                }
+            }
+        });
+    }
 }
 
 /// Recalculates alignments for both agents and federation agreements.

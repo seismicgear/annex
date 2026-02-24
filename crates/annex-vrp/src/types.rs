@@ -79,6 +79,12 @@ pub struct VrpAnchorSnapshot {
     pub prohibited_actions_hash: String,
     /// Timestamp of when this snapshot was generated.
     pub timestamp: u64,
+    /// Original principle texts for semantic alignment. Empty when not available.
+    #[serde(default)]
+    pub principles: Vec<String>,
+    /// Original prohibited action texts for semantic alignment. Empty when not available.
+    #[serde(default)]
+    pub prohibited_actions: Vec<String>,
 }
 
 /// A contract defining required and offered capabilities for an interaction.

@@ -79,11 +79,10 @@ The federation protocol has structural coverage but several subsystems have not 
 - `VrpAlignmentStatus` spectrum (Aligned / Partial / Conflict) with negotiated transfer scopes
 
 **Current gaps:**
-- `process_incoming_handshake` is stubbed — inbound federation handshake processing is not wired
-- RTX cross-server delivery is local-only; the relay endpoint exists but end-to-end multi-server flow has not been validated
-- Policy-reactive re-evaluation is conceptual — policy changes are logged but do not automatically trigger re-handshakes with federation peers
-- Federation agreement lifecycle supports creation and storage; update, expiration, and revocation are not yet implemented
-- Cross-server proof verification: servers can publish their Merkle root, but peers cannot yet verify user membership proofs against it
+- RTX cross-server delivery works single-hop; multi-hop chains lack origin validation and circular relay prevention
+- Policy changes trigger local re-evaluation of federation agreements and agent alignment, but do not proactively notify federation peers or initiate re-handshakes
+- Federation agreement lifecycle supports creation, storage, and policy-driven updates; manual revocation, expiration TTLs, and graceful deactivation are not yet implemented
+- Cross-server proof verification: initial attestation (Groth16 proof against remote Merkle root) works; continuous verification (re-checking on root changes) and revocation are not yet implemented
 
 **What needs testing in production:**
 - Multi-server federation in real network conditions (latency, partitions, reconnects)
@@ -104,11 +103,11 @@ The agent participation framework has API surface and data model coverage, but s
 - Channel access restrictions based on alignment status (e.g., voice blocked for Partial agents)
 
 **Current gaps:**
-- Semantic VRP alignment is not functional — `compare_peer_anchor` does exact hash matching only. Without a real embedding service, any policy difference results in `Conflict` alignment; `Partial` alignment is never reached in practice
-- ZK proof verification keys load at startup but proofs are not enforced at channel access points — membership is currently validated via presence graph, not Groth16 verification
-- Agent voice pipeline is file-based (Piper/Whisper process invocation), not real-time WebRTC — agents don't actually connect to LiveKit rooms; the `AgentVoiceClient` is a simulation layer
-- Legacy Ledger reputation schema exists but lookup functions are stubs; time-based reputation decay is not implemented
-- Bark and System TTS backends return "not implemented"
+- Semantic VRP alignment uses bag-of-words text similarity when original principle text is available; exact hash matching is used as a fast path. The `Partial` tier is reachable when principles overlap but are not identical
+- ZK proof verification keys load at startup; enforcement at channel access points is configurable via `enforce_zk_proofs` (default: off for backward compatibility)
+- Agent voice pipeline uses LiveKit for real-time WebRTC room participation; TTS (Piper, Bark, System) and STT (Whisper) are subprocess-based
+- Reputation scoring (`check_reputation_score`) is implemented with algorithmic exponential decay over handshake history; wall-clock-based TTL decay is not yet implemented
+- Bark TTS uses a Python subprocess wrapper; System TTS uses platform-native commands (espeak-ng on Linux, `say` on macOS)
 
 **What needs testing in production:**
 - Full end-to-end agent connection flow with real ZK proof generation and verification
@@ -122,13 +121,13 @@ The agent participation framework has API surface and data model coverage, but s
 
 ## Known limitations
 
-- **ZK proofs not enforced at access points** — Groth16 verification keys load at startup, but channel access and membership checks currently rely on presence graph state, not proof verification. The ZK infrastructure is in place but the enforcement wiring is incomplete.
-- **Semantic alignment defaults to Conflict** — without a real text embedding service, `compare_peer_anchor` can only do exact hash matching. Any policy difference between agent and server (or between two federating servers) results in `Conflict` alignment. The `Partial` tier is architecturally defined but unreachable in practice.
-- **STT binary path** — defaults reference a macOS-style path; Linux/Docker deployments should set `ANNEX_STT_BINARY_PATH` explicitly.
+- **ZK proof enforcement is opt-in** — Groth16 verification keys load at startup and enforcement at channel access points is available via `enforce_zk_proofs` config (default: off). Enable it once clients support proof submission via the `x-annex-zk-proof` header.
+- **Semantic alignment** — `compare_peer_anchor` uses bag-of-words text similarity for the `Partial` tier when original principle text is available; falls back to exact hash matching otherwise. Requires principle text in anchor snapshots (not just hashes) for partial alignment to activate.
+- **STT binary path** — defaults to `assets/whisper/whisper` (platform-agnostic relative path). The Whisper binary is not bundled in Docker (unlike Piper TTS); Docker deployments should set `ANNEX_STT_BINARY_PATH` explicitly or use the provided Dockerfile which bundles it.
 - **SQLite single-writer** — write throughput is bounded by SQLite's single-writer model. Sufficient for small-to-medium deployments; larger instances should monitor WAL checkpoint frequency.
 - **No TLS termination** — the server binds HTTP only. Run behind a reverse proxy (nginx, Caddy) for production TLS.
-- **Voice requires LiveKit** — voice channels are non-functional without a running LiveKit server and valid API credentials. Agent voice is file-based (process invocation), not real-time WebRTC.
-- **Desktop app** — Tauri builds require platform-specific toolchains. GitHub Actions workflow covers automated builds but manual signing is needed for distribution.
+- **Voice requires LiveKit** — voice channels require a running LiveKit server and valid API credentials for real-time WebRTC audio. Agent voice connects to LiveKit rooms directly.
+- **Desktop app** — Tauri builds require platform-specific toolchains. CORS origins for the Tauri webview are automatically configured. GitHub Actions workflow covers automated builds but manual signing is needed for distribution.
 - **Not all features may work** — this is a developer preview. Features that have been implemented and unit-tested may still have integration-level issues that only surface in production network conditions, multi-server topologies, or under load. Operators should expect to encounter rough edges.
 
 ---

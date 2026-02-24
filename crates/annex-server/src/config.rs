@@ -32,6 +32,19 @@ pub struct Config {
     /// CORS configuration.
     #[serde(default)]
     pub cors: CorsConfig,
+
+    /// Security enforcement settings.
+    #[serde(default)]
+    pub security: SecurityConfig,
+}
+
+/// Security enforcement configuration.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct SecurityConfig {
+    /// When true, channel access endpoints require a valid ZK membership proof
+    /// via the `x-annex-zk-proof` header. Default: false (backward-compatible).
+    #[serde(default)]
+    pub enforce_zk_proofs: bool,
 }
 
 /// CORS (Cross-Origin Resource Sharing) configuration.
@@ -64,6 +77,10 @@ pub struct VoicePathsConfig {
     /// Path to the Whisper STT binary.
     #[serde(default = "default_stt_binary_path")]
     pub stt_binary_path: String,
+
+    /// Path to the Bark TTS Python wrapper script.
+    #[serde(default = "default_bark_binary_path")]
+    pub bark_binary_path: String,
 }
 
 fn default_tts_voices_dir() -> String {
@@ -82,6 +99,10 @@ fn default_stt_binary_path() -> String {
     "assets/whisper/whisper".to_string()
 }
 
+fn default_bark_binary_path() -> String {
+    "assets/bark/bark_tts.py".to_string()
+}
+
 impl Default for VoicePathsConfig {
     fn default() -> Self {
         Self {
@@ -89,6 +110,7 @@ impl Default for VoicePathsConfig {
             tts_binary_path: default_tts_binary_path(),
             stt_model_path: default_stt_model_path(),
             stt_binary_path: default_stt_binary_path(),
+            bark_binary_path: default_bark_binary_path(),
         }
     }
 }
@@ -449,12 +471,18 @@ pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
     if let Some(val) = parse_env_var::<String>("ANNEX_STT_BINARY_PATH")? {
         config.voice.stt_binary_path = val;
     }
+    if let Some(val) = parse_env_var::<String>("ANNEX_BARK_BINARY_PATH")? {
+        config.voice.bark_binary_path = val;
+    }
     if let Ok(origins) = std::env::var("ANNEX_CORS_ORIGINS") {
         config.cors.allowed_origins = origins
             .split(',')
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
+    }
+    if let Some(enforce) = parse_env_bool("ANNEX_ENFORCE_ZK_PROOFS")? {
+        config.security.enforce_zk_proofs = enforce;
     }
 
     validate_config(&config)?;

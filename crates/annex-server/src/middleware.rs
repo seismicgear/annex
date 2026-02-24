@@ -1,3 +1,4 @@
+use annex_identity::zk::{parse_fr_from_hex, parse_proof, verify_proof};
 use annex_identity::{get_platform_identity, PlatformIdentity};
 use axum::{
     body::Body,
@@ -6,6 +7,7 @@ use axum::{
     middleware::Next,
     response::Response,
 };
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
@@ -338,6 +340,85 @@ pub async fn rate_limit_middleware(req: Request<Body>, next: Next) -> Result<Res
     }
 
     Ok(next.run(req).await)
+}
+
+/// JSON payload for a ZK membership proof submitted via the `x-annex-zk-proof` header.
+#[derive(Debug, Deserialize)]
+pub struct ZkProofPayload {
+    /// The Groth16 proof JSON (snarkjs format).
+    pub proof: serde_json::Value,
+    /// Merkle root hex used for the proof.
+    pub root_hex: String,
+    /// Identity commitment hex.
+    pub commitment_hex: String,
+}
+
+/// Verifies a ZK membership proof from the `x-annex-zk-proof` header.
+///
+/// When `state.enforce_zk_proofs` is true and the header is present, the proof
+/// is verified against the server's membership verifying key. Returns:
+/// - `Ok(())` if enforcement is disabled, or the proof is valid
+/// - `Err(StatusCode::FORBIDDEN)` if enforcement is enabled and proof is missing/invalid
+pub fn verify_zk_membership_header(
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+) -> Result<(), StatusCode> {
+    if !state.enforce_zk_proofs {
+        return Ok(());
+    }
+
+    let header_val = headers
+        .get("x-annex-zk-proof")
+        .ok_or(StatusCode::FORBIDDEN)?;
+
+    let header_str = header_val.to_str().map_err(|_| StatusCode::FORBIDDEN)?;
+
+    // Decode base64 to JSON
+    use base64::Engine;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(header_str)
+        .map_err(|_| StatusCode::FORBIDDEN)?;
+
+    let payload: ZkProofPayload =
+        serde_json::from_slice(&decoded).map_err(|_| StatusCode::FORBIDDEN)?;
+
+    // Parse the proof
+    let proof_json =
+        serde_json::to_string(&payload.proof).map_err(|_| StatusCode::FORBIDDEN)?;
+    let proof = parse_proof(&proof_json).map_err(|_| StatusCode::FORBIDDEN)?;
+
+    // Parse public inputs: [merkle_root, commitment]
+    let root_fr = parse_fr_from_hex(&payload.root_hex).map_err(|_| StatusCode::FORBIDDEN)?;
+    let commitment_fr =
+        parse_fr_from_hex(&payload.commitment_hex).map_err(|_| StatusCode::FORBIDDEN)?;
+    let public_inputs = vec![root_fr, commitment_fr];
+
+    // Verify the proof
+    let valid =
+        verify_proof(&state.membership_vkey, &proof, &public_inputs).map_err(|_| StatusCode::FORBIDDEN)?;
+
+    if !valid {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    // Optionally verify that the merkle root matches the current tree root
+    let current_root = {
+        let tree = state
+            .merkle_tree
+            .lock()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        tree.root_hex()
+    };
+    if current_root != payload.root_hex {
+        tracing::warn!(
+            submitted = %payload.root_hex,
+            current = %current_root,
+            "ZK proof root does not match current Merkle root"
+        );
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

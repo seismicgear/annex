@@ -91,7 +91,7 @@ async fn setup_app_with_mock_tts(
         annex_voice::LiveKitConfig::new("http://localhost:7880", "devkey", "devsecret");
     let voice_service = annex_voice::VoiceService::new(livekit_config);
 
-    let tts_service = annex_voice::TtsService::new(temp_dir.path(), &mock_piper);
+    let tts_service = annex_voice::TtsService::new(temp_dir.path(), &mock_piper, "bark");
 
     // Register a "default" voice profile pointing to the test model
     let default_profile = VoiceProfile {
@@ -128,6 +128,7 @@ async fn setup_app_with_mock_tts(
         upload_dir: std::env::temp_dir().to_string_lossy().into_owned(),
         preview_cache: annex_server::api_link_preview::PreviewCache::new(),
         cors_origins: vec![],
+        enforce_zk_proofs: false,
     };
 
     (app(state.clone()), pool, Arc::new(state))
@@ -423,7 +424,7 @@ async fn test_voice_intent_tts_profile_not_found() {
         annex_voice::LiveKitConfig::new("http://localhost:7880", "devkey", "devsecret");
 
     // TTS service with no profiles registered → will fail with ProfileNotFound
-    let tts_service = annex_voice::TtsService::new(temp_dir.path(), "nonexistent_piper");
+    let tts_service = annex_voice::TtsService::new(temp_dir.path(), "nonexistent_piper", "bark");
 
     let state = AppState {
         pool: pool.clone(),
@@ -444,6 +445,7 @@ async fn test_voice_intent_tts_profile_not_found() {
         upload_dir: std::env::temp_dir().to_string_lossy().into_owned(),
         preview_cache: annex_server::api_link_preview::PreviewCache::new(),
         cors_origins: vec![],
+        enforce_zk_proofs: false,
     };
 
     // Seed agent and channel

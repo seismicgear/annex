@@ -55,6 +55,20 @@ RUN curl -fSL "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US
     && curl -fSL "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json" \
     -o en_US-lessac-medium.onnx.json
 
+# ── Download whisper.cpp binary ──
+FROM debian:bookworm-slim AS whisper-builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates git cmake build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /whisper
+RUN git clone --depth 1 https://github.com/ggerganov/whisper.cpp.git /tmp/whisper && \
+    cd /tmp/whisper && cmake -B build && cmake --build build --config Release && \
+    mkdir -p /whisper/bin && \
+    cp /tmp/whisper/build/bin/main /whisper/bin/whisper && \
+    rm -rf /tmp/whisper
+
 # ── Build client ──
 FROM node:22-slim AS client-builder
 
@@ -92,6 +106,9 @@ COPY --from=piper-downloader /piper/ /app/assets/piper/
 # Default voice model
 COPY --from=piper-downloader /voices/ /app/assets/voices/
 
+# Whisper STT binary
+COPY --from=whisper-builder /whisper/bin/whisper /app/assets/whisper/whisper
+
 # Default config
 COPY config.toml /app/config.toml
 
@@ -111,6 +128,8 @@ ENV ANNEX_DB_PATH=/app/data/annex.db
 ENV ANNEX_TTS_BINARY_PATH=/app/assets/piper/piper
 ENV ANNEX_TTS_VOICES_DIR=/app/assets/voices
 ENV ANNEX_CLIENT_DIR=/app/client/dist
+ENV ANNEX_STT_BINARY_PATH=/app/assets/whisper/whisper
+ENV ANNEX_STT_MODEL_PATH=/app/assets/models/ggml-base.en.bin
 ENV ANNEX_CORS_ORIGINS=*
 
 EXPOSE 3000

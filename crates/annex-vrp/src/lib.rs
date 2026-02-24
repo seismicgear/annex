@@ -64,33 +64,55 @@ impl VrpAnchorSnapshot {
             principles_hash: hash_list(principles),
             prohibited_actions_hash: hash_list(prohibited_actions),
             timestamp,
+            principles: principles.to_vec(),
+            prohibited_actions: prohibited_actions.to_vec(),
         })
     }
 }
 
 /// Compares two anchor snapshots to determine alignment status.
 ///
-/// In Phase 3, this performs an exact hash match.
-///
-/// Note: Semantic alignment (embedding comparison) for partial matches is defined in the
-/// `semantic` module. However, because `VrpAnchorSnapshot` only contains hashes of the
-/// principles, this function currently only supports exact matches (Aligned) or
-/// mismatches (Conflict). To support partial alignment, the full principle text
-/// must be available and passed to `semantic::calculate_semantic_alignment`.
+/// 1. Exact hash match on both principles and prohibited actions → `Aligned`
+/// 2. If hashes differ and original text is available on both sides, computes
+///    bag-of-words semantic similarity. Score >= `config.min_alignment_score` → `Partial`
+/// 3. Otherwise → `Conflict`
 pub fn compare_peer_anchor(
     local: &VrpAnchorSnapshot,
     remote: &VrpAnchorSnapshot,
-    _config: &VrpAlignmentConfig,
+    config: &VrpAlignmentConfig,
 ) -> VrpAlignmentStatus {
+    // Fast path: exact hash match
     if local.principles_hash == remote.principles_hash
         && local.prohibited_actions_hash == remote.prohibited_actions_hash
     {
-        VrpAlignmentStatus::Aligned
-    } else {
-        // Without semantic analysis, any difference is treated as a conflict for safety.
-        // If semantic alignment was implemented, we would compute a score here.
-        VrpAlignmentStatus::Conflict
+        return VrpAlignmentStatus::Aligned;
     }
+
+    // Semantic alignment: compare original text when available
+    if config.semantic_alignment_required
+        && !local.principles.is_empty()
+        && !remote.principles.is_empty()
+    {
+        let mut embedder = semantic::BagOfWordsEmbedder::new();
+        // Build shared vocabulary from both sides
+        let all_texts: Vec<String> = local
+            .principles
+            .iter()
+            .chain(remote.principles.iter())
+            .cloned()
+            .collect();
+        embedder.build_vocab(&all_texts);
+
+        if let Ok(score) =
+            semantic::calculate_semantic_alignment(&local.principles, &remote.principles, &embedder)
+        {
+            if score >= config.min_alignment_score {
+                return VrpAlignmentStatus::Partial;
+            }
+        }
+    }
+
+    VrpAlignmentStatus::Conflict
 }
 
 /// Validates that capability contracts are mutually compatible.

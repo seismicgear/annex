@@ -78,13 +78,14 @@ fn build_state(db_path: &str, initial_policy: ServerPolicy) -> (Arc<AppState>, a
         voice_service: Arc::new(annex_voice::VoiceService::new(
             annex_voice::LiveKitConfig::default(),
         )),
-        tts_service: Arc::new(annex_voice::TtsService::new("dummy", "dummy")),
+        tts_service: Arc::new(annex_voice::TtsService::new("dummy", "dummy", "dummy")),
         stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),
         voice_sessions: Arc::new(RwLock::new(HashMap::new())),
         observe_tx: tokio::sync::broadcast::channel(256).0,
         upload_dir: std::env::temp_dir().to_string_lossy().into_owned(),
         preview_cache: annex_server::api_link_preview::PreviewCache::new(),
         cors_origins: vec![],
+        enforce_zk_proofs: false,
     };
 
     (Arc::new(state), pool)

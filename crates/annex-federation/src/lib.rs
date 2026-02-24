@@ -17,7 +17,7 @@ pub mod db;
 pub mod handshake;
 pub mod types;
 
-pub use db::{create_agreement, get_agreement};
+pub use db::{create_agreement, get_agreement, revoke_agreement, list_active_agreements, expire_stale_agreements};
 pub use handshake::{process_incoming_handshake, HandshakeError};
 pub use types::{
     AttestationRequest, FederatedMessageEnvelope, FederatedRtxEnvelope, FederationAgreement,

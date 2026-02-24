@@ -65,7 +65,7 @@ pub async fn agent_handshake_handler(
 
         // 5. Construct Alignment Config
         let alignment_config = VrpAlignmentConfig {
-            semantic_alignment_required: false, // Deferred in Phase 3.3
+            semantic_alignment_required: true,
             min_alignment_score: policy.agent_min_alignment_score,
         };
 
