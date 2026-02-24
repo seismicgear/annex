@@ -88,7 +88,16 @@ pub fn compare_peer_anchor(
         return VrpAlignmentStatus::Aligned;
     }
 
-    // Semantic alignment: compare original text when available
+    // Prohibited-action divergence is an immediate conflict regardless of
+    // principle similarity. Allowing Partial when prohibitions differ would
+    // let peers with conflicting safety boundaries negotiate transfer scopes
+    // they shouldn't have.
+    if local.prohibited_actions_hash != remote.prohibited_actions_hash {
+        return VrpAlignmentStatus::Conflict;
+    }
+
+    // Semantic alignment: compare original principle text when available.
+    // Only reachable when prohibited actions already match (above).
     if config.semantic_alignment_required
         && !local.principles.is_empty()
         && !remote.principles.is_empty()

@@ -28,6 +28,16 @@ impl VoiceService {
         &self.config.url
     }
 
+    /// Returns the LiveKit API key for server-side Room Service calls.
+    pub fn api_key(&self) -> &str {
+        &self.config.api_key
+    }
+
+    /// Returns the LiveKit API secret for server-side Room Service calls.
+    pub fn api_secret(&self) -> &str {
+        &self.config.api_secret
+    }
+
     /// Returns the browser-facing URL. Falls back to the internal URL if no
     /// public URL is configured.
     pub fn get_public_url(&self) -> &str {

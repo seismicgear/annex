@@ -410,6 +410,8 @@ pub async fn join_channel_handler(
                 &token,
                 &channel_id_clone,
                 state.stt_service.clone(),
+                state.voice_service.api_key(),
+                state.voice_service.api_secret(),
             )
             .await
             .map_err(|e| {

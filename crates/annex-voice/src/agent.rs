@@ -32,6 +32,8 @@ pub struct AgentVoiceClient {
     pub connected: bool,
     pub stt_service: Arc<SttService>,
     pub transcription_tx: broadcast::Sender<TranscriptionEvent>,
+    api_key: String,
+    api_secret: String,
 }
 
 impl AgentVoiceClient {
@@ -40,11 +42,17 @@ impl AgentVoiceClient {
     /// Performs a real HTTP connection to the LiveKit server to verify that the
     /// URL is reachable and the API credentials are valid before marking the
     /// client as connected.
+    ///
+    /// `api_key` and `api_secret` are the LiveKit server-side credentials used
+    /// to authenticate Room Service API calls (e.g. `send_data`). `token` is
+    /// the participant JWT used for room joins but **not** for admin Twirp RPCs.
     pub async fn connect(
         url: &str,
         token: &str,
         room_name: &str,
         stt_service: Arc<SttService>,
+        api_key: &str,
+        api_secret: &str,
     ) -> Result<Self, VoiceError> {
         info!(
             room = %room_name,
@@ -87,6 +95,8 @@ impl AgentVoiceClient {
             connected: true,
             stt_service,
             transcription_tx: tx,
+            api_key: api_key.to_string(),
+            api_secret: api_secret.to_string(),
         })
     }
 
@@ -108,15 +118,17 @@ impl AgentVoiceClient {
             "agent publishing audio data to room"
         );
 
-        // Construct RoomClient per-call and dispatch to a local task to avoid
-        // the non-Send constraint from livekit-api's internal ThreadRng usage.
+        // Construct RoomClient per-call with server-side API credentials and
+        // dispatch to a local task to avoid the non-Send constraint from
+        // livekit-api's internal ThreadRng usage.
         let room_url = self.room_url.clone();
-        let token = self.token.clone();
+        let api_key = self.api_key.clone();
+        let api_secret = self.api_secret.clone();
         let room_name = self.room_name.clone();
         let data = pcm_data.to_vec();
 
         tokio::task::spawn_blocking(move || {
-            let room_client = RoomClient::with_api_key(&room_url, &token, "");
+            let room_client = RoomClient::with_api_key(&room_url, &api_key, &api_secret);
             let send_opts = SendDataOptions {
                 kind: livekit_protocol::data_packet::Kind::Reliable,
                 topic: Some("audio".to_string()),

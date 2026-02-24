@@ -129,6 +129,52 @@ fn test_compare_peer_anchor_conflict() {
 }
 
 #[test]
+fn test_compare_peer_anchor_prohibited_action_mismatch_forces_conflict() {
+    // Even with identical principles, differing prohibited actions must yield Conflict.
+    let snap1 = VrpAnchorSnapshot::new(
+        &["shared principle".to_string()],
+        &["no violence".to_string()],
+    )
+    .unwrap();
+    let snap2 = VrpAnchorSnapshot::new(
+        &["shared principle".to_string()],
+        &["no hate speech".to_string()], // different prohibition
+    )
+    .unwrap();
+
+    let config = VrpAlignmentConfig {
+        semantic_alignment_required: true,
+        min_alignment_score: 0.1, // very low threshold — should still be Conflict
+    };
+
+    let status = compare_peer_anchor(&snap1, &snap2, &config);
+    assert_eq!(status, VrpAlignmentStatus::Conflict);
+}
+
+#[test]
+fn test_compare_peer_anchor_partial_when_prohibited_actions_match() {
+    // Similar principles with matching prohibited actions should reach Partial.
+    let snap1 = VrpAnchorSnapshot::new(
+        &["free speech".to_string(), "privacy".to_string()],
+        &["no doxxing".to_string()],
+    )
+    .unwrap();
+    let snap2 = VrpAnchorSnapshot::new(
+        &["free speech".to_string(), "transparency".to_string()],
+        &["no doxxing".to_string()], // same prohibition
+    )
+    .unwrap();
+
+    let config = VrpAlignmentConfig {
+        semantic_alignment_required: true,
+        min_alignment_score: 0.3,
+    };
+
+    let status = compare_peer_anchor(&snap1, &snap2, &config);
+    assert_eq!(status, VrpAlignmentStatus::Partial);
+}
+
+#[test]
 fn test_contracts_mutually_accepted() {
     let local = VrpCapabilitySharingContract {
         required_capabilities: vec!["cap_A".to_string()],
