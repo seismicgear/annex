@@ -375,20 +375,56 @@ pub async fn prepare_server(
                     rusqlite::params![slug, label, &policy_json],
                 )?;
                 let id = conn.last_insert_rowid();
+
+                // Seed a default #general text channel so the first user has
+                // somewhere to chat immediately after identity creation.
+                let general_id = uuid::Uuid::new_v4().to_string();
+                let channel_type_json = serde_json::to_string(&annex_types::ChannelType::Text)
+                    .expect("ChannelType::Text serialization cannot fail");
+                let scope_json = serde_json::to_string(&annex_types::FederationScope::Local)
+                    .expect("FederationScope::Local serialization cannot fail");
+                match conn.execute(
+                    "INSERT INTO channels (
+                        server_id, channel_id, name, channel_type, topic, federation_scope
+                    ) VALUES (?1, ?2, 'General', ?3, 'Welcome to Annex!', ?4)",
+                    rusqlite::params![id, general_id, channel_type_json, scope_json],
+                ) {
+                    Ok(_) => tracing::info!(channel_id = %general_id, "seeded default #General channel"),
+                    Err(e) => tracing::warn!(error = %e, "failed to seed default channel (non-fatal)"),
+                }
+
                 (id, default_policy)
             }
         }
     };
 
-    // Load ZK verification key
+    // Load ZK verification key.
+    //
+    // Priority:
+    // 1. ANNEX_ZK_KEY_PATH env var (explicit path)
+    // 2. Default path: zk/keys/membership_vkey.json
+    // 3. Fallback: generate a dummy vkey so the server can still start.
+    //    With a dummy vkey all real proof verifications will fail, so identity
+    //    creation will be blocked — but the server process won't crash.
     let vkey_path = std::env::var("ANNEX_ZK_KEY_PATH")
         .unwrap_or_else(|_| "zk/keys/membership_vkey.json".to_string());
-    let vkey_json = std::fs::read_to_string(&vkey_path).map_err(|e| {
-        tracing::error!(path = %vkey_path, "failed to read verification key");
-        StartupError::IoError(e)
-    })?;
-    let membership_vkey =
-        annex_identity::zk::parse_verification_key(&vkey_json).map_err(StartupError::ZkError)?;
+    let membership_vkey = match std::fs::read_to_string(&vkey_path) {
+        Ok(vkey_json) => {
+            annex_identity::zk::parse_verification_key(&vkey_json)
+                .map_err(StartupError::ZkError)?
+        }
+        Err(e) => {
+            tracing::warn!(
+                path = %vkey_path,
+                error = %e,
+                "ZK verification key not found — using dummy key. \
+                 Identity creation will fail until a real key is provided. \
+                 Run the ZK build (cd zk && npm ci && node scripts/build-circuits.js && \
+                 node scripts/setup-groth16.js) to generate one."
+            );
+            annex_identity::zk::generate_dummy_vkey()
+        }
+    };
 
     // Load or generate Signing Key.
     // Priority: (1) ANNEX_SIGNING_KEY env var, (2) persistent file on disk, (3) generate + persist.

@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "identifier": "com.annex.desktop",
   "build": {
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "bash ../../scripts/build-desktop.sh",
     "beforeDevCommand": "npm run dev",
     "frontendDist": "../../client/dist",
     "devUrl": "http://localhost:5173"
@@ -28,6 +28,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": {
+      "../../zk/keys/membership_vkey.json": "zk/keys/membership_vkey.json"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

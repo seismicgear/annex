@@ -211,7 +211,7 @@ fn cloudflared_download_url() -> Option<&'static str> {
     } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
         Some("https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-amd64.tgz")
     } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        Some("https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-amd64.tgz")
+        Some("https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-arm64.tgz")
     } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
         Some("https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe")
     } else {
@@ -482,18 +482,32 @@ fn main() {
     };
 
     let client_dir = resource_base.join("client").join("dist");
-    let zk_vkey = resource_base
-        .join("zk")
-        .join("keys")
-        .join("membership_vkey.json");
     let upload_dir = data_dir.join("uploads");
+
+    // Resolve the ZK verification key from multiple candidate locations.
+    // Priority:
+    //   1. Tauri bundle resource directory (platform-specific, set by bundle.resources)
+    //   2. Alongside the executable (flat layout)
+    //   3. Workspace root (development builds)
+    // The server falls back to a dummy vkey if none is found (see lib.rs).
+    let vkey_candidates = [
+        // Tauri bundle resources (macOS: ../Resources/, Linux/Windows: beside exe)
+        exe_dir.join("zk").join("keys").join("membership_vkey.json"),
+        // macOS .app bundle Resources directory
+        exe_dir.parent()
+            .map(|p| p.join("Resources").join("zk").join("keys").join("membership_vkey.json"))
+            .unwrap_or_default(),
+        // Workspace root (development)
+        resource_base.join("zk").join("keys").join("membership_vkey.json"),
+    ];
+    let zk_vkey = vkey_candidates.iter().find(|p| p.exists());
 
     // Set environment variables so the embedded server picks up the right paths.
     // SAFETY: Called before any threads are spawned, so this is single-threaded.
     unsafe {
         std::env::set_var("ANNEX_CLIENT_DIR", &client_dir);
-        if zk_vkey.exists() {
-            std::env::set_var("ANNEX_ZK_KEY_PATH", &zk_vkey);
+        if let Some(vkey_path) = zk_vkey {
+            std::env::set_var("ANNEX_ZK_KEY_PATH", vkey_path);
         }
         std::env::set_var("ANNEX_UPLOAD_DIR", &upload_dir);
 
