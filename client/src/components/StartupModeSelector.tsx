@@ -297,7 +297,7 @@ export function StartupModeSelector({ onReady }: Props) {
           </p>
         </div>
 
-        <button className="primary-btn tunnel-continue-btn" onClick={onReady}>
+        <button className="primary-btn tunnel-continue-btn" onClick={() => onReady()}>
           Continue to Annex
         </button>
       </div>
