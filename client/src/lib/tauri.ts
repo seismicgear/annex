@@ -41,3 +41,18 @@ export async function clearStartupMode(): Promise<void> {
 export async function startEmbeddedServer(): Promise<string> {
   return invoke<string>('start_embedded_server');
 }
+
+/** Start a cloudflared tunnel to expose the local server. Returns the public URL. */
+export async function startTunnel(): Promise<string> {
+  return invoke<string>('start_tunnel');
+}
+
+/** Stop the cloudflared tunnel if running. */
+export async function stopTunnel(): Promise<void> {
+  await invoke('stop_tunnel');
+}
+
+/** Get the current tunnel URL, if a tunnel is active. */
+export async function getTunnelUrl(): Promise<string | null> {
+  return invoke<string | null>('get_tunnel_url');
+}
