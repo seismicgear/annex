@@ -15,6 +15,7 @@
   background: #0a0a0a;
   border-bottom: 1px solid #1a1a1a;
   flex-shrink: 0;
+  position: relative;
 }
 
 .app-header h1 {
@@ -2410,13 +2411,15 @@
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  margin-left: auto;
-  margin-right: 0.75rem;
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
   padding: 0.2rem 0.6rem;
   border-radius: 12px;
   background: var(--persona-bg-tint, transparent);
   border: 1px solid var(--persona-border-tint, transparent);
   transition: background 0.3s, border-color 0.3s;
+  pointer-events: auto;
 }
 
 .persona-context-dot {
