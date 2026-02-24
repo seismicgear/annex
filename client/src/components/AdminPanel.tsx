@@ -8,6 +8,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { useIdentityStore } from '@/stores/identity';
 import { useChannelsStore } from '@/stores/channels';
 import { useServersStore } from '@/stores/servers';
+import { InfoTip } from '@/components/InfoTip';
 import * as api from '@/lib/api';
 import type { ServerPolicy, AccessMode } from '@/types';
 import type { MemberInfo } from '@/lib/api';
@@ -78,9 +79,7 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
     }
   };
 
-  const shareUrl = publicUrl
-    ? `${publicUrl}/#/invite?server=${encodeURIComponent(slug)}&label=${encodeURIComponent(label)}`
-    : `${window.location.origin}/#/invite?server=${encodeURIComponent(slug)}&label=${encodeURIComponent(label)}`;
+  const shareUrl = `${publicUrl || window.location.origin}/#/invite?server=${encodeURIComponent(slug)}&label=${encodeURIComponent(label)}`;
 
   const handleCopyLink = async () => {
     try {
@@ -210,7 +209,7 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
       <h3>Server Policy</h3>
 
       <div className="policy-section">
-        <h4>Access Control</h4>
+        <h4>Access Control<InfoTip text="Controls who can sign up for your server. Public means anyone, invite-only requires a link, and password-protected requires a shared secret." /></h4>
         <p className="field-hint" style={{ marginTop: 0 }}>Determines who can register on this server.</p>
         <label title="Controls how new users can join this server.">
           Access Mode
@@ -245,7 +244,7 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
 
       <div className="policy-grid">
         <label title="Minimum VRP alignment score (0.0–1.0) required for AI agents to join this server. Higher values require stronger value alignment.">
-          Min Alignment Score
+          Min Alignment Score<InfoTip text="An AI safety score from 0 to 1. Higher values mean AI agents must be more closely aligned with human values to participate on this server. Most servers use 0.5 or above." />
           <input
             type="number"
             step="0.1"
@@ -294,7 +293,7 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
             checked={policy.federation_enabled}
             onChange={(e) => setPolicy({ ...policy, federation_enabled: e.target.checked })}
           />
-          Federation Enabled
+          Federation Enabled<InfoTip text="Federation lets your server connect to other Annex servers so users can discover and chat across communities — like email servers that can message each other." />
           <span className="field-hint">Allow connecting to other Annex servers to share channels and messages.</span>
         </label>
 
@@ -314,7 +313,7 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
             checked={policy.usernames_enabled}
             onChange={(e) => setPolicy({ ...policy, usernames_enabled: e.target.checked })}
           />
-          Usernames Enabled
+          Usernames Enabled<InfoTip text="When on, users can pick a display name that's encrypted on the server. They control exactly who sees it — everyone else sees only an anonymous ID." />
           <span className="field-hint">Allow users to set encrypted display names with per-user visibility grants.</span>
         </label>
       </div>
@@ -450,7 +449,7 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
       </div>
 
       <div className="policy-section">
-        <h4>Required Agent Capabilities</h4>
+        <h4>Required Agent Capabilities<InfoTip text="AI agents must declare specific abilities (like 'summarize' or 'translate') to join this server. List the capabilities you require." /></h4>
         <ul className="tag-list">
           {policy.agent_required_capabilities.map((cap, i) => (
             <li key={i} className="tag-item">
@@ -494,7 +493,7 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
       </div>
 
       <div className="policy-section">
-        <h4>Principles</h4>
+        <h4>Principles<InfoTip text="Guidelines that AI agents on this server must follow — for example, 'Be helpful and honest' or 'Respect user privacy'." /></h4>
         <ul className="tag-list">
           {policy.principles.map((p, i) => (
             <li key={i} className="tag-item">
@@ -533,7 +532,7 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
       </div>
 
       <div className="policy-section">
-        <h4>Prohibited Actions</h4>
+        <h4>Prohibited Actions<InfoTip text="Things AI agents are explicitly forbidden from doing — for example, 'Share private messages' or 'Impersonate users'." /></h4>
         <ul className="tag-list">
           {policy.prohibited_actions.map((p, i) => (
             <li key={i} className="tag-item">

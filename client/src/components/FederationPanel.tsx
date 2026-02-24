@@ -10,6 +10,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import * as api from '@/lib/api';
 import { useServersStore } from '@/stores/servers';
+import { InfoTip } from '@/components/InfoTip';
 import type { FederationPeer, ServerSummary } from '@/types';
 
 interface PeerDetailProps {
@@ -83,9 +84,9 @@ function PeerDetail({ peer, onClose }: PeerDetailProps) {
             </div>
             <div className="peer-detail-trust">
               <span className={`alignment-badge alignment-${peer.alignment_status.toLowerCase()}`}>
-                {peer.alignment_status}
+                {peer.alignment_status}<InfoTip text="Shows how well this server's values match yours. 'Aligned' means strong trust; 'Unverified' means no assessment yet." />
               </span>
-              <span className="scope-badge">{peer.transfer_scope}</span>
+              <span className="scope-badge">{peer.transfer_scope}<InfoTip text="What kind of data can flow between servers — for example, messages only, or messages and media." /></span>
             </div>
           </div>
         ) : (
@@ -142,7 +143,7 @@ export function FederationPanel() {
   return (
     <>
       <div className="federation-panel">
-        <h3>Federation Peers</h3>
+        <h3>Federation Peers<InfoTip text="These are other Annex servers your community is connected to. You can explore them and join ones that interest you." /></h3>
         <p className="federation-description">
           Discover new communities through the trusted edges of your current network.
         </p>
@@ -155,9 +156,9 @@ export function FederationPanel() {
               </div>
               <div className="peer-trust">
                 <div className={`peer-alignment alignment-${peer.alignment_status.toLowerCase()}`}>
-                  {peer.alignment_status}
+                  {peer.alignment_status}<InfoTip text="Shows how well this server's values match yours. 'Aligned' means strong trust; 'Unverified' means no assessment yet." />
                 </div>
-                <div className="peer-scope">{peer.transfer_scope}</div>
+                <div className="peer-scope">{peer.transfer_scope}<InfoTip text="What kind of data can flow between servers — for example, messages only, or messages and media." /></div>
               </div>
               <button
                 className="peer-explore-btn"
