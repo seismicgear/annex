@@ -19,15 +19,20 @@ SAFE_LABEL="$(printf '%s' "$LABEL" | sed "s/'/''/g")"
 # If ANNEX_SIGNING_KEY is not set, generate a persistent key on the data
 # volume so it survives container restarts.
 if [ -z "${ANNEX_SIGNING_KEY:-}" ]; then
-    if [ -f "$KEY_FILE" ]; then
-        ANNEX_SIGNING_KEY="$(cat "$KEY_FILE")"
+    if [ -f "$KEY_FILE" ] && ANNEX_SIGNING_KEY="$(cat "$KEY_FILE" 2>/dev/null)"; then
         export ANNEX_SIGNING_KEY
     else
+        if [ -f "$KEY_FILE" ]; then
+            echo "WARN: signing key file exists but is unreadable; regenerating" >&2
+        fi
         ANNEX_SIGNING_KEY="$(head -c 32 /dev/urandom | od -A n -t x1 | tr -d ' \n')"
         export ANNEX_SIGNING_KEY
-        printf '%s' "$ANNEX_SIGNING_KEY" > "$KEY_FILE"
-        chmod 600 "$KEY_FILE"
-        echo "Generated signing key at $KEY_FILE"
+        if printf '%s' "$ANNEX_SIGNING_KEY" > "$KEY_FILE" 2>/dev/null; then
+            chmod 600 "$KEY_FILE"
+            echo "Generated signing key at $KEY_FILE"
+        else
+            echo "WARN: could not persist signing key — using ephemeral key" >&2
+        fi
     fi
 fi
 
