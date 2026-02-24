@@ -24,11 +24,11 @@ async function setup() {
     if (!fs.existsSync(ptauPath)) {
         console.log("Generating Powers of Tau...");
         // 1. Start a new powers of tau ceremony
-        run(`npx snarkjs powersoftau new bn128 14 ${ptau0} -v`);
+        run(`npx snarkjs powersoftau new bn128 14 "${ptau0}" -v`);
         // 2. Contribute to the ceremony
-        run(`npx snarkjs powersoftau contribute ${ptau0} ${ptau1} --name="First Contribution" -v -e="random text"`);
+        run(`npx snarkjs powersoftau contribute "${ptau0}" "${ptau1}" --name="First Contribution" -v -e="random text"`);
         // 3. Prepare for phase 2
-        run(`npx snarkjs powersoftau prepare phase2 ${ptau1} ${ptauPath} -v`);
+        run(`npx snarkjs powersoftau prepare phase2 "${ptau1}" "${ptauPath}" -v`);
     }
 
     for (const circuit of circuits) {
@@ -39,13 +39,13 @@ async function setup() {
         const vkeyPath = path.join(keysPath, `${circuit}_vkey.json`);
 
         // 4. Setup Phase 2
-        run(`npx snarkjs groth16 setup ${r1csPath} ${ptauPath} ${zkey0}`);
+        run(`npx snarkjs groth16 setup "${r1csPath}" "${ptauPath}" "${zkey0}"`);
 
         // 5. Contribute to Phase 2
-        run(`npx snarkjs zkey contribute ${zkey0} ${zkeyFinal} --name="Second Contribution" -v -e="more entropy"`);
+        run(`npx snarkjs zkey contribute "${zkey0}" "${zkeyFinal}" --name="Second Contribution" -v -e="more entropy"`);
 
         // 6. Export verification key
-        run(`npx snarkjs zkey export verificationkey ${zkeyFinal} ${vkeyPath}`);
+        run(`npx snarkjs zkey export verificationkey "${zkeyFinal}" "${vkeyPath}"`);
 
         console.log(`${circuit} setup complete.`);
     }
