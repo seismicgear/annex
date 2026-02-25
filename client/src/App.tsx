@@ -66,8 +66,7 @@ export default function App() {
   const [serverRetry, setServerRetry] = useState(0);
 
   // Load identities and saved servers on mount (web/Docker only).
-  // Tauri: handled inside the server startup effect below so that
-  // identity validation runs against the live embedded server.
+  // Tauri: handled inside the server startup effect below.
   useEffect(() => {
     if (inTauri) return;
     loadIdentities();
