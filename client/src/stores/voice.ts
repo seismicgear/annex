@@ -9,6 +9,26 @@
 import { create } from 'zustand';
 import * as api from '@/lib/api';
 
+function getJoinErrorMessage(error: unknown): string {
+  if (error instanceof api.ApiError) {
+    const body = error.message?.trim();
+    if (!body) return `Failed to join voice (${error.status})`;
+
+    try {
+      const parsed = JSON.parse(body) as { error?: string; message?: string };
+      return parsed.error ?? parsed.message ?? body;
+    } catch {
+      return body;
+    }
+  }
+
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+
+  return 'Failed to join voice';
+}
+
 export interface VoiceState {
   /** LiveKit access token for the current session. */
   voiceToken: string | null;
@@ -20,6 +40,8 @@ export interface VoiceState {
   joining: boolean;
   /** Whether a call is active on the current channel (for Join vs Create). */
   callActive: boolean;
+  /** Most recent join failure shown in the UI. */
+  lastJoinError: string | null;
   /** Whether the user has self-deafened (output muted). */
   deafened: boolean;
 
@@ -69,6 +91,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   connectedChannelId: null,
   joining: false,
   callActive: false,
+  lastJoinError: null,
   deafened: false,
 
   inputDeviceId: (saved.inputDeviceId as string) ?? null,
@@ -77,7 +100,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   outputVolume: (saved.outputVolume as number) ?? 100,
 
   joinCall: async (pseudonymId, channelId) => {
-    set({ joining: true });
+    set({ joining: true, lastJoinError: null });
     try {
       const { token, url } = await api.joinVoice(pseudonymId, channelId);
       set({
@@ -85,9 +108,10 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
         livekitUrl: url,
         connectedChannelId: channelId,
         joining: false,
+        lastJoinError: null,
       });
-    } catch {
-      set({ joining: false });
+    } catch (error) {
+      set({ joining: false, lastJoinError: getJoinErrorMessage(error) });
     }
   },
 
@@ -102,6 +126,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       voiceToken: null,
       livekitUrl: null,
       connectedChannelId: null,
+      lastJoinError: null,
       deafened: false,
     });
   },
