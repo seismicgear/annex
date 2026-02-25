@@ -60,7 +60,7 @@ json = false
 [cors]
 # Desktop defaults: allow Tauri webview origins (macOS/Linux + Windows).
 # Override with ANNEX_CORS_ORIGINS env var if needed.
-allowed_origins = ["tauri://localhost", "https://tauri.localhost"]
+allowed_origins = ["tauri://localhost", "https://tauri.localhost", "http://tauri.localhost"]
 "#,
             db_path = db_path_safe,
         );
@@ -688,11 +688,12 @@ fn main() {
         // Tauri webview origins vary by platform:
         //   macOS/Linux: tauri://localhost
         //   Windows:     https://tauri.localhost
+        //   Alternate:   http://tauri.localhost
         // Both are included so the desktop app works on all platforms.
         if std::env::var("ANNEX_CORS_ORIGINS").is_err() {
             std::env::set_var(
                 "ANNEX_CORS_ORIGINS",
-                "tauri://localhost,https://tauri.localhost",
+                "tauri://localhost,https://tauri.localhost,http://tauri.localhost",
             );
         }
     }
