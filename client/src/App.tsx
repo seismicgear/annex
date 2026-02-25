@@ -131,8 +131,17 @@ export default function App() {
         if (!cancelled) {
           await registerWithServer(summary.slug);
         }
-      } catch {
-        // Errors are surfaced by registerWithServer via the store.
+      } catch (err) {
+        // registerWithServer surfaces its own errors via the store.
+        // But if getServerSummary() itself fails (server unreachable),
+        // we need to surface that too — otherwise the user gets stuck
+        // on "Preparing to register..." with no error and no retry.
+        if (!cancelled) {
+          useIdentityStore.setState({
+            phase: 'error',
+            error: err instanceof Error ? err.message : 'Failed to reach server',
+          });
+        }
       }
     })();
     return () => { cancelled = true; };
