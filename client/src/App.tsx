@@ -31,7 +31,7 @@ import { clearWebStartupMode } from '@/lib/startup-prefs';
 import { parseInviteFromUrl, clearInviteFromUrl } from '@/lib/invite';
 import { getPersonasForIdentity } from '@/lib/personas';
 import { getApiBaseUrl, getServerSummary, setPublicUrl } from '@/lib/api';
-import { isTauri, getStartupMode as tauriGetStartupMode } from '@/lib/tauri';
+import { isTauri, getStartupMode as tauriGetStartupMode, clearStartupMode as tauriClearStartupMode } from '@/lib/tauri';
 import type { InvitePayload } from '@/types';
 import './App.css';
 
@@ -76,7 +76,20 @@ export default function App() {
   // from a previous install.  Returning users with saved prefs skip this.
   useEffect(() => {
     loadIdentities()
-      .then(() => inTauri ? tauriGetStartupMode().catch(() => null) : undefined)
+      .then(async () => {
+        if (inTauri) {
+          // If no identity exists, clear any stale startup preferences so the user
+          // is forced to choose a server mode (Host vs Connect) after creating keys.
+          // This satisfies the requirement: Identity Creation -> Server Choice.
+          const { identity } = useIdentityStore.getState();
+          if (!identity) {
+            await tauriClearStartupMode().catch(() => {});
+            return null;
+          }
+          return tauriGetStartupMode().catch(() => null);
+        }
+        return undefined;
+      })
       .then((startupPrefs) => {
         if (inTauri && startupPrefs === null) {
           const { phase: currentPhase } = useIdentityStore.getState();

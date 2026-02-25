@@ -383,6 +383,30 @@ describe('App startup flow', () => {
       // no business starting while the user is creating their identity.
       expect(tauri.startEmbeddedServer).not.toHaveBeenCalled();
     });
+
+    it('clears stale startup prefs if no identity exists on launch', async () => {
+      // Scenario: User deleted identity (or fresh install with lingering prefs).
+      // Prefs exist pointing to a server.
+      // But no identity in DB.
+      // App should CLEAR prefs and show IdentitySetup, then show StartupModeSelector in "Choose" mode.
+
+      // Mock stale prefs exist
+      const tauri = await import('@/lib/tauri');
+      vi.mocked(tauri.getStartupMode).mockResolvedValue({
+        startup_mode: { mode: 'host' },
+      });
+
+      const App = (await import('./App')).default;
+      render(<App />);
+
+      // IdentitySetup should appear (because no identity)
+      await waitFor(() => {
+        expect(screen.getByTestId('identity-setup')).toBeInTheDocument();
+      });
+
+      // Verify clearStartupMode was called to purge stale prefs
+      expect(tauri.clearStartupMode).toHaveBeenCalled();
+    });
   });
 
   describe('Render order invariants', () => {
