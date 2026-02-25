@@ -1,15 +1,16 @@
 /**
  * App.tsx startup flow tests.
  *
- * These tests verify the Tauri EXE startup flow:
- *   1. Launch → IdentitySetup screen (always first)
- *   2. User selects/creates identity → StartupModeSelector screen
- *   3. User picks host/connect → main app
+ * The startup flow has two sequential screens with a hard gate:
  *
- * The critical bug: IndexedDB persists across EXE reinstalls on Windows,
- * causing loadIdentities() to auto-select a stored identity and skip
- * IdentitySetup.  The fix calls logout() unconditionally after loading
- * so the user always lands on IdentitySetup first.
+ *   Screen 1 — Identity creation (offline, zero network requests)
+ *     Shows when no identity keys exist in local storage.
+ *
+ *   Screen 2 — Server / startup-mode selection
+ *     Shows ONLY after identity keys exist.
+ *
+ * After Screen 2, unregistered keys are automatically registered
+ * with the chosen server (commitment → proof → verification).
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -44,7 +45,7 @@ vi.mock('@/lib/servers', () => ({
 vi.mock('@/lib/zk', () => ({
   initPoseidon: vi.fn(async () => {}),
   generateSecretKey: vi.fn(() => BigInt(42)),
-  generateNodeId: vi.fn(() => 'node-1'),
+  generateNodeId: vi.fn(() => 1),
   computeCommitment: vi.fn(async () => '0xabc'),
   generateMembershipProof: vi.fn(async () => ({ proof: {}, publicSignals: [] })),
 }));
@@ -52,7 +53,7 @@ vi.mock('@/lib/zk', () => ({
 // ── Mock all child components to isolate App routing logic ──
 
 vi.mock('@/components/IdentitySetup', () => ({
-  IdentitySetup: () => <div data-testid="identity-setup">Annex Identity</div>,
+  IdentitySetup: () => <div data-testid="identity-setup">Create Your Identity</div>,
 }));
 
 vi.mock('@/components/StartupModeSelector', () => ({
@@ -86,8 +87,17 @@ vi.mock('@/lib/api', () => ({
   getApiBaseUrl: vi.fn(() => 'http://localhost:3000'),
   setApiBaseUrl: vi.fn(),
   setPublicUrl: vi.fn(async () => {}),
-  register: vi.fn(async () => ({})),
-  verifyMembership: vi.fn(async () => ({})),
+  register: vi.fn(async () => ({
+    identityId: 1,
+    leafIndex: 0,
+    rootHex: '0x123',
+    pathElements: ['0x1'],
+    pathIndexBits: [0],
+  })),
+  verifyMembership: vi.fn(async () => ({
+    ok: true,
+    pseudonymId: 'pseudo-123',
+  })),
   getIdentityInfo: vi.fn(async () => ({
     pseudonymId: 'pseudo-123',
     participantType: 'human',
@@ -99,6 +109,15 @@ vi.mock('@/lib/api', () => ({
       can_federate: false,
       can_bridge: false,
     },
+  })),
+  getServerSummary: vi.fn(async () => ({
+    slug: 'default',
+    label: 'Default',
+    members_by_type: {},
+    total_active_members: 0,
+    channel_count: 0,
+    federation_peer_count: 0,
+    active_agent_count: 0,
   })),
   getMessages: vi.fn(async () => []),
   getChannels: vi.fn(async () => []),
@@ -146,6 +165,14 @@ const FAKE_IDENTITY: StoredIdentity = {
   createdAt: '2025-01-01T00:00:00Z',
 };
 
+/** Identity that has keys but is not yet registered with any server. */
+const KEYS_ONLY_IDENTITY: StoredIdentity = {
+  ...FAKE_IDENTITY,
+  pseudonymId: null,
+  serverSlug: '',
+  leafIndex: null,
+};
+
 function resetStores() {
   useIdentityStore.setState({
     phase: 'uninitialized',
@@ -156,10 +183,14 @@ function resetStores() {
   });
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks();
   tauriEnabled = false;
   resetStores();
+  // Restore default mock: no identities in IndexedDB.
+  // Tests that need pre-existing identities must override this BEFORE render.
+  const dbMock = await import('@/lib/db');
+  vi.mocked(dbMock.listIdentities).mockResolvedValue([]);
 });
 
 // ── Tests ──
@@ -170,22 +201,39 @@ describe('App startup flow', () => {
       const App = (await import('./App')).default;
       render(<App />);
 
-      expect(screen.getByTestId('identity-setup')).toBeInTheDocument();
+      await waitFor(() => {
+        expect(screen.getByTestId('identity-setup')).toBeInTheDocument();
+      });
       expect(screen.queryByTestId('startup-mode-selector')).not.toBeInTheDocument();
     });
 
-    it('shows StartupModeSelector when identity is already ready', async () => {
-      useIdentityStore.setState({
-        phase: 'ready',
-        identity: FAKE_IDENTITY,
-        storedIdentities: [FAKE_IDENTITY],
-      });
+    it('shows StartupModeSelector when identity with pseudonymId exists', async () => {
+      // Mock IndexedDB to contain a fully registered identity so
+      // loadIdentities() auto-selects it (phase='ready').
+      const dbMock = await import('@/lib/db');
+      vi.mocked(dbMock.listIdentities).mockResolvedValue([FAKE_IDENTITY]);
 
       const App = (await import('./App')).default;
       render(<App />);
 
+      await waitFor(() => {
+        expect(screen.getByTestId('startup-mode-selector')).toBeInTheDocument();
+      });
       expect(screen.queryByTestId('identity-setup')).not.toBeInTheDocument();
-      expect(screen.getByTestId('startup-mode-selector')).toBeInTheDocument();
+    });
+
+    it('shows StartupModeSelector (not IdentitySetup) when identity has keys but no pseudonymId', async () => {
+      // Keys exist → skip Screen 1 → Screen 2
+      const dbMock = await import('@/lib/db');
+      vi.mocked(dbMock.listIdentities).mockResolvedValue([KEYS_ONLY_IDENTITY]);
+
+      const App = (await import('./App')).default;
+      render(<App />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('startup-mode-selector')).toBeInTheDocument();
+      });
+      expect(screen.queryByTestId('identity-setup')).not.toBeInTheDocument();
     });
   });
 
@@ -194,111 +242,116 @@ describe('App startup flow', () => {
       tauriEnabled = true;
     });
 
-    it('shows loading screen initially while server starts', async () => {
-      const App = (await import('./App')).default;
-      render(<App />);
+    it('shows IdentitySetup (NOT "Starting server...") on first launch when no identity exists', async () => {
+      // THIS IS THE CRITICAL TEST.
+      //
+      // On first EXE launch, no identity keys exist. The app MUST show the
+      // identity creation screen first — not a "Starting server..." or
+      // server selection screen.  The embedded server starts in the
+      // background while the user creates their identity.
 
-      expect(screen.getByText('Starting server...')).toBeInTheDocument();
-      expect(screen.queryByTestId('identity-setup')).not.toBeInTheDocument();
-      expect(screen.queryByTestId('startup-mode-selector')).not.toBeInTheDocument();
-    });
-
-    it('shows IdentitySetup after server starts with no persisted identity', async () => {
       const App = (await import('./App')).default;
       render(<App />);
 
       await waitFor(() => {
-        expect(screen.queryByText('Starting server...')).not.toBeInTheDocument();
+        expect(screen.getByTestId('identity-setup')).toBeInTheDocument();
       });
-
-      expect(screen.getByTestId('identity-setup')).toBeInTheDocument();
+      // "Starting server..." must NOT be visible — Screen 1 has priority
+      // over server loading because Screen 1 makes zero network requests.
       expect(screen.queryByTestId('startup-mode-selector')).not.toBeInTheDocument();
     });
 
-    it('shows IdentitySetup even when IndexedDB has a valid persisted identity (THE REINSTALL BUG)', async () => {
-      // THIS IS THE CRITICAL TEST.
-      //
-      // Scenario: user reinstalls the EXE on Windows. The Tauri WebView's
-      // IndexedDB persists in %LOCALAPPDATA% across installs. loadIdentities()
-      // finds a valid identity and auto-selects it (phase='ready').
-      //
-      // WITHOUT the fix: app skips IdentitySetup → shows StartupModeSelector.
-      // WITH the fix: logout() resets phase → IdentitySetup shows first.
+    it('IdentitySetup has NO server field, NO "Failed to fetch" error', async () => {
+      const App = (await import('./App')).default;
+      render(<App />);
 
-      // Make listIdentities return a ready identity so loadIdentities()
-      // auto-selects it (simulating persisted IndexedDB).
+      await waitFor(() => {
+        expect(screen.getByTestId('identity-setup')).toBeInTheDocument();
+      });
+
+      // The identity-setup mock renders "Create Your Identity" — no server
+      // fields, no network error text.
+      expect(screen.queryByText(/Failed to fetch/)).not.toBeInTheDocument();
+    });
+
+    it('after keys created, shows StartupModeSelector once server is ready', async () => {
+      const App = (await import('./App')).default;
+      render(<App />);
+
+      // Start on Screen 1
+      await waitFor(() => {
+        expect(screen.getByTestId('identity-setup')).toBeInTheDocument();
+      });
+
+      // User creates identity keys (locally, offline)
+      act(() => {
+        useIdentityStore.setState({
+          phase: 'keys_ready',
+          identity: KEYS_ONLY_IDENTITY,
+          storedIdentities: [KEYS_ONLY_IDENTITY],
+        });
+      });
+
+      // Embedded server finishes starting → Screen 2 appears
+      await waitFor(() => {
+        expect(screen.getByTestId('startup-mode-selector')).toBeInTheDocument();
+      });
+      expect(screen.queryByTestId('identity-setup')).not.toBeInTheDocument();
+    });
+
+    it('existing identity with pseudonymId skips Screen 1 entirely', async () => {
+      // Returning user: IndexedDB already has a fully registered identity.
+      // Screen 1 (identity creation) should be skipped.
       const dbMock = await import('@/lib/db');
       vi.mocked(dbMock.listIdentities).mockResolvedValue([FAKE_IDENTITY]);
 
       const App = (await import('./App')).default;
       render(<App />);
 
-      await waitFor(() => {
-        expect(screen.queryByText('Starting server...')).not.toBeInTheDocument();
-      });
-
-      // IdentitySetup MUST show — this is the whole point of the fix
-      expect(screen.getByTestId('identity-setup')).toBeInTheDocument();
-      expect(screen.queryByTestId('startup-mode-selector')).not.toBeInTheDocument();
-
-      // Store state: phase must be reset, but storedIdentities preserved
-      const state = useIdentityStore.getState();
-      expect(state.phase).toBe('uninitialized');
-      expect(state.storedIdentities).toHaveLength(1);
-      expect(state.storedIdentities[0].pseudonymId).toBe('pseudo-123');
-    });
-
-    it('after user selects identity on IdentitySetup, shows StartupModeSelector', async () => {
-      const App = (await import('./App')).default;
-      render(<App />);
-
-      await waitFor(() => {
-        expect(screen.getByTestId('identity-setup')).toBeInTheDocument();
-      });
-
-      // Simulate user clicking an existing identity
-      act(() => {
-        useIdentityStore.setState({
-          phase: 'ready',
-          identity: FAKE_IDENTITY,
-        });
-      });
-
+      // Should go to Screen 2 (after server starts), never showing Screen 1
       await waitFor(() => {
         expect(screen.getByTestId('startup-mode-selector')).toBeInTheDocument();
       });
       expect(screen.queryByTestId('identity-setup')).not.toBeInTheDocument();
     });
 
-    it('full Tauri flow: loading → IdentitySetup → StartupModeSelector → main app', async () => {
+    it('full Tauri flow: Screen 1 → Screen 2 → main app', async () => {
       const App = (await import('./App')).default;
       render(<App />);
 
-      // Step 1: Loading
-      expect(screen.getByText('Starting server...')).toBeInTheDocument();
-
-      // Step 2: IdentitySetup
+      // Step 1: Screen 1 (identity creation)
       await waitFor(() => {
         expect(screen.getByTestId('identity-setup')).toBeInTheDocument();
       });
 
-      // Step 3: User selects identity
+      // Step 2: User creates keys
+      act(() => {
+        useIdentityStore.setState({
+          phase: 'keys_ready',
+          identity: KEYS_ONLY_IDENTITY,
+          storedIdentities: [KEYS_ONLY_IDENTITY],
+        });
+      });
+
+      // Step 3: Screen 2 (server/mode selection)
+      await waitFor(() => {
+        expect(screen.getByTestId('startup-mode-selector')).toBeInTheDocument();
+      });
+
+      // Step 4: User picks a mode → triggers auto-registration
+      await act(async () => {
+        screen.getByTestId('pick-mode-btn').click();
+      });
+
+      // Step 5: Simulate registration completing
+      // (In real flow, the auto-register effect calls registerWithServer
+      // which sets phase='ready' with pseudonymId.)
       act(() => {
         useIdentityStore.setState({
           phase: 'ready',
           identity: FAKE_IDENTITY,
           storedIdentities: [FAKE_IDENTITY],
         });
-      });
-
-      // Step 4: StartupModeSelector
-      await waitFor(() => {
-        expect(screen.getByTestId('startup-mode-selector')).toBeInTheDocument();
-      });
-
-      // Step 5: User picks a mode
-      await act(async () => {
-        screen.getByTestId('pick-mode-btn').click();
       });
 
       // Step 6: Main app
@@ -315,6 +368,10 @@ describe('App startup flow', () => {
         new Error('Port 9999 already in use'),
       );
 
+      // Need keys to get past Screen 1 gate
+      const dbMock = await import('@/lib/db');
+      vi.mocked(dbMock.listIdentities).mockResolvedValue([KEYS_ONLY_IDENTITY]);
+
       const App = (await import('./App')).default;
       render(<App />);
 
@@ -329,41 +386,42 @@ describe('App startup flow', () => {
   });
 
   describe('Render order invariants', () => {
-    it('IdentitySetup renders when phase is uninitialized (web mode)', async () => {
+    it('IdentitySetup renders when phase is uninitialized and no identity (web mode)', async () => {
       tauriEnabled = false;
       resetStores();
       const App = (await import('./App')).default;
       render(<App />);
 
-      expect(screen.getByTestId('identity-setup')).toBeInTheDocument();
+      await waitFor(() => {
+        expect(screen.getByTestId('identity-setup')).toBeInTheDocument();
+      });
     });
 
-    it('IdentitySetup renders when phase is ready but pseudonymId is null', async () => {
+    it('StartupModeSelector renders when identity has keys but no pseudonymId', async () => {
       tauriEnabled = false;
-      useIdentityStore.setState({
-        phase: 'ready',
-        identity: { ...FAKE_IDENTITY, pseudonymId: null },
-      });
+      const dbMock = await import('@/lib/db');
+      vi.mocked(dbMock.listIdentities).mockResolvedValue([KEYS_ONLY_IDENTITY]);
 
       const App = (await import('./App')).default;
       render(<App />);
 
-      expect(screen.getByTestId('identity-setup')).toBeInTheDocument();
-      expect(screen.queryByTestId('startup-mode-selector')).not.toBeInTheDocument();
+      await waitFor(() => {
+        expect(screen.getByTestId('startup-mode-selector')).toBeInTheDocument();
+      });
+      expect(screen.queryByTestId('identity-setup')).not.toBeInTheDocument();
     });
 
-    it('StartupModeSelector renders only when phase is ready AND pseudonymId exists', async () => {
+    it('StartupModeSelector renders when phase is ready AND pseudonymId exists', async () => {
       tauriEnabled = false;
-      useIdentityStore.setState({
-        phase: 'ready',
-        identity: FAKE_IDENTITY,
-        storedIdentities: [FAKE_IDENTITY],
-      });
+      const dbMock = await import('@/lib/db');
+      vi.mocked(dbMock.listIdentities).mockResolvedValue([FAKE_IDENTITY]);
 
       const App = (await import('./App')).default;
       render(<App />);
 
-      expect(screen.getByTestId('startup-mode-selector')).toBeInTheDocument();
+      await waitFor(() => {
+        expect(screen.getByTestId('startup-mode-selector')).toBeInTheDocument();
+      });
       expect(screen.queryByTestId('identity-setup')).not.toBeInTheDocument();
     });
   });

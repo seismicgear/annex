@@ -1,8 +1,13 @@
 /**
  * Identity store — manages the current user's identity lifecycle.
  *
- * Handles: key generation, commitment, registration, proof generation,
- * membership verification, and pseudonym persistence.
+ * The lifecycle is split into two stages:
+ *   1. Local key generation (offline): generateLocalKeys()
+ *   2. Server registration (online):  registerWithServer()
+ *
+ * This split ensures the identity creation screen (Screen 1) never makes
+ * network requests.  Server interaction only starts after the user has
+ * selected a server on Screen 2.
  */
 
 import { create } from 'zustand';
@@ -14,6 +19,7 @@ import * as api from '@/lib/api';
 export type IdentityPhase =
   | 'uninitialized'
   | 'generating'
+  | 'keys_ready'
   | 'registering'
   | 'proving'
   | 'verifying'
@@ -32,13 +38,15 @@ interface IdentityState {
   /** Server-side permissions for the current identity. */
   permissions: IdentityInfo | null;
 
-  /** Load stored identities and auto-select the most recent ready one. */
+  /** Load stored identities and auto-select the most recent one. */
   loadIdentities: () => Promise<void>;
   /** Fetch permissions from the server for the current identity. */
   loadPermissions: () => Promise<void>;
-  /** Run the full registration flow: generate keys -> register -> prove -> verify. */
-  createIdentity: (roleCode: number, serverSlug: string) => Promise<void>;
-  /** Select an existing identity (must already have pseudonymId). */
+  /** Generate ZK identity keys locally (no network requests). */
+  generateLocalKeys: (roleCode: number) => Promise<void>;
+  /** Register existing local keys with a server (requires network). */
+  registerWithServer: (serverSlug: string) => Promise<void>;
+  /** Select an existing identity by ID. */
   selectIdentity: (id: string) => Promise<void>;
   /** Export current identity for backup. */
   exportCurrent: () => string | null;
@@ -57,12 +65,19 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
 
   loadIdentities: async () => {
     const identities = await db.listIdentities();
+    // Prefer a fully registered identity (has pseudonymId).
     const ready = identities.find((i) => i.pseudonymId !== null);
-    set({
-      storedIdentities: identities,
-      identity: ready ?? null,
-      phase: ready ? 'ready' : 'uninitialized',
-    });
+    if (ready) {
+      set({ storedIdentities: identities, identity: ready, phase: 'ready' });
+      return;
+    }
+    // Otherwise select one that has keys but isn't registered yet.
+    const withKeys = identities.find((i) => !!i.sk);
+    if (withKeys) {
+      set({ storedIdentities: identities, identity: withKeys, phase: 'keys_ready' });
+      return;
+    }
+    set({ storedIdentities: identities, identity: null, phase: 'uninitialized' });
   },
 
   loadPermissions: async () => {
@@ -77,9 +92,8 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
     }
   },
 
-  createIdentity: async (roleCode: number, serverSlug: string) => {
+  generateLocalKeys: async (roleCode: number) => {
     try {
-      // Phase 1: Generate keys
       set({ phase: 'generating', error: null });
       await zk.initPoseidon();
       const sk = zk.generateSecretKey();
@@ -93,38 +107,60 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
         nodeId,
         commitmentHex,
         pseudonymId: null,
-        serverSlug,
+        serverSlug: '',
         leafIndex: null,
         createdAt: new Date().toISOString(),
       };
       await db.saveIdentity(identity);
-      set({ identity });
+      const identities = await db.listIdentities();
+      set({ identity, storedIdentities: identities, phase: 'keys_ready' });
+    } catch (e) {
+      set({
+        phase: 'error',
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  },
 
-      // Phase 2: Register commitment
+  registerWithServer: async (serverSlug: string) => {
+    const { identity } = get();
+    if (!identity?.sk || !identity.commitmentHex) {
+      set({ phase: 'error', error: 'No identity keys found' });
+      return;
+    }
+
+    try {
+      const sk = BigInt('0x' + identity.sk);
+
+      // Update server slug on the identity.
+      identity.serverSlug = serverSlug;
+      await db.saveIdentity(identity);
+      set({ identity: { ...identity } });
+
+      // Register commitment with server.
       set({ phase: 'registering' });
-      const reg = await api.register(commitmentHex, roleCode, nodeId);
+      const reg = await api.register(identity.commitmentHex, identity.roleCode, identity.nodeId);
       identity.leafIndex = reg.leafIndex;
       await db.saveIdentity(identity);
 
-      // Phase 3: Generate proof
+      // Generate proof.
       set({ phase: 'proving' });
       const { proof, publicSignals } = await zk.generateMembershipProof({
         sk,
-        roleCode,
-        nodeId,
+        roleCode: identity.roleCode,
+        nodeId: identity.nodeId,
         leafIndex: reg.leafIndex,
         pathElements: reg.pathElements,
         pathIndexBits: reg.pathIndexBits,
       });
 
-      // Phase 4: Verify membership — the VRP topic scopes pseudonym derivation
-      // to this specific server. The resulting pseudonymId is stored in IndexedDB
-      // and never re-derived, so changing this format only affects new identities.
+      // Verify membership — the VRP topic scopes pseudonym derivation
+      // to this specific server.
       set({ phase: 'verifying' });
       const vrpTopic = `annex:server:${serverSlug}:v1`;
       const verification = await api.verifyMembership(
         reg.rootHex,
-        commitmentHex,
+        identity.commitmentHex,
         vrpTopic,
         proof,
         publicSignals,
@@ -134,7 +170,7 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
       await db.saveIdentity(identity);
 
       const identities = await db.listIdentities();
-      set({ phase: 'ready', identity, storedIdentities: identities });
+      set({ phase: 'ready', identity: { ...identity }, storedIdentities: identities });
     } catch (e) {
       set({
         phase: 'error',
@@ -145,8 +181,11 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
 
   selectIdentity: async (id: string) => {
     const identity = await db.getIdentity(id);
-    if (identity?.pseudonymId) {
+    if (!identity) return;
+    if (identity.pseudonymId) {
       set({ identity, phase: 'ready', error: null });
+    } else if (identity.sk) {
+      set({ identity, phase: 'keys_ready', error: null });
     }
   },
 
@@ -158,11 +197,13 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
   importBackup: async (json: string) => {
     const identity = await db.importIdentity(json);
     const identities = await db.listIdentities();
-    set({
-      storedIdentities: identities,
-      identity: identity.pseudonymId ? identity : get().identity,
-      phase: identity.pseudonymId ? 'ready' : get().phase,
-    });
+    if (identity.pseudonymId) {
+      set({ storedIdentities: identities, identity, phase: 'ready' });
+    } else if (identity.sk) {
+      set({ storedIdentities: identities, identity, phase: 'keys_ready' });
+    } else {
+      set({ storedIdentities: identities });
+    }
   },
 
   logout: () => {
