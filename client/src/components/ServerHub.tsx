@@ -11,6 +11,7 @@
 
 import { useState, useCallback } from 'react';
 import { useServersStore } from '@/stores/servers';
+import { resolveUrl } from '@/lib/api';
 import type { SavedServer } from '@/types';
 
 interface AddServerDialogProps {
@@ -109,7 +110,7 @@ function ServerIcon({ server, isActive, imageUrl, onClick }: {
         title={`${server.label}${server.slug ? ` (${server.slug})` : ''}${memberCount ? ` — ${memberCount} online` : ''}`}
       >
         {imageUrl ? (
-          <img src={imageUrl} alt={server.label} className="server-hub-image" />
+          <img src={resolveUrl(imageUrl)} alt={server.label} className="server-hub-image" />
         ) : (
           <span className="server-hub-initial">{initial}</span>
         )}

@@ -93,7 +93,7 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
     setError(null);
     try {
       const resp = await api.uploadServerImage(pseudonymId, file);
-      setServerImageUrl(resp.url);
+      setServerImageUrl(api.resolveUrl(resp.url));
       setSuccess('Server image updated.');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -128,7 +128,7 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
         <p className="field-hint" style={{ marginTop: 0 }}>Upload a logo or icon for your server. Metadata (EXIF, GPS) is stripped automatically.</p>
         <div className="server-image-section">
           {serverImageUrl ? (
-            <img src={serverImageUrl} alt="Server" className="server-image-preview" />
+            <img src={api.resolveUrl(serverImageUrl)} alt="Server" className="server-image-preview" />
           ) : (
             <div className="server-image-placeholder">No image set</div>
           )}
