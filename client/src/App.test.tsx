@@ -14,6 +14,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, act } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { useIdentityStore } from '@/stores/identity';
 import type { StoredIdentity } from '@/types';
 
@@ -53,15 +54,6 @@ vi.mock('@/lib/zk', () => ({
 
 vi.mock('@/components/IdentitySetup', () => ({
   IdentitySetup: () => <div data-testid="identity-setup">Create Your Identity</div>,
-}));
-
-vi.mock('@/components/StartupModeSelector', () => ({
-  StartupModeSelector: ({ onReady }: { onReady: (url?: string) => void }) => (
-    <div data-testid="startup-mode-selector">
-      Choose how to use Annex
-      <button data-testid="pick-mode-btn" onClick={() => onReady()}>Pick Mode</button>
-    </div>
-  ),
 }));
 
 vi.mock('@/components/ChannelList', () => ({ ChannelList: () => <div data-testid="channel-list" /> }));
@@ -190,6 +182,7 @@ beforeEach(async () => {
   // Tests that need pre-existing identities must override this BEFORE render.
   const dbMock = await import('@/lib/db');
   vi.mocked(dbMock.listIdentities).mockResolvedValue([]);
+  global.fetch = vi.fn(async () => ({ ok: true, status: 200 } as Response));
 });
 
 // ── Tests ──
@@ -203,7 +196,7 @@ describe('App startup flow', () => {
       await waitFor(() => {
         expect(screen.getByTestId('identity-setup')).toBeInTheDocument();
       });
-      expect(screen.queryByTestId('startup-mode-selector')).not.toBeInTheDocument();
+      expect(screen.queryByText('Choose how to use Annex. Remembered values are shown as suggestions.')).not.toBeInTheDocument();
     });
 
     it('shows StartupModeSelector when identity with pseudonymId exists', async () => {
@@ -216,7 +209,7 @@ describe('App startup flow', () => {
       render(<App />);
 
       await waitFor(() => {
-        expect(screen.getByTestId('startup-mode-selector')).toBeInTheDocument();
+        expect(screen.getByText('Choose how to use Annex. Remembered values are shown as suggestions.')).toBeInTheDocument();
       });
       expect(screen.queryByTestId('identity-setup')).not.toBeInTheDocument();
     });
@@ -230,7 +223,7 @@ describe('App startup flow', () => {
       render(<App />);
 
       await waitFor(() => {
-        expect(screen.getByTestId('startup-mode-selector')).toBeInTheDocument();
+        expect(screen.getByText('Choose how to use Annex. Remembered values are shown as suggestions.')).toBeInTheDocument();
       });
       expect(screen.queryByTestId('identity-setup')).not.toBeInTheDocument();
     });
@@ -256,7 +249,7 @@ describe('App startup flow', () => {
         expect(screen.getByTestId('identity-setup')).toBeInTheDocument();
       });
       // No server-related UI during identity creation.
-      expect(screen.queryByTestId('startup-mode-selector')).not.toBeInTheDocument();
+      expect(screen.queryByText('Choose how to use Annex. Remembered values are shown as suggestions.')).not.toBeInTheDocument();
       expect(screen.queryByText(/Starting server/)).not.toBeInTheDocument();
     });
 
@@ -295,7 +288,7 @@ describe('App startup flow', () => {
       // The server hasn't started yet; it only starts when the user
       // explicitly picks "Host a Server" on this screen.
       await waitFor(() => {
-        expect(screen.getByTestId('startup-mode-selector')).toBeInTheDocument();
+        expect(screen.getByText('Choose how to use Annex. Remembered values are shown as suggestions.')).toBeInTheDocument();
       });
       expect(screen.queryByTestId('identity-setup')).not.toBeInTheDocument();
     });
@@ -316,7 +309,7 @@ describe('App startup flow', () => {
 
       // Should go to Screen 2 (after server starts), never showing Screen 1
       await waitFor(() => {
-        expect(screen.getByTestId('startup-mode-selector')).toBeInTheDocument();
+        expect(screen.getByText('Choose how to use Annex. Remembered values are shown as suggestions.')).toBeInTheDocument();
       });
       expect(screen.queryByTestId('identity-setup')).not.toBeInTheDocument();
     });
@@ -341,13 +334,11 @@ describe('App startup flow', () => {
 
       // Step 3: Screen 2 (server/mode selection)
       await waitFor(() => {
-        expect(screen.getByTestId('startup-mode-selector')).toBeInTheDocument();
+        expect(screen.getByText('Choose how to use Annex. Remembered values are shown as suggestions.')).toBeInTheDocument();
       });
 
       // Step 4: User picks a mode → triggers auto-registration
-      await act(async () => {
-        screen.getByTestId('pick-mode-btn').click();
-      });
+      await userEvent.click(screen.getByRole('button', { name: 'Start Hosting' }));
 
       // Step 5: Simulate registration completing
       // (In real flow, the auto-register effect calls registerWithServer
@@ -365,7 +356,7 @@ describe('App startup flow', () => {
         expect(screen.getByTestId('status-bar')).toBeInTheDocument();
       });
       expect(screen.queryByTestId('identity-setup')).not.toBeInTheDocument();
-      expect(screen.queryByTestId('startup-mode-selector')).not.toBeInTheDocument();
+      expect(screen.queryByText('Choose how to use Annex. Remembered values are shown as suggestions.')).not.toBeInTheDocument();
     });
 
     it('no server is started during identity creation', async () => {
@@ -406,7 +397,7 @@ describe('App startup flow', () => {
       render(<App />);
 
       await waitFor(() => {
-        expect(screen.getByTestId('startup-mode-selector')).toBeInTheDocument();
+        expect(screen.getByText('Choose how to use Annex. Remembered values are shown as suggestions.')).toBeInTheDocument();
       });
       expect(screen.queryByTestId('identity-setup')).not.toBeInTheDocument();
     });
@@ -420,9 +411,67 @@ describe('App startup flow', () => {
       render(<App />);
 
       await waitFor(() => {
-        expect(screen.getByTestId('startup-mode-selector')).toBeInTheDocument();
+        expect(screen.getByText('Choose how to use Annex. Remembered values are shown as suggestions.')).toBeInTheDocument();
       });
       expect(screen.queryByTestId('identity-setup')).not.toBeInTheDocument();
+    });
+
+    it('keys-ready identity with startup prefs stays on Screen 2 until user selects Host/Connect', async () => {
+      tauriEnabled = true;
+      const dbMock = await import('@/lib/db');
+      vi.mocked(dbMock.listIdentities).mockResolvedValue([KEYS_ONLY_IDENTITY]);
+      const tauri = await import('@/lib/tauri');
+      vi.mocked(tauri.getStartupMode).mockResolvedValue({
+        startup_mode: { mode: 'client', server_url: 'https://unreachable.invalid' },
+      });
+      const App = (await import('./App')).default;
+      render(<App />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Choose how to use Annex. Remembered values are shown as suggestions.')).toBeInTheDocument();
+      });
+
+      expect(screen.getByDisplayValue('https://unreachable.invalid')).toBeInTheDocument();
+      expect(screen.queryByText('Registering with server...')).not.toBeInTheDocument();
+    });
+
+    it('Gate 3 retry returns to StartupModeSelector without immediate re-registration loop', async () => {
+      tauriEnabled = true;
+      const user = userEvent.setup();
+      const dbMock = await import('@/lib/db');
+      vi.mocked(dbMock.listIdentities).mockResolvedValue([KEYS_ONLY_IDENTITY]);
+      const api = await import('@/lib/api');
+
+      const App = (await import('./App')).default;
+      render(<App />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Choose how to use Annex. Remembered values are shown as suggestions.')).toBeInTheDocument();
+      });
+
+      await user.click(screen.getByRole('button', { name: 'Start Hosting' }));
+
+      act(() => {
+        useIdentityStore.setState({
+          phase: 'error',
+          identity: KEYS_ONLY_IDENTITY,
+          storedIdentities: [KEYS_ONLY_IDENTITY],
+          error: 'offline',
+        });
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText('offline')).toBeInTheDocument();
+      });
+
+      const callsBeforeRetry = vi.mocked(api.getServerSummary).mock.calls.length;
+      await user.click(screen.getByRole('button', { name: 'Retry' }));
+
+      await waitFor(() => {
+        expect(screen.getByText('Choose how to use Annex. Remembered values are shown as suggestions.')).toBeInTheDocument();
+      });
+
+      expect(api.getServerSummary).toHaveBeenCalledTimes(callsBeforeRetry);
     });
   });
 });
