@@ -63,6 +63,15 @@ export class ZkProofTimeoutError extends Error {
   }
 }
 
+export class ZkProofInFlightError extends Error {
+  readonly kind = 'in_flight';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'ZkProofInFlightError';
+  }
+}
+
 // circomlibjs doesn't have TS types; we import and cast
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let poseidonFn: any = null;
@@ -136,6 +145,12 @@ export interface MembershipProofOutput {
   publicSignals: string[];
 }
 
+let activeProofPromise: Promise<MembershipProofOutput> | null = null;
+
+export function isProofGenerationInFlight(): boolean {
+  return activeProofPromise !== null;
+}
+
 async function assertProofAssetAvailable(path: string): Promise<void> {
   let response: Response;
   try {
@@ -157,8 +172,21 @@ async function proveWithTimeout(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   circuitInput: any,
 ): Promise<MembershipProofOutput> {
+  if (activeProofPromise) {
+    throw new ZkProofInFlightError('proof still running.');
+  }
+
   const timeoutMs = getProofTimeoutMs();
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const fullProvePromise = snarkjs.groth16.fullProve(
+    circuitInput,
+    MEMBERSHIP_WASM_PATH,
+    MEMBERSHIP_ZKEY_PATH,
+  );
+
+  activeProofPromise = fullProvePromise.finally(() => {
+    activeProofPromise = null;
+  });
 
   try {
     const timeoutPromise = new Promise<never>((_, reject) => {
@@ -171,13 +199,7 @@ async function proveWithTimeout(
       }, timeoutMs);
     });
 
-    const proofPromise = snarkjs.groth16.fullProve(
-      circuitInput,
-      MEMBERSHIP_WASM_PATH,
-      MEMBERSHIP_ZKEY_PATH,
-    );
-
-    const { proof, publicSignals } = await Promise.race([proofPromise, timeoutPromise]);
+    const { proof, publicSignals } = await Promise.race([activeProofPromise, timeoutPromise]);
     return { proof, publicSignals };
   } finally {
     if (timeoutHandle) clearTimeout(timeoutHandle);

@@ -39,6 +39,8 @@ interface IdentityState {
   storedIdentities: StoredIdentity[];
   /** Server-side permissions for the current identity. */
   permissions: IdentityInfo | null;
+  /** True while snarkjs fullProve is still running. */
+  proofInFlight: boolean;
 
   /** Load stored identities and auto-select the most recent one. */
   loadIdentities: () => Promise<void>;
@@ -65,22 +67,23 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
   errorDetails: null,
   storedIdentities: [],
   permissions: null,
+  proofInFlight: false,
 
   loadIdentities: async () => {
     const identities = await db.listIdentities();
     // Prefer a fully registered identity (has pseudonymId).
     const ready = identities.find((i) => i.pseudonymId !== null);
     if (ready) {
-      set({ storedIdentities: identities, identity: ready, phase: 'ready', error: null, errorDetails: null });
+      set({ storedIdentities: identities, identity: ready, phase: 'ready', error: null, errorDetails: null, proofInFlight: false });
       return;
     }
     // Otherwise select one that has keys but isn't registered yet.
     const withKeys = identities.find((i) => !!i.sk);
     if (withKeys) {
-      set({ storedIdentities: identities, identity: withKeys, phase: 'keys_ready', error: null, errorDetails: null });
+      set({ storedIdentities: identities, identity: withKeys, phase: 'keys_ready', error: null, errorDetails: null, proofInFlight: false });
       return;
     }
-    set({ storedIdentities: identities, identity: null, phase: 'uninitialized', error: null, errorDetails: null });
+    set({ storedIdentities: identities, identity: null, phase: 'uninitialized', error: null, errorDetails: null, proofInFlight: false });
   },
 
   loadPermissions: async () => {
@@ -116,7 +119,7 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
       };
       await db.saveIdentity(identity);
       const identities = await db.listIdentities();
-      set({ identity, storedIdentities: identities, phase: 'keys_ready' });
+      set({ identity, storedIdentities: identities, phase: 'keys_ready', proofInFlight: false });
     } catch (e) {
       set({
         phase: 'error',
@@ -127,6 +130,16 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
   },
 
   registerWithServer: async (serverSlug: string) => {
+    if (zk.isProofGenerationInFlight()) {
+      set({
+        phase: 'error',
+        proofInFlight: true,
+        error: 'proof still running.',
+        errorDetails: 'registerWithServer blocked: previous proof generation is still running.',
+      });
+      return;
+    }
+
     const { identity } = get();
     if (!identity?.sk || !identity.commitmentHex) {
       set({
@@ -152,7 +165,7 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
       await db.saveIdentity(identity);
 
       // Generate proof.
-      set({ phase: 'proving', error: null, errorDetails: null });
+      set({ phase: 'proving', proofInFlight: true, error: null, errorDetails: null });
       const { proof, publicSignals } = await zk.generateMembershipProof({
         sk,
         roleCode: identity.roleCode,
@@ -180,6 +193,7 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
       const identities = await db.listIdentities();
       set({
         phase: 'ready',
+        proofInFlight: false,
         identity: { ...identity },
         storedIdentities: identities,
         error: null,
@@ -192,10 +206,13 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
         userError = 'Proof assets missing. Please restart and try again.';
       } else if (e instanceof zk.ZkProofTimeoutError) {
         userError = 'Proof generation timed out. Please retry (the first proof can take longer on slow hardware).';
+      } else if (e instanceof zk.ZkProofInFlightError) {
+        userError = 'proof still running.';
       }
 
       set({
         phase: 'error',
+        proofInFlight: zk.isProofGenerationInFlight(),
         error: userError,
         errorDetails: e instanceof Error ? `${e.name}: ${e.message}` : String(e),
       });
@@ -206,9 +223,9 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
     const identity = await db.getIdentity(id);
     if (!identity) return;
     if (identity.pseudonymId) {
-      set({ identity, phase: 'ready', error: null, errorDetails: null });
+      set({ identity, phase: 'ready', error: null, errorDetails: null, proofInFlight: false });
     } else if (identity.sk) {
-      set({ identity, phase: 'keys_ready', error: null, errorDetails: null });
+      set({ identity, phase: 'keys_ready', error: null, errorDetails: null, proofInFlight: false });
     }
   },
 
@@ -221,15 +238,15 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
     const identity = await db.importIdentity(json);
     const identities = await db.listIdentities();
     if (identity.pseudonymId) {
-      set({ storedIdentities: identities, identity, phase: 'ready', error: null, errorDetails: null });
+      set({ storedIdentities: identities, identity, phase: 'ready', error: null, errorDetails: null, proofInFlight: false });
     } else if (identity.sk) {
-      set({ storedIdentities: identities, identity, phase: 'keys_ready', error: null, errorDetails: null });
+      set({ storedIdentities: identities, identity, phase: 'keys_ready', error: null, errorDetails: null, proofInFlight: false });
     } else {
       set({ storedIdentities: identities });
     }
   },
 
   logout: () => {
-    set({ identity: null, phase: 'uninitialized', error: null, errorDetails: null, permissions: null });
+    set({ identity: null, phase: 'uninitialized', error: null, errorDetails: null, permissions: null, proofInFlight: false });
   },
 }));
