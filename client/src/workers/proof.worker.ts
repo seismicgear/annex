@@ -13,21 +13,32 @@ function emitStatus(jobId: string, stage: 'loading_assets' | 'computing_witness'
   self.postMessage({ kind: 'status', jobId, stage });
 }
 
-async function assertProofAssetAvailable(path: string): Promise<void> {
-  let response: Response;
-  try {
-    response = await fetch(path, { method: 'GET', cache: 'no-store' });
-  } catch {
-    const err = new Error(`Required proof asset could not be fetched: ${path}.`);
-    err.name = 'ZkProofAssetsError';
-    throw err;
+function isLikelyProofAssetFailure(error: Error, wasmPath: string, zkeyPath: string): boolean {
+  const message = error.message.toLowerCase();
+  const hasAssetPath = message.includes(wasmPath.toLowerCase()) || message.includes(zkeyPath.toLowerCase());
+  const hasAssetHint =
+    message.includes('wasm')
+    || message.includes('zkey')
+    || message.includes('failed to fetch')
+    || message.includes('networkerror')
+    || message.includes('not found')
+    || message.includes('status code 404')
+    || message.includes('enoent');
+
+  return hasAssetPath || hasAssetHint;
+}
+
+function mapProofError(error: unknown, wasmPath: string, zkeyPath: string): Error {
+  const err = error instanceof Error ? error : new Error(String(error));
+  if (err.name === 'ZkProofAssetsError' || isLikelyProofAssetFailure(err, wasmPath, zkeyPath)) {
+    const mappedError = new Error(
+      `Required proof asset could not be loaded. Ensure both assets are available: ${wasmPath} and ${zkeyPath}.`,
+    );
+    mappedError.name = 'ZkProofAssetsError';
+    return mappedError;
   }
 
-  if (!response.ok) {
-    const err = new Error(`Required proof asset is unavailable (${response.status}): ${path}.`);
-    err.name = 'ZkProofAssetsError';
-    throw err;
-  }
+  return err;
 }
 
 self.onmessage = async (event: MessageEvent<StartMessage>) => {
@@ -36,8 +47,6 @@ self.onmessage = async (event: MessageEvent<StartMessage>) => {
 
   try {
     emitStatus(message.jobId, 'loading_assets');
-    await assertProofAssetAvailable(message.wasmPath);
-    await assertProofAssetAvailable(message.zkeyPath);
 
     emitStatus(message.jobId, 'computing_witness');
     emitStatus(message.jobId, 'generating_proof');
@@ -50,7 +59,7 @@ self.onmessage = async (event: MessageEvent<StartMessage>) => {
 
     self.postMessage({ kind: 'result', jobId: message.jobId, proof, publicSignals });
   } catch (error) {
-    const err = error instanceof Error ? error : new Error(String(error));
+    const err = mapProofError(error, message.wasmPath, message.zkeyPath);
     self.postMessage({
       kind: 'error',
       jobId: message.jobId,
