@@ -56,3 +56,8 @@ export async function stopTunnel(): Promise<void> {
 export async function getTunnelUrl(): Promise<string | null> {
   return invoke<string | null>('get_tunnel_url');
 }
+
+/** Open a native save dialog and export identity JSON to disk. */
+export async function exportIdentityJson(json: string): Promise<string | null> {
+  return invoke<string | null>('export_identity_json', { json });
+}

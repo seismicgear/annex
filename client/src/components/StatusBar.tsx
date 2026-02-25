@@ -17,6 +17,7 @@ import { IdentitySettings } from '@/components/IdentitySettings';
 import { SocialRecoveryDialog } from '@/components/SocialRecoveryDialog';
 import { AudioSettings } from '@/components/AudioSettings';
 import { getPersonasForIdentity } from '@/lib/personas';
+import { exportIdentityJson, isTauri } from '@/lib/tauri';
 import type { Persona } from '@/types';
 
 interface StatusBarProps {
@@ -48,6 +49,7 @@ export function StatusBar({ tunnelUrl }: StatusBarProps) {
   // a secondary quick-toggle that mirrors the intent.
   const [micMuted, setMicMuted] = useState(false);
   const [tunnelCopied, setTunnelCopied] = useState(false);
+  const [exportStatus, setExportStatus] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
 
   // Load active persona for display
   useEffect(() => {
@@ -57,16 +59,39 @@ export function StatusBar({ tunnelUrl }: StatusBarProps) {
     });
   }, [identity, showIdentity]);
 
-  const handleExport = () => {
-    const json = exportCurrent();
-    if (!json) return;
-    const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `annex-identity-${identity?.pseudonymId?.slice(0, 8)}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+  const handleExport = async () => {
+    try {
+      const json = exportCurrent();
+      if (!json) {
+        setExportStatus({ kind: 'error', text: 'No identity is available to export.' });
+        return;
+      }
+
+      if (isTauri()) {
+        const savedPath = await exportIdentityJson(json);
+        if (!savedPath) {
+          setExportStatus({ kind: 'error', text: 'Export canceled.' });
+          return;
+        }
+
+        setExportStatus({ kind: 'success', text: `Identity exported to ${savedPath}` });
+        return;
+      }
+
+      const blob = new Blob([json], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `annex-identity-${identity?.pseudonymId?.slice(0, 8)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setExportStatus({ kind: 'success', text: 'Identity backup downloaded.' });
+    } catch (err) {
+      setExportStatus({
+        kind: 'error',
+        text: err instanceof Error ? `Export failed: ${err.message}` : `Export failed: ${String(err)}`
+      });
+    }
   };
 
   const pseudonymId = identity?.pseudonymId ?? null;
@@ -76,6 +101,12 @@ export function StatusBar({ tunnelUrl }: StatusBarProps) {
       await leaveCall(pseudonymId);
     }
   }, [pseudonymId, leaveCall]);
+
+  useEffect(() => {
+    if (!exportStatus) return;
+    const timeout = window.setTimeout(() => setExportStatus(null), 3000);
+    return () => window.clearTimeout(timeout);
+  }, [exportStatus]);
 
   if (!identity) return null;
 
@@ -200,6 +231,11 @@ export function StatusBar({ tunnelUrl }: StatusBarProps) {
           <button onClick={handleExport} title="Export identity backup — download a JSON file of your cryptographic identity for safekeeping">
             Export
           </button>
+          {exportStatus && (
+            <span className={exportStatus.kind === 'success' ? 'success-message' : 'error-message'}>
+              {exportStatus.text}
+            </span>
+          )}
           <button onClick={() => setShowIdentity(true)} title="Identity — manage your persona, color, username, and visibility">
             Identity
           </button>

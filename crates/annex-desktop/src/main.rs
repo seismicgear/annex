@@ -170,8 +170,7 @@ fn save_startup_mode(
     prefs: StartupPrefs,
 ) -> Result<(), String> {
     let prefs_path = state.data_dir.join("startup_prefs.json");
-    let json =
-        serde_json::to_string_pretty(&prefs).map_err(|e| format!("serialize error: {e}"))?;
+    let json = serde_json::to_string_pretty(&prefs).map_err(|e| format!("serialize error: {e}"))?;
     std::fs::write(&prefs_path, json).map_err(|e| format!("write error: {e}"))?;
     Ok(())
 }
@@ -189,9 +188,7 @@ fn clear_startup_mode(state: tauri::State<'_, AppManagedState>) -> Result<(), St
 /// Start the embedded Axum server. Returns the server URL on success.
 /// Idempotent — returns existing URL if already running.
 #[tauri::command]
-async fn start_embedded_server(
-    state: tauri::State<'_, AppManagedState>,
-) -> Result<String, String> {
+async fn start_embedded_server(state: tauri::State<'_, AppManagedState>) -> Result<String, String> {
     // Check if server is already running.
     {
         let guard = state.server.lock().map_err(|e| e.to_string())?;
@@ -405,9 +402,7 @@ fn extract_tunnel_url(line: &str) -> Option<String> {
 /// Start a cloudflared quick tunnel to expose the local server.
 /// Returns the public tunnel URL (e.g. https://random.trycloudflare.com).
 #[tauri::command]
-async fn start_tunnel(
-    state: tauri::State<'_, AppManagedState>,
-) -> Result<String, String> {
+async fn start_tunnel(state: tauri::State<'_, AppManagedState>) -> Result<String, String> {
     // Check if tunnel is already running
     {
         let guard = state.tunnel.lock().map_err(|e| e.to_string())?;
@@ -470,9 +465,7 @@ async fn start_tunnel(
                 }
                 Err(e) => {
                     if let Some(sender) = tx.take() {
-                        let _ = sender.send(Err(format!(
-                            "cloudflared stderr read error: {e}"
-                        )));
+                        let _ = sender.send(Err(format!("cloudflared stderr read error: {e}")));
                     }
                     return;
                 }
@@ -480,7 +473,7 @@ async fn start_tunnel(
         }
         if let Some(sender) = tx.take() {
             let _ = sender.send(Err(
-                "cloudflared exited without providing a tunnel URL".to_string(),
+                "cloudflared exited without providing a tunnel URL".to_string()
             ));
         }
     });
@@ -525,6 +518,27 @@ fn get_tunnel_url(state: tauri::State<'_, AppManagedState>) -> Option<String> {
         .lock()
         .ok()
         .and_then(|guard| guard.as_ref().map(|t| t.url.clone()))
+}
+
+/// Open a save-file dialog and write the provided JSON to the selected path.
+///
+/// Returns `Ok(Some(path))` when the file is saved, `Ok(None)` when the user
+/// cancels the dialog, and `Err(...)` for I/O failures.
+#[tauri::command]
+fn export_identity_json(json: String) -> Result<Option<String>, String> {
+    let file_path = rfd::FileDialog::new()
+        .add_filter("JSON", &["json"])
+        .set_file_name("annex-identity-backup.json")
+        .save_file();
+
+    let Some(path) = file_path else {
+        return Ok(None);
+    };
+
+    std::fs::write(&path, json)
+        .map_err(|e| format!("failed to write export file {}: {e}", path.display()))?;
+
+    Ok(Some(path.display().to_string()))
 }
 
 /// Force the window to use dark mode chrome and a black border.
@@ -640,29 +654,42 @@ fn main() {
         // Legacy object-map layout
         exe_dir.join("zk").join("keys").join("membership_vkey.json"),
         // macOS .app bundle Resources directory
-        exe_dir.parent()
+        exe_dir
+            .parent()
             .map(|p| p.join("Resources").join("membership_vkey.json"))
             .unwrap_or_default(),
         // Workspace root (development)
-        resource_base.join("zk").join("keys").join("membership_vkey.json"),
+        resource_base
+            .join("zk")
+            .join("keys")
+            .join("membership_vkey.json"),
     ];
     let zk_vkey = vkey_candidates.iter().find(|p| p.exists());
 
     // Resolve Piper TTS binary from bundled resources or dev workspace.
-    let piper_bin_name = if cfg!(target_os = "windows") { "piper.exe" } else { "piper" };
+    let piper_bin_name = if cfg!(target_os = "windows") {
+        "piper.exe"
+    } else {
+        "piper"
+    };
     let piper_candidates = [
         exe_dir.join("piper").join(piper_bin_name),
-        exe_dir.parent()
+        exe_dir
+            .parent()
             .map(|p| p.join("Resources").join("piper").join(piper_bin_name))
             .unwrap_or_default(),
-        resource_base.join("assets").join("piper").join(piper_bin_name),
+        resource_base
+            .join("assets")
+            .join("piper")
+            .join(piper_bin_name),
     ];
     let piper_binary = piper_candidates.iter().find(|p| p.exists());
 
     // Resolve voice models directory.
     let voices_candidates = [
         exe_dir.join("voices"),
-        exe_dir.parent()
+        exe_dir
+            .parent()
             .map(|p| p.join("Resources").join("voices"))
             .unwrap_or_default(),
         resource_base.join("assets").join("voices"),
@@ -722,6 +749,7 @@ fn main() {
             start_tunnel,
             stop_tunnel,
             get_tunnel_url,
+            export_identity_json,
         ])
         .run(tauri::generate_context!())
         .expect("error running Annex desktop");

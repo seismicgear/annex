@@ -17,6 +17,7 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 dirs = "6"
 reqwest = { workspace = true }
+rfd = "0.15"
 
 [target.'cfg(windows)'.dependencies]
 raw-window-handle = "0.6"
