@@ -46,7 +46,16 @@ const REGISTRATION_LABELS: Record<string, string> = {
 };
 
 export default function App() {
-  const { phase, identity, error, loadIdentities, loadPermissions, permissions, registerWithServer } = useIdentityStore();
+  const {
+    phase,
+    identity,
+    error,
+    errorDetails,
+    loadIdentities,
+    loadPermissions,
+    permissions,
+    registerWithServer,
+  } = useIdentityStore();
   const { connectWs, disconnectWs, selectChannel, joinChannel, loadChannels } = useChannelsStore();
   const { servers, loadServers, saveCurrentServer, fetchServerImage } = useServersStore();
   const activeServer = useServersStore((s) => s.getActiveServer());
@@ -61,6 +70,7 @@ export default function App() {
   const [activeView, setActiveView] = useState<AppView>('chat');
   const [adminMenuOpen, setAdminMenuOpen] = useState(false);
   const [startupErrorDetails, setStartupErrorDetails] = useState<string | null>(null);
+  const [provingFailures, setProvingFailures] = useState(0);
   const adminMenuRef = useRef<HTMLDivElement>(null);
   const [pendingInvite, setPendingInvite] = useState<InvitePayload | null>(
     () => parseInviteFromUrl(),
@@ -70,11 +80,24 @@ export default function App() {
   const prevPhaseRef = useRef(phase);
 
   const resetToServerSelection = () => {
-    useIdentityStore.setState({ phase: 'keys_ready', error: null });
+    useIdentityStore.setState({ phase: 'keys_ready', error: null, errorDetails: null });
     setStartupErrorDetails(null);
+    setProvingFailures(0);
     setServerReady(false);
     setTunnelUrl(null);
   };
+
+  useEffect(() => {
+    if (phase !== 'error') return;
+
+    if (errorDetails) {
+      setStartupErrorDetails((prev) => prev ?? errorDetails);
+    }
+
+    if (error?.includes('Proof assets missing') || error?.includes('Proof generation timed out')) {
+      setProvingFailures((count) => count + 1);
+    }
+  }, [phase, error, errorDetails]);
 
   // ── Load identities + servers on mount (all modes) ──
   // In Tauri mode, after loading identities we also check whether startup
@@ -350,10 +373,10 @@ export default function App() {
             {phase === 'error' && error && (
               <>
                 <div className="error-message">{error}</div>
-                {startupErrorDetails && (
+                {(startupErrorDetails || errorDetails) && (
                   <details className="error-details">
                     <summary>Details</summary>
-                    <pre>{startupErrorDetails}</pre>
+                    <pre>{startupErrorDetails ?? errorDetails}</pre>
                   </details>
                 )}
                 <button
@@ -362,6 +385,14 @@ export default function App() {
                 >
                   Retry
                 </button>
+                {provingFailures >= 2 && (
+                  <button
+                    className="secondary-btn"
+                    onClick={resetToServerSelection}
+                  >
+                    Back to server selection
+                  </button>
+                )}
               </>
             )}
           </div>

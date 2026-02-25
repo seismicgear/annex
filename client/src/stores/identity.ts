@@ -33,6 +33,8 @@ interface IdentityState {
   identity: StoredIdentity | null;
   /** Error message if phase is 'error'. */
   error: string | null;
+  /** Structured diagnostics for startup/register failures. */
+  errorDetails: string | null;
   /** All stored identities from IndexedDB. */
   storedIdentities: StoredIdentity[];
   /** Server-side permissions for the current identity. */
@@ -60,6 +62,7 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
   phase: 'uninitialized',
   identity: null,
   error: null,
+  errorDetails: null,
   storedIdentities: [],
   permissions: null,
 
@@ -68,16 +71,16 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
     // Prefer a fully registered identity (has pseudonymId).
     const ready = identities.find((i) => i.pseudonymId !== null);
     if (ready) {
-      set({ storedIdentities: identities, identity: ready, phase: 'ready' });
+      set({ storedIdentities: identities, identity: ready, phase: 'ready', error: null, errorDetails: null });
       return;
     }
     // Otherwise select one that has keys but isn't registered yet.
     const withKeys = identities.find((i) => !!i.sk);
     if (withKeys) {
-      set({ storedIdentities: identities, identity: withKeys, phase: 'keys_ready' });
+      set({ storedIdentities: identities, identity: withKeys, phase: 'keys_ready', error: null, errorDetails: null });
       return;
     }
-    set({ storedIdentities: identities, identity: null, phase: 'uninitialized' });
+    set({ storedIdentities: identities, identity: null, phase: 'uninitialized', error: null, errorDetails: null });
   },
 
   loadPermissions: async () => {
@@ -94,7 +97,7 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
 
   generateLocalKeys: async (roleCode: number) => {
     try {
-      set({ phase: 'generating', error: null });
+      set({ phase: 'generating', error: null, errorDetails: null });
       await zk.initPoseidon();
       const sk = zk.generateSecretKey();
       const nodeId = zk.generateNodeId();
@@ -118,6 +121,7 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
       set({
         phase: 'error',
         error: e instanceof Error ? e.message : String(e),
+        errorDetails: e instanceof Error ? `${e.name}: ${e.message}` : String(e),
       });
     }
   },
@@ -125,7 +129,11 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
   registerWithServer: async (serverSlug: string) => {
     const { identity } = get();
     if (!identity?.sk || !identity.commitmentHex) {
-      set({ phase: 'error', error: 'No identity keys found' });
+      set({
+        phase: 'error',
+        error: 'No identity keys found',
+        errorDetails: 'registerWithServer aborted: missing local key material.',
+      });
       return;
     }
 
@@ -138,13 +146,13 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
       set({ identity: { ...identity } });
 
       // Register commitment with server.
-      set({ phase: 'registering' });
+      set({ phase: 'registering', error: null, errorDetails: null });
       const reg = await api.register(identity.commitmentHex, identity.roleCode, identity.nodeId);
       identity.leafIndex = reg.leafIndex;
       await db.saveIdentity(identity);
 
       // Generate proof.
-      set({ phase: 'proving' });
+      set({ phase: 'proving', error: null, errorDetails: null });
       const { proof, publicSignals } = await zk.generateMembershipProof({
         sk,
         roleCode: identity.roleCode,
@@ -156,7 +164,7 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
 
       // Verify membership — the VRP topic scopes pseudonym derivation
       // to this specific server.
-      set({ phase: 'verifying' });
+      set({ phase: 'verifying', error: null, errorDetails: null });
       const vrpTopic = `annex:server:${serverSlug}:v1`;
       const verification = await api.verifyMembership(
         reg.rootHex,
@@ -170,11 +178,26 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
       await db.saveIdentity(identity);
 
       const identities = await db.listIdentities();
-      set({ phase: 'ready', identity: { ...identity }, storedIdentities: identities });
+      set({
+        phase: 'ready',
+        identity: { ...identity },
+        storedIdentities: identities,
+        error: null,
+        errorDetails: null,
+      });
     } catch (e) {
+      let userError = e instanceof Error ? e.message : String(e);
+
+      if (e instanceof zk.ZkProofAssetsError) {
+        userError = 'Proof assets missing. Please restart and try again.';
+      } else if (e instanceof zk.ZkProofTimeoutError) {
+        userError = 'Proof generation timed out. Please retry.';
+      }
+
       set({
         phase: 'error',
-        error: e instanceof Error ? e.message : String(e),
+        error: userError,
+        errorDetails: e instanceof Error ? `${e.name}: ${e.message}` : String(e),
       });
     }
   },
@@ -183,9 +206,9 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
     const identity = await db.getIdentity(id);
     if (!identity) return;
     if (identity.pseudonymId) {
-      set({ identity, phase: 'ready', error: null });
+      set({ identity, phase: 'ready', error: null, errorDetails: null });
     } else if (identity.sk) {
-      set({ identity, phase: 'keys_ready', error: null });
+      set({ identity, phase: 'keys_ready', error: null, errorDetails: null });
     }
   },
 
@@ -198,15 +221,15 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
     const identity = await db.importIdentity(json);
     const identities = await db.listIdentities();
     if (identity.pseudonymId) {
-      set({ storedIdentities: identities, identity, phase: 'ready' });
+      set({ storedIdentities: identities, identity, phase: 'ready', error: null, errorDetails: null });
     } else if (identity.sk) {
-      set({ storedIdentities: identities, identity, phase: 'keys_ready' });
+      set({ storedIdentities: identities, identity, phase: 'keys_ready', error: null, errorDetails: null });
     } else {
       set({ storedIdentities: identities });
     }
   },
 
   logout: () => {
-    set({ identity: null, phase: 'uninitialized', error: null, permissions: null });
+    set({ identity: null, phase: 'uninitialized', error: null, errorDetails: null, permissions: null });
   },
 }));

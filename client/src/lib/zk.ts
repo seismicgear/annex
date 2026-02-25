@@ -9,6 +9,28 @@
 
 import * as snarkjs from 'snarkjs';
 
+const MEMBERSHIP_WASM_PATH = '/zk/membership.wasm';
+const MEMBERSHIP_ZKEY_PATH = '/zk/membership_final.zkey';
+const PROOF_TIMEOUT_MS = 45_000;
+
+export class ZkProofAssetsError extends Error {
+  readonly kind = 'assets';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'ZkProofAssetsError';
+  }
+}
+
+export class ZkProofTimeoutError extends Error {
+  readonly kind = 'timeout';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'ZkProofTimeoutError';
+  }
+}
+
 // circomlibjs doesn't have TS types; we import and cast
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let poseidonFn: any = null;
@@ -82,6 +104,53 @@ export interface MembershipProofOutput {
   publicSignals: string[];
 }
 
+async function assertProofAssetAvailable(path: string): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(path, { method: 'GET', cache: 'no-store' });
+  } catch {
+    throw new ZkProofAssetsError(
+      `Required proof asset could not be fetched: ${path}.`,
+    );
+  }
+
+  if (!response.ok) {
+    throw new ZkProofAssetsError(
+      `Required proof asset is unavailable (${response.status}): ${path}.`,
+    );
+  }
+}
+
+async function proveWithTimeout(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  circuitInput: any,
+): Promise<MembershipProofOutput> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+
+  try {
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => {
+        reject(
+          new ZkProofTimeoutError(
+            `Proof generation timed out after ${PROOF_TIMEOUT_MS / 1000}s.`,
+          ),
+        );
+      }, PROOF_TIMEOUT_MS);
+    });
+
+    const proofPromise = snarkjs.groth16.fullProve(
+      circuitInput,
+      MEMBERSHIP_WASM_PATH,
+      MEMBERSHIP_ZKEY_PATH,
+    );
+
+    const { proof, publicSignals } = await Promise.race([proofPromise, timeoutPromise]);
+    return { proof, publicSignals };
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+  }
+}
+
 /**
  * Generate a Groth16 membership proof.
  *
@@ -91,6 +160,9 @@ export interface MembershipProofOutput {
 export async function generateMembershipProof(
   input: MembershipProofInput,
 ): Promise<MembershipProofOutput> {
+  await assertProofAssetAvailable(MEMBERSHIP_WASM_PATH);
+  await assertProofAssetAvailable(MEMBERSHIP_ZKEY_PATH);
+
   const circuitInput = {
     sk: input.sk.toString(),
     roleCode: input.roleCode.toString(),
@@ -100,11 +172,5 @@ export async function generateMembershipProof(
     pathIndexBits: input.pathIndexBits.map(String),
   };
 
-  const { proof, publicSignals } = await snarkjs.groth16.fullProve(
-    circuitInput,
-    '/zk/membership.wasm',
-    '/zk/membership_final.zkey',
-  );
-
-  return { proof, publicSignals };
+  return proveWithTimeout(circuitInput);
 }
