@@ -4,7 +4,7 @@
   "identifier": "com.annex.desktop",
   "build": {
     "beforeBuildCommand": "node ../scripts/build-desktop.js",
-    "beforeDevCommand": "npm --prefix ../client run dev",
+    "beforeDevCommand": "node ../../scripts/prepare-zk-dev.js && npm --prefix ../../client run dev",
     "frontendDist": "../../client/dist",
     "devUrl": "http://localhost:5173"
   },

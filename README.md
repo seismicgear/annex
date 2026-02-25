@@ -48,6 +48,14 @@ cargo tauri dev
 
 The desktop app bundles an embedded server and auto-generates a `config.toml` on first launch. CORS origins for the Tauri webview (`tauri://localhost`, `https://tauri.localhost`) are configured automatically — no manual setup required.
 
+During `cargo tauri dev`, Tauri now runs a ZK prep step before Vite starts. It ensures `client/public/zk/membership.wasm` and `client/public/zk/membership_final.zkey` exist (building/copying them when needed) and prints a clear warning if artifacts are missing.
+
+If you need to run the prep manually:
+
+```bash
+node scripts/prepare-zk-dev.js
+```
+
 ### Prerequisites
 
 | Requirement | Version | Notes |
