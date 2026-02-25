@@ -16,6 +16,11 @@
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+# PowerShell 5.1 doesn't define $IsWindows / $IsMacOS automatic variables.
+# If they're absent we're running Windows PowerShell 5.1, so set the values accordingly.
+if (-not (Test-Path variable:IsWindows)) { $IsWindows = $true }
+if (-not (Test-Path variable:IsMacOS))   { $IsMacOS   = $false }
+
 $PiperVersion = "2023.11.14-2"
 $VoiceModel = "en_US-lessac-medium"
 $VoiceBaseUrl = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium"
