@@ -11,7 +11,39 @@ import * as snarkjs from 'snarkjs';
 
 const MEMBERSHIP_WASM_PATH = '/zk/membership.wasm';
 const MEMBERSHIP_ZKEY_PATH = '/zk/membership_final.zkey';
-const PROOF_TIMEOUT_MS = 45_000;
+const DEFAULT_PROOF_TIMEOUT_MS = 120_000;
+
+function parseTimeoutMs(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    return Math.floor(value);
+  }
+
+  if (typeof value === 'string') {
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+
+  return null;
+}
+
+export function getProofTimeoutMs(): number {
+  const runtimeConfig = (globalThis as { __ANNEX_CONFIG__?: { zkProofTimeoutMs?: number | string } })
+    .__ANNEX_CONFIG__;
+  const runtimeValue = parseTimeoutMs(runtimeConfig?.zkProofTimeoutMs);
+  if (runtimeValue !== null) {
+    return runtimeValue;
+  }
+
+  const env = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env;
+  const envValue = parseTimeoutMs(env?.VITE_ZK_PROOF_TIMEOUT_MS);
+  if (envValue !== null) {
+    return envValue;
+  }
+
+  return DEFAULT_PROOF_TIMEOUT_MS;
+}
 
 export class ZkProofAssetsError extends Error {
   readonly kind = 'assets';
@@ -125,6 +157,7 @@ async function proveWithTimeout(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   circuitInput: any,
 ): Promise<MembershipProofOutput> {
+  const timeoutMs = getProofTimeoutMs();
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
   try {
@@ -132,10 +165,10 @@ async function proveWithTimeout(
       timeoutHandle = setTimeout(() => {
         reject(
           new ZkProofTimeoutError(
-            `Proof generation timed out after ${PROOF_TIMEOUT_MS / 1000}s.`,
+            `Proof generation timed out after ${Math.round(timeoutMs / 1000)}s (configured timeout: ${timeoutMs}ms).`,
           ),
         );
-      }, PROOF_TIMEOUT_MS);
+      }, timeoutMs);
     });
 
     const proofPromise = snarkjs.groth16.fullProve(

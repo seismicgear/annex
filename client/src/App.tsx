@@ -373,6 +373,9 @@ export default function App() {
             {phase === 'error' && error && (
               <>
                 <div className="error-message">{error}</div>
+                {error.includes('Proof generation timed out') && (
+                  <div className="error-message">Hint: the first proof can take longer on slower hardware.</div>
+                )}
                 {(startupErrorDetails || errorDetails) && (
                   <details className="error-details">
                     <summary>Details</summary>
