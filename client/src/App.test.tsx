@@ -300,10 +300,15 @@ describe('App startup flow', () => {
     });
 
     it('existing identity with pseudonymId skips Screen 1 entirely', async () => {
-      // Returning user: IndexedDB already has a fully registered identity.
+      // Returning user: IndexedDB already has a fully registered identity
+      // AND startup prefs exist (they completed the full flow before).
       // Screen 1 (identity creation) should be skipped.
       const dbMock = await import('@/lib/db');
       vi.mocked(dbMock.listIdentities).mockResolvedValue([FAKE_IDENTITY]);
+      const tauri = await import('@/lib/tauri');
+      vi.mocked(tauri.getStartupMode).mockResolvedValue({
+        startup_mode: { mode: 'host' },
+      });
 
       const App = (await import('./App')).default;
       render(<App />);

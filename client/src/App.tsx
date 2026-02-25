@@ -31,7 +31,7 @@ import { clearWebStartupMode } from '@/lib/startup-prefs';
 import { parseInviteFromUrl, clearInviteFromUrl } from '@/lib/invite';
 import { getPersonasForIdentity } from '@/lib/personas';
 import { getApiBaseUrl, getServerSummary, setApiBaseUrl, setPublicUrl } from '@/lib/api';
-import { isTauri } from '@/lib/tauri';
+import { isTauri, getStartupMode as tauriGetStartupMode } from '@/lib/tauri';
 import type { InvitePayload } from '@/types';
 import './App.css';
 
@@ -74,10 +74,25 @@ export default function App() {
   const [serverRetry, setServerRetry] = useState(0);
 
   // ── Load identities + servers on mount (all modes) ──
+  // In Tauri mode, after loading identities we also check whether startup
+  // preferences (startup_prefs.json) exist.  If they don't, the user has
+  // never completed the full setup flow — reset identity selection so
+  // IdentitySetup renders first, even if IndexedDB has a valid identity
+  // from a previous install.  Returning users with saved prefs skip this.
   useEffect(() => {
-    loadIdentities().then(() => setIdentityChecked(true));
+    loadIdentities()
+      .then(() => inTauri ? tauriGetStartupMode().catch(() => null) : undefined)
+      .then((startupPrefs) => {
+        if (inTauri && startupPrefs === null) {
+          const { phase: currentPhase } = useIdentityStore.getState();
+          if (currentPhase === 'ready') {
+            useIdentityStore.getState().logout();
+          }
+        }
+        setIdentityChecked(true);
+      });
     loadServers();
-  }, [loadIdentities, loadServers]);
+  }, [loadIdentities, loadServers, inTauri]);
 
   // ── Tauri: start embedded server in background ──
   // Runs in parallel with identity loading.  The server starts while the
@@ -116,8 +131,17 @@ export default function App() {
         if (!cancelled) {
           await registerWithServer(summary.slug);
         }
-      } catch {
-        // Errors are surfaced by registerWithServer via the store.
+      } catch (err) {
+        // registerWithServer surfaces its own errors via the store.
+        // But if getServerSummary() itself fails (server unreachable),
+        // we need to surface that too — otherwise the user gets stuck
+        // on "Preparing to register..." with no error and no retry.
+        if (!cancelled) {
+          useIdentityStore.setState({
+            phase: 'error',
+            error: err instanceof Error ? err.message : 'Failed to reach server',
+          });
+        }
       }
     })();
     return () => { cancelled = true; };

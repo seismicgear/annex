@@ -68,11 +68,16 @@ export function StartupModeSelector({ onReady, embeddedServerRunning }: Props) {
     async (skipSave: boolean) => {
       if (!inTauri) return;
       const { startEmbeddedServer, startTunnel, saveStartupMode } = await import('@/lib/tauri');
-      setPhase('starting_server');
       setError('');
       try {
-        const url = await startEmbeddedServer();
-        setApiBaseUrl(url);
+        // If App.tsx already started the embedded server, skip starting it
+        // again — calling startEmbeddedServer() twice hangs because the
+        // port is already occupied.
+        if (!embeddedServerRunning) {
+          setPhase('starting_server');
+          const url = await startEmbeddedServer();
+          setApiBaseUrl(url);
+        }
         if (!skipSave) {
           await saveStartupMode({ startup_mode: { mode: 'host' } });
         }
@@ -92,7 +97,7 @@ export function StartupModeSelector({ onReady, embeddedServerRunning }: Props) {
         setPhase('error');
       }
     },
-    [onReady, inTauri],
+    [onReady, inTauri, embeddedServerRunning],
   );
 
   // ── Connect to a remote server (shared by Tauri + web) ──
