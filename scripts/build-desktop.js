@@ -114,6 +114,19 @@ if (process.env.SKIP_PIPER === "1") {
       ROOT_DIR
     );
   }
+  // Verify the setup actually produced the expected files
+  if (!fs.existsSync(PIPER_BIN)) {
+    console.error(
+      `[build-desktop] ERROR: Piper binary not found at ${PIPER_BIN} after setup`
+    );
+    process.exit(1);
+  }
+  if (!fs.existsSync(VOICE_MODEL)) {
+    console.error(
+      `[build-desktop] ERROR: Voice model not found at ${VOICE_MODEL} after setup`
+    );
+    process.exit(1);
+  }
   log("Piper setup complete.");
 }
 
