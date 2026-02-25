@@ -212,6 +212,28 @@
   font-size: 0.85rem;
 }
 
+.error-details {
+  margin: 0 0 1rem;
+  text-align: left;
+  font-size: 0.75rem;
+}
+
+.error-details summary {
+  cursor: pointer;
+  color: #aaa;
+}
+
+.error-details pre {
+  margin-top: 0.5rem;
+  padding: 0.5rem;
+  border-radius: 4px;
+  background: #111;
+  border: 1px solid #222;
+  color: #c7c7c7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .create-form {
   display: flex;
   flex-direction: column;

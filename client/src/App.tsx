@@ -60,6 +60,7 @@ export default function App() {
   const [tunnelUrl, setTunnelUrl] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<AppView>('chat');
   const [adminMenuOpen, setAdminMenuOpen] = useState(false);
+  const [startupErrorDetails, setStartupErrorDetails] = useState<string | null>(null);
   const adminMenuRef = useRef<HTMLDivElement>(null);
   const [pendingInvite, setPendingInvite] = useState<InvitePayload | null>(
     () => parseInviteFromUrl(),
@@ -70,6 +71,7 @@ export default function App() {
 
   const resetToServerSelection = () => {
     useIdentityStore.setState({ phase: 'keys_ready', error: null });
+    setStartupErrorDetails(null);
     setServerReady(false);
     setTunnelUrl(null);
   };
@@ -107,6 +109,8 @@ export default function App() {
 
     const MAX_RETRIES = 5;
     const BASE_DELAY_MS = 500;
+    const apiBaseUrl = getApiBaseUrl() || 'same-origin';
+    const origin = window.location.origin;
 
     (async () => {
       let lastError: unknown;
@@ -120,20 +124,43 @@ export default function App() {
           return;
         } catch (err) {
           lastError = err;
+          console.error('startup_registration_retry_failed', {
+            apiBaseUrl,
+            origin,
+            attempt,
+            maxRetries: MAX_RETRIES,
+            error: err,
+          });
           if (attempt < MAX_RETRIES) {
             await new Promise((r) => setTimeout(r, BASE_DELAY_MS * 2 ** attempt));
           }
         }
       }
       if (!cancelled) {
+        const message = lastError instanceof Error ? lastError.message : 'Failed to reach server';
+        const likelyNetworkError =
+          lastError instanceof TypeError && /failed to fetch/i.test(lastError.message);
+        const networkHint = inTauri && likelyNetworkError
+          ? ' Desktop mode hint: this may be a CORS/origin mismatch between the embedded app origin and API base URL.'
+          : '';
+        const safeDiagnostic = `Unable to contact server (API: ${apiBaseUrl}, app origin: ${origin}).${networkHint}`;
+
+        setStartupErrorDetails(
+          [
+            `apiBaseUrl: ${apiBaseUrl}`,
+            `origin: ${origin}`,
+            `attempts: ${MAX_RETRIES + 1}`,
+            `error: ${message}`,
+          ].join('\n'),
+        );
         useIdentityStore.setState({
           phase: 'error',
-          error: lastError instanceof Error ? lastError.message : 'Failed to reach server',
+          error: safeDiagnostic,
         });
       }
     })();
     return () => { cancelled = true; };
-  }, [serverReady, phase, identity?.sk, registerWithServer]);
+  }, [serverReady, phase, identity?.sk, registerWithServer, inTauri]);
 
   // When the user logs out, return to the mode selector.
   // We track the previous phase so we only reset when phase *transitions*
@@ -323,6 +350,12 @@ export default function App() {
             {phase === 'error' && error && (
               <>
                 <div className="error-message">{error}</div>
+                {startupErrorDetails && (
+                  <details className="error-details">
+                    <summary>Details</summary>
+                    <pre>{startupErrorDetails}</pre>
+                  </details>
+                )}
                 <button
                   className="primary-btn"
                   onClick={resetToServerSelection}
