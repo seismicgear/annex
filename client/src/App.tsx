@@ -31,7 +31,8 @@ import { clearWebStartupMode } from '@/lib/startup-prefs';
 import { parseInviteFromUrl, clearInviteFromUrl } from '@/lib/invite';
 import { getPersonasForIdentity } from '@/lib/personas';
 import { getApiBaseUrl, getServerSummary, setPublicUrl } from '@/lib/api';
-import { isProofGenerationInFlight } from '@/lib/zk';
+import { cancelMembershipProofGeneration, isProofGenerationInFlight } from '@/lib/zk';
+import type { ProvingStatus } from '@/stores/identity';
 import { isTauri, getStartupMode as tauriGetStartupMode } from '@/lib/tauri';
 import type { InvitePayload } from '@/types';
 import './App.css';
@@ -46,6 +47,13 @@ const REGISTRATION_LABELS: Record<string, string> = {
   verifying: 'Verifying membership...',
 };
 
+const PROVING_STATUS_LABELS: Record<ProvingStatus, string> = {
+  idle: 'Generating zero-knowledge proof...',
+  loading_assets: 'Loading proof assets...',
+  computing_witness: 'Computing witness...',
+  generating_proof: 'Generating proof...',
+};
+
 export default function App() {
   const {
     phase,
@@ -56,6 +64,7 @@ export default function App() {
     loadPermissions,
     permissions,
     proofInFlight,
+    provingStatus,
     registerWithServer,
   } = useIdentityStore();
   const { connectWs, disconnectWs, selectChannel, joinChannel, loadChannels } = useChannelsStore();
@@ -81,18 +90,12 @@ export default function App() {
   const serverSaved = useRef(false);
   const prevPhaseRef = useRef(phase);
 
-  const resetToServerSelection = () => {
+  const resetToServerSelection = async () => {
     if (isProofGenerationInFlight()) {
-      useIdentityStore.setState({
-        phase: 'error',
-        proofInFlight: true,
-        error: 'proof still running.',
-        errorDetails: 'Retry blocked: previous proof generation is still running.',
-      });
-      return;
+      await cancelMembershipProofGeneration('Proof generation cancelled before retry.');
     }
 
-    useIdentityStore.setState({ phase: 'keys_ready', proofInFlight: false, error: null, errorDetails: null });
+    useIdentityStore.setState({ phase: 'keys_ready', proofInFlight: false, provingStatus: 'idle', error: null, errorDetails: null });
     setStartupErrorDetails(null);
     setProvingFailures(0);
     setServerReady(false);
@@ -116,7 +119,7 @@ export default function App() {
 
     const syncProofFlightState = () => {
       if (!isProofGenerationInFlight()) {
-        useIdentityStore.setState({ proofInFlight: false });
+        useIdentityStore.setState({ proofInFlight: false, provingStatus: 'idle' });
       }
     };
 
@@ -394,7 +397,9 @@ export default function App() {
           <div className="identity-setup">
             <h2>Annex</h2>
             <div className={`phase-status phase-${phase}`}>
-              {REGISTRATION_LABELS[phase] ?? 'Preparing...'}
+              {phase === 'proving'
+                ? PROVING_STATUS_LABELS[provingStatus]
+                : (REGISTRATION_LABELS[phase] ?? 'Preparing...')}
             </div>
             {phase === 'error' && error && (
               <>
@@ -413,15 +418,14 @@ export default function App() {
                 )}
                 <button
                   className="primary-btn"
-                  onClick={resetToServerSelection}
-                  disabled={proofInFlight}
+                  onClick={() => { void resetToServerSelection(); }}
                 >
-                  {proofInFlight ? 'Retry (proof still running)' : 'Retry'}
+                  {proofInFlight ? 'Retry (cancel running proof)' : 'Retry'}
                 </button>
                 {provingFailures >= 2 && (
                   <button
                     className="secondary-btn"
-                    onClick={resetToServerSelection}
+                    onClick={() => { void resetToServerSelection(); }}
                   >
                     Back to server selection
                   </button>

@@ -26,6 +26,12 @@ export type IdentityPhase =
   | 'ready'
   | 'error';
 
+export type ProvingStatus =
+  | 'idle'
+  | 'loading_assets'
+  | 'computing_witness'
+  | 'generating_proof';
+
 interface IdentityState {
   /** Current lifecycle phase. */
   phase: IdentityPhase;
@@ -41,6 +47,8 @@ interface IdentityState {
   permissions: IdentityInfo | null;
   /** True while snarkjs fullProve is still running. */
   proofInFlight: boolean;
+  /** Detailed proving stage surfaced from the proof worker. */
+  provingStatus: ProvingStatus;
 
   /** Load stored identities and auto-select the most recent one. */
   loadIdentities: () => Promise<void>;
@@ -68,22 +76,23 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
   storedIdentities: [],
   permissions: null,
   proofInFlight: false,
+  provingStatus: 'idle',
 
   loadIdentities: async () => {
     const identities = await db.listIdentities();
     // Prefer a fully registered identity (has pseudonymId).
     const ready = identities.find((i) => i.pseudonymId !== null);
     if (ready) {
-      set({ storedIdentities: identities, identity: ready, phase: 'ready', error: null, errorDetails: null, proofInFlight: false });
+      set({ storedIdentities: identities, identity: ready, phase: 'ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
       return;
     }
     // Otherwise select one that has keys but isn't registered yet.
     const withKeys = identities.find((i) => !!i.sk);
     if (withKeys) {
-      set({ storedIdentities: identities, identity: withKeys, phase: 'keys_ready', error: null, errorDetails: null, proofInFlight: false });
+      set({ storedIdentities: identities, identity: withKeys, phase: 'keys_ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
       return;
     }
-    set({ storedIdentities: identities, identity: null, phase: 'uninitialized', error: null, errorDetails: null, proofInFlight: false });
+    set({ storedIdentities: identities, identity: null, phase: 'uninitialized', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
   },
 
   loadPermissions: async () => {
@@ -119,7 +128,7 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
       };
       await db.saveIdentity(identity);
       const identities = await db.listIdentities();
-      set({ identity, storedIdentities: identities, phase: 'keys_ready', proofInFlight: false });
+      set({ identity, storedIdentities: identities, phase: 'keys_ready', proofInFlight: false, provingStatus: 'idle' });
     } catch (e) {
       set({
         phase: 'error',
@@ -131,13 +140,7 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
 
   registerWithServer: async (serverSlug: string) => {
     if (zk.isProofGenerationInFlight()) {
-      set({
-        phase: 'error',
-        proofInFlight: true,
-        error: 'proof still running.',
-        errorDetails: 'registerWithServer blocked: previous proof generation is still running.',
-      });
-      return;
+      await zk.cancelMembershipProofGeneration('Proof generation cancelled before retry.');
     }
 
     const { identity } = get();
@@ -159,13 +162,13 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
       set({ identity: { ...identity } });
 
       // Register commitment with server.
-      set({ phase: 'registering', error: null, errorDetails: null });
+      set({ phase: 'registering', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
       const reg = await api.register(identity.commitmentHex, identity.roleCode, identity.nodeId);
       identity.leafIndex = reg.leafIndex;
       await db.saveIdentity(identity);
 
       // Generate proof.
-      set({ phase: 'proving', proofInFlight: true, error: null, errorDetails: null });
+      set({ phase: 'proving', proofInFlight: true, provingStatus: 'loading_assets', error: null, errorDetails: null });
       const { proof, publicSignals } = await zk.generateMembershipProof({
         sk,
         roleCode: identity.roleCode,
@@ -173,11 +176,15 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
         leafIndex: reg.leafIndex,
         pathElements: reg.pathElements,
         pathIndexBits: reg.pathIndexBits,
+      }, {
+        onStage: (stage) => {
+          set({ provingStatus: stage });
+        },
       });
 
       // Verify membership — the VRP topic scopes pseudonym derivation
       // to this specific server.
-      set({ phase: 'verifying', error: null, errorDetails: null });
+      set({ phase: 'verifying', error: null, errorDetails: null, provingStatus: 'idle' });
       const vrpTopic = `annex:server:${serverSlug}:v1`;
       const verification = await api.verifyMembership(
         reg.rootHex,
@@ -194,6 +201,7 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
       set({
         phase: 'ready',
         proofInFlight: false,
+        provingStatus: 'idle',
         identity: { ...identity },
         storedIdentities: identities,
         error: null,
@@ -208,11 +216,14 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
         userError = 'Proof generation timed out. Please retry (the first proof can take longer on slow hardware).';
       } else if (e instanceof zk.ZkProofInFlightError) {
         userError = 'proof still running.';
+      } else if (e instanceof zk.ZkProofCancelledError) {
+        userError = 'Proof generation was cancelled. Please retry.';
       }
 
       set({
         phase: 'error',
         proofInFlight: zk.isProofGenerationInFlight(),
+        provingStatus: 'idle',
         error: userError,
         errorDetails: e instanceof Error ? `${e.name}: ${e.message}` : String(e),
       });
@@ -223,9 +234,9 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
     const identity = await db.getIdentity(id);
     if (!identity) return;
     if (identity.pseudonymId) {
-      set({ identity, phase: 'ready', error: null, errorDetails: null, proofInFlight: false });
+      set({ identity, phase: 'ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
     } else if (identity.sk) {
-      set({ identity, phase: 'keys_ready', error: null, errorDetails: null, proofInFlight: false });
+      set({ identity, phase: 'keys_ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
     }
   },
 
@@ -238,15 +249,16 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
     const identity = await db.importIdentity(json);
     const identities = await db.listIdentities();
     if (identity.pseudonymId) {
-      set({ storedIdentities: identities, identity, phase: 'ready', error: null, errorDetails: null, proofInFlight: false });
+      set({ storedIdentities: identities, identity, phase: 'ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
     } else if (identity.sk) {
-      set({ storedIdentities: identities, identity, phase: 'keys_ready', error: null, errorDetails: null, proofInFlight: false });
+      set({ storedIdentities: identities, identity, phase: 'keys_ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
     } else {
       set({ storedIdentities: identities });
     }
   },
 
   logout: () => {
-    set({ identity: null, phase: 'uninitialized', error: null, errorDetails: null, permissions: null, proofInFlight: false });
+    void zk.cancelMembershipProofGeneration();
+    set({ identity: null, phase: 'uninitialized', error: null, errorDetails: null, permissions: null, proofInFlight: false, provingStatus: 'idle' });
   },
 }));
