@@ -6,7 +6,8 @@
  *   - Web/Docker: "Use this server" (current origin) or "Connect to another server"
  *
  * The choice is persisted (Tauri: disk via IPC, Web: localStorage) so
- * subsequent visits skip this screen. Logout clears the preference.
+ * subsequent visits can be pre-filled with suggestions. Logout clears
+ * the preference.
  */
 
 import { useState, useEffect, useCallback } from 'react';
@@ -150,7 +151,7 @@ export function StartupModeSelector({ onReady }: Props) {
     [onReady],
   );
 
-  // On mount, check for saved preference
+  // On mount, load saved preference only to pre-fill form state.
   useEffect(() => {
     let cancelled = false;
 
@@ -161,18 +162,14 @@ export function StartupModeSelector({ onReady }: Props) {
           const prefs = await getStartupMode();
           if (cancelled) return;
           if (!prefs) {
-            // No saved preference — show the choice screen so the user
-            // explicitly picks host vs. client.
             setPhase('choose');
             return;
           }
-          if (prefs.startup_mode.mode === 'host') {
-            await applyHost(true);
-          } else {
+          if (prefs.startup_mode.mode === 'client' && prefs.startup_mode.server_url) {
             const url = prefs.startup_mode.server_url;
             setRemoteUrl(url);
-            await applyRemote(url, true);
           }
+          setPhase('choose');
         } else {
           // Web/Docker
           const prefs = loadWebPrefs();
@@ -181,14 +178,10 @@ export function StartupModeSelector({ onReady }: Props) {
             setPhase('choose');
             return;
           }
-          if (prefs.mode === 'local') {
-            applyLocal(true);
-          } else if (prefs.server_url) {
+          if (prefs.mode === 'remote' && prefs.server_url) {
             setRemoteUrl(prefs.server_url);
-            await applyRemote(prefs.server_url, true);
-          } else {
-            setPhase('choose');
           }
+          setPhase('choose');
         }
       } catch {
         if (!cancelled) setPhase('choose');
@@ -198,7 +191,7 @@ export function StartupModeSelector({ onReady }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [applyHost, applyRemote, applyLocal, inTauri]);
+  }, [inTauri]);
 
   const handleReset = async () => {
     if (inTauri) {
@@ -320,7 +313,7 @@ export function StartupModeSelector({ onReady }: Props) {
     <div className="startup-mode-selector">
       <h2>Annex</h2>
       <p className="startup-description">
-        Choose how to use Annex.
+        Choose how to use Annex. Remembered values are shown as suggestions.
       </p>
 
       <div className="startup-options">
