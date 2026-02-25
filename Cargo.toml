@@ -56,6 +56,10 @@ tempfile = "3"
 # Date/time
 chrono = "0.4"
 
+# HTTP client — use rustls only; disable default-tls (native-tls) to avoid
+# compiling the schannel/OpenSSL stack alongside rustls.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "charset", "http2", "macos-system-configuration"] }
+
 # Configuration
 toml = "0.8"
 
