@@ -286,6 +286,7 @@ function RoomContent({ onLeave }: { onLeave: () => void }) {
 
 export function VoicePanel() {
   const identity = useIdentityStore((s) => s.identity);
+  const permissions = useIdentityStore((s) => s.permissions);
   const activeChannelId = useChannelsStore((s) => s.activeChannelId);
   const channels = useChannelsStore((s) => s.channels);
 
@@ -295,6 +296,7 @@ export function VoicePanel() {
     connectedChannelId,
     joining,
     callActive,
+    lastJoinError,
     joinCall,
     leaveCall,
     checkCallActive,
@@ -303,6 +305,8 @@ export function VoicePanel() {
   const activeChannel = channels.find((c) => c.channel_id === activeChannelId);
   const isVoiceCapable =
     activeChannel?.channel_type === 'Voice' || activeChannel?.channel_type === 'Hybrid';
+  const isVoiceAllowed = permissions?.capabilities.can_voice ?? true;
+  const canJoinVoice = isVoiceAllowed;
 
   // Poll voice status to determine if a call is active (Create vs Join).
   useEffect(() => {
@@ -319,9 +323,9 @@ export function VoicePanel() {
   const pseudonymId = identity?.pseudonymId ?? null;
 
   const handleJoin = useCallback(async () => {
-    if (!pseudonymId || !activeChannelId) return;
+    if (!pseudonymId || !activeChannelId || !canJoinVoice) return;
     await joinCall(pseudonymId, activeChannelId);
-  }, [pseudonymId, activeChannelId, joinCall]);
+  }, [pseudonymId, activeChannelId, canJoinVoice, joinCall]);
 
   const handleLeave = useCallback(async () => {
     if (!pseudonymId) return;
@@ -361,11 +365,25 @@ export function VoicePanel() {
       ? 'Join Call'
       : 'Create Call';
 
+  const unavailableReason = !isVoiceAllowed
+    ? 'Voice is disabled by server policy for your identity.'
+    : null;
+
   return (
     <div className="voice-panel disconnected">
-      <button onClick={handleJoin} disabled={joining} className="voice-join-btn">
+      <button
+        onClick={handleJoin}
+        disabled={joining || !canJoinVoice}
+        className="voice-join-btn"
+        title={unavailableReason ?? undefined}
+      >
         {buttonText}
       </button>
+      {(lastJoinError || unavailableReason) && (
+        <div className="voice-error" role="alert">
+          {lastJoinError ?? unavailableReason}
+        </div>
+      )}
     </div>
   );
 }

@@ -142,13 +142,10 @@ pub async fn list_channels_handler(
     Extension(IdentityContext(_identity)): Extension<IdentityContext>,
 ) -> Result<Json<Vec<Channel>>, StatusCode> {
     let channels = tokio::task::spawn_blocking(move || {
-        let conn = state
-            .pool
-            .get()
-            .map_err(|e| {
-                tracing::error!(error = %e, "failed to get db connection for list_channels");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
+        let conn = state.pool.get().map_err(|e| {
+            tracing::error!(error = %e, "failed to get db connection for list_channels");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
         list_channels(&conn, state.server_id).map_err(channel_err_to_status)
     })
     .await
@@ -167,13 +164,10 @@ pub async fn get_channel_handler(
     Path(channel_id): Path<String>,
 ) -> Result<Json<Channel>, StatusCode> {
     let channel = tokio::task::spawn_blocking(move || {
-        let conn = state
-            .pool
-            .get()
-            .map_err(|e| {
-                tracing::error!(error = %e, "failed to get db connection for get_channel");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
+        let conn = state.pool.get().map_err(|e| {
+            tracing::error!(error = %e, "failed to get db connection for get_channel");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
         get_channel(&conn, &channel_id).map_err(channel_err_to_status)
     })
     .await
@@ -196,13 +190,10 @@ pub async fn delete_channel_handler(
     }
 
     tokio::task::spawn_blocking(move || {
-        let conn = state
-            .pool
-            .get()
-            .map_err(|e| {
-                tracing::error!(error = %e, "failed to get db connection for delete_channel");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
+        let conn = state.pool.get().map_err(|e| {
+            tracing::error!(error = %e, "failed to get db connection for delete_channel");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
         delete_channel(&conn, &channel_id).map_err(channel_err_to_status)
     })
     .await
@@ -448,9 +439,7 @@ pub async fn join_channel_handler(
                                 cm.send(&p_clone, json).await;
                             }
                             Err(e) => {
-                                tracing::error!(
-                                    "failed to serialize transcription message: {}", e
-                                );
+                                tracing::error!("failed to serialize transcription message: {}", e);
                             }
                         }
                     }
@@ -543,9 +532,24 @@ pub async fn join_voice_channel_handler(
     Extension(IdentityContext(identity)): Extension<IdentityContext>,
     headers: axum::http::HeaderMap,
     Path(channel_id): Path<String>,
-) -> Result<Json<JoinVoiceResponse>, StatusCode> {
+) -> Result<Json<JoinVoiceResponse>, (StatusCode, String)> {
     // 0. ZK proof enforcement (when enabled)
-    verify_zk_membership_header(&state, &headers)?;
+    verify_zk_membership_header(&state, &headers).map_err(|status| {
+        (
+            status,
+            status
+                .canonical_reason()
+                .unwrap_or("request failed")
+                .to_string(),
+        )
+    })?;
+
+    if !state.voice_service.is_enabled() || state.voice_service.get_public_url().is_empty() {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Voice is not configured".to_string(),
+        ));
+    }
 
     // 1. Check if user is a member of the channel
     let is_member = tokio::task::spawn_blocking({
@@ -558,10 +562,24 @@ pub async fn join_voice_channel_handler(
         }
     })
     .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+    .map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to validate channel membership".to_string(),
+        )
+    })?
+    .map_err(|status| {
+        (
+            status,
+            status
+                .canonical_reason()
+                .unwrap_or("request failed")
+                .to_string(),
+        )
+    })?;
 
     if !is_member {
-        return Err(StatusCode::FORBIDDEN);
+        return Err((StatusCode::FORBIDDEN, "Not a channel member".to_string()));
     }
 
     // 2. Fetch channel to verify type
@@ -574,10 +592,27 @@ pub async fn join_voice_channel_handler(
         }
     })
     .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+    .map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to load channel".to_string(),
+        )
+    })?
+    .map_err(|status| {
+        (
+            status,
+            status
+                .canonical_reason()
+                .unwrap_or("request failed")
+                .to_string(),
+        )
+    })?;
 
     if channel.channel_type != ChannelType::Voice && channel.channel_type != ChannelType::Hybrid {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Channel does not support voice".to_string(),
+        ));
     }
 
     // 3. Generate Token
@@ -587,7 +622,10 @@ pub async fn join_voice_channel_handler(
         .generate_join_token(&channel_id, &identity.pseudonym_id, &identity.pseudonym_id)
         .map_err(|e| {
             tracing::error!("failed to generate LiveKit token: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to generate voice token".to_string(),
+            )
         })?;
 
     Ok(Json(JoinVoiceResponse {
