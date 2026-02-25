@@ -27,8 +27,11 @@ fn resolve_data_dir() -> PathBuf {
 }
 
 /// Writes a default `config.toml` into the data directory if one does not
-/// already exist. Returns the path to the config file.
-fn ensure_config(data_dir: &std::path::Path) -> PathBuf {
+/// already exist, and ensures any Windows backslash paths are corrected.
+///
+/// Returns the path to the config file on success. Returns an error if the
+/// config file cannot be created or a backslash migration cannot be persisted.
+fn ensure_config(data_dir: &std::path::Path) -> Result<PathBuf, String> {
     let config_path = data_dir.join("config.toml");
     if !config_path.exists() {
         let db_path = data_dir.join("annex.db");
@@ -60,22 +63,55 @@ allowed_origins = ["tauri://localhost", "https://tauri.localhost"]
 "#,
             db_path = db_path_safe,
         );
-        let _ = std::fs::write(&config_path, contents);
+        std::fs::write(&config_path, contents).map_err(|e| {
+            format!(
+                "failed to write default config to {}: {e}",
+                config_path.display()
+            )
+        })?;
 
-        // Pre-create the upload directory.
+        // Pre-create the upload directory (non-fatal if this fails).
         let _ = std::fs::create_dir_all(&upload_dir);
-    } else {
-        // Migrate existing config files that were generated with Windows
-        // backslash paths. TOML treats \U in double-quoted strings as a
-        // unicode escape, so paths like C:\Users\...\annex.db fail to parse.
-        if let Ok(contents) = std::fs::read_to_string(&config_path) {
-            if contents.contains(":\\") {
-                let fixed = contents.replace('\\', "/");
-                let _ = std::fs::write(&config_path, fixed);
-            }
-        }
     }
-    config_path
+
+    // Always fix backslash paths regardless of whether the config was just
+    // created or already existed. This handles configs from older versions
+    // that wrote Windows-style paths, and acts as a safety net in case the
+    // forward-slash replacement above is ever bypassed.
+    fix_backslash_paths(&config_path)?;
+
+    Ok(config_path)
+}
+
+/// Replaces Windows backslashes with forward slashes in a config file.
+///
+/// TOML double-quoted strings treat `\U` as an 8-digit unicode escape, so a
+/// path like `C:\Users\monty\AppData\...\annex.db` fails to parse. This
+/// function detects the drive-letter pattern `:\` and replaces all backslashes
+/// with forward slashes, which Windows APIs accept.
+fn fix_backslash_paths(config_path: &std::path::Path) -> Result<(), String> {
+    let contents = match std::fs::read_to_string(config_path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => {
+            return Err(format!(
+                "failed to read config at {}: {e}",
+                config_path.display()
+            ))
+        }
+    };
+
+    if contents.contains(":\\") {
+        let fixed = contents.replace('\\', "/");
+        std::fs::write(config_path, fixed).map_err(|e| {
+            format!(
+                "failed to fix backslash paths in config {}: {e}",
+                config_path.display()
+            )
+        })?;
+    }
+
+    Ok(())
 }
 
 // ── Startup mode preference types ──
@@ -472,7 +508,7 @@ fn main() {
     let data_dir = resolve_data_dir();
     std::fs::create_dir_all(&data_dir).expect("failed to create Annex data directory");
 
-    let config_path = ensure_config(&data_dir);
+    let config_path = ensure_config(&data_dir).expect("failed to initialize configuration");
 
     // Resolve resource paths. When running from a Tauri bundle, bundled
     // resources live next to the executable. During development they are

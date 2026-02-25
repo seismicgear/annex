@@ -400,7 +400,29 @@ fn parse_env_bool(name: &'static str) -> Result<Option<bool>, ConfigError> {
 pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
     let mut config = match path {
         Some(p) => match std::fs::read_to_string(p) {
-            Ok(contents) => toml::from_str(&contents)?,
+            Ok(contents) => {
+                // Fix Windows backslash paths before parsing. TOML
+                // double-quoted strings treat `\U` as an 8-digit unicode
+                // escape, so paths like `C:\Users\...\annex.db` cause parse
+                // errors. Replace backslashes with forward slashes when the
+                // content contains a drive-letter pattern (e.g. `C:\`).
+                let sanitized = if contents.contains(":\\") {
+                    let fixed = contents.replace('\\', "/");
+                    // Best-effort: persist the fix so the on-disk file is
+                    // also valid for manual inspection and future reads.
+                    if let Err(e) = std::fs::write(p, &fixed) {
+                        tracing::warn!(
+                            path = p,
+                            error = %e,
+                            "could not persist backslash path fix to config file"
+                        );
+                    }
+                    fixed
+                } else {
+                    contents
+                };
+                toml::from_str(&sanitized)?
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 tracing::info!(path = p, "config file not found, using defaults");
                 Config::default()
@@ -769,5 +791,117 @@ retention_check_interval_seconds = 0
 
         fs::remove_file(path).expect("failed to remove temp config");
         clear_env();
+    }
+
+    #[test]
+    fn windows_backslash_paths_are_fixed_during_load() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+
+        // Simulate a config file generated on Windows with backslash paths.
+        // TOML treats \U as a unicode escape, so this would fail without the
+        // backslash fix. We write the raw bytes to avoid Rust string escaping.
+        let unique_suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        let file_name = format!("annex-config-bslash-{unique_suffix}.toml");
+        let path = std::env::temp_dir().join(file_name);
+
+        // Write raw bytes: the file on disk literally contains C:\Users\...
+        let raw_content = b"[server]\nhost = \"127.0.0.1\"\nport = 3000\n\n[database]\npath = \"C:\\Users\\monty\\AppData\\Roaming\\Annex\\annex.db\"\nbusy_timeout_ms = 5000\npool_max_size = 8\n\n[logging]\nlevel = \"info\"\njson = false\n";
+        fs::write(&path, raw_content).expect("failed to write temp config with backslashes");
+
+        // Verify the raw file actually contains backslashes
+        let before = fs::read_to_string(&path).expect("should read");
+        assert!(
+            before.contains('\\'),
+            "test setup: file should contain backslashes"
+        );
+
+        let path_str = path.to_string_lossy().into_owned();
+        let cfg = load_config(Some(&path_str))
+            .expect("load should succeed despite backslash paths");
+        assert_eq!(
+            cfg.database.path,
+            "C:/Users/monty/AppData/Roaming/Annex/annex.db"
+        );
+
+        // Verify the file on disk was also fixed
+        let after = fs::read_to_string(&path).expect("should read fixed file");
+        assert!(
+            !after.contains('\\'),
+            "on-disk config should have forward slashes after load"
+        );
+        assert!(after.contains("C:/Users/monty/AppData/Roaming/Annex/annex.db"));
+
+        fs::remove_file(path).expect("failed to remove temp config");
+    }
+
+    #[test]
+    fn forward_slash_paths_are_not_modified() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+
+        let original = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+
+[database]
+path = "C:/Users/monty/AppData/Roaming/Annex/annex.db"
+busy_timeout_ms = 5000
+pool_max_size = 8
+
+[logging]
+level = "info"
+json = false
+"#;
+        let path = write_temp_config(original);
+
+        let cfg = load_config(Some(path.as_str())).expect("load should succeed");
+        assert_eq!(
+            cfg.database.path,
+            "C:/Users/monty/AppData/Roaming/Annex/annex.db"
+        );
+
+        // File should be unchanged (no unnecessary writes)
+        let after = fs::read_to_string(&path).expect("should read file");
+        assert_eq!(after, original);
+
+        fs::remove_file(path).expect("failed to remove temp config");
+    }
+
+    #[test]
+    fn multiple_backslash_paths_are_all_fixed() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+
+        let unique_suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        let file_name = format!("annex-config-multi-{unique_suffix}.toml");
+        let path = std::env::temp_dir().join(file_name);
+
+        // Config with multiple Windows paths
+        let raw = b"[database]\npath = \"D:\\Servers\\Annex\\data\\annex.db\"\nbusy_timeout_ms = 5000\npool_max_size = 8\n\n[voice]\ntts_voices_dir = \"D:\\Servers\\Annex\\voices\"\ntts_binary_path = \"D:\\Servers\\Annex\\piper\\piper.exe\"\nstt_model_path = \"D:\\Servers\\Annex\\models\\ggml-base.en.bin\"\nstt_binary_path = \"D:\\Servers\\Annex\\whisper\\whisper.exe\"\n\n[logging]\nlevel = \"info\"\njson = false\n";
+        fs::write(&path, raw).expect("failed to write");
+
+        let path_str = path.to_string_lossy().into_owned();
+        let cfg = load_config(Some(&path_str))
+            .expect("load should succeed with multiple backslash paths");
+
+        assert_eq!(cfg.database.path, "D:/Servers/Annex/data/annex.db");
+        assert_eq!(cfg.voice.tts_voices_dir, "D:/Servers/Annex/voices");
+        assert_eq!(
+            cfg.voice.tts_binary_path,
+            "D:/Servers/Annex/piper/piper.exe"
+        );
+
+        let after = fs::read_to_string(&path).expect("should read");
+        assert!(!after.contains('\\'));
+
+        fs::remove_file(path).expect("failed to remove temp config");
     }
 }
