@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use tauri::Manager;
 
 /// Resolve the application data directory.
 ///
@@ -237,6 +238,28 @@ async fn start_embedded_server(
             tracing::error!("server error: {e}");
         }
     });
+
+    // Poll the health endpoint until the server is accepting connections.
+    // Without this, the frontend can fire API requests before axum::serve()
+    // has polled its first accept(), causing "Failed to fetch" on startup.
+    let health_url = format!("{url}/health");
+    let client = reqwest::Client::new();
+    let mut ready = false;
+    for attempt in 0u32..50 {
+        match client.get(&health_url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                ready = true;
+                tracing::debug!(attempt, "embedded server health check passed");
+                break;
+            }
+            _ => {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+    }
+    if !ready {
+        return Err("embedded server failed to become ready within 5 seconds".to_string());
+    }
 
     Ok(url)
 }
@@ -504,6 +527,57 @@ fn get_tunnel_url(state: tauri::State<'_, AppManagedState>) -> Option<String> {
         .and_then(|guard| guard.as_ref().map(|t| t.url.clone()))
 }
 
+/// Set the window border color to black on Windows 11+.
+///
+/// Uses `DwmSetWindowAttribute` with `DWMWA_BORDER_COLOR` (attribute 34).
+/// This API is available on Windows 11 build 22000 and later.
+/// On older Windows versions the call returns an error which we ignore.
+#[cfg(target_os = "windows")]
+fn set_window_border_black(window: &tauri::WebviewWindow) {
+    #[link(name = "dwmapi")]
+    extern "system" {
+        fn DwmSetWindowAttribute(
+            hwnd: isize,
+            dw_attribute: u32,
+            pv_attribute: *const std::ffi::c_void,
+            cb_attribute: u32,
+        ) -> i32;
+    }
+
+    use raw_window_handle::HasWindowHandle;
+    let handle = match window.window_handle() {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("failed to get window handle for border color: {e}");
+            return;
+        }
+    };
+    let hwnd = match handle.as_raw() {
+        raw_window_handle::RawWindowHandle::Win32(h) => h.hwnd.get() as isize,
+        _ => return,
+    };
+
+    const DWMWA_BORDER_COLOR: u32 = 34;
+    // COLORREF format is 0x00BBGGRR — black = 0x00000000.
+    let black: u32 = 0x00000000;
+
+    // SAFETY: hwnd is a valid window handle obtained from Tauri, and we
+    // pass a correctly-sized COLORREF value. The call is harmless if the
+    // attribute is unsupported (Windows 10).
+    let hr = unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_BORDER_COLOR,
+            std::ptr::addr_of!(black).cast(),
+            std::mem::size_of::<u32>() as u32,
+        )
+    };
+    if hr != 0 {
+        // Expected on Windows 10 where DWMWA_BORDER_COLOR is unsupported.
+        eprintln!("DwmSetWindowAttribute(DWMWA_BORDER_COLOR) returned 0x{hr:08X}");
+    }
+}
+
 fn main() {
     let data_dir = resolve_data_dir();
     std::fs::create_dir_all(&data_dir).expect("failed to create Annex data directory");
@@ -609,6 +683,15 @@ fn main() {
             config_path,
             server: Mutex::new(None),
             tunnel: Mutex::new(None),
+        })
+        .setup(|app| {
+            #[cfg(target_os = "windows")]
+            {
+                if let Some(window) = app.get_webview_window("main") {
+                    set_window_border_black(&window);
+                }
+            }
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             get_startup_mode,

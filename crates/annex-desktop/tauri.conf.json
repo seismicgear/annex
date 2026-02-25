@@ -18,7 +18,8 @@
         "minWidth": 800,
         "minHeight": 600,
         "resizable": true,
-        "url": "index.html"
+        "url": "index.html",
+        "backgroundColor": "#000000"
       }
     ],
     "security": {

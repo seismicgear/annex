@@ -122,26 +122,42 @@ export default function App() {
   // ── Auto-register identity with server after server is selected ──
   // Only fires when phase is exactly 'keys_ready' (keys exist, not yet
   // registered) and the user has finished picking a server.
+  //
+  // Retries getServerSummary() with exponential backoff because the
+  // embedded server may still be initialising when serverReady flips to
+  // true (the Rust side polls /health, but a retry here is defence-in-depth
+  // against transient network errors).
   useEffect(() => {
     if (!serverReady || phase !== 'keys_ready' || !identity?.sk) return;
     let cancelled = false;
+
+    const MAX_RETRIES = 5;
+    const BASE_DELAY_MS = 500;
+
     (async () => {
-      try {
-        const summary = await getServerSummary();
-        if (!cancelled) {
-          await registerWithServer(summary.slug);
+      let lastError: unknown;
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        if (cancelled) return;
+        try {
+          const summary = await getServerSummary();
+          if (!cancelled) {
+            await registerWithServer(summary.slug);
+          }
+          return;
+        } catch (err) {
+          lastError = err;
+          if (attempt < MAX_RETRIES) {
+            await new Promise((r) => setTimeout(r, BASE_DELAY_MS * 2 ** attempt));
+          }
         }
-      } catch (err) {
-        // registerWithServer surfaces its own errors via the store.
-        // But if getServerSummary() itself fails (server unreachable),
-        // we need to surface that too — otherwise the user gets stuck
-        // on "Preparing to register..." with no error and no retry.
-        if (!cancelled) {
-          useIdentityStore.setState({
-            phase: 'error',
-            error: err instanceof Error ? err.message : 'Failed to reach server',
-          });
-        }
+      }
+      // All retries exhausted — surface the error so Gate 5 shows
+      // the message and the Retry button.
+      if (!cancelled) {
+        useIdentityStore.setState({
+          phase: 'error',
+          error: lastError instanceof Error ? lastError.message : 'Failed to reach server',
+        });
       }
     })();
     return () => { cancelled = true; };
