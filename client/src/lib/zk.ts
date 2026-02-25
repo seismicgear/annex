@@ -7,7 +7,7 @@
  * - Witness generation via WASM circuit
  */
 
-import * as snarkjs from 'snarkjs';
+import type * as snarkjs from 'snarkjs';
 
 const MEMBERSHIP_WASM_PATH = '/zk/membership.wasm';
 const MEMBERSHIP_ZKEY_PATH = '/zk/membership_final.zkey';
@@ -69,6 +69,15 @@ export class ZkProofInFlightError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'ZkProofInFlightError';
+  }
+}
+
+export class ZkProofCancelledError extends Error {
+  readonly kind = 'cancelled';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'ZkProofCancelledError';
   }
 }
 
@@ -145,79 +154,153 @@ export interface MembershipProofOutput {
   publicSignals: string[];
 }
 
-let activeProofPromise: Promise<MembershipProofOutput> | null = null;
+export type ProofGenerationStage =
+  | 'loading_assets'
+  | 'computing_witness'
+  | 'generating_proof';
+
+interface GenerateMembershipProofOptions {
+  onStage?: (stage: ProofGenerationStage) => void;
+}
+
+type ActiveProofJob = {
+  promise: Promise<MembershipProofOutput>;
+  cancel: (reason?: string) => void;
+};
+
+let activeProofJob: ActiveProofJob | null = null;
 
 export function isProofGenerationInFlight(): boolean {
-  return activeProofPromise !== null;
+  return activeProofJob !== null;
 }
 
-async function assertProofAssetAvailable(path: string): Promise<void> {
-  let response: Response;
+function mapWorkerError(name: string | undefined, message: string): Error {
+  if (name === 'ZkProofAssetsError') {
+    return new ZkProofAssetsError(message);
+  }
+
+  const err = new Error(message);
+  err.name = name ?? 'Error';
+  return err;
+}
+
+export async function cancelMembershipProofGeneration(reason = 'Proof generation cancelled.'): Promise<void> {
+  if (!activeProofJob) return;
+  activeProofJob.cancel(reason);
   try {
-    response = await fetch(path, { method: 'GET', cache: 'no-store' });
+    await activeProofJob.promise;
   } catch {
-    throw new ZkProofAssetsError(
-      `Required proof asset could not be fetched: ${path}.`,
-    );
-  }
-
-  if (!response.ok) {
-    throw new ZkProofAssetsError(
-      `Required proof asset is unavailable (${response.status}): ${path}.`,
-    );
+    // Expected when cancellation rejects the active promise.
   }
 }
 
-async function proveWithTimeout(
+function runProofInWorker(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   circuitInput: any,
+  options?: GenerateMembershipProofOptions,
 ): Promise<MembershipProofOutput> {
-  if (activeProofPromise) {
+  if (activeProofJob) {
     throw new ZkProofInFlightError('proof still running.');
   }
 
   const timeoutMs = getProofTimeoutMs();
+  const worker = new Worker(new URL('../workers/proof.worker.ts', import.meta.url), { type: 'module' });
+  const jobId = crypto.randomUUID();
+
+  let finished = false;
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-  const fullProvePromise = snarkjs.groth16.fullProve(
-    circuitInput,
-    MEMBERSHIP_WASM_PATH,
-    MEMBERSHIP_ZKEY_PATH,
-  );
+  let rejectPromise: ((reason?: unknown) => void) | null = null;
 
-  activeProofPromise = fullProvePromise.finally(() => {
-    activeProofPromise = null;
-  });
+  const cleanup = () => {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+    worker.onmessage = null;
+    worker.onerror = null;
+    worker.terminate();
+    activeProofJob = null;
+  };
 
-  try {
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      timeoutHandle = setTimeout(() => {
-        reject(
-          new ZkProofTimeoutError(
-            `Proof generation timed out after ${Math.round(timeoutMs / 1000)}s (configured timeout: ${timeoutMs}ms).`,
+  const proofPromise = new Promise<MembershipProofOutput>((resolve, reject) => {
+    rejectPromise = reject;
+
+    const fail = (error: Error) => {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      reject(error);
+    };
+
+    const succeed = (result: MembershipProofOutput) => {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      resolve(result);
+    };
+
+    timeoutHandle = setTimeout(() => {
+      fail(new ZkProofTimeoutError(
+        `Proof generation timed out after ${Math.round(timeoutMs / 1000)}s (configured timeout: ${timeoutMs}ms).`,
+      ));
+    }, timeoutMs);
+
+    worker.onmessage = (event: MessageEvent) => {
+      const message = event.data as
+        | { kind: 'status'; jobId: string; stage: ProofGenerationStage }
+        | { kind: 'result'; jobId: string; proof: snarkjs.Groth16Proof; publicSignals: string[] }
+        | { kind: 'error'; jobId: string; error: { name?: string; message?: string } };
+
+      if (!message || message.jobId !== jobId) return;
+
+      if (message.kind === 'status') {
+        options?.onStage?.(message.stage);
+        return;
+      }
+
+      if (message.kind === 'error') {
+        fail(
+          mapWorkerError(
+            message.error?.name,
+            message.error?.message ?? 'Unknown proof worker failure',
           ),
         );
-      }, timeoutMs);
-    });
+        return;
+      }
 
-    const { proof, publicSignals } = await Promise.race([activeProofPromise, timeoutPromise]);
-    return { proof, publicSignals };
-  } finally {
-    if (timeoutHandle) clearTimeout(timeoutHandle);
-  }
+      succeed({ proof: message.proof, publicSignals: message.publicSignals });
+    };
+
+    worker.onerror = () => {
+      fail(new Error('Proof worker crashed.'));
+    };
+
+    worker.postMessage({
+      kind: 'start',
+      jobId,
+      input: circuitInput,
+      wasmPath: MEMBERSHIP_WASM_PATH,
+      zkeyPath: MEMBERSHIP_ZKEY_PATH,
+    });
+  });
+
+  activeProofJob = {
+    promise: proofPromise,
+    cancel: (reason?: string) => {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      rejectPromise?.(new ZkProofCancelledError(reason ?? 'Proof generation cancelled.'));
+    },
+  };
+
+  return proofPromise;
 }
 
 /**
  * Generate a Groth16 membership proof.
- *
- * Requires the membership circuit WASM and zkey files to be available
- * at /zk/membership.wasm and /zk/membership_final.zkey respectively.
  */
 export async function generateMembershipProof(
   input: MembershipProofInput,
+  options?: GenerateMembershipProofOptions,
 ): Promise<MembershipProofOutput> {
-  await assertProofAssetAvailable(MEMBERSHIP_WASM_PATH);
-  await assertProofAssetAvailable(MEMBERSHIP_ZKEY_PATH);
-
   const circuitInput = {
     sk: input.sk.toString(),
     roleCode: input.roleCode.toString(),
@@ -227,5 +310,5 @@ export async function generateMembershipProof(
     pathIndexBits: input.pathIndexBits.map(String),
   };
 
-  return proveWithTimeout(circuitInput);
+  return runProofInWorker(circuitInput, options);
 }
