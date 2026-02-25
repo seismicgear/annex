@@ -64,6 +64,16 @@ allowed_origins = ["tauri://localhost", "https://tauri.localhost"]
 
         // Pre-create the upload directory.
         let _ = std::fs::create_dir_all(&upload_dir);
+    } else {
+        // Migrate existing config files that were generated with Windows
+        // backslash paths. TOML treats \U in double-quoted strings as a
+        // unicode escape, so paths like C:\Users\...\annex.db fail to parse.
+        if let Ok(contents) = std::fs::read_to_string(&config_path) {
+            if contents.contains(":\\") {
+                let fixed = contents.replace('\\', "/");
+                let _ = std::fs::write(&config_path, fixed);
+            }
+        }
     }
     config_path
 }
