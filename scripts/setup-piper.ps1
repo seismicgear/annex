@@ -16,6 +16,14 @@
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+# PowerShell 5.1 doesn't define $IsWindows / $IsMacOS automatic variables.
+# If they're absent we're running Windows PowerShell 5.1, so set the values accordingly.
+if (-not (Test-Path variable:IsWindows)) { $IsWindows = $true }
+if (-not (Test-Path variable:IsMacOS))   { $IsMacOS   = $false }
+
+# PowerShell 5.1 defaults to TLS 1.0; GitHub and HuggingFace require TLS 1.2.
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
 $PiperVersion = "2023.11.14-2"
 $VoiceModel = "en_US-lessac-medium"
 $VoiceBaseUrl = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium"
@@ -60,7 +68,7 @@ function Setup-PiperBinary {
     }
 
     Write-Step "Downloading Piper binary..."
-    New-Item -ItemType Directory -Path $PiperDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $AssetsDir -Force | Out-Null
 
     $archive = Get-PiperArchive
     $url = "https://github.com/rhasspy/piper/releases/download/$PiperVersion/$archive"
@@ -74,9 +82,12 @@ function Setup-PiperBinary {
     }
 
     if ($archive -like "*.zip") {
-        Expand-Archive -Path $tmpFile -DestinationPath $PiperDir -Force
+        # The zip contains a top-level piper/ directory, so extract to $AssetsDir
+        # which places the contents at $AssetsDir/piper/ = $PiperDir.
+        Expand-Archive -Path $tmpFile -DestinationPath $AssetsDir -Force
     } else {
-        # tar.gz — use tar
+        # tar.gz — strip the top-level piper/ directory
+        New-Item -ItemType Directory -Path $PiperDir -Force | Out-Null
         tar -xzf $tmpFile -C $PiperDir --strip-components=1
     }
 
