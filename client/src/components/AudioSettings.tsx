@@ -5,13 +5,43 @@
  * Settings are persisted to localStorage via the voice store.
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { useVoiceStore } from '@/stores/voice';
 
 interface DeviceInfo {
   deviceId: string;
   label: string;
   kind: MediaDeviceKind;
+}
+
+interface DeviceResult {
+  devices: DeviceInfo[];
+  permissionGranted: boolean;
+}
+
+/** Enumerate media devices. Pure async — no React state calls. */
+async function enumerateMediaDevices(): Promise<DeviceResult> {
+  let permissionGranted = false;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true }).catch(
+      () => navigator.mediaDevices.getUserMedia({ audio: true }),
+    );
+    permissionGranted = true;
+    stream.getTracks().forEach((t) => t.stop());
+  } catch {
+    // Permission denied — continue with limited labels.
+  }
+  const list = await navigator.mediaDevices.enumerateDevices();
+  return {
+    permissionGranted,
+    devices: list
+      .filter((d) => d.kind === 'audioinput' || d.kind === 'audiooutput' || d.kind === 'videoinput')
+      .map((d) => ({
+        deviceId: d.deviceId,
+        label: d.label || `${d.kind} (${d.deviceId.slice(0, 8)})`,
+        kind: d.kind,
+      })),
+  };
 }
 
 export function AudioSettings({ onClose }: { onClose: () => void }) {
@@ -29,43 +59,15 @@ export function AudioSettings({ onClose }: { onClose: () => void }) {
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [permissionGranted, setPermissionGranted] = useState(false);
 
-  const loadDevices = useCallback(async () => {
-    try {
-      // Request permission so labels are available
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true }).catch(
-        () => navigator.mediaDevices.getUserMedia({ audio: true }),
-      );
-      setPermissionGranted(true);
-      stream.getTracks().forEach((t) => t.stop());
-
-      const list = await navigator.mediaDevices.enumerateDevices();
-      setDevices(
-        list
-          .filter((d) => d.kind === 'audioinput' || d.kind === 'audiooutput' || d.kind === 'videoinput')
-          .map((d) => ({
-            deviceId: d.deviceId,
-            label: d.label || `${d.kind} (${d.deviceId.slice(0, 8)})`,
-            kind: d.kind,
-          })),
-      );
-    } catch {
-      // Permission denied — show what we can
-      const list = await navigator.mediaDevices.enumerateDevices();
-      setDevices(
-        list
-          .filter((d) => d.kind === 'audioinput' || d.kind === 'audiooutput' || d.kind === 'videoinput')
-          .map((d) => ({
-            deviceId: d.deviceId,
-            label: d.label || `${d.kind} (${d.deviceId.slice(0, 8)})`,
-            kind: d.kind,
-          })),
-      );
-    }
-  }, []);
-
   useEffect(() => {
-    loadDevices();
-  }, [loadDevices]);
+    let cancelled = false;
+    enumerateMediaDevices().then((result) => {
+      if (cancelled) return;
+      setPermissionGranted(result.permissionGranted);
+      setDevices(result.devices);
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   const audioInputs = devices.filter((d) => d.kind === 'audioinput');
   const audioOutputs = devices.filter((d) => d.kind === 'audiooutput');

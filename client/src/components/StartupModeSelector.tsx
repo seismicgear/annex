@@ -12,6 +12,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { isTauri } from '@/lib/tauri';
 import { setApiBaseUrl } from '@/lib/api';
+import { clearWebStartupMode } from '@/lib/startup-prefs';
 
 const STORAGE_KEY = 'annex:startup-mode';
 
@@ -51,15 +52,6 @@ function saveWebPrefs(prefs: WebPrefs): void {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs));
   } catch {
     // Storage full or blocked — non-fatal.
-  }
-}
-
-/** Clear the saved startup preference (called on logout). */
-export function clearWebStartupMode(): void {
-  try {
-    localStorage.removeItem(STORAGE_KEY);
-  } catch {
-    // non-fatal
   }
 }
 
