@@ -33,7 +33,8 @@ import { ServerHub } from '@/components/ServerHub';
 import { StartupModeSelector, clearWebStartupMode } from '@/components/StartupModeSelector';
 import { parseInviteFromUrl, clearInviteFromUrl } from '@/lib/invite';
 import { getPersonasForIdentity } from '@/lib/personas';
-import { getApiBaseUrl, setPublicUrl } from '@/lib/api';
+import { getApiBaseUrl, setApiBaseUrl, setPublicUrl } from '@/lib/api';
+import { isTauri } from '@/lib/tauri';
 import type { InvitePayload } from '@/types';
 import './App.css';
 
@@ -45,6 +46,7 @@ export default function App() {
   const { servers, loadServers, saveCurrentServer, fetchServerImage } = useServersStore();
   const activeServer = useServersStore((s) => s.getActiveServer());
   const serverImageUrl = useServersStore((s) => s.serverImageUrl);
+  const inTauri = isTauri();
   const [serverReady, setServerReady] = useState(false);
   const [tunnelUrl, setTunnelUrl] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<AppView>('chat');
@@ -57,11 +59,42 @@ export default function App() {
   const serverSaved = useRef(false);
   const prevPhaseRef = useRef(phase);
 
+  // Tauri: tracks the auto-started embedded server URL.
+  const [embeddedServerUrl, setEmbeddedServerUrl] = useState<string | null>(null);
+  const [embeddedServerError, setEmbeddedServerError] = useState<string | null>(null);
+  const [serverRetry, setServerRetry] = useState(0);
+
   // Load identities and saved servers on mount
   useEffect(() => {
     loadIdentities();
     loadServers();
   }, [loadIdentities, loadServers]);
+
+  // Tauri: auto-start the embedded server immediately so the identity
+  // creation screen (which needs a running server for registration and
+  // proof verification) can be shown first, before the host/connect choice.
+  useEffect(() => {
+    if (!inTauri) return;
+    let cancelled = false;
+    setEmbeddedServerError(null);
+    (async () => {
+      try {
+        const { startEmbeddedServer } = await import('@/lib/tauri');
+        const url = await startEmbeddedServer();
+        if (!cancelled) {
+          setApiBaseUrl(url);
+          setEmbeddedServerUrl(url);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setEmbeddedServerError(
+            err instanceof Error ? err.message : String(err),
+          );
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [inTauri, serverRetry]);
 
   // When the user logs out, return to the mode selector.
   // We track the previous phase so we only reset when phase *transitions*
@@ -186,8 +219,8 @@ export default function App() {
     return () => document.removeEventListener('mousedown', handler);
   }, [adminMenuOpen]);
 
-  // Show startup mode selector when running inside Tauri
-  if (!serverReady) {
+  // ── Web / Docker: server selection first (unchanged) ──
+  if (!inTauri && !serverReady) {
     return (
       <div className="app">
         <main className="app-main setup">
@@ -197,7 +230,38 @@ export default function App() {
     );
   }
 
-  // Show identity setup if not ready
+  // ── Tauri: loading while embedded server auto-starts ──
+  if (inTauri && !embeddedServerUrl && !embeddedServerError) {
+    return (
+      <div className="app">
+        <main className="app-main setup">
+          <div className="startup-mode-selector">
+            <h2>Annex</h2>
+            <div className="startup-loading">Starting server...</div>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  // ── Tauri: embedded server failed to start ──
+  if (inTauri && embeddedServerError) {
+    return (
+      <div className="app">
+        <main className="app-main setup">
+          <div className="startup-mode-selector">
+            <h2>Annex</h2>
+            <div className="error-message">{embeddedServerError}</div>
+            <button className="primary-btn" onClick={() => setServerRetry((n) => n + 1)}>
+              Retry
+            </button>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  // ── Identity setup (both Tauri and Web) ──
   if (phase !== 'ready' || !identity?.pseudonymId) {
     return (
       <div className="app">
@@ -211,6 +275,20 @@ export default function App() {
         </header>
         <main className="app-main setup">
           <IdentitySetup inviteServerSlug={pendingInvite?.serverSlug} />
+        </main>
+      </div>
+    );
+  }
+
+  // ── Tauri: mode selection (host / connect) after identity is ready ──
+  if (inTauri && !serverReady) {
+    return (
+      <div className="app">
+        <main className="app-main setup">
+          <StartupModeSelector
+            embeddedServerRunning
+            onReady={(url) => { setTunnelUrl(url ?? null); setServerReady(true); }}
+          />
         </main>
       </div>
     );

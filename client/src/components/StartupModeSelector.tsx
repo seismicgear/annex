@@ -22,6 +22,8 @@ interface WebPrefs {
 
 interface Props {
   onReady: (tunnelUrl?: string) => void;
+  /** When true, the embedded server is already running (Tauri post-identity flow). */
+  embeddedServerRunning?: boolean;
 }
 
 type Phase =
@@ -61,7 +63,7 @@ export function clearWebStartupMode(): void {
   }
 }
 
-export function StartupModeSelector({ onReady }: Props) {
+export function StartupModeSelector({ onReady, embeddedServerRunning }: Props) {
   const [phase, setPhase] = useState<Phase>('loading');
   const [remoteUrl, setRemoteUrl] = useState('');
   const [tunnelUrl, setTunnelUrl] = useState('');
@@ -171,10 +173,16 @@ export function StartupModeSelector({ onReady }: Props) {
           const prefs = await getStartupMode();
           if (cancelled) return;
           if (!prefs) {
-            // No saved preference — desktop users expect the app to
-            // just work on first launch. Auto-start the embedded server
-            // and proceed directly to the identity/ZK setup screen.
-            await applyHost(false);
+            if (embeddedServerRunning) {
+              // Server already running (auto-started in App.tsx).
+              // Show the host/connect choice so the user decides how
+              // to expose or connect their instance.
+              setPhase('choose');
+            } else {
+              // Fallback: auto-start the embedded server and proceed
+              // directly to the identity/ZK setup screen.
+              await applyHost(false);
+            }
             return;
           }
           if (prefs.startup_mode.mode === 'host') {
@@ -209,7 +217,7 @@ export function StartupModeSelector({ onReady }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [applyHost, applyRemote, applyLocal, inTauri]);
+  }, [applyHost, applyRemote, applyLocal, inTauri, embeddedServerRunning]);
 
   const handleReset = async () => {
     if (inTauri) {
