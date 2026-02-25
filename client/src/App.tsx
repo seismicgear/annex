@@ -31,7 +31,7 @@ import { clearWebStartupMode } from '@/lib/startup-prefs';
 import { parseInviteFromUrl, clearInviteFromUrl } from '@/lib/invite';
 import { getPersonasForIdentity } from '@/lib/personas';
 import { getApiBaseUrl, getServerSummary, setApiBaseUrl, setPublicUrl } from '@/lib/api';
-import { isTauri } from '@/lib/tauri';
+import { isTauri, getStartupMode as tauriGetStartupMode } from '@/lib/tauri';
 import type { InvitePayload } from '@/types';
 import './App.css';
 
@@ -74,10 +74,25 @@ export default function App() {
   const [serverRetry, setServerRetry] = useState(0);
 
   // ── Load identities + servers on mount (all modes) ──
+  // In Tauri mode, after loading identities we also check whether startup
+  // preferences (startup_prefs.json) exist.  If they don't, the user has
+  // never completed the full setup flow — reset identity selection so
+  // IdentitySetup renders first, even if IndexedDB has a valid identity
+  // from a previous install.  Returning users with saved prefs skip this.
   useEffect(() => {
-    loadIdentities().then(() => setIdentityChecked(true));
+    loadIdentities()
+      .then(() => inTauri ? tauriGetStartupMode().catch(() => null) : undefined)
+      .then((startupPrefs) => {
+        if (inTauri && startupPrefs === null) {
+          const { phase: currentPhase } = useIdentityStore.getState();
+          if (currentPhase === 'ready') {
+            useIdentityStore.getState().logout();
+          }
+        }
+        setIdentityChecked(true);
+      });
     loadServers();
-  }, [loadIdentities, loadServers]);
+  }, [loadIdentities, loadServers, inTauri]);
 
   // ── Tauri: start embedded server in background ──
   // Runs in parallel with identity loading.  The server starts while the
