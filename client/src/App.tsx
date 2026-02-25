@@ -1,18 +1,14 @@
 /**
  * Root application component.
  *
- * Orchestrates the identity flow, view navigation, and layout.
- * Shows IdentitySetup when no identity is active, otherwise shows
- * a tabbed layout with Chat, Federation, and Events views.
+ * Orchestrates the two-screen startup flow:
+ *   Screen 1  – Identity creation (offline, zero network requests)
+ *   Screen 2  – Server / startup-mode selection (network OK)
  *
- * The ServerHub sidebar renders the user's local database of established
- * Merkle tree insertions — click-to-connect with immediate UI transitions
- * and async crypto in the background. Persona isolation dynamically
- * shifts the color palette based on the active server context.
+ * Hard gate: Screen 2 never renders until local identity keys exist.
  *
- * Admin features are accessible via a gear-icon dropdown menu.
- * Supports invite link routing: if the URL contains /invite/<channelId>,
- * the app will auto-join the channel after identity setup completes.
+ * After the user picks a server, keys that haven't been registered yet
+ * are automatically registered (commitment → proof → verification).
  */
 
 import { useEffect, useState, useRef } from 'react';
@@ -34,20 +30,32 @@ import { StartupModeSelector } from '@/components/StartupModeSelector';
 import { clearWebStartupMode } from '@/lib/startup-prefs';
 import { parseInviteFromUrl, clearInviteFromUrl } from '@/lib/invite';
 import { getPersonasForIdentity } from '@/lib/personas';
-import { getApiBaseUrl, setApiBaseUrl, setPublicUrl } from '@/lib/api';
+import { getApiBaseUrl, getServerSummary, setApiBaseUrl, setPublicUrl } from '@/lib/api';
 import { isTauri } from '@/lib/tauri';
 import type { InvitePayload } from '@/types';
 import './App.css';
 
 type AppView = 'chat' | 'federation' | 'events' | 'admin-policy' | 'admin-channels' | 'admin-members' | 'admin-server';
 
+/** Labels shown while registering keys with the chosen server. */
+const REGISTRATION_LABELS: Record<string, string> = {
+  keys_ready: 'Preparing to register...',
+  registering: 'Registering with server...',
+  proving: 'Generating zero-knowledge proof...',
+  verifying: 'Verifying membership...',
+};
+
 export default function App() {
-  const { phase, identity, loadIdentities, loadPermissions, permissions } = useIdentityStore();
+  const { phase, identity, error, loadIdentities, loadPermissions, permissions, registerWithServer } = useIdentityStore();
   const { connectWs, disconnectWs, selectChannel, joinChannel, loadChannels } = useChannelsStore();
   const { servers, loadServers, saveCurrentServer, fetchServerImage } = useServersStore();
   const activeServer = useServersStore((s) => s.getActiveServer());
   const serverImageUrl = useServersStore((s) => s.serverImageUrl);
   const inTauri = isTauri();
+
+  // Whether we have finished checking IndexedDB for existing identities.
+  const [identityChecked, setIdentityChecked] = useState(false);
+
   const [serverReady, setServerReady] = useState(false);
   const [tunnelUrl, setTunnelUrl] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<AppView>('chat');
@@ -65,47 +73,26 @@ export default function App() {
   const [embeddedServerError, setEmbeddedServerError] = useState<string | null>(null);
   const [serverRetry, setServerRetry] = useState(0);
 
-  // Load identities and saved servers on mount (web/Docker only).
-  // Tauri: handled inside the server startup effect below.
+  // ── Load identities + servers on mount (all modes) ──
   useEffect(() => {
-    if (inTauri) return;
-    loadIdentities();
+    loadIdentities().then(() => setIdentityChecked(true));
     loadServers();
-  }, [inTauri, loadIdentities, loadServers]);
+  }, [loadIdentities, loadServers]);
 
-  // Tauri: auto-start the embedded server, load persisted identities
-  // (for the selection list), then reset identity selection so the user
-  // always lands on IdentitySetup first.  The loading screen stays
-  // visible until this entire sequence completes.
+  // ── Tauri: start embedded server in background ──
+  // Runs in parallel with identity loading.  The server starts while the
+  // user is on Screen 1 (identity creation), giving it time to initialise.
   useEffect(() => {
     if (!inTauri) return;
     let cancelled = false;
     setEmbeddedServerError(null);
     (async () => {
       try {
-        // 1. Start embedded Axum server on a free port.
         const { startEmbeddedServer } = await import('@/lib/tauri');
         const url = await startEmbeddedServer();
         if (cancelled) return;
         setApiBaseUrl(url);
-
-        // 2. Load persisted identities & servers now that the API is reachable.
-        await loadIdentities();
-        await loadServers();
-        if (cancelled) return;
-
-        // 3. Always show IdentitySetup first.  loadIdentities() auto-selects
-        //    a stored identity (setting phase='ready'), which would skip
-        //    the identity screen and land on StartupModeSelector.  Reset
-        //    the selection so the user always confirms their identity on
-        //    launch.  storedIdentities is preserved — existing identities
-        //    appear in the list for one-click selection.
-        useIdentityStore.getState().logout();
-
-        // 4. Dismiss the loading screen now that state is consistent.
-        if (!cancelled) {
-          setEmbeddedServerUrl(url);
-        }
+        setEmbeddedServerUrl(url);
       } catch (err) {
         if (!cancelled) {
           setEmbeddedServerError(
@@ -115,12 +102,30 @@ export default function App() {
       }
     })();
     return () => { cancelled = true; };
-  }, [inTauri, serverRetry, loadIdentities, loadServers]);
+  }, [inTauri, serverRetry]);
+
+  // ── Auto-register identity with server after server is selected ──
+  // Only fires when phase is exactly 'keys_ready' (keys exist, not yet
+  // registered) and the user has finished picking a server.
+  useEffect(() => {
+    if (!serverReady || phase !== 'keys_ready' || !identity?.sk) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const summary = await getServerSummary();
+        if (!cancelled) {
+          await registerWithServer(summary.slug);
+        }
+      } catch {
+        // Errors are surfaced by registerWithServer via the store.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [serverReady, phase, identity?.sk, registerWithServer]);
 
   // When the user logs out, return to the mode selector.
   // We track the previous phase so we only reset when phase *transitions*
-  // to 'uninitialized' (a real logout), not when it was already 'uninitialized'
-  // (e.g. user just picked a server and hasn't created an identity yet).
+  // to 'uninitialized' (a real logout), not when it was already 'uninitialized'.
   useEffect(() => {
     const prevPhase = prevPhaseRef.current;
     prevPhaseRef.current = phase;
@@ -157,7 +162,6 @@ export default function App() {
   useEffect(() => {
     if (phase === 'ready' && identity?.pseudonymId && identity.id && !serverSaved.current) {
       serverSaved.current = true;
-      // Save this server to the local hub (idempotent — skips if already saved)
       saveCurrentServer(identity.id, identity.serverSlug, identity.serverSlug)
         .then(() =>
           getPersonasForIdentity(identity.id).then((personas) => {
@@ -182,11 +186,9 @@ export default function App() {
   // Apply persona isolation — dynamic CSS custom properties per server context
   useEffect(() => {
     const raw = activeServer?.accentColor ?? '#e63946';
-    // Validate hex color format; fall back to default if malformed
     const accentColor = /^#[0-9a-fA-F]{6}$/.test(raw) ? raw : '#e63946';
     document.documentElement.style.setProperty('--persona-accent', accentColor);
 
-    // Derive tint colors from the accent
     const r = parseInt(accentColor.slice(1, 3), 16);
     const g = parseInt(accentColor.slice(3, 5), 16);
     const b = parseInt(accentColor.slice(5, 7), 16);
@@ -240,7 +242,47 @@ export default function App() {
     return () => document.removeEventListener('mousedown', handler);
   }, [adminMenuOpen]);
 
-  // ── Tauri: loading while embedded server auto-starts ──
+  // ────────────────────────────────────────────────────────────────────
+  // RENDER GATES — evaluated top-to-bottom, first match wins.
+  // ────────────────────────────────────────────────────────────────────
+
+  // Gate 0: Still checking IndexedDB for existing identities.
+  if (!identityChecked) {
+    return (
+      <div className="app">
+        <main className="app-main setup">
+          <div className="startup-mode-selector">
+            <h2>Annex</h2>
+            <div className="startup-loading">Loading...</div>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  // Gate 1 — HARD GATE: No identity keys → Screen 1 (identity creation).
+  // This screen makes ZERO network requests.
+  if (!identity?.sk) {
+    return (
+      <div className="app">
+        <header className="app-header">
+          <h1>Annex</h1>
+          {pendingInvite && (
+            <span className="invite-banner">
+              Joining {pendingInvite.label ?? pendingInvite.channelId}...
+            </span>
+          )}
+        </header>
+        <main className="app-main setup">
+          <IdentitySetup />
+        </main>
+      </div>
+    );
+  }
+
+  // Gate 2: Tauri — embedded server still starting.
+  // Keys exist, so Screen 1 is done.  We wait for the server before
+  // showing Screen 2 because Screen 2 may make network requests.
   if (inTauri && !embeddedServerUrl && !embeddedServerError) {
     return (
       <div className="app">
@@ -254,7 +296,7 @@ export default function App() {
     );
   }
 
-  // ── Tauri: embedded server failed to start ──
+  // Gate 3: Tauri — embedded server failed to start.
   if (inTauri && embeddedServerError) {
     return (
       <div className="app">
@@ -271,32 +313,13 @@ export default function App() {
     );
   }
 
-  // ── Identity setup (both Tauri and Web) ──
-  if (phase !== 'ready' || !identity?.pseudonymId) {
-    return (
-      <div className="app">
-        <header className="app-header">
-          <h1>Annex</h1>
-          {pendingInvite && (
-            <span className="invite-banner">
-              Joining {pendingInvite.label ?? pendingInvite.channelId}...
-            </span>
-          )}
-        </header>
-        <main className="app-main setup">
-          <IdentitySetup inviteServerSlug={pendingInvite?.serverSlug} />
-        </main>
-      </div>
-    );
-  }
-
-  // ── Mode selection (host / connect) after identity is ready ──
+  // Gate 4: Server not yet selected → Screen 2 (startup mode selector).
   if (!serverReady) {
     return (
       <div className="app">
         <main className="app-main setup">
           <StartupModeSelector
-            embeddedServerRunning={inTauri}
+            embeddedServerRunning={inTauri && !!embeddedServerUrl}
             onReady={(url) => { setTunnelUrl(url ?? null); setServerReady(true); }}
           />
         </main>
@@ -304,12 +327,46 @@ export default function App() {
     );
   }
 
+  // Gate 5: Identity keys not yet registered with the chosen server.
+  // The auto-register effect handles the registration automatically;
+  // this gate just shows progress while it runs.
+  if (phase !== 'ready' || !identity?.pseudonymId) {
+    return (
+      <div className="app">
+        <main className="app-main setup">
+          <div className="identity-setup">
+            <h2>Annex</h2>
+            <div className={`phase-status phase-${phase}`}>
+              {REGISTRATION_LABELS[phase] ?? 'Preparing...'}
+            </div>
+            {phase === 'error' && error && (
+              <>
+                <div className="error-message">{error}</div>
+                <button
+                  className="primary-btn"
+                  onClick={() => {
+                    useIdentityStore.setState({ phase: 'keys_ready', error: null });
+                  }}
+                >
+                  Retry
+                </button>
+              </>
+            )}
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  // ────────────────────────────────────────────────────────────────────
+  // MAIN APP — identity ready, server connected.
+  // ────────────────────────────────────────────────────────────────────
+
   const navigateAdmin = (view: AppView) => {
     setActiveView(view);
     setAdminMenuOpen(false);
   };
 
-  // Render active view content
   const renderView = () => {
     switch (activeView) {
       case 'federation':
@@ -386,7 +443,6 @@ export default function App() {
           </button>
         </nav>
 
-        {/* Persona context indicator — shows which mask is active */}
         {activeServer && (
           <div className="persona-context-indicator">
             <span className="persona-context-dot" />
@@ -444,13 +500,8 @@ export default function App() {
       </header>
 
       <div className="app-with-hub">
-        {/* Server Hub — the leftmost icon sidebar showing saved Merkle insertions */}
         {servers.length > 0 && <ServerHub />}
-
-        {/* Main content area — shifts color palette per active persona */}
         <div className="app-main-content" key={activeServer?.id ?? 'default'}>
-          {/* VoicePanel is rendered outside the view switch so the call
-              stays connected when the user navigates to Federation/Events. */}
           <VoicePanel />
           {renderView()}
         </div>
