@@ -21,6 +21,7 @@ import { useUsernameStore } from '@/stores/usernames';
 import { LinkPreview } from '@/components/LinkPreview';
 import { extractUrls } from '@/lib/link-preview';
 import { getPersonasForIdentity } from '@/lib/personas';
+import { resolveUrl } from '@/lib/api';
 import * as api from '@/lib/api';
 import type { Message, MessageEdit, Persona } from '@/types';
 
@@ -290,7 +291,7 @@ function MessageBubble({
               {imageUrls.map((url) => (
                 <img
                   key={url}
-                  src={url}
+                  src={resolveUrl(url)}
                   alt="Uploaded image"
                   className="message-inline-image"
                   loading="lazy"
@@ -304,7 +305,7 @@ function MessageBubble({
               {videoUrls.map((url) => (
                 <video
                   key={url}
-                  src={url}
+                  src={resolveUrl(url)}
                   className="message-inline-video"
                   controls
                   preload="metadata"
@@ -318,7 +319,7 @@ function MessageBubble({
               {fileUrls.map((url) => (
                 <a
                   key={url}
-                  href={url}
+                  href={resolveUrl(url)}
                   className="message-file-link"
                   download
                   target="_blank"
@@ -461,7 +462,7 @@ export function MessageView() {
 
       {lightboxUrl && (
         <div className="image-lightbox" onClick={() => setLightboxUrl(null)}>
-          <img src={lightboxUrl} alt="Full size" />
+          <img src={resolveUrl(lightboxUrl)} alt="Full size" />
           <button
             className="lightbox-close"
             onClick={() => setLightboxUrl(null)}
