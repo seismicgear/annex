@@ -527,13 +527,21 @@ fn get_tunnel_url(state: tauri::State<'_, AppManagedState>) -> Option<String> {
         .and_then(|guard| guard.as_ref().map(|t| t.url.clone()))
 }
 
-/// Set the window border color to black on Windows 11+.
+/// Force the window to use dark mode chrome and a black border.
 ///
-/// Uses `DwmSetWindowAttribute` with `DWMWA_BORDER_COLOR` (attribute 34).
-/// This API is available on Windows 11 build 22000 and later.
-/// On older Windows versions the call returns an error which we ignore.
+/// Two DWM attributes are set:
+///   1. `DWMWA_USE_IMMERSIVE_DARK_MODE` (20) — forces the title bar and
+///      window border to use dark-mode colors regardless of the system
+///      theme.  Available on Windows 10 20H1 (build 18985) and later.
+///      Without this, Windows uses the user's system accent color for
+///      the border (which may be orange, blue, etc.).
+///   2. `DWMWA_BORDER_COLOR` (34) — overrides the border to pure black.
+///      Only available on Windows 11 build 22000+.  Ignored on Win10.
+///
+/// Both calls are harmless if unsupported — the HRESULT is logged but
+/// does not affect the application.
 #[cfg(target_os = "windows")]
-fn set_window_border_black(window: &tauri::WebviewWindow) {
+fn set_dark_window_border(window: &tauri::WebviewWindow) {
     #[link(name = "dwmapi")]
     extern "system" {
         fn DwmSetWindowAttribute(
@@ -557,24 +565,36 @@ fn set_window_border_black(window: &tauri::WebviewWindow) {
         _ => return,
     };
 
-    const DWMWA_BORDER_COLOR: u32 = 34;
-    // COLORREF format is 0x00BBGGRR — black = 0x00000000.
-    let black: u32 = 0x00000000;
+    // SAFETY: hwnd is a valid window handle obtained from Tauri.
+    // Both calls pass correctly-sized u32 values and are harmless if the
+    // attribute is unsupported on the current Windows version.
+    unsafe {
+        // 1. Dark mode title bar + border (Windows 10 20H1+).
+        const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
+        let enabled: u32 = 1;
+        let hr = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            std::ptr::addr_of!(enabled).cast(),
+            std::mem::size_of::<u32>() as u32,
+        );
+        if hr != 0 {
+            eprintln!("DwmSetWindowAttribute(DWMWA_USE_IMMERSIVE_DARK_MODE) returned 0x{hr:08X}");
+        }
 
-    // SAFETY: hwnd is a valid window handle obtained from Tauri, and we
-    // pass a correctly-sized COLORREF value. The call is harmless if the
-    // attribute is unsupported (Windows 10).
-    let hr = unsafe {
-        DwmSetWindowAttribute(
+        // 2. Override border to pure black (Windows 11 22000+).
+        const DWMWA_BORDER_COLOR: u32 = 34;
+        let black: u32 = 0x00000000; // COLORREF 0x00BBGGRR
+        let hr = DwmSetWindowAttribute(
             hwnd,
             DWMWA_BORDER_COLOR,
             std::ptr::addr_of!(black).cast(),
             std::mem::size_of::<u32>() as u32,
-        )
-    };
-    if hr != 0 {
-        // Expected on Windows 10 where DWMWA_BORDER_COLOR is unsupported.
-        eprintln!("DwmSetWindowAttribute(DWMWA_BORDER_COLOR) returned 0x{hr:08X}");
+        );
+        if hr != 0 {
+            // Expected on Windows 10 where DWMWA_BORDER_COLOR is unsupported.
+            eprintln!("DwmSetWindowAttribute(DWMWA_BORDER_COLOR) returned 0x{hr:08X}");
+        }
     }
 }
 
@@ -688,7 +708,7 @@ fn main() {
             #[cfg(target_os = "windows")]
             {
                 if let Some(window) = app.get_webview_window("main") {
-                    set_window_border_black(&window);
+                    set_dark_window_border(&window);
                 }
             }
             Ok(())

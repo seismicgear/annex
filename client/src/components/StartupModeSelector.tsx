@@ -23,8 +23,6 @@ interface WebPrefs {
 
 interface Props {
   onReady: (tunnelUrl?: string) => void;
-  /** When true, the embedded server is already running (Tauri post-identity flow). */
-  embeddedServerRunning?: boolean;
 }
 
 type Phase =
@@ -55,7 +53,7 @@ function saveWebPrefs(prefs: WebPrefs): void {
   }
 }
 
-export function StartupModeSelector({ onReady, embeddedServerRunning }: Props) {
+export function StartupModeSelector({ onReady }: Props) {
   const [phase, setPhase] = useState<Phase>('loading');
   const [remoteUrl, setRemoteUrl] = useState('');
   const [tunnelUrl, setTunnelUrl] = useState('');
@@ -70,14 +68,9 @@ export function StartupModeSelector({ onReady, embeddedServerRunning }: Props) {
       const { startEmbeddedServer, startTunnel, saveStartupMode } = await import('@/lib/tauri');
       setError('');
       try {
-        // If App.tsx already started the embedded server, skip starting it
-        // again — calling startEmbeddedServer() twice hangs because the
-        // port is already occupied.
-        if (!embeddedServerRunning) {
-          setPhase('starting_server');
-          const url = await startEmbeddedServer();
-          setApiBaseUrl(url);
-        }
+        setPhase('starting_server');
+        const url = await startEmbeddedServer();
+        setApiBaseUrl(url);
         if (!skipSave) {
           await saveStartupMode({ startup_mode: { mode: 'host' } });
         }
@@ -85,8 +78,6 @@ export function StartupModeSelector({ onReady, embeddedServerRunning }: Props) {
         try {
           const pubUrl = await startTunnel();
           setTunnelUrl(pubUrl);
-          // Auto-continue to the main UI — tunnel URL is surfaced
-          // in the StatusBar so the user can copy/share it later.
           onReady(pubUrl);
         } catch (tunnelErr) {
           console.warn('Tunnel creation failed:', tunnelErr);
@@ -97,7 +88,7 @@ export function StartupModeSelector({ onReady, embeddedServerRunning }: Props) {
         setPhase('error');
       }
     },
-    [onReady, inTauri, embeddedServerRunning],
+    [onReady, inTauri],
   );
 
   // ── Connect to a remote server (shared by Tauri + web) ──
@@ -170,16 +161,9 @@ export function StartupModeSelector({ onReady, embeddedServerRunning }: Props) {
           const prefs = await getStartupMode();
           if (cancelled) return;
           if (!prefs) {
-            if (embeddedServerRunning) {
-              // Server already running (auto-started in App.tsx).
-              // Show the host/connect choice so the user decides how
-              // to expose or connect their instance.
-              setPhase('choose');
-            } else {
-              // Fallback: auto-start the embedded server and proceed
-              // directly to the identity/ZK setup screen.
-              await applyHost(false);
-            }
+            // No saved preference — show the choice screen so the user
+            // explicitly picks host vs. client.
+            setPhase('choose');
             return;
           }
           if (prefs.startup_mode.mode === 'host') {
@@ -214,7 +198,7 @@ export function StartupModeSelector({ onReady, embeddedServerRunning }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [applyHost, applyRemote, applyLocal, inTauri, embeddedServerRunning]);
+  }, [applyHost, applyRemote, applyLocal, inTauri]);
 
   const handleReset = async () => {
     if (inTauri) {

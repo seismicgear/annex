@@ -3,14 +3,13 @@
  *
  * The startup flow has two sequential screens with a hard gate:
  *
- *   Screen 1 — Identity creation (offline, zero network requests)
+ *   Screen 1 — Identity creation (offline, zero network requests, no server)
  *     Shows when no identity keys exist in local storage.
+ *     No server is started, contacted, or registered with.
  *
  *   Screen 2 — Server / startup-mode selection
  *     Shows ONLY after identity keys exist.
- *
- * After Screen 2, unregistered keys are automatically registered
- * with the chosen server (commitment → proof → verification).
+ *     The server is started here (not before) if the user picks "Host".
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -246,9 +245,9 @@ describe('App startup flow', () => {
       // THIS IS THE CRITICAL TEST.
       //
       // On first EXE launch, no identity keys exist. The app MUST show the
-      // identity creation screen first — not a "Starting server..." or
-      // server selection screen.  The embedded server starts in the
-      // background while the user creates their identity.
+      // identity creation screen — not a server selection or "Starting
+      // server..." screen. No server is started during identity creation.
+      // The server only enters the picture on Screen 2.
 
       const App = (await import('./App')).default;
       render(<App />);
@@ -256,9 +255,9 @@ describe('App startup flow', () => {
       await waitFor(() => {
         expect(screen.getByTestId('identity-setup')).toBeInTheDocument();
       });
-      // "Starting server..." must NOT be visible — Screen 1 has priority
-      // over server loading because Screen 1 makes zero network requests.
+      // No server-related UI during identity creation.
       expect(screen.queryByTestId('startup-mode-selector')).not.toBeInTheDocument();
+      expect(screen.queryByText(/Starting server/)).not.toBeInTheDocument();
     });
 
     it('IdentitySetup has NO server field, NO "Failed to fetch" error', async () => {
@@ -274,7 +273,7 @@ describe('App startup flow', () => {
       expect(screen.queryByText(/Failed to fetch/)).not.toBeInTheDocument();
     });
 
-    it('after keys created, shows StartupModeSelector once server is ready', async () => {
+    it('after keys created, shows StartupModeSelector immediately (no server gate)', async () => {
       const App = (await import('./App')).default;
       render(<App />);
 
@@ -292,7 +291,9 @@ describe('App startup flow', () => {
         });
       });
 
-      // Embedded server finishes starting → Screen 2 appears
+      // Screen 2 appears immediately — no "Starting server..." gate.
+      // The server hasn't started yet; it only starts when the user
+      // explicitly picks "Host a Server" on this screen.
       await waitFor(() => {
         expect(screen.getByTestId('startup-mode-selector')).toBeInTheDocument();
       });
@@ -367,26 +368,20 @@ describe('App startup flow', () => {
       expect(screen.queryByTestId('startup-mode-selector')).not.toBeInTheDocument();
     });
 
-    it('shows error screen with retry when embedded server fails to start', async () => {
+    it('no server is started during identity creation', async () => {
       const tauri = await import('@/lib/tauri');
-      vi.mocked(tauri.startEmbeddedServer).mockRejectedValueOnce(
-        new Error('Port 9999 already in use'),
-      );
-
-      // Need keys to get past Screen 1 gate
-      const dbMock = await import('@/lib/db');
-      vi.mocked(dbMock.listIdentities).mockResolvedValue([KEYS_ONLY_IDENTITY]);
 
       const App = (await import('./App')).default;
       render(<App />);
 
+      // Identity creation screen should appear
       await waitFor(() => {
-        expect(screen.getByText('Port 9999 already in use')).toBeInTheDocument();
+        expect(screen.getByTestId('identity-setup')).toBeInTheDocument();
       });
 
-      expect(screen.getByText('Retry')).toBeInTheDocument();
-      expect(screen.queryByTestId('identity-setup')).not.toBeInTheDocument();
-      expect(screen.queryByTestId('startup-mode-selector')).not.toBeInTheDocument();
+      // startEmbeddedServer must NOT have been called — the server has
+      // no business starting while the user is creating their identity.
+      expect(tauri.startEmbeddedServer).not.toHaveBeenCalled();
     });
   });
 
