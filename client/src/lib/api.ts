@@ -63,12 +63,19 @@ export function resolveUrl(path: string): string {
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const url = _apiBaseUrl ? `${_apiBaseUrl}${path}` : path;
+  const method = (options?.method ?? 'GET').toUpperCase();
+  const hasBody = options?.body !== undefined && options?.body !== null;
+  const shouldSetJsonContentType =
+    ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && hasBody;
+  const headers = new Headers(options?.headers);
+
+  if (shouldSetJsonContentType && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
+
   const res = await fetch(url, {
     ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...options?.headers,
-    },
+    headers,
   });
   if (!res.ok) {
     const body = await res.text();
@@ -87,12 +94,19 @@ export async function requestRemote<T>(
   options?: RequestInit,
 ): Promise<T> {
   const url = `${baseUrl.replace(/\/+$/, '')}${path}`;
+  const method = (options?.method ?? 'GET').toUpperCase();
+  const hasBody = options?.body !== undefined && options?.body !== null;
+  const shouldSetJsonContentType =
+    ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && hasBody;
+  const headers = new Headers(options?.headers);
+
+  if (shouldSetJsonContentType && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
+
   const res = await fetch(url, {
     ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...options?.headers,
-    },
+    headers,
   });
   if (!res.ok) {
     const body = await res.text();
