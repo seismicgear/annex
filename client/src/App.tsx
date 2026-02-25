@@ -68,6 +68,12 @@ export default function App() {
   const serverSaved = useRef(false);
   const prevPhaseRef = useRef(phase);
 
+  const resetToServerSelection = () => {
+    useIdentityStore.setState({ phase: 'keys_ready', error: null });
+    setServerReady(false);
+    setTunnelUrl(null);
+  };
+
   // ── Load identities + servers on mount (all modes) ──
   // In Tauri mode, after loading identities we also check whether startup
   // preferences (startup_prefs.json) exist.  If they don't, the user has
@@ -139,6 +145,7 @@ export default function App() {
     if (phase === 'uninitialized' && prevPhase !== 'uninitialized' && serverReady) {
       clearWebStartupMode();
       setServerReady(false);
+      setTunnelUrl(null);
       serverSaved.current = false;
     }
   }, [phase, serverReady]);
@@ -318,9 +325,7 @@ export default function App() {
                 <div className="error-message">{error}</div>
                 <button
                   className="primary-btn"
-                  onClick={() => {
-                    useIdentityStore.setState({ phase: 'keys_ready', error: null });
-                  }}
+                  onClick={resetToServerSelection}
                 >
                   Retry
                 </button>
