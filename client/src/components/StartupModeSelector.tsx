@@ -171,7 +171,10 @@ export function StartupModeSelector({ onReady }: Props) {
           const prefs = await getStartupMode();
           if (cancelled) return;
           if (!prefs) {
-            setPhase('choose');
+            // No saved preference — desktop users expect the app to
+            // just work on first launch. Auto-start the embedded server
+            // and proceed directly to the identity/ZK setup screen.
+            await applyHost(false);
             return;
           }
           if (prefs.startup_mode.mode === 'host') {
