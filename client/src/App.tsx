@@ -219,17 +219,6 @@ export default function App() {
     return () => document.removeEventListener('mousedown', handler);
   }, [adminMenuOpen]);
 
-  // ── Web / Docker: server selection first (unchanged) ──
-  if (!inTauri && !serverReady) {
-    return (
-      <div className="app">
-        <main className="app-main setup">
-          <StartupModeSelector onReady={(url) => { setTunnelUrl(url ?? null); setServerReady(true); }} />
-        </main>
-      </div>
-    );
-  }
-
   // ── Tauri: loading while embedded server auto-starts ──
   if (inTauri && !embeddedServerUrl && !embeddedServerError) {
     return (
@@ -280,13 +269,13 @@ export default function App() {
     );
   }
 
-  // ── Tauri: mode selection (host / connect) after identity is ready ──
-  if (inTauri && !serverReady) {
+  // ── Mode selection (host / connect) after identity is ready ──
+  if (!serverReady) {
     return (
       <div className="app">
         <main className="app-main setup">
           <StartupModeSelector
-            embeddedServerRunning
+            embeddedServerRunning={inTauri}
             onReady={(url) => { setTunnelUrl(url ?? null); setServerReady(true); }}
           />
         </main>
