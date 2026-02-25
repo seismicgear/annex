@@ -122,7 +122,22 @@ export default function App() {
           }
         }
 
-        // 4. Dismiss the loading screen now that state is consistent.
+        // 4. First-launch gate: if no startup preferences have been saved,
+        //    the user has not completed the full setup flow. Reset identity
+        //    selection so IdentitySetup renders first — even if IndexedDB
+        //    contains a valid identity from a previous install.
+        //    Returning users (who have startup_prefs.json) skip this gate
+        //    and proceed directly through StartupModeSelector's auto-apply.
+        const { getStartupMode } = await import('@/lib/tauri');
+        const startupPrefs = await getStartupMode().catch(() => null);
+        if (cancelled) return;
+
+        const { phase: currentPhase } = useIdentityStore.getState();
+        if (currentPhase === 'ready' && !startupPrefs) {
+          useIdentityStore.getState().logout();
+        }
+
+        // 5. Dismiss the loading screen now that state is consistent.
         if (!cancelled) {
           setEmbeddedServerUrl(url);
         }
