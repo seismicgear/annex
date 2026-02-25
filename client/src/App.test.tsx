@@ -48,6 +48,7 @@ vi.mock('@/lib/zk', () => ({
   generateNodeId: vi.fn(() => 1),
   computeCommitment: vi.fn(async () => '0xabc'),
   generateMembershipProof: vi.fn(async () => ({ proof: {}, publicSignals: [] })),
+  isProofGenerationInFlight: vi.fn(() => false),
 }));
 
 // ── Mock all child components to isolate App routing logic ──

@@ -31,6 +31,7 @@ import { clearWebStartupMode } from '@/lib/startup-prefs';
 import { parseInviteFromUrl, clearInviteFromUrl } from '@/lib/invite';
 import { getPersonasForIdentity } from '@/lib/personas';
 import { getApiBaseUrl, getServerSummary, setPublicUrl } from '@/lib/api';
+import { isProofGenerationInFlight } from '@/lib/zk';
 import { isTauri, getStartupMode as tauriGetStartupMode } from '@/lib/tauri';
 import type { InvitePayload } from '@/types';
 import './App.css';
@@ -54,6 +55,7 @@ export default function App() {
     loadIdentities,
     loadPermissions,
     permissions,
+    proofInFlight,
     registerWithServer,
   } = useIdentityStore();
   const { connectWs, disconnectWs, selectChannel, joinChannel, loadChannels } = useChannelsStore();
@@ -80,7 +82,17 @@ export default function App() {
   const prevPhaseRef = useRef(phase);
 
   const resetToServerSelection = () => {
-    useIdentityStore.setState({ phase: 'keys_ready', error: null, errorDetails: null });
+    if (isProofGenerationInFlight()) {
+      useIdentityStore.setState({
+        phase: 'error',
+        proofInFlight: true,
+        error: 'proof still running.',
+        errorDetails: 'Retry blocked: previous proof generation is still running.',
+      });
+      return;
+    }
+
+    useIdentityStore.setState({ phase: 'keys_ready', proofInFlight: false, error: null, errorDetails: null });
     setStartupErrorDetails(null);
     setProvingFailures(0);
     setServerReady(false);
@@ -98,6 +110,20 @@ export default function App() {
       setProvingFailures((count) => count + 1);
     }
   }, [phase, error, errorDetails]);
+
+  useEffect(() => {
+    if (!proofInFlight) return;
+
+    const syncProofFlightState = () => {
+      if (!isProofGenerationInFlight()) {
+        useIdentityStore.setState({ proofInFlight: false });
+      }
+    };
+
+    syncProofFlightState();
+    const interval = setInterval(syncProofFlightState, 400);
+    return () => clearInterval(interval);
+  }, [proofInFlight]);
 
   // ── Load identities + servers on mount (all modes) ──
   // In Tauri mode, after loading identities we also check whether startup
@@ -382,11 +408,15 @@ export default function App() {
                     <pre>{startupErrorDetails ?? errorDetails}</pre>
                   </details>
                 )}
+                {proofInFlight && (
+                  <div className="error-message">proof still running.</div>
+                )}
                 <button
                   className="primary-btn"
                   onClick={resetToServerSelection}
+                  disabled={proofInFlight}
                 >
-                  Retry
+                  {proofInFlight ? 'Retry (proof still running)' : 'Retry'}
                 </button>
                 {provingFailures >= 2 && (
                   <button
