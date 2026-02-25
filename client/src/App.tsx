@@ -34,7 +34,7 @@ import { StartupModeSelector } from '@/components/StartupModeSelector';
 import { clearWebStartupMode } from '@/lib/startup-prefs';
 import { parseInviteFromUrl, clearInviteFromUrl } from '@/lib/invite';
 import { getPersonasForIdentity } from '@/lib/personas';
-import { getApiBaseUrl, setApiBaseUrl, setPublicUrl, getIdentityInfo, ApiError } from '@/lib/api';
+import { getApiBaseUrl, setApiBaseUrl, setPublicUrl } from '@/lib/api';
 import { isTauri } from '@/lib/tauri';
 import type { InvitePayload } from '@/types';
 import './App.css';
@@ -66,22 +66,17 @@ export default function App() {
   const [serverRetry, setServerRetry] = useState(0);
 
   // Load identities and saved servers on mount (web/Docker only).
-  // Tauri: handled inside the server startup effect below so that
-  // identity validation runs against the live embedded server.
+  // Tauri: handled inside the server startup effect below.
   useEffect(() => {
     if (inTauri) return;
     loadIdentities();
     loadServers();
   }, [inTauri, loadIdentities, loadServers]);
 
-  // Tauri: auto-start the embedded server, load persisted state, and
-  // validate the stored identity against the running server.  This
-  // prevents stale IndexedDB entries (which survive EXE reinstalls) from
-  // bypassing the identity-creation screen.
-  //
-  // The loading screen ("Starting server…") stays visible until this
-  // entire sequence completes, so the user never sees a flash of the
-  // wrong screen.
+  // Tauri: auto-start the embedded server, load persisted identities
+  // (for the selection list), then reset identity selection so the user
+  // always lands on IdentitySetup first.  The loading screen stays
+  // visible until this entire sequence completes.
   useEffect(() => {
     if (!inTauri) return;
     let cancelled = false;
@@ -99,28 +94,13 @@ export default function App() {
         await loadServers();
         if (cancelled) return;
 
-        // 3. Validate: does the server still recognise the stored identity?
-        //    On a fresh install (or after DB wipe) the WebView IndexedDB may
-        //    retain an old identity whose pseudonymId no longer exists in the
-        //    server's database.  Detect this and clear the stale state so the
-        //    identity-creation screen renders instead of the mode selector.
-        const { identity: storedId, phase: storedPhase } =
-          useIdentityStore.getState();
-        if (storedPhase === 'ready' && storedId?.pseudonymId) {
-          try {
-            await getIdentityInfo(storedId.pseudonymId);
-            // 200 — identity is still valid on this server.
-          } catch (err) {
-            if (err instanceof ApiError && err.status === 404) {
-              // Pseudonym not found — stale entry.  Reset to force the
-              // identity-creation screen.
-              useIdentityStore.getState().logout();
-            }
-            // Any other error (500, network): keep the identity.  The
-            // server may be temporarily unhealthy; the user will see a
-            // proper error when they try to interact.
-          }
-        }
+        // 3. Always show IdentitySetup first.  loadIdentities() auto-selects
+        //    a stored identity (setting phase='ready'), which would skip
+        //    the identity screen and land on StartupModeSelector.  Reset
+        //    the selection so the user always confirms their identity on
+        //    launch.  storedIdentities is preserved — existing identities
+        //    appear in the list for one-click selection.
+        useIdentityStore.getState().logout();
 
         // 4. Dismiss the loading screen now that state is consistent.
         if (!cancelled) {
