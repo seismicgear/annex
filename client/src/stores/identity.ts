@@ -191,7 +191,7 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
       if (e instanceof zk.ZkProofAssetsError) {
         userError = 'Proof assets missing. Please restart and try again.';
       } else if (e instanceof zk.ZkProofTimeoutError) {
-        userError = 'Proof generation timed out. Please retry.';
+        userError = 'Proof generation timed out. Please retry (the first proof can take longer on slow hardware).';
       }
 
       set({
