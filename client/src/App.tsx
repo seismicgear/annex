@@ -30,10 +30,11 @@ import { FederationPanel } from '@/components/FederationPanel';
 import { EventLog } from '@/components/EventLog';
 import { AdminPanel } from '@/components/AdminPanel';
 import { ServerHub } from '@/components/ServerHub';
-import { StartupModeSelector, clearWebStartupMode } from '@/components/StartupModeSelector';
+import { StartupModeSelector } from '@/components/StartupModeSelector';
+import { clearWebStartupMode } from '@/lib/startup-prefs';
 import { parseInviteFromUrl, clearInviteFromUrl } from '@/lib/invite';
 import { getPersonasForIdentity } from '@/lib/personas';
-import { getApiBaseUrl, setApiBaseUrl, setPublicUrl } from '@/lib/api';
+import { getApiBaseUrl, setApiBaseUrl, setPublicUrl, getIdentityInfo, ApiError } from '@/lib/api';
 import { isTauri } from '@/lib/tauri';
 import type { InvitePayload } from '@/types';
 import './App.css';
@@ -64,25 +65,65 @@ export default function App() {
   const [embeddedServerError, setEmbeddedServerError] = useState<string | null>(null);
   const [serverRetry, setServerRetry] = useState(0);
 
-  // Load identities and saved servers on mount
+  // Load identities and saved servers on mount (web/Docker only).
+  // Tauri: handled inside the server startup effect below so that
+  // identity validation runs against the live embedded server.
   useEffect(() => {
+    if (inTauri) return;
     loadIdentities();
     loadServers();
-  }, [loadIdentities, loadServers]);
+  }, [inTauri, loadIdentities, loadServers]);
 
-  // Tauri: auto-start the embedded server immediately so the identity
-  // creation screen (which needs a running server for registration and
-  // proof verification) can be shown first, before the host/connect choice.
+  // Tauri: auto-start the embedded server, load persisted state, and
+  // validate the stored identity against the running server.  This
+  // prevents stale IndexedDB entries (which survive EXE reinstalls) from
+  // bypassing the identity-creation screen.
+  //
+  // The loading screen ("Starting server…") stays visible until this
+  // entire sequence completes, so the user never sees a flash of the
+  // wrong screen.
   useEffect(() => {
     if (!inTauri) return;
     let cancelled = false;
     setEmbeddedServerError(null);
     (async () => {
       try {
+        // 1. Start embedded Axum server on a free port.
         const { startEmbeddedServer } = await import('@/lib/tauri');
         const url = await startEmbeddedServer();
+        if (cancelled) return;
+        setApiBaseUrl(url);
+
+        // 2. Load persisted identities & servers now that the API is reachable.
+        await loadIdentities();
+        await loadServers();
+        if (cancelled) return;
+
+        // 3. Validate: does the server still recognise the stored identity?
+        //    On a fresh install (or after DB wipe) the WebView IndexedDB may
+        //    retain an old identity whose pseudonymId no longer exists in the
+        //    server's database.  Detect this and clear the stale state so the
+        //    identity-creation screen renders instead of the mode selector.
+        const { identity: storedId, phase: storedPhase } =
+          useIdentityStore.getState();
+        if (storedPhase === 'ready' && storedId?.pseudonymId) {
+          try {
+            await getIdentityInfo(storedId.pseudonymId);
+            // 200 — identity is still valid on this server.
+          } catch (err) {
+            if (err instanceof ApiError && err.status === 404) {
+              // Pseudonym not found — stale entry.  Reset to force the
+              // identity-creation screen.
+              useIdentityStore.getState().logout();
+            }
+            // Any other error (500, network): keep the identity.  The
+            // server may be temporarily unhealthy; the user will see a
+            // proper error when they try to interact.
+          }
+        }
+
+        // 4. Dismiss the loading screen now that state is consistent.
         if (!cancelled) {
-          setApiBaseUrl(url);
           setEmbeddedServerUrl(url);
         }
       } catch (err) {
@@ -94,7 +135,7 @@ export default function App() {
       }
     })();
     return () => { cancelled = true; };
-  }, [inTauri, serverRetry]);
+  }, [inTauri, serverRetry, loadIdentities, loadServers]);
 
   // When the user logs out, return to the mode selector.
   // We track the previous phase so we only reset when phase *transitions*

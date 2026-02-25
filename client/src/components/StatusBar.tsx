@@ -69,11 +69,13 @@ export function StatusBar({ tunnelUrl }: StatusBarProps) {
     URL.revokeObjectURL(url);
   };
 
+  const pseudonymId = identity?.pseudonymId ?? null;
+
   const handleDisconnect = useCallback(async () => {
-    if (identity?.pseudonymId) {
-      await leaveCall(identity.pseudonymId);
+    if (pseudonymId) {
+      await leaveCall(pseudonymId);
     }
-  }, [identity?.pseudonymId, leaveCall]);
+  }, [pseudonymId, leaveCall]);
 
   if (!identity) return null;
 

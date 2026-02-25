@@ -316,15 +316,17 @@ export function VoicePanel() {
     return () => clearInterval(interval);
   }, [isVoiceCapable, activeChannelId, identity?.pseudonymId, voiceToken, checkCallActive]);
 
+  const pseudonymId = identity?.pseudonymId ?? null;
+
   const handleJoin = useCallback(async () => {
-    if (!identity?.pseudonymId || !activeChannelId) return;
-    await joinCall(identity.pseudonymId, activeChannelId);
-  }, [identity?.pseudonymId, activeChannelId, joinCall]);
+    if (!pseudonymId || !activeChannelId) return;
+    await joinCall(pseudonymId, activeChannelId);
+  }, [pseudonymId, activeChannelId, joinCall]);
 
   const handleLeave = useCallback(async () => {
-    if (!identity?.pseudonymId) return;
-    await leaveCall(identity.pseudonymId);
-  }, [identity?.pseudonymId, leaveCall]);
+    if (!pseudonymId) return;
+    await leaveCall(pseudonymId);
+  }, [pseudonymId, leaveCall]);
 
   // If connected to a call, always show the LiveKitRoom (even on non-voice channels).
   if (voiceToken && livekitUrl && connectedChannelId) {

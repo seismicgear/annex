@@ -143,11 +143,14 @@ function MessageBubble({
     return () => clearTimeout(timer);
   }, [isSelf, isDeleted, message.created_at]);
 
-  // Focus edit input when editing
+  // Focus edit input when editing starts and place cursor at end.
+  // Read length from the DOM element (always current) to avoid adding
+  // editText to deps, which would jump the cursor on every keystroke.
   useEffect(() => {
     if (editing && editInputRef.current) {
       editInputRef.current.focus();
-      editInputRef.current.setSelectionRange(editText.length, editText.length);
+      const len = editInputRef.current.value.length;
+      editInputRef.current.setSelectionRange(len, len);
     }
   }, [editing]);
 
