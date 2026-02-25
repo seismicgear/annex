@@ -1,14 +1,14 @@
 /**
  * Root application component.
  *
- * Orchestrates the two-screen startup flow:
- *   Screen 1  – Identity creation (offline, zero network requests)
- *   Screen 2  – Server / startup-mode selection (network OK)
+ * Orchestrates the startup flow:
+ *   Screen 1  – Identity creation (offline, zero network requests, no server)
+ *   Screen 2  – Server / startup-mode selection (server starts here, not before)
  *
- * Hard gate: Screen 2 never renders until local identity keys exist.
- *
- * After the user picks a server, keys that haven't been registered yet
- * are automatically registered (commitment → proof → verification).
+ * Identity creation is purely local — keys are generated and stored on the
+ * device. No server is started, contacted, or registered with during
+ * identity creation. The server only enters the picture when the user
+ * explicitly chooses a server mode on Screen 2.
  */
 
 import { useEffect, useState, useRef } from 'react';
@@ -30,7 +30,7 @@ import { StartupModeSelector } from '@/components/StartupModeSelector';
 import { clearWebStartupMode } from '@/lib/startup-prefs';
 import { parseInviteFromUrl, clearInviteFromUrl } from '@/lib/invite';
 import { getPersonasForIdentity } from '@/lib/personas';
-import { getApiBaseUrl, getServerSummary, setApiBaseUrl, setPublicUrl } from '@/lib/api';
+import { getApiBaseUrl, getServerSummary, setPublicUrl } from '@/lib/api';
 import { isTauri, getStartupMode as tauriGetStartupMode } from '@/lib/tauri';
 import type { InvitePayload } from '@/types';
 import './App.css';
@@ -68,11 +68,6 @@ export default function App() {
   const serverSaved = useRef(false);
   const prevPhaseRef = useRef(phase);
 
-  // Tauri: tracks the auto-started embedded server URL.
-  const [embeddedServerUrl, setEmbeddedServerUrl] = useState<string | null>(null);
-  const [embeddedServerError, setEmbeddedServerError] = useState<string | null>(null);
-  const [serverRetry, setServerRetry] = useState(0);
-
   // ── Load identities + servers on mount (all modes) ──
   // In Tauri mode, after loading identities we also check whether startup
   // preferences (startup_prefs.json) exist.  If they don't, the user has
@@ -94,39 +89,12 @@ export default function App() {
     loadServers();
   }, [loadIdentities, loadServers, inTauri]);
 
-  // ── Tauri: start embedded server in background ──
-  // Runs in parallel with identity loading.  The server starts while the
-  // user is on Screen 1 (identity creation), giving it time to initialise.
-  useEffect(() => {
-    if (!inTauri) return;
-    let cancelled = false;
-    setEmbeddedServerError(null);
-    (async () => {
-      try {
-        const { startEmbeddedServer } = await import('@/lib/tauri');
-        const url = await startEmbeddedServer();
-        if (cancelled) return;
-        setApiBaseUrl(url);
-        setEmbeddedServerUrl(url);
-      } catch (err) {
-        if (!cancelled) {
-          setEmbeddedServerError(
-            err instanceof Error ? err.message : String(err),
-          );
-        }
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [inTauri, serverRetry]);
-
-  // ── Auto-register identity with server after server is selected ──
+  // ── Register identity with server after user selects a server ──
   // Only fires when phase is exactly 'keys_ready' (keys exist, not yet
-  // registered) and the user has finished picking a server.
+  // registered) and the user has explicitly picked a server on Screen 2.
   //
   // Retries getServerSummary() with exponential backoff because the
-  // embedded server may still be initialising when serverReady flips to
-  // true (the Rust side polls /health, but a retry here is defence-in-depth
-  // against transient network errors).
+  // server may still be initialising when serverReady flips to true.
   useEffect(() => {
     if (!serverReady || phase !== 'keys_ready' || !identity?.sk) return;
     let cancelled = false;
@@ -151,8 +119,6 @@ export default function App() {
           }
         }
       }
-      // All retries exhausted — surface the error so Gate 5 shows
-      // the message and the Retry button.
       if (!cancelled) {
         useIdentityStore.setState({
           phase: 'error',
@@ -320,46 +286,14 @@ export default function App() {
     );
   }
 
-  // Gate 2: Tauri — embedded server still starting.
-  // Keys exist, so Screen 1 is done.  We wait for the server before
-  // showing Screen 2 because Screen 2 may make network requests.
-  if (inTauri && !embeddedServerUrl && !embeddedServerError) {
-    return (
-      <div className="app">
-        <main className="app-main setup">
-          <div className="startup-mode-selector">
-            <h2>Annex</h2>
-            <div className="startup-loading">Starting server...</div>
-          </div>
-        </main>
-      </div>
-    );
-  }
-
-  // Gate 3: Tauri — embedded server failed to start.
-  if (inTauri && embeddedServerError) {
-    return (
-      <div className="app">
-        <main className="app-main setup">
-          <div className="startup-mode-selector">
-            <h2>Annex</h2>
-            <div className="error-message">{embeddedServerError}</div>
-            <button className="primary-btn" onClick={() => setServerRetry((n) => n + 1)}>
-              Retry
-            </button>
-          </div>
-        </main>
-      </div>
-    );
-  }
-
-  // Gate 4: Server not yet selected → Screen 2 (startup mode selector).
+  // Gate 2: Server not yet selected → Screen 2 (startup mode selector).
+  // The server is NOT started yet — StartupModeSelector handles starting
+  // the embedded server if the user picks "Host a Server".
   if (!serverReady) {
     return (
       <div className="app">
         <main className="app-main setup">
           <StartupModeSelector
-            embeddedServerRunning={inTauri && !!embeddedServerUrl}
             onReady={(url) => { setTunnelUrl(url ?? null); setServerReady(true); }}
           />
         </main>
@@ -367,7 +301,7 @@ export default function App() {
     );
   }
 
-  // Gate 5: Identity keys not yet registered with the chosen server.
+  // Gate 3: Identity keys not yet registered with the chosen server.
   // The auto-register effect handles the registration automatically;
   // this gate just shows progress while it runs.
   if (phase !== 'ready' || !identity?.pseudonymId) {
