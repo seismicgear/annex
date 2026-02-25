@@ -9,6 +9,8 @@
 import { useState, useRef, type FormEvent } from 'react';
 import { useIdentityStore, type IdentityPhase } from '@/stores/identity';
 import { DeviceLinkDialog } from '@/components/DeviceLinkDialog';
+import { isTauri } from '@/lib/tauri';
+import { clearWebStartupMode } from '@/lib/startup-prefs';
 
 const PHASE_LABELS: Partial<Record<IdentityPhase, string>> = {
   uninitialized: 'Ready to create identity',
@@ -33,12 +35,31 @@ export function IdentitySetup() {
 
   const handleCreate = async (e: FormEvent) => {
     e.preventDefault();
+
+    // Clear any existing startup prefs to ensure the user is asked to choose a server
+    // for this new identity (discarding choices made for previous identities).
+    if (isTauri()) {
+      const { clearStartupMode } = await import('@/lib/tauri');
+      await clearStartupMode();
+    } else {
+      clearWebStartupMode();
+    }
+
     await generateLocalKeys(1); // roleCode 1 = Human
   };
 
   const handleImport = async () => {
     const file = fileInputRef.current?.files?.[0];
     if (!file) return;
+
+    // Clear existing prefs so imported identity must choose server connection
+    if (isTauri()) {
+      const { clearStartupMode } = await import('@/lib/tauri');
+      await clearStartupMode();
+    } else {
+      clearWebStartupMode();
+    }
+
     const text = await file.text();
     await importBackup(text);
   };

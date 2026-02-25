@@ -138,10 +138,13 @@ export default function App() {
 
     if (phase === 'uninitialized' && prevPhase !== 'uninitialized' && serverReady) {
       clearWebStartupMode();
+      if (inTauri) {
+        import('@/lib/tauri').then(({ clearStartupMode }) => clearStartupMode().catch(() => {}));
+      }
       setServerReady(false);
       serverSaved.current = false;
     }
-  }, [phase, serverReady]);
+  }, [phase, serverReady, inTauri]);
 
   // Connect WebSocket and load permissions when identity is ready
   useEffect(() => {
