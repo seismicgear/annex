@@ -21,8 +21,9 @@ $VoiceModel = "en_US-lessac-medium"
 $VoiceBaseUrl = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium"
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
-$PiperDir = Join-Path $ProjectRoot "assets" "piper"
-$VoicesDir = Join-Path $ProjectRoot "assets" "voices"
+$AssetsDir = Join-Path $ProjectRoot "assets"
+$PiperDir = Join-Path $AssetsDir "piper"
+$VoicesDir = Join-Path $AssetsDir "voices"
 
 # ── Helpers ──
 
