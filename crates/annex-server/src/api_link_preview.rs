@@ -16,7 +16,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -108,62 +108,25 @@ fn is_private_or_reserved(url: &str) -> bool {
         _ => return true,
     }
 
-    let host = match parsed.host_str() {
-        Some(h) => h,
+    // Use the typed host() enum to correctly handle IPv4, IPv6, and domains.
+    // host_str() returns brackets around IPv6 which won't parse with IpAddr.
+    match parsed.host() {
+        Some(url::Host::Ipv4(v4)) => return is_private_ip(IpAddr::V4(v4)),
+        Some(url::Host::Ipv6(v6)) => return is_private_ip(IpAddr::V6(v6)),
+        Some(url::Host::Domain(domain)) => {
+            let lower = domain.to_lowercase();
+            if lower == "localhost"
+                || lower.ends_with(".local")
+                || lower.ends_with(".internal")
+                || lower == "metadata.google.internal"
+                || lower.starts_with("169.254.")
+            {
+                return true;
+            }
+        }
         None => return true,
-    };
-
-    // Try to parse as IP directly
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        return is_private_ip(ip);
     }
 
-    // For hostnames, block obvious internal names
-    let lower = host.to_lowercase();
-    if lower == "localhost"
-        || lower.ends_with(".local")
-        || lower.ends_with(".internal")
-        || lower == "metadata.google.internal"
-        || lower.starts_with("169.254.")
-    {
-        return true;
-    }
-
-    false
-}
-
-/// Performs DNS resolution and checks if **any** resolved IP is private/reserved.
-///
-/// This prevents DNS rebinding SSRF attacks where a hostname initially resolves
-/// to a public IP during `is_private_or_reserved()` but then resolves to an
-/// internal IP when the actual HTTP request is made (TOCTOU).
-async fn resolves_to_private_ip(host: &str) -> bool {
-    // Append a dummy port — `lookup_host` requires a socket address string.
-    let lookup_target = if host.contains(':') {
-        // IPv6 literal or already has port
-        host.to_string()
-    } else {
-        format!("{}:443", host)
-    };
-
-    let addrs = match tokio::net::lookup_host(&lookup_target).await {
-        Ok(addrs) => addrs.collect::<Vec<_>>(),
-        Err(e) => {
-            tracing::debug!(host = %host, error = %e, "DNS resolution failed — blocking request");
-            return true; // fail-closed: if we can't resolve, don't allow
-        }
-    };
-
-    for addr in addrs {
-        if is_private_ip(addr.ip()) {
-            tracing::warn!(
-                host = %host,
-                resolved_ip = %addr.ip(),
-                "DNS resolved to private/reserved IP — blocking request"
-            );
-            return true;
-        }
-    }
     false
 }
 
@@ -181,6 +144,11 @@ fn is_private_ip(ip: IpAddr) -> bool {
                 || v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64
         }
         IpAddr::V6(v6) => {
+            // IPv4-mapped IPv6 addresses (::ffff:x.x.x.x) — delegate to
+            // the IPv4 check so private ranges aren't bypassed.
+            if let Some(mapped_v4) = v6.to_ipv4_mapped() {
+                return is_private_ip(IpAddr::V4(mapped_v4));
+            }
             v6.is_loopback() || v6.is_unspecified()
                 // fc00::/7 (unique local)
                 || (v6.segments()[0] & 0xfe00) == 0xfc00
@@ -289,30 +257,107 @@ fn parse_og_metadata(html: &str) -> PreviewResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Build a shared reqwest client
+// Build a shared reqwest client with SSRF-safe redirect policy
 // ---------------------------------------------------------------------------
 
-fn build_http_client() -> reqwest::Client {
+/// Redirect policy that re-validates every hop against SSRF filters.
+///
+/// Blocks redirect chains longer than 5 hops and rejects any redirect
+/// whose target resolves to a private/reserved IP or hostname.
+fn safe_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= 5 {
+            return attempt.stop();
+        }
+        match attempt.url().host_str() {
+            Some(host) => {
+                // Block IP-literal redirects to private ranges
+                if let Ok(ip) = host.parse::<IpAddr>() {
+                    if is_private_ip(ip) {
+                        return attempt.stop();
+                    }
+                }
+                // Block obvious internal hostnames
+                let lower = host.to_lowercase();
+                if lower == "localhost"
+                    || lower.ends_with(".local")
+                    || lower.ends_with(".internal")
+                    || lower == "metadata.google.internal"
+                    || lower.starts_with("169.254.")
+                {
+                    return attempt.stop();
+                }
+                // Only allow http/https schemes
+                match attempt.url().scheme() {
+                    "http" | "https" => attempt.follow(),
+                    _ => attempt.stop(),
+                }
+            }
+            None => attempt.stop(),
+        }
+    })
+}
+
+/// Resolve a hostname to a socket address and validate that ALL resolved IPs
+/// are public. Returns a validated address for DNS-pinned requests.
+async fn resolve_and_validate(host: &str, port: u16) -> Result<SocketAddr, ()> {
+    let lookup = format!("{}:{}", host, port);
+    let addrs: Vec<SocketAddr> = tokio::net::lookup_host(&lookup)
+        .await
+        .map_err(|e| {
+            tracing::debug!(host = %host, error = %e, "DNS resolution failed — blocking");
+        })?
+        .collect();
+
+    if addrs.is_empty() {
+        return Err(());
+    }
+
+    // Reject if ANY resolved address is private
+    for addr in &addrs {
+        if is_private_ip(addr.ip()) {
+            tracing::warn!(
+                host = %host,
+                resolved_ip = %addr.ip(),
+                "DNS resolved to private/reserved IP — blocking request"
+            );
+            return Err(());
+        }
+    }
+
+    // Return first validated address for pinning
+    Ok(addrs[0])
+}
+
+/// Build an HTTP client pinned to a validated IP address.
+///
+/// The `resolve()` call ensures reqwest connects to the pre-validated IP
+/// instead of performing its own DNS resolution, closing the TOCTOU gap.
+fn build_pinned_http_client(
+    host: &str,
+    pinned_addr: SocketAddr,
+    user_agent: &str,
+) -> Result<reqwest::Client, reqwest::Error> {
     reqwest::Client::builder()
         .timeout(FETCH_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::limited(5))
-        .user_agent("AnnexBot/1.0 (link-preview)")
+        .redirect(safe_redirect_policy())
+        .resolve(host, pinned_addr)
+        .user_agent(user_agent)
+        .build()
+}
+
+/// Build a non-pinned HTTP client (for IP-literal URLs that don't need DNS).
+fn build_http_client(user_agent: &str) -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(FETCH_TIMEOUT)
+        .redirect(safe_redirect_policy())
+        .user_agent(user_agent)
         .build()
         .unwrap_or_default()
 }
 
-/// Build a client with a browser-like user-agent for image fetching.
-/// Many CDNs and image hosts block non-browser user agents.
-fn build_image_http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(FETCH_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::limited(5))
-        .user_agent(
-            "Mozilla/5.0 (compatible; AnnexImageProxy/1.0; +https://annex.chat)",
-        )
-        .build()
-        .unwrap_or_default()
-}
+const PREVIEW_USER_AGENT: &str = "AnnexBot/1.0 (link-preview)";
+const IMAGE_USER_AGENT: &str = "Mozilla/5.0 (compatible; AnnexImageProxy/1.0; +https://annex.chat)";
 
 // ---------------------------------------------------------------------------
 // Handlers
@@ -344,18 +389,25 @@ pub async fn link_preview_handler(
         }
     }
 
-    // DNS rebinding protection: resolve the hostname and verify all IPs are public.
-    // Only runs for cache misses — avoids unnecessary DNS lookups on cached hits.
-    if let Ok(parsed) = url::Url::parse(&url) {
-        if let Some(host) = parsed.host_str() {
-            if host.parse::<IpAddr>().is_err() && resolves_to_private_ip(host).await {
-                return Err(StatusCode::FORBIDDEN);
-            }
-        }
-    }
+    // DNS-pinned fetch: resolve hostname, validate all IPs are public, then
+    // pin the connection to the validated address (closes TOCTOU rebinding gap).
+    let client = {
+        let parsed = url::Url::parse(&url).map_err(|_| StatusCode::BAD_REQUEST)?;
+        let host = parsed.host_str().ok_or(StatusCode::BAD_REQUEST)?;
+        let port = parsed.port_or_known_default().unwrap_or(443);
 
-    // Fetch the page
-    let client = build_http_client();
+        if host.parse::<IpAddr>().is_ok() {
+            // IP-literal URL — already checked by is_private_or_reserved above
+            build_http_client(PREVIEW_USER_AGENT)
+        } else {
+            let pinned_addr = resolve_and_validate(host, port)
+                .await
+                .map_err(|_| StatusCode::FORBIDDEN)?;
+            build_pinned_http_client(host, pinned_addr, PREVIEW_USER_AGENT)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        }
+    };
+
     let resp = client
         .get(&url)
         .header(header::ACCEPT, "text/html,application/xhtml+xml")
@@ -365,6 +417,11 @@ pub async fn link_preview_handler(
             tracing::debug!(url = %url, error = %e, "link preview fetch failed");
             StatusCode::BAD_GATEWAY
         })?;
+
+    // Belt-and-suspenders: re-validate the final URL after any redirects
+    if is_private_or_reserved(resp.url().as_str()) {
+        return Err(StatusCode::FORBIDDEN);
+    }
 
     if !resp.status().is_success() {
         return Err(StatusCode::BAD_GATEWAY);
@@ -475,18 +532,25 @@ pub async fn image_proxy_handler(
         }
     }
 
-    // DNS rebinding protection: resolve the hostname and verify all IPs are public.
-    // Only runs for cache misses — avoids unnecessary DNS lookups on cached hits.
-    if let Ok(parsed) = url::Url::parse(&url) {
-        if let Some(host) = parsed.host_str() {
-            if host.parse::<IpAddr>().is_err() && resolves_to_private_ip(host).await {
-                return Err(StatusCode::FORBIDDEN);
-            }
-        }
-    }
+    // DNS-pinned fetch: resolve hostname, validate all IPs are public, then
+    // pin the connection to the validated address (closes TOCTOU rebinding gap).
+    let client = {
+        let parsed = url::Url::parse(&url).map_err(|_| StatusCode::BAD_REQUEST)?;
+        let host = parsed.host_str().ok_or(StatusCode::BAD_REQUEST)?;
+        let port = parsed.port_or_known_default().unwrap_or(443);
 
-    // Fetch the image — use browser-like UA to avoid CDN blocks
-    let client = build_image_http_client();
+        if host.parse::<IpAddr>().is_ok() {
+            // IP-literal URL — already checked by is_private_or_reserved above
+            build_http_client(IMAGE_USER_AGENT)
+        } else {
+            let pinned_addr = resolve_and_validate(host, port)
+                .await
+                .map_err(|_| StatusCode::FORBIDDEN)?;
+            build_pinned_http_client(host, pinned_addr, IMAGE_USER_AGENT)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        }
+    };
+
     let resp = client
         .get(&url)
         .header(header::ACCEPT, "image/*")
@@ -496,6 +560,11 @@ pub async fn image_proxy_handler(
             tracing::debug!(url = %url, error = %e, "image proxy fetch failed");
             StatusCode::BAD_GATEWAY
         })?;
+
+    // Belt-and-suspenders: re-validate the final URL after any redirects
+    if is_private_or_reserved(resp.url().as_str()) {
+        return Err(StatusCode::FORBIDDEN);
+    }
 
     if !resp.status().is_success() {
         tracing::debug!(url = %url, status = %resp.status(), "image proxy: upstream returned error");
@@ -774,6 +843,32 @@ mod tests {
         assert!(url_has_image_extension("https://cdn.example.com/img.webp"));
         assert!(!url_has_image_extension("https://example.com/page.html"));
         assert!(!url_has_image_extension("https://example.com/api/image"));
+    }
+
+    #[test]
+    fn blocks_ipv4_mapped_ipv6() {
+        // IPv4-mapped IPv6 addresses must be checked against IPv4 private ranges
+        let mapped_loopback: IpAddr = "::ffff:127.0.0.1".parse().unwrap();
+        assert!(is_private_ip(mapped_loopback));
+
+        let mapped_private: IpAddr = "::ffff:10.0.0.1".parse().unwrap();
+        assert!(is_private_ip(mapped_private));
+
+        let mapped_private_192: IpAddr = "::ffff:192.168.1.1".parse().unwrap();
+        assert!(is_private_ip(mapped_private_192));
+
+        let mapped_link_local: IpAddr = "::ffff:169.254.169.254".parse().unwrap();
+        assert!(is_private_ip(mapped_link_local));
+
+        // Public IPv4-mapped should be allowed
+        let mapped_public: IpAddr = "::ffff:8.8.8.8".parse().unwrap();
+        assert!(!is_private_ip(mapped_public));
+    }
+
+    #[test]
+    fn blocks_ipv4_mapped_ipv6_in_url() {
+        assert!(is_private_or_reserved("http://[::ffff:127.0.0.1]/admin"));
+        assert!(is_private_or_reserved("http://[::ffff:10.0.0.1]/admin"));
     }
 
     #[test]

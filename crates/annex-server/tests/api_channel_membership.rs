@@ -119,7 +119,7 @@ async fn test_join_channel_success() {
     // Verify DB
     {
         let conn = pool.get().unwrap();
-        assert!(is_member(&conn, "chan-1", "user-1").unwrap());
+        assert!(is_member(&conn, 1, "chan-1", "user-1").unwrap());
     }
 }
 
@@ -247,7 +247,7 @@ async fn test_leave_channel() {
 
     {
         let conn = pool.get().unwrap();
-        assert!(!is_member(&conn, "chan-1", "user-1").unwrap());
+        assert!(!is_member(&conn, 1, "chan-1", "user-1").unwrap());
     }
 }
 
@@ -509,7 +509,7 @@ async fn test_ws_message_enforcement() {
     // 5. Verify Not Persisted
     {
         let conn = pool.get().unwrap();
-        let messages = list_messages(&conn, "chan-bad", None, None).unwrap();
+        let messages = list_messages(&conn, 1, "chan-bad", None, None).unwrap();
         assert_eq!(messages.len(), 0);
     }
 }

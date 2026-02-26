@@ -403,15 +403,16 @@ pub fn add_member(
     }
 }
 
-/// Removes a member from a channel.
+/// Removes a member from a channel, scoped by server.
 pub fn remove_member(
     conn: &Connection,
+    server_id: i64,
     channel_id: &str,
     pseudonym_id: &str,
 ) -> Result<(), ChannelError> {
     let count = conn.execute(
-        "DELETE FROM channel_members WHERE channel_id = ?1 AND pseudonym_id = ?2",
-        [channel_id, pseudonym_id],
+        "DELETE FROM channel_members WHERE server_id = ?1 AND channel_id = ?2 AND pseudonym_id = ?3",
+        params![server_id, channel_id, pseudonym_id],
     )?;
     if count == 0 {
         // Not considered an error if they weren't a member?
@@ -423,15 +424,16 @@ pub fn remove_member(
     Ok(())
 }
 
-/// Checks if a pseudonym is a member of a channel.
+/// Checks if a pseudonym is a member of a channel, scoped by server.
 pub fn is_member(
     conn: &Connection,
+    server_id: i64,
     channel_id: &str,
     pseudonym_id: &str,
 ) -> Result<bool, ChannelError> {
     let exists: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM channel_members WHERE channel_id = ?1 AND pseudonym_id = ?2)",
-        [channel_id, pseudonym_id],
+        "SELECT EXISTS(SELECT 1 FROM channel_members WHERE server_id = ?1 AND channel_id = ?2 AND pseudonym_id = ?3)",
+        params![server_id, channel_id, pseudonym_id],
         |row| row.get(0),
     )?;
     Ok(exists)
@@ -535,13 +537,14 @@ pub fn get_message(conn: &Connection, message_id: &str) -> Result<Message, Chann
     .ok_or_else(|| ChannelError::NotFound(message_id.to_string()))
 }
 
-/// Lists messages in a channel, with pagination.
+/// Lists messages in a channel, with pagination, scoped by server.
 ///
 /// If `before` is provided, returns messages created before that timestamp/message_id.
 /// For simplicity, we filter by created_at.
 /// `limit` defaults to 50 if not specified.
 pub fn list_messages(
     conn: &Connection,
+    server_id: i64,
     channel_id: &str,
     before: Option<String>,
     limit: Option<u32>,
@@ -554,7 +557,7 @@ pub fn list_messages(
                 id, server_id, channel_id, message_id, sender_pseudonym, content,
                 reply_to_message_id, created_at, expires_at, edited_at, deleted_at
             FROM messages
-            WHERE channel_id = ?1 AND created_at < ?2
+            WHERE server_id = ?1 AND channel_id = ?2 AND created_at < ?3
             ORDER BY created_at DESC
             LIMIT {}",
             limit
@@ -565,7 +568,7 @@ pub fn list_messages(
                 id, server_id, channel_id, message_id, sender_pseudonym, content,
                 reply_to_message_id, created_at, expires_at, edited_at, deleted_at
             FROM messages
-            WHERE channel_id = ?1
+            WHERE server_id = ?1 AND channel_id = ?2
             ORDER BY created_at DESC
             LIMIT {}",
             limit
@@ -575,9 +578,9 @@ pub fn list_messages(
     let mut stmt = conn.prepare(&sql)?;
 
     let rows = if let Some(before_ts) = before {
-        stmt.query_map(params![channel_id, before_ts], map_row_to_message)?
+        stmt.query_map(params![server_id, channel_id, before_ts], map_row_to_message)?
     } else {
-        stmt.query_map(params![channel_id], map_row_to_message)?
+        stmt.query_map(params![server_id, channel_id], map_row_to_message)?
     };
 
     let mut messages = Vec::new();
@@ -926,7 +929,7 @@ mod tests {
         assert_eq!(fetched.content, "Hello World");
 
         // List messages
-        let messages = list_messages(&conn, "chan-msg", None, None).expect("list messages failed");
+        let messages = list_messages(&conn, server_id, "chan-msg", None, None).expect("list messages failed");
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].message_id, "msg-2"); // Reverse chronological
         assert_eq!(messages[1].message_id, "msg-1");
@@ -996,8 +999,8 @@ mod tests {
         add_member(&conn, server_id, "chan-mem", "user-1").expect("add member failed");
 
         // Check is_member
-        assert!(is_member(&conn, "chan-mem", "user-1").unwrap());
-        assert!(!is_member(&conn, "chan-mem", "user-2").unwrap());
+        assert!(is_member(&conn, server_id, "chan-mem", "user-1").unwrap());
+        assert!(!is_member(&conn, server_id, "chan-mem", "user-2").unwrap());
 
         // List members
         let members = list_members(&conn, "chan-mem").expect("list members failed");
@@ -1005,8 +1008,8 @@ mod tests {
         assert_eq!(members[0].pseudonym_id, "user-1");
 
         // Remove member
-        remove_member(&conn, "chan-mem", "user-1").expect("remove member failed");
-        assert!(!is_member(&conn, "chan-mem", "user-1").unwrap());
+        remove_member(&conn, server_id, "chan-mem", "user-1").expect("remove member failed");
+        assert!(!is_member(&conn, server_id, "chan-mem", "user-1").unwrap());
     }
 
     #[test]
@@ -1207,7 +1210,7 @@ mod tests {
 
         // First add succeeds
         add_member(&conn, server_id, "chan-idem", "idem-user").expect("first add failed");
-        assert!(is_member(&conn, "chan-idem", "idem-user").expect("check failed"));
+        assert!(is_member(&conn, server_id, "chan-idem", "idem-user").expect("check failed"));
 
         // Second add is idempotent (no error)
         add_member(&conn, server_id, "chan-idem", "idem-user")

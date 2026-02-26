@@ -176,7 +176,7 @@ async fn test_ws_lifecycle() {
     // 8. Verify DB
     {
         let conn = pool.get().unwrap();
-        let msgs = list_messages(&conn, "chan-1", None, None).unwrap();
+        let msgs = list_messages(&conn, 1, "chan-1", None, None).unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, content);
     }

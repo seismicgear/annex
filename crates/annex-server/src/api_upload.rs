@@ -445,7 +445,7 @@ pub async fn upload_chat_handler(
         let conn = state_clone.pool.get().map_err(|e| {
             ApiError::InternalServerError(format!("db connection failed: {}", e))
         })?;
-        is_member(&conn, &channel_id_clone, &pseudonym)
+        is_member(&conn, state_clone.server_id, &channel_id_clone, &pseudonym)
             .map_err(|e| ApiError::InternalServerError(format!("membership check failed: {}", e)))
     })
     .await

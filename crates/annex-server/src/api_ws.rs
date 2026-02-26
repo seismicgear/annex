@@ -417,6 +417,7 @@ enum MembershipResult {
 /// Returns [`MembershipResult`] rather than silently swallowing errors.
 async fn check_ws_membership(
     pool: annex_db::DbPool,
+    server_id: i64,
     channel_id: &str,
     pseudonym: &str,
 ) -> MembershipResult {
@@ -424,7 +425,7 @@ async fn check_ws_membership(
     let pid = pseudonym.to_string();
     let result = tokio::task::spawn_blocking(move || {
         let conn = pool.get().map_err(|e| format!("pool error: {}", e))?;
-        is_member(&conn, &cid, &pid).map_err(|e| format!("db error: {}", e))
+        is_member(&conn, server_id, &cid, &pid).map_err(|e| format!("db error: {}", e))
     })
     .await;
 
@@ -501,7 +502,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
             if let Ok(incoming) = serde_json::from_str::<IncomingMessage>(&text.to_string()) {
                 match incoming {
                     IncomingMessage::Subscribe { channel_id } => {
-                        match check_ws_membership(state.pool.clone(), &channel_id, &pseudonym).await
+                        match check_ws_membership(state.pool.clone(), state.server_id, &channel_id, &pseudonym).await
                         {
                             MembershipResult::Allowed => {
                                 state
@@ -553,7 +554,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                         }
 
                         // 1. Validate membership (enforcing Phase 4.4 requirements)
-                        match check_ws_membership(state.pool.clone(), &channel_id, &pseudonym).await
+                        match check_ws_membership(state.pool.clone(), state.server_id, &channel_id, &pseudonym).await
                         {
                             MembershipResult::Allowed => {}
                             MembershipResult::Denied => {
@@ -677,9 +678,35 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                             continue;
                         }
 
+                        // Membership check: same gate as Message handler
+                        match check_ws_membership(state.pool.clone(), state.server_id, &channel_id, &pseudonym)
+                            .await
+                        {
+                            MembershipResult::Allowed => {}
+                            MembershipResult::Denied => {
+                                send_ws_error(
+                                    &tx,
+                                    format!("Not a member of channel {}", channel_id),
+                                );
+                                continue;
+                            }
+                            MembershipResult::Error(e) => {
+                                tracing::error!(
+                                    pseudonym = %pseudonym,
+                                    channel_id = %channel_id,
+                                    "edit membership check failed: {}",
+                                    e
+                                );
+                                send_ws_error(
+                                    &tx,
+                                    "Internal error checking channel membership".to_string(),
+                                );
+                                continue;
+                            }
+                        }
+
                         let state_clone = state.clone();
                         let pseudonym_clone = pseudonym.clone();
-                        let channel_id_clone = channel_id.clone();
 
                         let res = tokio::task::spawn_blocking(move || {
                             let conn = state_clone.pool.get().map_err(|e| e.to_string())?;
@@ -690,13 +717,17 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
 
                         match res {
                             Ok(Ok(updated)) => {
+                                // Use the persisted channel_id from DB, not the
+                                // client-supplied one, to prevent cross-channel
+                                // broadcast spoofing.
+                                let persisted_channel_id = updated.channel_id.clone();
                                 let ws_payload: WsMessagePayload = updated.into();
                                 let out = OutgoingMessage::MessageEdited(ws_payload);
                                 match serde_json::to_string(&out) {
                                     Ok(json) => {
                                         state
                                             .connection_manager
-                                            .broadcast(&channel_id_clone, json)
+                                            .broadcast(&persisted_channel_id, json)
                                             .await;
                                     }
                                     Err(e) => {
@@ -717,9 +748,35 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                         channel_id,
                         message_id,
                     } => {
+                        // Membership check: same gate as Message handler
+                        match check_ws_membership(state.pool.clone(), state.server_id, &channel_id, &pseudonym)
+                            .await
+                        {
+                            MembershipResult::Allowed => {}
+                            MembershipResult::Denied => {
+                                send_ws_error(
+                                    &tx,
+                                    format!("Not a member of channel {}", channel_id),
+                                );
+                                continue;
+                            }
+                            MembershipResult::Error(e) => {
+                                tracing::error!(
+                                    pseudonym = %pseudonym,
+                                    channel_id = %channel_id,
+                                    "delete membership check failed: {}",
+                                    e
+                                );
+                                send_ws_error(
+                                    &tx,
+                                    "Internal error checking channel membership".to_string(),
+                                );
+                                continue;
+                            }
+                        }
+
                         let state_clone = state.clone();
                         let pseudonym_clone = pseudonym.clone();
-                        let channel_id_clone = channel_id.clone();
 
                         let res = tokio::task::spawn_blocking(move || {
                             let conn = state_clone.pool.get().map_err(|e| e.to_string())?;
@@ -730,13 +787,17 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
 
                         match res {
                             Ok(Ok(updated)) => {
+                                // Use the persisted channel_id from DB, not the
+                                // client-supplied one, to prevent cross-channel
+                                // broadcast spoofing.
+                                let persisted_channel_id = updated.channel_id.clone();
                                 let ws_payload: WsMessagePayload = updated.into();
                                 let out = OutgoingMessage::MessageDeleted(ws_payload);
                                 match serde_json::to_string(&out) {
                                     Ok(json) => {
                                         state
                                             .connection_manager
-                                            .broadcast(&channel_id_clone, json)
+                                            .broadcast(&persisted_channel_id, json)
                                             .await;
                                     }
                                     Err(e) => {
@@ -763,7 +824,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                         }
 
                         // Check membership
-                        match check_ws_membership(state.pool.clone(), &channel_id, &pseudonym).await
+                        match check_ws_membership(state.pool.clone(), state.server_id, &channel_id, &pseudonym).await
                         {
                             MembershipResult::Allowed => {}
                             MembershipResult::Denied => {
