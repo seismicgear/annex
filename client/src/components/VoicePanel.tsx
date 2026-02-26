@@ -333,6 +333,30 @@ export function VoicePanel() {
     await leaveCall(pseudonymId);
   }, [pseudonymId, leaveCall]);
 
+  // Fetch setup guidance from server when error indicates voice is not configured.
+  const [setupHint, setSetupHint] = useState<string | null>(null);
+  useEffect(() => {
+    if (!lastJoinError?.includes('not configured')) {
+      setSetupHint(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    api.getVoiceConfigStatus()
+      .then((status) => {
+        if (cancelled || status.voice_enabled) return;
+        setSetupHint(status.setup_hint);
+      })
+      .catch(() => {
+        // Best-effort: if the status endpoint fails, just show the raw error
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [lastJoinError]);
+
   // If connected to a call, always show the LiveKitRoom (even on non-voice channels).
   if (voiceToken && livekitUrl && connectedChannelId) {
     // Find the channel name for the connected call
@@ -369,22 +393,6 @@ export function VoicePanel() {
   const unavailableReason = !isVoiceAllowed
     ? 'Voice is disabled by server policy for your identity.'
     : null;
-
-  // Fetch setup guidance from server when error indicates voice is not configured.
-  const [setupHint, setSetupHint] = useState<string | null>(null);
-  useEffect(() => {
-    if (lastJoinError && lastJoinError.includes('not configured')) {
-      api.getVoiceConfigStatus().then((status) => {
-        if (!status.voice_enabled) {
-          setSetupHint(status.setup_hint);
-        }
-      }).catch(() => {
-        // Best-effort: if the status endpoint fails, just show the raw error
-      });
-    } else {
-      setSetupHint(null);
-    }
-  }, [lastJoinError]);
 
   return (
     <div className="voice-panel disconnected">
