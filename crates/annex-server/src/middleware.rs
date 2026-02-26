@@ -264,14 +264,14 @@ pub async fn rate_limit_middleware(req: Request<Body>, next: Next) -> Result<Res
         .clone();
 
     // Auto-detect public URL from request headers if not yet configured.
-    // Skips loopback, private IPs, and single-label hostnames since those
-    // are never valid public URLs. Keeps retrying until a plausible host
-    // arrives (e.g. via reverse proxy) or the admin sets one explicitly
-    // via PUT /api/admin/public-url or ANNEX_PUBLIC_URL.
     //
-    // SECURITY NOTE: This trusts X-Forwarded-Host / Host headers which can
-    // be spoofed. Deploy behind a reverse proxy that strips untrusted
-    // forwarded headers, or set ANNEX_PUBLIC_URL explicitly.
+    // To prevent Host/X-Forwarded-Host header poisoning, we only trust
+    // forwarded headers when the request arrives from a loopback or
+    // private IP (i.e., from a trusted reverse proxy). Direct external
+    // requests cannot spoof these headers to poison the public URL.
+    //
+    // If no trusted proxy is detected, the URL must be set explicitly
+    // via PUT /api/admin/public-url or the ANNEX_PUBLIC_URL env var.
     {
         let current = state
             .public_url
@@ -282,78 +282,96 @@ pub async fn rate_limit_middleware(req: Request<Body>, next: Next) -> Result<Res
         let needs_detection = current.is_empty();
 
         if needs_detection {
-            let proto = req
-                .headers()
-                .get("x-forwarded-proto")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("http");
-
-            let source_header = if req.headers().get("x-forwarded-host").is_some() {
-                "x-forwarded-host"
-            } else {
-                "host"
-            };
-
-            let host = req
-                .headers()
-                .get("x-forwarded-host")
-                .or_else(|| req.headers().get("host"))
-                .and_then(|v| v.to_str().ok());
-
-            if let Some(host) = host {
-                // Strip port for validation checks
-                let host_name = host.split(':').next().unwrap_or(host);
-
-                // Reject loopback and internal hostnames
-                let mut is_internal = host_name == "localhost"
-                    || host_name == "127.0.0.1"
-                    || host_name == "[::1]"
-                    || host_name == "0.0.0.0"
-                    || host_name.ends_with(".local")
-                    || host_name.ends_with(".internal");
-
-                // Reject private/reserved IP addresses
-                if !is_internal {
-                    // Strip brackets for IPv6 parsing
-                    let bare = host_name.trim_start_matches('[').trim_end_matches(']');
-                    if let Ok(ip) = bare.parse::<std::net::IpAddr>() {
-                        use std::net::IpAddr;
-                        is_internal = match ip {
-                            IpAddr::V4(v4) => {
-                                v4.is_loopback()
-                                    || v4.is_private()
-                                    || v4.is_link_local()
-                                    || v4.is_unspecified()
-                            }
-                            IpAddr::V6(v6) => {
-                                v6.is_loopback()
-                                    || v6.is_unspecified()
-                                    || (v6.segments()[0] & 0xfe00) == 0xfc00
-                                    || (v6.segments()[0] & 0xffc0) == 0xfe80
-                            }
-                        };
+            // Only trust forwarded headers from local/private peers
+            let peer_is_trusted = req
+                .extensions()
+                .get::<ConnectInfo<SocketAddr>>()
+                .map(|ConnectInfo(addr)| {
+                    let ip = addr.ip();
+                    match ip {
+                        IpAddr::V4(v4) => {
+                            v4.is_loopback() || v4.is_private() || v4.is_link_local()
+                        }
+                        IpAddr::V6(v6) => {
+                            v6.is_loopback()
+                                || (v6.segments()[0] & 0xfe00) == 0xfc00
+                                || (v6.segments()[0] & 0xffc0) == 0xfe80
+                        }
                     }
-                }
+                })
+                .unwrap_or(false);
 
-                // Require a dot or valid IP to avoid single-word poisoning
-                // (e.g. "Host: evil" with no TLD).
-                let bare = host_name.trim_start_matches('[').trim_end_matches(']');
-                let looks_plausible =
-                    host_name.contains('.') || bare.parse::<std::net::IpAddr>().is_ok();
+            if peer_is_trusted {
+                let proto = req
+                    .headers()
+                    .get("x-forwarded-proto")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("http");
 
-                if !is_internal && looks_plausible {
-                    let detected = format!("{proto}://{host}");
-                    let mut url = state
-                        .public_url
-                        .write()
-                        .unwrap_or_else(|p| p.into_inner());
-                    if url.is_empty() {
-                        tracing::info!(
-                            public_url = %detected,
-                            source_header = source_header,
-                            "auto-detected server public URL from request headers"
-                        );
-                        *url = detected;
+                let source_header = if req.headers().get("x-forwarded-host").is_some() {
+                    "x-forwarded-host"
+                } else {
+                    "host"
+                };
+
+                let host = req
+                    .headers()
+                    .get("x-forwarded-host")
+                    .or_else(|| req.headers().get("host"))
+                    .and_then(|v| v.to_str().ok());
+
+                if let Some(host) = host {
+                    // Strip port for validation checks
+                    let host_name = host.split(':').next().unwrap_or(host);
+
+                    // Reject loopback and internal hostnames
+                    let mut is_internal = host_name == "localhost"
+                        || host_name == "127.0.0.1"
+                        || host_name == "[::1]"
+                        || host_name == "0.0.0.0"
+                        || host_name.ends_with(".local")
+                        || host_name.ends_with(".internal");
+
+                    // Reject private/reserved IP addresses
+                    if !is_internal {
+                        let bare = host_name.trim_start_matches('[').trim_end_matches(']');
+                        if let Ok(ip) = bare.parse::<std::net::IpAddr>() {
+                            is_internal = match ip {
+                                IpAddr::V4(v4) => {
+                                    v4.is_loopback()
+                                        || v4.is_private()
+                                        || v4.is_link_local()
+                                        || v4.is_unspecified()
+                                }
+                                IpAddr::V6(v6) => {
+                                    v6.is_loopback()
+                                        || v6.is_unspecified()
+                                        || (v6.segments()[0] & 0xfe00) == 0xfc00
+                                        || (v6.segments()[0] & 0xffc0) == 0xfe80
+                                }
+                            };
+                        }
+                    }
+
+                    // Require a dot or valid IP to avoid single-word poisoning
+                    let bare = host_name.trim_start_matches('[').trim_end_matches(']');
+                    let looks_plausible =
+                        host_name.contains('.') || bare.parse::<std::net::IpAddr>().is_ok();
+
+                    if !is_internal && looks_plausible {
+                        let detected = format!("{proto}://{host}");
+                        let mut url = state
+                            .public_url
+                            .write()
+                            .unwrap_or_else(|p| p.into_inner());
+                        if url.is_empty() {
+                            tracing::info!(
+                                public_url = %detected,
+                                source_header = source_header,
+                                "auto-detected server public URL from trusted proxy"
+                            );
+                            *url = detected;
+                        }
                     }
                 }
             }

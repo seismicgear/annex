@@ -179,17 +179,37 @@ pub async fn list_channels_handler(
 }
 
 /// GET /api/channels/:channelId
+///
+/// Returns channel details. Requires the requester to be a member of the
+/// channel or to have moderation privileges, preventing metadata leakage
+/// for private channels.
 pub async fn get_channel_handler(
     Extension(state): Extension<Arc<AppState>>,
-    Extension(IdentityContext(_identity)): Extension<IdentityContext>,
+    Extension(IdentityContext(identity)): Extension<IdentityContext>,
     Path(channel_id): Path<String>,
 ) -> Result<Json<Channel>, StatusCode> {
+    let pool = state.pool.clone();
+    let server_id = state.server_id;
+    let cid = channel_id.clone();
+    let pid = identity.pseudonym_id.clone();
+    let can_moderate = identity.can_moderate;
+
     let channel = tokio::task::spawn_blocking(move || {
-        let conn = state.pool.get().map_err(|e| {
+        let conn = pool.get().map_err(|e| {
             tracing::error!(error = %e, "failed to get db connection for get_channel");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
-        get_channel(&conn, &channel_id).map_err(channel_err_to_status)
+
+        // Moderators can view any channel; regular users must be members
+        if !can_moderate {
+            let member = is_member(&conn, server_id, &cid, &pid)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            if !member {
+                return Err(StatusCode::FORBIDDEN);
+            }
+        }
+
+        get_channel(&conn, &cid).map_err(channel_err_to_status)
     })
     .await
     .map_err(|e| {

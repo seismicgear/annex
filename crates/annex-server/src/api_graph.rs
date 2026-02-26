@@ -4,7 +4,7 @@ use crate::AppState;
 use annex_graph::{find_path_bfs, get_visible_profile, BfsPath, GraphError, GraphProfile};
 use axum::{
     extract::{Extension, Path, Query},
-    http::{HeaderMap, StatusCode},
+    http::StatusCode,
     response::{IntoResponse, Response},
     Json,
 };
@@ -83,22 +83,16 @@ pub async fn get_degrees_handler(
 }
 
 /// Handler for `GET /api/graph/profile/{targetPseudonym}`.
+///
+/// Uses the authenticated identity (from auth middleware) as the viewer,
+/// rather than trusting a client-supplied header. This prevents spoofing
+/// the viewer pseudonym to access profile data not visible to the caller.
 pub async fn get_profile_handler(
     Extension(state): Extension<Arc<AppState>>,
+    Extension(crate::middleware::IdentityContext(identity)): Extension<crate::middleware::IdentityContext>,
     Path(target_pseudonym): Path<String>,
-    headers: HeaderMap,
 ) -> Result<Json<GraphProfile>, GraphApiError> {
-    // In Phase 5, we expect X-Annex-Viewer header to determine visibility.
-    // Future phases may integrate this with standard auth middleware.
-    let viewer_pseudonym = if let Some(val) = headers.get("X-Annex-Viewer") {
-        val.to_str()
-            .map_err(|_| GraphApiError::BadRequest("Invalid X-Annex-Viewer header".into()))?
-            .to_string()
-    } else {
-        return Err(GraphApiError::BadRequest(
-            "Missing X-Annex-Viewer header".into(),
-        ));
-    };
+    let viewer_pseudonym = identity.pseudonym_id;
 
     let result = tokio::task::spawn_blocking(move || {
         let conn = state.pool.get().map_err(|e| {

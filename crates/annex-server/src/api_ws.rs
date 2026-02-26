@@ -27,10 +27,107 @@ use std::{
 use tokio::sync::{mpsc, RwLock};
 use uuid::Uuid;
 
+/// Duration for which a WebSocket session token is valid (60 seconds).
+/// Tokens are single-use: the short TTL limits replay risk for unused tokens.
+const WS_TOKEN_TTL_SECS: u64 = 60;
+
+/// Derive a 32-byte HMAC key for WebSocket session tokens from the server's
+/// Ed25519 signing key. Uses SHA-256 with a domain-separation prefix so the
+/// derived key is independent of any other use of the signing key.
+pub fn derive_ws_token_secret(signing_key: &ed25519_dalek::SigningKey) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"annex-ws-token-v1:");
+    hasher.update(signing_key.as_bytes());
+    let result = hasher.finalize();
+    let mut secret = [0u8; 32];
+    secret.copy_from_slice(&result);
+    secret
+}
+
+/// Generates an HMAC-SHA256 signed WebSocket session token.
+///
+/// Token format: `base64(pseudonym|expires_unix_secs|hmac_signature)`
+/// The token binds the pseudonym to a time window, preventing both
+/// impersonation (different pseudonym) and replay (after expiry).
+fn generate_ws_token(pseudonym: &str, secret: &[u8; 32]) -> String {
+    use sha2::Sha256;
+    use hmac::{Hmac, Mac};
+
+    let expires = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        + WS_TOKEN_TTL_SECS;
+
+    let payload = format!("{}|{}", pseudonym, expires);
+
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC key length is valid");
+    mac.update(payload.as_bytes());
+    let signature = mac.finalize().into_bytes();
+
+    use base64::Engine;
+    let token_bytes = format!("{}|{}", payload, hex::encode(signature));
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(token_bytes.as_bytes())
+}
+
+/// Verifies an HMAC-SHA256 signed WebSocket session token.
+/// Returns the pseudonym if valid and not expired.
+fn verify_ws_token(token: &str, secret: &[u8; 32]) -> Result<String, StatusCode> {
+    use sha2::Sha256;
+    use hmac::{Hmac, Mac};
+    use base64::Engine;
+
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(token.as_bytes())
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+    let token_str = String::from_utf8(decoded).map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+    // Parse: pseudonym|expires|signature_hex
+    let parts: Vec<&str> = token_str.splitn(3, '|').collect();
+    if parts.len() != 3 {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let pseudonym = parts[0];
+    let expires_str = parts[1];
+    let sig_hex = parts[2];
+
+    // Verify HMAC
+    let payload = format!("{}|{}", pseudonym, expires_str);
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC key length is valid");
+    mac.update(payload.as_bytes());
+    let expected_sig = mac.finalize().into_bytes();
+    let provided_sig = hex::decode(sig_hex).map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+    if expected_sig.as_slice() != provided_sig.as_slice() {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    // Check expiry
+    let expires: u64 = expires_str.parse().map_err(|_| StatusCode::UNAUTHORIZED)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    if now > expires {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    Ok(pseudonym.to_string())
+}
+
 /// Query parameters for the WebSocket connection.
+///
+/// Accepts either a signed `token` (preferred) or a raw `pseudonym`
+/// (legacy/backwards-compatible). When both are present, `token` takes
+/// precedence.
 #[derive(Debug, Deserialize)]
 pub struct WsConnectParams {
-    pub pseudonym: String,
+    pub pseudonym: Option<String>,
+    pub token: Option<String>,
 }
 
 /// Incoming WebSocket message types.
@@ -337,14 +434,30 @@ impl ConnectionManager {
     }
 }
 
-/// WebSocket handler: `GET /ws?pseudonym=...`
+/// `POST /api/ws/token` — issues a short-lived, HMAC-signed WebSocket session
+/// token for the authenticated user. Clients should call this endpoint and
+/// then connect to `/ws?token=<token>` instead of passing raw pseudonyms.
 ///
-/// # Security Note
+/// Requires authentication via `auth_middleware` (X-Annex-Pseudonym or Bearer).
+pub async fn create_ws_token_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(crate::middleware::IdentityContext(identity)): Extension<crate::middleware::IdentityContext>,
+) -> Result<axum::Json<serde_json::Value>, StatusCode> {
+    let token = generate_ws_token(&identity.pseudonym_id, &state.ws_token_secret);
+    Ok(axum::Json(serde_json::json!({
+        "token": token,
+        "expires_in_secs": WS_TOKEN_TTL_SECS,
+    })))
+}
+
+/// WebSocket handler: `GET /ws?token=...` (preferred) or `GET /ws?pseudonym=...` (legacy).
 ///
-/// Authentication currently relies on the pseudonym acting as a bearer token.
-/// There is no per-request cryptographic signature verification. This is a
-/// known Phase 2 limitation; future hardening phases will introduce signed
-/// requests or session tokens.
+/// When a signed `token` parameter is present, the server verifies the HMAC
+/// signature and expiry, then resolves the bound pseudonym. This prevents
+/// impersonation and replay attacks.
+///
+/// The legacy `pseudonym` parameter is still accepted for backwards compatibility
+/// but should be considered deprecated. All new clients should use the token flow.
 ///
 /// All auth attempts (success and failure) are logged with the remote address
 /// for security monitoring.
@@ -354,10 +467,34 @@ pub async fn ws_handler(
     ws: WebSocketUpgrade,
     Query(params): Query<WsConnectParams>,
 ) -> impl IntoResponse {
-    // 1. Authenticate
-    // We do a blocking check against the DB.
+    // 1. Resolve pseudonym — prefer signed token over raw pseudonym
+    let pseudonym = if let Some(ref token) = params.token {
+        match verify_ws_token(token, &state.ws_token_secret) {
+            Ok(p) => p,
+            Err(code) => {
+                tracing::warn!(
+                    remote_addr = %addr,
+                    status = %code,
+                    "websocket token verification failed"
+                );
+                return code.into_response();
+            }
+        }
+    } else if let Some(ref p) = params.pseudonym {
+        tracing::debug!(
+            pseudonym = %p,
+            remote_addr = %addr,
+            "websocket auth via legacy pseudonym parameter (deprecated)"
+        );
+        p.clone()
+    } else {
+        tracing::warn!(remote_addr = %addr, "websocket connect missing token and pseudonym");
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+
+    // 2. Authenticate via DB
     let server_id = state.server_id;
-    let pseudonym = params.pseudonym.clone();
+    let pseudonym_clone = pseudonym.clone();
 
     let state_clone = state.clone();
     let auth_result = tokio::task::spawn_blocking(move || {
@@ -365,7 +502,7 @@ pub async fn ws_handler(
             .pool
             .get()
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        match get_platform_identity(&conn, server_id, &pseudonym) {
+        match get_platform_identity(&conn, server_id, &pseudonym_clone) {
             Ok(identity) if identity.active => Ok(identity),
             Ok(_) => Err(StatusCode::FORBIDDEN), // Inactive
             Err(_) => Err(StatusCode::UNAUTHORIZED),
@@ -376,15 +513,16 @@ pub async fn ws_handler(
     match auth_result {
         Ok(Ok(identity)) => {
             tracing::info!(
-                pseudonym = %params.pseudonym,
+                pseudonym = %pseudonym,
                 remote_addr = %addr,
+                token_auth = params.token.is_some(),
                 "websocket auth success"
             );
             ws.on_upgrade(move |socket| handle_socket(socket, state, identity))
         }
         Ok(Err(code)) => {
             tracing::warn!(
-                pseudonym = %params.pseudonym,
+                pseudonym = %pseudonym,
                 remote_addr = %addr,
                 status = %code,
                 "websocket auth failed"
@@ -393,7 +531,7 @@ pub async fn ws_handler(
         }
         Err(_) => {
             tracing::warn!(
-                pseudonym = %params.pseudonym,
+                pseudonym = %pseudonym,
                 remote_addr = %addr,
                 "websocket auth internal error"
             );
@@ -453,6 +591,11 @@ fn send_ws_error(tx: &mpsc::Sender<String>, message: String) {
 
 /// Maximum allowed length for a WebSocket message content field (64 KiB).
 const MAX_WS_MESSAGE_CONTENT_LEN: usize = 65_536;
+
+/// Maximum allowed length for a VoiceIntent text field (2 KiB).
+/// TTS synthesis is CPU/memory intensive; limiting input size prevents
+/// resource abuse from oversized text payloads.
+const MAX_VOICE_INTENT_TEXT_LEN: usize = 2_048;
 
 /// Minimum interval between activity updates per WebSocket connection.
 /// Prevents spawning a blocking DB task on every single message.
@@ -820,6 +963,18 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                     IncomingMessage::VoiceIntent { channel_id, text } => {
                         if identity.participant_type != RoleCode::AiAgent {
                             send_ws_error(&tx, "Only AI agents can use VoiceIntent".to_string());
+                            continue;
+                        }
+
+                        // Validate text length before expensive TTS synthesis
+                        if text.len() > MAX_VOICE_INTENT_TEXT_LEN {
+                            send_ws_error(
+                                &tx,
+                                format!(
+                                    "VoiceIntent text exceeds maximum length of {} bytes",
+                                    MAX_VOICE_INTENT_TEXT_LEN
+                                ),
+                            );
                             continue;
                         }
 

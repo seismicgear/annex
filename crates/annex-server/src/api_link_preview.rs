@@ -260,43 +260,8 @@ fn parse_og_metadata(html: &str) -> PreviewResponse {
 // Build a shared reqwest client with SSRF-safe redirect policy
 // ---------------------------------------------------------------------------
 
-/// Redirect policy that re-validates every hop against SSRF filters.
-///
-/// Blocks redirect chains longer than 5 hops and rejects any redirect
-/// whose target resolves to a private/reserved IP or hostname.
-fn safe_redirect_policy() -> reqwest::redirect::Policy {
-    reqwest::redirect::Policy::custom(|attempt| {
-        if attempt.previous().len() >= 5 {
-            return attempt.stop();
-        }
-        match attempt.url().host_str() {
-            Some(host) => {
-                // Block IP-literal redirects to private ranges
-                if let Ok(ip) = host.parse::<IpAddr>() {
-                    if is_private_ip(ip) {
-                        return attempt.stop();
-                    }
-                }
-                // Block obvious internal hostnames
-                let lower = host.to_lowercase();
-                if lower == "localhost"
-                    || lower.ends_with(".local")
-                    || lower.ends_with(".internal")
-                    || lower == "metadata.google.internal"
-                    || lower.starts_with("169.254.")
-                {
-                    return attempt.stop();
-                }
-                // Only allow http/https schemes
-                match attempt.url().scheme() {
-                    "http" | "https" => attempt.follow(),
-                    _ => attempt.stop(),
-                }
-            }
-            None => attempt.stop(),
-        }
-    })
-}
+/// Maximum number of redirect hops to follow.
+const MAX_REDIRECT_HOPS: usize = 5;
 
 /// Resolve a hostname to a socket address and validate that ALL resolved IPs
 /// are public. Returns a validated address for DNS-pinned requests.
@@ -333,6 +298,8 @@ async fn resolve_and_validate(host: &str, port: u16) -> Result<SocketAddr, ()> {
 ///
 /// The `resolve()` call ensures reqwest connects to the pre-validated IP
 /// instead of performing its own DNS resolution, closing the TOCTOU gap.
+/// Redirects are disabled — callers must follow redirects manually via
+/// `fetch_with_redirect_validation` to DNS-validate each hop.
 fn build_pinned_http_client(
     host: &str,
     pinned_addr: SocketAddr,
@@ -340,20 +307,118 @@ fn build_pinned_http_client(
 ) -> Result<reqwest::Client, reqwest::Error> {
     reqwest::Client::builder()
         .timeout(FETCH_TIMEOUT)
-        .redirect(safe_redirect_policy())
+        .redirect(reqwest::redirect::Policy::none())
         .resolve(host, pinned_addr)
         .user_agent(user_agent)
         .build()
 }
 
 /// Build a non-pinned HTTP client (for IP-literal URLs that don't need DNS).
+/// Redirects are disabled — callers must follow redirects manually via
+/// `fetch_with_redirect_validation` to DNS-validate each hop.
 fn build_http_client(user_agent: &str) -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(FETCH_TIMEOUT)
-        .redirect(safe_redirect_policy())
+        .redirect(reqwest::redirect::Policy::none())
         .user_agent(user_agent)
         .build()
         .unwrap_or_default()
+}
+
+/// Performs an HTTP GET request, manually following redirects with full DNS
+/// validation at each hop. This closes the SSRF gap where redirected domains
+/// could resolve to private IPs without being checked.
+async fn fetch_with_redirect_validation(
+    initial_url: &str,
+    accept_header: &str,
+    user_agent: &str,
+) -> Result<reqwest::Response, StatusCode> {
+    let mut current_url = initial_url.to_string();
+
+    for hop in 0..=MAX_REDIRECT_HOPS {
+        if hop == MAX_REDIRECT_HOPS {
+            tracing::debug!(url = %current_url, "too many redirects");
+            return Err(StatusCode::BAD_GATEWAY);
+        }
+
+        // Validate URL at each hop
+        if is_private_or_reserved(&current_url) {
+            return Err(StatusCode::FORBIDDEN);
+        }
+
+        let parsed = url::Url::parse(&current_url).map_err(|_| StatusCode::BAD_REQUEST)?;
+        let host = parsed.host_str().ok_or(StatusCode::BAD_REQUEST)?;
+        let port = parsed.port_or_known_default().unwrap_or(443);
+
+        // DNS-pinned client for each hop
+        let client = if host.parse::<IpAddr>().is_ok() {
+            build_http_client(user_agent)
+        } else {
+            let pinned_addr = resolve_and_validate(host, port)
+                .await
+                .map_err(|_| StatusCode::FORBIDDEN)?;
+            build_pinned_http_client(host, pinned_addr, user_agent)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        };
+
+        let resp = client
+            .get(&current_url)
+            .header(header::ACCEPT, accept_header)
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::debug!(url = %current_url, error = %e, "fetch failed at redirect hop {}", hop);
+                StatusCode::BAD_GATEWAY
+            })?;
+
+        if resp.status().is_redirection() {
+            let location = resp
+                .headers()
+                .get(header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .ok_or(StatusCode::BAD_GATEWAY)?;
+
+            // Resolve relative redirect URLs against the current URL
+            let next_url = parsed
+                .join(location)
+                .map_err(|_| StatusCode::BAD_GATEWAY)?;
+
+            // Only allow http/https schemes
+            match next_url.scheme() {
+                "http" | "https" => {}
+                _ => return Err(StatusCode::FORBIDDEN),
+            }
+
+            current_url = next_url.to_string();
+            continue;
+        }
+
+        return Ok(resp);
+    }
+
+    Err(StatusCode::BAD_GATEWAY)
+}
+
+/// Reads a response body in chunks up to `max_bytes`, rejecting early if the
+/// limit is exceeded. This prevents over-allocating memory for oversized
+/// upstream responses (DoS mitigation).
+async fn read_body_capped(mut resp: reqwest::Response, max_bytes: usize) -> Result<Vec<u8>, StatusCode> {
+    // Fast-path: check Content-Length header if present
+    if let Some(cl) = resp.content_length() {
+        if cl as usize > max_bytes {
+            return Err(StatusCode::BAD_GATEWAY);
+        }
+    }
+
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|_| StatusCode::BAD_GATEWAY)? {
+        if body.len() + chunk.len() > max_bytes {
+            return Err(StatusCode::BAD_GATEWAY);
+        }
+        body.extend_from_slice(&chunk);
+    }
+
+    Ok(body)
 }
 
 const PREVIEW_USER_AGENT: &str = "AnnexBot/1.0 (link-preview)";
@@ -389,39 +454,14 @@ pub async fn link_preview_handler(
         }
     }
 
-    // DNS-pinned fetch: resolve hostname, validate all IPs are public, then
-    // pin the connection to the validated address (closes TOCTOU rebinding gap).
-    let client = {
-        let parsed = url::Url::parse(&url).map_err(|_| StatusCode::BAD_REQUEST)?;
-        let host = parsed.host_str().ok_or(StatusCode::BAD_REQUEST)?;
-        let port = parsed.port_or_known_default().unwrap_or(443);
-
-        if host.parse::<IpAddr>().is_ok() {
-            // IP-literal URL — already checked by is_private_or_reserved above
-            build_http_client(PREVIEW_USER_AGENT)
-        } else {
-            let pinned_addr = resolve_and_validate(host, port)
-                .await
-                .map_err(|_| StatusCode::FORBIDDEN)?;
-            build_pinned_http_client(host, pinned_addr, PREVIEW_USER_AGENT)
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        }
-    };
-
-    let resp = client
-        .get(&url)
-        .header(header::ACCEPT, "text/html,application/xhtml+xml")
-        .send()
-        .await
-        .map_err(|e| {
-            tracing::debug!(url = %url, error = %e, "link preview fetch failed");
-            StatusCode::BAD_GATEWAY
-        })?;
-
-    // Belt-and-suspenders: re-validate the final URL after any redirects
-    if is_private_or_reserved(resp.url().as_str()) {
-        return Err(StatusCode::FORBIDDEN);
-    }
+    // Fetch with DNS validation at every redirect hop, preventing SSRF
+    // via DNS rebinding on intermediate redirects.
+    let resp = fetch_with_redirect_validation(
+        &url,
+        "text/html,application/xhtml+xml",
+        PREVIEW_USER_AGENT,
+    )
+    .await?;
 
     if !resp.status().is_success() {
         return Err(StatusCode::BAD_GATEWAY);
@@ -444,14 +484,9 @@ pub async fn link_preview_handler(
         return Ok(Json(empty));
     }
 
-    // Read body with size limit
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|_| StatusCode::BAD_GATEWAY)?;
-    if bytes.len() > MAX_HTML_BYTES {
-        return Err(StatusCode::BAD_GATEWAY);
-    }
+    // Stream body with size limit — reject before buffering to prevent
+    // memory exhaustion from oversized upstream responses.
+    let bytes = read_body_capped(resp, MAX_HTML_BYTES).await?;
 
     let html = String::from_utf8_lossy(&bytes);
 
@@ -532,39 +567,9 @@ pub async fn image_proxy_handler(
         }
     }
 
-    // DNS-pinned fetch: resolve hostname, validate all IPs are public, then
-    // pin the connection to the validated address (closes TOCTOU rebinding gap).
-    let client = {
-        let parsed = url::Url::parse(&url).map_err(|_| StatusCode::BAD_REQUEST)?;
-        let host = parsed.host_str().ok_or(StatusCode::BAD_REQUEST)?;
-        let port = parsed.port_or_known_default().unwrap_or(443);
-
-        if host.parse::<IpAddr>().is_ok() {
-            // IP-literal URL — already checked by is_private_or_reserved above
-            build_http_client(IMAGE_USER_AGENT)
-        } else {
-            let pinned_addr = resolve_and_validate(host, port)
-                .await
-                .map_err(|_| StatusCode::FORBIDDEN)?;
-            build_pinned_http_client(host, pinned_addr, IMAGE_USER_AGENT)
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        }
-    };
-
-    let resp = client
-        .get(&url)
-        .header(header::ACCEPT, "image/*")
-        .send()
-        .await
-        .map_err(|e| {
-            tracing::debug!(url = %url, error = %e, "image proxy fetch failed");
-            StatusCode::BAD_GATEWAY
-        })?;
-
-    // Belt-and-suspenders: re-validate the final URL after any redirects
-    if is_private_or_reserved(resp.url().as_str()) {
-        return Err(StatusCode::FORBIDDEN);
-    }
+    // Fetch with DNS validation at every redirect hop, preventing SSRF
+    // via DNS rebinding on intermediate redirects.
+    let resp = fetch_with_redirect_validation(&url, "image/*", IMAGE_USER_AGENT).await?;
 
     if !resp.status().is_success() {
         tracing::debug!(url = %url, status = %resp.status(), "image proxy: upstream returned error");
@@ -600,13 +605,11 @@ pub async fn image_proxy_handler(
         infer_image_content_type(&url)
     };
 
-    // Read body with size limit
-    let bytes = resp.bytes().await.map_err(|_| StatusCode::BAD_GATEWAY)?;
-    if bytes.len() > MAX_IMAGE_BYTES {
-        return Err(StatusCode::BAD_GATEWAY);
-    }
+    // Stream body with size limit — reject before buffering to prevent
+    // memory exhaustion from oversized upstream responses.
+    let bytes = read_body_capped(resp, MAX_IMAGE_BYTES).await?;
 
-    let body = bytes.to_vec();
+    let body = bytes;
 
     // Cache the image
     {
