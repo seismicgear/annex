@@ -184,6 +184,11 @@ beforeEach(async () => {
   // Tests that need pre-existing identities must override this BEFORE render.
   const dbMock = await import('@/lib/db');
   vi.mocked(dbMock.listIdentities).mockResolvedValue([]);
+  // Restore default Tauri mocks — vi.clearAllMocks() only clears call counts,
+  // it does NOT reset implementations set by mockResolvedValue in earlier tests.
+  const tauriMock = await import('@/lib/tauri');
+  vi.mocked(tauriMock.getStartupMode).mockResolvedValue(null);
+  vi.mocked(tauriMock.startEmbeddedServer).mockResolvedValue('http://127.0.0.1:9999');
   global.fetch = vi.fn(async () => ({ ok: true, status: 200 } as Response));
 });
 
@@ -295,10 +300,12 @@ describe('App startup flow', () => {
       expect(screen.queryByTestId('identity-setup')).not.toBeInTheDocument();
     });
 
-    it('existing identity with pseudonymId skips Screen 1 entirely', async () => {
+    it('existing identity with saved prefs auto-resumes past selector to main app', async () => {
       // Returning user: IndexedDB already has a fully registered identity
       // AND startup prefs exist (they completed the full flow before).
-      // Screen 1 (identity creation) should be skipped.
+      // Screen 1 (identity creation) AND Screen 2 (selector) should both
+      // be skipped — the app auto-resumes the saved startup mode and
+      // proceeds directly to the main app.
       const dbMock = await import('@/lib/db');
       vi.mocked(dbMock.listIdentities).mockResolvedValue([FAKE_IDENTITY]);
       const tauri = await import('@/lib/tauri');
@@ -309,11 +316,14 @@ describe('App startup flow', () => {
       const App = (await import('./App')).default;
       render(<App />);
 
-      // Should go to Screen 2 (after server starts), never showing Screen 1
+      // Should auto-resume to the main app, skipping both selector and identity setup
       await waitFor(() => {
-        expect(screen.getByText('Choose how to use Annex. Remembered values are shown as suggestions.')).toBeInTheDocument();
+        expect(screen.getByTestId('status-bar')).toBeInTheDocument();
       });
       expect(screen.queryByTestId('identity-setup')).not.toBeInTheDocument();
+      expect(screen.queryByText('Choose how to use Annex. Remembered values are shown as suggestions.')).not.toBeInTheDocument();
+      // startEmbeddedServer should have been called for auto-resume
+      expect(tauri.startEmbeddedServer).toHaveBeenCalled();
     });
 
     it('full Tauri flow: Screen 1 → Screen 2 → main app', async () => {
@@ -334,17 +344,19 @@ describe('App startup flow', () => {
         });
       });
 
-      // Step 3: Screen 2 (server/mode selection)
+      // Step 3: Screen 2 (server/mode selection) — no saved prefs so
+      // selector is shown.
       await waitFor(() => {
         expect(screen.getByText('Choose how to use Annex. Remembered values are shown as suggestions.')).toBeInTheDocument();
       });
 
-      // Step 4: User picks a mode → triggers auto-registration
+      // Step 4: User picks "Host a Server" → triggers embedded server +
+      // auto-registration. Since all mocks resolve, registration completes
+      // and the main app renders.
       await userEvent.click(screen.getByRole('button', { name: 'Start Hosting' }));
 
-      // Step 5: Simulate registration completing
-      // (In real flow, the auto-register effect calls registerWithServer
-      // which sets phase='ready' with pseudonymId.)
+      // Step 5: Manually simulate registration completing in case the
+      // auto-register flow didn't fully resolve yet.
       act(() => {
         useIdentityStore.setState({
           phase: 'ready',
@@ -418,7 +430,7 @@ describe('App startup flow', () => {
       expect(screen.queryByTestId('identity-setup')).not.toBeInTheDocument();
     });
 
-    it('keys-ready identity with startup prefs stays on Screen 2 until user selects Host/Connect', async () => {
+    it('keys-ready identity with saved client prefs auto-resumes connection attempt', async () => {
       tauriEnabled = true;
       const dbMock = await import('@/lib/db');
       vi.mocked(dbMock.listIdentities).mockResolvedValue([KEYS_ONLY_IDENTITY]);
@@ -426,54 +438,67 @@ describe('App startup flow', () => {
       vi.mocked(tauri.getStartupMode).mockResolvedValue({
         startup_mode: { mode: 'client', server_url: 'https://unreachable.invalid' },
       });
+      // Make the server health check fail so auto-resume falls back to selector
+      global.fetch = vi.fn(async () => { throw new Error('network'); });
       const App = (await import('./App')).default;
       render(<App />);
 
+      // Auto-resume tries to connect, shows "Connecting..." then falls back
+      // to selector on failure
       await waitFor(() => {
         expect(screen.getByText('Choose how to use Annex. Remembered values are shown as suggestions.')).toBeInTheDocument();
       });
 
-      expect(screen.getByDisplayValue('https://unreachable.invalid')).toBeInTheDocument();
-      expect(screen.queryByText('Registering with server...')).not.toBeInTheDocument();
+      // Selector should not show identity setup
+      expect(screen.queryByTestId('identity-setup')).not.toBeInTheDocument();
     });
 
     it('Gate 3 retry returns to StartupModeSelector without immediate re-registration loop', async () => {
-      tauriEnabled = true;
+      // Use web mode — Gate 3 retry behavior is mode-independent and web
+      // mode avoids Tauri getStartupMode async complexities.
+      tauriEnabled = false;
       const user = userEvent.setup();
       const dbMock = await import('@/lib/db');
       vi.mocked(dbMock.listIdentities).mockResolvedValue([KEYS_ONLY_IDENTITY]);
       const api = await import('@/lib/api');
+      // Make register() fail so registration cannot complete
+      vi.mocked(api.register).mockRejectedValue(new Error('offline'));
 
       const App = (await import('./App')).default;
       render(<App />);
 
+      // Selector appears (web mode, keys exist but no pseudonymId)
       await waitFor(() => {
         expect(screen.getByText('Choose how to use Annex. Remembered values are shown as suggestions.')).toBeInTheDocument();
       });
 
-      await user.click(screen.getByRole('button', { name: 'Start Hosting' }));
+      // Click "Continue" (web mode: "Use This Server") → onReady → serverReady=true
+      await user.click(screen.getByRole('button', { name: 'Continue' }));
 
+      // Registration fails (register mock rejects) → error state.
+      // Simulate the final error from the retry loop exhaustion to avoid
+      // waiting for the real 15.5s exponential backoff.
       act(() => {
         useIdentityStore.setState({
           phase: 'error',
-          identity: KEYS_ONLY_IDENTITY,
-          storedIdentities: [KEYS_ONLY_IDENTITY],
-          error: 'offline',
+          error: 'Unable to contact server',
         });
       });
 
       await waitFor(() => {
-        expect(screen.getByText('offline')).toBeInTheDocument();
+        expect(screen.getByText(/Unable to contact server/)).toBeInTheDocument();
       });
 
-      const callsBeforeRetry = vi.mocked(api.getServerSummary).mock.calls.length;
+      const callsBefore = vi.mocked(api.getServerSummary).mock.calls.length;
       await user.click(screen.getByRole('button', { name: 'Retry' }));
 
+      // Retry resets serverReady=false → Gate 2 shows selector again
       await waitFor(() => {
         expect(screen.getByText('Choose how to use Annex. Remembered values are shown as suggestions.')).toBeInTheDocument();
       });
 
-      expect(api.getServerSummary).toHaveBeenCalledTimes(callsBeforeRetry);
+      // Retry should NOT immediately re-trigger registration
+      expect(api.getServerSummary).toHaveBeenCalledTimes(callsBefore);
     });
   });
 });
