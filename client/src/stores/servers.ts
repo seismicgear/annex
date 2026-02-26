@@ -201,7 +201,7 @@ export const useServersStore = create<ServersState>((set, get) => ({
   fetchServerImage: async () => {
     try {
       const resp = await api.getServerImage();
-      set({ serverImageUrl: api.resolveUrl(resp.image_url) });
+      set({ serverImageUrl: resp.image_url ? api.resolveUrl(resp.image_url) : null });
     } catch {
       // No image set — leave as null
     }
