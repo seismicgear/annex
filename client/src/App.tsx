@@ -63,6 +63,7 @@ export default function App() {
     loadIdentities,
     loadPermissions,
     permissions,
+    permissionsStatus,
     proofInFlight,
     provingStatus,
     registerWithServer,
@@ -89,6 +90,7 @@ export default function App() {
   const inviteProcessed = useRef(false);
   const serverSaved = useRef(false);
   const prevPhaseRef = useRef(phase);
+  const canModerate = permissions?.capabilities.can_moderate === true;
 
   const resetToServerSelection = async () => {
     if (isProofGenerationInFlight()) {
@@ -243,12 +245,12 @@ export default function App() {
   // Push tunnel URL to the server so invite links, federation, and relay
   // paths use the globally-reachable address instead of localhost.
   useEffect(() => {
-    if (tunnelUrl && phase === 'ready' && identity?.pseudonymId && permissions?.capabilities.can_moderate) {
+    if (tunnelUrl && phase === 'ready' && identity?.pseudonymId && canModerate) {
       setPublicUrl(identity.pseudonymId, tunnelUrl).catch(() => {
         // Non-fatal: admin-only endpoint — will fail for non-admins silently
       });
     }
-  }, [tunnelUrl, phase, identity?.pseudonymId, permissions?.capabilities.can_moderate]);
+  }, [tunnelUrl, phase, identity?.pseudonymId, canModerate]);
 
   // Auto-save current server to the node hub on first identity ready
   useEffect(() => {
@@ -535,7 +537,7 @@ export default function App() {
           </div>
         )}
 
-        {permissions?.capabilities.can_moderate && (
+        {canModerate && (
           <div className="admin-menu" ref={adminMenuRef}>
             <button
               className={`admin-menu-btn ${activeView.startsWith('admin') ? 'active' : ''}`}
@@ -576,6 +578,15 @@ export default function App() {
               </div>
             )}
           </div>
+        )}
+        {!canModerate && permissionsStatus === 'error' && (
+          <button
+            className="tab-btn"
+            onClick={() => { void loadPermissions(); }}
+            title="Retry loading permissions"
+          >
+            Retry admin access
+          </button>
         )}
       </header>
 

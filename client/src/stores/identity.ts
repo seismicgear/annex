@@ -32,6 +32,8 @@ export type ProvingStatus =
   | 'computing_witness'
   | 'generating_proof';
 
+export type PermissionsStatus = 'idle' | 'loading' | 'ready' | 'error';
+
 interface IdentityState {
   /** Current lifecycle phase. */
   phase: IdentityPhase;
@@ -45,6 +47,8 @@ interface IdentityState {
   storedIdentities: StoredIdentity[];
   /** Server-side permissions for the current identity. */
   permissions: IdentityInfo | null;
+  /** Fetch state for server-side permissions. */
+  permissionsStatus: PermissionsStatus;
   /** True while snarkjs fullProve is still running. */
   proofInFlight: boolean;
   /** Detailed proving stage surfaced from the proof worker. */
@@ -75,6 +79,7 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
   errorDetails: null,
   storedIdentities: [],
   permissions: null,
+  permissionsStatus: 'idle',
   proofInFlight: false,
   provingStatus: 'idle',
 
@@ -98,12 +103,14 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
   loadPermissions: async () => {
     const { identity } = get();
     if (!identity?.pseudonymId) return;
+    set({ permissionsStatus: 'loading' });
     try {
       const info = await api.getIdentityInfo(identity.pseudonymId);
-      set({ permissions: info });
+      set({ permissions: info, permissionsStatus: 'ready' });
     } catch {
-      // Non-fatal: permissions won't gate admin UI. Expected when the
-      // server is unreachable or the identity session has expired.
+      // Non-fatal: keep any last-known permissions in memory so transient
+      // failures do not immediately strip capabilities from the UI.
+      set({ permissionsStatus: 'error' });
     }
   },
 
@@ -259,6 +266,6 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
 
   logout: () => {
     void zk.cancelMembershipProofGeneration();
-    set({ identity: null, phase: 'uninitialized', error: null, errorDetails: null, permissions: null, proofInFlight: false, provingStatus: 'idle' });
+    set({ identity: null, phase: 'uninitialized', error: null, errorDetails: null, permissions: null, permissionsStatus: 'idle', proofInFlight: false, provingStatus: 'idle' });
   },
 }));
