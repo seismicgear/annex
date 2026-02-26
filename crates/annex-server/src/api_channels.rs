@@ -547,7 +547,12 @@ pub async fn join_voice_channel_handler(
     if !state.voice_service.is_enabled() || state.voice_service.get_public_url().is_empty() {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
-            "Voice is not configured".to_string(),
+            serde_json::json!({
+                "error": "voice_not_configured",
+                "message": "Voice is not configured. Set up LiveKit credentials in server settings to enable voice channels.",
+                "setup_hint": "Configure livekit.url, livekit.api_key, and livekit.api_secret in config.toml or use ANNEX_LIVEKIT_* environment variables."
+            })
+            .to_string(),
         ));
     }
 

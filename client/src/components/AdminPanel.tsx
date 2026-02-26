@@ -9,6 +9,8 @@ import { useIdentityStore } from '@/stores/identity';
 import { useChannelsStore } from '@/stores/channels';
 import { useServersStore } from '@/stores/servers';
 import { InfoTip } from '@/components/InfoTip';
+import { LiveKitSettings } from '@/components/LiveKitSettings';
+import { isTauri } from '@/lib/tauri';
 import * as api from '@/lib/api';
 import type { ServerPolicy, AccessMode } from '@/types';
 import type { MemberInfo } from '@/lib/api';
@@ -803,7 +805,12 @@ export function AdminPanel({ section }: { section?: 'policy' | 'channels' | 'mem
   return (
     <div className="admin-panel">
       <h2>{titles[active] ?? 'Server Policy'}</h2>
-      {active === 'server' && <ServerSettings pseudonymId={identity.pseudonymId} />}
+      {active === 'server' && (
+        <>
+          <ServerSettings pseudonymId={identity.pseudonymId} />
+          {isTauri() && <LiveKitSettings />}
+        </>
+      )}
       {active === 'policy' && <PolicyEditor pseudonymId={identity.pseudonymId} />}
       {active === 'members' && <MemberManager pseudonymId={identity.pseudonymId} />}
       {active === 'channels' && <ChannelManager pseudonymId={identity.pseudonymId} />}

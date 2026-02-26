@@ -556,3 +556,16 @@ export async function getVoiceStatus(
     { headers: authHeaders(pseudonymId) },
   );
 }
+
+// ── Voice configuration status ──
+
+export interface VoiceConfigStatus {
+  voice_enabled: boolean;
+  has_public_url: boolean;
+  setup_hint: string;
+}
+
+/** Get the server's voice (LiveKit) configuration status (public, no auth). */
+export async function getVoiceConfigStatus(): Promise<VoiceConfigStatus> {
+  return request<VoiceConfigStatus>('/api/voice/config-status');
+}

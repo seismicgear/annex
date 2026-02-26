@@ -15,7 +15,7 @@
  * tab and channel switches (like Discord).
  */
 
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   LiveKitRoom,
   RoomAudioRenderer,
@@ -29,6 +29,7 @@ import { Track, type LocalParticipant } from 'livekit-client';
 import { useIdentityStore } from '@/stores/identity';
 import { useChannelsStore } from '@/stores/channels';
 import { useVoiceStore } from '@/stores/voice';
+import * as api from '@/lib/api';
 
 /** Local media status bar shown above the controls. */
 function LocalMediaStatus() {
@@ -369,6 +370,22 @@ export function VoicePanel() {
     ? 'Voice is disabled by server policy for your identity.'
     : null;
 
+  // Fetch setup guidance from server when error indicates voice is not configured.
+  const [setupHint, setSetupHint] = useState<string | null>(null);
+  useEffect(() => {
+    if (lastJoinError && lastJoinError.includes('not configured')) {
+      api.getVoiceConfigStatus().then((status) => {
+        if (!status.voice_enabled) {
+          setSetupHint(status.setup_hint);
+        }
+      }).catch(() => {
+        // Best-effort: if the status endpoint fails, just show the raw error
+      });
+    } else {
+      setSetupHint(null);
+    }
+  }, [lastJoinError]);
+
   return (
     <div className="voice-panel disconnected">
       <button
@@ -381,7 +398,14 @@ export function VoicePanel() {
       </button>
       {(lastJoinError || unavailableReason) && (
         <div className="voice-error" role="alert">
-          {lastJoinError ?? unavailableReason}
+          {setupHint ? (
+            <>
+              <p>Voice is not configured on this server.</p>
+              <p className="voice-setup-hint">{setupHint}</p>
+            </>
+          ) : (
+            lastJoinError ?? unavailableReason
+          )}
         </div>
       )}
     </div>

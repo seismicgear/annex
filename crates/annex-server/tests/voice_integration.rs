@@ -303,3 +303,264 @@ async fn test_leave_voice_channel_success() {
 
     assert_eq!(body.get("status").unwrap().as_str().unwrap(), "left");
 }
+
+/// Setup an app with voice DISABLED (empty LiveKit config).
+async fn setup_app_voice_disabled() -> axum::Router {
+    let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
+    {
+        let conn = pool.get().unwrap();
+        run_migrations(&conn).unwrap();
+        let policy = ServerPolicy::default();
+        let policy_json = serde_json::to_string(&policy).unwrap();
+        conn.execute(
+            "INSERT INTO servers (slug, label, policy_json) VALUES ('test', 'Test', ?1)",
+            [policy_json],
+        )
+        .unwrap();
+    }
+
+    let tree = MerkleTree::new(20).unwrap();
+
+    // LiveKit config with empty URL — voice is disabled
+    let livekit_config = annex_voice::LiveKitConfig::default();
+    let voice_service = annex_voice::VoiceService::new(livekit_config);
+
+    let state = AppState {
+        pool,
+        merkle_tree: Arc::new(Mutex::new(tree)),
+        membership_vkey: load_vkey(),
+        server_id: 1,
+        signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
+            &mut rand::rngs::OsRng,
+        )),
+        public_url: std::sync::Arc::new(std::sync::RwLock::new(
+            "http://localhost:3000".to_string(),
+        )),
+        policy: Arc::new(RwLock::new(ServerPolicy::default())),
+        rate_limiter: RateLimiter::new(),
+        connection_manager: annex_server::api_ws::ConnectionManager::new(),
+        presence_tx: tokio::sync::broadcast::channel(100).0,
+        voice_service: Arc::new(voice_service),
+        tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper", "bark")),
+        stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),
+        voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        observe_tx: tokio::sync::broadcast::channel(256).0,
+        upload_dir: std::env::temp_dir().to_string_lossy().into_owned(),
+        preview_cache: annex_server::api_link_preview::PreviewCache::new(),
+        cors_origins: vec![],
+        enforce_zk_proofs: false,
+    };
+
+    app(state)
+}
+
+#[tokio::test]
+async fn test_health_includes_voice_enabled_true() {
+    let (app, _pool) = setup_app().await;
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+    let mut request = Request::builder()
+        .uri("/health")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    assert_eq!(body["status"].as_str().unwrap(), "ok");
+    assert_eq!(body["voice_enabled"].as_bool().unwrap(), true);
+}
+
+#[tokio::test]
+async fn test_health_includes_voice_enabled_false() {
+    let app = setup_app_voice_disabled().await;
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+    let mut request = Request::builder()
+        .uri("/health")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    assert_eq!(body["status"].as_str().unwrap(), "ok");
+    assert_eq!(body["voice_enabled"].as_bool().unwrap(), false);
+}
+
+#[tokio::test]
+async fn test_voice_config_status_disabled() {
+    let app = setup_app_voice_disabled().await;
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+    let mut request = Request::builder()
+        .uri("/api/voice/config-status")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    assert_eq!(body["voice_enabled"].as_bool().unwrap(), false);
+    assert_eq!(body["has_public_url"].as_bool().unwrap(), false);
+    assert!(
+        body["setup_hint"]
+            .as_str()
+            .unwrap()
+            .contains("not configured"),
+        "setup_hint should mention LiveKit is not configured"
+    );
+}
+
+#[tokio::test]
+async fn test_voice_config_status_enabled() {
+    let (app, _pool) = setup_app().await;
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+    let mut request = Request::builder()
+        .uri("/api/voice/config-status")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    assert_eq!(body["voice_enabled"].as_bool().unwrap(), true);
+    assert!(
+        body["setup_hint"]
+            .as_str()
+            .unwrap()
+            .contains("ready"),
+        "setup_hint should indicate voice is ready"
+    );
+}
+
+#[tokio::test]
+async fn test_voice_join_not_configured_returns_structured_error() {
+    // Build a voice-disabled app with user and voice channel seeded
+    let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
+    {
+        let conn = pool.get().unwrap();
+        run_migrations(&conn).unwrap();
+        let policy = ServerPolicy::default();
+        let policy_json = serde_json::to_string(&policy).unwrap();
+        conn.execute(
+            "INSERT INTO servers (slug, label, policy_json) VALUES ('test', 'Test', ?1)",
+            [policy_json],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active) VALUES (1, 'user-1', 'HUMAN', 1)",
+            [],
+        )
+        .unwrap();
+
+        let params = annex_channels::CreateChannelParams {
+            server_id: 1,
+            channel_id: "voice-test".to_string(),
+            name: "Voice Test".to_string(),
+            channel_type: ChannelType::Voice,
+            topic: None,
+            vrp_topic_binding: None,
+            required_capabilities_json: None,
+            agent_min_alignment: None,
+            retention_days: None,
+            federation_scope: FederationScope::Local,
+        };
+        create_channel(&conn, &params).unwrap();
+        add_member(&conn, 1, "voice-test", "user-1").unwrap();
+    }
+
+    let tree = MerkleTree::new(20).unwrap();
+    let livekit_config = annex_voice::LiveKitConfig::default();
+    let voice_service = annex_voice::VoiceService::new(livekit_config);
+
+    let state = AppState {
+        pool,
+        merkle_tree: Arc::new(Mutex::new(tree)),
+        membership_vkey: load_vkey(),
+        server_id: 1,
+        signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
+            &mut rand::rngs::OsRng,
+        )),
+        public_url: std::sync::Arc::new(std::sync::RwLock::new(
+            "http://localhost:3000".to_string(),
+        )),
+        policy: Arc::new(RwLock::new(ServerPolicy::default())),
+        rate_limiter: RateLimiter::new(),
+        connection_manager: annex_server::api_ws::ConnectionManager::new(),
+        presence_tx: tokio::sync::broadcast::channel(100).0,
+        voice_service: Arc::new(voice_service),
+        tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper", "bark")),
+        stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),
+        voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        observe_tx: tokio::sync::broadcast::channel(256).0,
+        upload_dir: std::env::temp_dir().to_string_lossy().into_owned(),
+        preview_cache: annex_server::api_link_preview::PreviewCache::new(),
+        cors_origins: vec![],
+        enforce_zk_proofs: false,
+    };
+
+    let router = app(state);
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+    let mut request = Request::builder()
+        .uri("/api/channels/voice-test/voice/join")
+        .method("POST")
+        .header("X-Annex-Pseudonym", "user-1")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
+
+    let response = router.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+
+    // The error body should be parseable JSON with a structured error code
+    let body: Value = serde_json::from_str(&body_str).unwrap();
+    assert_eq!(
+        body["error"].as_str().unwrap(),
+        "voice_not_configured",
+        "error should have a structured error code"
+    );
+    assert!(
+        body["message"].as_str().unwrap().contains("not configured"),
+        "message should mention voice is not configured"
+    );
+    assert!(
+        body["setup_hint"].is_string(),
+        "setup_hint should be present"
+    );
+}

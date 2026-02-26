@@ -61,6 +61,13 @@ json = false
 # Desktop defaults: allow Tauri webview origins (macOS/Linux + Windows).
 # Override with ANNEX_CORS_ORIGINS env var if needed.
 allowed_origins = ["tauri://localhost", "https://tauri.localhost", "http://tauri.localhost"]
+
+# [livekit]
+# Uncomment and configure to enable voice channels (LiveKit WebRTC).
+# url = "ws://localhost:7880"
+# api_key = ""
+# api_secret = ""
+# token_ttl_seconds = 3600
 "#,
             db_path = db_path_safe,
         );
@@ -144,12 +151,19 @@ struct TunnelState {
     child: std::process::Child,
 }
 
+/// Tracks a locally-managed LiveKit server process.
+struct LiveKitProcessState {
+    url: String,
+    child: std::process::Child,
+}
+
 /// Tauri-managed application state.
 struct AppManagedState {
     data_dir: PathBuf,
     config_path: PathBuf,
     server: Mutex<Option<ServerState>>,
     tunnel: Mutex<Option<TunnelState>>,
+    livekit: Mutex<Option<LiveKitProcessState>>,
 }
 
 // ── Tauri commands ──
@@ -541,6 +555,553 @@ fn export_identity_json(json: String) -> Result<Option<String>, String> {
     Ok(Some(path.display().to_string()))
 }
 
+// ── OS credential storage (keyring) ──
+
+const KEYRING_SERVICE: &str = "com.annex.desktop";
+const KEYRING_LIVEKIT_SECRET: &str = "livekit-api-secret";
+
+/// Store the LiveKit API secret in the OS keyring.
+fn store_api_secret_in_keyring(secret: &str) -> Result<(), String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_LIVEKIT_SECRET)
+        .map_err(|e| format!("keyring entry creation failed: {e}"))?;
+    entry
+        .set_password(secret)
+        .map_err(|e| format!("keyring store failed: {e}"))?;
+    Ok(())
+}
+
+/// Retrieve the LiveKit API secret from the OS keyring.
+///
+/// Returns `Ok(None)` if no secret is stored or the keyring is unavailable.
+fn load_api_secret_from_keyring() -> Result<Option<String>, String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_LIVEKIT_SECRET)
+        .map_err(|e| format!("keyring entry creation failed: {e}"))?;
+    match entry.get_password() {
+        Ok(secret) => Ok(Some(secret)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(keyring::Error::PlatformFailure(ref msg)) => {
+            tracing::warn!("OS keyring platform failure (falling back to config): {msg}");
+            Ok(None)
+        }
+        Err(keyring::Error::NoStorageAccess(ref msg)) => {
+            tracing::warn!("OS keyring not accessible (falling back to config): {msg}");
+            Ok(None)
+        }
+        Err(e) => Err(format!("keyring read failed: {e}")),
+    }
+}
+
+/// Delete the LiveKit API secret from the OS keyring.
+fn delete_api_secret_from_keyring() -> Result<(), String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_LIVEKIT_SECRET)
+        .map_err(|e| format!("keyring entry creation failed: {e}"))?;
+    match entry.delete_credential() {
+        Ok(()) => Ok(()),
+        Err(keyring::Error::NoEntry) => Ok(()), // Already absent
+        Err(e) => Err(format!("keyring delete failed: {e}")),
+    }
+}
+
+// ── LiveKit configuration commands ──
+
+/// LiveKit configuration status returned to the frontend.
+///
+/// The `api_secret` is never exposed — only a boolean `has_api_secret`.
+#[derive(Debug, Clone, Serialize)]
+struct LiveKitSettingsResponse {
+    configured: bool,
+    url: String,
+    api_key: String,
+    has_api_secret: bool,
+    token_ttl_seconds: u64,
+}
+
+/// Read the current LiveKit configuration from config.toml + keyring.
+#[tauri::command]
+fn get_livekit_config(state: tauri::State<'_, AppManagedState>) -> Result<LiveKitSettingsResponse, String> {
+    let config_path_str = state.config_path.to_string_lossy().to_string();
+    let cfg = config::load_config(Some(&config_path_str))
+        .map_err(|e| format!("config error: {e}"))?;
+
+    let has_secret_in_config = !cfg.livekit.api_secret.is_empty();
+    let has_secret_in_keyring = load_api_secret_from_keyring()
+        .unwrap_or(None)
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
+
+    Ok(LiveKitSettingsResponse {
+        configured: !cfg.livekit.url.is_empty(),
+        url: cfg.livekit.url,
+        api_key: cfg.livekit.api_key,
+        has_api_secret: has_secret_in_config || has_secret_in_keyring,
+        token_ttl_seconds: cfg.livekit.token_ttl_seconds,
+    })
+}
+
+/// Input from the frontend for saving LiveKit settings.
+#[derive(Debug, Clone, Deserialize)]
+struct SaveLiveKitInput {
+    url: String,
+    api_key: String,
+    api_secret: String,
+    #[serde(default = "default_token_ttl")]
+    token_ttl_seconds: u64,
+}
+
+fn default_token_ttl() -> u64 {
+    3600
+}
+
+/// Save LiveKit configuration to config.toml and the API secret to OS keyring.
+///
+/// If the keyring is unavailable, the secret falls back to config.toml storage
+/// with a warning log.
+#[tauri::command]
+fn save_livekit_config(
+    state: tauri::State<'_, AppManagedState>,
+    input: SaveLiveKitInput,
+) -> Result<(), String> {
+    // Try to store secret in keyring first
+    let secret_in_keyring = match store_api_secret_in_keyring(&input.api_secret) {
+        Ok(()) => {
+            tracing::info!("LiveKit API secret stored in OS keyring");
+            true
+        }
+        Err(e) => {
+            tracing::warn!("failed to store secret in keyring, storing in config file: {e}");
+            false
+        }
+    };
+
+    let config_path = &state.config_path;
+    let contents = std::fs::read_to_string(config_path)
+        .map_err(|e| format!("failed to read config: {e}"))?;
+
+    let mut doc: toml::Value = toml::from_str(&contents)
+        .map_err(|e| format!("failed to parse config: {e}"))?;
+
+    let table = doc
+        .as_table_mut()
+        .ok_or("config root is not a TOML table")?;
+
+    let lk = table
+        .entry("livekit")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    let lk_table = lk
+        .as_table_mut()
+        .ok_or("[livekit] is not a TOML table")?;
+
+    lk_table.insert("url".into(), toml::Value::String(input.url));
+    lk_table.insert("api_key".into(), toml::Value::String(input.api_key));
+    lk_table.insert(
+        "token_ttl_seconds".into(),
+        toml::Value::Integer(input.token_ttl_seconds as i64),
+    );
+
+    if secret_in_keyring {
+        // Secret is in keyring — remove from config file for security
+        lk_table.remove("api_secret");
+    } else {
+        // Fallback: store in config file
+        lk_table.insert(
+            "api_secret".into(),
+            toml::Value::String(input.api_secret),
+        );
+    }
+
+    let serialized =
+        toml::to_string_pretty(&doc).map_err(|e| format!("failed to serialize config: {e}"))?;
+
+    std::fs::write(config_path, serialized)
+        .map_err(|e| format!("failed to write config: {e}"))?;
+
+    tracing::info!("LiveKit configuration saved");
+    Ok(())
+}
+
+/// Clear LiveKit configuration from both config.toml and the OS keyring.
+#[tauri::command]
+fn clear_livekit_config(state: tauri::State<'_, AppManagedState>) -> Result<(), String> {
+    // Remove from keyring
+    if let Err(e) = delete_api_secret_from_keyring() {
+        tracing::warn!("failed to remove secret from keyring: {e}");
+    }
+
+    // Remove from config file
+    let config_path = &state.config_path;
+    let contents = std::fs::read_to_string(config_path)
+        .map_err(|e| format!("failed to read config: {e}"))?;
+
+    let mut doc: toml::Value = toml::from_str(&contents)
+        .map_err(|e| format!("failed to parse config: {e}"))?;
+
+    if let Some(table) = doc.as_table_mut() {
+        table.remove("livekit");
+    }
+
+    let serialized =
+        toml::to_string_pretty(&doc).map_err(|e| format!("failed to serialize config: {e}"))?;
+
+    std::fs::write(config_path, serialized)
+        .map_err(|e| format!("failed to write config: {e}"))?;
+
+    tracing::info!("LiveKit configuration cleared");
+    Ok(())
+}
+
+/// Check if a LiveKit server is reachable at the given URL.
+#[tauri::command]
+async fn check_livekit_reachable(url: String) -> Result<serde_json::Value, String> {
+    // LiveKit serves HTTP on the same port as WebSocket.
+    // Replace ws:// with http:// for the health check.
+    let http_url = url
+        .replace("ws://", "http://")
+        .replace("wss://", "https://");
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| format!("HTTP client error: {e}"))?;
+
+    match client.get(&http_url).send().await {
+        Ok(resp) if resp.status().is_success() || resp.status().is_redirection() => {
+            Ok(serde_json::json!({ "reachable": true }))
+        }
+        Ok(resp) => Ok(serde_json::json!({
+            "reachable": false,
+            "error": format!("HTTP {}", resp.status())
+        })),
+        Err(e) => Ok(serde_json::json!({
+            "reachable": false,
+            "error": format!("{e}")
+        })),
+    }
+}
+
+// ── Local LiveKit server management ──
+
+const LIVEKIT_VERSION: &str = "1.7.2";
+
+/// Returns the platform-specific LiveKit server binary name.
+fn livekit_binary_name() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "livekit-server.exe"
+    } else {
+        "livekit-server"
+    }
+}
+
+/// Returns the download URL for livekit-server on this platform, if supported.
+fn livekit_download_url() -> Option<String> {
+    let base = format!(
+        "https://github.com/livekit/livekit/releases/download/v{LIVEKIT_VERSION}"
+    );
+    if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        Some(format!(
+            "{base}/livekit_{LIVEKIT_VERSION}_linux_amd64.tar.gz"
+        ))
+    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        Some(format!(
+            "{base}/livekit_{LIVEKIT_VERSION}_linux_arm64.tar.gz"
+        ))
+    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        Some(format!(
+            "{base}/livekit_{LIVEKIT_VERSION}_darwin_amd64.tar.gz"
+        ))
+    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        Some(format!(
+            "{base}/livekit_{LIVEKIT_VERSION}_darwin_arm64.tar.gz"
+        ))
+    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+        Some(format!(
+            "{base}/livekit_{LIVEKIT_VERSION}_windows_amd64.zip"
+        ))
+    } else {
+        None
+    }
+}
+
+/// Searches PATH for the livekit-server binary.
+fn find_livekit_in_path() -> Option<PathBuf> {
+    let name = livekit_binary_name();
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths).find_map(|dir| {
+            let full = dir.join(name);
+            if full.is_file() {
+                Some(full)
+            } else {
+                None
+            }
+        })
+    })
+}
+
+/// Ensures livekit-server is available: checks PATH, then the local bin cache,
+/// and downloads it if necessary. Returns the path to the binary.
+async fn ensure_livekit(data_dir: &Path) -> Result<PathBuf, String> {
+    // 1. Check PATH
+    if let Some(path) = find_livekit_in_path() {
+        tracing::info!(path = %path.display(), "found livekit-server in PATH");
+        return Ok(path);
+    }
+
+    // 2. Check local bin cache
+    let bin_dir = data_dir.join("bin");
+    let lk_path = bin_dir.join(livekit_binary_name());
+    if lk_path.exists() {
+        tracing::info!(path = %lk_path.display(), "using cached livekit-server");
+        return Ok(lk_path);
+    }
+
+    // 3. Download
+    let url = livekit_download_url()
+        .ok_or_else(|| "livekit-server download not supported on this platform".to_string())?;
+
+    tracing::info!(%url, "downloading livekit-server");
+
+    std::fs::create_dir_all(&bin_dir)
+        .map_err(|e| format!("failed to create bin directory: {e}"))?;
+
+    let resp = reqwest::get(&url)
+        .await
+        .map_err(|e| format!("livekit-server download failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(format!(
+            "livekit-server download failed: HTTP {}",
+            resp.status()
+        ));
+    }
+
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("livekit-server download read failed: {e}"))?;
+
+    if url.ends_with(".tar.gz") {
+        let tgz_path = bin_dir.join("livekit.tar.gz");
+        std::fs::write(&tgz_path, &bytes)
+            .map_err(|e| format!("failed to write livekit archive: {e}"))?;
+        let output = std::process::Command::new("tar")
+            .args([
+                "xzf",
+                &tgz_path.to_string_lossy(),
+                "-C",
+                &bin_dir.to_string_lossy(),
+            ])
+            .output()
+            .map_err(|e| format!("tar extract failed: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "tar extract failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        let _ = std::fs::remove_file(&tgz_path);
+    } else if url.ends_with(".zip") {
+        let zip_path = bin_dir.join("livekit.zip");
+        std::fs::write(&zip_path, &bytes)
+            .map_err(|e| format!("failed to write livekit archive: {e}"))?;
+
+        #[cfg(target_os = "windows")]
+        {
+            let output = std::process::Command::new("powershell")
+                .args([
+                    "-Command",
+                    &format!(
+                        "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
+                        zip_path.to_string_lossy(),
+                        bin_dir.to_string_lossy()
+                    ),
+                ])
+                .output()
+                .map_err(|e| format!("zip extraction failed: {e}"))?;
+            if !output.status.success() {
+                return Err(format!(
+                    "zip extraction failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let output = std::process::Command::new("unzip")
+                .args([
+                    "-o",
+                    &zip_path.to_string_lossy(),
+                    "-d",
+                    &bin_dir.to_string_lossy(),
+                ])
+                .output()
+                .map_err(|e| format!("zip extraction failed: {e}"))?;
+            if !output.status.success() {
+                return Err(format!(
+                    "zip extraction failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+        }
+
+        let _ = std::fs::remove_file(&zip_path);
+    } else {
+        std::fs::write(&lk_path, &bytes)
+            .map_err(|e| format!("failed to write livekit-server binary: {e}"))?;
+    }
+
+    // Make executable on Unix
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&lk_path, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("failed to set livekit-server permissions: {e}"))?;
+    }
+
+    tracing::info!(path = %lk_path.display(), "livekit-server downloaded successfully");
+    Ok(lk_path)
+}
+
+/// Start a local LiveKit server instance for desktop host mode.
+///
+/// Generates random API key/secret, spawns the process, and sets environment
+/// variables so the embedded Annex server picks up the LiveKit config.
+///
+/// Must be called BEFORE `start_embedded_server` for the env vars to take effect.
+#[tauri::command]
+async fn start_local_livekit(state: tauri::State<'_, AppManagedState>) -> Result<serde_json::Value, String> {
+    // Check if already running
+    {
+        let guard = state.livekit.lock().map_err(|e| e.to_string())?;
+        if let Some(ref lk) = *guard {
+            return Ok(serde_json::json!({ "url": lk.url }));
+        }
+    }
+
+    // Check if the embedded server is already running — env vars won't help after that
+    {
+        let guard = state.server.lock().map_err(|e| e.to_string())?;
+        if guard.is_some() {
+            return Err(
+                "embedded server is already running — start local LiveKit before the server, or restart the application".to_string()
+            );
+        }
+    }
+
+    let lk_path = ensure_livekit(&state.data_dir).await?;
+
+    // Generate random API key + secret
+    let api_key = format!("annex_{}", uuid::Uuid::new_v4().simple());
+    let api_secret = format!("secret_{}", uuid::Uuid::new_v4().simple());
+
+    let port: u16 = 7880;
+    let lk_url = format!("ws://127.0.0.1:{port}");
+
+    tracing::info!(path = %lk_path.display(), %port, "starting local livekit-server");
+
+    let mut child = std::process::Command::new(&lk_path)
+        .args([
+            "--dev",
+            "--bind",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+            "--keys",
+            &format!("{api_key}: {api_secret}"),
+        ])
+        .stderr(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("failed to start livekit-server: {e}"))?;
+
+    // Read stderr in a background thread to detect readiness and keep pipe open.
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("failed to capture livekit-server stderr")?;
+    let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+    std::thread::spawn(move || {
+        use std::io::{BufRead, BufReader};
+        let reader = BufReader::new(stderr);
+        let mut tx = Some(tx);
+        for line in reader.lines() {
+            match line {
+                Ok(line) => {
+                    tracing::debug!(line = %line, "livekit-server");
+                    if let Some(sender) = tx.take() {
+                        // LiveKit logs readiness messages containing "started" or "ready"
+                        if line.contains("started") || line.contains("ready") || line.contains("listening") {
+                            let _ = sender.send(Ok(()));
+                            // Continue reading to drain the pipe
+                        } else {
+                            tx = Some(sender);
+                        }
+                    }
+                }
+                Err(e) => {
+                    if let Some(sender) = tx.take() {
+                        let _ = sender.send(Err(format!("livekit-server stderr error: {e}")));
+                    }
+                    return;
+                }
+            }
+        }
+        if let Some(sender) = tx.take() {
+            let _ = sender.send(Err(
+                "livekit-server exited before becoming ready".to_string(),
+            ));
+        }
+    });
+
+    // Wait for readiness with timeout
+    tokio::time::timeout(std::time::Duration::from_secs(15), rx)
+        .await
+        .map_err(|_| "livekit-server startup timed out after 15 seconds".to_string())?
+        .map_err(|_| "livekit readiness channel dropped".to_string())??;
+
+    // Set env vars so the embedded server picks up LiveKit config.
+    // SAFETY: Called before `start_embedded_server` spawns any server threads.
+    unsafe {
+        std::env::set_var("ANNEX_LIVEKIT_URL", &lk_url);
+        std::env::set_var("ANNEX_LIVEKIT_PUBLIC_URL", &lk_url);
+        std::env::set_var("ANNEX_LIVEKIT_API_KEY", &api_key);
+        std::env::set_var("ANNEX_LIVEKIT_API_SECRET", &api_secret);
+    }
+
+    tracing::info!(%lk_url, "local livekit-server ready");
+
+    {
+        let mut guard = state.livekit.lock().map_err(|e| e.to_string())?;
+        *guard = Some(LiveKitProcessState {
+            url: lk_url.clone(),
+            child,
+        });
+    }
+
+    Ok(serde_json::json!({ "url": lk_url }))
+}
+
+/// Stop the local LiveKit server if running.
+#[tauri::command]
+fn stop_local_livekit(state: tauri::State<'_, AppManagedState>) -> Result<(), String> {
+    let mut guard = state.livekit.lock().map_err(|e| e.to_string())?;
+    if let Some(mut lk) = guard.take() {
+        tracing::info!(url = %lk.url, "stopping local livekit-server");
+        let _ = lk.child.kill();
+        let _ = lk.child.wait();
+    }
+    Ok(())
+}
+
+/// Get the local LiveKit server URL, if a local instance is running.
+#[tauri::command]
+fn get_local_livekit_url(state: tauri::State<'_, AppManagedState>) -> Option<String> {
+    state
+        .livekit
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().map(|lk| lk.url.clone()))
+}
+
 /// Force the window to use dark mode chrome and a black border.
 ///
 /// Two DWM attributes are set:
@@ -723,6 +1284,21 @@ fn main() {
                 "tauri://localhost,https://tauri.localhost,http://tauri.localhost",
             );
         }
+
+        // Load LiveKit API secret from OS keychain if not already in env.
+        // This injects the secret before any server thread reads the config.
+        if std::env::var("ANNEX_LIVEKIT_API_SECRET").is_err() {
+            match load_api_secret_from_keyring() {
+                Ok(Some(secret)) => {
+                    std::env::set_var("ANNEX_LIVEKIT_API_SECRET", &secret);
+                    tracing::info!("loaded LiveKit API secret from OS keychain");
+                }
+                Ok(None) => {} // No secret stored — voice may be disabled
+                Err(e) => {
+                    tracing::warn!("failed to load LiveKit secret from keychain: {e}");
+                }
+            }
+        }
     }
 
     tauri::Builder::default()
@@ -731,6 +1307,7 @@ fn main() {
             config_path,
             server: Mutex::new(None),
             tunnel: Mutex::new(None),
+            livekit: Mutex::new(None),
         })
         .setup(|app| {
             #[cfg(target_os = "windows")]
@@ -750,7 +1327,127 @@ fn main() {
             stop_tunnel,
             get_tunnel_url,
             export_identity_json,
+            get_livekit_config,
+            save_livekit_config,
+            clear_livekit_config,
+            check_livekit_reachable,
+            start_local_livekit,
+            stop_local_livekit,
+            get_local_livekit_url,
         ])
         .run(tauri::generate_context!())
         .expect("error running Annex desktop");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ensure_config_creates_file_with_all_sections() {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let config_path = ensure_config(dir.path()).expect("ensure_config should succeed");
+        assert!(config_path.exists(), "config file must be created");
+
+        let contents = std::fs::read_to_string(&config_path).expect("should read config");
+
+        // Verify all expected sections are present
+        assert!(contents.contains("[server]"), "missing [server] section");
+        assert!(contents.contains("[database]"), "missing [database] section");
+        assert!(contents.contains("[logging]"), "missing [logging] section");
+        assert!(contents.contains("[cors]"), "missing [cors] section");
+
+        // Verify the livekit comment block is present
+        assert!(
+            contents.contains("# [livekit]"),
+            "missing commented [livekit] section"
+        );
+        assert!(
+            contents.contains("# url = \"ws://localhost:7880\""),
+            "missing commented livekit url"
+        );
+        assert!(
+            contents.contains("# api_key = \"\""),
+            "missing commented livekit api_key"
+        );
+        assert!(
+            contents.contains("# api_secret = \"\""),
+            "missing commented livekit api_secret"
+        );
+        assert!(
+            contents.contains("# token_ttl_seconds = 3600"),
+            "missing commented livekit token_ttl_seconds"
+        );
+    }
+
+    #[test]
+    fn ensure_config_is_valid_toml_with_voice_disabled() {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let config_path = ensure_config(dir.path()).expect("ensure_config should succeed");
+        let config_path_str = config_path.to_string_lossy();
+
+        // The file should parse cleanly via the server config loader.
+        // Since the [livekit] section is fully commented out, the TOML parser
+        // should see no livekit fields and use LiveKitConfig::default().
+        let cfg = annex_server::config::load_config(Some(&config_path_str))
+            .expect("config should parse");
+
+        // Voice must be disabled (empty url)
+        assert!(cfg.livekit.url.is_empty(), "livekit.url should be empty");
+        assert!(
+            cfg.livekit.api_key.is_empty(),
+            "livekit.api_key should be empty"
+        );
+        assert!(
+            cfg.livekit.api_secret.is_empty(),
+            "livekit.api_secret should be empty"
+        );
+        assert_eq!(
+            cfg.livekit.token_ttl_seconds, 3600,
+            "livekit.token_ttl_seconds should default to 3600"
+        );
+    }
+
+    #[test]
+    fn ensure_config_is_idempotent() {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+
+        // First call creates the file
+        let path1 = ensure_config(dir.path()).expect("first call should succeed");
+        let contents1 = std::fs::read_to_string(&path1).expect("should read");
+
+        // Second call should not overwrite
+        let path2 = ensure_config(dir.path()).expect("second call should succeed");
+        let contents2 = std::fs::read_to_string(&path2).expect("should read");
+
+        assert_eq!(path1, path2, "paths should match");
+        assert_eq!(contents1, contents2, "contents should not change on second call");
+    }
+
+    #[test]
+    fn ensure_config_creates_db_path_in_data_dir() {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let config_path = ensure_config(dir.path()).expect("ensure_config should succeed");
+        let contents = std::fs::read_to_string(&config_path).expect("should read");
+
+        // Database path should point to the data directory
+        let expected_db = dir.path().join("annex.db");
+        let expected_db_safe = expected_db.display().to_string().replace('\\', "/");
+        assert!(
+            contents.contains(&expected_db_safe),
+            "config should contain db path: {expected_db_safe}"
+        );
+    }
+
+    #[test]
+    fn fix_backslash_paths_is_noop_for_clean_config() {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let config_path = ensure_config(dir.path()).expect("ensure_config should succeed");
+        let before = std::fs::read_to_string(&config_path).expect("should read");
+
+        fix_backslash_paths(&config_path).expect("fix should succeed");
+
+        let after = std::fs::read_to_string(&config_path).expect("should read");
+        assert_eq!(before, after, "clean config should not be modified");
+    }
 }
