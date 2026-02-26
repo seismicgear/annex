@@ -79,6 +79,7 @@ async fn test_auth_middleware_flow() {
         preview_cache: annex_server::api_link_preview::PreviewCache::new(),
         cors_origins: vec![],
         enforce_zk_proofs: false,
+        ws_token_secret: std::sync::Arc::new([0u8; 32]),
     };
 
     // 5. Setup Router with middleware

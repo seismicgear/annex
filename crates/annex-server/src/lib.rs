@@ -89,6 +89,9 @@ pub struct AppState {
     pub upload_dir: String,
     /// In-memory cache for link preview metadata and proxied images.
     pub preview_cache: api_link_preview::PreviewCache,
+    /// HMAC secret for signing WebSocket session tokens. Derived at startup
+    /// from the server's Ed25519 key to avoid managing a separate secret.
+    pub ws_token_secret: Arc<[u8; 32]>,
     /// Configured CORS allowed origins (empty = same-origin only, ["*"] = permissive).
     pub cors_origins: Vec<String>,
     /// When true, channel access endpoints require ZK membership proof via
@@ -454,6 +457,8 @@ pub async fn prepare_server(
         tracing::info!(path = %upload_dir, "upload directory ready");
     }
 
+    let ws_token_secret = api_ws::derive_ws_token_secret(&signing_key);
+
     let state = AppState {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
@@ -472,6 +477,7 @@ pub async fn prepare_server(
         observe_tx,
         upload_dir,
         preview_cache: api_link_preview::PreviewCache::new(),
+        ws_token_secret: Arc::new(ws_token_secret),
         cors_origins: config.cors.allowed_origins.clone(),
         enforce_zk_proofs: config.security.enforce_zk_proofs,
     };
@@ -655,6 +661,14 @@ pub fn app(state: AppState) -> Router {
             "/api/link-preview",
             get(api_link_preview::link_preview_handler),
         )
+        .route(
+            "/api/ws/token",
+            post(api_ws::create_ws_token_handler),
+        )
+        .route(
+            "/api/graph/profile/{targetPseudonym}",
+            get(api_graph::get_profile_handler),
+        )
         .layer(axum::middleware::from_fn(middleware::auth_middleware));
 
     // Upload routes need a larger body limit for media uploads.
@@ -729,10 +743,6 @@ pub fn app(state: AppState) -> Router {
             post(api_federation::receive_federated_rtx_handler),
         )
         .route("/api/graph/degrees", get(api_graph::get_degrees_handler))
-        .route(
-            "/api/graph/profile/{targetPseudonym}",
-            get(api_graph::get_profile_handler),
-        )
         .route(
             "/events/presence",
             get(api_sse::get_presence_stream_handler),

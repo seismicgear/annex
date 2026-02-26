@@ -58,6 +58,7 @@ async fn test_update_agent_voice_profile() {
         preview_cache: annex_server::api_link_preview::PreviewCache::new(),
         cors_origins: vec![],
         enforce_zk_proofs: false,
+        ws_token_secret: std::sync::Arc::new([0u8; 32]),
     };
 
     let app = app(state);

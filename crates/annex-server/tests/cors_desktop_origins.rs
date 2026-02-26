@@ -54,6 +54,7 @@ fn build_test_state(cors_origins: Vec<String>) -> AppState {
         preview_cache: annex_server::api_link_preview::PreviewCache::new(),
         cors_origins,
         enforce_zk_proofs: false,
+        ws_token_secret: std::sync::Arc::new([0u8; 32]),
     }
 }
 

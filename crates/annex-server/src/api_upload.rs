@@ -285,6 +285,35 @@ fn strip_metadata(data: &[u8], content_type: &str) -> Vec<u8> {
     }
 }
 
+/// Hard ceiling for streaming multipart reads (50 MiB). Prevents any
+/// single upload field from consuming unbounded memory before category-
+/// specific limits are checked. The per-category limits may be lower.
+const UPLOAD_STREAM_CEILING: usize = 50 * 1024 * 1024;
+
+/// Reads a multipart field in chunks, enforcing a byte limit during
+/// streaming. Returns `Err` as soon as the limit is exceeded, preventing
+/// oversized payloads from being fully buffered into RAM.
+async fn read_field_capped(
+    field: &mut axum::extract::multipart::Field<'_>,
+    max_bytes: usize,
+) -> Result<Vec<u8>, ApiError> {
+    let mut buf = Vec::new();
+    while let Some(chunk) = field
+        .chunk()
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("failed to read upload chunk: {}", e)))?
+    {
+        if buf.len() + chunk.len() > max_bytes {
+            return Err(ApiError::BadRequest(format!(
+                "upload exceeds maximum size of {} bytes",
+                max_bytes,
+            )));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf)
+}
+
 // ── Upload Handlers ──
 
 /// Handler for `POST /api/admin/server/image`.
@@ -302,13 +331,15 @@ pub async fn upload_server_image_handler(
     }
 
     // Extract the file field from multipart
-    let field = multipart
+    let mut field = multipart
         .next_field()
         .await
         .map_err(|e| ApiError::BadRequest(format!("multipart error: {}", e)))?
         .ok_or_else(|| ApiError::BadRequest("no file provided".to_string()))?;
 
-    let content_type = field
+    // Client-declared content type is intentionally ignored in favour of
+    // magic-byte detection (see detected_ct below).
+    let _declared_ct = field
         .content_type()
         .unwrap_or("application/octet-stream")
         .to_string();
@@ -318,18 +349,9 @@ pub async fn upload_server_image_handler(
         .unwrap_or("image")
         .to_string();
 
-    let data = field
-        .bytes()
-        .await
-        .map_err(|e| ApiError::BadRequest(format!("failed to read upload: {}", e)))?;
-
-    if data.len() > MAX_SERVER_IMAGE_SIZE {
-        return Err(ApiError::BadRequest(format!(
-            "file too large: {} bytes (max {})",
-            data.len(),
-            MAX_SERVER_IMAGE_SIZE
-        )));
-    }
+    // Stream with size enforcement — rejects before fully buffering
+    let data = read_field_capped(&mut field, MAX_SERVER_IMAGE_SIZE).await?;
+    let data = axum::body::Bytes::from(data);
 
     // Detect actual content type from magic bytes (server images must be images)
     let (detected_ct, category) = detect_content_type(&data)
@@ -367,7 +389,9 @@ pub async fn upload_server_image_handler(
     let image_url_clone = image_url.clone();
     let upload_id_clone = upload_id.clone();
     let original_filename_clone = original_filename.clone();
-    let content_type_clone = content_type.clone();
+    // Store the magic-byte-detected MIME type, not the client-declared one,
+    // to ensure downstream consumers see a consistent, verified content type.
+    let content_type_clone = detected_ct.to_string();
     let size = cleaned.len() as i64;
     let moderator = identity.pseudonym_id.clone();
 
@@ -465,7 +489,7 @@ pub async fn upload_chat_handler(
         .clone();
 
     // Extract file field
-    let field = multipart
+    let mut field = multipart
         .next_field()
         .await
         .map_err(|e| ApiError::BadRequest(format!("multipart error: {}", e)))?
@@ -481,10 +505,10 @@ pub async fn upload_chat_handler(
         .unwrap_or("upload")
         .to_string();
 
-    let data = field
-        .bytes()
-        .await
-        .map_err(|e| ApiError::BadRequest(format!("failed to read upload: {}", e)))?;
+    // Stream with size enforcement — rejects before fully buffering.
+    // Uses a hard ceiling; per-category limits are enforced after detection.
+    let data = read_field_capped(&mut field, UPLOAD_STREAM_CEILING).await?;
+    let data = axum::body::Bytes::from(data);
 
     // Detect actual content type from magic bytes.
     // When magic bytes are unrecognized, treat the file as a generic binary

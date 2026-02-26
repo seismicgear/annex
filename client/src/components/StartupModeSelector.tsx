@@ -151,7 +151,9 @@ export function StartupModeSelector({ onReady }: Props) {
     [onReady],
   );
 
-  // On mount, load saved preference only to pre-fill form state.
+  // On mount, load saved preference. For returning Tauri users with saved
+  // prefs, auto-resume the previous mode (skip the selector entirely).
+  // Web/Docker mode only pre-fills form state for manual selection.
   useEffect(() => {
     let cancelled = false;
 
@@ -165,13 +167,18 @@ export function StartupModeSelector({ onReady }: Props) {
             setPhase('choose');
             return;
           }
+          // Auto-resume: apply saved mode without re-saving (skipSave=true)
+          if (prefs.startup_mode.mode === 'host') {
+            void applyHost(true);
+            return;
+          }
           if (prefs.startup_mode.mode === 'client' && prefs.startup_mode.server_url) {
-            const url = prefs.startup_mode.server_url;
-            setRemoteUrl(url);
+            void applyRemote(prefs.startup_mode.server_url, true);
+            return;
           }
           setPhase('choose');
         } else {
-          // Web/Docker
+          // Web/Docker — pre-fill only, no auto-resume
           const prefs = loadWebPrefs();
           if (cancelled) return;
           if (!prefs) {
@@ -191,7 +198,7 @@ export function StartupModeSelector({ onReady }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [inTauri]);
+  }, [inTauri, applyHost, applyRemote]);
 
   const handleReset = async () => {
     if (inTauri) {

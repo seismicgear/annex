@@ -63,6 +63,7 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool) {
         preview_cache: annex_server::api_link_preview::PreviewCache::new(),
         cors_origins: vec![],
         enforce_zk_proofs: false,
+        ws_token_secret: std::sync::Arc::new([0u8; 32]),
     };
 
     (app(state), pool)
@@ -349,6 +350,7 @@ async fn setup_app_voice_disabled() -> axum::Router {
         preview_cache: annex_server::api_link_preview::PreviewCache::new(),
         cors_origins: vec![],
         enforce_zk_proofs: false,
+        ws_token_secret: std::sync::Arc::new([0u8; 32]),
     };
 
     app(state)
@@ -527,6 +529,7 @@ async fn test_voice_join_not_configured_returns_structured_error() {
         preview_cache: annex_server::api_link_preview::PreviewCache::new(),
         cors_origins: vec![],
         enforce_zk_proofs: false,
+        ws_token_secret: std::sync::Arc::new([0u8; 32]),
     };
 
     let router = app(state);
