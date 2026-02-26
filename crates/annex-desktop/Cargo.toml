@@ -19,5 +19,12 @@ dirs = "6"
 reqwest = { workspace = true }
 rfd = "0.15"
 
+toml = { workspace = true }
+uuid = { workspace = true }
+keyring = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
 [target.'cfg(windows)'.dependencies]
 raw-window-handle = "0.6"

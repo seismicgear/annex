@@ -510,10 +510,35 @@ pub async fn prepare_server(
 const MAX_REQUEST_BODY_BYTES: usize = 2 * 1024 * 1024;
 
 /// Health check handler.
-async fn health() -> Json<Value> {
+///
+/// Reports basic server liveness, version, and whether voice (LiveKit) is configured.
+async fn health(Extension(state): Extension<Arc<AppState>>) -> Json<Value> {
     Json(json!({
         "status": "ok",
-        "version": env!("CARGO_PKG_VERSION")
+        "version": env!("CARGO_PKG_VERSION"),
+        "voice_enabled": state.voice_service.is_enabled()
+    }))
+}
+
+/// Voice configuration status (public, no auth required).
+///
+/// Reports whether LiveKit is configured and provides setup guidance if not.
+async fn voice_config_status(Extension(state): Extension<Arc<AppState>>) -> Json<Value> {
+    let enabled = state.voice_service.is_enabled();
+    let has_public_url = !state.voice_service.get_public_url().is_empty();
+
+    let setup_hint = if !enabled {
+        "LiveKit is not configured. Set livekit.url, livekit.api_key, and livekit.api_secret in config.toml or use ANNEX_LIVEKIT_* environment variables."
+    } else if !has_public_url {
+        "LiveKit URL is configured but no public URL is set. Clients may not be able to connect."
+    } else {
+        "Voice is configured and ready."
+    };
+
+    Json(json!({
+        "voice_enabled": enabled,
+        "has_public_url": has_public_url,
+        "setup_hint": setup_hint
     }))
 }
 
@@ -723,6 +748,7 @@ pub fn app(state: AppState) -> Router {
             get(api_observe::get_federation_peers_handler),
         )
         .route("/api/public/agents", get(api_observe::get_agents_handler))
+        .route("/api/voice/config-status", get(voice_config_status))
         .route(
             "/api/public/server/image",
             get(api_upload::get_server_image_handler),

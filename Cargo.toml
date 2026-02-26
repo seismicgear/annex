@@ -63,6 +63,9 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # Configuration
 toml = "0.8"
 
+# OS credential storage (desktop only)
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+
 # Internal crates
 annex-types = { path = "crates/annex-types" }
 annex-db = { path = "crates/annex-db" }

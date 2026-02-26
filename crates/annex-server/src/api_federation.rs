@@ -281,7 +281,7 @@ pub async fn relay_message(
 /// Uses the denormalized `pseudonym_id` and `commitment_hex` columns added by
 /// migration 024 for an O(1) indexed lookup. Falls back to the legacy O(N*M)
 /// scan for rows that predate the migration (where those columns are NULL).
-fn find_commitment_for_pseudonym(
+pub(crate) fn find_commitment_for_pseudonym(
     conn: &rusqlite::Connection,
     pseudonym: &str,
 ) -> Result<Option<(String, String)>, rusqlite::Error> {
@@ -534,7 +534,7 @@ pub async fn receive_federated_message_handler(
         }
 
         // 6. Verify Membership (Local Pseudonym)
-        let is_member = annex_channels::is_member(&conn, &envelope.channel_id, &local_pseudonym_id)
+        let is_member = annex_channels::is_member(&conn, state_clone.server_id, &envelope.channel_id, &local_pseudonym_id)
             .map_err(FederationError::Channel)?;
 
         if !is_member {

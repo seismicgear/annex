@@ -1,3 +1,4 @@
+use crate::api_federation::find_commitment_for_pseudonym;
 use crate::middleware::{verify_zk_membership_header, IdentityContext};
 use crate::AppState;
 use annex_channels::{
@@ -23,6 +24,26 @@ const MAX_CHANNEL_ID_LEN: usize = 128;
 const MAX_CHANNEL_NAME_LEN: usize = 256;
 /// Maximum length for a channel topic.
 const MAX_TOPIC_LEN: usize = 1024;
+
+/// Look up the identity commitment for a pseudonym (needed for ZK proof binding).
+///
+/// Returns the commitment hex string, or `None` if the pseudonym has no
+/// registered commitment (e.g. pre-ZK legacy identities).
+async fn lookup_commitment(
+    pool: &annex_db::DbPool,
+    pseudonym_id: &str,
+) -> Result<Option<String>, StatusCode> {
+    let pool = pool.clone();
+    let pseudo = pseudonym_id.to_string();
+    tokio::task::spawn_blocking(move || {
+        let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        find_commitment_for_pseudonym(&conn, &pseudo)
+            .map(|opt| opt.map(|(commitment, _topic)| commitment))
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+}
 
 /// Maps a [`ChannelError`] to the correct HTTP status code, logging non-404 errors.
 ///
@@ -213,17 +234,19 @@ pub async fn get_channel_history_handler(
     Path(channel_id): Path<String>,
     Query(params): Query<HistoryParams>,
 ) -> Result<Json<Vec<Message>>, StatusCode> {
-    // 0. ZK proof enforcement (when enabled)
-    verify_zk_membership_header(&state, &headers)?;
+    // 0. ZK proof enforcement — bind proof to authenticated identity
+    let commitment = lookup_commitment(&state.pool, &identity.pseudonym_id).await?;
+    verify_zk_membership_header(&state, &headers, commitment.as_deref())?;
 
     // 1. Verify Membership
     let is_member = tokio::task::spawn_blocking({
         let pool = state.pool.clone();
+        let server_id = state.server_id;
         let cid = channel_id.clone();
         let pid = identity.pseudonym_id.clone();
         move || {
             let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            is_member(&conn, &cid, &pid).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+            is_member(&conn, server_id, &cid, &pid).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
         }
     })
     .await
@@ -236,12 +259,13 @@ pub async fn get_channel_history_handler(
     // 2. Fetch Messages (cap limit to 200 to prevent oversize responses)
     let messages = tokio::task::spawn_blocking({
         let pool = state.pool.clone();
+        let server_id = state.server_id;
         let cid = channel_id.clone();
         let before = params.before;
         let limit = params.limit.map(|l| l.min(200));
         move || {
             let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            list_messages(&conn, &cid, before, limit).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+            list_messages(&conn, server_id, &cid, before, limit).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
         }
     })
     .await
@@ -257,8 +281,9 @@ pub async fn join_channel_handler(
     headers: axum::http::HeaderMap,
     Path(channel_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    // 0. ZK proof enforcement (when enabled)
-    verify_zk_membership_header(&state, &headers)?;
+    // 0. ZK proof enforcement — bind proof to authenticated identity
+    let commitment = lookup_commitment(&state.pool, &identity.pseudonym_id).await?;
+    verify_zk_membership_header(&state, &headers, commitment.as_deref())?;
 
     // 1. Fetch Channel
     let channel = {
@@ -486,7 +511,7 @@ pub async fn leave_channel_handler(
         let is_agent = identity.participant_type == RoleCode::AiAgent;
         move || {
             let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            remove_member(&conn, &cid, &pid).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            remove_member(&conn, server_id, &cid, &pid).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
             if is_agent {
                 delete_edge(&conn, server_id, &pid, &cid, EdgeKind::AgentServing)
@@ -533,8 +558,19 @@ pub async fn join_voice_channel_handler(
     headers: axum::http::HeaderMap,
     Path(channel_id): Path<String>,
 ) -> Result<Json<JoinVoiceResponse>, (StatusCode, String)> {
-    // 0. ZK proof enforcement (when enabled)
-    verify_zk_membership_header(&state, &headers).map_err(|status| {
+    // 0. ZK proof enforcement — bind proof to authenticated identity
+    let commitment = lookup_commitment(&state.pool, &identity.pseudonym_id)
+        .await
+        .map_err(|status| {
+            (
+                status,
+                status
+                    .canonical_reason()
+                    .unwrap_or("internal error")
+                    .to_string(),
+            )
+        })?;
+    verify_zk_membership_header(&state, &headers, commitment.as_deref()).map_err(|status| {
         (
             status,
             status
@@ -547,18 +583,24 @@ pub async fn join_voice_channel_handler(
     if !state.voice_service.is_enabled() || state.voice_service.get_public_url().is_empty() {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
-            "Voice is not configured".to_string(),
+            serde_json::json!({
+                "error": "voice_not_configured",
+                "message": "Voice is not configured. Set up LiveKit credentials in server settings to enable voice channels.",
+                "setup_hint": "Configure livekit.url, livekit.api_key, and livekit.api_secret in config.toml or use ANNEX_LIVEKIT_* environment variables."
+            })
+            .to_string(),
         ));
     }
 
     // 1. Check if user is a member of the channel
     let is_member = tokio::task::spawn_blocking({
         let pool = state.pool.clone();
+        let server_id = state.server_id;
         let cid = channel_id.clone();
         let pid = identity.pseudonym_id.clone();
         move || {
             let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            is_member(&conn, &cid, &pid).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+            is_member(&conn, server_id, &cid, &pid).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
         }
     })
     .await
@@ -643,11 +685,12 @@ pub async fn leave_voice_channel_handler(
     // 1. Check if user is a member of the channel
     let is_member = tokio::task::spawn_blocking({
         let pool = state.pool.clone();
+        let server_id = state.server_id;
         let cid = channel_id.clone();
         let pid = identity.pseudonym_id.clone();
         move || {
             let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            is_member(&conn, &cid, &pid).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+            is_member(&conn, server_id, &cid, &pid).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
         }
     })
     .await
@@ -704,11 +747,12 @@ pub async fn voice_status_handler(
     // Verify membership
     let is_member_val = tokio::task::spawn_blocking({
         let pool = state.pool.clone();
+        let server_id = state.server_id;
         let cid = channel_id.clone();
         let pid = identity.pseudonym_id.clone();
         move || {
             let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            is_member(&conn, &cid, &pid).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+            is_member(&conn, server_id, &cid, &pid).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
         }
     })
     .await
@@ -740,11 +784,12 @@ pub async fn get_message_edits_handler(
     // Verify membership
     let is_member_val = tokio::task::spawn_blocking({
         let pool = state.pool.clone();
+        let server_id = state.server_id;
         let cid = channel_id.clone();
         let pid = identity.pseudonym_id.clone();
         move || {
             let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            is_member(&conn, &cid, &pid).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+            is_member(&conn, server_id, &cid, &pid).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
         }
     })
     .await

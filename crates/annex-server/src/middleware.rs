@@ -264,9 +264,14 @@ pub async fn rate_limit_middleware(req: Request<Body>, next: Next) -> Result<Res
         .clone();
 
     // Auto-detect public URL from request headers if not yet configured.
-    // Skips localhost/127.0.0.1 since those are never valid public URLs
-    // — keeps retrying until a real host arrives (e.g. via reverse proxy)
-    // or the admin sets one explicitly via PUT /api/admin/public-url.
+    // Skips loopback, private IPs, and single-label hostnames since those
+    // are never valid public URLs. Keeps retrying until a plausible host
+    // arrives (e.g. via reverse proxy) or the admin sets one explicitly
+    // via PUT /api/admin/public-url or ANNEX_PUBLIC_URL.
+    //
+    // SECURITY NOTE: This trusts X-Forwarded-Host / Host headers which can
+    // be spoofed. Deploy behind a reverse proxy that strips untrusted
+    // forwarded headers, or set ANNEX_PUBLIC_URL explicitly.
     {
         let current = state
             .public_url
@@ -283,6 +288,12 @@ pub async fn rate_limit_middleware(req: Request<Body>, next: Next) -> Result<Res
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("http");
 
+            let source_header = if req.headers().get("x-forwarded-host").is_some() {
+                "x-forwarded-host"
+            } else {
+                "host"
+            };
+
             let host = req
                 .headers()
                 .get("x-forwarded-host")
@@ -290,21 +301,58 @@ pub async fn rate_limit_middleware(req: Request<Body>, next: Next) -> Result<Res
                 .and_then(|v| v.to_str().ok());
 
             if let Some(host) = host {
-                // Strip port for the loopback check
+                // Strip port for validation checks
                 let host_name = host.split(':').next().unwrap_or(host);
-                let is_loopback = host_name == "localhost"
+
+                // Reject loopback and internal hostnames
+                let mut is_internal = host_name == "localhost"
                     || host_name == "127.0.0.1"
                     || host_name == "[::1]"
-                    || host_name == "0.0.0.0";
+                    || host_name == "0.0.0.0"
+                    || host_name.ends_with(".local")
+                    || host_name.ends_with(".internal");
 
-                if !is_loopback {
+                // Reject private/reserved IP addresses
+                if !is_internal {
+                    // Strip brackets for IPv6 parsing
+                    let bare = host_name.trim_start_matches('[').trim_end_matches(']');
+                    if let Ok(ip) = bare.parse::<std::net::IpAddr>() {
+                        use std::net::IpAddr;
+                        is_internal = match ip {
+                            IpAddr::V4(v4) => {
+                                v4.is_loopback()
+                                    || v4.is_private()
+                                    || v4.is_link_local()
+                                    || v4.is_unspecified()
+                            }
+                            IpAddr::V6(v6) => {
+                                v6.is_loopback()
+                                    || v6.is_unspecified()
+                                    || (v6.segments()[0] & 0xfe00) == 0xfc00
+                                    || (v6.segments()[0] & 0xffc0) == 0xfe80
+                            }
+                        };
+                    }
+                }
+
+                // Require a dot or valid IP to avoid single-word poisoning
+                // (e.g. "Host: evil" with no TLD).
+                let bare = host_name.trim_start_matches('[').trim_end_matches(']');
+                let looks_plausible =
+                    host_name.contains('.') || bare.parse::<std::net::IpAddr>().is_ok();
+
+                if !is_internal && looks_plausible {
                     let detected = format!("{proto}://{host}");
                     let mut url = state
                         .public_url
                         .write()
                         .unwrap_or_else(|p| p.into_inner());
                     if url.is_empty() {
-                        tracing::info!(public_url = %detected, "auto-detected server public URL from request headers");
+                        tracing::info!(
+                            public_url = %detected,
+                            source_header = source_header,
+                            "auto-detected server public URL from request headers"
+                        );
                         *url = detected;
                     }
                 }
@@ -370,12 +418,17 @@ pub struct ZkProofPayload {
 /// Verifies a ZK membership proof from the `x-annex-zk-proof` header.
 ///
 /// When `state.enforce_zk_proofs` is true and the header is present, the proof
-/// is verified against the server's membership verifying key. Returns:
-/// - `Ok(())` if enforcement is disabled, or the proof is valid
-/// - `Err(StatusCode::FORBIDDEN)` if enforcement is enabled and proof is missing/invalid
+/// is verified against the server's membership verifying key. If
+/// `expected_commitment_hex` is provided, the proof's commitment must match
+/// the authenticated identity's commitment (prevents proof replay across users).
+///
+/// Returns:
+/// - `Ok(())` if enforcement is disabled, or the proof is valid and bound
+/// - `Err(StatusCode::FORBIDDEN)` if enforcement is enabled and proof is missing/invalid/mismatched
 pub fn verify_zk_membership_header(
     state: &AppState,
     headers: &axum::http::HeaderMap,
+    expected_commitment_hex: Option<&str>,
 ) -> Result<(), StatusCode> {
     if !state.enforce_zk_proofs {
         return Ok(());
@@ -395,6 +448,19 @@ pub fn verify_zk_membership_header(
 
     let payload: ZkProofPayload =
         serde_json::from_slice(&decoded).map_err(|_| StatusCode::FORBIDDEN)?;
+
+    // Bind proof to authenticated identity: reject if the proof's commitment
+    // does not match the pseudonym's registered commitment.
+    if let Some(expected) = expected_commitment_hex {
+        if payload.commitment_hex != expected {
+            tracing::warn!(
+                submitted = %payload.commitment_hex,
+                expected = %expected,
+                "ZK proof commitment does not match authenticated identity"
+            );
+            return Err(StatusCode::FORBIDDEN);
+        }
+    }
 
     // Parse the proof
     let proof_json =

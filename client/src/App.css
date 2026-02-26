@@ -561,6 +561,22 @@
   color: #e63946;
 }
 
+.voice-error {
+  color: #e63946;
+  font-size: 0.8rem;
+  padding: 0.25rem 0.5rem;
+}
+
+.voice-error p {
+  margin: 0.25rem 0;
+}
+
+.voice-setup-hint {
+  color: #888;
+  font-size: 0.75rem;
+  font-style: italic;
+}
+
 /* ── Media Controls ── */
 
 .media-controls {

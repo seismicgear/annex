@@ -174,7 +174,7 @@ async fn test_agent_websocket_behavior() {
     // 8. Verify DB
     {
         let conn = pool.get().unwrap();
-        let msgs = list_messages(&conn, "chan-agent", None, None).unwrap();
+        let msgs = list_messages(&conn, 1, "chan-agent", None, None).unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, content);
         assert_eq!(msgs[0].sender_pseudonym, "agent-007");
