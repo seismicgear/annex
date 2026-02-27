@@ -47,16 +47,6 @@ export async function startTunnel(): Promise<string> {
   return invoke<string>('start_tunnel');
 }
 
-/** Stop the cloudflared tunnel if running. */
-export async function stopTunnel(): Promise<void> {
-  await invoke('stop_tunnel');
-}
-
-/** Get the current tunnel URL, if a tunnel is active. */
-export async function getTunnelUrl(): Promise<string | null> {
-  return invoke<string | null>('get_tunnel_url');
-}
-
 /** Open a native save dialog and export identity JSON to disk. */
 export async function exportIdentityJson(json: string): Promise<string | null> {
   return invoke<string | null>('export_identity_json', { json });
