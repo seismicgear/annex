@@ -3,8 +3,8 @@
   "version": "0.0.1",
   "identifier": "com.annex.desktop",
   "build": {
-    "beforeBuildCommand": "node ../../scripts/build-desktop.js",
-    "beforeDevCommand": "node ../../scripts/prepare-zk-dev.js && npm --prefix ../../client run dev",
+    "beforeBuildCommand": "node ../scripts/build-desktop.js",
+    "beforeDevCommand": "node ../scripts/prepare-zk-dev.js && npm --prefix ../client run dev",
     "frontendDist": "../../client/dist",
     "devUrl": "http://localhost:5173"
   },
