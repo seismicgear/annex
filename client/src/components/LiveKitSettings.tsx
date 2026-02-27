@@ -51,7 +51,6 @@ export function LiveKitSettings() {
 
   useEffect(() => {
     loadConfig();
-    // Check if local LiveKit is running
     if (isTauri()) {
       getLocalLiveKitUrl().then(setLocalLiveKitUrl).catch(() => {});
     }
@@ -69,7 +68,7 @@ export function LiveKitSettings() {
         token_ttl_seconds: tokenTtl,
       });
       setSuccess('LiveKit configuration saved. Restart the application for changes to take effect.');
-      setApiSecret(''); // Clear from UI after save
+      setApiSecret('');
       await loadConfig();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -137,46 +136,51 @@ export function LiveKitSettings() {
   };
 
   if (!isTauri()) return null;
-  if (loading) return <p className="admin-loading">Loading LiveKit settings...</p>;
+  if (loading) return <p style={{ color: '#888', fontSize: '0.85rem' }}>Loading LiveKit settings...</p>;
 
   return (
-    <div className="admin-section">
+    <div className="policy-editor">
       <h3>Voice (LiveKit)</h3>
 
-      <div className="admin-status-row">
-        <span>Status: </span>
-        <strong style={{ color: configured ? '#4caf50' : '#888' }}>
-          {configured ? 'Configured' : 'Not configured'}
-        </strong>
-        {hasSecret && <span style={{ color: '#666', marginLeft: '0.5rem' }}>(secret stored)</span>}
+      <div className="policy-section">
+        <h4>Status</h4>
+        <p style={{ margin: '0 0 0.5rem', fontSize: '0.85rem' }}>
+          <span style={{ color: configured ? '#4caf50' : '#888' }}>
+            {configured ? 'Configured' : 'Not configured'}
+          </span>
+          {hasSecret && <span style={{ color: '#666', marginLeft: '0.5rem' }}>(secret stored)</span>}
+        </p>
+
+        {localLiveKitUrl && (
+          <div className="share-link-row" style={{ marginBottom: '0.5rem' }}>
+            <span style={{ fontSize: '0.85rem' }}>
+              Local server: <strong style={{ color: '#4caf50' }}>{localLiveKitUrl}</strong>
+            </span>
+            <button onClick={handleStopLocal} className="delete-btn">
+              Stop
+            </button>
+          </div>
+        )}
+
+        {!localLiveKitUrl && (
+          <div>
+            <button
+              onClick={handleStartLocal}
+              disabled={startingLocal}
+              className="primary-btn"
+            >
+              {startingLocal ? 'Starting...' : 'Start Local LiveKit Server'}
+            </button>
+            <span className="field-hint" style={{ marginLeft: '0.5rem' }}>
+              Downloads and runs a local LiveKit server for voice in host mode.
+            </span>
+          </div>
+        )}
       </div>
 
-      {localLiveKitUrl && (
-        <div className="admin-status-row" style={{ marginTop: '0.5rem' }}>
-          <span>Local LiveKit: </span>
-          <strong style={{ color: '#4caf50' }}>{localLiveKitUrl}</strong>
-          <button onClick={handleStopLocal} className="admin-btn-sm" style={{ marginLeft: '0.5rem' }}>
-            Stop
-          </button>
-        </div>
-      )}
+      <div className="policy-section">
+        <h4>Configuration</h4>
 
-      {!localLiveKitUrl && (
-        <div style={{ marginTop: '0.5rem' }}>
-          <button
-            onClick={handleStartLocal}
-            disabled={startingLocal}
-            className="admin-btn"
-          >
-            {startingLocal ? 'Starting...' : 'Start Local LiveKit Server'}
-          </button>
-          <span className="admin-hint" style={{ marginLeft: '0.5rem' }}>
-            Downloads and runs a local LiveKit server for voice in host mode.
-          </span>
-        </div>
-      )}
-
-      <div className="admin-form" style={{ marginTop: '1rem' }}>
         <label>
           LiveKit URL
           <input
@@ -218,29 +222,29 @@ export function LiveKitSettings() {
           />
         </label>
 
-        <div className="admin-btn-row">
-          <button onClick={handleSave} disabled={saving || !url} className="admin-btn">
+        <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.75rem' }}>
+          <button onClick={handleSave} disabled={saving || !url} className="primary-btn">
             {saving ? 'Saving...' : 'Save'}
           </button>
-          <button onClick={handleCheckReachable} disabled={checking || !url} className="admin-btn-secondary">
+          <button onClick={handleCheckReachable} disabled={checking || !url} className="primary-btn">
             {checking ? 'Checking...' : 'Test Connection'}
           </button>
           {configured && (
-            <button onClick={handleClear} className="admin-btn-danger">
+            <button onClick={handleClear} className="delete-btn">
               Clear
             </button>
           )}
         </div>
 
         {reachable !== null && (
-          <p style={{ color: reachable ? '#4caf50' : '#e63946', marginTop: '0.5rem' }}>
+          <p style={{ color: reachable ? '#4caf50' : '#e63946', marginTop: '0.5rem', fontSize: '0.85rem' }}>
             {reachable ? 'LiveKit server is reachable.' : 'LiveKit server is not reachable.'}
           </p>
         )}
       </div>
 
-      {error && <p className="admin-error">{error}</p>}
-      {success && <p className="admin-success">{success}</p>}
+      {error && <div className="error-message">{error}</div>}
+      {success && <div className="success-message">{success}</div>}
     </div>
   );
 }
