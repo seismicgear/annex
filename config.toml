@@ -23,6 +23,27 @@ json = false
 [cors]
 # allowed_origins = []
 
+# LiveKit WebRTC configuration.
+# Uncomment and configure to enable voice/video channels.
+# Override with env vars: ANNEX_LIVEKIT_URL, ANNEX_LIVEKIT_API_KEY, ANNEX_LIVEKIT_API_SECRET
+# [livekit]
+# url = "ws://localhost:7880"
+# api_key = "devkey"
+# api_secret = "secret"
+# token_ttl_seconds = 3600
+#
+# ICE servers for WebRTC NAT traversal.
+# Default: Google STUN servers (sufficient for home/mobile networks).
+# Add TURN servers for restrictive corporate firewalls that block UDP.
+#
+# [[livekit.ice_servers]]
+# urls = ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]
+#
+# [[livekit.ice_servers]]
+# urls = ["turn:turn.example.com:3478"]
+# username = "user"
+# credential = "pass"
+
 [voice]
 tts_voices_dir = "assets/voices"
 tts_binary_path = "assets/piper/piper"

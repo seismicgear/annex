@@ -1,4 +1,4 @@
-use annex_voice::{LiveKitConfig, VoiceService};
+use annex_voice::{IceServer, LiveKitConfig, VoiceService};
 use std::env;
 
 const DEFAULT_URL: &str = "http://localhost:7880";
@@ -93,4 +93,114 @@ async fn test_token_permissions() {
         "canSubscribe should be true"
     );
     assert!(token_data.claims.video.room_join, "roomJoin should be true");
+}
+
+#[test]
+fn test_default_ice_servers() {
+    let config = LiveKitConfig::default();
+    assert!(!config.ice_servers.is_empty(), "default should include STUN servers");
+
+    let first = &config.ice_servers[0];
+    assert!(
+        first.urls.iter().any(|u| u.starts_with("stun:")),
+        "default ICE servers should include at least one STUN URL"
+    );
+    assert!(first.username.is_empty(), "STUN servers should have no username");
+    assert!(first.credential.is_empty(), "STUN servers should have no credential");
+}
+
+#[test]
+fn test_ice_servers_from_new() {
+    let config = LiveKitConfig::new(DEFAULT_URL, DEFAULT_KEY, DEFAULT_SECRET);
+    assert!(!config.ice_servers.is_empty(), "new() should include default STUN servers");
+}
+
+#[tokio::test]
+async fn test_voice_service_ice_servers() {
+    let mut config = LiveKitConfig::new(DEFAULT_URL, DEFAULT_KEY, DEFAULT_SECRET);
+    config.ice_servers = vec![
+        IceServer {
+            urls: vec!["stun:stun.example.com:3478".into()],
+            username: String::new(),
+            credential: String::new(),
+        },
+        IceServer {
+            urls: vec!["turn:turn.example.com:3478".into()],
+            username: "user".into(),
+            credential: "pass".into(),
+        },
+    ];
+    let service = VoiceService::new(config);
+    let servers = service.ice_servers();
+    assert_eq!(servers.len(), 2);
+    assert_eq!(servers[0].urls[0], "stun:stun.example.com:3478");
+    assert_eq!(servers[1].username, "user");
+    assert_eq!(servers[1].credential, "pass");
+}
+
+#[test]
+fn test_ice_server_serialization() {
+    let server = IceServer {
+        urls: vec![
+            "stun:stun.l.google.com:19302".to_string(),
+            "stun:stun1.l.google.com:19302".to_string(),
+        ],
+        username: String::new(),
+        credential: String::new(),
+    };
+
+    let json = serde_json::to_value(&server).expect("serialize");
+    assert_eq!(json["urls"].as_array().unwrap().len(), 2);
+    assert_eq!(json["username"], "");
+    assert_eq!(json["credential"], "");
+}
+
+#[test]
+fn test_ice_server_deserialization() {
+    let json = r#"{"urls": ["turn:turn.example.com:3478"], "username": "u", "credential": "p"}"#;
+    let server: IceServer = serde_json::from_str(json).expect("deserialize");
+    assert_eq!(server.urls, vec!["turn:turn.example.com:3478"]);
+    assert_eq!(server.username, "u");
+    assert_eq!(server.credential, "p");
+}
+
+#[test]
+fn test_livekit_config_with_ice_servers_toml() {
+    let toml_str = r#"
+        url = "ws://localhost:7880"
+        api_key = "key"
+        api_secret = "secret"
+
+        [[ice_servers]]
+        urls = ["stun:stun.l.google.com:19302"]
+
+        [[ice_servers]]
+        urls = ["turn:turn.example.com:3478"]
+        username = "user"
+        credential = "pass"
+    "#;
+
+    let config: LiveKitConfig = toml::from_str(toml_str).expect("parse TOML");
+    assert_eq!(config.ice_servers.len(), 2);
+    assert_eq!(config.ice_servers[0].urls[0], "stun:stun.l.google.com:19302");
+    assert_eq!(config.ice_servers[1].username, "user");
+}
+
+#[test]
+fn test_livekit_config_without_ice_servers_uses_defaults() {
+    let toml_str = r#"
+        url = "ws://localhost:7880"
+        api_key = "key"
+        api_secret = "secret"
+    "#;
+
+    let config: LiveKitConfig = toml::from_str(toml_str).expect("parse TOML");
+    assert!(
+        !config.ice_servers.is_empty(),
+        "missing ice_servers should use defaults"
+    );
+    assert!(
+        config.ice_servers[0].urls[0].starts_with("stun:"),
+        "default should be a STUN server"
+    );
 }

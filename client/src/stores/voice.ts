@@ -34,6 +34,8 @@ export interface VoiceState {
   voiceToken: string | null;
   /** LiveKit server URL. */
   livekitUrl: string | null;
+  /** ICE (STUN/TURN) servers for WebRTC NAT traversal. */
+  iceServers: api.IceServerConfig[];
   /** Channel ID the call is connected to. */
   connectedChannelId: string | null;
   /** Whether a join is in progress. */
@@ -88,6 +90,7 @@ const saved = loadAudioSettings();
 export const useVoiceStore = create<VoiceState>((set, get) => ({
   voiceToken: null,
   livekitUrl: null,
+  iceServers: [],
   connectedChannelId: null,
   joining: false,
   callActive: false,
@@ -102,10 +105,11 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   joinCall: async (pseudonymId, channelId) => {
     set({ joining: true, lastJoinError: null });
     try {
-      const { token, url } = await api.joinVoice(pseudonymId, channelId);
+      const { token, url, ice_servers } = await api.joinVoice(pseudonymId, channelId);
       set({
         voiceToken: token,
         livekitUrl: url,
+        iceServers: ice_servers ?? [],
         connectedChannelId: channelId,
         joining: false,
         lastJoinError: null,
@@ -125,6 +129,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     set({
       voiceToken: null,
       livekitUrl: null,
+      iceServers: [],
       connectedChannelId: null,
       lastJoinError: null,
       deafened: false,

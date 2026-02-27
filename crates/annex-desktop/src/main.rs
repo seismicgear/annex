@@ -802,6 +802,18 @@ async fn check_livekit_reachable(url: String) -> Result<serde_json::Value, Strin
 
 // ── Local LiveKit server management ──
 
+/// Probe a range of ports and return the first one that is not already in use.
+/// Uses a bind-and-drop approach: if we can bind to 127.0.0.1:port, the port
+/// is available. The socket is closed immediately so livekit-server can bind.
+fn find_available_port(start: u16, end: u16) -> Option<u16> {
+    for port in start..=end {
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return Some(port);
+        }
+    }
+    None
+}
+
 const LIVEKIT_VERSION: &str = "1.7.2";
 
 /// Returns the platform-specific LiveKit server binary name.
@@ -1015,20 +1027,11 @@ async fn start_local_livekit(state: tauri::State<'_, AppManagedState>) -> Result
     let api_key = format!("annex_{}", uuid::Uuid::new_v4().simple());
     let api_secret = format!("secret_{}", uuid::Uuid::new_v4().simple());
 
-    // AUDIT-TAURI: Port 7880 is hardcoded. If another process (or a second
-    // Annex instance) already occupies this port, livekit-server will fail to
-    // bind and the readiness check will time out after 15 seconds. Ideally
-    // this should probe for a free port (like the Axum server does with port 0),
-    // but livekit-server's --port flag doesn't support 0/auto-select.
-    //
-    // AUDIT-TAURI: The URL uses ws:// (not wss://) which is an insecure
-    // WebSocket. This works on Windows WebView2 and macOS WKWebView because
-    // Chromium and WebKit treat 127.0.0.1 as "potentially trustworthy",
-    // allowing ws:// from an https:// secure context. However, Linux
-    // WebKitGTK may enforce stricter mixed-content rules and block this
-    // connection. Test on Linux hardware — if blocked, the LiveKit server
-    // would need a TLS listener or a localhost proxy.
-    let port: u16 = 7880;
+    // Probe for a free port starting from 7880. livekit-server's --port flag
+    // doesn't support auto-select (port 0), so we try ports 7880..7899 and pick
+    // the first one that is not already in use.
+    let port = find_available_port(7880, 7899)
+        .ok_or("no available port in range 7880–7899 for livekit-server")?;
     let lk_url = format!("ws://127.0.0.1:{port}");
 
     tracing::info!(path = %lk_path.display(), %port, "starting local livekit-server");
@@ -1214,6 +1217,67 @@ fn set_dark_window_border(window: &tauri::WebviewWindow) {
     }
 }
 
+/// Check for PipeWire availability on Linux (required for screen sharing on Wayland).
+///
+/// Logs warnings if PipeWire or xdg-desktop-portal are not detected.
+/// These are required for `getDisplayMedia()` to work in WebKitGTK on Wayland.
+#[cfg(target_os = "linux")]
+fn check_pipewire_available() {
+    // Check if the PipeWire daemon socket exists (standard XDG path).
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_default();
+    if runtime_dir.is_empty() {
+        tracing::warn!("XDG_RUNTIME_DIR not set — cannot detect PipeWire");
+        return;
+    }
+
+    let pipewire_socket = std::path::Path::new(&runtime_dir).join("pipewire-0");
+    let pipewire_found = if pipewire_socket.exists() {
+        tracing::info!("PipeWire detected (socket: {})", pipewire_socket.display());
+        true
+    } else {
+        // Fallback: check if `pw-cli` is on PATH.
+        std::process::Command::new("pw-cli")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    };
+
+    if !pipewire_found {
+        tracing::warn!(
+            "PipeWire not detected — screen sharing via getDisplayMedia() will not work on Wayland. \
+             Install pipewire and wireplumber, then restart the session."
+        );
+    }
+
+    // Check for xdg-desktop-portal (required for screen sharing prompts on Wayland).
+    let portal_running = std::process::Command::new("dbus-send")
+        .args([
+            "--session",
+            "--dest=org.freedesktop.DBus",
+            "--type=method_call",
+            "--print-reply",
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus.NameHasOwner",
+            "string:org.freedesktop.portal.Desktop",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).contains("true"))
+        .unwrap_or(false);
+
+    if !portal_running {
+        tracing::warn!(
+            "xdg-desktop-portal not running — screen sharing will not work on Wayland. \
+             Install xdg-desktop-portal and a backend (e.g. xdg-desktop-portal-gtk or \
+             xdg-desktop-portal-wlr for wlroots compositors)."
+        );
+    }
+}
+
 fn main() {
     let data_dir = resolve_data_dir();
     std::fs::create_dir_all(&data_dir).expect("failed to create Annex data directory");
@@ -1351,18 +1415,11 @@ fn main() {
             livekit: Mutex::new(None),
         })
         .setup(|app| {
-            // AUDIT-TAURI: WebView2 on Windows may require explicit permission
-            // handling for getUserMedia (camera/mic). Without an
-            // `on_permission_request` handler, WebView2 can silently deny
-            // media access — no error thrown, just null streams. Test on
-            // Windows hardware to confirm getUserMedia works without manual
-            // permission configuration.
-            //
-            // AUDIT-TAURI: WebView2 autoplay policy may block auto-playing
-            // audio/video elements (RoomAudioRenderer in LiveKit). If remote
-            // audio doesn't play on join, the WebView2 may need
-            // `--autoplay-policy=no-user-gesture-required` via
-            // additional_browser_args. Test on Windows hardware.
+            #[cfg(target_os = "linux")]
+            {
+                check_pipewire_available();
+            }
+
             #[cfg(target_os = "windows")]
             {
                 if let Some(window) = app.get_webview_window("main") {

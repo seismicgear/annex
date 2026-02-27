@@ -5,7 +5,7 @@
  * Settings are persisted to localStorage via the voice store.
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useVoiceStore } from '@/stores/voice';
 
 interface DeviceInfo {
@@ -67,7 +67,7 @@ export function AudioSettings({ onClose }: { onClose: () => void }) {
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [permissionGranted, setPermissionGranted] = useState(false);
 
-  useEffect(() => {
+  const refreshDevices = useCallback(() => {
     let cancelled = false;
     enumerateMediaDevices().then((result) => {
       if (cancelled) return;
@@ -76,6 +76,20 @@ export function AudioSettings({ onClose }: { onClose: () => void }) {
     });
     return () => { cancelled = true; };
   }, []);
+
+  // Enumerate on mount.
+  useEffect(() => refreshDevices(), [refreshDevices]);
+
+  // Re-enumerate when devices are plugged/unplugged.
+  useEffect(() => {
+    if (!navigator.mediaDevices?.addEventListener) return;
+
+    const handler = () => { refreshDevices(); };
+    navigator.mediaDevices.addEventListener('devicechange', handler);
+    return () => {
+      navigator.mediaDevices.removeEventListener('devicechange', handler);
+    };
+  }, [refreshDevices]);
 
   const audioInputs = devices.filter((d) => d.kind === 'audioinput');
   const audioOutputs = devices.filter((d) => d.kind === 'audiooutput');

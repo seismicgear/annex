@@ -42,6 +42,27 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "macOS": {
+      "entitlements": "Entitlements.plist",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Annex needs camera access for video calls.",
+        "NSMicrophoneUsageDescription": "Annex needs microphone access for voice and video calls.",
+        "NSScreenCaptureUsageDescription": "Annex needs screen recording access for screen sharing."
+      },
+      "minimumSystemVersion": "11.0"
+    },
+    "iOS": {
+      "developmentTeam": ""
+    },
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0 (>= 2.40)",
+          "libgtk-3-0",
+          "libpipewire-0.3-0"
+        ]
+      }
+    },
     "windows": {
       "nsis": {
         "installMode": "both",

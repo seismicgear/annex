@@ -52,13 +52,11 @@ async fn setup_app() -> (axum::Router, Arc<AppState>, TempDir) {
     let membership_vkey = zk::generate_dummy_vkey();
     let (presence_tx, _) = tokio::sync::broadcast::channel(100);
 
-    let voice_config = LiveKitConfig {
-        url: "http://localhost:7880".to_string(),
-        public_url: String::new(),
-        api_key: "devkey".to_string(),
-        api_secret: "secret".to_string(),
-        token_ttl_seconds: 3600,
-    };
+    let voice_config = LiveKitConfig::new(
+        "http://localhost:7880",
+        "devkey",
+        "secret",
+    );
     let voice_service = VoiceService::new(voice_config);
     let tts_service = TtsService::new("dummy/voices", "dummy/piper", "dummy/bark");
     let stt_service = SttService::new("dummy/model.bin", "dummy/whisper");
