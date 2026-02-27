@@ -19,8 +19,8 @@ pub use commitment::generate_commitment;
 pub use merkle::MerkleTree;
 pub use nullifier::{check_nullifier_exists, insert_nullifier};
 pub use platform::{
-    create_platform_identity, deactivate_platform_identity, get_platform_identity,
-    update_capabilities, Capabilities, PlatformIdentity,
+    create_platform_identity, deactivate_platform_identity, ensure_founder,
+    get_platform_identity, update_capabilities, Capabilities, PlatformIdentity,
 };
 pub use poseidon::hash_inputs;
 pub use registry::{

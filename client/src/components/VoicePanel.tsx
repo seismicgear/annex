@@ -345,7 +345,7 @@ export function VoicePanel() {
 
     api.getVoiceConfigStatus()
       .then((status) => {
-        if (cancelled || status.voice_enabled) return;
+        if (cancelled || (status.policy_enabled && status.infrastructure_ready)) return;
         setSetupHint(status.setup_hint);
       })
       .catch(() => {

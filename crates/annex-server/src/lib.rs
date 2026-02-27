@@ -528,13 +528,22 @@ async fn health(Extension(state): Extension<Arc<AppState>>) -> Json<Value> {
 
 /// Voice configuration status (public, no auth required).
 ///
-/// Reports whether LiveKit is configured and provides setup guidance if not.
+/// Reports both the server policy voice setting and whether the LiveKit
+/// infrastructure is configured, so the client can distinguish between
+/// "voice disabled by admin" and "voice enabled but needs LiveKit setup".
 async fn voice_config_status(Extension(state): Extension<Arc<AppState>>) -> Json<Value> {
-    let enabled = state.voice_service.is_enabled();
+    let infrastructure_ready = state.voice_service.is_enabled();
     let has_public_url = !state.voice_service.get_public_url().is_empty();
+    let policy_enabled = state
+        .policy
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .voice_enabled;
 
-    let setup_hint = if !enabled {
-        "LiveKit is not configured. Set livekit.url, livekit.api_key, and livekit.api_secret in config.toml or use ANNEX_LIVEKIT_* environment variables."
+    let setup_hint = if !policy_enabled {
+        "Voice is disabled in the server policy. An admin can enable it in Server Policy settings."
+    } else if !infrastructure_ready {
+        "Voice is enabled by policy but LiveKit is not configured. Set livekit.url, livekit.api_key, and livekit.api_secret in config.toml or use ANNEX_LIVEKIT_* environment variables."
     } else if !has_public_url {
         "LiveKit URL is configured but no public URL is set. Clients may not be able to connect."
     } else {
@@ -542,7 +551,9 @@ async fn voice_config_status(Extension(state): Extension<Arc<AppState>>) -> Json
     };
 
     Json(json!({
-        "voice_enabled": enabled,
+        "voice_enabled": policy_enabled && infrastructure_ready,
+        "policy_enabled": policy_enabled,
+        "infrastructure_ready": infrastructure_ready,
         "has_public_url": has_public_url,
         "setup_hint": setup_hint
     }))

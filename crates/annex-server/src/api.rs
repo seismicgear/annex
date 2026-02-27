@@ -3,9 +3,9 @@
 use crate::AppState;
 use annex_graph::{ensure_graph_node, role_code_to_node_type};
 use annex_identity::{
-    create_platform_identity, derive_nullifier_hex, derive_pseudonym_id, get_all_roles,
-    get_all_topics, get_path_for_commitment, get_platform_identity, insert_nullifier,
-    register_identity,
+    create_platform_identity, derive_nullifier_hex, derive_pseudonym_id, ensure_founder,
+    get_all_roles, get_all_topics, get_path_for_commitment, get_platform_identity,
+    insert_nullifier, register_identity,
     zk::{parse_fr_from_hex, parse_proof, parse_public_signals, verify_proof},
     Capabilities, PlatformIdentity, RoleCode, VrpRoleEntry, VrpTopic,
 };
@@ -593,6 +593,12 @@ pub async fn get_topics_handler(
 }
 
 /// Helper to fetch platform identity. Blocking.
+///
+/// When the fetched identity lacks moderator capabilities, this also runs
+/// [`ensure_founder`] to self-heal servers that have no moderator (e.g. due
+/// to stale identities preventing the normal founder bootstrap). If a
+/// promotion occurs the identity is re-fetched so the caller sees the
+/// updated capabilities.
 fn fetch_platform_identity(
     state: &AppState,
     pseudonym_id: &str,
@@ -602,12 +608,28 @@ fn fetch_platform_identity(
         .get()
         .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
 
-    get_platform_identity(&conn, state.server_id, pseudonym_id).map_err(|e| match e {
-        annex_identity::IdentityError::DatabaseError(rusqlite::Error::QueryReturnedNoRows) => {
-            ApiError::NotFound(format!("identity not found: {}", pseudonym_id))
+    let identity =
+        get_platform_identity(&conn, state.server_id, pseudonym_id).map_err(|e| match e {
+            annex_identity::IdentityError::DatabaseError(
+                rusqlite::Error::QueryReturnedNoRows,
+            ) => ApiError::NotFound(format!("identity not found: {}", pseudonym_id)),
+            _ => ApiError::InternalServerError(e.to_string()),
+        })?;
+
+    // Self-heal: if the identity has no moderator flag, check whether the
+    // server has *any* moderator. If not, promote the earliest active identity
+    // and re-fetch in case this identity was the one promoted.
+    if !identity.can_moderate {
+        let promoted = ensure_founder(&conn, state.server_id)
+            .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
+        if promoted {
+            return get_platform_identity(&conn, state.server_id, pseudonym_id).map_err(
+                |e| ApiError::InternalServerError(e.to_string()),
+            );
         }
-        _ => ApiError::InternalServerError(e.to_string()),
-    })
+    }
+
+    Ok(identity)
 }
 
 /// Handler for `GET /api/identity/:pseudonymId`.
