@@ -650,6 +650,7 @@ fn get_livekit_config(state: tauri::State<'_, AppManagedState>) -> Result<LiveKi
 
 /// Input from the frontend for saving LiveKit settings.
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 struct SaveLiveKitInput {
     url: String,
     api_key: String,
@@ -658,6 +659,7 @@ struct SaveLiveKitInput {
     token_ttl_seconds: u64,
 }
 
+#[allow(dead_code)]
 fn default_token_ttl() -> u64 {
     3600
 }
@@ -666,7 +668,11 @@ fn default_token_ttl() -> u64 {
 ///
 /// If the keyring is unavailable, the secret falls back to config.toml storage
 /// with a warning log.
+///
+/// Not currently registered in the invoke handler (frontend settings panel was
+/// removed). Retained for potential future admin CLI or plugin use.
 #[tauri::command]
+#[allow(dead_code)]
 fn save_livekit_config(
     state: tauri::State<'_, AppManagedState>,
     input: SaveLiveKitInput,
@@ -730,7 +736,10 @@ fn save_livekit_config(
 }
 
 /// Clear LiveKit configuration from both config.toml and the OS keyring.
+///
+/// Not currently registered in the invoke handler. Retained for future use.
 #[tauri::command]
+#[allow(dead_code)]
 fn clear_livekit_config(state: tauri::State<'_, AppManagedState>) -> Result<(), String> {
     // Remove from keyring
     if let Err(e) = delete_api_secret_from_keyring() {
@@ -760,7 +769,10 @@ fn clear_livekit_config(state: tauri::State<'_, AppManagedState>) -> Result<(), 
 }
 
 /// Check if a LiveKit server is reachable at the given URL.
+///
+/// Not currently registered in the invoke handler. Retained for future use.
 #[tauri::command]
+#[allow(dead_code)]
 async fn check_livekit_reachable(url: String) -> Result<serde_json::Value, String> {
     // LiveKit serves HTTP on the same port as WebSocket.
     // Replace ws:// with http:// for the health check.
@@ -1008,6 +1020,14 @@ async fn start_local_livekit(state: tauri::State<'_, AppManagedState>) -> Result
     // bind and the readiness check will time out after 15 seconds. Ideally
     // this should probe for a free port (like the Axum server does with port 0),
     // but livekit-server's --port flag doesn't support 0/auto-select.
+    //
+    // AUDIT-TAURI: The URL uses ws:// (not wss://) which is an insecure
+    // WebSocket. This works on Windows WebView2 and macOS WKWebView because
+    // Chromium and WebKit treat 127.0.0.1 as "potentially trustworthy",
+    // allowing ws:// from an https:// secure context. However, Linux
+    // WebKitGTK may enforce stricter mixed-content rules and block this
+    // connection. Test on Linux hardware — if blocked, the LiveKit server
+    // would need a TLS listener or a localhost proxy.
     let port: u16 = 7880;
     let lk_url = format!("ws://127.0.0.1:{port}");
 
@@ -1096,7 +1116,10 @@ async fn start_local_livekit(state: tauri::State<'_, AppManagedState>) -> Result
 }
 
 /// Stop the local LiveKit server if running.
+///
+/// Not currently registered in the invoke handler. Retained for future use.
 #[tauri::command]
+#[allow(dead_code)]
 fn stop_local_livekit(state: tauri::State<'_, AppManagedState>) -> Result<(), String> {
     let mut guard = state.livekit.lock().map_err(|e| e.to_string())?;
     if let Some(mut lk) = guard.take() {
@@ -1108,7 +1131,10 @@ fn stop_local_livekit(state: tauri::State<'_, AppManagedState>) -> Result<(), St
 }
 
 /// Get the local LiveKit server URL, if a local instance is running.
+///
+/// Not currently registered in the invoke handler. Retained for future use.
 #[tauri::command]
+#[allow(dead_code)]
 fn get_local_livekit_url(state: tauri::State<'_, AppManagedState>) -> Option<String> {
     state
         .livekit
@@ -1355,12 +1381,12 @@ fn main() {
             get_tunnel_url,
             export_identity_json,
             get_livekit_config,
-            save_livekit_config,
-            clear_livekit_config,
-            check_livekit_reachable,
             start_local_livekit,
-            stop_local_livekit,
-            get_local_livekit_url,
+            // NOTE: save_livekit_config, clear_livekit_config, check_livekit_reachable,
+            // stop_local_livekit, and get_local_livekit_url are intentionally not
+            // registered. Their frontend callers were removed with the LiveKit settings
+            // panel. The Rust implementations are retained for potential future admin
+            // CLI or plugin use.
         ])
         .run(tauri::generate_context!())
         .expect("error running Annex desktop");
