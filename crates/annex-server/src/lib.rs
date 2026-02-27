@@ -195,6 +195,130 @@ pub enum StartupError {
     InvalidSigningKey(String),
 }
 
+/// Checks whether a LiveKit server is reachable at the given WebSocket URL
+/// by converting it to an HTTP health-check.
+async fn is_livekit_reachable(ws_url: &str) -> bool {
+    let http_url = ws_url
+        .replace("ws://", "http://")
+        .replace("wss://", "https://");
+    match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+    {
+        Ok(client) => client.get(&http_url).send().await.is_ok(),
+        Err(_) => false,
+    }
+}
+
+/// Attempts to start a LiveKit dev server as a background process.
+///
+/// Tries in order:
+/// 1. `livekit-server` binary from PATH
+/// 2. Docker container via `docker run`
+///
+/// On success the child process handle is returned so the caller can keep
+/// it alive (dropping it will NOT kill the process — it is detached).
+async fn try_start_livekit_dev(config: &annex_voice::LiveKitConfig) -> Option<tokio::process::Child> {
+    let livekit_keys = format!("{}: {}", config.api_key, config.api_secret);
+
+    // Try native binary first
+    match tokio::process::Command::new("livekit-server")
+        .args(["--dev", "--bind", "0.0.0.0"])
+        .env("LIVEKIT_KEYS", &livekit_keys)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(child) => {
+            tracing::info!("started LiveKit dev server (native binary)");
+            return Some(child);
+        }
+        Err(_) => {
+            tracing::debug!("livekit-server binary not found in PATH, trying Docker");
+        }
+    }
+
+    // Fallback: Docker
+    match tokio::process::Command::new("docker")
+        .args([
+            "run",
+            "-d",
+            "--rm",
+            "--name", "annex-livekit-dev",
+            "-p", "7880:7880",
+            "-p", "7881:7881",
+            "-p", "7882:7882/udp",
+            "-e", &format!("LIVEKIT_KEYS={livekit_keys}"),
+            "livekit/livekit-server:latest",
+            "--dev",
+            "--bind", "0.0.0.0",
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+    {
+        Ok(status) if status.success() => {
+            tracing::info!("started LiveKit dev server (Docker container: annex-livekit-dev)");
+            return None; // Docker manages the process
+        }
+        _ => {
+            tracing::debug!("Docker fallback for LiveKit also failed");
+        }
+    }
+
+    None
+}
+
+/// Ensures LiveKit is running. When dev defaults are in use and LiveKit is
+/// not reachable, this will attempt to auto-start it.
+///
+/// Returns an optional child process handle that must be kept alive for the
+/// lifetime of the server.
+async fn ensure_livekit_running(
+    config: &annex_voice::LiveKitConfig,
+) -> Option<tokio::process::Child> {
+    if config.url.is_empty() {
+        return None;
+    }
+
+    if is_livekit_reachable(&config.url).await {
+        tracing::info!(url = %config.url, "LiveKit server is reachable");
+        return None;
+    }
+
+    tracing::info!(
+        url = %config.url,
+        "LiveKit not reachable — attempting auto-start"
+    );
+
+    let child = try_start_livekit_dev(config).await;
+
+    // Give it a moment to start up, then verify
+    for attempt in 1..=5 {
+        tokio::time::sleep(std::time::Duration::from_millis(500 * attempt)).await;
+        if is_livekit_reachable(&config.url).await {
+            tracing::info!(
+                url = %config.url,
+                attempt,
+                "LiveKit dev server is now reachable"
+            );
+            return child;
+        }
+    }
+
+    tracing::warn!(
+        url = %config.url,
+        "LiveKit dev server was started but is not yet reachable. \
+         Voice may not work immediately. Install livekit-server \
+         (https://docs.livekit.io/home/self-hosting/local/) or run: \
+         docker run -d --rm -p 7880:7880 -p 7881:7881 -p 7882:7882/udp \
+         -e \"LIVEKIT_KEYS=devkey: secret\" livekit/livekit-server --dev"
+    );
+
+    child
+}
+
 /// Initializes the tracing subscriber based on logging configuration.
 ///
 /// Must be called exactly once per process, before any tracing macros are used.
@@ -438,6 +562,11 @@ pub async fn prepare_server(
         tokio::sync::broadcast::channel(config.server.presence_broadcast_capacity);
     let (observe_tx, _) = tokio::sync::broadcast::channel(256);
 
+    // Ensure LiveKit is running (auto-starts in dev mode if needed).
+    // The child handle must be kept alive for the server's lifetime; it is
+    // dropped when the server shuts down.
+    let _livekit_child = ensure_livekit_running(&config.livekit).await;
+
     // Initialize Voice / TTS / STT services
     let voice_service = annex_voice::VoiceService::new(config.livekit);
     let tts_service = annex_voice::TtsService::new(
@@ -528,13 +657,22 @@ async fn health(Extension(state): Extension<Arc<AppState>>) -> Json<Value> {
 
 /// Voice configuration status (public, no auth required).
 ///
-/// Reports whether LiveKit is configured and provides setup guidance if not.
+/// Reports both the server policy voice setting and whether the LiveKit
+/// infrastructure is configured, so the client can distinguish between
+/// "voice disabled by admin" and "voice enabled but needs LiveKit setup".
 async fn voice_config_status(Extension(state): Extension<Arc<AppState>>) -> Json<Value> {
-    let enabled = state.voice_service.is_enabled();
+    let infrastructure_ready = state.voice_service.is_enabled();
     let has_public_url = !state.voice_service.get_public_url().is_empty();
+    let policy_enabled = state
+        .policy
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .voice_enabled;
 
-    let setup_hint = if !enabled {
-        "LiveKit is not configured. Set livekit.url, livekit.api_key, and livekit.api_secret in config.toml or use ANNEX_LIVEKIT_* environment variables."
+    let setup_hint = if !policy_enabled {
+        "Voice is disabled in the server policy. An admin can enable it in Server Policy settings."
+    } else if !infrastructure_ready {
+        "Voice is enabled by policy but LiveKit is not configured. Set livekit.url, livekit.api_key, and livekit.api_secret in config.toml or use ANNEX_LIVEKIT_* environment variables."
     } else if !has_public_url {
         "LiveKit URL is configured but no public URL is set. Clients may not be able to connect."
     } else {
@@ -542,7 +680,9 @@ async fn voice_config_status(Extension(state): Extension<Arc<AppState>>) -> Json
     };
 
     Json(json!({
-        "voice_enabled": enabled,
+        "voice_enabled": policy_enabled && infrastructure_ready,
+        "policy_enabled": policy_enabled,
+        "infrastructure_ready": infrastructure_ready,
         "has_public_url": has_public_url,
         "setup_hint": setup_hint
     }))

@@ -561,6 +561,10 @@ export async function getVoiceStatus(
 
 export interface VoiceConfigStatus {
   voice_enabled: boolean;
+  /** Whether voice is enabled in the server policy (admin toggle). */
+  policy_enabled: boolean;
+  /** Whether the LiveKit infrastructure is configured and reachable. */
+  infrastructure_ready: boolean;
   has_public_url: boolean;
   setup_hint: string;
 }

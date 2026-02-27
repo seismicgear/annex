@@ -94,6 +94,17 @@
   color: #fff;
 }
 
+.admin-menu-btn.loading {
+  opacity: 0.5;
+  cursor: wait;
+  animation: admin-gear-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes admin-gear-pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 0.6; }
+}
+
 .admin-dropdown {
   position: absolute;
   top: 100%;

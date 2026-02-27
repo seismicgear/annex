@@ -1381,26 +1381,33 @@ mod tests {
     }
 
     #[test]
-    fn ensure_config_is_valid_toml_with_voice_disabled() {
+    fn ensure_config_is_valid_toml_with_voice_dev_defaults() {
         let dir = tempfile::tempdir().expect("failed to create temp dir");
         let config_path = ensure_config(dir.path()).expect("ensure_config should succeed");
         let config_path_str = config_path.to_string_lossy();
 
         // The file should parse cleanly via the server config loader.
         // Since the [livekit] section is fully commented out, the TOML parser
-        // should see no livekit fields and use LiveKitConfig::default().
+        // should see no livekit fields and use LiveKitConfig::default(),
+        // which now contains dev server values so voice works out of the box.
         let cfg = annex_server::config::load_config(Some(&config_path_str))
             .expect("config should parse");
 
-        // Voice must be disabled (empty url)
-        assert!(cfg.livekit.url.is_empty(), "livekit.url should be empty");
-        assert!(
-            cfg.livekit.api_key.is_empty(),
-            "livekit.api_key should be empty"
+        // Voice defaults to dev configuration (auto-start LiveKit)
+        assert_eq!(
+            cfg.livekit.url,
+            annex_voice::DEV_LIVEKIT_URL,
+            "livekit.url should default to dev URL"
         );
-        assert!(
-            cfg.livekit.api_secret.is_empty(),
-            "livekit.api_secret should be empty"
+        assert_eq!(
+            cfg.livekit.api_key,
+            annex_voice::DEV_LIVEKIT_API_KEY,
+            "livekit.api_key should default to dev key"
+        );
+        assert_eq!(
+            cfg.livekit.api_secret,
+            annex_voice::DEV_LIVEKIT_API_SECRET,
+            "livekit.api_secret should default to dev secret"
         );
         assert_eq!(
             cfg.livekit.token_ttl_seconds, 3600,

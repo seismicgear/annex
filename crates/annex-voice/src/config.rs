@@ -5,6 +5,14 @@ fn default_token_ttl_seconds() -> u64 {
     3600
 }
 
+/// Default URL used when no LiveKit config is provided. Matches the
+/// `docker-compose.yml` and `--dev` mode defaults.
+pub const DEV_LIVEKIT_URL: &str = "ws://localhost:7880";
+/// Default API key used for LiveKit `--dev` mode.
+pub const DEV_LIVEKIT_API_KEY: &str = "devkey";
+/// Default API secret used for LiveKit `--dev` mode.
+pub const DEV_LIVEKIT_API_SECRET: &str = "secret";
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct LiveKitConfig {
     pub url: String,
@@ -25,10 +33,10 @@ pub struct LiveKitConfig {
 impl Default for LiveKitConfig {
     fn default() -> Self {
         Self {
-            url: String::new(),
+            url: DEV_LIVEKIT_URL.to_string(),
             public_url: String::new(),
-            api_key: String::new(),
-            api_secret: String::new(),
+            api_key: DEV_LIVEKIT_API_KEY.to_string(),
+            api_secret: DEV_LIVEKIT_API_SECRET.to_string(),
             token_ttl_seconds: default_token_ttl_seconds(),
         }
     }

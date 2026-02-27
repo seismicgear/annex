@@ -160,6 +160,49 @@ pub fn update_capabilities(
     Ok(())
 }
 
+/// Ensures at least one active identity on the server has moderator capabilities.
+///
+/// If no active identity has `can_moderate = 1`, the earliest active identity
+/// is promoted to founder with core capabilities (voice, moderate, invite,
+/// federate). This self-heals scenarios where stale identities prevented the
+/// normal founder bootstrap in [`create_platform_identity`].
+///
+/// Returns `true` if a promotion was performed.
+///
+/// # Errors
+///
+/// Returns `IdentityError::DatabaseError` on query/update failure.
+pub fn ensure_founder(conn: &Connection, server_id: i64) -> Result<bool, IdentityError> {
+    let has_moderator: bool = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM platform_identities
+            WHERE server_id = ?1 AND can_moderate = 1 AND active = 1
+        )",
+        params![server_id],
+        |row| row.get(0),
+    )?;
+
+    if has_moderator {
+        return Ok(false);
+    }
+
+    let promoted = conn.execute(
+        "UPDATE platform_identities SET
+            can_voice = 1,
+            can_moderate = 1,
+            can_invite = 1,
+            can_federate = 1,
+            updated_at = datetime('now')
+        WHERE id = (
+            SELECT MIN(id) FROM platform_identities
+            WHERE server_id = ?1 AND active = 1
+        )",
+        params![server_id],
+    )?;
+
+    Ok(promoted > 0)
+}
+
 /// Deactivates a platform identity (sets active = 0).
 ///
 /// # Errors
