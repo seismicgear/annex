@@ -30,26 +30,21 @@ import { useIdentityStore } from '@/stores/identity';
 import { useChannelsStore } from '@/stores/channels';
 import { useVoiceStore } from '@/stores/voice';
 import * as api from '@/lib/api';
-import { isTauri, getPlatformMediaStatus, type PlatformMediaStatus } from '@/lib/tauri';
+import { isTauri, getPlatformMediaStatus, setMediaKeepalive, type PlatformMediaStatus } from '@/lib/tauri';
 
 /** Local media status bar shown above the controls. */
 function LocalMediaStatus() {
-  const { localParticipant } = useLocalParticipant();
-  const lp = localParticipant as LocalParticipant;
-
-  const micEnabled = lp.isMicrophoneEnabled;
-  const camEnabled = lp.isCameraEnabled;
-  const screenEnabled = lp.isScreenShareEnabled;
+  const { isMicrophoneEnabled, isCameraEnabled, isScreenShareEnabled } = useLocalParticipant();
 
   return (
     <div className="local-media-status">
-      <span className={`status-pill ${micEnabled ? 'on' : 'off'}`}>
-        {micEnabled ? 'Mic ON' : 'Mic OFF'}
+      <span className={`status-pill ${isMicrophoneEnabled ? 'on' : 'off'}`}>
+        {isMicrophoneEnabled ? 'Mic ON' : 'Mic OFF'}
       </span>
-      <span className={`status-pill ${camEnabled ? 'on' : 'off'}`}>
-        {camEnabled ? 'Cam ON' : 'Cam OFF'}
+      <span className={`status-pill ${isCameraEnabled ? 'on' : 'off'}`}>
+        {isCameraEnabled ? 'Cam ON' : 'Cam OFF'}
       </span>
-      {screenEnabled && (
+      {isScreenShareEnabled && (
         <span className="status-pill sharing">Sharing Screen</span>
       )}
     </div>
@@ -58,12 +53,11 @@ function LocalMediaStatus() {
 
 /** Controls bar rendered inside the LiveKit room context. */
 function MediaControls({ onLeave }: { onLeave: () => void }) {
-  const { localParticipant } = useLocalParticipant();
-  const lp = localParticipant as LocalParticipant;
+  const { localParticipant, isMicrophoneEnabled, isCameraEnabled, isScreenShareEnabled } = useLocalParticipant();
 
-  const micEnabled = lp.isMicrophoneEnabled;
-  const camEnabled = lp.isCameraEnabled;
-  const screenEnabled = lp.isScreenShareEnabled;
+  const micEnabled = isMicrophoneEnabled;
+  const camEnabled = isCameraEnabled;
+  const screenEnabled = isScreenShareEnabled;
 
   // Listen for device hot-plug events during an active call.
   // Shows a transient notification so the user knows a device was added/removed.
@@ -82,16 +76,16 @@ function MediaControls({ onLeave }: { onLeave: () => void }) {
   }, []);
 
   const toggleMic = useCallback(async () => {
-    await lp.setMicrophoneEnabled(!micEnabled);
-  }, [lp, micEnabled]);
+    await localParticipant.setMicrophoneEnabled(!micEnabled);
+  }, [localParticipant, micEnabled]);
 
   const toggleCamera = useCallback(async () => {
-    await lp.setCameraEnabled(!camEnabled);
-  }, [lp, camEnabled]);
+    await localParticipant.setCameraEnabled(!camEnabled);
+  }, [localParticipant, camEnabled]);
 
   const toggleScreen = useCallback(async () => {
-    await lp.setScreenShareEnabled(!screenEnabled);
-  }, [lp, screenEnabled]);
+    await localParticipant.setScreenShareEnabled(!screenEnabled);
+  }, [localParticipant, screenEnabled]);
 
   return (
     <div className="media-controls">
@@ -291,11 +285,160 @@ function ParticipantGrid() {
   );
 }
 
+/**
+ * Re-enable media tracks killed by the OS/webview when the Tauri window
+ * loses focus or is minimized.
+ *
+ * **Layer 1** (Rust-side `set_media_keepalive`) prevents most track deaths
+ * by keeping `ICoreWebView2Controller::IsVisible = true` during calls.
+ * This hook is **Layer 2**: a safety net that detects and recovers any
+ * tracks that still ended despite the keepalive.
+ *
+ * For screen share, we first attempt a silent auto-restart. In WebView2,
+ * `getDisplayMedia()` may succeed programmatically because the permission
+ * model is more relaxed than Chrome. If that fails (user gesture required),
+ * `onScreenShareInterrupted` fires so the UI can show a resume banner
+ * (**Layer 3**).
+ *
+ * We listen to BOTH `visibilitychange` (fires on minimize) and `window.focus`
+ * (fires on alt-tab back) because a simple alt-tab may not trigger
+ * `visibilitychange` on WebView2 — the document can stay "visible" while
+ * unfocused, yet the OS still kills the MediaStreamTracks.
+ */
+function useTauriMediaRestore(onScreenShareInterrupted?: () => void) {
+  const { localParticipant } = useLocalParticipant();
+
+  useEffect(() => {
+    if (!isTauri()) return;
+
+    let restoring = false;
+
+    const restoreMedia = async () => {
+      // Guard against visibilitychange and focus both firing in quick succession
+      if (restoring) return;
+      // Skip if the document is still hidden (the 'hidden' transition of visibilitychange)
+      if (document.visibilityState === 'hidden') return;
+
+      restoring = true;
+      try {
+        // Brief delay for the webview to fully resume
+        await new Promise((r) => setTimeout(r, 200));
+
+        const lp = localParticipant as LocalParticipant;
+
+        // Helper: find a publication by source from the participant's track map.
+        const findPub = (source: Track.Source) => {
+          for (const pub of lp.trackPublications.values()) {
+            if (pub.source === source) return pub;
+          }
+          return undefined;
+        };
+
+        // Re-enable mic if it was on but the track ended
+        if (lp.isMicrophoneEnabled) {
+          const pub = findPub(Track.Source.Microphone);
+          if (pub?.track?.mediaStreamTrack?.readyState === 'ended') {
+            try {
+              await lp.setMicrophoneEnabled(false);
+              await lp.setMicrophoneEnabled(true);
+            } catch { /* best effort */ }
+          }
+        }
+
+        // Re-enable camera if it was on but the track ended
+        if (lp.isCameraEnabled) {
+          const pub = findPub(Track.Source.Camera);
+          if (pub?.track?.mediaStreamTrack?.readyState === 'ended') {
+            try {
+              await lp.setCameraEnabled(false);
+              await lp.setCameraEnabled(true);
+            } catch { /* best effort */ }
+          }
+        }
+
+        // Screen share: attempt silent auto-restart first. WebView2 may
+        // allow getDisplayMedia() without a user gesture (unlike Chrome).
+        // If that fails, clean up and notify the UI to show a resume banner.
+        if (lp.isScreenShareEnabled) {
+          const pub = findPub(Track.Source.ScreenShare);
+          if (pub?.track?.mediaStreamTrack?.readyState === 'ended') {
+            try {
+              await lp.setScreenShareEnabled(false);
+              await lp.setScreenShareEnabled(true);
+            } catch {
+              // getDisplayMedia failed (gesture required) — clean up and notify
+              try { await lp.setScreenShareEnabled(false); } catch { /* ignore */ }
+              onScreenShareInterrupted?.();
+            }
+          }
+        }
+      } finally {
+        restoring = false;
+      }
+    };
+
+    document.addEventListener('visibilitychange', restoreMedia);
+    window.addEventListener('focus', restoreMedia);
+    return () => {
+      document.removeEventListener('visibilitychange', restoreMedia);
+      window.removeEventListener('focus', restoreMedia);
+    };
+  }, [localParticipant, onScreenShareInterrupted]);
+}
+
 /** Room content rendered inside the LiveKitRoom context. */
 function RoomContent({ onLeave }: { onLeave: () => void }) {
+  const { localParticipant, isScreenShareEnabled } = useLocalParticipant();
+  const [screenShareInterrupted, setScreenShareInterrupted] = useState(false);
+
+  // Layer 1: Tell the Rust backend to keep the webview alive during the call.
+  // This prevents WebView2 from setting IsVisible=false on minimize, which
+  // would kill MediaStreamTracks.
+  useEffect(() => {
+    if (!isTauri()) return;
+    setMediaKeepalive(true).catch(() => {});
+    return () => { setMediaKeepalive(false).catch(() => {}); };
+  }, []);
+
+  // Layer 2: Safety-net hook that restores any tracks that still died.
+  // If screen share can't auto-restart, it fires the callback for Layer 3.
+  const handleScreenShareInterrupted = useCallback(() => {
+    setScreenShareInterrupted(true);
+  }, []);
+  useTauriMediaRestore(handleScreenShareInterrupted);
+
+  // Clear the interrupted banner when the user manually re-enables screen share.
+  useEffect(() => {
+    if (isScreenShareEnabled) setScreenShareInterrupted(false);
+  }, [isScreenShareEnabled]);
+
+  // Layer 3: Resume banner — the button click provides the user gesture
+  // needed for getDisplayMedia() in browsers that require it.
+  const resumeScreenShare = useCallback(async () => {
+    setScreenShareInterrupted(false);
+    try {
+      await (localParticipant as LocalParticipant).setScreenShareEnabled(true);
+    } catch { /* user cancelled the picker or error — stay dismissed */ }
+  }, [localParticipant]);
+
   return (
     <>
       <RoomAudioRenderer />
+      {screenShareInterrupted && (
+        <div className="screen-share-interrupted" role="alert">
+          <span>Screen share was interrupted</span>
+          <button onClick={resumeScreenShare} className="screen-share-resume-btn">
+            Resume Sharing
+          </button>
+          <button
+            onClick={() => setScreenShareInterrupted(false)}
+            className="screen-share-dismiss-btn"
+            aria-label="Dismiss"
+          >
+            &times;
+          </button>
+        </div>
+      )}
       <LocalMediaStatus />
       <LocalSelfView />
       <ScreenShareView />
@@ -401,6 +544,12 @@ export function VoicePanel() {
     };
   }, [lastJoinError]);
 
+  // Prevent LiveKit from disconnecting when the Tauri webview fires page-leave events.
+  const roomOptions = useMemo(() => {
+    if (!isTauri()) return undefined;
+    return { disconnectOnPageLeave: false };
+  }, []);
+
   // Build RTC configuration with server-provided ICE servers for NAT traversal.
   const connectOptions = useMemo(() => {
     if (!iceServers || iceServers.length === 0) return undefined;
@@ -432,6 +581,7 @@ export function VoicePanel() {
           connect={true}
           audio={true}
           video={false}
+          options={roomOptions}
           connectOptions={connectOptions}
         >
           <RoomContent onLeave={handleLeave} />
