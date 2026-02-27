@@ -29,6 +29,7 @@ interface Props {
 type Phase =
   | 'loading'
   | 'choose'
+  | 'starting_voice'
   | 'starting_server'
   | 'creating_tunnel'
   | 'tunnel_ready'
@@ -66,9 +67,21 @@ export function StartupModeSelector({ onReady }: Props) {
   const applyHost = useCallback(
     async (skipSave: boolean) => {
       if (!inTauri) return;
-      const { startEmbeddedServer, startTunnel, saveStartupMode } = await import('@/lib/tauri');
+      const { startEmbeddedServer, startTunnel, saveStartupMode, getLiveKitConfig, startLocalLiveKit } = await import('@/lib/tauri');
       setError('');
       try {
+        // Auto-configure voice: start a local LiveKit server if not already configured.
+        // Must happen BEFORE startEmbeddedServer so env vars are picked up.
+        setPhase('starting_voice');
+        try {
+          const lkConfig = await getLiveKitConfig();
+          if (!lkConfig.configured) {
+            await startLocalLiveKit();
+          }
+        } catch (voiceErr) {
+          console.warn('Auto-configure voice failed (voice may be unavailable):', voiceErr);
+        }
+
         setPhase('starting_server');
         const url = await startEmbeddedServer();
         setApiBaseUrl(url);
@@ -233,6 +246,19 @@ export function StartupModeSelector({ onReady }: Props) {
     return (
       <div className="startup-mode-selector">
         <div className="startup-loading">Loading...</div>
+      </div>
+    );
+  }
+
+  if (phase === 'starting_voice') {
+    return (
+      <div className="startup-mode-selector">
+        <h2>Annex</h2>
+        <div className="startup-loading">Setting up voice...</div>
+        <p className="tunnel-hint">
+          This may take a moment on first launch while the voice server is
+          downloaded.
+        </p>
       </div>
     );
   }
