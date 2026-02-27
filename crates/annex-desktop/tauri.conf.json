@@ -43,7 +43,8 @@
     ],
     "windows": {
       "nsis": {
-        "installMode": "both"
+        "installMode": "both",
+        "installerHooks": "nsis/hooks.nsi"
       },
       "webviewInstallMode": {
         "type": "downloadBootstrapper",
