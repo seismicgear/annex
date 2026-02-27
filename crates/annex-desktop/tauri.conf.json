@@ -44,11 +44,7 @@
     ],
     "macOS": {
       "entitlements": "Entitlements.plist",
-      "infoPlist": {
-        "NSCameraUsageDescription": "Annex needs camera access for video calls.",
-        "NSMicrophoneUsageDescription": "Annex needs microphone access for voice and video calls.",
-        "NSScreenCaptureUsageDescription": "Annex needs screen recording access for screen sharing."
-      },
+      "infoPlist": "Info.plist",
       "minimumSystemVersion": "11.0"
     },
     "iOS": {
