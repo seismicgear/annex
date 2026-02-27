@@ -629,8 +629,18 @@ fn get_livekit_config(state: tauri::State<'_, AppManagedState>) -> Result<LiveKi
         .map(|s| !s.is_empty())
         .unwrap_or(false);
 
+    // Check whether the user has explicitly configured LiveKit by looking for
+    // a [livekit] section in the config file. When the section is absent (or
+    // commented out), LiveKitConfig::default() provides dev values — but we
+    // should NOT consider that "configured" because the user never set it up.
+    let explicitly_configured = std::fs::read_to_string(&state.config_path)
+        .ok()
+        .and_then(|contents| contents.parse::<toml::Value>().ok())
+        .map(|doc| doc.get("livekit").is_some())
+        .unwrap_or(false);
+
     Ok(LiveKitSettingsResponse {
-        configured: !cfg.livekit.url.is_empty(),
+        configured: explicitly_configured,
         url: cfg.livekit.url,
         api_key: cfg.livekit.api_key,
         has_api_secret: has_secret_in_config || has_secret_in_keyring,
