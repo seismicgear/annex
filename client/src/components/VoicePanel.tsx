@@ -402,7 +402,7 @@ export function VoicePanel() {
   }, [lastJoinError]);
 
   // Build RTC configuration with server-provided ICE servers for NAT traversal.
-  const roomOptions = useMemo(() => {
+  const connectOptions = useMemo(() => {
     if (!iceServers || iceServers.length === 0) return undefined;
     return {
       rtcConfig: {
@@ -432,7 +432,7 @@ export function VoicePanel() {
           connect={true}
           audio={true}
           video={false}
-          options={roomOptions}
+          connectOptions={connectOptions}
         >
           <RoomContent onLeave={handleLeave} />
         </LiveKitRoom>
