@@ -1264,7 +1264,7 @@
 }
 
 .success-message {
-  color: #e63946;
+  color: #4caf50;
   margin-bottom: 0.5rem;
   font-size: 0.85rem;
 }
@@ -1394,6 +1394,37 @@
 .policy-editor h3 {
   margin: 0 0 1rem;
   font-size: 1rem;
+}
+
+.policy-editor label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  color: #aaa;
+  margin-bottom: 0.5rem;
+}
+
+.policy-editor input[type='text'],
+.policy-editor input[type='password'],
+.policy-editor input[type='number'],
+.policy-editor select {
+  padding: 0.4rem 0.5rem;
+  border-radius: 4px;
+  border: 1px solid #222;
+  background: #000;
+  color: inherit;
+  font-size: 0.85rem;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.policy-editor input[type='text']:focus,
+.policy-editor input[type='password']:focus,
+.policy-editor input[type='number']:focus,
+.policy-editor select:focus {
+  outline: none;
+  border-color: #fff;
 }
 
 .policy-grid {

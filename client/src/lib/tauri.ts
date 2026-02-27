@@ -72,46 +72,12 @@ export interface LiveKitSettings {
   token_ttl_seconds: number;
 }
 
-export interface SaveLiveKitInput {
-  url: string;
-  api_key: string;
-  api_secret: string;
-  token_ttl_seconds?: number;
-}
-
 /** Read the current LiveKit configuration status. */
 export async function getLiveKitConfig(): Promise<LiveKitSettings> {
   return invoke<LiveKitSettings>('get_livekit_config');
 }
 
-/** Save LiveKit credentials to config.toml + OS keyring. */
-export async function saveLiveKitConfig(input: SaveLiveKitInput): Promise<void> {
-  await invoke('save_livekit_config', { input });
-}
-
-/** Clear LiveKit credentials from config.toml and OS keyring. */
-export async function clearLiveKitConfig(): Promise<void> {
-  await invoke('clear_livekit_config');
-}
-
-/** Check if a LiveKit server is reachable at the given URL. */
-export async function checkLiveKitReachable(url: string): Promise<{ reachable: boolean; error?: string }> {
-  return invoke<{ reachable: boolean; error?: string }>('check_livekit_reachable', { url });
-}
-
-// ── Local LiveKit server management ──
-
 /** Start a local LiveKit server. Returns the LiveKit WebSocket URL. */
 export async function startLocalLiveKit(): Promise<{ url: string }> {
   return invoke<{ url: string }>('start_local_livekit');
-}
-
-/** Stop the local LiveKit server if running. */
-export async function stopLocalLiveKit(): Promise<void> {
-  await invoke('stop_local_livekit');
-}
-
-/** Get the local LiveKit server URL, if running. */
-export async function getLocalLiveKitUrl(): Promise<string | null> {
-  return invoke<string | null>('get_local_livekit_url');
 }
