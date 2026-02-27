@@ -627,6 +627,50 @@ fn fetch_platform_identity(
                 |e| ApiError::InternalServerError(e.to_string()),
             );
         }
+
+        // A moderator exists but it may be stale — e.g. from a previous
+        // desktop-app session where the user created a different identity.
+        // Check if ANY active moderator has a graph_node that was seen
+        // recently (within the last 5 minutes). If not, all moderators are
+        // stale and this requesting identity should be promoted.
+        let has_live_moderator: bool = conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM platform_identities p
+                    INNER JOIN graph_nodes g
+                        ON g.server_id = p.server_id
+                        AND g.pseudonym_id = p.pseudonym_id
+                    WHERE p.server_id = ?1
+                      AND p.can_moderate = 1
+                      AND p.active = 1
+                      AND g.last_seen_at > datetime('now', '-300 seconds')
+                )",
+                rusqlite::params![state.server_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
+
+        if !has_live_moderator {
+            conn.execute(
+                "UPDATE platform_identities SET
+                    can_voice = 1,
+                    can_moderate = 1,
+                    can_invite = 1,
+                    can_federate = 1,
+                    updated_at = datetime('now')
+                WHERE server_id = ?1 AND pseudonym_id = ?2",
+                rusqlite::params![state.server_id, pseudonym_id],
+            )
+            .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
+
+            tracing::info!(
+                pseudonym_id = pseudonym_id,
+                "promoted identity to founder (existing moderators stale)"
+            );
+
+            return get_platform_identity(&conn, state.server_id, pseudonym_id)
+                .map_err(|e| ApiError::InternalServerError(e.to_string()));
+        }
     }
 
     Ok(identity)
