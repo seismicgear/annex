@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "identifier": "com.annex.desktop",
   "build": {
-    "beforeBuildCommand": "node ../scripts/build-desktop.js",
+    "beforeBuildCommand": "node ../../scripts/build-desktop.js",
     "beforeDevCommand": "node ../../scripts/prepare-zk-dev.js && npm --prefix ../../client run dev",
     "frontendDist": "../../client/dist",
     "devUrl": "http://localhost:5173"
@@ -24,7 +24,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' tauri: https://tauri.localhost; connect-src * ws: wss:; img-src 'self' data: blob: http: https:; media-src 'self' blob: data: mediastream: http: https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:"
+      "csp": "default-src 'self' tauri: https://tauri.localhost; connect-src * ws: wss:; img-src 'self' data: blob: http: https:; media-src 'self' blob: data: mediastream: http: https:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:"
     }
   },
   "bundle": {

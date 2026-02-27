@@ -1003,6 +1003,11 @@ async fn start_local_livekit(state: tauri::State<'_, AppManagedState>) -> Result
     let api_key = format!("annex_{}", uuid::Uuid::new_v4().simple());
     let api_secret = format!("secret_{}", uuid::Uuid::new_v4().simple());
 
+    // AUDIT-TAURI: Port 7880 is hardcoded. If another process (or a second
+    // Annex instance) already occupies this port, livekit-server will fail to
+    // bind and the readiness check will time out after 15 seconds. Ideally
+    // this should probe for a free port (like the Axum server does with port 0),
+    // but livekit-server's --port flag doesn't support 0/auto-select.
     let port: u16 = 7880;
     let lk_url = format!("ws://127.0.0.1:{port}");
 
@@ -1320,6 +1325,18 @@ fn main() {
             livekit: Mutex::new(None),
         })
         .setup(|app| {
+            // AUDIT-TAURI: WebView2 on Windows may require explicit permission
+            // handling for getUserMedia (camera/mic). Without an
+            // `on_permission_request` handler, WebView2 can silently deny
+            // media access — no error thrown, just null streams. Test on
+            // Windows hardware to confirm getUserMedia works without manual
+            // permission configuration.
+            //
+            // AUDIT-TAURI: WebView2 autoplay policy may block auto-playing
+            // audio/video elements (RoomAudioRenderer in LiveKit). If remote
+            // audio doesn't play on join, the WebView2 may need
+            // `--autoplay-policy=no-user-gesture-required` via
+            // additional_browser_args. Test on Windows hardware.
             #[cfg(target_os = "windows")]
             {
                 if let Some(window) = app.get_webview_window("main") {

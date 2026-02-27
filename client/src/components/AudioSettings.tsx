@@ -19,7 +19,15 @@ interface DeviceResult {
   permissionGranted: boolean;
 }
 
-/** Enumerate media devices. Pure async — no React state calls. */
+/**
+ * Enumerate media devices. Pure async — no React state calls.
+ *
+ * AUDIT-TAURI: In Tauri webviews, getUserMedia may behave differently than
+ * in a browser. On Windows WebView2 without a PermissionRequested handler,
+ * getUserMedia can silently return null (NotAllowedError). The catch block
+ * handles this gracefully (limited labels shown), but verify on hardware
+ * that the dialog prompts or auto-grants permission correctly.
+ */
 async function enumerateMediaDevices(): Promise<DeviceResult> {
   let permissionGranted = false;
   try {

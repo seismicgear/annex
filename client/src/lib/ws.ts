@@ -40,7 +40,12 @@ export class AnnexWebSocket {
 
     let url: string;
     if (this.baseUrl) {
-      // Cross-server: convert http(s) URL to ws(s) URL
+      // Cross-server: convert http(s) URL to ws(s) URL.
+      // In Tauri host mode, baseUrl is http://127.0.0.1:<port> which becomes
+      // ws://127.0.0.1:<port>. Chromium treats 127.0.0.1 as "potentially
+      // trustworthy" so ws:// from an https:// secure context is allowed.
+      // AUDIT-TAURI: Verify this works on Linux WebKitGTK which may enforce
+      // stricter mixed-content rules than Chromium/WebView2.
       const wsBase = this.baseUrl.replace(/^http/, 'ws');
       url = `${wsBase}/ws?pseudonym=${encodeURIComponent(this.pseudonymId)}`;
     } else {
