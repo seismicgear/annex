@@ -358,6 +358,11 @@ export function VoicePanel() {
   }, [lastJoinError]);
 
   // If connected to a call, always show the LiveKitRoom (even on non-voice channels).
+  // AUDIT-TAURI: LiveKitRoom with audio={true} calls getUserMedia on connect.
+  // On Windows WebView2, getUserMedia may silently fail if the webview lacks
+  // a PermissionRequested handler (returns null stream, no error). On Linux
+  // WebKitGTK, PipeWire is required for screen sharing on Wayland. Test all
+  // three platforms (Windows, macOS, Linux) to verify mic/camera/screen work.
   if (voiceToken && livekitUrl && connectedChannelId) {
     // Find the channel name for the connected call
     const connectedChannel = channels.find((c) => c.channel_id === connectedChannelId);
