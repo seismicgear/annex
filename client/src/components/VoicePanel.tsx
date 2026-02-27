@@ -292,6 +292,11 @@ function ParticipantGrid() {
  * app is backgrounded (alt-tab). This hook detects the ended tracks on focus
  * restore and re-creates them. Screen share cannot be auto-restarted (requires
  * user gesture for getDisplayMedia), so it is cleaned up instead.
+ *
+ * We listen to BOTH visibilitychange (fires on minimize) and window focus
+ * (fires on alt-tab back) because a simple alt-tab may not trigger
+ * visibilitychange on WebView2 — the document can stay "visible" while
+ * unfocused, yet the OS still kills the MediaStreamTracks.
  */
 function useTauriMediaRestore() {
   const { localParticipant } = useLocalParticipant();
@@ -299,58 +304,72 @@ function useTauriMediaRestore() {
   useEffect(() => {
     if (!isTauri()) return;
 
+    let restoring = false;
+
     const restoreMedia = async () => {
-      if (document.visibilityState !== 'visible') return;
+      // Guard against visibilitychange and focus both firing in quick succession
+      if (restoring) return;
+      // Skip if the document is still hidden (the 'hidden' transition of visibilitychange)
+      if (document.visibilityState === 'hidden') return;
 
-      // Brief delay for the webview to fully resume
-      await new Promise((r) => setTimeout(r, 200));
+      restoring = true;
+      try {
+        // Brief delay for the webview to fully resume
+        await new Promise((r) => setTimeout(r, 200));
 
-      const lp = localParticipant as LocalParticipant;
+        const lp = localParticipant as LocalParticipant;
 
-      // Helper: find a publication by source from the participant's track map.
-      const findPub = (source: Track.Source) => {
-        for (const pub of lp.trackPublications.values()) {
-          if (pub.source === source) return pub;
+        // Helper: find a publication by source from the participant's track map.
+        const findPub = (source: Track.Source) => {
+          for (const pub of lp.trackPublications.values()) {
+            if (pub.source === source) return pub;
+          }
+          return undefined;
+        };
+
+        // Re-enable mic if it was on but the track ended
+        if (lp.isMicrophoneEnabled) {
+          const pub = findPub(Track.Source.Microphone);
+          if (pub?.track?.mediaStreamTrack?.readyState === 'ended') {
+            try {
+              await lp.setMicrophoneEnabled(false);
+              await lp.setMicrophoneEnabled(true);
+            } catch { /* best effort */ }
+          }
         }
-        return undefined;
-      };
 
-      // Re-enable mic if it was on but the track ended
-      if (lp.isMicrophoneEnabled) {
-        const pub = findPub(Track.Source.Microphone);
-        if (pub?.track?.mediaStreamTrack?.readyState === 'ended') {
-          try {
-            await lp.setMicrophoneEnabled(false);
-            await lp.setMicrophoneEnabled(true);
-          } catch { /* best effort */ }
+        // Re-enable camera if it was on but the track ended
+        if (lp.isCameraEnabled) {
+          const pub = findPub(Track.Source.Camera);
+          if (pub?.track?.mediaStreamTrack?.readyState === 'ended') {
+            try {
+              await lp.setCameraEnabled(false);
+              await lp.setCameraEnabled(true);
+            } catch { /* best effort */ }
+          }
         }
-      }
 
-      // Re-enable camera if it was on but the track ended
-      if (lp.isCameraEnabled) {
-        const pub = findPub(Track.Source.Camera);
-        if (pub?.track?.mediaStreamTrack?.readyState === 'ended') {
-          try {
-            await lp.setCameraEnabled(false);
-            await lp.setCameraEnabled(true);
-          } catch { /* best effort */ }
+        // Screen share can't be auto-restarted (getDisplayMedia needs user gesture).
+        // Clean it up so the UI reflects that sharing has stopped.
+        if (lp.isScreenShareEnabled) {
+          const pub = findPub(Track.Source.ScreenShare);
+          if (pub?.track?.mediaStreamTrack?.readyState === 'ended') {
+            try {
+              await lp.setScreenShareEnabled(false);
+            } catch { /* best effort */ }
+          }
         }
-      }
-
-      // Screen share can't be auto-restarted (getDisplayMedia needs user gesture).
-      // Clean it up so the UI reflects that sharing has stopped.
-      if (lp.isScreenShareEnabled) {
-        const pub = findPub(Track.Source.ScreenShare);
-        if (pub?.track?.mediaStreamTrack?.readyState === 'ended') {
-          try {
-            await lp.setScreenShareEnabled(false);
-          } catch { /* best effort */ }
-        }
+      } finally {
+        restoring = false;
       }
     };
 
     document.addEventListener('visibilitychange', restoreMedia);
-    return () => document.removeEventListener('visibilitychange', restoreMedia);
+    window.addEventListener('focus', restoreMedia);
+    return () => {
+      document.removeEventListener('visibilitychange', restoreMedia);
+      window.removeEventListener('focus', restoreMedia);
+    };
   }, [localParticipant]);
 }
 
