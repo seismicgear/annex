@@ -21,7 +21,7 @@ pub mod stt;
 pub mod tts;
 
 pub use agent::{AgentVoiceClient, TranscriptionEvent};
-pub use config::LiveKitConfig;
+pub use config::{LiveKitConfig, DEV_LIVEKIT_API_KEY, DEV_LIVEKIT_API_SECRET, DEV_LIVEKIT_URL};
 pub use error::VoiceError;
 pub use service::VoiceService;
 pub use stt::SttService;
