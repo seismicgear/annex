@@ -30,7 +30,7 @@ import { useIdentityStore } from '@/stores/identity';
 import { useChannelsStore } from '@/stores/channels';
 import { useVoiceStore } from '@/stores/voice';
 import * as api from '@/lib/api';
-import { isTauri, getPlatformMediaStatus, type PlatformMediaStatus } from '@/lib/tauri';
+import { isTauri, getPlatformMediaStatus, setMediaKeepalive, type PlatformMediaStatus } from '@/lib/tauri';
 
 /** Local media status bar shown above the controls. */
 function LocalMediaStatus() {
@@ -286,19 +286,26 @@ function ParticipantGrid() {
 }
 
 /**
- * Re-enable media tracks killed by the OS/webview when the Tauri window loses focus.
+ * Re-enable media tracks killed by the OS/webview when the Tauri window
+ * loses focus or is minimized.
  *
- * WebView2 on Windows can set MediaStreamTrack.readyState to 'ended' when the
- * app is backgrounded (alt-tab). This hook detects the ended tracks on focus
- * restore and re-creates them. Screen share cannot be auto-restarted (requires
- * user gesture for getDisplayMedia), so it is cleaned up instead.
+ * **Layer 1** (Rust-side `set_media_keepalive`) prevents most track deaths
+ * by keeping `ICoreWebView2Controller::IsVisible = true` during calls.
+ * This hook is **Layer 2**: a safety net that detects and recovers any
+ * tracks that still ended despite the keepalive.
  *
- * We listen to BOTH visibilitychange (fires on minimize) and window focus
+ * For screen share, we first attempt a silent auto-restart. In WebView2,
+ * `getDisplayMedia()` may succeed programmatically because the permission
+ * model is more relaxed than Chrome. If that fails (user gesture required),
+ * `onScreenShareInterrupted` fires so the UI can show a resume banner
+ * (**Layer 3**).
+ *
+ * We listen to BOTH `visibilitychange` (fires on minimize) and `window.focus`
  * (fires on alt-tab back) because a simple alt-tab may not trigger
- * visibilitychange on WebView2 — the document can stay "visible" while
+ * `visibilitychange` on WebView2 — the document can stay "visible" while
  * unfocused, yet the OS still kills the MediaStreamTracks.
  */
-function useTauriMediaRestore() {
+function useTauriMediaRestore(onScreenShareInterrupted?: () => void) {
   const { localParticipant } = useLocalParticipant();
 
   useEffect(() => {
@@ -349,14 +356,20 @@ function useTauriMediaRestore() {
           }
         }
 
-        // Screen share can't be auto-restarted (getDisplayMedia needs user gesture).
-        // Clean it up so the UI reflects that sharing has stopped.
+        // Screen share: attempt silent auto-restart first. WebView2 may
+        // allow getDisplayMedia() without a user gesture (unlike Chrome).
+        // If that fails, clean up and notify the UI to show a resume banner.
         if (lp.isScreenShareEnabled) {
           const pub = findPub(Track.Source.ScreenShare);
           if (pub?.track?.mediaStreamTrack?.readyState === 'ended') {
             try {
               await lp.setScreenShareEnabled(false);
-            } catch { /* best effort */ }
+              await lp.setScreenShareEnabled(true);
+            } catch {
+              // getDisplayMedia failed (gesture required) — clean up and notify
+              try { await lp.setScreenShareEnabled(false); } catch { /* ignore */ }
+              onScreenShareInterrupted?.();
+            }
           }
         }
       } finally {
@@ -370,16 +383,62 @@ function useTauriMediaRestore() {
       document.removeEventListener('visibilitychange', restoreMedia);
       window.removeEventListener('focus', restoreMedia);
     };
-  }, [localParticipant]);
+  }, [localParticipant, onScreenShareInterrupted]);
 }
 
 /** Room content rendered inside the LiveKitRoom context. */
 function RoomContent({ onLeave }: { onLeave: () => void }) {
-  useTauriMediaRestore();
+  const { localParticipant, isScreenShareEnabled } = useLocalParticipant();
+  const [screenShareInterrupted, setScreenShareInterrupted] = useState(false);
+
+  // Layer 1: Tell the Rust backend to keep the webview alive during the call.
+  // This prevents WebView2 from setting IsVisible=false on minimize, which
+  // would kill MediaStreamTracks.
+  useEffect(() => {
+    if (!isTauri()) return;
+    setMediaKeepalive(true).catch(() => {});
+    return () => { setMediaKeepalive(false).catch(() => {}); };
+  }, []);
+
+  // Layer 2: Safety-net hook that restores any tracks that still died.
+  // If screen share can't auto-restart, it fires the callback for Layer 3.
+  const handleScreenShareInterrupted = useCallback(() => {
+    setScreenShareInterrupted(true);
+  }, []);
+  useTauriMediaRestore(handleScreenShareInterrupted);
+
+  // Clear the interrupted banner when the user manually re-enables screen share.
+  useEffect(() => {
+    if (isScreenShareEnabled) setScreenShareInterrupted(false);
+  }, [isScreenShareEnabled]);
+
+  // Layer 3: Resume banner — the button click provides the user gesture
+  // needed for getDisplayMedia() in browsers that require it.
+  const resumeScreenShare = useCallback(async () => {
+    setScreenShareInterrupted(false);
+    try {
+      await (localParticipant as LocalParticipant).setScreenShareEnabled(true);
+    } catch { /* user cancelled the picker or error — stay dismissed */ }
+  }, [localParticipant]);
 
   return (
     <>
       <RoomAudioRenderer />
+      {screenShareInterrupted && (
+        <div className="screen-share-interrupted" role="alert">
+          <span>Screen share was interrupted</span>
+          <button onClick={resumeScreenShare} className="screen-share-resume-btn">
+            Resume Sharing
+          </button>
+          <button
+            onClick={() => setScreenShareInterrupted(false)}
+            className="screen-share-dismiss-btn"
+            aria-label="Dismiss"
+          >
+            &times;
+          </button>
+        </div>
+      )}
       <LocalMediaStatus />
       <LocalSelfView />
       <ScreenShareView />

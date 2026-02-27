@@ -85,3 +85,16 @@ export interface PlatformMediaStatus {
 export async function getPlatformMediaStatus(): Promise<PlatformMediaStatus> {
   return invoke<PlatformMediaStatus>('get_platform_media_status');
 }
+
+// ── Media keepalive ──
+
+/**
+ * Tell the Rust backend to keep the webview's IsVisible=true even when the
+ * window is minimized. This prevents WebView2/Chromium from killing active
+ * MediaStreamTracks (mic, camera, screen share) during a voice call.
+ *
+ * Call with `true` when joining a call, `false` when leaving.
+ */
+export async function setMediaKeepalive(active: boolean): Promise<void> {
+  await invoke('set_media_keepalive', { active });
+}

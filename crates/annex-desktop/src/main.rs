@@ -12,6 +12,7 @@ use annex_server::{config, init_tracing, prepare_server};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::Manager;
 
@@ -1389,6 +1390,76 @@ fn get_platform_media_status() -> PlatformMediaStatus {
     }
 }
 
+// ── Media keepalive (prevent WebView2 from killing tracks on minimize) ──
+
+/// When true, the webview's `IsVisible` property is forced to `true` even
+/// when the window is minimized.
+///
+/// **Why this is needed:** wry v0.22+ sets `ICoreWebView2Controller::IsVisible = false`
+/// when the window is minimized (following Microsoft's performance guidance). This
+/// triggers Chromium's page-hidden optimizations which kill active `MediaStreamTrack`s
+/// (mic, camera, screen share). By immediately overriding `IsVisible` back to `true`,
+/// the Chromium renderer stays active and media tracks survive.
+///
+/// The frontend toggles this flag via the `set_media_keepalive` command when
+/// joining or leaving a voice call.
+///
+/// See: <https://github.com/MicrosoftEdge/WebView2Feedback/issues/2177>
+static MEDIA_KEEPALIVE: AtomicBool = AtomicBool::new(false);
+
+#[tauri::command]
+fn set_media_keepalive(active: bool) {
+    MEDIA_KEEPALIVE.store(active, Ordering::SeqCst);
+    tracing::debug!(active, "media keepalive toggled");
+}
+
+/// On Windows, override `IsVisible = true` when the window is minimized
+/// and a voice call is active. This is called from the window-event handler
+/// via `tauri::async_runtime::spawn` to avoid deadlocking `with_webview`
+/// in a synchronous event callback.
+///
+/// The async spawn dispatches back to the main thread via `PostMessage`,
+/// so there is a ~1 message-loop-iteration delay. This is fast enough
+/// because Chromium's browser process batches visibility state changes
+/// asynchronously — the rapid `false→true` transition is seen as a no-op.
+#[cfg(target_os = "windows")]
+fn media_keepalive_on_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
+    if !MEDIA_KEEPALIVE.load(Ordering::SeqCst) {
+        return;
+    }
+
+    let should_override = match event {
+        // wry fires Resized when the window is minimized (SIZE_MINIMIZED).
+        tauri::WindowEvent::Resized(_) => window.is_minimized().unwrap_or(false),
+        // Also re-assert on focus-gain as a safety net, in case something
+        // else set IsVisible=false (e.g. the OS power manager).
+        tauri::WindowEvent::Focused(true) => true,
+        _ => false,
+    };
+
+    if should_override {
+        let handle = window.app_handle().clone();
+        // Spawn async to avoid with_webview deadlock in synchronous handler.
+        tauri::async_runtime::spawn(async move {
+            if let Some(ww) = handle.get_webview_window("main") {
+                let _ = ww.with_webview(|wv| {
+                    // SAFETY: SetIsVisible is a standard COM call on the UI thread.
+                    // The async_runtime dispatches this closure to the main thread
+                    // via PostMessage, so we are on the correct apartment.
+                    unsafe { wv.controller().SetIsVisible(true.into()).ok() }
+                });
+            }
+        });
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn media_keepalive_on_window_event(_window: &tauri::Window, _event: &tauri::WindowEvent) {
+    // macOS (WebKit) and Linux (WebKitGTK) do not set IsVisible on minimize.
+    // Their webview engines handle background media differently and typically
+    // do not kill MediaStreamTracks when the window is unfocused/minimized.
+}
+
 fn main() {
     let data_dir = resolve_data_dir();
     std::fs::create_dir_all(&data_dir).expect("failed to create Annex data directory");
@@ -1539,6 +1610,9 @@ fn main() {
             }
             Ok(())
         })
+        .on_window_event(|window, event| {
+            media_keepalive_on_window_event(window, event);
+        })
         .invoke_handler(tauri::generate_handler![
             get_startup_mode,
             save_startup_mode,
@@ -1551,11 +1625,7 @@ fn main() {
             get_livekit_config,
             start_local_livekit,
             get_platform_media_status,
-            // NOTE: save_livekit_config, clear_livekit_config, check_livekit_reachable,
-            // stop_local_livekit, and get_local_livekit_url are intentionally not
-            // registered. Their frontend callers were removed with the LiveKit settings
-            // panel. The Rust implementations are retained for potential future admin
-            // CLI or plugin use.
+            set_media_keepalive,
         ])
         .run(tauri::generate_context!())
         .expect("error running Annex desktop");
