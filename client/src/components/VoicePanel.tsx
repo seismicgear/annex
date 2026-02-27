@@ -34,22 +34,17 @@ import { isTauri, getPlatformMediaStatus, type PlatformMediaStatus } from '@/lib
 
 /** Local media status bar shown above the controls. */
 function LocalMediaStatus() {
-  const { localParticipant } = useLocalParticipant();
-  const lp = localParticipant as LocalParticipant;
-
-  const micEnabled = lp.isMicrophoneEnabled;
-  const camEnabled = lp.isCameraEnabled;
-  const screenEnabled = lp.isScreenShareEnabled;
+  const { isMicrophoneEnabled, isCameraEnabled, isScreenShareEnabled } = useLocalParticipant();
 
   return (
     <div className="local-media-status">
-      <span className={`status-pill ${micEnabled ? 'on' : 'off'}`}>
-        {micEnabled ? 'Mic ON' : 'Mic OFF'}
+      <span className={`status-pill ${isMicrophoneEnabled ? 'on' : 'off'}`}>
+        {isMicrophoneEnabled ? 'Mic ON' : 'Mic OFF'}
       </span>
-      <span className={`status-pill ${camEnabled ? 'on' : 'off'}`}>
-        {camEnabled ? 'Cam ON' : 'Cam OFF'}
+      <span className={`status-pill ${isCameraEnabled ? 'on' : 'off'}`}>
+        {isCameraEnabled ? 'Cam ON' : 'Cam OFF'}
       </span>
-      {screenEnabled && (
+      {isScreenShareEnabled && (
         <span className="status-pill sharing">Sharing Screen</span>
       )}
     </div>
@@ -58,12 +53,11 @@ function LocalMediaStatus() {
 
 /** Controls bar rendered inside the LiveKit room context. */
 function MediaControls({ onLeave }: { onLeave: () => void }) {
-  const { localParticipant } = useLocalParticipant();
-  const lp = localParticipant as LocalParticipant;
+  const { localParticipant, isMicrophoneEnabled, isCameraEnabled, isScreenShareEnabled } = useLocalParticipant();
 
-  const micEnabled = lp.isMicrophoneEnabled;
-  const camEnabled = lp.isCameraEnabled;
-  const screenEnabled = lp.isScreenShareEnabled;
+  const micEnabled = isMicrophoneEnabled;
+  const camEnabled = isCameraEnabled;
+  const screenEnabled = isScreenShareEnabled;
 
   // Listen for device hot-plug events during an active call.
   // Shows a transient notification so the user knows a device was added/removed.
@@ -82,16 +76,16 @@ function MediaControls({ onLeave }: { onLeave: () => void }) {
   }, []);
 
   const toggleMic = useCallback(async () => {
-    await lp.setMicrophoneEnabled(!micEnabled);
-  }, [lp, micEnabled]);
+    await localParticipant.setMicrophoneEnabled(!micEnabled);
+  }, [localParticipant, micEnabled]);
 
   const toggleCamera = useCallback(async () => {
-    await lp.setCameraEnabled(!camEnabled);
-  }, [lp, camEnabled]);
+    await localParticipant.setCameraEnabled(!camEnabled);
+  }, [localParticipant, camEnabled]);
 
   const toggleScreen = useCallback(async () => {
-    await lp.setScreenShareEnabled(!screenEnabled);
-  }, [lp, screenEnabled]);
+    await localParticipant.setScreenShareEnabled(!screenEnabled);
+  }, [localParticipant, screenEnabled]);
 
   return (
     <div className="media-controls">
@@ -291,8 +285,79 @@ function ParticipantGrid() {
   );
 }
 
+/**
+ * Re-enable media tracks killed by the OS/webview when the Tauri window loses focus.
+ *
+ * WebView2 on Windows can set MediaStreamTrack.readyState to 'ended' when the
+ * app is backgrounded (alt-tab). This hook detects the ended tracks on focus
+ * restore and re-creates them. Screen share cannot be auto-restarted (requires
+ * user gesture for getDisplayMedia), so it is cleaned up instead.
+ */
+function useTauriMediaRestore() {
+  const { localParticipant } = useLocalParticipant();
+
+  useEffect(() => {
+    if (!isTauri()) return;
+
+    const restoreMedia = async () => {
+      if (document.visibilityState !== 'visible') return;
+
+      // Brief delay for the webview to fully resume
+      await new Promise((r) => setTimeout(r, 200));
+
+      const lp = localParticipant as LocalParticipant;
+
+      // Helper: find a publication by source from the participant's track map.
+      const findPub = (source: Track.Source) => {
+        for (const pub of lp.trackPublications.values()) {
+          if (pub.source === source) return pub;
+        }
+        return undefined;
+      };
+
+      // Re-enable mic if it was on but the track ended
+      if (lp.isMicrophoneEnabled) {
+        const pub = findPub(Track.Source.Microphone);
+        if (pub?.track?.mediaStreamTrack?.readyState === 'ended') {
+          try {
+            await lp.setMicrophoneEnabled(false);
+            await lp.setMicrophoneEnabled(true);
+          } catch { /* best effort */ }
+        }
+      }
+
+      // Re-enable camera if it was on but the track ended
+      if (lp.isCameraEnabled) {
+        const pub = findPub(Track.Source.Camera);
+        if (pub?.track?.mediaStreamTrack?.readyState === 'ended') {
+          try {
+            await lp.setCameraEnabled(false);
+            await lp.setCameraEnabled(true);
+          } catch { /* best effort */ }
+        }
+      }
+
+      // Screen share can't be auto-restarted (getDisplayMedia needs user gesture).
+      // Clean it up so the UI reflects that sharing has stopped.
+      if (lp.isScreenShareEnabled) {
+        const pub = findPub(Track.Source.ScreenShare);
+        if (pub?.track?.mediaStreamTrack?.readyState === 'ended') {
+          try {
+            await lp.setScreenShareEnabled(false);
+          } catch { /* best effort */ }
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', restoreMedia);
+    return () => document.removeEventListener('visibilitychange', restoreMedia);
+  }, [localParticipant]);
+}
+
 /** Room content rendered inside the LiveKitRoom context. */
 function RoomContent({ onLeave }: { onLeave: () => void }) {
+  useTauriMediaRestore();
+
   return (
     <>
       <RoomAudioRenderer />
@@ -401,6 +466,12 @@ export function VoicePanel() {
     };
   }, [lastJoinError]);
 
+  // Prevent LiveKit from disconnecting when the Tauri webview fires page-leave events.
+  const roomOptions = useMemo(() => {
+    if (!isTauri()) return undefined;
+    return { disconnectOnPageLeave: false };
+  }, []);
+
   // Build RTC configuration with server-provided ICE servers for NAT traversal.
   const connectOptions = useMemo(() => {
     if (!iceServers || iceServers.length === 0) return undefined;
@@ -432,6 +503,7 @@ export function VoicePanel() {
           connect={true}
           audio={true}
           video={false}
+          options={roomOptions}
           connectOptions={connectOptions}
         >
           <RoomContent onLeave={handleLeave} />
