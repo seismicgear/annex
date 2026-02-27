@@ -820,8 +820,8 @@ retention_check_interval_seconds = 0
         );
 
         let path_str = path.to_string_lossy().into_owned();
-        let cfg = load_config(Some(&path_str))
-            .expect("load should succeed despite backslash paths");
+        let cfg =
+            load_config(Some(&path_str)).expect("load should succeed despite backslash paths");
         assert_eq!(
             cfg.database.path,
             "C:/Users/monty/AppData/Roaming/Annex/annex.db"

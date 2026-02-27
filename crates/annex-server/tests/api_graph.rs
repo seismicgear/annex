@@ -43,7 +43,9 @@ fn setup_test_app() -> (axum::Router, annex_db::DbPool, tempfile::NamedTempFile)
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,
         )),
-        public_url: std::sync::Arc::new(std::sync::RwLock::new("http://localhost:3000".to_string())),
+        public_url: std::sync::Arc::new(std::sync::RwLock::new(
+            "http://localhost:3000".to_string(),
+        )),
         policy: Arc::new(RwLock::new(ServerPolicy::default())),
         rate_limiter: middleware::RateLimiter::new(),
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
@@ -150,6 +152,12 @@ async fn test_get_profile_visibility() {
     let nodes = vec!["A", "B", "C", "D", "E"];
     for n in &nodes {
         ensure_graph_node(&conn, server_id, n, NodeType::Human, None).unwrap();
+        // Register each node as a platform identity so auth middleware accepts them.
+        conn.execute(
+            "INSERT OR IGNORE INTO platform_identities (server_id, pseudonym_id, participant_type, active) VALUES (?1, ?2, 'HUMAN', 1)",
+            rusqlite::params![server_id, n],
+        )
+        .unwrap();
     }
 
     create_edge(&conn, server_id, "A", "B", EdgeKind::Connected, 1.0).unwrap();
@@ -165,7 +173,7 @@ async fn test_get_profile_visibility() {
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
 
-    // Helper to make request
+    // Helper to make request — the handler uses the authenticated identity as the viewer.
     let check_visibility = |target: &str, viewer: &str| {
         let target = target.to_string();
         let viewer = viewer.to_string();
@@ -174,7 +182,7 @@ async fn test_get_profile_visibility() {
             let uri = format!("/api/graph/profile/{}", target);
             let req = Request::builder()
                 .uri(uri)
-                .header("X-Annex-Viewer", viewer)
+                .header("X-Annex-Pseudonym", viewer)
                 .body(Body::empty())
                 .unwrap();
             let mut req = req;
@@ -221,12 +229,12 @@ async fn test_get_profile_visibility() {
     assert!(p.last_seen_at.is_none());
     assert!(p.metadata_json.is_none());
 
-    // 6. Missing Header
+    // 6. Missing X-Annex-Pseudonym header should return 401 (auth middleware rejects).
     let uri = "/api/graph/profile/A";
     let req = Request::builder().uri(uri).body(Body::empty()).unwrap();
     let mut req = req;
     req.extensions_mut().insert(ConnectInfo(addr));
 
     let resp = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }

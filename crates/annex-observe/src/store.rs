@@ -56,7 +56,13 @@ pub fn emit_event(
             entity_id,
             payload_json,
         ],
-        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?)),
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        },
     )?;
 
     let (id, seq, occurred_at) = row;

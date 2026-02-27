@@ -295,7 +295,8 @@ pub async fn get_channel_history_handler(
         let limit = params.limit.map(|l| l.min(200));
         move || {
             let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            list_messages(&conn, server_id, &cid, before, limit).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+            list_messages(&conn, server_id, &cid, before, limit)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
         }
     })
     .await
@@ -541,7 +542,8 @@ pub async fn leave_channel_handler(
         let is_agent = identity.participant_type == RoleCode::AiAgent;
         move || {
             let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            remove_member(&conn, server_id, &cid, &pid).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            remove_member(&conn, server_id, &cid, &pid)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
             if is_agent {
                 delete_edge(&conn, server_id, &pid, &cid, EdgeKind::AgentServing)

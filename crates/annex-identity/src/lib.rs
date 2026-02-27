@@ -19,8 +19,8 @@ pub use commitment::generate_commitment;
 pub use merkle::MerkleTree;
 pub use nullifier::{check_nullifier_exists, insert_nullifier};
 pub use platform::{
-    create_platform_identity, deactivate_platform_identity, ensure_founder,
-    get_platform_identity, update_capabilities, Capabilities, PlatformIdentity,
+    create_platform_identity, deactivate_platform_identity, ensure_founder, get_platform_identity,
+    update_capabilities, Capabilities, PlatformIdentity,
 };
 pub use poseidon::hash_inputs;
 pub use registry::{
@@ -75,10 +75,7 @@ pub enum IdentityError {
     CommitmentNotFound(String),
     /// Merkle root mismatch between stored and computed values.
     #[error("merkle root mismatch: stored={stored}, computed={computed}")]
-    MerkleRootMismatch {
-        stored: String,
-        computed: String,
-    },
+    MerkleRootMismatch { stored: String, computed: String },
     /// Database error.
     #[error("database error: {0}")]
     DatabaseError(#[from] rusqlite::Error),
@@ -102,8 +99,14 @@ impl PartialEq for IdentityError {
             (Self::DuplicateCommitment(a), Self::DuplicateCommitment(b)) => a == b,
             (Self::CommitmentNotFound(a), Self::CommitmentNotFound(b)) => a == b,
             (
-                Self::MerkleRootMismatch { stored: s1, computed: c1 },
-                Self::MerkleRootMismatch { stored: s2, computed: c2 },
+                Self::MerkleRootMismatch {
+                    stored: s1,
+                    computed: c1,
+                },
+                Self::MerkleRootMismatch {
+                    stored: s2,
+                    computed: c2,
+                },
             ) => s1 == s2 && c1 == c2,
             (Self::DatabaseError(a), Self::DatabaseError(b)) => a.to_string() == b.to_string(),
             _ => false,

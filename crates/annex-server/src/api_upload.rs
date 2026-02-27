@@ -242,8 +242,7 @@ fn strip_png_metadata(data: &[u8]) -> Vec<u8> {
     let mut i = 8;
 
     while i + 12 <= data.len() {
-        let length =
-            u32::from_be_bytes([data[i], data[i + 1], data[i + 2], data[i + 3]]) as usize;
+        let length = u32::from_be_bytes([data[i], data[i + 1], data[i + 2], data[i + 3]]) as usize;
         let chunk_type = &data[i + 4..i + 8];
         let total = 12 + length; // 4 length + 4 type + data + 4 CRC
 
@@ -344,10 +343,7 @@ pub async fn upload_server_image_handler(
         .unwrap_or("application/octet-stream")
         .to_string();
 
-    let original_filename = field
-        .file_name()
-        .unwrap_or("image")
-        .to_string();
+    let original_filename = field.file_name().unwrap_or("image").to_string();
 
     // Stream with size enforcement — rejects before fully buffering
     let data = read_field_capped(&mut field, MAX_SERVER_IMAGE_SIZE).await?;
@@ -373,9 +369,9 @@ pub async fn upload_server_image_handler(
     let upload_dir = state.upload_dir.clone();
     let server_dir = format!("{}/server", upload_dir);
 
-    tokio::fs::create_dir_all(&server_dir)
-        .await
-        .map_err(|e| ApiError::InternalServerError(format!("failed to create upload dir: {}", e)))?;
+    tokio::fs::create_dir_all(&server_dir).await.map_err(|e| {
+        ApiError::InternalServerError(format!("failed to create upload dir: {}", e))
+    })?;
 
     let file_path = format!("{}/{}", server_dir, filename);
     tokio::fs::write(&file_path, &cleaned)
@@ -466,9 +462,10 @@ pub async fn upload_chat_handler(
     let pseudonym = identity.pseudonym_id.clone();
 
     let is_member_result = tokio::task::spawn_blocking(move || {
-        let conn = state_clone.pool.get().map_err(|e| {
-            ApiError::InternalServerError(format!("db connection failed: {}", e))
-        })?;
+        let conn = state_clone
+            .pool
+            .get()
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
         is_member(&conn, state_clone.server_id, &channel_id_clone, &pseudonym)
             .map_err(|e| ApiError::InternalServerError(format!("membership check failed: {}", e)))
     })
@@ -500,10 +497,7 @@ pub async fn upload_chat_handler(
         .unwrap_or("application/octet-stream")
         .to_string();
 
-    let original_filename = field
-        .file_name()
-        .unwrap_or("upload")
-        .to_string();
+    let original_filename = field.file_name().unwrap_or("upload").to_string();
 
     // Stream with size enforcement — rejects before fully buffering.
     // Uses a hard ceiling; per-category limits are enforced after detection.
@@ -515,8 +509,8 @@ pub async fn upload_chat_handler(
     // regardless of the declared Content-Type header. This prevents:
     // (1) memory leaks from the previous Box::leak approach, and
     // (2) declared-MIME bypass of magic byte verification.
-    let (detected_ct, category) = detect_content_type(&data)
-        .unwrap_or(("application/octet-stream", UploadCategory::File));
+    let (detected_ct, category) =
+        detect_content_type(&data).unwrap_or(("application/octet-stream", UploadCategory::File));
 
     // Check for blocked types
     if BLOCKED_TYPES.contains(&detected_ct) {
@@ -570,9 +564,9 @@ pub async fn upload_chat_handler(
     let upload_dir = state.upload_dir.clone();
     let chat_dir = format!("{}/chat/{}", upload_dir, category.subdir());
 
-    tokio::fs::create_dir_all(&chat_dir)
-        .await
-        .map_err(|e| ApiError::InternalServerError(format!("failed to create upload dir: {}", e)))?;
+    tokio::fs::create_dir_all(&chat_dir).await.map_err(|e| {
+        ApiError::InternalServerError(format!("failed to create upload dir: {}", e))
+    })?;
 
     let file_path = format!("{}/{}", chat_dir, safe_filename);
     tokio::fs::write(&file_path, &cleaned)
@@ -651,9 +645,10 @@ pub async fn get_server_image_handler(
     let state_clone = state.clone();
 
     let image_url = tokio::task::spawn_blocking(move || {
-        let conn = state_clone.pool.get().map_err(|e| {
-            ApiError::InternalServerError(format!("db connection failed: {}", e))
-        })?;
+        let conn = state_clone
+            .pool
+            .get()
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
 
         let url: Option<String> = conn
             .query_row(
@@ -661,9 +656,7 @@ pub async fn get_server_image_handler(
                 rusqlite::params![state_clone.server_id],
                 |row| row.get(0),
             )
-            .map_err(|e| {
-                ApiError::InternalServerError(format!("failed to query server: {}", e))
-            })?;
+            .map_err(|e| ApiError::InternalServerError(format!("failed to query server: {}", e)))?;
 
         Ok::<_, ApiError>(url)
     })
@@ -684,7 +677,7 @@ mod tests {
     fn strip_jpeg_preserves_image_data() {
         // Minimal JPEG: SOI + APP0 + SOS + EOI
         let mut jpeg = vec![0xFF, 0xD8]; // SOI
-        // APP0 (keep)
+                                         // APP0 (keep)
         jpeg.extend_from_slice(&[0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00]);
         // APP1/EXIF (strip)
         jpeg.extend_from_slice(&[0xFF, 0xE1, 0x00, 0x06, 0x45, 0x78, 0x69, 0x66]);
@@ -837,9 +830,18 @@ mod tests {
             max_file_size_mb: 3,
             ..Default::default()
         };
-        assert_eq!(max_size_for_category(&policy, UploadCategory::Image), 5 * 1024 * 1024);
-        assert_eq!(max_size_for_category(&policy, UploadCategory::Video), 10 * 1024 * 1024);
-        assert_eq!(max_size_for_category(&policy, UploadCategory::File), 3 * 1024 * 1024);
+        assert_eq!(
+            max_size_for_category(&policy, UploadCategory::Image),
+            5 * 1024 * 1024
+        );
+        assert_eq!(
+            max_size_for_category(&policy, UploadCategory::Video),
+            10 * 1024 * 1024
+        );
+        assert_eq!(
+            max_size_for_category(&policy, UploadCategory::File),
+            3 * 1024 * 1024
+        );
     }
 
     #[test]

@@ -151,9 +151,10 @@ pub async fn revoke_federation_handler(
     let moderator = identity.pseudonym_id.clone();
 
     let remote_url = tokio::task::spawn_blocking(move || {
-        let conn = state_clone.pool.get().map_err(|e| {
-            ApiError::InternalServerError(format!("db connection failed: {}", e))
-        })?;
+        let conn = state_clone
+            .pool
+            .get()
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
 
         // Look up the remote instance base_url before revoking so we can emit the event.
         let remote_url: Option<String> = conn
@@ -166,8 +167,11 @@ pub async fn revoke_federation_handler(
             )
             .ok();
 
-        let revoked = annex_federation::revoke_agreement(&conn, agreement_id, state_clone.server_id)
-            .map_err(|e| ApiError::InternalServerError(format!("failed to revoke agreement: {}", e)))?;
+        let revoked =
+            annex_federation::revoke_agreement(&conn, agreement_id, state_clone.server_id)
+                .map_err(|e| {
+                    ApiError::InternalServerError(format!("failed to revoke agreement: {}", e))
+                })?;
 
         if !revoked {
             return Err(ApiError::NotFound(
@@ -234,9 +238,10 @@ pub async fn rename_server_handler(
     let moderator = identity.pseudonym_id.clone();
 
     tokio::task::spawn_blocking(move || {
-        let conn = state_clone.pool.get().map_err(|e| {
-            ApiError::InternalServerError(format!("db connection failed: {}", e))
-        })?;
+        let conn = state_clone
+            .pool
+            .get()
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
 
         conn.execute(
             "UPDATE servers SET label = ?1 WHERE id = ?2",
@@ -277,9 +282,10 @@ pub async fn get_server_handler(
 
     let state_clone = state.clone();
     let (slug, label) = tokio::task::spawn_blocking(move || {
-        let conn = state_clone.pool.get().map_err(|e| {
-            ApiError::InternalServerError(format!("db connection failed: {}", e))
-        })?;
+        let conn = state_clone
+            .pool
+            .get()
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
         conn.query_row(
             "SELECT slug, label FROM servers WHERE id = ?1",
             rusqlite::params![state_clone.server_id],
@@ -316,9 +322,7 @@ pub async fn set_public_url_handler(
     Json(body): Json<SetPublicUrlRequest>,
 ) -> Result<Response, ApiError> {
     if !identity.can_moderate {
-        return Err(ApiError::Forbidden(
-            "insufficient permissions".to_string(),
-        ));
+        return Err(ApiError::Forbidden("insufficient permissions".to_string()));
     }
 
     let url = body.public_url.trim().trim_end_matches('/').to_string();
@@ -329,10 +333,7 @@ pub async fn set_public_url_handler(
     }
 
     {
-        let mut current = state
-            .public_url
-            .write()
-            .unwrap_or_else(|p| p.into_inner());
+        let mut current = state.public_url.write().unwrap_or_else(|p| p.into_inner());
         *current = url.clone();
     }
 
@@ -369,9 +370,10 @@ pub async fn list_members_handler(
 
     let state_clone = state.clone();
     let members = tokio::task::spawn_blocking(move || {
-        let conn = state_clone.pool.get().map_err(|e| {
-            ApiError::InternalServerError(format!("db connection failed: {}", e))
-        })?;
+        let conn = state_clone
+            .pool
+            .get()
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
 
         let mut stmt = conn
             .prepare(
@@ -400,9 +402,8 @@ pub async fn list_members_handler(
 
         let mut members = Vec::new();
         for row in rows {
-            members.push(
-                row.map_err(|e| ApiError::InternalServerError(format!("row error: {}", e)))?,
-            );
+            members
+                .push(row.map_err(|e| ApiError::InternalServerError(format!("row error: {}", e)))?);
         }
         Ok::<_, ApiError>(members)
     })

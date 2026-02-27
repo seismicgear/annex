@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, act } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { VoicePanel } from './VoicePanel';
 
@@ -34,6 +34,18 @@ vi.mock('@/stores/voice', () => ({
 
 vi.mock('@/lib/api', () => ({
   getVoiceConfigStatus: vi.fn(async () => ({ voice_enabled: false, setup_hint: 'Enable voice in server config' })),
+}));
+
+// Mock the tauri module — tests run in browser (jsdom), not inside Tauri.
+const mockGetPlatformMediaStatus = vi.fn().mockResolvedValue({
+  screen_share_available: true,
+  camera_mic_available: true,
+  warnings: [],
+  display_server: 'test',
+});
+vi.mock('@/lib/tauri', () => ({
+  isTauri: () => true,
+  getPlatformMediaStatus: (...args: unknown[]) => mockGetPlatformMediaStatus(...args),
 }));
 
 vi.mock('@livekit/components-react', () => ({
@@ -140,5 +152,46 @@ describe('VoicePanel', () => {
 
     expect(screen.getByText(/Voice Connected/)).toBeInTheDocument();
     expect(screen.getByTestId('livekit-room')).toBeInTheDocument();
+  });
+
+  it('shows platform media warnings when PipeWire is missing', async () => {
+    mockGetPlatformMediaStatus.mockResolvedValueOnce({
+      screen_share_available: false,
+      camera_mic_available: true,
+      warnings: ['PipeWire not detected — screen sharing will not work on Wayland.'],
+      display_server: 'wayland',
+    });
+
+    await act(async () => {
+      render(<VoicePanel />);
+    });
+
+    expect(screen.getByText(/PipeWire not detected/)).toBeInTheDocument();
+  });
+
+  it('shows no platform warnings when all media is available', async () => {
+    mockGetPlatformMediaStatus.mockResolvedValueOnce({
+      screen_share_available: true,
+      camera_mic_available: true,
+      warnings: [],
+      display_server: 'x11',
+    });
+
+    await act(async () => {
+      render(<VoicePanel />);
+    });
+
+    expect(screen.queryByText(/PipeWire/)).not.toBeInTheDocument();
+  });
+
+  it('handles getPlatformMediaStatus failure gracefully', async () => {
+    mockGetPlatformMediaStatus.mockRejectedValueOnce(new Error('not in tauri'));
+
+    await act(async () => {
+      render(<VoicePanel />);
+    });
+
+    // Should still render the voice panel without errors.
+    expect(screen.getByRole('button', { name: 'Create Call' })).toBeInTheDocument();
   });
 });

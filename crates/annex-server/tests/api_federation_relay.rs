@@ -101,7 +101,9 @@ async fn test_receive_federated_message() {
         membership_vkey: load_dummy_vkey(),
         server_id: local_server_id,
         signing_key: Arc::new(signing_key),
-        public_url: std::sync::Arc::new(std::sync::RwLock::new("http://localhost:3000".to_string())),
+        public_url: std::sync::Arc::new(std::sync::RwLock::new(
+            "http://localhost:3000".to_string(),
+        )),
         policy: Arc::new(RwLock::new(policy)),
         rate_limiter: RateLimiter::new(),
         connection_manager: annex_server::api_ws::ConnectionManager::new(),

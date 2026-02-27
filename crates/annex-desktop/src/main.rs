@@ -68,6 +68,16 @@ allowed_origins = ["tauri://localhost", "https://tauri.localhost", "http://tauri
 # api_key = ""
 # api_secret = ""
 # token_ttl_seconds = 3600
+#
+# STUN/TURN servers for WebRTC NAT traversal. Defaults to Google STUN.
+# Add TURN servers for restrictive corporate networks that block UDP.
+# [[livekit.ice_servers]]
+# urls = ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]
+#
+# [[livekit.ice_servers]]
+# urls = ["turn:turn.example.com:3478?transport=udp", "turns:turn.example.com:5349?transport=tcp"]
+# username = "your-turn-username"
+# credential = "your-turn-credential"
 "#,
             db_path = db_path_safe,
         );
@@ -618,10 +628,12 @@ struct LiveKitSettingsResponse {
 
 /// Read the current LiveKit configuration from config.toml + keyring.
 #[tauri::command]
-fn get_livekit_config(state: tauri::State<'_, AppManagedState>) -> Result<LiveKitSettingsResponse, String> {
+fn get_livekit_config(
+    state: tauri::State<'_, AppManagedState>,
+) -> Result<LiveKitSettingsResponse, String> {
     let config_path_str = state.config_path.to_string_lossy().to_string();
-    let cfg = config::load_config(Some(&config_path_str))
-        .map_err(|e| format!("config error: {e}"))?;
+    let cfg =
+        config::load_config(Some(&config_path_str)).map_err(|e| format!("config error: {e}"))?;
 
     let has_secret_in_config = !cfg.livekit.api_secret.is_empty();
     let has_secret_in_keyring = load_api_secret_from_keyring()
@@ -690,11 +702,11 @@ fn save_livekit_config(
     };
 
     let config_path = &state.config_path;
-    let contents = std::fs::read_to_string(config_path)
-        .map_err(|e| format!("failed to read config: {e}"))?;
+    let contents =
+        std::fs::read_to_string(config_path).map_err(|e| format!("failed to read config: {e}"))?;
 
-    let mut doc: toml::Value = toml::from_str(&contents)
-        .map_err(|e| format!("failed to parse config: {e}"))?;
+    let mut doc: toml::Value =
+        toml::from_str(&contents).map_err(|e| format!("failed to parse config: {e}"))?;
 
     let table = doc
         .as_table_mut()
@@ -703,9 +715,7 @@ fn save_livekit_config(
     let lk = table
         .entry("livekit")
         .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
-    let lk_table = lk
-        .as_table_mut()
-        .ok_or("[livekit] is not a TOML table")?;
+    let lk_table = lk.as_table_mut().ok_or("[livekit] is not a TOML table")?;
 
     lk_table.insert("url".into(), toml::Value::String(input.url));
     lk_table.insert("api_key".into(), toml::Value::String(input.api_key));
@@ -719,17 +729,13 @@ fn save_livekit_config(
         lk_table.remove("api_secret");
     } else {
         // Fallback: store in config file
-        lk_table.insert(
-            "api_secret".into(),
-            toml::Value::String(input.api_secret),
-        );
+        lk_table.insert("api_secret".into(), toml::Value::String(input.api_secret));
     }
 
     let serialized =
         toml::to_string_pretty(&doc).map_err(|e| format!("failed to serialize config: {e}"))?;
 
-    std::fs::write(config_path, serialized)
-        .map_err(|e| format!("failed to write config: {e}"))?;
+    std::fs::write(config_path, serialized).map_err(|e| format!("failed to write config: {e}"))?;
 
     tracing::info!("LiveKit configuration saved");
     Ok(())
@@ -748,11 +754,11 @@ fn clear_livekit_config(state: tauri::State<'_, AppManagedState>) -> Result<(), 
 
     // Remove from config file
     let config_path = &state.config_path;
-    let contents = std::fs::read_to_string(config_path)
-        .map_err(|e| format!("failed to read config: {e}"))?;
+    let contents =
+        std::fs::read_to_string(config_path).map_err(|e| format!("failed to read config: {e}"))?;
 
-    let mut doc: toml::Value = toml::from_str(&contents)
-        .map_err(|e| format!("failed to parse config: {e}"))?;
+    let mut doc: toml::Value =
+        toml::from_str(&contents).map_err(|e| format!("failed to parse config: {e}"))?;
 
     if let Some(table) = doc.as_table_mut() {
         table.remove("livekit");
@@ -761,8 +767,7 @@ fn clear_livekit_config(state: tauri::State<'_, AppManagedState>) -> Result<(), 
     let serialized =
         toml::to_string_pretty(&doc).map_err(|e| format!("failed to serialize config: {e}"))?;
 
-    std::fs::write(config_path, serialized)
-        .map_err(|e| format!("failed to write config: {e}"))?;
+    std::fs::write(config_path, serialized).map_err(|e| format!("failed to write config: {e}"))?;
 
     tracing::info!("LiveKit configuration cleared");
     Ok(())
@@ -827,9 +832,7 @@ fn livekit_binary_name() -> &'static str {
 
 /// Returns the download URL for livekit-server on this platform, if supported.
 fn livekit_download_url() -> Option<String> {
-    let base = format!(
-        "https://github.com/livekit/livekit/releases/download/v{LIVEKIT_VERSION}"
-    );
+    let base = format!("https://github.com/livekit/livekit/releases/download/v{LIVEKIT_VERSION}");
     if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         Some(format!(
             "{base}/livekit_{LIVEKIT_VERSION}_linux_amd64.tar.gz"
@@ -1002,7 +1005,9 @@ async fn ensure_livekit(data_dir: &Path) -> Result<PathBuf, String> {
 ///
 /// Must be called BEFORE `start_embedded_server` for the env vars to take effect.
 #[tauri::command]
-async fn start_local_livekit(state: tauri::State<'_, AppManagedState>) -> Result<serde_json::Value, String> {
+async fn start_local_livekit(
+    state: tauri::State<'_, AppManagedState>,
+) -> Result<serde_json::Value, String> {
     // Check if already running
     {
         let guard = state.livekit.lock().map_err(|e| e.to_string())?;
@@ -1032,6 +1037,13 @@ async fn start_local_livekit(state: tauri::State<'_, AppManagedState>) -> Result
     // the first one that is not already in use.
     let port = find_available_port(7880, 7899)
         .ok_or("no available port in range 7880–7899 for livekit-server")?;
+    if port != 7880 {
+        tracing::warn!(
+            default_port = 7880,
+            actual_port = port,
+            "default LiveKit port 7880 was occupied — fell back to port {port}"
+        );
+    }
     let lk_url = format!("ws://127.0.0.1:{port}");
 
     tracing::info!(path = %lk_path.display(), %port, "starting local livekit-server");
@@ -1067,7 +1079,10 @@ async fn start_local_livekit(state: tauri::State<'_, AppManagedState>) -> Result
                     tracing::debug!(line = %line, "livekit-server");
                     if let Some(sender) = tx.take() {
                         // LiveKit logs readiness messages containing "started" or "ready"
-                        if line.contains("started") || line.contains("ready") || line.contains("listening") {
+                        if line.contains("started")
+                            || line.contains("ready")
+                            || line.contains("listening")
+                        {
                             let _ = sender.send(Ok(()));
                             // Continue reading to drain the pipe
                         } else {
@@ -1085,7 +1100,7 @@ async fn start_local_livekit(state: tauri::State<'_, AppManagedState>) -> Result
         }
         if let Some(sender) = tx.take() {
             let _ = sender.send(Err(
-                "livekit-server exited before becoming ready".to_string(),
+                "livekit-server exited before becoming ready".to_string()
             ));
         }
     });
@@ -1115,7 +1130,7 @@ async fn start_local_livekit(state: tauri::State<'_, AppManagedState>) -> Result
         });
     }
 
-    Ok(serde_json::json!({ "url": lk_url }))
+    Ok(serde_json::json!({ "url": lk_url, "port": port }))
 }
 
 /// Stop the local LiveKit server if running.
@@ -1217,38 +1232,55 @@ fn set_dark_window_border(window: &tauri::WebviewWindow) {
     }
 }
 
-/// Check for PipeWire availability on Linux (required for screen sharing on Wayland).
-///
-/// Logs warnings if PipeWire or xdg-desktop-portal are not detected.
-/// These are required for `getDisplayMedia()` to work in WebKitGTK on Wayland.
+// ── Platform media capability checks ──
+
+/// Status of platform media capabilities, exposed to the frontend so users
+/// see actionable guidance instead of silent failures.
+#[derive(Debug, Clone, Serialize)]
+struct PlatformMediaStatus {
+    /// True if screen sharing is expected to work.
+    screen_share_available: bool,
+    /// True if camera/mic are expected to work.
+    camera_mic_available: bool,
+    /// Human-readable warnings for missing dependencies.
+    warnings: Vec<String>,
+    /// Display session type (e.g. "wayland", "x11", "windows", "macos").
+    display_server: String,
+}
+
+/// Detect PipeWire and xdg-desktop-portal on Linux.
+/// Returns `(pipewire_ok, portal_ok, warnings)`.
 #[cfg(target_os = "linux")]
-fn check_pipewire_available() {
+fn detect_pipewire() -> (bool, bool, Vec<String>) {
+    let mut warnings = Vec::new();
+
     // Check if the PipeWire daemon socket exists (standard XDG path).
     let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_default();
-    if runtime_dir.is_empty() {
-        tracing::warn!("XDG_RUNTIME_DIR not set — cannot detect PipeWire");
-        return;
-    }
-
-    let pipewire_socket = std::path::Path::new(&runtime_dir).join("pipewire-0");
-    let pipewire_found = if pipewire_socket.exists() {
-        tracing::info!("PipeWire detected (socket: {})", pipewire_socket.display());
-        true
+    let pipewire_found = if runtime_dir.is_empty() {
+        warnings.push("XDG_RUNTIME_DIR not set — cannot detect PipeWire.".into());
+        false
     } else {
-        // Fallback: check if `pw-cli` is on PATH.
-        std::process::Command::new("pw-cli")
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+        let pipewire_socket = std::path::Path::new(&runtime_dir).join("pipewire-0");
+        if pipewire_socket.exists() {
+            tracing::info!("PipeWire detected (socket: {})", pipewire_socket.display());
+            true
+        } else {
+            // Fallback: check if `pw-cli` is on PATH.
+            std::process::Command::new("pw-cli")
+                .arg("--version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        }
     };
 
     if !pipewire_found {
-        tracing::warn!(
-            "PipeWire not detected — screen sharing via getDisplayMedia() will not work on Wayland. \
+        warnings.push(
+            "PipeWire not detected — screen sharing will not work on Wayland. \
              Install pipewire and wireplumber, then restart the session."
+                .into(),
         );
     }
 
@@ -1270,11 +1302,90 @@ fn check_pipewire_available() {
         .unwrap_or(false);
 
     if !portal_running {
-        tracing::warn!(
+        warnings.push(
             "xdg-desktop-portal not running — screen sharing will not work on Wayland. \
              Install xdg-desktop-portal and a backend (e.g. xdg-desktop-portal-gtk or \
              xdg-desktop-portal-wlr for wlroots compositors)."
+                .into(),
         );
+    }
+
+    (pipewire_found, portal_running, warnings)
+}
+
+/// Log PipeWire/portal warnings at startup on Linux.
+#[cfg(target_os = "linux")]
+fn check_pipewire_available() {
+    let (_, _, warnings) = detect_pipewire();
+    for w in &warnings {
+        tracing::warn!("{w}");
+    }
+}
+
+/// Return the display server type on Linux.
+#[cfg(target_os = "linux")]
+fn detect_display_server() -> String {
+    if let Ok(val) = std::env::var("WAYLAND_DISPLAY") {
+        if !val.is_empty() {
+            return "wayland".into();
+        }
+    }
+    if let Ok(val) = std::env::var("DISPLAY") {
+        if !val.is_empty() {
+            return "x11".into();
+        }
+    }
+    "unknown".into()
+}
+
+/// Query platform media capabilities. Returns structured status the frontend
+/// can display as a banner or tooltip.
+#[tauri::command]
+fn get_platform_media_status() -> PlatformMediaStatus {
+    #[cfg(target_os = "linux")]
+    {
+        let display_server = detect_display_server();
+        let (pipewire_ok, portal_ok, warnings) = detect_pipewire();
+        let is_wayland = display_server == "wayland";
+        PlatformMediaStatus {
+            // On X11, screen sharing works via XComposite without PipeWire.
+            // On Wayland, both PipeWire and xdg-desktop-portal are required.
+            screen_share_available: if is_wayland {
+                pipewire_ok && portal_ok
+            } else {
+                true
+            },
+            camera_mic_available: true,
+            warnings,
+            display_server,
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        PlatformMediaStatus {
+            screen_share_available: true,
+            camera_mic_available: true,
+            warnings: vec![],
+            display_server: "macos".into(),
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        PlatformMediaStatus {
+            screen_share_available: true,
+            camera_mic_available: true,
+            warnings: vec![],
+            display_server: "windows".into(),
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        PlatformMediaStatus {
+            screen_share_available: false,
+            camera_mic_available: false,
+            warnings: vec!["Unsupported platform.".into()],
+            display_server: "unknown".into(),
+        }
     }
 }
 
@@ -1439,6 +1550,7 @@ fn main() {
             export_identity_json,
             get_livekit_config,
             start_local_livekit,
+            get_platform_media_status,
             // NOTE: save_livekit_config, clear_livekit_config, check_livekit_reachable,
             // stop_local_livekit, and get_local_livekit_url are intentionally not
             // registered. Their frontend callers were removed with the LiveKit settings
@@ -1463,7 +1575,10 @@ mod tests {
 
         // Verify all expected sections are present
         assert!(contents.contains("[server]"), "missing [server] section");
-        assert!(contents.contains("[database]"), "missing [database] section");
+        assert!(
+            contents.contains("[database]"),
+            "missing [database] section"
+        );
         assert!(contents.contains("[logging]"), "missing [logging] section");
         assert!(contents.contains("[cors]"), "missing [cors] section");
 
@@ -1500,8 +1615,8 @@ mod tests {
         // Since the [livekit] section is fully commented out, the TOML parser
         // should see no livekit fields and use LiveKitConfig::default(),
         // which now contains dev server values so voice works out of the box.
-        let cfg = annex_server::config::load_config(Some(&config_path_str))
-            .expect("config should parse");
+        let cfg =
+            annex_server::config::load_config(Some(&config_path_str)).expect("config should parse");
 
         // Voice defaults to dev configuration (auto-start LiveKit)
         assert_eq!(
@@ -1538,7 +1653,10 @@ mod tests {
         let contents2 = std::fs::read_to_string(&path2).expect("should read");
 
         assert_eq!(path1, path2, "paths should match");
-        assert_eq!(contents1, contents2, "contents should not change on second call");
+        assert_eq!(
+            contents1, contents2,
+            "contents should not change on second call"
+        );
     }
 
     #[test]
@@ -1566,5 +1684,77 @@ mod tests {
 
         let after = std::fs::read_to_string(&config_path).expect("should read");
         assert_eq!(before, after, "clean config should not be modified");
+    }
+
+    #[test]
+    fn find_available_port_returns_port_in_range() {
+        // With 20 ports to choose from, at least one should be available.
+        let port = find_available_port(49152, 49171);
+        assert!(port.is_some(), "should find at least one available port");
+        let port = port.unwrap();
+        assert!(
+            (49152..=49171).contains(&port),
+            "port {port} should be in range 49152–49171"
+        );
+    }
+
+    #[test]
+    fn find_available_port_returns_none_for_invalid_range() {
+        // Port 0 is never bindable in practice. Use a range that is definitely occupied
+        // by the test itself (port 0 is special — the OS picks one).
+        // Instead, test that an empty range returns None.
+        let port = find_available_port(10, 9);
+        assert!(port.is_none(), "invalid range should return None");
+    }
+
+    #[test]
+    fn get_platform_media_status_returns_valid_response() {
+        let status = get_platform_media_status();
+        // On any platform, display_server should not be empty.
+        assert!(
+            !status.display_server.is_empty(),
+            "display_server should not be empty"
+        );
+        // The warnings list should be valid (possibly empty).
+        // On CI (no Wayland), Linux may have warnings; macOS/Windows should have none.
+        #[cfg(not(target_os = "linux"))]
+        {
+            assert!(
+                status.warnings.is_empty(),
+                "macOS/Windows should have no media warnings"
+            );
+            assert!(status.screen_share_available);
+            assert!(status.camera_mic_available);
+        }
+    }
+
+    #[test]
+    fn config_template_documents_turn_servers() {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let config_path = ensure_config(dir.path()).expect("ensure_config should succeed");
+        let contents = std::fs::read_to_string(&config_path).expect("should read config");
+
+        assert!(
+            contents.contains("[[livekit.ice_servers]]"),
+            "config template should document ICE server configuration"
+        );
+        assert!(
+            contents.contains("turn:"),
+            "config template should include TURN server example"
+        );
+        assert!(
+            contents.contains("stun:stun.l.google.com"),
+            "config template should document default STUN server"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn detect_display_server_returns_known_type() {
+        let ds = detect_display_server();
+        assert!(
+            ["wayland", "x11", "unknown"].contains(&ds.as_str()),
+            "display_server should be wayland, x11, or unknown, got: {ds}"
+        );
     }
 }

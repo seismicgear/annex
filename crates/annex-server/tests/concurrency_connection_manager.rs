@@ -50,9 +50,7 @@ async fn test_concurrent_add_remove_session_no_orphans() {
 
     // Register a user and subscribe them to channels
     let sender = dummy_sender();
-    let session_id = cm
-        .add_session("user_a".to_string(), sender)
-        .await;
+    let session_id = cm.add_session("user_a".to_string(), sender).await;
 
     cm.subscribe("ch1".to_string(), "user_a".to_string()).await;
     cm.subscribe("ch2".to_string(), "user_a".to_string()).await;
@@ -96,13 +94,18 @@ async fn test_concurrent_session_replacement() {
                 .add_session("reconnecting_user".to_string(), sender)
                 .await;
             // Subscribe to a channel immediately after connecting
-            cm.subscribe("shared_channel".to_string(), "reconnecting_user".to_string())
-                .await;
+            cm.subscribe(
+                "shared_channel".to_string(),
+                "reconnecting_user".to_string(),
+            )
+            .await;
         }));
     }
 
     for handle in handles {
-        handle.await.expect("concurrent session replacement should not panic");
+        handle
+            .await
+            .expect("concurrent session replacement should not panic");
     }
 
     // After all reconnections settle, exactly one session should remain.
@@ -122,9 +125,7 @@ async fn test_concurrent_broadcast_with_subscribe_unsubscribe() {
         cm.subscribe("live_channel".to_string(), format!("user_{}", i))
             .await;
         // Spawn a drain task so the channel doesn't fill up
-        tokio::spawn(async move {
-            while let Some(_msg) = rx.recv().await {}
-        });
+        tokio::spawn(async move { while let Some(_msg) = rx.recv().await {} });
     }
 
     let mut handles = Vec::new();
@@ -149,7 +150,9 @@ async fn test_concurrent_broadcast_with_subscribe_unsubscribe() {
     }
 
     for handle in handles {
-        handle.await.expect("concurrent broadcast + sub/unsub should not panic");
+        handle
+            .await
+            .expect("concurrent broadcast + sub/unsub should not panic");
     }
 }
 

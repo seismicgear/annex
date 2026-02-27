@@ -118,7 +118,10 @@ fn validate_username(username: &str) -> Result<(), String> {
         return Err("username cannot be empty".to_string());
     }
     if trimmed.chars().count() > MAX_USERNAME_LEN {
-        return Err(format!("username too long (max {} chars)", MAX_USERNAME_LEN));
+        return Err(format!(
+            "username too long (max {} chars)",
+            MAX_USERNAME_LEN
+        ));
     }
     if trimmed.chars().any(|c| c.is_control()) {
         return Err("username cannot contain control characters".to_string());
@@ -170,9 +173,10 @@ pub async fn set_username_handler(
 
     let state_clone = state.clone();
     tokio::task::spawn_blocking(move || {
-        let conn = state_clone.pool.get().map_err(|e| {
-            ApiError::InternalServerError(format!("db connection failed: {}", e))
-        })?;
+        let conn = state_clone
+            .pool
+            .get()
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
 
         conn.execute(
             "INSERT INTO user_profiles (server_id, pseudonym_id, encrypted_username, updated_at)
@@ -209,9 +213,10 @@ pub async fn delete_username_handler(
     let state_clone = state.clone();
 
     tokio::task::spawn_blocking(move || {
-        let conn = state_clone.pool.get().map_err(|e| {
-            ApiError::InternalServerError(format!("db connection failed: {}", e))
-        })?;
+        let conn = state_clone
+            .pool
+            .get()
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
 
         conn.execute(
             "DELETE FROM user_profiles WHERE server_id = ?1 AND pseudonym_id = ?2",
@@ -259,9 +264,10 @@ pub async fn grant_username_handler(
 
     let state_clone = state.clone();
     tokio::task::spawn_blocking(move || {
-        let conn = state_clone.pool.get().map_err(|e| {
-            ApiError::InternalServerError(format!("db connection failed: {}", e))
-        })?;
+        let conn = state_clone
+            .pool
+            .get()
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
 
         // Verify granter has a username set
         let has_username: bool = conn
@@ -336,9 +342,10 @@ pub async fn list_grants_handler(
     let state_clone = state.clone();
 
     let grantees = tokio::task::spawn_blocking(move || {
-        let conn = state_clone.pool.get().map_err(|e| {
-            ApiError::InternalServerError(format!("db connection failed: {}", e))
-        })?;
+        let conn = state_clone
+            .pool
+            .get()
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
 
         let mut stmt = conn
             .prepare(
@@ -349,7 +356,9 @@ pub async fn list_grants_handler(
             .map_err(|e| ApiError::InternalServerError(format!("query prepare failed: {}", e)))?;
 
         let rows = stmt
-            .query_map(rusqlite::params![server_id, granter], |row| row.get::<_, String>(0))
+            .query_map(rusqlite::params![server_id, granter], |row| {
+                row.get::<_, String>(0)
+            })
             .map_err(|e| ApiError::InternalServerError(format!("query failed: {}", e)))?;
 
         let mut grantees = Vec::new();
@@ -384,9 +393,7 @@ pub async fn get_visible_usernames_handler(
         .clone();
 
     if !policy.usernames_enabled {
-        return Ok(
-            AxumJson(serde_json::json!({ "usernames": {} })).into_response()
-        );
+        return Ok(AxumJson(serde_json::json!({ "usernames": {} })).into_response());
     }
 
     let grantee = identity.pseudonym_id.clone();
@@ -507,13 +514,13 @@ mod tests {
     fn validate_username_counts_chars_not_bytes() {
         // 32 emoji characters (each 4 bytes UTF-8 = 128 bytes total)
         // Should pass since we count characters, not bytes.
-        let emoji_32: String = std::iter::repeat('🎉').take(32).collect();
+        let emoji_32: String = "🎉".repeat(32);
         assert_eq!(emoji_32.chars().count(), 32);
         assert!(emoji_32.len() > 32); // would fail under byte-based check
         assert!(validate_username(&emoji_32).is_ok());
 
         // 33 emoji characters should be rejected
-        let emoji_33: String = std::iter::repeat('🎉').take(33).collect();
+        let emoji_33: String = "🎉".repeat(33);
         assert!(validate_username(&emoji_33).is_err());
 
         // Mixed ASCII + multi-byte: 30 ASCII + 2 emoji = 32 chars, should pass
@@ -534,7 +541,10 @@ mod tests {
         let e2 = encrypt_username(&key, pseudo, username);
 
         // Same plaintext, same key, same pseudonym → different ciphertexts
-        assert_ne!(e1, e2, "AEAD encryption must produce different ciphertexts due to random nonce");
+        assert_ne!(
+            e1, e2,
+            "AEAD encryption must produce different ciphertexts due to random nonce"
+        );
 
         // Both must decrypt to the same plaintext
         assert_eq!(decrypt_username(&key, pseudo, &e1).unwrap(), username);

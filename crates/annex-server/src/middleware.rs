@@ -188,10 +188,8 @@ impl RateLimiter {
 
         // Sliding window estimate: weight the previous window's count by the
         // fraction of the window that has NOT yet elapsed.
-        let elapsed_frac = now
-            .duration_since(ws.window_start)
-            .as_secs_f64()
-            / RATE_LIMIT_WINDOW.as_secs_f64();
+        let elapsed_frac =
+            now.duration_since(ws.window_start).as_secs_f64() / RATE_LIMIT_WINDOW.as_secs_f64();
         let prev_weight = 1.0 - elapsed_frac.min(1.0);
         let effective = (ws.prev_count as f64 * prev_weight) + ws.curr_count as f64;
 
@@ -242,7 +240,7 @@ pub async fn security_headers_middleware(req: Request<Body>, next: Next) -> Resp
              img-src 'self' data: blob:; \
              style-src 'self' 'unsafe-inline'; \
              frame-ancestors 'none'; \
-             object-src 'none'"
+             object-src 'none'",
         ),
     );
 
@@ -289,9 +287,7 @@ pub async fn rate_limit_middleware(req: Request<Body>, next: Next) -> Result<Res
                 .map(|ConnectInfo(addr)| {
                     let ip = addr.ip();
                     match ip {
-                        IpAddr::V4(v4) => {
-                            v4.is_loopback() || v4.is_private() || v4.is_link_local()
-                        }
+                        IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
                         IpAddr::V6(v6) => {
                             v6.is_loopback()
                                 || (v6.segments()[0] & 0xfe00) == 0xfc00
@@ -360,10 +356,7 @@ pub async fn rate_limit_middleware(req: Request<Body>, next: Next) -> Result<Res
 
                     if !is_internal && looks_plausible {
                         let detected = format!("{proto}://{host}");
-                        let mut url = state
-                            .public_url
-                            .write()
-                            .unwrap_or_else(|p| p.into_inner());
+                        let mut url = state.public_url.write().unwrap_or_else(|p| p.into_inner());
                         if url.is_empty() {
                             tracing::info!(
                                 public_url = %detected,
@@ -389,9 +382,15 @@ pub async fn rate_limit_middleware(req: Request<Body>, next: Next) -> Result<Res
         };
         let path = req.uri().path();
         if path == "/api/registry/register" {
-            (RateLimitCategory::Registration, policy.rate_limit.registration_limit)
+            (
+                RateLimitCategory::Registration,
+                policy.rate_limit.registration_limit,
+            )
         } else if path == "/api/zk/verify-membership" {
-            (RateLimitCategory::Verification, policy.rate_limit.verification_limit)
+            (
+                RateLimitCategory::Verification,
+                policy.rate_limit.verification_limit,
+            )
         } else {
             (RateLimitCategory::Default, policy.rate_limit.default_limit)
         }
@@ -481,8 +480,7 @@ pub fn verify_zk_membership_header(
     }
 
     // Parse the proof
-    let proof_json =
-        serde_json::to_string(&payload.proof).map_err(|_| StatusCode::FORBIDDEN)?;
+    let proof_json = serde_json::to_string(&payload.proof).map_err(|_| StatusCode::FORBIDDEN)?;
     let proof = parse_proof(&proof_json).map_err(|_| StatusCode::FORBIDDEN)?;
 
     // Parse public inputs: [merkle_root, commitment]
@@ -492,8 +490,8 @@ pub fn verify_zk_membership_header(
     let public_inputs = vec![root_fr, commitment_fr];
 
     // Verify the proof
-    let valid =
-        verify_proof(&state.membership_vkey, &proof, &public_inputs).map_err(|_| StatusCode::FORBIDDEN)?;
+    let valid = verify_proof(&state.membership_vkey, &proof, &public_inputs)
+        .map_err(|_| StatusCode::FORBIDDEN)?;
 
     if !valid {
         return Err(StatusCode::FORBIDDEN);

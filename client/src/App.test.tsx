@@ -42,15 +42,24 @@ vi.mock('@/lib/servers', () => ({
   randomAccentColor: vi.fn(() => '#e63946'),
 }));
 
-vi.mock('@/lib/zk', () => ({
-  initPoseidon: vi.fn(async () => {}),
-  generateSecretKey: vi.fn(() => BigInt(42)),
-  generateNodeId: vi.fn(() => 1),
-  computeCommitment: vi.fn(async () => '0xabc'),
-  generateMembershipProof: vi.fn(async () => ({ proof: {}, publicSignals: [] })),
-  cancelMembershipProofGeneration: vi.fn(async () => {}),
-  isProofGenerationInFlight: vi.fn(() => false),
-}));
+vi.mock('@/lib/zk', () => {
+  class ZkProofAssetsError extends Error {
+    constructor(message: string) {
+      super(message);
+      this.name = 'ZkProofAssetsError';
+    }
+  }
+  return {
+    initPoseidon: vi.fn(async () => {}),
+    generateSecretKey: vi.fn(() => BigInt(42)),
+    generateNodeId: vi.fn(() => 1),
+    computeCommitment: vi.fn(async () => '0xabc'),
+    generateMembershipProof: vi.fn(async () => ({ proof: {}, publicSignals: [] })),
+    cancelMembershipProofGeneration: vi.fn(async () => {}),
+    isProofGenerationInFlight: vi.fn(() => false),
+    ZkProofAssetsError,
+  };
+});
 
 // ── Mock all child components to isolate App routing logic ──
 
@@ -142,6 +151,10 @@ vi.mock('@/lib/tauri', () => ({
   startTunnel: vi.fn(async () => 'https://tunnel.example.com'),
   stopTunnel: vi.fn(async () => {}),
   getTunnelUrl: vi.fn(async () => null),
+  getLiveKitConfig: vi.fn(async () => ({ configured: false, url: '', api_key: '', has_api_secret: false, token_ttl_seconds: 3600 })),
+  startLocalLiveKit: vi.fn(async () => ({ url: 'ws://127.0.0.1:7880' })),
+  exportIdentityJson: vi.fn(async () => null),
+  getPlatformMediaStatus: vi.fn(async () => ({ screen_share_available: true, camera_mic_available: true, warnings: [], display_server: 'test' })),
 }));
 
 // ── Helpers ──

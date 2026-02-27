@@ -48,7 +48,9 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool) {
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,
         )),
-        public_url: std::sync::Arc::new(std::sync::RwLock::new("http://localhost:3000".to_string())),
+        public_url: std::sync::Arc::new(std::sync::RwLock::new(
+            "http://localhost:3000".to_string(),
+        )),
         policy: Arc::new(RwLock::new(ServerPolicy::default())),
         rate_limiter: RateLimiter::new(),
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
@@ -235,8 +237,9 @@ async fn test_get_channel() {
 
     {
         let conn = pool.get().unwrap();
+        // Create user with can_moderate so they can view channels.
         conn.execute(
-            "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active) VALUES (1, 'user-1', 'HUMAN', 1)",
+            "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, can_moderate, active) VALUES (1, 'user-1', 'HUMAN', 1, 1)",
             [],
         )
         .unwrap();
@@ -254,6 +257,9 @@ async fn test_get_channel() {
             federation_scope: FederationScope::Local,
         };
         annex_channels::create_channel(&conn, &params).unwrap();
+
+        // Join the channel so the GET endpoint allows access.
+        annex_channels::add_member(&conn, 1, "chan-get", "user-1").unwrap();
     }
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 12345));

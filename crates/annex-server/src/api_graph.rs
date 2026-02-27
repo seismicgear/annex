@@ -89,7 +89,9 @@ pub async fn get_degrees_handler(
 /// the viewer pseudonym to access profile data not visible to the caller.
 pub async fn get_profile_handler(
     Extension(state): Extension<Arc<AppState>>,
-    Extension(crate::middleware::IdentityContext(identity)): Extension<crate::middleware::IdentityContext>,
+    Extension(crate::middleware::IdentityContext(identity)): Extension<
+        crate::middleware::IdentityContext,
+    >,
     Path(target_pseudonym): Path<String>,
 ) -> Result<Json<GraphProfile>, GraphApiError> {
     let viewer_pseudonym = identity.pseudonym_id;

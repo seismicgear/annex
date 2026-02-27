@@ -42,7 +42,11 @@ async fn test_rate_limiter_concurrent_same_key() {
     let total_allowed = allowed_count.load(Ordering::Relaxed);
     let total_denied = denied_count.load(Ordering::Relaxed);
 
-    assert_eq!(total_allowed + total_denied, 200, "all requests should be counted");
+    assert_eq!(
+        total_allowed + total_denied,
+        200,
+        "all requests should be counted"
+    );
     // Due to the sliding window estimate, the exact cutoff point varies based on
     // timing. We verify that *some* requests were denied (we sent 200 with limit 100).
     assert!(
@@ -88,8 +92,7 @@ async fn test_rate_limiter_concurrent_distinct_keys() {
     // All 250 requests (50 IPs * 5 each) should be within their respective limits
     let allowed = results.iter().filter(|&&r| r).count();
     assert_eq!(
-        allowed,
-        250,
+        allowed, 250,
         "each IP sends exactly `limit` requests, all should be allowed"
     );
 }
@@ -112,7 +115,9 @@ async fn test_rate_limiter_concurrent_high_volume_no_panic() {
     }
 
     for handle in handles {
-        handle.await.expect("rate limiter should not panic under high concurrency");
+        handle
+            .await
+            .expect("rate limiter should not panic under high concurrency");
     }
 }
 
@@ -129,7 +134,8 @@ async fn test_rate_limiter_pseudonym_key_concurrent() {
         let limiter = limiter.clone();
         let allowed = allowed.clone();
         handles.push(tokio::task::spawn_blocking(move || {
-            let key = RateLimitKey::Pseudonym("agent_alpha".to_string(), RateLimitCategory::Default);
+            let key =
+                RateLimitKey::Pseudonym("agent_alpha".to_string(), RateLimitCategory::Default);
             if limiter.check(key, limit) {
                 allowed.fetch_add(1, Ordering::Relaxed);
             }
@@ -172,7 +178,10 @@ async fn test_rate_limiter_eviction_under_concurrent_load() {
     }
 
     // Verify a recently-used key still works
-    let key = RateLimitKey::Ip("0.0.39.115".parse::<IpAddr>().unwrap(), RateLimitCategory::Default); // IP from index 10099
+    let key = RateLimitKey::Ip(
+        "0.0.39.115".parse::<IpAddr>().unwrap(),
+        RateLimitCategory::Default,
+    ); // IP from index 10099
     assert!(
         limiter.check(key, 100),
         "recently-used key should still be tracked after eviction"

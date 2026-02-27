@@ -12,6 +12,10 @@ vi.mock('@/lib/tauri', () => ({
   clearStartupMode: vi.fn(async () => {}),
   startEmbeddedServer: vi.fn(async () => 'http://127.0.0.1:9999'),
   startTunnel: vi.fn(async () => 'https://tunnel.example.com'),
+  getLiveKitConfig: vi.fn(async () => ({ configured: false, url: '', api_key: '', has_api_secret: false, token_ttl_seconds: 3600 })),
+  startLocalLiveKit: vi.fn(async () => ({ url: 'ws://127.0.0.1:7880' })),
+  exportIdentityJson: vi.fn(async () => null),
+  getPlatformMediaStatus: vi.fn(async () => ({ screen_share_available: true, camera_mic_available: true, warnings: [], display_server: 'test' })),
 }));
 
 vi.mock('@/lib/api', () => ({

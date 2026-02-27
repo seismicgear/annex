@@ -21,6 +21,31 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
 
+      - name: Install Linux dependencies (WebKitGTK, PipeWire, GTK)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libgtk-3-dev \
+            libsoup-3.0-dev \
+            javascriptcoregtk-4.1-dev \
+            libpipewire-0.3-dev \
+            libxdg-desktop-portal-dev
+
+      - name: Verify WebKitGTK version (>= 2.40 required for WebRTC)
+        run: |
+          version=$(pkg-config --modversion webkitgtk-4.1)
+          echo "WebKitGTK version: $version"
+          major=$(echo "$version" | cut -d. -f1)
+          minor=$(echo "$version" | cut -d. -f2)
+          if [ "$major" -lt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -lt 40 ]; }; then
+            echo "::error::WebKitGTK $version is too old. WebRTC requires >= 2.40."
+            exit 1
+          fi
+
       - name: cargo fmt
         run: cargo fmt --all --check
 

@@ -253,10 +253,7 @@ pub fn update_channel(
 /// atomicity with other operations is required.
 pub fn delete_channel(conn: &Connection, channel_id: &str) -> Result<(), ChannelError> {
     // Delete child rows first to satisfy FK constraints.
-    conn.execute(
-        "DELETE FROM messages WHERE channel_id = ?1",
-        [channel_id],
-    )?;
+    conn.execute("DELETE FROM messages WHERE channel_id = ?1", [channel_id])?;
     conn.execute(
         "DELETE FROM channel_members WHERE channel_id = ?1",
         [channel_id],
@@ -578,7 +575,10 @@ pub fn list_messages(
     let mut stmt = conn.prepare(&sql)?;
 
     let rows = if let Some(before_ts) = before {
-        stmt.query_map(params![server_id, channel_id, before_ts], map_row_to_message)?
+        stmt.query_map(
+            params![server_id, channel_id, before_ts],
+            map_row_to_message,
+        )?
     } else {
         stmt.query_map(params![server_id, channel_id], map_row_to_message)?
     };
@@ -622,9 +622,8 @@ pub fn edit_message(
     }
 
     // Time window check
-    let created =
-        chrono::NaiveDateTime::parse_from_str(&msg.created_at, "%Y-%m-%d %H:%M:%S")
-            .map_err(|_| ChannelError::NotFound("invalid created_at timestamp".to_string()))?;
+    let created = chrono::NaiveDateTime::parse_from_str(&msg.created_at, "%Y-%m-%d %H:%M:%S")
+        .map_err(|_| ChannelError::NotFound("invalid created_at timestamp".to_string()))?;
     let now = chrono::Utc::now().naive_utc();
     if (now - created).num_seconds() > EDIT_WINDOW_SECONDS {
         return Err(ChannelError::NotFound(
@@ -675,9 +674,8 @@ pub fn delete_message(
     }
 
     // Time window check
-    let created =
-        chrono::NaiveDateTime::parse_from_str(&msg.created_at, "%Y-%m-%d %H:%M:%S")
-            .map_err(|_| ChannelError::NotFound("invalid created_at timestamp".to_string()))?;
+    let created = chrono::NaiveDateTime::parse_from_str(&msg.created_at, "%Y-%m-%d %H:%M:%S")
+        .map_err(|_| ChannelError::NotFound("invalid created_at timestamp".to_string()))?;
     let now = chrono::Utc::now().naive_utc();
     if (now - created).num_seconds() > EDIT_WINDOW_SECONDS {
         return Err(ChannelError::NotFound(
@@ -929,7 +927,8 @@ mod tests {
         assert_eq!(fetched.content, "Hello World");
 
         // List messages
-        let messages = list_messages(&conn, server_id, "chan-msg", None, None).expect("list messages failed");
+        let messages =
+            list_messages(&conn, server_id, "chan-msg", None, None).expect("list messages failed");
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].message_id, "msg-2"); // Reverse chronological
         assert_eq!(messages[1].message_id, "msg-1");
@@ -1355,7 +1354,9 @@ mod tests {
         let err = edit_message(&conn, &msg.message_id, "user-a", "Too late")
             .expect_err("edit after window should fail");
         match err {
-            ChannelError::NotFound(s) => assert!(s.contains("expired"), "expected 'expired' in: {}", s),
+            ChannelError::NotFound(s) => {
+                assert!(s.contains("expired"), "expected 'expired' in: {}", s)
+            }
             _ => panic!("expected NotFound, got {:?}", err),
         }
     }
@@ -1365,8 +1366,8 @@ mod tests {
         let conn = setup_db();
         let msg = setup_editable_message(&conn);
 
-        let deleted = delete_message(&conn, &msg.message_id, "user-a")
-            .expect("delete should succeed");
+        let deleted =
+            delete_message(&conn, &msg.message_id, "user-a").expect("delete should succeed");
         assert!(deleted.deleted_at.is_some());
         assert_eq!(deleted.content, "");
     }
@@ -1399,7 +1400,9 @@ mod tests {
         let err = delete_message(&conn, &msg.message_id, "user-a")
             .expect_err("delete after window should fail");
         match err {
-            ChannelError::NotFound(s) => assert!(s.contains("expired"), "expected 'expired' in: {}", s),
+            ChannelError::NotFound(s) => {
+                assert!(s.contains("expired"), "expected 'expired' in: {}", s)
+            }
             _ => panic!("expected NotFound, got {:?}", err),
         }
     }

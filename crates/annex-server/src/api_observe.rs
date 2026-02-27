@@ -128,8 +128,8 @@ pub async fn get_event_stream_handler(
     Extension(state): Extension<Arc<AppState>>,
     Query(params): Query<StreamQuery>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let domain_filter: Option<EventDomain> = params.domain.as_deref().and_then(|d| {
-        match d.parse() {
+    let domain_filter: Option<EventDomain> =
+        params.domain.as_deref().and_then(|d| match d.parse() {
             Ok(domain) => Some(domain),
             Err(_) => {
                 tracing::warn!(
@@ -139,8 +139,7 @@ pub async fn get_event_stream_handler(
                 );
                 None
             }
-        }
-    });
+        });
 
     let rx = state.observe_tx.subscribe();
     let stream = BroadcastStream::new(rx);
@@ -281,7 +280,15 @@ pub async fn get_server_summary_handler(
             )
             .map_err(|e| format!("failed to count agents: {}", e))?;
 
-        Ok::<_, String>((slug, label, members_map, total_active, channel_count, federation_peer_count, active_agent_count))
+        Ok::<_, String>((
+            slug,
+            label,
+            members_map,
+            total_active,
+            channel_count,
+            federation_peer_count,
+            active_agent_count,
+        ))
     })
     .await
     .map_err(|e| {
@@ -299,7 +306,15 @@ pub async fn get_server_summary_handler(
             .into_response()
     })?;
 
-    let (slug, label, members_map, total_active, channel_count, federation_peer_count, active_agent_count) = summary;
+    let (
+        slug,
+        label,
+        members_map,
+        total_active,
+        channel_count,
+        federation_peer_count,
+        active_agent_count,
+    ) = summary;
 
     Ok(Json(ServerSummaryResponse {
         slug,

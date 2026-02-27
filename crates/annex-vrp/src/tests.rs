@@ -434,7 +434,10 @@ fn test_anchor_snapshot_new_returns_ok_with_valid_system_clock() {
     // On any correctly configured system, new() should succeed and produce
     // a non-zero timestamp.
     let result = VrpAnchorSnapshot::new(&["p1".to_string()], &[]);
-    assert!(result.is_ok(), "VrpAnchorSnapshot::new() should succeed on a valid system");
+    assert!(
+        result.is_ok(),
+        "VrpAnchorSnapshot::new() should succeed on a valid system"
+    );
     let snapshot = result.unwrap();
     assert!(snapshot.timestamp > 0, "timestamp should be non-zero");
     assert!(!snapshot.principles_hash.is_empty());
