@@ -1,4 +1,5 @@
-use crate::{config::LiveKitConfig, error::VoiceError};
+use crate::config::{IceServer, LiveKitConfig};
+use crate::error::VoiceError;
 use livekit_api::access_token::{AccessToken, VideoGrants};
 use livekit_api::services::room::{CreateRoomOptions, RoomClient};
 use livekit_protocol::Room;
@@ -84,6 +85,11 @@ impl VoiceService {
             .remove_participant(room, identity)
             .await
             .map_err(|e| VoiceError::RoomService(e.to_string()))
+    }
+
+    /// Returns the configured ICE (STUN/TURN) servers for WebRTC NAT traversal.
+    pub fn ice_servers(&self) -> &[IceServer] {
+        &self.config.ice_servers
     }
 
     /// Returns the number of participants currently in a room.

@@ -79,9 +79,19 @@ pub struct CreateChannelRequest {
 }
 
 #[derive(Serialize)]
+pub struct IceServerResponse {
+    pub urls: Vec<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub username: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub credential: String,
+}
+
+#[derive(Serialize)]
 pub struct JoinVoiceResponse {
     pub token: String,
     pub url: String,
+    pub ice_servers: Vec<IceServerResponse>,
 }
 
 /// POST /api/channels
@@ -690,9 +700,21 @@ pub async fn join_voice_channel_handler(
             )
         })?;
 
+    let ice_servers: Vec<IceServerResponse> = state
+        .voice_service
+        .ice_servers()
+        .iter()
+        .map(|s| IceServerResponse {
+            urls: s.urls.clone(),
+            username: s.username.clone(),
+            credential: s.credential.clone(),
+        })
+        .collect();
+
     Ok(Json(JoinVoiceResponse {
         token,
         url: state.voice_service.get_public_url().to_string(),
+        ice_servers,
     }))
 }
 

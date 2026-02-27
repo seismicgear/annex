@@ -169,6 +169,16 @@ async fn test_join_voice_channel_success() {
         body.get("url").unwrap().as_str().unwrap(),
         "http://localhost:7880"
     );
+
+    // ICE servers should be present in the join response.
+    let ice_servers = body.get("ice_servers").expect("response must include ice_servers");
+    assert!(ice_servers.is_array(), "ice_servers must be an array");
+    let ice_arr = ice_servers.as_array().unwrap();
+    assert!(!ice_arr.is_empty(), "default config should include STUN servers");
+    assert!(
+        ice_arr[0].get("urls").is_some(),
+        "each ICE server must have urls"
+    );
 }
 
 #[tokio::test]
@@ -323,7 +333,7 @@ async fn setup_app_voice_disabled() -> axum::Router {
     let tree = MerkleTree::new(20).unwrap();
 
     // LiveKit config with empty URL — voice is disabled
-    let livekit_config = annex_voice::LiveKitConfig::default();
+    let livekit_config = annex_voice::LiveKitConfig::new("", "", "");
     let voice_service = annex_voice::VoiceService::new(livekit_config);
 
     let state = AppState {
@@ -502,7 +512,8 @@ async fn test_voice_join_not_configured_returns_structured_error() {
     }
 
     let tree = MerkleTree::new(20).unwrap();
-    let livekit_config = annex_voice::LiveKitConfig::default();
+    // Voice disabled: empty URL prevents voice join.
+    let livekit_config = annex_voice::LiveKitConfig::new("", "", "");
     let voice_service = annex_voice::VoiceService::new(livekit_config);
 
     let state = AppState {

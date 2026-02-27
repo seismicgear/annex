@@ -15,7 +15,7 @@
  * tab and channel switches (like Discord).
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   LiveKitRoom,
   RoomAudioRenderer,
@@ -294,6 +294,7 @@ export function VoicePanel() {
   const {
     voiceToken,
     livekitUrl,
+    iceServers,
     connectedChannelId,
     joining,
     callActive,
@@ -357,12 +358,21 @@ export function VoicePanel() {
     };
   }, [lastJoinError]);
 
+  // Build RTC configuration with server-provided ICE servers for NAT traversal.
+  const roomOptions = useMemo(() => {
+    if (!iceServers || iceServers.length === 0) return undefined;
+    return {
+      rtcConfig: {
+        iceServers: iceServers.map((s) => ({
+          urls: s.urls,
+          username: s.username || undefined,
+          credential: s.credential || undefined,
+        })),
+      },
+    };
+  }, [iceServers]);
+
   // If connected to a call, always show the LiveKitRoom (even on non-voice channels).
-  // AUDIT-TAURI: LiveKitRoom with audio={true} calls getUserMedia on connect.
-  // On Windows WebView2, getUserMedia may silently fail if the webview lacks
-  // a PermissionRequested handler (returns null stream, no error). On Linux
-  // WebKitGTK, PipeWire is required for screen sharing on Wayland. Test all
-  // three platforms (Windows, macOS, Linux) to verify mic/camera/screen work.
   if (voiceToken && livekitUrl && connectedChannelId) {
     // Find the channel name for the connected call
     const connectedChannel = channels.find((c) => c.channel_id === connectedChannelId);
@@ -379,6 +389,7 @@ export function VoicePanel() {
           connect={true}
           audio={true}
           video={false}
+          options={roomOptions}
         >
           <RoomContent onLeave={handleLeave} />
         </LiveKitRoom>

@@ -7,7 +7,7 @@ async fn test_tts_service_instantiation() {
     let voices_dir = PathBuf::from("assets/voices");
     let piper_path = PathBuf::from("piper"); // Assume in PATH or mock
 
-    let service = TtsService::new(voices_dir, piper_path);
+    let service = TtsService::new(voices_dir, piper_path, "bark");
 
     // Add a profile
     let profile = VoiceProfile {
@@ -29,7 +29,7 @@ async fn test_tts_service_instantiation() {
 
 #[tokio::test]
 async fn test_tts_missing_profile() {
-    let service = TtsService::new("assets/voices", "piper");
+    let service = TtsService::new("assets/voices", "piper", "bark");
 
     let result = service.synthesize("Hello", "non-existent").await;
     match result {
@@ -44,7 +44,7 @@ async fn test_tts_missing_model_file() {
     let temp_dir = tempfile::tempdir().unwrap();
     let voices_dir = temp_dir.path().to_path_buf();
 
-    let service = TtsService::new(&voices_dir, "piper");
+    let service = TtsService::new(&voices_dir, "piper", "bark");
 
     let profile = VoiceProfile {
         id: "missing-model".to_string(),
@@ -75,7 +75,7 @@ async fn test_tts_invalid_speed() {
     let model_path = voices_dir.join("test.onnx");
     std::fs::File::create(&model_path).unwrap();
 
-    let service = TtsService::new(&voices_dir, "piper");
+    let service = TtsService::new(&voices_dir, "piper", "bark");
 
     // Zero speed is below the minimum (0.1)
     let profile_zero = VoiceProfile {

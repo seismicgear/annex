@@ -524,11 +524,23 @@ export async function getRemoteFederationPeers(
 
 // ── Voice ──
 
+export interface IceServerConfig {
+  urls: string[];
+  username?: string;
+  credential?: string;
+}
+
+export interface JoinVoiceResponse {
+  token: string;
+  url: string;
+  ice_servers: IceServerConfig[];
+}
+
 export async function joinVoice(
   pseudonymId: string,
   channelId: string,
-): Promise<{ token: string; url: string }> {
-  return request<{ token: string; url: string }>(
+): Promise<JoinVoiceResponse> {
+  return request<JoinVoiceResponse>(
     `/api/channels/${channelId}/voice/join`,
     {
       method: 'POST',

@@ -6,6 +6,7 @@ import { VoicePanel } from './VoicePanel';
 type VoiceStoreSnapshot = {
   voiceToken: string | null;
   livekitUrl: string | null;
+  iceServers: Array<{ urls: string[]; username?: string; credential?: string }>;
   connectedChannelId: string | null;
   joining: boolean;
   callActive: boolean;
@@ -79,6 +80,7 @@ describe('VoicePanel', () => {
     voiceState = {
       voiceToken: null,
       livekitUrl: null,
+      iceServers: [],
       connectedChannelId: null,
       joining: false,
       callActive: false,
@@ -102,6 +104,39 @@ describe('VoicePanel', () => {
     };
 
     rerender(<VoicePanel />);
+
+    expect(screen.getByText(/Voice Connected/)).toBeInTheDocument();
+    expect(screen.getByTestId('livekit-room')).toBeInTheDocument();
+  });
+
+  it('renders connected state with ICE servers configured', () => {
+    voiceState = {
+      ...voiceState,
+      voiceToken: 'token-ice',
+      livekitUrl: 'wss://livekit.example',
+      iceServers: [
+        { urls: ['stun:stun.l.google.com:19302'] },
+        { urls: ['turn:turn.example.com:3478'], username: 'user', credential: 'pass' },
+      ],
+      connectedChannelId: 'chan-1',
+    };
+
+    render(<VoicePanel />);
+
+    expect(screen.getByText(/Voice Connected/)).toBeInTheDocument();
+    expect(screen.getByTestId('livekit-room')).toBeInTheDocument();
+  });
+
+  it('renders connected state with empty ICE servers (defaults)', () => {
+    voiceState = {
+      ...voiceState,
+      voiceToken: 'token-no-ice',
+      livekitUrl: 'wss://livekit.example',
+      iceServers: [],
+      connectedChannelId: 'chan-1',
+    };
+
+    render(<VoicePanel />);
 
     expect(screen.getByText(/Voice Connected/)).toBeInTheDocument();
     expect(screen.getByTestId('livekit-room')).toBeInTheDocument();
