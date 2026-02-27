@@ -131,7 +131,11 @@ pub fn get_agreement(
 }
 
 /// Revokes a federation agreement by setting active=0.
-pub fn revoke_agreement(conn: &Connection, agreement_id: i64, local_server_id: i64) -> Result<bool> {
+pub fn revoke_agreement(
+    conn: &Connection,
+    agreement_id: i64,
+    local_server_id: i64,
+) -> Result<bool> {
     let rows = conn.execute(
         "UPDATE federation_agreements SET active = 0, updated_at = datetime('now')
          WHERE id = ?1 AND local_server_id = ?2 AND active = 1",
@@ -141,12 +145,15 @@ pub fn revoke_agreement(conn: &Connection, agreement_id: i64, local_server_id: i
 }
 
 /// Lists all active federation agreements for a server.
-pub fn list_active_agreements(conn: &Connection, local_server_id: i64) -> Result<Vec<(i64, i64, String, String)>> {
+pub fn list_active_agreements(
+    conn: &Connection,
+    local_server_id: i64,
+) -> Result<Vec<(i64, i64, String, String)>> {
     let mut stmt = conn.prepare(
         "SELECT fa.id, fa.remote_instance_id, fa.alignment_status, fa.transfer_scope
          FROM federation_agreements fa
          WHERE fa.local_server_id = ?1 AND fa.active = 1
-         ORDER BY fa.created_at DESC"
+         ORDER BY fa.created_at DESC",
     )?;
     let rows = stmt.query_map(params![local_server_id], |row| {
         Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
@@ -155,7 +162,11 @@ pub fn list_active_agreements(conn: &Connection, local_server_id: i64) -> Result
 }
 
 /// Expires agreements older than the given number of days.
-pub fn expire_stale_agreements(conn: &Connection, local_server_id: i64, max_age_days: u32) -> Result<usize> {
+pub fn expire_stale_agreements(
+    conn: &Connection,
+    local_server_id: i64,
+    max_age_days: u32,
+) -> Result<usize> {
     let rows = conn.execute(
         "UPDATE federation_agreements SET active = 0, updated_at = datetime('now')
          WHERE local_server_id = ?1 AND active = 1

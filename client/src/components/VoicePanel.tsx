@@ -30,6 +30,7 @@ import { useIdentityStore } from '@/stores/identity';
 import { useChannelsStore } from '@/stores/channels';
 import { useVoiceStore } from '@/stores/voice';
 import * as api from '@/lib/api';
+import { isTauri, getPlatformMediaStatus, type PlatformMediaStatus } from '@/lib/tauri';
 
 /** Local media status bar shown above the controls. */
 function LocalMediaStatus() {
@@ -64,6 +65,22 @@ function MediaControls({ onLeave }: { onLeave: () => void }) {
   const camEnabled = lp.isCameraEnabled;
   const screenEnabled = lp.isScreenShareEnabled;
 
+  // Listen for device hot-plug events during an active call.
+  // Shows a transient notification so the user knows a device was added/removed.
+  const [deviceNotice, setDeviceNotice] = useState<string | null>(null);
+  useEffect(() => {
+    if (!navigator.mediaDevices?.addEventListener) return;
+    const handler = () => {
+      setDeviceNotice('Audio/video device changed. Open Audio Settings to select.');
+      const timer = setTimeout(() => setDeviceNotice(null), 5000);
+      return () => clearTimeout(timer);
+    };
+    navigator.mediaDevices.addEventListener('devicechange', handler);
+    return () => {
+      navigator.mediaDevices.removeEventListener('devicechange', handler);
+    };
+  }, []);
+
   const toggleMic = useCallback(async () => {
     await lp.setMicrophoneEnabled(!micEnabled);
   }, [lp, micEnabled]);
@@ -78,6 +95,9 @@ function MediaControls({ onLeave }: { onLeave: () => void }) {
 
   return (
     <div className="media-controls">
+      {deviceNotice && (
+        <div className="device-notice" role="status">{deviceNotice}</div>
+      )}
       <button
         className={`media-control-btn ${micEnabled ? 'active' : 'muted'}`}
         onClick={toggleMic}
@@ -285,6 +305,18 @@ function RoomContent({ onLeave }: { onLeave: () => void }) {
   );
 }
 
+/** Platform media warning banner (Linux PipeWire / portal issues). */
+function PlatformMediaWarning({ mediaStatus }: { mediaStatus: PlatformMediaStatus | null }) {
+  if (!mediaStatus || mediaStatus.warnings.length === 0) return null;
+  return (
+    <div className="voice-error" role="status">
+      {mediaStatus.warnings.map((w, i) => (
+        <p key={i} className="voice-setup-hint">{w}</p>
+      ))}
+    </div>
+  );
+}
+
 export function VoicePanel() {
   const identity = useIdentityStore((s) => s.identity);
   const permissions = useIdentityStore((s) => s.permissions);
@@ -303,6 +335,17 @@ export function VoicePanel() {
     leaveCall,
     checkCallActive,
   } = useVoiceStore();
+
+  // Query platform media capabilities once (PipeWire, xdg-desktop-portal).
+  const [mediaStatus, setMediaStatus] = useState<PlatformMediaStatus | null>(null);
+  useEffect(() => {
+    if (!isTauri()) return;
+    let cancelled = false;
+    getPlatformMediaStatus()
+      .then((status) => { if (!cancelled) setMediaStatus(status); })
+      .catch(() => { /* non-fatal: desktop-only command */ });
+    return () => { cancelled = true; };
+  }, []);
 
   const activeChannel = channels.find((c) => c.channel_id === activeChannelId);
   const isVoiceCapable =
@@ -412,6 +455,7 @@ export function VoicePanel() {
 
   return (
     <div className="voice-panel disconnected">
+      <PlatformMediaWarning mediaStatus={mediaStatus} />
       <button
         onClick={handleJoin}
         disabled={joining || !canJoinVoice}

@@ -459,18 +459,17 @@ pub async fn subscribe_handler(
                     ApiError::InternalServerError(format!("failed to read subscription: {}", e))
                 })?;
 
-            let parsed_filters: Vec<String> =
-                serde_json::from_str(&filters_back).map_err(|e| {
-                    tracing::error!(
-                        subscriber = %pseudonym,
-                        raw_json = %filters_back,
-                        "corrupted domain_filters_json in subscription read-back: {}",
-                        e
-                    );
-                    ApiError::InternalServerError(
-                        "corrupted domain filter data in subscription".to_string(),
-                    )
-                })?;
+            let parsed_filters: Vec<String> = serde_json::from_str(&filters_back).map_err(|e| {
+                tracing::error!(
+                    subscriber = %pseudonym,
+                    raw_json = %filters_back,
+                    "corrupted domain_filters_json in subscription read-back: {}",
+                    e
+                );
+                ApiError::InternalServerError(
+                    "corrupted domain filter data in subscription".to_string(),
+                )
+            })?;
 
             Ok(SubscriptionInfo {
                 subscriber_pseudonym: pseudonym,
@@ -698,7 +697,10 @@ pub async fn relay_rtx_bundles(state: Arc<AppState>, bundle: ReflectionSummaryBu
     let client = match crate::api_federation::federation_http_client() {
         Ok(c) => c,
         Err(e) => {
-            tracing::error!("failed to build federation HTTP client for RTX relay: {}", e);
+            tracing::error!(
+                "failed to build federation HTTP client for RTX relay: {}",
+                e
+            );
             return;
         }
     };

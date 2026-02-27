@@ -63,7 +63,9 @@ impl AgentVoiceClient {
 
         // Validate connectivity with a lightweight HTTP health check.
         // This confirms the LiveKit server URL is reachable before proceeding.
-        let http_url = url.replace("ws://", "http://").replace("wss://", "https://");
+        let http_url = url
+            .replace("ws://", "http://")
+            .replace("wss://", "https://");
         let health_client = reqwest::Client::builder()
             .connect_timeout(CONNECT_VALIDATION_TIMEOUT)
             .timeout(CONNECT_VALIDATION_TIMEOUT)

@@ -79,9 +79,7 @@ impl MerkleTree {
     /// Returns [`IdentityError::PoseidonError`] if hashing fails.
     pub fn preview_insert(&self, leaf: Fr) -> Result<InsertionPreview, IdentityError> {
         // Use checked shift to avoid panic on depth >= 64 (or >= 32 on 32-bit).
-        let capacity = 1usize
-            .checked_shl(self.depth as u32)
-            .unwrap_or(usize::MAX);
+        let capacity = 1usize.checked_shl(self.depth as u32).unwrap_or(usize::MAX);
         if self.next_index >= capacity {
             return Err(IdentityError::TreeFull);
         }
@@ -390,10 +388,19 @@ mod tests {
         let root_before = tree.root();
         let next_idx_before = tree.next_index;
 
-        let _preview = tree.preview_insert(Fr::from(42)).expect("preview should succeed");
+        let _preview = tree
+            .preview_insert(Fr::from(42))
+            .expect("preview should succeed");
 
-        assert_eq!(tree.root(), root_before, "preview_insert must not change root");
-        assert_eq!(tree.next_index, next_idx_before, "preview_insert must not change next_index");
+        assert_eq!(
+            tree.root(),
+            root_before,
+            "preview_insert must not change root"
+        );
+        assert_eq!(
+            tree.next_index, next_idx_before,
+            "preview_insert must not change next_index"
+        );
     }
 
     #[test]
@@ -407,8 +414,15 @@ mod tests {
         assert!(result.is_err(), "should fail due to missing table");
 
         // Tree state must remain unchanged
-        assert_eq!(tree.root(), root_before, "tree must not be modified on DB failure");
-        assert_eq!(tree.next_index, 0, "next_index must not advance on DB failure");
+        assert_eq!(
+            tree.root(),
+            root_before,
+            "tree must not be modified on DB failure"
+        );
+        assert_eq!(
+            tree.next_index, 0,
+            "next_index must not advance on DB failure"
+        );
     }
 
     #[test]
@@ -417,6 +431,10 @@ mod tests {
         // We can't actually create a tree with depth 64 (memory), but we can
         // test the capacity calculation logic directly.
         let capacity = 1usize.checked_shl(64).unwrap_or(usize::MAX);
-        assert_eq!(capacity, usize::MAX, "depth 64 should saturate to usize::MAX");
+        assert_eq!(
+            capacity,
+            usize::MAX,
+            "depth 64 should saturate to usize::MAX"
+        );
     }
 }

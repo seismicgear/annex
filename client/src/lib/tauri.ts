@@ -71,3 +71,17 @@ export async function getLiveKitConfig(): Promise<LiveKitSettings> {
 export async function startLocalLiveKit(): Promise<{ url: string }> {
   return invoke<{ url: string }>('start_local_livekit');
 }
+
+// ── Platform media status ──
+
+export interface PlatformMediaStatus {
+  screen_share_available: boolean;
+  camera_mic_available: boolean;
+  warnings: string[];
+  display_server: string;
+}
+
+/** Query platform media capabilities (PipeWire, screen sharing, etc.). */
+export async function getPlatformMediaStatus(): Promise<PlatformMediaStatus> {
+  return invoke<PlatformMediaStatus>('get_platform_media_status');
+}

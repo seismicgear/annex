@@ -164,9 +164,9 @@ export function StartupModeSelector({ onReady }: Props) {
     [onReady],
   );
 
-  // On mount, load saved preference. For returning Tauri users with saved
-  // prefs, auto-resume the previous mode (skip the selector entirely).
-  // Web/Docker mode only pre-fills form state for manual selection.
+  // On mount, load saved preference. For returning Tauri host users,
+  // auto-resume (skip the selector entirely). For Tauri client and
+  // web/Docker modes, pre-fill form state for manual selection.
   useEffect(() => {
     let cancelled = false;
 
@@ -186,7 +186,11 @@ export function StartupModeSelector({ onReady }: Props) {
             return;
           }
           if (prefs.startup_mode.mode === 'client' && prefs.startup_mode.server_url) {
-            void applyRemote(prefs.startup_mode.server_url, true);
+            // Pre-fill the URL as a suggestion — let the user decide to connect.
+            // Auto-resuming a remote server that may be unreachable gives poor UX
+            // (brief "Connecting..." flash then an error with no pre-filled URL).
+            setRemoteUrl(prefs.startup_mode.server_url);
+            setPhase('choose');
             return;
           }
           setPhase('choose');

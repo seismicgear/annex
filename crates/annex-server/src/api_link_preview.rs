@@ -170,8 +170,7 @@ fn parse_og_metadata(html: &str) -> PreviewResponse {
     // Helper: select content of <meta property="og:XXX"> or <meta name="og:XXX">
     let og = |prop: &str| -> Option<String> {
         // Try property attribute first (standard OG)
-        let sel_prop =
-            Selector::parse(&format!(r#"meta[property="og:{}"]"#, prop)).ok()?;
+        let sel_prop = Selector::parse(&format!(r#"meta[property="og:{}"]"#, prop)).ok()?;
         if let Some(el) = document.select(&sel_prop).next() {
             if let Some(content) = el.value().attr("content") {
                 let trimmed = content.trim();
@@ -182,8 +181,7 @@ fn parse_og_metadata(html: &str) -> PreviewResponse {
         }
 
         // Fallback: name attribute
-        let sel_name =
-            Selector::parse(&format!(r#"meta[name="og:{}"]"#, prop)).ok()?;
+        let sel_name = Selector::parse(&format!(r#"meta[name="og:{}"]"#, prop)).ok()?;
         if let Some(el) = document.select(&sel_name).next() {
             if let Some(content) = el.value().attr("content") {
                 let trimmed = content.trim();
@@ -218,34 +216,37 @@ fn parse_og_metadata(html: &str) -> PreviewResponse {
     });
 
     // Image: og:image → twitter:image → <link rel="image_src"> → <meta itemprop="image">
-    let image_url = og("image").or_else(|| {
-        // Twitter card image
-        let sel = Selector::parse(r#"meta[name="twitter:image"]"#).ok()?;
-        document
-            .select(&sel)
-            .next()
-            .and_then(|el| el.value().attr("content"))
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-    }).or_else(|| {
-        // <link rel="image_src">
-        let sel = Selector::parse(r#"link[rel="image_src"]"#).ok()?;
-        document
-            .select(&sel)
-            .next()
-            .and_then(|el| el.value().attr("href"))
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-    }).or_else(|| {
-        // Schema.org itemprop="image"
-        let sel = Selector::parse(r#"meta[itemprop="image"]"#).ok()?;
-        document
-            .select(&sel)
-            .next()
-            .and_then(|el| el.value().attr("content"))
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-    });
+    let image_url = og("image")
+        .or_else(|| {
+            // Twitter card image
+            let sel = Selector::parse(r#"meta[name="twitter:image"]"#).ok()?;
+            document
+                .select(&sel)
+                .next()
+                .and_then(|el| el.value().attr("content"))
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+        .or_else(|| {
+            // <link rel="image_src">
+            let sel = Selector::parse(r#"link[rel="image_src"]"#).ok()?;
+            document
+                .select(&sel)
+                .next()
+                .and_then(|el| el.value().attr("href"))
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+        .or_else(|| {
+            // Schema.org itemprop="image"
+            let sel = Selector::parse(r#"meta[itemprop="image"]"#).ok()?;
+            document
+                .select(&sel)
+                .next()
+                .and_then(|el| el.value().attr("content"))
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        });
     let site_name = og("site_name");
 
     PreviewResponse {
@@ -379,9 +380,7 @@ async fn fetch_with_redirect_validation(
                 .ok_or(StatusCode::BAD_GATEWAY)?;
 
             // Resolve relative redirect URLs against the current URL
-            let next_url = parsed
-                .join(location)
-                .map_err(|_| StatusCode::BAD_GATEWAY)?;
+            let next_url = parsed.join(location).map_err(|_| StatusCode::BAD_GATEWAY)?;
 
             // Only allow http/https schemes
             match next_url.scheme() {
@@ -402,7 +401,10 @@ async fn fetch_with_redirect_validation(
 /// Reads a response body in chunks up to `max_bytes`, rejecting early if the
 /// limit is exceeded. This prevents over-allocating memory for oversized
 /// upstream responses (DoS mitigation).
-async fn read_body_capped(mut resp: reqwest::Response, max_bytes: usize) -> Result<Vec<u8>, StatusCode> {
+async fn read_body_capped(
+    mut resp: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>, StatusCode> {
     // Fast-path: check Content-Length header if present
     if let Some(cl) = resp.content_length() {
         if cl as usize > max_bytes {
@@ -446,7 +448,11 @@ pub async fn link_preview_handler(
     // Check cache before expensive DNS resolution — cached results are safe
     // because they were already validated on the original fetch.
     {
-        let cache = state.preview_cache.previews.lock().unwrap_or_else(|e| e.into_inner());
+        let cache = state
+            .preview_cache
+            .previews
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if let Some(entry) = cache.get(&url) {
             if entry.fetched_at.elapsed() < CACHE_TTL {
                 return Ok(Json(entry.data.clone()));
@@ -456,12 +462,9 @@ pub async fn link_preview_handler(
 
     // Fetch with DNS validation at every redirect hop, preventing SSRF
     // via DNS rebinding on intermediate redirects.
-    let resp = fetch_with_redirect_validation(
-        &url,
-        "text/html,application/xhtml+xml",
-        PREVIEW_USER_AGENT,
-    )
-    .await?;
+    let resp =
+        fetch_with_redirect_validation(&url, "text/html,application/xhtml+xml", PREVIEW_USER_AGENT)
+            .await?;
 
     if !resp.status().is_success() {
         return Err(StatusCode::BAD_GATEWAY);
@@ -509,7 +512,11 @@ pub async fn link_preview_handler(
 
     // Store in cache
     {
-        let mut cache = state.preview_cache.previews.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cache = state
+            .preview_cache
+            .previews
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // Evict oldest entries if at capacity
         if cache.len() >= MAX_CACHE_ENTRIES {
             // Remove ~10% of oldest entries
@@ -556,7 +563,11 @@ pub async fn image_proxy_handler(
     // Check cache before expensive DNS resolution — cached results are safe
     // because they were already validated on the original fetch.
     {
-        let cache = state.preview_cache.images.lock().unwrap_or_else(|e| e.into_inner());
+        let cache = state
+            .preview_cache
+            .images
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if let Some(entry) = cache.get(&url) {
             if entry.fetched_at.elapsed() < IMAGE_CACHE_TTL {
                 return Ok(build_image_response(
@@ -587,8 +598,8 @@ pub async fn image_proxy_handler(
         .to_string();
 
     let is_image_content = content_type.starts_with("image/");
-    let is_octet_stream_with_image_ext = content_type == "application/octet-stream"
-        && url_has_image_extension(&url);
+    let is_octet_stream_with_image_ext =
+        content_type == "application/octet-stream" && url_has_image_extension(&url);
 
     if !is_image_content && !is_octet_stream_with_image_ext {
         tracing::debug!(
@@ -613,7 +624,11 @@ pub async fn image_proxy_handler(
 
     // Cache the image
     {
-        let mut cache = state.preview_cache.images.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cache = state
+            .preview_cache
+            .images
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if cache.len() >= MAX_IMAGE_CACHE_ENTRIES {
             let mut entries: Vec<_> = cache
                 .iter()
@@ -643,9 +658,11 @@ fn url_has_image_extension(url: &str) -> bool {
     let path = url::Url::parse(url)
         .map(|u| u.path().to_lowercase())
         .unwrap_or_default();
-    [".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".ico", ".bmp", ".avif"]
-        .iter()
-        .any(|ext| path.ends_with(ext))
+    [
+        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".ico", ".bmp", ".avif",
+    ]
+    .iter()
+    .any(|ext| path.ends_with(ext))
 }
 
 /// Infer an image content-type from the URL file extension.

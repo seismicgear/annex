@@ -51,8 +51,8 @@ pub fn derive_ws_token_secret(signing_key: &ed25519_dalek::SigningKey) -> [u8; 3
 /// The token binds the pseudonym to a time window, preventing both
 /// impersonation (different pseudonym) and replay (after expiry).
 fn generate_ws_token(pseudonym: &str, secret: &[u8; 32]) -> String {
-    use sha2::Sha256;
     use hmac::{Hmac, Mac};
+    use sha2::Sha256;
 
     let expires = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -74,9 +74,9 @@ fn generate_ws_token(pseudonym: &str, secret: &[u8; 32]) -> String {
 /// Verifies an HMAC-SHA256 signed WebSocket session token.
 /// Returns the pseudonym if valid and not expired.
 fn verify_ws_token(token: &str, secret: &[u8; 32]) -> Result<String, StatusCode> {
-    use sha2::Sha256;
-    use hmac::{Hmac, Mac};
     use base64::Engine;
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
 
     let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(token.as_bytes())
@@ -261,11 +261,7 @@ impl ConnectionManager {
     /// `channel_subscriptions` and `user_subscriptions`.
     ///
     /// Returns the unique session ID.
-    pub async fn add_session(
-        &self,
-        pseudonym: String,
-        sender: mpsc::Sender<String>,
-    ) -> Uuid {
+    pub async fn add_session(&self, pseudonym: String, sender: mpsc::Sender<String>) -> Uuid {
         let session_id = Uuid::new_v4();
 
         // Check for and clean up an existing session for this pseudonym.
@@ -441,7 +437,9 @@ impl ConnectionManager {
 /// Requires authentication via `auth_middleware` (X-Annex-Pseudonym or Bearer).
 pub async fn create_ws_token_handler(
     Extension(state): Extension<Arc<AppState>>,
-    Extension(crate::middleware::IdentityContext(identity)): Extension<crate::middleware::IdentityContext>,
+    Extension(crate::middleware::IdentityContext(identity)): Extension<
+        crate::middleware::IdentityContext,
+    >,
 ) -> Result<axum::Json<serde_json::Value>, StatusCode> {
     let token = generate_ws_token(&identity.pseudonym_id, &state.ws_token_secret);
     Ok(axum::Json(serde_json::json!({
@@ -645,7 +643,13 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
             if let Ok(incoming) = serde_json::from_str::<IncomingMessage>(&text.to_string()) {
                 match incoming {
                     IncomingMessage::Subscribe { channel_id } => {
-                        match check_ws_membership(state.pool.clone(), state.server_id, &channel_id, &pseudonym).await
+                        match check_ws_membership(
+                            state.pool.clone(),
+                            state.server_id,
+                            &channel_id,
+                            &pseudonym,
+                        )
+                        .await
                         {
                             MembershipResult::Allowed => {
                                 state
@@ -697,7 +701,13 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                         }
 
                         // 1. Validate membership (enforcing Phase 4.4 requirements)
-                        match check_ws_membership(state.pool.clone(), state.server_id, &channel_id, &pseudonym).await
+                        match check_ws_membership(
+                            state.pool.clone(),
+                            state.server_id,
+                            &channel_id,
+                            &pseudonym,
+                        )
+                        .await
                         {
                             MembershipResult::Allowed => {}
                             MembershipResult::Denied => {
@@ -822,8 +832,13 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                         }
 
                         // Membership check: same gate as Message handler
-                        match check_ws_membership(state.pool.clone(), state.server_id, &channel_id, &pseudonym)
-                            .await
+                        match check_ws_membership(
+                            state.pool.clone(),
+                            state.server_id,
+                            &channel_id,
+                            &pseudonym,
+                        )
+                        .await
                         {
                             MembershipResult::Allowed => {}
                             MembershipResult::Denied => {
@@ -874,7 +889,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                             .await;
                                     }
                                     Err(e) => {
-                                        tracing::error!("failed to serialize edit broadcast: {}", e);
+                                        tracing::error!(
+                                            "failed to serialize edit broadcast: {}",
+                                            e
+                                        );
                                     }
                                 }
                             }
@@ -892,8 +910,13 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                         message_id,
                     } => {
                         // Membership check: same gate as Message handler
-                        match check_ws_membership(state.pool.clone(), state.server_id, &channel_id, &pseudonym)
-                            .await
+                        match check_ws_membership(
+                            state.pool.clone(),
+                            state.server_id,
+                            &channel_id,
+                            &pseudonym,
+                        )
+                        .await
                         {
                             MembershipResult::Allowed => {}
                             MembershipResult::Denied => {
@@ -979,7 +1002,13 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                         }
 
                         // Check membership
-                        match check_ws_membership(state.pool.clone(), state.server_id, &channel_id, &pseudonym).await
+                        match check_ws_membership(
+                            state.pool.clone(),
+                            state.server_id,
+                            &channel_id,
+                            &pseudonym,
+                        )
+                        .await
                         {
                             MembershipResult::Allowed => {}
                             MembershipResult::Denied => {
@@ -1124,7 +1153,9 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                                                         text: event.text,
                                                                     };
 
-                                                                    match serde_json::to_string(&msg) {
+                                                                    match serde_json::to_string(
+                                                                        &msg,
+                                                                    ) {
                                                                         Ok(json) => {
                                                                             cm.send(&p_clone, json)
                                                                                 .await;
@@ -1246,7 +1277,10 @@ async fn touch_activity(state: Arc<AppState>, pseudonym: String) {
     .await;
 
     if let Err(e) = result {
-        tracing::error!("touch_activity: blocking task panicked or was cancelled: {}", e);
+        tracing::error!(
+            "touch_activity: blocking task panicked or was cancelled: {}",
+            e
+        );
     }
 }
 
@@ -1268,15 +1302,36 @@ mod tests {
         };
 
         let json = serde_json::to_value(&payload).expect("serialization should not fail");
-        assert!(json.get("channelId").is_some(), "expected camelCase channelId");
-        assert!(json.get("messageId").is_some(), "expected camelCase messageId");
-        assert!(json.get("senderPseudonym").is_some(), "expected camelCase senderPseudonym");
-        assert!(json.get("replyToMessageId").is_some(), "expected camelCase replyToMessageId");
-        assert!(json.get("createdAt").is_some(), "expected camelCase createdAt");
+        assert!(
+            json.get("channelId").is_some(),
+            "expected camelCase channelId"
+        );
+        assert!(
+            json.get("messageId").is_some(),
+            "expected camelCase messageId"
+        );
+        assert!(
+            json.get("senderPseudonym").is_some(),
+            "expected camelCase senderPseudonym"
+        );
+        assert!(
+            json.get("replyToMessageId").is_some(),
+            "expected camelCase replyToMessageId"
+        );
+        assert!(
+            json.get("createdAt").is_some(),
+            "expected camelCase createdAt"
+        );
 
         // Verify snake_case keys are NOT present
-        assert!(json.get("channel_id").is_none(), "snake_case channel_id should not be present");
-        assert!(json.get("message_id").is_none(), "snake_case message_id should not be present");
+        assert!(
+            json.get("channel_id").is_none(),
+            "snake_case channel_id should not be present"
+        );
+        assert!(
+            json.get("message_id").is_none(),
+            "snake_case message_id should not be present"
+        );
     }
 
     #[test]

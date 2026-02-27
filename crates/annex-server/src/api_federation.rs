@@ -1,4 +1,6 @@
-use crate::{api::GetRootResponse, api_rtx::rtx_relay_signing_payload, parse_transfer_scope, AppState};
+use crate::{
+    api::GetRootResponse, api_rtx::rtx_relay_signing_payload, parse_transfer_scope, AppState,
+};
 use annex_channels::{
     add_member, create_message, list_federated_channels, Channel, CreateMessageParams,
 };
@@ -90,9 +92,10 @@ impl axum::response::IntoResponse for FederationError {
             FederationError::Serialization(_) => {
                 (axum::http::StatusCode::BAD_REQUEST, self.to_string())
             }
-            FederationError::Handshake(HandshakeError::Vrp(_)) => {
-                (axum::http::StatusCode::INTERNAL_SERVER_ERROR, self.to_string())
-            }
+            FederationError::Handshake(HandshakeError::Vrp(_)) => (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                self.to_string(),
+            ),
             FederationError::Handshake(_) => {
                 (axum::http::StatusCode::BAD_REQUEST, self.to_string())
             }
@@ -302,9 +305,8 @@ pub(crate) fn find_commitment_for_pseudonym(
 
     // Slow fallback: only scan legacy rows that lack the denormalized columns.
     // Once all rows are backfilled this path becomes a no-op.
-    let mut stmt = conn.prepare(
-        "SELECT topic, nullifier_hex FROM zk_nullifiers WHERE pseudonym_id IS NULL",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT topic, nullifier_hex FROM zk_nullifiers WHERE pseudonym_id IS NULL")?;
     let rows = stmt.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;

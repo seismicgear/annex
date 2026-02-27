@@ -115,7 +115,9 @@ async fn setup_app_with_mock_tts(
         membership_vkey: load_vkey(),
         server_id: 1,
         signing_key: Arc::new(ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng)),
-        public_url: std::sync::Arc::new(std::sync::RwLock::new("http://localhost:3000".to_string())),
+        public_url: std::sync::Arc::new(std::sync::RwLock::new(
+            "http://localhost:3000".to_string(),
+        )),
         policy: Arc::new(RwLock::new(ServerPolicy::default())),
         rate_limiter: RateLimiter::new(),
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
@@ -156,9 +158,7 @@ async fn start_server(app: axum::Router) -> SocketAddr {
 async fn connect_ws(
     addr: SocketAddr,
     pseudonym: &str,
-) -> tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-> {
+) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>> {
     let url = format!("ws://{}/ws?pseudonym={}", addr, pseudonym);
     let (socket, _) = connect_async(url).await.expect("WS connect failed");
     socket
@@ -189,7 +189,9 @@ async fn send_voice_intent_and_read(
         .expect("socket error");
 
     match response {
-        WsMessage::Text(text) => serde_json::from_str(text.as_str()).expect("invalid JSON response"),
+        WsMessage::Text(text) => {
+            serde_json::from_str(text.as_str()).expect("invalid JSON response")
+        }
         other => panic!("expected Text message, got {:?}", other),
     }
 }
@@ -285,8 +287,7 @@ async fn test_voice_intent_non_member_rejected() {
     let addr = start_server(app).await;
     let mut socket = connect_ws(addr, "agent-nomem").await;
 
-    let response =
-        send_voice_intent_and_read(&mut socket, "voice-restricted", "Hello world").await;
+    let response = send_voice_intent_and_read(&mut socket, "voice-restricted", "Hello world").await;
 
     assert_eq!(
         response.get("type").and_then(|v| v.as_str()),
@@ -433,7 +434,9 @@ async fn test_voice_intent_tts_profile_not_found() {
         membership_vkey: load_vkey(),
         server_id: 1,
         signing_key: Arc::new(ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng)),
-        public_url: std::sync::Arc::new(std::sync::RwLock::new("http://localhost:3000".to_string())),
+        public_url: std::sync::Arc::new(std::sync::RwLock::new(
+            "http://localhost:3000".to_string(),
+        )),
         policy: Arc::new(RwLock::new(ServerPolicy::default())),
         rate_limiter: RateLimiter::new(),
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
@@ -480,8 +483,7 @@ async fn test_voice_intent_tts_profile_not_found() {
     let addr = start_server(router).await;
     let mut socket = connect_ws(addr, "agent-noprof").await;
 
-    let response =
-        send_voice_intent_and_read(&mut socket, "voice-noprof", "Trying to speak").await;
+    let response = send_voice_intent_and_read(&mut socket, "voice-noprof", "Trying to speak").await;
 
     assert_eq!(
         response.get("type").and_then(|v| v.as_str()),
@@ -751,10 +753,7 @@ async fn test_voice_session_cleaned_up_on_disconnect() {
     }
 
     // Close WebSocket (disconnect)
-    socket
-        .close(None)
-        .await
-        .expect("failed to close WebSocket");
+    socket.close(None).await.expect("failed to close WebSocket");
 
     // Wait for cleanup to propagate
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;

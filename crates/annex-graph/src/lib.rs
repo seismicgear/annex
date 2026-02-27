@@ -203,11 +203,13 @@ fn str_to_edge_kind(s: &str) -> Result<EdgeKind, GraphError> {
         "AGENT_SERVING" => Ok(EdgeKind::AgentServing),
         "FEDERATED_WITH" => Ok(EdgeKind::FederatedWith),
         "MODERATES" => Ok(EdgeKind::Moderates),
-        other => Err(GraphError::DatabaseError(rusqlite::Error::FromSqlConversionFailure(
-            0,
-            rusqlite::types::Type::Text,
-            format!("unknown edge kind: {}", other).into(),
-        ))),
+        other => Err(GraphError::DatabaseError(
+            rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Text,
+                format!("unknown edge kind: {}", other).into(),
+            ),
+        )),
     }
 }
 
@@ -218,11 +220,13 @@ fn str_to_node_type(s: &str) -> Result<NodeType, GraphError> {
         "COLLECTIVE" => Ok(NodeType::Collective),
         "BRIDGE" => Ok(NodeType::Bridge),
         "SERVICE" => Ok(NodeType::Service),
-        other => Err(GraphError::DatabaseError(rusqlite::Error::FromSqlConversionFailure(
-            0,
-            rusqlite::types::Type::Text,
-            format!("unknown node type: {}", other).into(),
-        ))),
+        other => Err(GraphError::DatabaseError(
+            rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Text,
+                format!("unknown node type: {}", other).into(),
+            ),
+        )),
     }
 }
 
@@ -680,11 +684,7 @@ mod tests {
             ("MODERATES", EdgeKind::Moderates),
         ];
         for (s, expected) in cases {
-            assert_eq!(
-                str_to_edge_kind(s).unwrap(),
-                expected,
-                "failed for {s}"
-            );
+            assert_eq!(str_to_edge_kind(s).unwrap(), expected, "failed for {s}");
         }
     }
 
@@ -704,11 +704,7 @@ mod tests {
             ("SERVICE", NodeType::Service),
         ];
         for (s, expected) in cases {
-            assert_eq!(
-                str_to_node_type(s).unwrap(),
-                expected,
-                "failed for {s}"
-            );
+            assert_eq!(str_to_node_type(s).unwrap(), expected, "failed for {s}");
         }
     }
 
@@ -724,8 +720,7 @@ mod tests {
         let chain_len = 100;
         for i in 0..=chain_len {
             let name = format!("chain-{}", i);
-            ensure_graph_node(&conn, server_id, &name, NodeType::Human, None)
-                .expect("node failed");
+            ensure_graph_node(&conn, server_id, &name, NodeType::Human, None).expect("node failed");
         }
         for i in 0..chain_len {
             let from = format!("chain-{}", i);

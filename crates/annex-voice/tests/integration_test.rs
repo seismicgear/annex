@@ -98,21 +98,33 @@ async fn test_token_permissions() {
 #[test]
 fn test_default_ice_servers() {
     let config = LiveKitConfig::default();
-    assert!(!config.ice_servers.is_empty(), "default should include STUN servers");
+    assert!(
+        !config.ice_servers.is_empty(),
+        "default should include STUN servers"
+    );
 
     let first = &config.ice_servers[0];
     assert!(
         first.urls.iter().any(|u| u.starts_with("stun:")),
         "default ICE servers should include at least one STUN URL"
     );
-    assert!(first.username.is_empty(), "STUN servers should have no username");
-    assert!(first.credential.is_empty(), "STUN servers should have no credential");
+    assert!(
+        first.username.is_empty(),
+        "STUN servers should have no username"
+    );
+    assert!(
+        first.credential.is_empty(),
+        "STUN servers should have no credential"
+    );
 }
 
 #[test]
 fn test_ice_servers_from_new() {
     let config = LiveKitConfig::new(DEFAULT_URL, DEFAULT_KEY, DEFAULT_SECRET);
-    assert!(!config.ice_servers.is_empty(), "new() should include default STUN servers");
+    assert!(
+        !config.ice_servers.is_empty(),
+        "new() should include default STUN servers"
+    );
 }
 
 #[tokio::test]
@@ -182,7 +194,10 @@ fn test_livekit_config_with_ice_servers_toml() {
 
     let config: LiveKitConfig = toml::from_str(toml_str).expect("parse TOML");
     assert_eq!(config.ice_servers.len(), 2);
-    assert_eq!(config.ice_servers[0].urls[0], "stun:stun.l.google.com:19302");
+    assert_eq!(
+        config.ice_servers[0].urls[0],
+        "stun:stun.l.google.com:19302"
+    );
     assert_eq!(config.ice_servers[1].username, "user");
 }
 

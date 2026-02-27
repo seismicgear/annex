@@ -238,7 +238,8 @@ mod tests {
     #[test]
     fn parse_proof_rejects_off_curve_pi_a() {
         // Valid JSON structure but invalid curve point
-        let json = r#"{"pi_a":["1","1","1"],"pi_b":[["1","0"],["0","1"],["1","0"]],"pi_c":["1","1","1"]}"#;
+        let json =
+            r#"{"pi_a":["1","1","1"],"pi_b":[["1","0"],["0","1"],["1","0"]],"pi_c":["1","1","1"]}"#;
         let result = parse_proof(json);
         assert!(result.is_err(), "off-curve pi_a should be rejected");
     }

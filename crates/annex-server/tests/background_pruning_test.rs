@@ -46,7 +46,9 @@ fn setup_state() -> (Arc<AppState>, annex_db::DbPool) {
         membership_vkey: load_vkey(),
         server_id: 1,
         signing_key: Arc::new(ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng)),
-        public_url: std::sync::Arc::new(std::sync::RwLock::new("http://localhost:3000".to_string())),
+        public_url: std::sync::Arc::new(std::sync::RwLock::new(
+            "http://localhost:3000".to_string(),
+        )),
         policy: Arc::new(RwLock::new(ServerPolicy::default())),
         rate_limiter: RateLimiter::new(),
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
@@ -111,8 +113,7 @@ async fn test_pruning_task_prunes_inactive_nodes_and_emits_events() {
     // Create a node and let it become inactive
     {
         let conn = pool.get().expect("connection");
-        ensure_graph_node(&conn, 1, "old_user", NodeType::Human, None)
-            .expect("ensure node");
+        ensure_graph_node(&conn, 1, "old_user", NodeType::Human, None).expect("ensure node");
     }
 
     // Wait for the node to become "old" (threshold=1 second)
@@ -146,24 +147,17 @@ async fn test_pruning_task_prunes_inactive_nodes_and_emits_events() {
         Ok(Ok(PresenceEvent::NodePruned { pseudonym_id })) => {
             assert_eq!(pseudonym_id, "old_user");
         }
-        other => panic!(
-            "expected NodePruned presence event, got: {:?}",
-            other
-        ),
+        other => panic!("expected NodePruned presence event, got: {:?}", other),
     }
 
     // Verify an observe event was emitted (NodePruned to audit log)
-    let observe_event =
-        tokio::time::timeout(Duration::from_millis(500), observe_rx.recv()).await;
+    let observe_event = tokio::time::timeout(Duration::from_millis(500), observe_rx.recv()).await;
     match observe_event {
         Ok(Ok(event)) => {
             assert_eq!(event.event_type, "NODE_PRUNED");
             assert_eq!(event.entity_id, "old_user");
         }
-        other => panic!(
-            "expected NODE_PRUNED observe event, got: {:?}",
-            other
-        ),
+        other => panic!("expected NODE_PRUNED observe event, got: {:?}", other),
     }
 
     // Cancel the infinite loop
@@ -177,8 +171,7 @@ async fn test_pruning_task_does_not_prune_active_nodes() {
     // Create a node
     {
         let conn = pool.get().expect("connection");
-        ensure_graph_node(&conn, 1, "active_user", NodeType::Human, None)
-            .expect("ensure node");
+        ensure_graph_node(&conn, 1, "active_user", NodeType::Human, None).expect("ensure node");
     }
 
     // Subscribe to presence events
@@ -281,8 +274,7 @@ async fn test_pruning_preserves_reactivated_nodes() {
     // Create two nodes
     {
         let conn = pool.get().expect("connection");
-        ensure_graph_node(&conn, 1, "will_be_pruned", NodeType::Human, None)
-            .expect("ensure node");
+        ensure_graph_node(&conn, 1, "will_be_pruned", NodeType::Human, None).expect("ensure node");
         ensure_graph_node(&conn, 1, "will_stay_active", NodeType::Human, None)
             .expect("ensure node");
     }

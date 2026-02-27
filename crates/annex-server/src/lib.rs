@@ -4,9 +4,9 @@ pub mod api;
 pub mod api_admin;
 pub mod api_agent;
 pub mod api_channels;
-pub mod api_link_preview;
 pub mod api_federation;
 pub mod api_graph;
+pub mod api_link_preview;
 pub mod api_observe;
 pub mod api_rtx;
 pub mod api_sse;
@@ -33,14 +33,14 @@ use ed25519_dalek::SigningKey;
 use middleware::RateLimiter;
 use rand::rngs::OsRng;
 use rusqlite::OptionalExtension;
-use tower_http::cors::{AllowOrigin, Any, CorsLayer};
-use tower_http::services::{ServeDir, ServeFile};
 use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, RwLock};
 use thiserror::Error;
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
+use tower_http::services::{ServeDir, ServeFile};
 use tracing_subscriber::EnvFilter;
 
 /// Application state shared across all request handlers.
@@ -218,7 +218,9 @@ async fn is_livekit_reachable(ws_url: &str) -> bool {
 ///
 /// On success the child process handle is returned so the caller can keep
 /// it alive (dropping it will NOT kill the process — it is detached).
-async fn try_start_livekit_dev(config: &annex_voice::LiveKitConfig) -> Option<tokio::process::Child> {
+async fn try_start_livekit_dev(
+    config: &annex_voice::LiveKitConfig,
+) -> Option<tokio::process::Child> {
     let livekit_keys = format!("{}: {}", config.api_key, config.api_secret);
 
     // Try native binary first
@@ -244,14 +246,20 @@ async fn try_start_livekit_dev(config: &annex_voice::LiveKitConfig) -> Option<to
             "run",
             "-d",
             "--rm",
-            "--name", "annex-livekit-dev",
-            "-p", "7880:7880",
-            "-p", "7881:7881",
-            "-p", "7882:7882/udp",
-            "-e", &format!("LIVEKIT_KEYS={livekit_keys}"),
+            "--name",
+            "annex-livekit-dev",
+            "-p",
+            "7880:7880",
+            "-p",
+            "7881:7881",
+            "-p",
+            "7882:7882/udp",
+            "-e",
+            &format!("LIVEKIT_KEYS={livekit_keys}"),
             "livekit/livekit-server:latest",
             "--dev",
-            "--bind", "0.0.0.0",
+            "--bind",
+            "0.0.0.0",
         ])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -430,9 +438,7 @@ fn resolve_signing_key(db_path: &str) -> Result<SigningKey, StartupError> {
 /// caller is responsible for driving `axum::serve(listener, app)`.
 ///
 /// Tracing must be initialized before calling this function (see [`init_tracing`]).
-pub async fn prepare_server(
-    config: config::Config,
-) -> Result<(TcpListener, Router), StartupError> {
+pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Router), StartupError> {
     // Initialize database
     let pool = annex_db::create_pool(
         &config.database.path,
@@ -474,14 +480,13 @@ pub async fn prepare_server(
             .query_row("SELECT id, policy_json FROM servers LIMIT 1", [], |row| {
                 let id: i64 = row.get(0)?;
                 let policy_json: String = row.get(1)?;
-                let policy: ServerPolicy =
-                    serde_json::from_str(&policy_json).map_err(|e| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            1,
-                            rusqlite::types::Type::Text,
-                            Box::new(e),
-                        )
-                    })?;
+                let policy: ServerPolicy = serde_json::from_str(&policy_json).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        1,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?;
                 Ok((id, policy))
             })
             .optional()?;
@@ -490,8 +495,8 @@ pub async fn prepare_server(
             Some(row) => row,
             None => {
                 tracing::info!("no server configured — seeding default server record");
-                let slug = std::env::var("ANNEX_SERVER_SLUG")
-                    .unwrap_or_else(|_| "default".to_string());
+                let slug =
+                    std::env::var("ANNEX_SERVER_SLUG").unwrap_or_else(|_| "default".to_string());
                 let label = std::env::var("ANNEX_SERVER_LABEL")
                     .unwrap_or_else(|_| "Annex Server".to_string());
                 let default_policy = ServerPolicy::default();
@@ -516,8 +521,12 @@ pub async fn prepare_server(
                     ) VALUES (?1, ?2, 'General', ?3, 'Welcome to Annex!', ?4)",
                     rusqlite::params![id, general_id, channel_type_json, scope_json],
                 ) {
-                    Ok(_) => tracing::info!(channel_id = %general_id, "seeded default #General channel"),
-                    Err(e) => tracing::warn!(error = %e, "failed to seed default channel (non-fatal)"),
+                    Ok(_) => {
+                        tracing::info!(channel_id = %general_id, "seeded default #General channel")
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "failed to seed default channel (non-fatal)")
+                    }
                 }
 
                 (id, default_policy)
@@ -537,8 +546,7 @@ pub async fn prepare_server(
         .unwrap_or_else(|_| "zk/keys/membership_vkey.json".to_string());
     let membership_vkey = match std::fs::read_to_string(&vkey_path) {
         Ok(vkey_json) => {
-            annex_identity::zk::parse_verification_key(&vkey_json)
-                .map_err(StartupError::ZkError)?
+            annex_identity::zk::parse_verification_key(&vkey_json).map_err(StartupError::ZkError)?
         }
         Err(e) => {
             tracing::warn!(
@@ -768,18 +776,14 @@ pub fn app(state: AppState) -> Router {
             "/api/admin/federation/{id}",
             delete(api_admin::revoke_federation_handler),
         )
-        .route(
-            "/api/admin/members",
-            get(api_admin::list_members_handler),
-        )
+        .route("/api/admin/members", get(api_admin::list_members_handler))
         .route(
             "/api/admin/members/{pseudonymId}/capabilities",
             patch(api_admin::update_member_capabilities_handler),
         )
         .route(
             "/api/profile/username",
-            put(api_usernames::set_username_handler)
-                .delete(api_usernames::delete_username_handler),
+            put(api_usernames::set_username_handler).delete(api_usernames::delete_username_handler),
         )
         .route(
             "/api/profile/username/grant",
@@ -801,10 +805,7 @@ pub fn app(state: AppState) -> Router {
             "/api/link-preview",
             get(api_link_preview::link_preview_handler),
         )
-        .route(
-            "/api/ws/token",
-            post(api_ws::create_ws_token_handler),
-        )
+        .route("/api/ws/token", post(api_ws::create_ws_token_handler))
         .route(
             "/api/graph/profile/{targetPseudonym}",
             get(api_graph::get_profile_handler),
@@ -926,8 +927,8 @@ pub fn app(state: AppState) -> Router {
 
     // Serve client static files if the directory exists.
     // Configured via ANNEX_CLIENT_DIR env var; defaults to "client/dist".
-    let client_dir = std::env::var("ANNEX_CLIENT_DIR")
-        .unwrap_or_else(|_| "client/dist".to_string());
+    let client_dir =
+        std::env::var("ANNEX_CLIENT_DIR").unwrap_or_else(|_| "client/dist".to_string());
     let client_dir = match std::fs::canonicalize(&client_dir) {
         Ok(abs) => {
             let s = abs.to_string_lossy().to_string();
@@ -945,12 +946,13 @@ pub fn app(state: AppState) -> Router {
             client_dir
         }
     };
-    let router = if std::path::Path::new(&client_dir).join("index.html").exists() {
+    let router = if std::path::Path::new(&client_dir)
+        .join("index.html")
+        .exists()
+    {
         tracing::info!(path = %client_dir, "serving client static files");
         let index = format!("{}/index.html", client_dir);
-        router.fallback_service(
-            ServeDir::new(&client_dir).fallback(ServeFile::new(index)),
-        )
+        router.fallback_service(ServeDir::new(&client_dir).fallback(ServeFile::new(index)))
     } else {
         tracing::info!(path = %client_dir, "client directory not found, skipping static file serving");
         router
@@ -986,7 +988,9 @@ pub fn app(state: AppState) -> Router {
         } else if origins.is_empty() {
             tracing::info!("CORS: restrictive mode (same-origin only)");
             // No Access-Control-Allow-Origin header → browsers block cross-origin requests
-            base.allow_origin(AllowOrigin::list(std::iter::empty::<axum::http::HeaderValue>()))
+            base.allow_origin(AllowOrigin::list(
+                std::iter::empty::<axum::http::HeaderValue>(),
+            ))
         } else {
             let parsed: Vec<axum::http::HeaderValue> = origins
                 .iter()
@@ -999,7 +1003,9 @@ pub fn app(state: AppState) -> Router {
 
     router
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
-        .layer(axum::middleware::from_fn(middleware::security_headers_middleware))
+        .layer(axum::middleware::from_fn(
+            middleware::security_headers_middleware,
+        ))
         .layer(axum::middleware::from_fn(middleware::rate_limit_middleware))
         .layer(cors_layer)
         .layer(Extension(shared_state))

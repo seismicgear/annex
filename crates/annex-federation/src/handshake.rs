@@ -2,8 +2,8 @@ use crate::db::create_agreement;
 use annex_types::ServerPolicy;
 use annex_vrp::{
     validate_federation_handshake, ServerPolicyRoot, VrpAlignmentConfig,
-    VrpCapabilitySharingContract, VrpError, VrpFederationHandshake,
-    VrpTransferAcceptanceConfig, VrpValidationReport,
+    VrpCapabilitySharingContract, VrpError, VrpFederationHandshake, VrpTransferAcceptanceConfig,
+    VrpValidationReport,
 };
 use rusqlite::Connection;
 use thiserror::Error;

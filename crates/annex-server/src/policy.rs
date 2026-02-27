@@ -494,7 +494,10 @@ pub async fn notify_federation_peers_of_policy_change(
     let client = match crate::api_federation::federation_http_client() {
         Ok(c) => c,
         Err(e) => {
-            tracing::error!("failed to build federation HTTP client for re-handshake: {}", e);
+            tracing::error!(
+                "failed to build federation HTTP client for re-handshake: {}",
+                e
+            );
             return;
         }
     };

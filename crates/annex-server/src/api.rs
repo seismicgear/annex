@@ -610,9 +610,9 @@ fn fetch_platform_identity(
 
     let identity =
         get_platform_identity(&conn, state.server_id, pseudonym_id).map_err(|e| match e {
-            annex_identity::IdentityError::DatabaseError(
-                rusqlite::Error::QueryReturnedNoRows,
-            ) => ApiError::NotFound(format!("identity not found: {}", pseudonym_id)),
+            annex_identity::IdentityError::DatabaseError(rusqlite::Error::QueryReturnedNoRows) => {
+                ApiError::NotFound(format!("identity not found: {}", pseudonym_id))
+            }
             _ => ApiError::InternalServerError(e.to_string()),
         })?;
 
@@ -623,9 +623,8 @@ fn fetch_platform_identity(
         let promoted = ensure_founder(&conn, state.server_id)
             .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
         if promoted {
-            return get_platform_identity(&conn, state.server_id, pseudonym_id).map_err(
-                |e| ApiError::InternalServerError(e.to_string()),
-            );
+            return get_platform_identity(&conn, state.server_id, pseudonym_id)
+                .map_err(|e| ApiError::InternalServerError(e.to_string()));
         }
 
         // A moderator exists but it may be stale — e.g. from a previous

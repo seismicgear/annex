@@ -49,7 +49,9 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool) {
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,
         )),
-        public_url: std::sync::Arc::new(std::sync::RwLock::new("http://localhost:3000".to_string())),
+        public_url: std::sync::Arc::new(std::sync::RwLock::new(
+            "http://localhost:3000".to_string(),
+        )),
         policy: Arc::new(RwLock::new(ServerPolicy::default())),
         rate_limiter: RateLimiter::new(),
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
@@ -171,10 +173,15 @@ async fn test_join_voice_channel_success() {
     );
 
     // ICE servers should be present in the join response.
-    let ice_servers = body.get("ice_servers").expect("response must include ice_servers");
+    let ice_servers = body
+        .get("ice_servers")
+        .expect("response must include ice_servers");
     assert!(ice_servers.is_array(), "ice_servers must be an array");
     let ice_arr = ice_servers.as_array().unwrap();
-    assert!(!ice_arr.is_empty(), "default config should include STUN servers");
+    assert!(
+        !ice_arr.is_empty(),
+        "default config should include STUN servers"
+    );
     assert!(
         ice_arr[0].get("urls").is_some(),
         "each ICE server must have urls"
@@ -387,7 +394,7 @@ async fn test_health_includes_voice_enabled_true() {
     let body: Value = serde_json::from_slice(&body_bytes).unwrap();
 
     assert_eq!(body["status"].as_str().unwrap(), "ok");
-    assert_eq!(body["voice_enabled"].as_bool().unwrap(), true);
+    assert!(body["voice_enabled"].as_bool().unwrap());
 }
 
 #[tokio::test]
@@ -411,7 +418,7 @@ async fn test_health_includes_voice_enabled_false() {
     let body: Value = serde_json::from_slice(&body_bytes).unwrap();
 
     assert_eq!(body["status"].as_str().unwrap(), "ok");
-    assert_eq!(body["voice_enabled"].as_bool().unwrap(), false);
+    assert!(!body["voice_enabled"].as_bool().unwrap());
 }
 
 #[tokio::test]
@@ -434,8 +441,8 @@ async fn test_voice_config_status_disabled() {
         .unwrap();
     let body: Value = serde_json::from_slice(&body_bytes).unwrap();
 
-    assert_eq!(body["voice_enabled"].as_bool().unwrap(), false);
-    assert_eq!(body["has_public_url"].as_bool().unwrap(), false);
+    assert!(!body["voice_enabled"].as_bool().unwrap());
+    assert!(!body["has_public_url"].as_bool().unwrap());
     assert!(
         body["setup_hint"]
             .as_str()
@@ -465,12 +472,9 @@ async fn test_voice_config_status_enabled() {
         .unwrap();
     let body: Value = serde_json::from_slice(&body_bytes).unwrap();
 
-    assert_eq!(body["voice_enabled"].as_bool().unwrap(), true);
+    assert!(body["voice_enabled"].as_bool().unwrap());
     assert!(
-        body["setup_hint"]
-            .as_str()
-            .unwrap()
-            .contains("ready"),
+        body["setup_hint"].as_str().unwrap().contains("ready"),
         "setup_hint should indicate voice is ready"
     );
 }

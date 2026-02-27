@@ -50,14 +50,8 @@ fn test_nullifier_with_lookup_columns() {
     let commitment = "c".repeat(64);
 
     // Insert with lookup columns
-    insert_nullifier(
-        &conn,
-        topic,
-        &nullifier,
-        Some(pseudonym),
-        Some(&commitment),
-    )
-    .expect("insertion with lookup columns failed");
+    insert_nullifier(&conn, topic, &nullifier, Some(pseudonym), Some(&commitment))
+        .expect("insertion with lookup columns failed");
 
     // Verify lookup columns are stored
     let (stored_pseudo, stored_commit): (Option<String>, Option<String>) = conn

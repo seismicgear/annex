@@ -9,10 +9,7 @@ fn main() {
         {
             if output.status.success() {
                 let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                let parts: Vec<u32> = version
-                    .split('.')
-                    .filter_map(|s| s.parse().ok())
-                    .collect();
+                let parts: Vec<u32> = version.split('.').filter_map(|s| s.parse().ok()).collect();
                 if parts.len() >= 2 {
                     let (major, minor) = (parts[0], parts[1]);
                     if major < 2 || (major == 2 && minor < 40) {
