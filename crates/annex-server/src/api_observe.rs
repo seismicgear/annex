@@ -95,16 +95,18 @@ pub async fn get_events_handler(
     })
     .await
     .map_err(|e| {
+        tracing::error!("task join error in events handler: {}", e);
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": format!("task join error: {}", e) })),
+            Json(serde_json::json!({ "error": "internal server error" })),
         )
             .into_response()
     })?
     .map_err(|e| {
+        tracing::error!("database error in events handler: {}", e);
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": e })),
+            Json(serde_json::json!({ "error": "internal server error" })),
         )
             .into_response()
     })?;
@@ -292,16 +294,18 @@ pub async fn get_server_summary_handler(
     })
     .await
     .map_err(|e| {
+        tracing::error!("task join error in server summary handler: {}", e);
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": format!("task join error: {}", e) })),
+            Json(serde_json::json!({ "error": "internal server error" })),
         )
             .into_response()
     })?
     .map_err(|e| {
+        tracing::error!("database error in server summary handler: {}", e);
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": e })),
+            Json(serde_json::json!({ "error": "internal server error" })),
         )
             .into_response()
     })?;
@@ -398,16 +402,18 @@ pub async fn get_federation_peers_handler(
     })
     .await
     .map_err(|e| {
+        tracing::error!("task join error in federation peers handler: {}", e);
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": format!("task join error: {}", e) })),
+            Json(serde_json::json!({ "error": "internal server error" })),
         )
             .into_response()
     })?
     .map_err(|e| {
+        tracing::error!("database error in federation peers handler: {}", e);
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": e })),
+            Json(serde_json::json!({ "error": "internal server error" })),
         )
             .into_response()
     })?;
@@ -496,16 +502,18 @@ pub async fn get_agents_handler(
     })
     .await
     .map_err(|e| {
+        tracing::error!("task join error in agents handler: {}", e);
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": format!("task join error: {}", e) })),
+            Json(serde_json::json!({ "error": "internal server error" })),
         )
             .into_response()
     })?
     .map_err(|e| {
+        tracing::error!("database error in agents handler: {}", e);
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": e })),
+            Json(serde_json::json!({ "error": "internal server error" })),
         )
             .into_response()
     })?;

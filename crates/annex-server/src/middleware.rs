@@ -19,6 +19,23 @@ use crate::AppState;
 #[derive(Clone, Debug)]
 pub struct IdentityContext(pub PlatformIdentity);
 
+/// Validates that a pseudonym string is safe to use as an identifier.
+///
+/// Production pseudonyms are 64-char lowercase hex (SHA-256 output), but
+/// in development/test mode (enforce_zk_proofs=false) shorter identifiers
+/// may be used. This check ensures basic sanity:
+/// - Non-empty
+/// - At most 128 bytes (well above the 64-char hex norm)
+/// - Only ASCII alphanumeric, hyphens, and underscores (no control chars,
+///   whitespace, quotes, semicolons, or other injection-friendly characters)
+fn is_valid_pseudonym_format(p: &str) -> bool {
+    !p.is_empty()
+        && p.len() <= 128
+        && p.as_bytes()
+            .iter()
+            .all(|&b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
 /// Middleware to authenticate requests via `X-Annex-Pseudonym` or `Authorization: Bearer`.
 ///
 /// # Security Note
@@ -51,7 +68,11 @@ pub async fn auth_middleware(mut req: Request<Body>, next: Next) -> Result<Respo
                 // session token, not a raw pseudonym.
                 crate::api_ws::verify_ws_token_for_auth(token, &state.ws_token_secret)?
             } else {
-                token.to_string()
+                let p = token.to_string();
+                if !is_valid_pseudonym_format(&p) {
+                    return Err(StatusCode::UNAUTHORIZED);
+                }
+                p
             }
         } else {
             return Err(StatusCode::UNAUTHORIZED);
@@ -61,9 +82,14 @@ pub async fn auth_middleware(mut req: Request<Body>, next: Next) -> Result<Respo
             tracing::warn!("X-Annex-Pseudonym header rejected (enforce_zk_proofs is enabled)");
             return Err(StatusCode::UNAUTHORIZED);
         }
-        val.to_str()
+        let p = val
+            .to_str()
             .map_err(|_| StatusCode::UNAUTHORIZED)?
-            .to_string()
+            .to_string();
+        if !is_valid_pseudonym_format(&p) {
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+        p
     } else {
         return Err(StatusCode::UNAUTHORIZED);
     };
@@ -580,6 +606,45 @@ mod tests {
 
         // Registration counter should be unaffected
         assert!(limiter.check(reg_key, 20));
+    }
+
+    #[test]
+    fn pseudonym_format_accepts_valid_64_hex() {
+        let valid = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";
+        assert!(is_valid_pseudonym_format(valid));
+    }
+
+    #[test]
+    fn pseudonym_format_accepts_alphanumeric_hyphen() {
+        assert!(is_valid_pseudonym_format("user-1"));
+        assert!(is_valid_pseudonym_format("agent_test"));
+    }
+
+    #[test]
+    fn pseudonym_format_rejects_empty() {
+        assert!(!is_valid_pseudonym_format(""));
+    }
+
+    #[test]
+    fn pseudonym_format_rejects_sql_injection() {
+        assert!(!is_valid_pseudonym_format("'; DROP TABLE platform_identities; --"));
+    }
+
+    #[test]
+    fn pseudonym_format_rejects_script_injection() {
+        assert!(!is_valid_pseudonym_format("<script>alert(1)</script>"));
+    }
+
+    #[test]
+    fn pseudonym_format_rejects_too_long() {
+        let long = "a".repeat(129);
+        assert!(!is_valid_pseudonym_format(&long));
+    }
+
+    #[test]
+    fn pseudonym_format_rejects_whitespace() {
+        assert!(!is_valid_pseudonym_format("user 1"));
+        assert!(!is_valid_pseudonym_format("user\t1"));
     }
 
     #[test]

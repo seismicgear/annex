@@ -267,17 +267,20 @@ impl ConnectionManager {
     pub async fn add_session(&self, pseudonym: String, sender: mpsc::Sender<String>) -> Uuid {
         let session_id = Uuid::new_v4();
 
-        // Check for and clean up an existing session for this pseudonym.
+        // Atomically replace any existing session under a single write lock
+        // to prevent TOCTOU races when two connections for the same pseudonym
+        // arrive concurrently.
         let had_previous = {
-            let sessions = self.sessions.read().await;
-            sessions.contains_key(&pseudonym)
+            let mut sessions = self.sessions.write().await;
+            let old = sessions.insert(pseudonym.clone(), (session_id, sender));
+            old.is_some()
         };
 
         if had_previous {
             // Clean up old subscriptions (channel_subscriptions → user_subscriptions order).
             let channels = {
-                let user_subs = self.user_subscriptions.read().await;
-                user_subs.get(&pseudonym).cloned()
+                let mut user_subs = self.user_subscriptions.write().await;
+                user_subs.remove(&pseudonym)
             };
 
             if let Some(ref channels) = channels {
@@ -292,21 +295,12 @@ impl ConnectionManager {
                 }
             }
 
-            if channels.is_some() {
-                let mut user_subs = self.user_subscriptions.write().await;
-                user_subs.remove(&pseudonym);
-            }
-
             tracing::info!(
                 pseudonym = %pseudonym,
                 "replaced existing WebSocket session; cleaned up old subscriptions"
             );
         }
 
-        self.sessions
-            .write()
-            .await
-            .insert(pseudonym, (session_id, sender));
         session_id
     }
 
@@ -511,6 +505,20 @@ pub async fn ws_handler(
                 pseudonym = %p,
                 remote_addr = %addr,
                 "websocket raw pseudonym rejected (enforce_zk_proofs is enabled)"
+            );
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+        // Validate pseudonym format before DB lookup — reject injection payloads
+        if p.is_empty()
+            || p.len() > 128
+            || !p
+                .as_bytes()
+                .iter()
+                .all(|&b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
+            tracing::warn!(
+                remote_addr = %addr,
+                "websocket raw pseudonym rejected (invalid format)"
             );
             return StatusCode::UNAUTHORIZED.into_response();
         }

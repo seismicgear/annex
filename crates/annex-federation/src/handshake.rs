@@ -104,7 +104,7 @@ mod tests {
     use annex_vrp::{VrpAnchorSnapshot, VrpCapabilitySharingContract};
 
     fn setup_db() -> Connection {
-        let mut conn = Connection::open_in_memory().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
         conn.execute(
             "CREATE TABLE federation_agreements (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -160,8 +160,10 @@ mod tests {
 
         // Local policy has prohibited actions; remote anchor has different ones.
         // This triggers a prohibited_actions_hash mismatch → Conflict.
-        let mut policy = ServerPolicy::default();
-        policy.prohibited_actions = vec!["violence".to_string()];
+        let policy = ServerPolicy {
+            prohibited_actions: vec!["violence".to_string()],
+            ..ServerPolicy::default()
+        };
 
         // Remote anchor with different prohibited actions
         let remote_anchor =

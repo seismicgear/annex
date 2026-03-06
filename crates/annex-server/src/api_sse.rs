@@ -1,5 +1,6 @@
 //! SSE presence stream handlers.
 
+use crate::middleware::IdentityContext;
 use crate::AppState;
 use axum::{
     extract::Extension,
@@ -13,7 +14,9 @@ use tokio_stream::StreamExt;
 /// Handler for `GET /events/presence`.
 ///
 /// Streams real-time presence events (node added, updated, pruned, edge changes).
+/// Requires authentication — presence data includes pseudonym IDs and trust state.
 pub async fn get_presence_stream_handler(
+    Extension(_identity): Extension<IdentityContext>,
     Extension(state): Extension<Arc<AppState>>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let rx = state.presence_tx.subscribe();

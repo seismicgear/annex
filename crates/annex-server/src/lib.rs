@@ -810,6 +810,10 @@ pub fn app(state: AppState) -> Router {
             "/api/graph/profile/{targetPseudonym}",
             get(api_graph::get_profile_handler),
         )
+        .route(
+            "/events/presence",
+            get(api_sse::get_presence_stream_handler),
+        )
         .layer(axum::middleware::from_fn(middleware::auth_middleware));
 
     // Upload routes need a larger body limit for media uploads.
@@ -884,10 +888,6 @@ pub fn app(state: AppState) -> Router {
             post(api_federation::receive_federated_rtx_handler),
         )
         .route("/api/graph/degrees", get(api_graph::get_degrees_handler))
-        .route(
-            "/events/presence",
-            get(api_sse::get_presence_stream_handler),
-        )
         .route("/api/public/events", get(api_observe::get_events_handler))
         .route("/events/stream", get(api_observe::get_event_stream_handler))
         .route(

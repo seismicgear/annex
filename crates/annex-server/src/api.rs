@@ -168,7 +168,16 @@ impl IntoResponse for ApiError {
             ApiError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg),
             ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
             ApiError::Conflict(msg) => (StatusCode::CONFLICT, msg),
-            ApiError::InternalServerError(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
+            ApiError::InternalServerError(msg) => {
+                // Log the real error server-side but return a generic message
+                // to the client to prevent leaking internal implementation details
+                // (DB errors, pool state, file paths, etc.)
+                tracing::error!("internal server error: {}", msg);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal server error".to_string(),
+                )
+            }
         };
 
         let body = Json(serde_json::json!({

@@ -39,7 +39,13 @@ impl IntoResponse for GraphApiError {
         let (status, message) = match self {
             GraphApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
             GraphApiError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
-            GraphApiError::InternalServerError(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
+            GraphApiError::InternalServerError(msg) => {
+                tracing::error!("internal server error: {}", msg);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal server error".to_string(),
+                )
+            }
         };
 
         let body = Json(serde_json::json!({
