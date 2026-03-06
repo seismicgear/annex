@@ -115,6 +115,9 @@ impl axum::response::IntoResponse for FederationError {
 pub struct HandshakeRequest {
     /// Base URL of the requesting server (to identify the instance).
     pub base_url: String,
+    /// Ed25519 signature (hex) over the canonical handshake JSON.
+    /// Binds the handshake to the claimed server identity.
+    pub signature: String,
     /// The VRP handshake payload.
     #[serde(flatten)]
     pub handshake: VrpFederationHandshake,
@@ -607,13 +610,13 @@ pub async fn federation_handshake_handler(
             .get()
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?; // Wrap pool error
 
-        // 1. Resolve remote instance ID from base_url
+        // 1. Resolve remote instance ID and public key from base_url
         tracing::debug!("Resolving instance for base_url: {}", payload.base_url);
-        let remote_instance_id: i64 = conn
+        let (remote_instance_id, public_key_hex): (i64, String) = conn
             .query_row(
-                "SELECT id FROM instances WHERE base_url = ?1",
+                "SELECT id, public_key FROM instances WHERE base_url = ?1",
                 params![payload.base_url],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .map_err(|e| {
                 tracing::error!("Instance resolution failed: {:?}", e);
@@ -623,6 +626,34 @@ pub async fn federation_handshake_handler(
                     FederationError::DbError(e)
                 }
             })?;
+
+        // 1b. Verify Ed25519 signature over the handshake payload.
+        // This binds the handshake to the claimed server identity, preventing
+        // forged handshakes from unauthenticated peers.
+        let handshake_json = serde_json::to_string(&payload.handshake)
+            .map_err(FederationError::Serialization)?;
+        let signing_payload = format!("{}\n{}", payload.base_url, handshake_json);
+
+        let public_key_bytes = hex::decode(&public_key_hex).map_err(|e| {
+            FederationError::InvalidSignature(format!("Invalid public key hex: {}", e))
+        })?;
+        let signature_bytes = hex::decode(&payload.signature).map_err(|e| {
+            FederationError::InvalidSignature(format!("Invalid signature hex: {}", e))
+        })?;
+
+        let public_key =
+            EdVerifyingKey::from_bytes(&public_key_bytes.try_into().map_err(|_| {
+                FederationError::InvalidSignature("Invalid public key length".to_string())
+            })?)
+            .map_err(|e| FederationError::InvalidSignature(e.to_string()))?;
+
+        let signature = Signature::from_bytes(&signature_bytes.try_into().map_err(|_| {
+            FederationError::InvalidSignature("Invalid signature length".to_string())
+        })?);
+
+        public_key
+            .verify(signing_payload.as_bytes(), &signature)
+            .map_err(|e| FederationError::InvalidSignature(e.to_string()))?;
 
         // 2. Process handshake
         tracing::debug!(

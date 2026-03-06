@@ -240,18 +240,24 @@ pub async fn delete_channel_handler(
         return Err(StatusCode::FORBIDDEN);
     }
 
+    let cid = channel_id.clone();
+    let state_clone = state.clone();
     tokio::task::spawn_blocking(move || {
-        let conn = state.pool.get().map_err(|e| {
+        let conn = state_clone.pool.get().map_err(|e| {
             tracing::error!(error = %e, "failed to get db connection for delete_channel");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
-        delete_channel(&conn, &channel_id).map_err(channel_err_to_status)
+        delete_channel(&conn, &cid).map_err(channel_err_to_status)
     })
     .await
     .map_err(|e| {
         tracing::error!(error = %e, "delete_channel task join error");
         StatusCode::INTERNAL_SERVER_ERROR
     })??;
+
+    // Unsubscribe all WebSocket subscribers from the deleted channel to prevent
+    // stale subscriptions from receiving messages on a non-existent channel.
+    state.connection_manager.unsubscribe_channel(&channel_id).await;
 
     Ok(Json(json!({"status": "deleted"})))
 }

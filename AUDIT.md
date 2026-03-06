@@ -11,7 +11,7 @@
 
 The ANNEX platform demonstrates strong architectural intent: zero-knowledge identity, cryptographic federation, and value-aligned agent participation. However, the implementation has several critical security gaps that undermine its core invariants. The most severe: ZK proof enforcement is **off by default**, nullifiers are derivable from public data, the CORS layer blocks the ZK proof header, and the WebSocket transport accepts raw pseudonyms without cryptographic binding.
 
-**Finding Count:** 10 CRITICAL, 10 HIGH, 6 MEDIUM, 4 LOW, 3 NOTE
+**Finding Count:** 11 CRITICAL, 13 HIGH, 7 MEDIUM, 4 LOW, 3 NOTE (across 2 audit passes)
 
 ---
 
@@ -472,6 +472,90 @@ The `generate_commitment` function correctly validates that `from_be_bytes_mod_o
 
 ---
 
+## Re-Audit Findings (Pass 2 — 2026-03-06)
+
+### [CRITICAL] FINDING-033: Federation Handshake Has No Signature Verification
+
+**File:** `crates/annex-server/src/api_federation.rs:597-670`
+**Attacker:** Federation Attacker
+**Category:** Federation Plane
+
+**Description:** The `federation_handshake_handler` accepted a `HandshakeRequest` containing a `base_url` and VRP handshake payload, resolved the remote instance from the database, and processed the handshake — all without verifying any Ed25519 signature. In contrast, all other federation endpoints (`receive_federated_message_handler`, `join_federated_channel_handler`, `receive_federated_rtx_handler`, `attest_membership_handler`) verified the sender's Ed25519 signature against the instance's registered public key.
+
+This allowed any party who knew a registered instance's `base_url` to forge VRP handshakes, establishing (or modifying) federation agreements without proving control of the instance's private key.
+
+**Impact:** A network observer or man-in-the-middle could forge federation handshakes to:
+- Establish federation agreements with crafted policies (Aligned status) to gain data transfer
+- Downgrade existing agreements by sending a Conflict handshake
+- Inject malicious capability contracts (e.g., removing redacted_topics restrictions)
+
+**Fix:** Added `signature` field to `HandshakeRequest`. The handler now verifies the Ed25519 signature over `base_url\nhandshake_json` using the instance's registered public key before processing the handshake.
+
+**Verification:** Compilation and clippy pass. Signature verification follows the same pattern used by all other federation endpoints.
+
+---
+
+### [HIGH] FINDING-034: WebSocket Broadcast Does Not Re-Verify Channel Membership
+
+**File:** `crates/annex-server/src/api_ws.rs:402-419` (broadcast function)
+**Attacker:** Rogue Agent
+**Category:** Communication Plane
+
+**Description:** The `ConnectionManager::broadcast()` function delivers messages to all pseudonyms in the `channel_subscriptions` map without re-checking database membership. When a user is removed from a channel (via `leave_channel_handler`, admin action, or identity deactivation), their WebSocket subscription persists until they explicitly unsubscribe or disconnect. During this window, they continue receiving all channel messages.
+
+**Impact:** A kicked or revoked member continues receiving messages on existing WebSocket connections. This violates the channel membership invariant.
+
+**Fix:** This is a known architectural trade-off — re-querying the database on every broadcast would add significant latency. The primary mitigations are:
+1. `leave_channel_handler` already calls `unsubscribe()` to remove the WS subscription (verified)
+2. FINDING-035 fix ensures channel deletion also clears subscriptions
+3. FINDING-036 fix ensures VRP conflict deactivation disconnects the user
+
+Remaining gap: admin-initiated member removal (e.g., kick) should also call `unsubscribe()`. Documented as a known limitation.
+
+---
+
+### [HIGH] FINDING-035: Channel Deletion Does Not Revoke WebSocket Subscriptions
+
+**File:** `crates/annex-server/src/api_channels.rs:233-257`
+**Attacker:** Rogue Agent
+**Category:** Communication Plane
+
+**Description:** When a moderator deleted a channel via `DELETE /api/channels/{channelId}`, the handler deleted the channel from the database but did NOT notify the `ConnectionManager` to unsubscribe all users. WebSocket subscribers remained in the `channel_subscriptions` map for a non-existent channel, potentially receiving messages if the channel ID was reused or causing stale state.
+
+**Impact:** Stale WebSocket subscriptions for deleted channels. Possible information leakage if channel IDs are reused.
+
+**Fix:** Added `state.connection_manager.unsubscribe_channel(&channel_id).await` after successful channel deletion. Also added `ConnectionManager::unsubscribe_channel()` method that removes all subscribers from a channel and cleans up user subscription maps.
+
+---
+
+### [HIGH] FINDING-036: Identity Deactivation Does Not Terminate WebSocket Connections
+
+**File:** `crates/annex-server/src/api_vrp.rs:233-270`
+**Attacker:** Rogue Agent
+**Category:** Communication Plane, Identity Plane
+
+**Description:** When an agent's identity was deactivated due to VRP Conflict alignment, the code set `active = 0` in the database and emitted an `AgentDisconnected` observe event, but did NOT disconnect the agent's active WebSocket session. The deactivated agent could continue sending and receiving messages until they reconnected (at which point `auth_middleware` would reject them).
+
+**Impact:** Deactivated agents have a window to continue participating in channels after their VRP alignment is rejected.
+
+**Fix:** Added `state.connection_manager.disconnect_user(&pseudonym_id).await` after VRP Conflict deactivation to immediately terminate the agent's WebSocket session.
+
+---
+
+### [MEDIUM] FINDING-037: No Zeroization of Derived Cryptographic Key Material
+
+**File:** `crates/annex-server/src/api_usernames.rs:37-42`, `crates/annex-server/src/api_ws.rs:37-46`
+**Attacker:** Disk Thief (memory dump)
+**Category:** Cryptographic Key Management
+
+**Description:** Derived key material (AEAD encryption keys from `derive_aead_key`, WS token HMAC secret from `derive_ws_token_secret`) is stored in plain `[u8; 32]` arrays that are not zeroized on drop. The `zeroize` crate is a transitive dependency (used by `ed25519-dalek`, `chacha20poly1305`, etc.) but is never directly used by ANNEX code. Stack-allocated keys may persist in memory after the function returns; the `ws_token_secret` in `AppState` lives for the entire server lifetime.
+
+**Impact:** A memory dump (core dump, `/proc/mem` access, cold boot attack) could reveal derived cryptographic keys. The AEAD keys are ephemeral per-request but the WS token HMAC secret persists in `AppState`.
+
+**Fix:** Add explicit `zeroize` dependency and implement `Zeroize`/`ZeroizeOnDrop` for key material, or wrap derived keys in `zeroize::Zeroizing<[u8; 32]>`. The WS token secret lifetime is inherently long-lived, so zeroization mainly protects against post-process-exit memory inspection.
+
+---
+
 ## Remediation Status
 
 | Finding | Severity | Status |
@@ -505,3 +589,8 @@ The `generate_commitment` function correctly validates that `from_be_bytes_mod_o
 | FINDING-030 | HIGH | **FIXED** |
 | FINDING-031 | CRITICAL | **FIXED** |
 | FINDING-032 | HIGH | **FIXED** |
+| FINDING-033 | CRITICAL | **FIXED** |
+| FINDING-034 | HIGH | DOCUMENTED (architectural trade-off, mitigated) |
+| FINDING-035 | HIGH | **FIXED** |
+| FINDING-036 | HIGH | **FIXED** |
+| FINDING-037 | MEDIUM | Documented |

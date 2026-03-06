@@ -398,6 +398,27 @@ impl ConnectionManager {
         }
     }
 
+    /// Removes all subscriptions for a channel (e.g., when it is deleted).
+    ///
+    /// Returns the set of pseudonyms that were subscribed, so callers can
+    /// notify them if needed.
+    pub async fn unsubscribe_channel(&self, channel_id: &str) -> HashSet<String> {
+        let mut chan_subs = self.channel_subscriptions.write().await;
+        let removed = chan_subs.remove(channel_id).unwrap_or_default();
+
+        let mut user_subs = self.user_subscriptions.write().await;
+        for pseudonym in &removed {
+            if let Some(channels) = user_subs.get_mut(pseudonym) {
+                channels.remove(channel_id);
+                if channels.is_empty() {
+                    user_subs.remove(pseudonym);
+                }
+            }
+        }
+
+        removed
+    }
+
     /// Broadcasts a message string to all subscribers of a channel.
     pub async fn broadcast(&self, channel_id: &str, message_json: String) {
         let chan_subs = self.channel_subscriptions.read().await;

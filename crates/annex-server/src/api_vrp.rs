@@ -29,6 +29,8 @@ pub async fn agent_handshake_handler(
     Extension(state): Extension<Arc<AppState>>,
     Json(payload): Json<AgentHandshakeRequest>,
 ) -> Result<Json<VrpValidationReport>, ApiError> {
+    let pseudonym_id_for_disconnect = payload.pseudonym_id.clone();
+    let state_for_disconnect = state.clone();
     let result = tokio::task::spawn_blocking(move || {
         // 1. Get DB connection
         let mut conn = state
@@ -278,6 +280,15 @@ pub async fn agent_handshake_handler(
     })
     .await
     .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+
+    // If the agent was deactivated due to Conflict alignment, disconnect their
+    // WebSocket session so they cannot continue sending/receiving messages.
+    if result.alignment_status == VrpAlignmentStatus::Conflict {
+        state_for_disconnect
+            .connection_manager
+            .disconnect_user(&pseudonym_id_for_disconnect)
+            .await;
+    }
 
     Ok(Json(result))
 }
