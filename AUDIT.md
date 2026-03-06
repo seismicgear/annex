@@ -11,7 +11,7 @@
 
 The ANNEX platform demonstrates strong architectural intent: zero-knowledge identity, cryptographic federation, and value-aligned agent participation. However, the implementation has several critical security gaps that undermine its core invariants. The most severe: ZK proof enforcement is **off by default**, nullifiers are derivable from public data, the CORS layer blocks the ZK proof header, and the WebSocket transport accepts raw pseudonyms without cryptographic binding.
 
-**Finding Count:** 9 CRITICAL, 9 HIGH, 6 MEDIUM, 4 LOW, 3 NOTE
+**Finding Count:** 10 CRITICAL, 10 HIGH, 6 MEDIUM, 4 LOW, 3 NOTE
 
 ---
 
@@ -444,6 +444,34 @@ The `generate_commitment` function correctly validates that `from_be_bytes_mod_o
 
 ---
 
+### [CRITICAL] FINDING-031: Legacy Identities Bypass ZK Proof Requirement
+
+**File:** `crates/annex-server/src/middleware.rs:460-495`
+**Attacker:** Rogue Agent, Network Observer
+**Category:** Identity Plane
+
+**Description:** When `enforce_zk_proofs` is enabled, the `verify_zk_membership_header` function requires the `x-annex-zk-proof` header but skips the commitment binding check when `expected_commitment_hex` is `None`. This happens for identities that were created before ZK registration was deployed (no commitment in the database). An attacker could submit a valid proof for *any* commitment and gain access to channels, since the binding check (`payload.commitment_hex != expected`) is wrapped in `if let Some(expected)`.
+
+**Impact:** Legacy identities without registered commitments can bypass the proof-to-identity binding, using any valid proof to access protected resources. This undermines the core ZK invariant even when enforcement is explicitly enabled.
+
+**Fix:** When `enforce_zk_proofs` is true and `expected_commitment_hex` is `None`, immediately reject with `FORBIDDEN`. Legacy identities must re-register through the ZK identity flow.
+
+---
+
+### [HIGH] FINDING-032: Commitment Hashes and Merkle Roots Logged in Warnings
+
+**File:** `crates/annex-server/src/middleware.rs:488-493,530-534`
+**Attacker:** Disk Thief
+**Category:** Error Handling / Information Leakage
+
+**Description:** When ZK proof verification fails (commitment mismatch or root mismatch), the warning logs included both the submitted and expected commitment hex values, and both the submitted and current Merkle root hex values. An attacker with access to log files could use these to reconstruct identity commitments and Merkle tree state for offline analysis.
+
+**Impact:** Log access reveals cryptographic identity material. Commitment hashes could be used for nullifier derivation (see FINDING-003). Root hashes reveal Merkle tree state evolution, enabling offline membership analysis.
+
+**Fix:** Removed commitment hex and root hex values from log messages. Logs now indicate the failure type without exposing cryptographic material.
+
+---
+
 ## Remediation Status
 
 | Finding | Severity | Status |
@@ -475,3 +503,5 @@ The `generate_commitment` function correctly validates that `from_be_bytes_mod_o
 | FINDING-028 | HIGH | **FIXED** |
 | FINDING-029 | CRITICAL | **FIXED** |
 | FINDING-030 | HIGH | **FIXED** |
+| FINDING-031 | CRITICAL | **FIXED** |
+| FINDING-032 | HIGH | **FIXED** |

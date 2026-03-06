@@ -466,6 +466,14 @@ pub fn verify_zk_membership_header(
         return Ok(());
     }
 
+    // When ZK enforcement is enabled, every identity MUST have a registered
+    // commitment. Legacy identities without commitments cannot bypass proof
+    // verification — they must re-register through the ZK identity flow.
+    if expected_commitment_hex.is_none() {
+        tracing::warn!("ZK enforcement enabled but identity has no registered commitment");
+        return Err(StatusCode::FORBIDDEN);
+    }
+
     let header_val = headers
         .get("x-annex-zk-proof")
         .ok_or(StatusCode::FORBIDDEN)?;
@@ -486,8 +494,6 @@ pub fn verify_zk_membership_header(
     if let Some(expected) = expected_commitment_hex {
         if payload.commitment_hex != expected {
             tracing::warn!(
-                submitted = %payload.commitment_hex,
-                expected = %expected,
                 "ZK proof commitment does not match authenticated identity"
             );
             return Err(StatusCode::FORBIDDEN);
@@ -521,11 +527,7 @@ pub fn verify_zk_membership_header(
         tree.root_hex()
     };
     if current_root != payload.root_hex {
-        tracing::warn!(
-            submitted = %payload.root_hex,
-            current = %current_root,
-            "ZK proof root does not match current Merkle root"
-        );
+        tracing::warn!("ZK proof root does not match current Merkle root");
         return Err(StatusCode::FORBIDDEN);
     }
 
