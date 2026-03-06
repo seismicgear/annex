@@ -81,7 +81,7 @@ vi.mock('@/components/DeviceLinkDialog', () => ({ DeviceLinkDialog: () => null }
 
 vi.mock('@/lib/startup-prefs', () => ({ clearWebStartupMode: vi.fn() }));
 vi.mock('@/lib/invite', () => ({
-  parseInviteFromUrl: vi.fn(() => null),
+  parseLegacyInviteFromUrl: vi.fn(() => null),
   clearInviteFromUrl: vi.fn(),
 }));
 vi.mock('@/lib/personas', () => ({ getPersonasForIdentity: vi.fn(async () => []) }));

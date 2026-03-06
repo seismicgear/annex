@@ -55,14 +55,6 @@ export function parseLegacyInviteFromUrl(): LegacyInvitePayload | null {
 }
 
 /**
- * @deprecated Use parseLegacyInviteFromUrl() for old-style channel links.
- * New invite flow uses the annex:// protocol handler via Tauri deep-link events.
- */
-export function parseInviteFromUrl(): LegacyInvitePayload | null {
-  return parseLegacyInviteFromUrl();
-}
-
-/**
  * Parse an annex:// protocol invite URL.
  *
  * Expected format: annex://invite?server={percent_encoded}&code={percent_encoded}
@@ -116,21 +108,6 @@ export async function createInviteLink(
   }
 
   return response.json();
-}
-
-/**
- * @deprecated Use createInviteLink() for monolithannex.com invite URLs.
- * Kept for backwards compatibility with existing UI code.
- */
-export function generateInviteLink(
-  channelId: string,
-  serverSlug: string,
-  label?: string,
-): string {
-  const base = `${window.location.origin}/invite/${encodeURIComponent(channelId)}`;
-  const params = new URLSearchParams({ slug: serverSlug });
-  if (label) params.set('label', label);
-  return `${base}?${params.toString()}`;
 }
 
 /** Clear the invite state from the URL without a page reload. */

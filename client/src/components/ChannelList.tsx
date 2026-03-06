@@ -9,7 +9,8 @@ import { useEffect, useState } from 'react';
 import { useChannelsStore } from '@/stores/channels';
 import { useIdentityStore } from '@/stores/identity';
 import { CreateChannelDialog } from '@/components/CreateChannelDialog';
-import { generateInviteLink } from '@/lib/invite';
+import { createInviteLink } from '@/lib/invite';
+import { getApiBaseUrl } from '@/lib/api';
 import type { Channel } from '@/types';
 
 const CHANNEL_TYPE_ICONS: Record<string, { icon: string; tooltip: string }> = {
@@ -68,12 +69,13 @@ function ChannelItem({
   const handleCopyInvite = async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      const link = generateInviteLink(channel.channel_id, serverSlug, channel.name);
-      await navigator.clipboard.writeText(link);
+      const apiBase = getApiBaseUrl();
+      const { url } = await createInviteLink(apiBase, pseudonymId);
+      await navigator.clipboard.writeText(url);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      // Clipboard access denied or insecure context
+      // Invite creation failed or clipboard access denied
     }
   };
 

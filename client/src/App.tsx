@@ -28,13 +28,13 @@ import { AdminPanel } from '@/components/AdminPanel';
 import { ServerHub } from '@/components/ServerHub';
 import { StartupModeSelector } from '@/components/StartupModeSelector';
 import { clearWebStartupMode } from '@/lib/startup-prefs';
-import { parseInviteFromUrl, clearInviteFromUrl } from '@/lib/invite';
+import { parseLegacyInviteFromUrl, clearInviteFromUrl } from '@/lib/invite';
 import { getPersonasForIdentity } from '@/lib/personas';
 import { getApiBaseUrl, getServerSummary, setPublicUrl } from '@/lib/api';
 import { cancelMembershipProofGeneration, isProofGenerationInFlight } from '@/lib/zk';
 import type { ProvingStatus } from '@/stores/identity';
 import { isTauri, getStartupMode as tauriGetStartupMode } from '@/lib/tauri';
-import type { LegacyLegacyInvitePayload } from '@/types';
+import type { LegacyInvitePayload } from '@/types';
 import './App.css';
 
 type AppView = 'chat' | 'federation' | 'events' | 'admin-policy' | 'admin-channels' | 'admin-members' | 'admin-server';
@@ -85,7 +85,7 @@ export default function App() {
   const [provingFailures, setProvingFailures] = useState(0);
   const adminMenuRef = useRef<HTMLDivElement>(null);
   const [pendingInvite, setPendingInvite] = useState<LegacyInvitePayload | null>(
-    () => parseInviteFromUrl(),
+    () => parseLegacyInviteFromUrl(),
   );
   const inviteProcessed = useRef(false);
   const serverSaved = useRef(false);
