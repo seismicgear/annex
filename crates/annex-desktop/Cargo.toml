@@ -11,6 +11,8 @@ tauri-build = { version = "2", features = [] }
 annex-server = { path = "../annex-server" }
 axum = { workspace = true }
 tauri = { version = "2", features = [] }
+tauri-plugin-deep-link = "2"
+url = "2"
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

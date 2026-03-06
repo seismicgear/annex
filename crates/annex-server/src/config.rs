@@ -163,6 +163,11 @@ pub struct ServerConfig {
     /// Default: 256.
     #[serde(default = "default_presence_broadcast_capacity")]
     pub presence_broadcast_capacity: usize,
+
+    /// Base URL for generated invite links.
+    /// Default: "https://monolithannex.com/invite".
+    #[serde(default = "default_invite_base_url")]
+    pub invite_base_url: String,
 }
 
 /// Database configuration.
@@ -229,6 +234,10 @@ fn default_presence_broadcast_capacity() -> usize {
     256
 }
 
+fn default_invite_base_url() -> String {
+    "https://monolithannex.com/invite".to_string()
+}
+
 fn default_db_busy_timeout_ms() -> u64 {
     5_000
 }
@@ -247,6 +256,7 @@ impl Default for ServerConfig {
             public_url: default_public_url(),
             merkle_tree_depth: default_merkle_tree_depth(),
             presence_broadcast_capacity: default_presence_broadcast_capacity(),
+            invite_base_url: default_invite_base_url(),
         }
     }
 }
@@ -469,6 +479,9 @@ pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
     }
     if let Some(cap) = parse_env_var("ANNEX_PRESENCE_BROADCAST_CAPACITY")? {
         config.server.presence_broadcast_capacity = cap;
+    }
+    if let Some(invite_url) = parse_env_var::<String>("ANNEX_INVITE_BASE_URL")? {
+        config.server.invite_base_url = invite_url;
     }
     if let Some(db_path) = parse_env_var::<String>("ANNEX_DB_PATH")? {
         config.database.path = db_path;

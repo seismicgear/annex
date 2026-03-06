@@ -14,7 +14,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use tauri::Manager;
+use tauri::{Emitter, Listener, Manager};
 
 /// Resolve the application data directory.
 ///
@@ -175,6 +175,52 @@ struct AppManagedState {
     server: Mutex<Option<ServerState>>,
     tunnel: Mutex<Option<TunnelState>>,
     livekit: Mutex<Option<LiveKitProcessState>>,
+}
+
+// ── Deep-link invite parsing ──
+
+/// Parsed invite from an `annex://` protocol handler URL.
+/// Emitted to the frontend as a Tauri event.
+#[derive(Debug, Clone, Serialize)]
+struct DeepLinkInvite {
+    server: String,
+    code: String,
+}
+
+/// Parse an `annex://invite?server=...&code=...` URL.
+///
+/// Returns `None` if the URL is not a valid annex://invite URL or if the
+/// server is not HTTPS.
+fn parse_deep_link_invite(raw_url: &str) -> Option<DeepLinkInvite> {
+    let parsed = url::Url::parse(raw_url).ok()?;
+
+    if parsed.scheme() != "annex" {
+        return None;
+    }
+
+    if parsed.host_str() != Some("invite") {
+        return None;
+    }
+
+    let mut server = None;
+    let mut code = None;
+
+    for (key, value) in parsed.query_pairs() {
+        match key.as_ref() {
+            "server" => server = Some(value.into_owned()),
+            "code" => code = Some(value.into_owned()),
+            _ => {}
+        }
+    }
+
+    let server = server?;
+    let code = code?;
+
+    if !server.starts_with("https://") {
+        return None;
+    }
+
+    Some(DeepLinkInvite { server, code })
 }
 
 // ── Tauri commands ──
@@ -1589,6 +1635,7 @@ fn main() {
     }
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_deep_link::init())
         .manage(AppManagedState {
             data_dir,
             config_path,
@@ -1608,6 +1655,25 @@ fn main() {
                     set_dark_window_border(&window);
                 }
             }
+
+            // Handle annex:// deep-link URLs for invite acceptance.
+            let handle = app.handle().clone();
+            app.listen("deep-link://new-url", move |event| {
+                let payload = event.payload();
+                if let Ok(urls) = serde_json::from_str::<Vec<String>>(payload) {
+                    for raw_url in urls {
+                        if let Some(invite) = parse_deep_link_invite(&raw_url) {
+                            tracing::info!(
+                                server = %invite.server,
+                                code = %invite.code,
+                                "received annex:// invite deep link"
+                            );
+                            let _ = handle.emit("annex-invite", &invite);
+                        }
+                    }
+                }
+            });
+
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -1826,5 +1892,37 @@ mod tests {
             ["wayland", "x11", "unknown"].contains(&ds.as_str()),
             "display_server should be wayland, x11, or unknown, got: {ds}"
         );
+    }
+
+    #[test]
+    fn parse_valid_annex_invite_deep_link() {
+        let url = "annex://invite?server=https%3A%2F%2Fannex.example.com&code=abc123";
+        let invite = parse_deep_link_invite(url).unwrap();
+        assert_eq!(invite.server, "https://annex.example.com");
+        assert_eq!(invite.code, "abc123");
+    }
+
+    #[test]
+    fn parse_deep_link_invite_rejects_http() {
+        let url = "annex://invite?server=http%3A%2F%2Fannex.example.com&code=abc123";
+        assert!(parse_deep_link_invite(url).is_none());
+    }
+
+    #[test]
+    fn parse_deep_link_invite_rejects_wrong_path() {
+        let url = "annex://settings?server=https%3A%2F%2Fannex.example.com&code=abc123";
+        assert!(parse_deep_link_invite(url).is_none());
+    }
+
+    #[test]
+    fn parse_deep_link_invite_missing_code() {
+        let url = "annex://invite?server=https%3A%2F%2Fannex.example.com";
+        assert!(parse_deep_link_invite(url).is_none());
+    }
+
+    #[test]
+    fn parse_deep_link_invite_missing_server() {
+        let url = "annex://invite?code=abc123";
+        assert!(parse_deep_link_invite(url).is_none());
     }
 }

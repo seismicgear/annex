@@ -1,24 +1,24 @@
 /**
  * Invite routing — parses invite links and orchestrates background
- * identity verification + channel join.
+ * identity verification + server join.
  *
- * Invite URL format:
+ * New invite URL format (monolithannex.com):
+ *   https://monolithannex.com/invite/{base64url_payload}
+ *   → deep-links to annex://invite?server={encoded}&code={encoded}
+ *
+ * Legacy invite URL format (direct server links):
  *   https://<host>/invite/<channelId>?slug=<serverSlug>&label=<label>
- *
- * The invite link carries enough state to:
- * 1. Route the user to the correct server
- * 2. Trigger background Groth16 proof generation
- * 3. Execute VRP handshake
- * 4. Join the target channel
  */
 
-import type { InvitePayload } from '@/types';
+import type { InvitePayload, LegacyInvitePayload } from '@/types';
 
 /**
- * Parse an invite link from the current window location.
+ * Parse an invite from the current window location.
+ *
+ * Supports legacy channel-based invite links for backwards compatibility.
  * Returns null if the current URL is not an invite link.
  */
-export function parseInviteFromUrl(): InvitePayload | null {
+export function parseLegacyInviteFromUrl(): LegacyInvitePayload | null {
   const url = new URL(window.location.href);
   const pathParts = url.pathname.split('/').filter(Boolean);
 
@@ -55,7 +55,72 @@ export function parseInviteFromUrl(): InvitePayload | null {
 }
 
 /**
- * Generate an invite link for a channel on the current server.
+ * @deprecated Use parseLegacyInviteFromUrl() for old-style channel links.
+ * New invite flow uses the annex:// protocol handler via Tauri deep-link events.
+ */
+export function parseInviteFromUrl(): LegacyInvitePayload | null {
+  return parseLegacyInviteFromUrl();
+}
+
+/**
+ * Parse an annex:// protocol invite URL.
+ *
+ * Expected format: annex://invite?server={percent_encoded}&code={percent_encoded}
+ *
+ * This is called when the desktop app receives a deep-link from
+ * monolithannex.com's "Open in Annex" button.
+ */
+export function parseProtocolInvite(rawUrl: string): InvitePayload | null {
+  try {
+    const url = new URL(rawUrl);
+    if (url.protocol !== 'annex:') return null;
+    if (url.hostname !== 'invite') return null;
+
+    const server = url.searchParams.get('server');
+    const code = url.searchParams.get('code');
+
+    if (!server || !code) return null;
+    if (!server.startsWith('https://')) return null;
+
+    return { server, code };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Create a new invite by calling the server API.
+ *
+ * Returns the full monolithannex.com shareable URL.
+ */
+export async function createInviteLink(
+  apiBaseUrl: string,
+  pseudonymId: string,
+  options?: { maxUses?: number; expiresInHours?: number },
+): Promise<{ code: string; url: string; expiresAt?: string }> {
+  const response = await fetch(`${apiBaseUrl}/api/invites`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Annex-Pseudonym': pseudonymId,
+    },
+    body: JSON.stringify({
+      maxUses: options?.maxUses,
+      expiresInHours: options?.expiresInHours,
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error || `Failed to create invite: ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * @deprecated Use createInviteLink() for monolithannex.com invite URLs.
+ * Kept for backwards compatibility with existing UI code.
  */
 export function generateInviteLink(
   channelId: string,

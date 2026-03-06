@@ -27,6 +27,13 @@
       "csp": "default-src 'self' tauri: https://tauri.localhost; connect-src * ws: wss:; img-src 'self' data: blob: http: https:; media-src 'self' blob: data: mediastream: http: https:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:"
     }
   },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["annex"]
+      }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",
