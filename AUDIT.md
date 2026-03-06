@@ -11,7 +11,7 @@
 
 The ANNEX platform demonstrates strong architectural intent: zero-knowledge identity, cryptographic federation, and value-aligned agent participation. However, the implementation has several critical security gaps that undermine its core invariants. The most severe: ZK proof enforcement is **off by default**, nullifiers are derivable from public data, the CORS layer blocks the ZK proof header, and the WebSocket transport accepts raw pseudonyms without cryptographic binding.
 
-**Finding Count:** 7 CRITICAL, 5 HIGH, 6 MEDIUM, 4 LOW, 3 NOTE
+**Finding Count:** 8 CRITICAL, 8 HIGH, 6 MEDIUM, 4 LOW, 3 NOTE
 
 ---
 
@@ -372,6 +372,50 @@ The `generate_commitment` function correctly validates that `from_be_bytes_mod_o
 
 ---
 
+### [CRITICAL] FINDING-026: Federation Agreement Persisted on Conflict Alignment
+
+**File:** `crates/annex-federation/src/handshake.rs:72-87`
+**Attacker:** Federation Attacker
+**Category:** Federation Plane
+
+**Description:** The `process_incoming_handshake` function called `validate_federation_handshake()` and persisted the resulting agreement regardless of the alignment status. When VRP validation returned `Conflict`, a federation agreement was still created in the database with `alignment_status = 'Conflict'` and `transfer_scope = 'NoTransfer'`. Downstream code (RTX relay, message relay) that queries for active agreements could find these Conflict agreements, and the transfer scope check was the only barrier — a logic error or future code change could allow unauthorized data flow through Conflict agreements.
+
+**Impact:** A malicious federation peer with conflicting safety policies could establish a persistent agreement record. If any downstream code path checks `active = 1` without also checking `alignment_status != 'Conflict'`, knowledge transfer could bypass VRP alignment enforcement.
+
+**Fix:** Reject Conflict handshakes before persisting. Return `HandshakeError::AlignmentConflict` error. Only Aligned and Partial handshakes create agreements.
+
+**Verification:** New test `conflict_handshake_rejected_no_agreement_persisted` confirms zero rows in `federation_agreements` after a Conflict handshake.
+
+---
+
+### [HIGH] FINDING-027: Agent Channel Type Not Enforced — Humans Can Join Agent Channels
+
+**File:** `crates/annex-server/src/api_channels.rs:309-407`
+**Attacker:** Rogue Agent, Network Observer
+**Category:** Communication Plane
+
+**Description:** The `join_channel_handler` validates agent alignment for AI agents (step 3) but does not enforce that `Agent`-type channels are restricted to AI agents only. A human identity can join an `Agent`-type channel by calling `POST /api/channels/{channel_id}/join`.
+
+**Impact:** Human identities gain access to agent-specific channels, potentially bypassing agent-specific policy controls (alignment checks, VRP handshake requirements, transfer scope). Agent channels may contain RTX bundles or agent coordination data not intended for human consumption.
+
+**Fix:** Added channel type enforcement between capability check (step 2) and alignment check (step 3): reject non-agent identities from Agent channels with `403 FORBIDDEN`.
+
+---
+
+### [HIGH] FINDING-028: Federation RTX Relay Does Not Enforce Redacted Topics
+
+**File:** `crates/annex-server/src/api_federation.rs:1049-1186`
+**Attacker:** Federation Attacker
+**Category:** Federation Plane
+
+**Description:** The `receive_federated_rtx_handler` validates transfer scope (step 2), signature (step 3), and bundle structure (step 4), but does NOT check the bundle's `domain_tags` against the remote peer's `redacted_topics` from their capability contract. The `check_redacted_topics` function exists in `annex-rtx::validation` but was never called in the federation relay path. A federation peer could send RTX bundles containing topics they declared as redacted in their VRP handshake.
+
+**Impact:** Knowledge about topics the remote peer declared off-limits (e.g., "finance", "politics") could be transferred across federation boundaries, violating the VRP capability contract's intent.
+
+**Fix:** Added redacted topics enforcement after transfer scope check: fetch the remote handshake's `capability_contract.redacted_topics` from the agreement and call `check_redacted_topics()` before accepting the bundle.
+
+---
+
 ## Remediation Status
 
 | Finding | Severity | Status |
@@ -398,3 +442,6 @@ The `generate_commitment` function correctly validates that `from_be_bytes_mod_o
 | FINDING-020 | LOW | **FIXED** |
 | FINDING-021 | LOW | Documented |
 | FINDING-022 | LOW | Documented |
+| FINDING-026 | CRITICAL | **FIXED** |
+| FINDING-027 | HIGH | **FIXED** |
+| FINDING-028 | HIGH | **FIXED** |
