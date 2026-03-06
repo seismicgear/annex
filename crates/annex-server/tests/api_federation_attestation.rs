@@ -99,7 +99,7 @@ async fn test_attest_membership_unknown_remote() {
         topic: "annex:server:v1".to_string(),
         commitment: "0000000000000000000000000000000000000000000000000000000000000001".to_string(),
         proof: serde_json::json!({}), // Dummy proof
-        participant_type: "HUMAN".to_string(),
+        participant_type: "AI_AGENT".to_string(),
         signature: "00".to_string(), // Dummy signature
     };
 
@@ -186,7 +186,7 @@ async fn test_attest_membership_invalid_signature() {
         topic: "annex:server:v1".to_string(),
         commitment: "0000000000000000000000000000000000000000000000000000000000000001".to_string(),
         proof: serde_json::json!({}),
-        participant_type: "HUMAN".to_string(),
+        participant_type: "AI_AGENT".to_string(),
         signature: "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000".to_string(), // Invalid signature (64 bytes hex = 128 chars)
     };
 
@@ -275,7 +275,7 @@ async fn test_attest_membership_valid_signature_fails_network() {
 
     let topic = "annex:server:v1".to_string();
     let commitment = "0000000000000000000000000000000000000000000000000000000000000001".to_string();
-    let participant_type = "HUMAN".to_string();
+    let participant_type = "AI_AGENT".to_string();
     let message = format!("{}\n{}\n{}", topic, commitment, participant_type);
     let signature = signing_key.sign(message.as_bytes());
     let signature_hex = hex::encode(signature.to_bytes());
@@ -307,4 +307,41 @@ async fn test_attest_membership_valid_signature_fails_network() {
         .unwrap();
     let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
     assert!(body_str.contains("internal server error"));
+}
+
+#[tokio::test]
+async fn test_attest_membership_rejects_human_participant_type() {
+    let app = setup_app().await;
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+
+    let payload = AttestationRequest {
+        originating_server: "http://any-server.com".to_string(),
+        topic: "annex:server:v1".to_string(),
+        commitment: "0000000000000000000000000000000000000000000000000000000000000001".to_string(),
+        proof: serde_json::json!({}),
+        participant_type: "HUMAN".to_string(),
+        signature: "00".to_string(),
+    };
+
+    let mut request = Request::builder()
+        .uri("/api/federation/attest-membership")
+        .method("POST")
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_string(&payload).unwrap()))
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
+
+    let response = app.oneshot(request).await.unwrap();
+
+    // HUMAN participant_type must be rejected before any other processing
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+    assert!(
+        body_str.contains("HUMAN participant_type is not permitted"),
+        "Expected HUMAN rejection error, got: {}",
+        body_str
+    );
 }

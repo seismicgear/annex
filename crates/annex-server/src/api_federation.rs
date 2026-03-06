@@ -755,6 +755,14 @@ pub async fn attest_membership_handler(
 ) -> Result<Json<serde_json::Value>, FederationError> {
     let state_clone = state.clone();
 
+    // 0. Reject HUMAN participant_type — only local identity proofs may attest HUMAN status.
+    //    Federation peers must not be able to inject HUMAN-typed identities.
+    if payload.participant_type == "HUMAN" {
+        return Err(FederationError::ZkVerification(
+            "HUMAN participant_type is not permitted via federation attestation".to_string(),
+        ));
+    }
+
     // 1. Verify Request Origin (Resolve Instance & Check Signature)
     let originating_server = payload.originating_server.clone();
     let (remote_instance_id, public_key_hex) = tokio::task::spawn_blocking(move || {
@@ -860,7 +868,11 @@ pub async fn attest_membership_handler(
         })?;
 
         let node_type = match payload.participant_type.as_str() {
-            "HUMAN" => NodeType::Human,
+            "HUMAN" => {
+                return Err(FederationError::ZkVerification(
+                    "HUMAN participant_type is not permitted via federation attestation".to_string(),
+                ));
+            }
             "AI_AGENT" => NodeType::AiAgent,
             "COLLECTIVE" => NodeType::Collective,
             "BRIDGE" => NodeType::Bridge,
