@@ -11,7 +11,7 @@
 
 The ANNEX platform demonstrates strong architectural intent: zero-knowledge identity, cryptographic federation, and value-aligned agent participation. However, the implementation has several critical security gaps that undermine its core invariants. The most severe: ZK proof enforcement is **off by default**, nullifiers are derivable from public data, the CORS layer blocks the ZK proof header, and the WebSocket transport accepts raw pseudonyms without cryptographic binding.
 
-**Finding Count:** 8 CRITICAL, 8 HIGH, 6 MEDIUM, 4 LOW, 3 NOTE
+**Finding Count:** 9 CRITICAL, 9 HIGH, 6 MEDIUM, 4 LOW, 3 NOTE
 
 ---
 
@@ -416,6 +416,34 @@ The `generate_commitment` function correctly validates that `from_be_bytes_mod_o
 
 ---
 
+### [CRITICAL] FINDING-029: Trusted Setup Uses Hardcoded Low-Entropy Strings
+
+**File:** `zk/scripts/setup-groth16.js:29,45`
+**Attacker:** Any (proof forgery)
+**Category:** ZK Infrastructure
+
+**Description:** The Powers of Tau ceremony and Phase 2 contribution used hardcoded strings `"random text"` and `"more entropy"` as ceremony entropy (`-e` flag to snarkjs). These are predictable constants — any adversary who knows these strings can reconstruct the toxic waste and forge valid proofs for arbitrary statements, completely breaking the soundness of the Groth16 system.
+
+**Impact:** If these artifacts were generated and deployed, any party could forge valid ZK proofs — proving false identity commitments, fake Merkle membership, etc. The entire ZK identity system would be compromised.
+
+**Fix:** Replaced hardcoded strings with `crypto.randomBytes(32).toString("hex")` for cryptographically random entropy. Note: a proper multi-party ceremony with independent contributors is still recommended for production.
+
+---
+
+### [HIGH] FINDING-030: ZK Integration Test Accepts Errors as Tamper Rejection
+
+**File:** `crates/annex-identity/tests/zk_integration.rs:58-66`
+**Attacker:** N/A (test quality)
+**Category:** Test Audit
+
+**Description:** The tampered proof verification test accepted both `Ok(false)` and `Err(...)` as successful tamper detection. This is unsound — an `Err` from the verifier could indicate a bug in the verification pipeline (e.g., malformed inputs, wrong key), not necessarily tamper detection. A real attack could cause a different kind of error that gets silently accepted as "fine."
+
+**Impact:** False confidence in tamper detection — the test would pass even if the verifier is broken in a way that produces errors instead of proper `Ok(false)` rejections.
+
+**Fix:** Changed to `expect("tampered proof verification should return Ok, not Err")` followed by `assert!(!valid)`. The verifier must return `Ok(false)` for well-formed but invalid proofs.
+
+---
+
 ## Remediation Status
 
 | Finding | Severity | Status |
@@ -445,3 +473,5 @@ The `generate_commitment` function correctly validates that `from_be_bytes_mod_o
 | FINDING-026 | CRITICAL | **FIXED** |
 | FINDING-027 | HIGH | **FIXED** |
 | FINDING-028 | HIGH | **FIXED** |
+| FINDING-029 | CRITICAL | **FIXED** |
+| FINDING-030 | HIGH | **FIXED** |

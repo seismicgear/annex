@@ -1,9 +1,18 @@
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { execSync } = require("child_process");
 
 const buildPath = path.resolve(__dirname, "../build");
 const keysPath = path.resolve(__dirname, "../keys");
+
+/// Generates a cryptographically random hex string for ceremony entropy.
+/// SECURITY: Using hardcoded strings (e.g., "random text") as ceremony
+/// entropy completely compromises the trusted setup — any adversary knowing
+/// the entropy can forge valid proofs for arbitrary statements.
+function randomEntropy() {
+    return crypto.randomBytes(32).toString("hex");
+}
 
 if (!fs.existsSync(keysPath)) {
     fs.mkdirSync(keysPath);
@@ -26,7 +35,7 @@ async function setup() {
         // 1. Start a new powers of tau ceremony
         run(`npx snarkjs powersoftau new bn128 14 "${ptau0}" -v`);
         // 2. Contribute to the ceremony
-        run(`npx snarkjs powersoftau contribute "${ptau0}" "${ptau1}" --name="First Contribution" -v -e="random text"`);
+        run(`npx snarkjs powersoftau contribute "${ptau0}" "${ptau1}" --name="First Contribution" -v -e="${randomEntropy()}"`);
         // 3. Prepare for phase 2
         run(`npx snarkjs powersoftau prepare phase2 "${ptau1}" "${ptauPath}" -v`);
     }
@@ -42,7 +51,7 @@ async function setup() {
         run(`npx snarkjs groth16 setup "${r1csPath}" "${ptauPath}" "${zkey0}"`);
 
         // 5. Contribute to Phase 2
-        run(`npx snarkjs zkey contribute "${zkey0}" "${zkeyFinal}" --name="Second Contribution" -v -e="more entropy"`);
+        run(`npx snarkjs zkey contribute "${zkey0}" "${zkeyFinal}" --name="Second Contribution" -v -e="${randomEntropy()}"`);
 
         // 6. Export verification key
         run(`npx snarkjs zkey export verificationkey "${zkeyFinal}" "${vkeyPath}"`);

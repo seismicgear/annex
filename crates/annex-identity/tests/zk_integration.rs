@@ -49,19 +49,9 @@ fn test_identity_commitment_proof_verification() {
     let mut tampered_signals = public_signals.clone();
     tampered_signals[0] += Fr::ONE; // Add 1 to commitment
 
-    // Verify invalid proof
+    // Verify invalid proof — tampered public signals must be rejected.
+    // Arkworks verify returns Ok(false) for well-formed but invalid proofs.
     let result = verify_proof(&vkey, &proof, &tampered_signals);
-    // Verification should return Ok(false) or Err(VerificationFailed)?
-    // Arkworks verify returns Ok(false) if proof is invalid but well-formed.
-    // If malformed, Err.
-    // My wrapper returns Result<bool, ZkError>.
-    if let Ok(valid) = result {
-        assert!(!valid, "tampered proof verified successfully!");
-    } else {
-        // If it returns error, that's also fine (e.g. malformed inputs), but usually it returns Ok(false).
-        println!(
-            "Tampered proof verification returned error: {:?}",
-            result.err()
-        );
-    }
+    let valid = result.expect("tampered proof verification should return Ok, not Err");
+    assert!(!valid, "tampered proof verified successfully!");
 }
