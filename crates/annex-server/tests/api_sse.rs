@@ -1,5 +1,6 @@
 use annex_db::{create_pool, run_migrations, DbRuntimeSettings};
 use annex_identity::zk::{G1Affine, G2Affine, VerifyingKey};
+use annex_identity::{create_platform_identity, RoleCode};
 use annex_server::{app, middleware, AppState};
 use annex_types::ServerPolicy;
 use std::net::SocketAddr;
@@ -10,6 +11,7 @@ use tokio::net::TcpListener;
 async fn test_sse_presence_stream() {
     // 1. Setup DB
     let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
+    let test_pseudo = "sse-test-user";
     {
         let conn = pool.get().unwrap();
         run_migrations(&conn).unwrap();
@@ -18,6 +20,7 @@ async fn test_sse_presence_stream() {
             [],
         )
         .unwrap();
+        create_platform_identity(&conn, 1, test_pseudo, RoleCode::Human).unwrap();
     }
 
     // 2. Setup AppState
@@ -75,10 +78,19 @@ async fn test_sse_presence_stream() {
         .unwrap();
     });
 
-    // 4. Connect to SSE Stream
+    // 4a. Verify unauthenticated access is rejected
     let client = reqwest::Client::new();
+    let unauth_response = client
+        .get(format!("{}/events/presence", server_url))
+        .send()
+        .await
+        .expect("Failed to send unauthenticated request");
+    assert_eq!(unauth_response.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    // 4b. Connect to SSE Stream with auth
     let mut response = client
         .get(format!("{}/events/presence", server_url))
+        .header("X-Annex-Pseudonym", test_pseudo)
         .send()
         .await
         .expect("Failed to connect to SSE stream");
