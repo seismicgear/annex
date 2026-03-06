@@ -205,9 +205,16 @@ impl MerkleTree {
 
         for leaf_result in leaf_iter {
             let hex_str = leaf_result.map_err(IdentityError::DatabaseError)?;
-            // Convert hex to Fr
+            // Convert hex to Fr with reduction validation
             let bytes = hex::decode(&hex_str).map_err(|_| IdentityError::InvalidHex)?;
             let leaf = Fr::from_be_bytes_mod_order(&bytes);
+            // Verify the value was not silently reduced modulo the field order
+            let roundtrip = leaf.into_bigint().to_bytes_be();
+            let mut padded = vec![0u8; 32usize.saturating_sub(bytes.len())];
+            padded.extend_from_slice(&bytes);
+            if padded.len() > 32 || padded != roundtrip {
+                return Err(IdentityError::InvalidHex);
+            }
             tree.insert(leaf)?;
         }
 

@@ -39,12 +39,28 @@ pub struct Config {
 }
 
 /// Security enforcement configuration.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct SecurityConfig {
     /// When true, channel access endpoints require a valid ZK membership proof
-    /// via the `x-annex-zk-proof` header. Default: false (backward-compatible).
-    #[serde(default)]
+    /// via the `x-annex-zk-proof` header. Default: true.
+    ///
+    /// Set to false only during development or when ZK trusted setup has not
+    /// been completed. Running with this disabled undermines identity plane
+    /// guarantees.
+    #[serde(default = "default_enforce_zk_proofs")]
     pub enforce_zk_proofs: bool,
+}
+
+fn default_enforce_zk_proofs() -> bool {
+    true
+}
+
+impl Default for SecurityConfig {
+    fn default() -> Self {
+        Self {
+            enforce_zk_proofs: default_enforce_zk_proofs(),
+        }
+    }
 }
 
 /// CORS (Cross-Origin Resource Sharing) configuration.
@@ -567,6 +583,11 @@ mod tests {
         assert_eq!(cfg.voice.tts_binary_path, default_tts_binary_path());
         assert_eq!(cfg.voice.stt_model_path, default_stt_model_path());
         assert_eq!(cfg.voice.stt_binary_path, default_stt_binary_path());
+        // FINDING-001: enforce_zk_proofs must default to true
+        assert!(
+            cfg.security.enforce_zk_proofs,
+            "enforce_zk_proofs must default to true for security"
+        );
     }
 
     #[test]

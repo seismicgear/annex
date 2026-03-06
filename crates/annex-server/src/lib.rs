@@ -980,6 +980,7 @@ pub fn app(state: AppState) -> Router {
                 axum::http::header::CONTENT_TYPE,
                 axum::http::header::AUTHORIZATION,
                 axum::http::HeaderName::from_static("x-annex-pseudonym"),
+                axum::http::HeaderName::from_static("x-annex-zk-proof"),
             ]);
 
         if is_permissive {

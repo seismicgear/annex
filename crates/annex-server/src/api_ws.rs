@@ -94,16 +94,13 @@ fn verify_ws_token(token: &str, secret: &[u8; 32]) -> Result<String, StatusCode>
     let expires_str = parts[1];
     let sig_hex = parts[2];
 
-    // Verify HMAC
+    // Verify HMAC using constant-time comparison to prevent timing side-channels
     let payload = format!("{}|{}", pseudonym, expires_str);
     let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC key length is valid");
     mac.update(payload.as_bytes());
-    let expected_sig = mac.finalize().into_bytes();
     let provided_sig = hex::decode(sig_hex).map_err(|_| StatusCode::UNAUTHORIZED)?;
-
-    if expected_sig.as_slice() != provided_sig.as_slice() {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
+    mac.verify_slice(&provided_sig)
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
 
     // Check expiry
     let expires: u64 = expires_str.parse().map_err(|_| StatusCode::UNAUTHORIZED)?;
@@ -117,6 +114,12 @@ fn verify_ws_token(token: &str, secret: &[u8; 32]) -> Result<String, StatusCode>
     }
 
     Ok(pseudonym.to_string())
+}
+
+/// Public wrapper for session token verification, used by the REST auth middleware
+/// when `enforce_zk_proofs` is enabled.
+pub fn verify_ws_token_for_auth(token: &str, secret: &[u8; 32]) -> Result<String, StatusCode> {
+    verify_ws_token(token, secret)
 }
 
 /// Query parameters for the WebSocket connection.
@@ -479,6 +482,17 @@ pub async fn ws_handler(
             }
         }
     } else if let Some(ref p) = params.pseudonym {
+        // Reject raw pseudonym connections when ZK proof enforcement is enabled.
+        // The raw pseudonym parameter offers no cryptographic binding and allows
+        // impersonation by anyone who knows (or can compute) the pseudonym.
+        if state.enforce_zk_proofs {
+            tracing::warn!(
+                pseudonym = %p,
+                remote_addr = %addr,
+                "websocket raw pseudonym rejected (enforce_zk_proofs is enabled)"
+            );
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
         tracing::debug!(
             pseudonym = %p,
             remote_addr = %addr,

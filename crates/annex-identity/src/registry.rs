@@ -75,9 +75,16 @@ pub fn register_identity(
     let commitment_hex = commitment_hex.to_ascii_lowercase();
     let commitment_hex = commitment_hex.as_str();
 
-    // Convert commitment to Fr leaf
+    // Convert commitment to Fr leaf with reduction validation
     let leaf_bytes = hex::decode(commitment_hex).map_err(|_| IdentityError::InvalidHex)?;
     let leaf = Fr::from_be_bytes_mod_order(&leaf_bytes);
+    // Verify the value was not silently reduced modulo the field order
+    let roundtrip = leaf.into_bigint().to_bytes_be();
+    let mut padded = vec![0u8; 32usize.saturating_sub(leaf_bytes.len())];
+    padded.extend_from_slice(&leaf_bytes);
+    if padded.len() > 32 || padded != roundtrip {
+        return Err(IdentityError::InvalidHex);
+    }
 
     // 1. Preview Merkle Tree changes (Read-Only)
     // This calculates the new root and updates without modifying the tree.
