@@ -34,7 +34,7 @@ import { getApiBaseUrl, getServerSummary, setPublicUrl } from '@/lib/api';
 import { cancelMembershipProofGeneration, isProofGenerationInFlight } from '@/lib/zk';
 import type { ProvingStatus } from '@/stores/identity';
 import { isTauri, getStartupMode as tauriGetStartupMode } from '@/lib/tauri';
-import type { InvitePayload } from '@/types';
+import type { LegacyLegacyInvitePayload } from '@/types';
 import './App.css';
 
 type AppView = 'chat' | 'federation' | 'events' | 'admin-policy' | 'admin-channels' | 'admin-members' | 'admin-server';
@@ -84,7 +84,7 @@ export default function App() {
   const [startupErrorDetails, setStartupErrorDetails] = useState<string | null>(null);
   const [provingFailures, setProvingFailures] = useState(0);
   const adminMenuRef = useRef<HTMLDivElement>(null);
-  const [pendingInvite, setPendingInvite] = useState<InvitePayload | null>(
+  const [pendingInvite, setPendingInvite] = useState<LegacyInvitePayload | null>(
     () => parseInviteFromUrl(),
   );
   const inviteProcessed = useRef(false);

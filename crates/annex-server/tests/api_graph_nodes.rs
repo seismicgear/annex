@@ -68,6 +68,7 @@ async fn test_graph_node_creation_on_verification() {
         preview_cache: annex_server::api_link_preview::PreviewCache::new(),
         cors_origins: vec![],
         enforce_zk_proofs: false,
+        invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
     };
     let app = app(state);

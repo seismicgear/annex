@@ -251,6 +251,17 @@ export interface DeviceLinkPayload {
 
 /** State carried by an invite link for instant channel routing. */
 export interface InvitePayload {
+  /** Target server's public HTTPS URL. */
+  server: string;
+  /** Invite code for server access. */
+  code: string;
+}
+
+/**
+ * Legacy invite payload for backwards compatibility with old-style
+ * channel-based invite links (/invite/<channelId>?slug=...).
+ */
+export interface LegacyInvitePayload {
   /** Target server host (e.g. "annex.example.com"). */
   server: string;
   /** Channel ID to join after identity is ready. */

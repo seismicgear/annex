@@ -139,6 +139,10 @@ const MIGRATIONS: &[Migration] = &[
         name: "030_federated_identity_verification",
         sql: include_str!("migrations/030_federated_identity_verification.sql"),
     },
+    Migration {
+        name: "031_invite_codes",
+        sql: include_str!("migrations/031_invite_codes.sql"),
+    },
 ];
 
 /// Errors that can occur during migration execution.
@@ -252,7 +256,7 @@ mod tests {
     fn run_migrations_on_fresh_db() {
         let conn = Connection::open_in_memory().expect("should open in-memory db");
         let applied = run_migrations(&conn).expect("migrations should succeed");
-        assert_eq!(applied, 31, "should apply all migrations");
+        assert_eq!(applied, 32, "should apply all migrations");
 
         // Verify tracking table exists and has a record
         let count: i32 = conn
@@ -260,7 +264,7 @@ mod tests {
                 row.get(0)
             })
             .expect("should query migration count");
-        assert_eq!(count, 31);
+        assert_eq!(count, 32);
     }
 
     #[test]
@@ -268,7 +272,7 @@ mod tests {
         let conn = Connection::open_in_memory().expect("should open in-memory db");
 
         let first = run_migrations(&conn).expect("first run should succeed");
-        assert_eq!(first, 31);
+        assert_eq!(first, 32);
 
         let second = run_migrations(&conn).expect("second run should succeed");
         assert_eq!(second, 0, "no new migrations to apply");

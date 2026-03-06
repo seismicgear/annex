@@ -6,6 +6,7 @@ pub mod api_agent;
 pub mod api_channels;
 pub mod api_federation;
 pub mod api_graph;
+pub mod api_invite;
 pub mod api_link_preview;
 pub mod api_observe;
 pub mod api_rtx;
@@ -97,6 +98,8 @@ pub struct AppState {
     /// When true, channel access endpoints require ZK membership proof via
     /// the `x-annex-zk-proof` header.
     pub enforce_zk_proofs: bool,
+    /// Base URL for generated invite links (e.g. "https://monolithannex.com/invite").
+    pub invite_base_url: String,
 }
 
 impl AppState {
@@ -617,6 +620,7 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
         ws_token_secret: Arc::new(ws_token_secret),
         cors_origins: config.cors.allowed_origins.clone(),
         enforce_zk_proofs: config.security.enforce_zk_proofs,
+        invite_base_url: config.server.invite_base_url.clone(),
     };
 
     // Start background pruning task
@@ -804,6 +808,14 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/api/link-preview",
             get(api_link_preview::link_preview_handler),
+        )
+        .route(
+            "/api/invites",
+            post(api_invite::create_invite_handler).get(api_invite::list_invites_handler),
+        )
+        .route(
+            "/api/invites/{code}",
+            delete(api_invite::delete_invite_handler),
         )
         .route("/api/ws/token", post(api_ws::create_ws_token_handler))
         .route(

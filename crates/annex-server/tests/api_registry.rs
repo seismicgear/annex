@@ -54,6 +54,7 @@ async fn test_register_identity_success() {
         preview_cache: annex_server::api_link_preview::PreviewCache::new(),
         cors_origins: vec![],
         enforce_zk_proofs: false,
+        invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
     };
     let app = app(state);
@@ -126,6 +127,7 @@ async fn test_register_duplicate_failure() {
         preview_cache: annex_server::api_link_preview::PreviewCache::new(),
         cors_origins: vec![],
         enforce_zk_proofs: false,
+        invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
     };
     let app = app(state);
@@ -199,6 +201,7 @@ async fn test_register_invalid_role_failure() {
         preview_cache: annex_server::api_link_preview::PreviewCache::new(),
         cors_origins: vec![],
         enforce_zk_proofs: false,
+        invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
     };
     let app = app(state);
