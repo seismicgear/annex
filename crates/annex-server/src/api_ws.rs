@@ -508,6 +508,20 @@ pub async fn ws_handler(
             );
             return StatusCode::UNAUTHORIZED.into_response();
         }
+        // Validate pseudonym format before DB lookup — reject injection payloads
+        if p.is_empty()
+            || p.len() > 128
+            || !p
+                .as_bytes()
+                .iter()
+                .all(|&b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
+            tracing::warn!(
+                remote_addr = %addr,
+                "websocket raw pseudonym rejected (invalid format)"
+            );
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
         tracing::debug!(
             pseudonym = %p,
             remote_addr = %addr,

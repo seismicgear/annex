@@ -50,7 +50,8 @@ async fn test_auth_middleware_flow() {
     .unwrap();
 
     // 3. Seed Identity
-    create_platform_identity(&conn, 1, "valid-pseudo", RoleCode::Human).unwrap();
+    let valid_pseudo = "valid-pseudo";
+    create_platform_identity(&conn, 1, valid_pseudo, RoleCode::Human).unwrap();
     drop(conn);
 
     // 4. Setup AppState
@@ -118,7 +119,7 @@ async fn test_auth_middleware_flow() {
     // Test 3: Valid header (X-Annex-Pseudonym)
     let req = Request::builder()
         .uri("/protected")
-        .header("X-Annex-Pseudonym", "valid-pseudo")
+        .header("X-Annex-Pseudonym", valid_pseudo)
         .body(Body::empty())
         .unwrap();
     let response = app.clone().oneshot(req).await.unwrap();
@@ -127,12 +128,13 @@ async fn test_auth_middleware_flow() {
     let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
-    assert_eq!(body_bytes, "Hello valid-pseudo");
+    assert_eq!(body_bytes, format!("Hello {}", valid_pseudo).as_bytes());
 
     // Test 4: Valid header (Authorization Bearer)
+    let bearer_val = format!("Bearer {}", valid_pseudo);
     let req = Request::builder()
         .uri("/protected")
-        .header("Authorization", "Bearer valid-pseudo")
+        .header("Authorization", &bearer_val)
         .body(Body::empty())
         .unwrap();
     let response = app.clone().oneshot(req).await.unwrap();
@@ -141,5 +143,5 @@ async fn test_auth_middleware_flow() {
     let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
-    assert_eq!(body_bytes, "Hello valid-pseudo");
+    assert_eq!(body_bytes, format!("Hello {}", valid_pseudo).as_bytes());
 }
