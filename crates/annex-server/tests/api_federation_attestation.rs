@@ -299,12 +299,12 @@ async fn test_attest_membership_valid_signature_fails_network() {
 
     let response = app.oneshot(request).await.unwrap();
 
-    // Should fail with 500 (Network error)
+    // Should fail with 500 (Network error); the response body is sanitized
+    // to prevent leaking internal error details to clients.
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
     let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
-    // Network error message depends on OS but usually contains "connect" or "refused" or "error sending request"
-    assert!(body_str.contains("Network error") || body_str.contains("error sending request"));
+    assert!(body_str.contains("internal server error"));
 }
