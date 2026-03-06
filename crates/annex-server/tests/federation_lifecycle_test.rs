@@ -188,8 +188,15 @@ async fn test_federation_full_lifecycle() {
         capability_contract: contract.clone(),
     };
 
+    // Sign the handshake with the remote signing key
+    let handshake_json = serde_json::to_string(&handshake).expect("failed to serialize handshake");
+    let signing_payload = format!("{}\n{}", remote_origin, handshake_json);
+    let handshake_signature = remote_signing_key.sign(signing_payload.as_bytes());
+    let handshake_signature_hex = hex::encode(handshake_signature.to_bytes());
+
     let handshake_payload = json!({
         "base_url": remote_origin,
+        "signature": handshake_signature_hex,
         "anchor_snapshot": handshake.anchor_snapshot,
         "capability_contract": handshake.capability_contract
     });

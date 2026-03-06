@@ -309,6 +309,7 @@ async fn test_voice_intent_non_member_rejected() {
 // Test: Full happy path - TTS succeeds, voice client created, audio published
 // ---------------------------------------------------------------------------
 #[tokio::test]
+#[ignore = "requires LiveKit server running on localhost:7880"]
 async fn test_voice_intent_tts_success_full_pipeline() {
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
     let (app, pool, state) = setup_app_with_mock_tts(&temp_dir).await;
@@ -505,6 +506,7 @@ async fn test_voice_intent_tts_profile_not_found() {
 // Test: Voice profile default fallback when agent has no voice_profile_id
 // ---------------------------------------------------------------------------
 #[tokio::test]
+#[ignore = "requires LiveKit server running on localhost:7880"]
 async fn test_voice_intent_default_profile_fallback() {
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
     let (app, pool, state) = setup_app_with_mock_tts(&temp_dir).await;

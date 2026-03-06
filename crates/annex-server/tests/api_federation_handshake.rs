@@ -11,6 +11,7 @@ use axum::{
     extract::ConnectInfo,
     http::{Request, StatusCode},
 };
+use ed25519_dalek::{Signer, SigningKey};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, RwLock};
 use tower::ServiceExt;
@@ -20,7 +21,22 @@ fn load_vkey() -> Arc<annex_identity::zk::VerifyingKey<annex_identity::zk::Bn254
     Arc::new(annex_identity::zk::generate_dummy_vkey())
 }
 
-async fn setup_app() -> (axum::Router, annex_db::DbPool) {
+/// Generates a remote signing key and returns both the key and the hex-encoded public key.
+fn generate_remote_key() -> (SigningKey, String) {
+    let key = SigningKey::generate(&mut rand::rngs::OsRng);
+    let pub_hex = hex::encode(key.verifying_key().as_bytes());
+    (key, pub_hex)
+}
+
+/// Signs a federation handshake payload with the given key.
+fn sign_handshake(key: &SigningKey, base_url: &str, handshake: &VrpFederationHandshake) -> String {
+    let handshake_json = serde_json::to_string(handshake).unwrap();
+    let signing_payload = format!("{}\n{}", base_url, handshake_json);
+    let signature = key.sign(signing_payload.as_bytes());
+    hex::encode(signature.to_bytes())
+}
+
+async fn setup_app() -> (axum::Router, annex_db::DbPool, SigningKey) {
     let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
     let conn = pool.get().unwrap();
     annex_db::run_migrations(&conn).unwrap();
@@ -32,10 +48,13 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool) {
     )
     .unwrap();
 
-    // Insert a remote instance for federation handshake
+    // Generate a proper Ed25519 key for the remote instance
+    let (remote_key, remote_pub_hex) = generate_remote_key();
+
+    // Insert a remote instance with the real public key
     conn.execute(
-        "INSERT INTO instances (id, base_url, public_key, label, status) VALUES (10, 'https://remote.example.com', 'pubkey', 'Remote Instance', 'ACTIVE')",
-        [],
+        "INSERT INTO instances (id, base_url, public_key, label, status) VALUES (10, 'https://remote.example.com', ?1, 'Remote Instance', 'ACTIVE')",
+        rusqlite::params![remote_pub_hex],
     ).unwrap();
 
     drop(conn); // Return connection to pool
@@ -72,12 +91,12 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool) {
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
     };
 
-    (app(state), pool)
+    (app(state), pool, remote_key)
 }
 
 #[tokio::test]
 async fn test_federation_handshake_success() {
-    let (app, pool) = setup_app().await;
+    let (app, pool, remote_key) = setup_app().await;
 
     // 1. Prepare Payload
     let anchor = VrpAnchorSnapshot::new(&[], &[]).unwrap(); // Matches default policy
@@ -91,8 +110,12 @@ async fn test_federation_handshake_success() {
         capability_contract: contract,
     };
 
+    let base_url = "https://remote.example.com";
+    let signature = sign_handshake(&remote_key, base_url, &handshake);
+
     let payload = serde_json::json!({
-        "base_url": "https://remote.example.com",
+        "base_url": base_url,
+        "signature": signature,
         "anchor_snapshot": handshake.anchor_snapshot,
         "capability_contract": handshake.capability_contract
     });
@@ -133,7 +156,7 @@ async fn test_federation_handshake_success() {
 
 #[tokio::test]
 async fn test_federation_handshake_unknown_instance() {
-    let (app, _) = setup_app().await;
+    let (app, _, remote_key) = setup_app().await;
 
     // 1. Prepare Payload with unknown URL
     let anchor = VrpAnchorSnapshot::new(&[], &[]).unwrap();
@@ -147,8 +170,12 @@ async fn test_federation_handshake_unknown_instance() {
         capability_contract: contract,
     };
 
+    let base_url = "https://unknown.example.com";
+    let signature = sign_handshake(&remote_key, base_url, &handshake);
+
     let payload = serde_json::json!({
-        "base_url": "https://unknown.example.com",
+        "base_url": base_url,
+        "signature": signature,
         "anchor_snapshot": handshake.anchor_snapshot,
         "capability_contract": handshake.capability_contract
     });
