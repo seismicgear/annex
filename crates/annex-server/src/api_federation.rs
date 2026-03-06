@@ -14,7 +14,7 @@ use annex_identity::{
     zk::{parse_fr_from_hex, parse_proof, verify_proof},
 };
 use annex_observe::EventPayload;
-use annex_rtx::{enforce_transfer_scope, validate_bundle_structure};
+use annex_rtx::{check_redacted_topics, enforce_transfer_scope, validate_bundle_structure};
 use annex_types::NodeType;
 use annex_vrp::{VrpFederationHandshake, VrpTransferScope, VrpValidationReport};
 use axum::{
@@ -1178,6 +1178,31 @@ pub async fn receive_federated_rtx_handler(
         // 4. Validate bundle structure
         validate_bundle_structure(&envelope.bundle)
             .map_err(|e| FederationError::Forbidden(format!("Invalid bundle structure: {}", e)))?;
+
+        // 4b. Enforce redacted topics from the federation agreement.
+        //     The remote peer's capability contract declares which topics they
+        //     prohibit sharing. If the bundle's domain_tags overlap with those
+        //     redacted topics, the transfer must be rejected.
+        let redacted_topics: Vec<String> = conn
+            .query_row(
+                "SELECT remote_handshake_json FROM federation_agreements
+                 WHERE remote_instance_id = ?1 AND active = 1",
+                params![remote_instance_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .ok()
+            .flatten()
+            .and_then(|json| {
+                serde_json::from_str::<VrpFederationHandshake>(&json)
+                    .ok()
+                    .map(|h| h.capability_contract.redacted_topics)
+            })
+            .unwrap_or_default();
+
+        if !redacted_topics.is_empty() {
+            check_redacted_topics(&envelope.bundle, &redacted_topics)
+                .map_err(|e| FederationError::Forbidden(format!("redacted topic violation: {}", e)))?;
+        }
 
         // 5. Enforce the local federation agreement's transfer scope on the bundle
         //    (may strip reasoning_chain if our agreement is ReflectionSummariesOnly)

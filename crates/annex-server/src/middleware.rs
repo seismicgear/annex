@@ -30,28 +30,43 @@ pub struct IdentityContext(pub PlatformIdentity);
 ///
 /// For now, the "Bearer" token IS the pseudonym.
 pub async fn auth_middleware(mut req: Request<Body>, next: Next) -> Result<Response, StatusCode> {
-    // 1. Extract pseudonym from header
-    let pseudonym = if let Some(val) = req.headers().get("X-Annex-Pseudonym") {
-        val.to_str()
-            .map_err(|_| StatusCode::UNAUTHORIZED)?
-            .to_string()
-    } else if let Some(val) = req.headers().get("Authorization") {
-        let val_str = val.to_str().map_err(|_| StatusCode::UNAUTHORIZED)?;
-        if let Some(token) = val_str.strip_prefix("Bearer ") {
-            token.to_string()
-        } else {
-            return Err(StatusCode::UNAUTHORIZED);
-        }
-    } else {
-        return Err(StatusCode::UNAUTHORIZED);
-    };
-
-    // 2. Get AppState
+    // 0. Get AppState early — needed for token verification
     let state = req
         .extensions()
         .get::<Arc<AppState>>()
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?
         .clone();
+
+    // 1. Extract pseudonym from header.
+    //
+    // When `enforce_zk_proofs` is enabled, `Authorization: Bearer` tokens must
+    // be HMAC-signed session tokens (same format as WebSocket tokens) rather
+    // than raw pseudonyms. The `X-Annex-Pseudonym` header is also rejected in
+    // enforced mode to prevent impersonation via public pseudonym strings.
+    let pseudonym = if let Some(val) = req.headers().get("Authorization") {
+        let val_str = val.to_str().map_err(|_| StatusCode::UNAUTHORIZED)?;
+        if let Some(token) = val_str.strip_prefix("Bearer ") {
+            if state.enforce_zk_proofs {
+                // In enforced mode, the Bearer token must be an HMAC-signed
+                // session token, not a raw pseudonym.
+                crate::api_ws::verify_ws_token_for_auth(token, &state.ws_token_secret)?
+            } else {
+                token.to_string()
+            }
+        } else {
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+    } else if let Some(val) = req.headers().get("X-Annex-Pseudonym") {
+        if state.enforce_zk_proofs {
+            tracing::warn!("X-Annex-Pseudonym header rejected (enforce_zk_proofs is enabled)");
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+        val.to_str()
+            .map_err(|_| StatusCode::UNAUTHORIZED)?
+            .to_string()
+    } else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
 
     let server_id = state.server_id;
 
@@ -451,6 +466,14 @@ pub fn verify_zk_membership_header(
         return Ok(());
     }
 
+    // When ZK enforcement is enabled, every identity MUST have a registered
+    // commitment. Legacy identities without commitments cannot bypass proof
+    // verification — they must re-register through the ZK identity flow.
+    if expected_commitment_hex.is_none() {
+        tracing::warn!("ZK enforcement enabled but identity has no registered commitment");
+        return Err(StatusCode::FORBIDDEN);
+    }
+
     let header_val = headers
         .get("x-annex-zk-proof")
         .ok_or(StatusCode::FORBIDDEN)?;
@@ -471,8 +494,6 @@ pub fn verify_zk_membership_header(
     if let Some(expected) = expected_commitment_hex {
         if payload.commitment_hex != expected {
             tracing::warn!(
-                submitted = %payload.commitment_hex,
-                expected = %expected,
                 "ZK proof commitment does not match authenticated identity"
             );
             return Err(StatusCode::FORBIDDEN);
@@ -506,11 +527,7 @@ pub fn verify_zk_membership_header(
         tree.root_hex()
     };
     if current_root != payload.root_hex {
-        tracing::warn!(
-            submitted = %payload.root_hex,
-            current = %current_root,
-            "ZK proof root does not match current Merkle root"
-        );
+        tracing::warn!("ZK proof root does not match current Merkle root");
         return Err(StatusCode::FORBIDDEN);
     }
 

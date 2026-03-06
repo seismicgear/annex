@@ -3,7 +3,7 @@ pub use ark_bn254::Fr;
 use ark_bn254::{Fq, Fq2};
 pub use ark_bn254::{G1Affine, G2Affine};
 use ark_ec::AffineRepr;
-use ark_ff::PrimeField;
+use ark_ff::{BigInteger, PrimeField};
 use ark_groth16::Groth16;
 pub use ark_groth16::{Proof, VerifyingKey};
 use ark_snark::SNARK;
@@ -50,7 +50,23 @@ pub fn parse_fr(s: &str) -> Result<Fr, ZkError> {
 
 pub fn parse_fr_from_hex(hex: &str) -> Result<Fr, ZkError> {
     let bytes = hex::decode(hex).map_err(|_| ZkError::FieldElementError)?;
-    Ok(Fr::from_be_bytes_mod_order(&bytes))
+    let fr = Fr::from_be_bytes_mod_order(&bytes);
+
+    // Verify the value was not silently reduced modulo the field order.
+    // If the input >= BN254 scalar field modulus, from_be_bytes_mod_order
+    // silently reduces it, creating ambiguity where two different hex strings
+    // map to the same field element.
+    let roundtrip = fr.into_bigint().to_bytes_be();
+    let mut padded = vec![0u8; 32usize.saturating_sub(bytes.len())];
+    padded.extend_from_slice(&bytes);
+    if padded.len() > 32 {
+        return Err(ZkError::FieldElementError);
+    }
+    if padded != roundtrip {
+        return Err(ZkError::FieldElementError);
+    }
+
+    Ok(fr)
 }
 
 pub fn parse_fq(s: &str) -> Result<Fq, ZkError> {
@@ -260,5 +276,33 @@ mod tests {
     fn parse_g2_rejects_too_few_elements() {
         let v: Vec<Vec<String>> = vec![vec!["1".to_string(), "0".to_string()]];
         assert!(parse_g2(&v).is_err());
+    }
+
+    #[test]
+    fn parse_fr_from_hex_accepts_valid_field_element() {
+        // Small value well within field order
+        let hex = "0000000000000000000000000000000000000000000000000000000000000001";
+        assert!(parse_fr_from_hex(hex).is_ok());
+    }
+
+    #[test]
+    fn parse_fr_from_hex_rejects_value_exceeding_field_order() {
+        // BN254 scalar field order is ~2^254. This is 2^256-1 (all ff bytes),
+        // which exceeds the field order and would be silently reduced.
+        let hex = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+        assert!(
+            parse_fr_from_hex(hex).is_err(),
+            "values >= field modulus should be rejected"
+        );
+    }
+
+    #[test]
+    fn parse_fr_from_hex_rejects_oversized_input() {
+        // 33 bytes — longer than 32 bytes
+        let hex = "00ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+        assert!(
+            parse_fr_from_hex(hex).is_err(),
+            "inputs > 32 bytes should be rejected"
+        );
     }
 }

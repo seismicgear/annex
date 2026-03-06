@@ -1,7 +1,7 @@
 use crate::db::create_agreement;
 use annex_types::ServerPolicy;
 use annex_vrp::{
-    validate_federation_handshake, ServerPolicyRoot, VrpAlignmentConfig,
+    validate_federation_handshake, ServerPolicyRoot, VrpAlignmentConfig, VrpAlignmentStatus,
     VrpCapabilitySharingContract, VrpError, VrpFederationHandshake, VrpTransferAcceptanceConfig,
     VrpValidationReport,
 };
@@ -17,6 +17,8 @@ pub enum HandshakeError {
     UnknownRemoteInstance,
     #[error("VRP error: {0}")]
     Vrp(#[from] VrpError),
+    #[error("Federation alignment conflict: handshake rejected")]
+    AlignmentConflict,
 }
 
 /// Processes an incoming federation handshake from a peer server.
@@ -77,7 +79,14 @@ pub fn process_incoming_handshake(
         &transfer_config,
     );
 
-    // 6. Persist agreement
+    // 6. Reject Conflict handshakes — do NOT persist an agreement.
+    // Persisting a Conflict agreement could leave a stale record that
+    // downstream code (relay, RTX delivery) might treat as valid.
+    if report.alignment_status == VrpAlignmentStatus::Conflict {
+        return Err(HandshakeError::AlignmentConflict);
+    }
+
+    // 7. Persist agreement (only Aligned or Partial)
     create_agreement(
         conn,
         local_server_id,
@@ -94,10 +103,8 @@ mod tests {
     use super::*;
     use annex_vrp::{VrpAnchorSnapshot, VrpCapabilitySharingContract};
 
-    #[test]
-    fn test_process_handshake() {
+    fn setup_db() -> Connection {
         let mut conn = Connection::open_in_memory().unwrap();
-        // Manually create table since migrations are in annex-db and we are in annex-federation test
         conn.execute(
             "CREATE TABLE federation_agreements (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -114,6 +121,12 @@ mod tests {
             [],
         )
         .unwrap();
+        conn
+    }
+
+    #[test]
+    fn test_process_handshake() {
+        let mut conn = setup_db();
 
         let policy = ServerPolicy::default();
         let anchor = VrpAnchorSnapshot::new(&[], &[]).unwrap();
@@ -139,5 +152,46 @@ mod tests {
             })
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn conflict_handshake_rejected_no_agreement_persisted() {
+        let mut conn = setup_db();
+
+        // Local policy has prohibited actions; remote anchor has different ones.
+        // This triggers a prohibited_actions_hash mismatch → Conflict.
+        let mut policy = ServerPolicy::default();
+        policy.prohibited_actions = vec!["violence".to_string()];
+
+        // Remote anchor with different prohibited actions
+        let remote_anchor =
+            VrpAnchorSnapshot::new(&[], &["spam".to_string()]).unwrap();
+        let contract = VrpCapabilitySharingContract {
+            required_capabilities: vec![],
+            offered_capabilities: vec![],
+            redacted_topics: vec![],
+        };
+        let handshake = VrpFederationHandshake {
+            anchor_snapshot: remote_anchor,
+            capability_contract: contract,
+        };
+
+        let result = process_incoming_handshake(&mut conn, 1, &policy, 10, &handshake);
+        assert!(
+            result.is_err(),
+            "Conflict handshake must be rejected"
+        );
+        assert!(
+            matches!(result.unwrap_err(), HandshakeError::AlignmentConflict),
+            "Error must be AlignmentConflict"
+        );
+
+        // No agreement should have been persisted
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM federation_agreements", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 0, "no agreement should be persisted for Conflict");
     }
 }

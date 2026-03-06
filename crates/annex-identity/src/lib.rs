@@ -37,6 +37,9 @@ pub enum IdentityError {
     /// The caller provided an empty topic string.
     #[error("topic cannot be empty")]
     EmptyTopic,
+    /// The caller provided a topic string exceeding the maximum length.
+    #[error("topic exceeds maximum length of {0} bytes")]
+    TopicTooLong(usize),
     /// The caller provided an empty nullifier string.
     #[error("nullifier hex cannot be empty")]
     EmptyNullifier,
@@ -86,6 +89,7 @@ impl PartialEq for IdentityError {
         match (self, other) {
             (Self::EmptyCommitment, Self::EmptyCommitment) => true,
             (Self::EmptyTopic, Self::EmptyTopic) => true,
+            (Self::TopicTooLong(a), Self::TopicTooLong(b)) => a == b,
             (Self::EmptyNullifier, Self::EmptyNullifier) => true,
             (Self::InvalidNullifierFormat, Self::InvalidNullifierFormat) => true,
             (Self::InvalidCommitmentFormat, Self::InvalidCommitmentFormat) => true,
@@ -126,12 +130,18 @@ impl Eq for IdentityError {}
 /// Returns [`IdentityError::EmptyTopic`] if `topic` is empty.
 /// Returns [`IdentityError::InvalidCommitmentFormat`] if `commitment_hex` is not
 /// a 64-character lowercase hexadecimal string.
+/// Maximum allowed topic length in bytes.
+const MAX_TOPIC_LEN: usize = 256;
+
 pub fn derive_nullifier_hex(commitment_hex: &str, topic: &str) -> Result<String, IdentityError> {
     if commitment_hex.is_empty() {
         return Err(IdentityError::EmptyCommitment);
     }
     if topic.is_empty() {
         return Err(IdentityError::EmptyTopic);
+    }
+    if topic.len() > MAX_TOPIC_LEN {
+        return Err(IdentityError::TopicTooLong(MAX_TOPIC_LEN));
     }
     if !is_lower_hex_64(commitment_hex) {
         return Err(IdentityError::InvalidCommitmentFormat);
@@ -153,6 +163,9 @@ pub fn derive_nullifier_hex(commitment_hex: &str, topic: &str) -> Result<String,
 pub fn derive_pseudonym_id(topic: &str, nullifier_hex: &str) -> Result<String, IdentityError> {
     if topic.is_empty() {
         return Err(IdentityError::EmptyTopic);
+    }
+    if topic.len() > MAX_TOPIC_LEN {
+        return Err(IdentityError::TopicTooLong(MAX_TOPIC_LEN));
     }
     if nullifier_hex.is_empty() {
         return Err(IdentityError::EmptyNullifier);
@@ -291,5 +304,32 @@ mod tests {
 
         assert!(first.is_ok());
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn derive_nullifier_hex_rejects_topic_exceeding_max_length() {
+        let commitment = "0000000000000000000000000000000000000000000000000000000000abc123";
+        let long_topic = "a".repeat(257);
+        assert_eq!(
+            derive_nullifier_hex(commitment, &long_topic),
+            Err(IdentityError::TopicTooLong(MAX_TOPIC_LEN))
+        );
+    }
+
+    #[test]
+    fn derive_pseudonym_id_rejects_topic_exceeding_max_length() {
+        let nullifier = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let long_topic = "a".repeat(257);
+        assert_eq!(
+            derive_pseudonym_id(&long_topic, nullifier),
+            Err(IdentityError::TopicTooLong(MAX_TOPIC_LEN))
+        );
+    }
+
+    #[test]
+    fn derive_nullifier_hex_accepts_max_length_topic() {
+        let commitment = "0000000000000000000000000000000000000000000000000000000000abc123";
+        let max_topic = "a".repeat(256);
+        assert!(derive_nullifier_hex(commitment, &max_topic).is_ok());
     }
 }

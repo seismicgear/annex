@@ -353,6 +353,16 @@ pub async fn join_channel_handler(
         }
     }
 
+    // 2b. Channel type enforcement
+    // Agent channels are restricted to AI agents only. Allowing humans into
+    // Agent channels would let them bypass agent-specific policy controls
+    // (alignment checks, VRP handshake requirements, transfer scope).
+    if channel.channel_type == ChannelType::Agent
+        && identity.participant_type != RoleCode::AiAgent
+    {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
     // 3. Check Agent Alignment
     if identity.participant_type == RoleCode::AiAgent {
         // Query agent registration

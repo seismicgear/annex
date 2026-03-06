@@ -331,10 +331,12 @@ pub async fn verify_membership_handler(
             .get()
             .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
 
-        // 1. Verify root exists and is active/valid
+        // 1. Verify root exists and is active (not a stale historical root).
+        // Only active roots are accepted to prevent revoked identities from
+        // generating valid proofs against old Merkle tree states.
         let root_exists: bool = conn
             .query_row(
-                "SELECT COUNT(*) FROM vrp_roots WHERE root_hex = ?1",
+                "SELECT COUNT(*) FROM vrp_roots WHERE root_hex = ?1 AND active = 1",
                 [&payload.root],
                 |row| row.get(0),
             )
@@ -619,54 +621,15 @@ fn fetch_platform_identity(
     // Self-heal: if the identity has no moderator flag, check whether the
     // server has *any* moderator. If not, promote the earliest active identity
     // and re-fetch in case this identity was the one promoted.
+    //
+    // SECURITY: Only the `ensure_founder` path (which promotes the EARLIEST
+    // active identity, not the requester) is used here. The previous
+    // stale-moderator auto-promotion was removed because it allowed any
+    // identity to escalate to admin by waiting for moderators to go offline.
     if !identity.can_moderate {
         let promoted = ensure_founder(&conn, state.server_id)
             .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
         if promoted {
-            return get_platform_identity(&conn, state.server_id, pseudonym_id)
-                .map_err(|e| ApiError::InternalServerError(e.to_string()));
-        }
-
-        // A moderator exists but it may be stale — e.g. from a previous
-        // desktop-app session where the user created a different identity.
-        // Check if ANY active moderator has a graph_node that was seen
-        // recently (within the last 5 minutes). If not, all moderators are
-        // stale and this requesting identity should be promoted.
-        let has_live_moderator: bool = conn
-            .query_row(
-                "SELECT EXISTS(
-                    SELECT 1 FROM platform_identities p
-                    INNER JOIN graph_nodes g
-                        ON g.server_id = p.server_id
-                        AND g.pseudonym_id = p.pseudonym_id
-                    WHERE p.server_id = ?1
-                      AND p.can_moderate = 1
-                      AND p.active = 1
-                      AND g.last_seen_at > datetime('now', '-300 seconds')
-                )",
-                rusqlite::params![state.server_id],
-                |row| row.get(0),
-            )
-            .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
-
-        if !has_live_moderator {
-            conn.execute(
-                "UPDATE platform_identities SET
-                    can_voice = 1,
-                    can_moderate = 1,
-                    can_invite = 1,
-                    can_federate = 1,
-                    updated_at = datetime('now')
-                WHERE server_id = ?1 AND pseudonym_id = ?2",
-                rusqlite::params![state.server_id, pseudonym_id],
-            )
-            .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
-
-            tracing::info!(
-                pseudonym_id = pseudonym_id,
-                "promoted identity to founder (existing moderators stale)"
-            );
-
             return get_platform_identity(&conn, state.server_id, pseudonym_id)
                 .map_err(|e| ApiError::InternalServerError(e.to_string()));
         }

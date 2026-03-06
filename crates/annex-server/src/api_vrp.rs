@@ -10,6 +10,7 @@ use annex_vrp::{
     VrpTransferAcceptanceConfig, VrpValidationReport,
 };
 use axum::{extract::Extension, Json};
+use rusqlite::OptionalExtension;
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -34,6 +35,38 @@ pub async fn agent_handshake_handler(
             .pool
             .get()
             .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
+
+        // 1b. Validate that the pseudonym belongs to an AI agent identity.
+        // Without this check, human identities could register as agents and
+        // gain agent-specific capabilities (RTX, voice profiles).
+        {
+            let role_code: Option<u8> = conn
+                .query_row(
+                    "SELECT pi.participant_type FROM platform_identities pi
+                     WHERE pi.server_id = ?1 AND pi.pseudonym_id = ?2 AND pi.active = 1",
+                    rusqlite::params![state.server_id, &payload.pseudonym_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| ApiError::InternalServerError(format!("db query failed: {}", e)))?;
+
+            match role_code {
+                Some(code) if code == annex_types::RoleCode::AiAgent.as_u8() => { /* OK */ }
+                Some(_) => {
+                    return Err(ApiError::Forbidden(
+                        "agent handshake rejected: identity is not registered as AI_AGENT".to_string(),
+                    ));
+                }
+                None => {
+                    // Allow handshake from unregistered pseudonyms (pre-registration agents)
+                    // but log a warning for monitoring
+                    tracing::debug!(
+                        pseudonym_id = %payload.pseudonym_id,
+                        "agent handshake from unregistered pseudonym (pre-registration)"
+                    );
+                }
+            }
+        }
 
         // 2. Get Server Policy (Read Lock)
         let policy = state.policy.read().map_err(|_| {
