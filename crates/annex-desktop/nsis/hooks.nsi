@@ -3,9 +3,19 @@
 ; the bundle.windows.nsis.installerHooks config field.
 
 !macro NSIS_HOOK_PREUNINSTALL
-  ; Ask the user whether to delete their server data (database, config,
-  ; uploads, cached binaries). Defaults to "No" on silent uninstall.
-  MessageBox MB_YESNO "Remove Annex server data (database, config, uploads)?$\nThis cannot be undone." /SD IDNO IDNO SkipDataClean
+  ; Ask the user whether to delete their data.
+  ; Defaults to "No" on silent uninstall (/SD IDNO).
+  MessageBox MB_YESNO "Remove all Annex data (database, config, uploads, cached data)?$\nThis cannot be undone." /SD IDNO IDNO SkipDataClean
+
+    ; Server data: database, config.toml, uploads, signing keys, LiveKit binaries
     RMDir /r "$APPDATA\Annex"
+
+    ; WebView2 user data: cache, cookies, IndexedDB, localStorage, service workers.
+    ; Tauri stores this under %LOCALAPPDATA%\<bundle-identifier>.
+    RMDir /r "$LOCALAPPDATA\com.annex.desktop"
+
+    ; Tauri may also create a directory under the product name for logs/crash data.
+    RMDir /r "$LOCALAPPDATA\Annex"
+
   SkipDataClean:
 !macroend

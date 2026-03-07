@@ -33,7 +33,7 @@ import { getPersonasForIdentity } from '@/lib/personas';
 import { getApiBaseUrl, getServerSummary, setApiBaseUrl, redeemInvite } from '@/lib/api';
 import { cancelMembershipProofGeneration, isProofGenerationInFlight } from '@/lib/zk';
 import type { ProvingStatus } from '@/stores/identity';
-import { isTauri, getStartupMode as tauriGetStartupMode, listenForInvite } from '@/lib/tauri';
+import { isTauri, getStartupMode as tauriGetStartupMode, listenForInvite, saveStartupMode } from '@/lib/tauri';
 import type { LegacyInvitePayload, InvitePayload } from '@/types';
 import './App.css';
 
@@ -170,15 +170,44 @@ export default function App() {
     (async () => {
       try {
         // 1. Validate invite code with target server
-        const result = await redeemInvite(pendingProtocolInvite.server, pendingProtocolInvite.code);
+        let result;
+        try {
+          result = await redeemInvite(pendingProtocolInvite.server, pendingProtocolInvite.code);
+        } catch (fetchErr) {
+          if (cancelled) return;
+          // Distinguish network errors from server-side rejections
+          const isNetworkError = fetchErr instanceof TypeError && /failed to fetch/i.test(fetchErr.message);
+          const message = isNetworkError
+            ? `Could not reach server at ${pendingProtocolInvite.server}. Check your connection and try again.`
+            : (fetchErr instanceof Error ? fetchErr.message : 'Invite validation failed');
+          useIdentityStore.setState({ phase: 'error', error: message });
+          setPendingProtocolInvite(null);
+          return;
+        }
         if (cancelled) return;
 
         // 2. Add remote server and switch API target
         const { addRemoteServer } = useServersStore.getState();
-        await addRemoteServer(pendingProtocolInvite.server);
+        const server = await addRemoteServer(pendingProtocolInvite.server);
+        if (!server) {
+          if (cancelled) return;
+          useIdentityStore.setState({
+            phase: 'error',
+            error: `Failed to connect to server at ${pendingProtocolInvite.server}.`,
+          });
+          setPendingProtocolInvite(null);
+          return;
+        }
         setApiBaseUrl(pendingProtocolInvite.server);
 
-        // 3. Reset identity phase so auto-register effect fires
+        // 3. Persist startup preference so returning users auto-connect
+        if (inTauri) {
+          saveStartupMode({
+            startup_mode: { mode: 'client', server_url: pendingProtocolInvite.server },
+          }).catch(() => {});
+        }
+
+        // 4. Reset identity phase so auto-register effect fires
         if (phase === 'ready') {
           useIdentityStore.setState({
             phase: 'keys_ready',
@@ -189,7 +218,7 @@ export default function App() {
           });
         }
 
-        // 4. Store invite code for registration, mark server ready
+        // 5. Store invite code for registration, mark server ready
         setPendingInviteCode(pendingProtocolInvite.code);
         setServerReady(true);
         setPendingProtocolInvite(null);
@@ -204,7 +233,7 @@ export default function App() {
     })();
 
     return () => { cancelled = true; };
-  }, [pendingProtocolInvite, identity?.sk, phase]);
+  }, [pendingProtocolInvite, identity?.sk, phase, inTauri]);
 
   // ── Register identity with server after user selects a server ──
   // Only fires when phase is exactly 'keys_ready' (keys exist, not yet
@@ -411,6 +440,11 @@ export default function App() {
               Joining {pendingInvite.label ?? pendingInvite.channelId}...
             </span>
           )}
+          {pendingProtocolInvite && (
+            <span className="invite-banner">
+              Invite received — create your identity to continue.
+            </span>
+          )}
         </header>
         <main className="app-main setup">
           <IdentitySetup />
@@ -422,7 +456,24 @@ export default function App() {
   // Gate 2: Server not yet selected → Screen 2 (startup mode selector).
   // The server is NOT started yet — StartupModeSelector handles starting
   // the embedded server if the user picks "Host a Server".
+  //
+  // When a protocol invite is pending, bypass this gate entirely — the
+  // invite processing effect will set the API base URL and mark the
+  // server ready automatically. Show a connecting indicator instead.
   if (!serverReady) {
+    if (pendingProtocolInvite && identity?.sk) {
+      return (
+        <div className="app">
+          <main className="app-main setup">
+            <div className="startup-mode-selector">
+              <h2>Annex</h2>
+              <div className="startup-loading">Connecting via invite...</div>
+            </div>
+          </main>
+        </div>
+      );
+    }
+
     return (
       <div className="app">
         <main className="app-main setup">
