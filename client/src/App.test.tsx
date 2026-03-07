@@ -154,6 +154,7 @@ vi.mock('@/lib/tauri', () => ({
   startLocalLiveKit: vi.fn(async () => ({ url: 'ws://127.0.0.1:7880' })),
   exportIdentityJson: vi.fn(async () => null),
   getPlatformMediaStatus: vi.fn(async () => ({ screen_share_available: true, camera_mic_available: true, warnings: [], display_server: 'test' })),
+  listenForInvite: vi.fn(async () => () => {}),
 }));
 
 // ── Helpers ──

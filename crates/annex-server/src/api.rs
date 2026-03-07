@@ -33,6 +33,9 @@ pub struct RegisterRequest {
     /// The node ID used in the commitment derivation.
     #[serde(rename = "nodeId")]
     pub node_id: i64,
+    /// Optional invite code for invite-only servers.
+    #[serde(default, rename = "inviteCode")]
+    pub invite_code: Option<String>,
 }
 
 /// Response body for successful registration.
@@ -196,6 +199,54 @@ pub async fn register_handler(
     // Validate role code
     let role = RoleCode::from_u8(payload.role_code)
         .ok_or_else(|| ApiError::BadRequest(format!("invalid role code: {}", payload.role_code)))?;
+
+    // Enforce access_mode policy
+    let access_mode = {
+        let policy = state.policy.read().map_err(|_| {
+            ApiError::InternalServerError("policy lock poisoned".to_string())
+        })?;
+        policy.access_mode.clone()
+    };
+
+    if access_mode == "invite_only" {
+        let invite_code = payload.invite_code.as_deref().unwrap_or("").trim();
+        if invite_code.is_empty() {
+            return Err(ApiError::Forbidden(
+                "This server requires an invite code to register.".to_string(),
+            ));
+        }
+        // Validate the invite code exists and is still usable
+        let code_owned = invite_code.to_string();
+        let server_id = state.server_id;
+        let state_check = state.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = state_check.pool.get().map_err(|e| {
+                ApiError::InternalServerError(format!("db connection failed: {}", e))
+            })?;
+            let row: Result<(Option<i64>, i64, Option<String>), _> = conn.query_row(
+                "SELECT max_uses, use_count, expires_at FROM invite_codes WHERE server_id = ?1 AND code = ?2",
+                rusqlite::params![server_id, code_owned],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            );
+            let (max_uses, use_count, expires_at) = row.map_err(|_| {
+                ApiError::Forbidden("Invalid or expired invite code.".to_string())
+            })?;
+            if let Some(ref exp) = expires_at {
+                let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                if *exp < now {
+                    return Err(ApiError::Forbidden("Invalid or expired invite code.".to_string()));
+                }
+            }
+            if let Some(max) = max_uses {
+                if use_count >= max {
+                    return Err(ApiError::Forbidden("Invalid or expired invite code.".to_string()));
+                }
+            }
+            Ok::<(), ApiError>(())
+        })
+        .await
+        .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    }
 
     let result =
         tokio::task::spawn_blocking(move || {

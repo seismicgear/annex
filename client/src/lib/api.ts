@@ -125,11 +125,28 @@ export async function register(
   commitmentHex: string,
   roleCode: number,
   nodeId: number,
+  inviteCode?: string,
 ): Promise<RegistrationResponse> {
   return request<RegistrationResponse>('/api/registry/register', {
     method: 'POST',
-    body: JSON.stringify({ commitmentHex, roleCode, nodeId }),
+    body: JSON.stringify({ commitmentHex, roleCode, nodeId, inviteCode }),
   });
+}
+
+export async function redeemInvite(
+  baseUrl: string,
+  code: string,
+): Promise<{ valid: boolean; serverName: string; serverSlug: string }> {
+  const resp = await fetch(`${baseUrl}/api/invites/redeem`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code }),
+  });
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}));
+    throw new Error(body.error || `Invite validation failed: ${resp.status}`);
+  }
+  return resp.json();
 }
 
 export async function verifyMembership(

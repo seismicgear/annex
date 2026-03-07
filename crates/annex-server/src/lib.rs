@@ -911,6 +911,10 @@ pub fn app(state: AppState) -> Router {
             get(api_observe::get_federation_peers_handler),
         )
         .route("/api/public/agents", get(api_observe::get_agents_handler))
+        .route(
+            "/api/invites/redeem",
+            post(api_invite::redeem_invite_handler),
+        )
         .route("/api/voice/config-status", get(voice_config_status))
         .route(
             "/api/public/server/image",

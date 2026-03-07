@@ -145,7 +145,7 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
     }
   },
 
-  registerWithServer: async (serverSlug: string) => {
+  registerWithServer: async (serverSlug: string, inviteCode?: string) => {
     if (zk.isProofGenerationInFlight()) {
       await zk.cancelMembershipProofGeneration('Proof generation cancelled before retry.');
     }
@@ -170,7 +170,7 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
 
       // Register commitment with server.
       set({ phase: 'registering', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
-      const reg = await api.register(identity.commitmentHex, identity.roleCode, identity.nodeId);
+      const reg = await api.register(identity.commitmentHex, identity.roleCode, identity.nodeId, inviteCode);
       identity.leafIndex = reg.leafIndex;
       await db.saveIdentity(identity);
 

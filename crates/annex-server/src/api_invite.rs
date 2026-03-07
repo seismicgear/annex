@@ -427,6 +427,102 @@ pub async fn list_invites_handler(
     Ok(Json(entries))
 }
 
+/// Request body for `POST /api/invites/redeem`.
+#[derive(Debug, Deserialize)]
+pub struct RedeemInviteRequest {
+    /// The invite code to validate and consume.
+    pub code: String,
+}
+
+/// Response body for `POST /api/invites/redeem`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RedeemInviteResponse {
+    pub valid: bool,
+    pub server_name: String,
+    pub server_slug: String,
+}
+
+/// Handler for `POST /api/invites/redeem`.
+///
+/// Public (no auth) endpoint that validates an invite code during registration.
+/// Checks expiration and max_uses, then increments use_count.
+pub async fn redeem_invite_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(payload): Json<RedeemInviteRequest>,
+) -> Result<Json<RedeemInviteResponse>, ApiError> {
+    let code = payload.code.trim().to_string();
+    if code.is_empty() {
+        return Err(ApiError::BadRequest("invite code is required".to_string()));
+    }
+
+    let server_id = state.server_id;
+    let state_clone = state.clone();
+
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = state_clone.pool.get().map_err(|e| {
+            ApiError::InternalServerError(format!("db connection failed: {}", e))
+        })?;
+
+        // Look up the invite code for this server
+        let row: Result<(i64, Option<i64>, i64, Option<String>), _> = conn.query_row(
+            "SELECT id, max_uses, use_count, expires_at FROM invite_codes WHERE server_id = ?1 AND code = ?2",
+            rusqlite::params![server_id, code],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        );
+
+        let (invite_id, max_uses, use_count, expires_at) = row.map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                ApiError::BadRequest("Invalid or expired invite code".to_string())
+            }
+            _ => ApiError::InternalServerError(format!("failed to query invite: {}", e)),
+        })?;
+
+        // Check expiration
+        if let Some(ref exp) = expires_at {
+            let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+            if *exp < now {
+                return Err(ApiError::BadRequest("Invalid or expired invite code".to_string()));
+            }
+        }
+
+        // Check max uses
+        if let Some(max) = max_uses {
+            if use_count >= max {
+                return Err(ApiError::BadRequest("Invalid or expired invite code".to_string()));
+            }
+        }
+
+        // Increment use_count
+        conn.execute(
+            "UPDATE invite_codes SET use_count = use_count + 1 WHERE id = ?1",
+            [invite_id],
+        )
+        .map_err(|e| ApiError::InternalServerError(format!("failed to update invite: {}", e)))?;
+
+        // Fetch server slug and label
+        let (slug, label): (String, String) = conn
+            .query_row(
+                "SELECT slug, label FROM servers WHERE id = ?1",
+                [server_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|e| {
+                ApiError::InternalServerError(format!("failed to fetch server info: {}", e))
+            })?;
+
+        Ok(RedeemInviteResponse {
+            valid: true,
+            server_name: label,
+            server_slug: slug,
+        })
+    })
+    .await
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+
+    Ok(Json(result))
+}
+
 /// Handler for `DELETE /api/invites/{code}`.
 ///
 /// Deletes an invite code. Requires `can_moderate` capability.
