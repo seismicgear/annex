@@ -142,4 +142,22 @@ if (!fs.existsSync(path.join(CLIENT_DIR, "node_modules"))) {
 run("npm run build", CLIENT_DIR);
 log("Client build complete.");
 
+// Copy client dist into the Tauri project directory.
+// Tauri on Windows uses \\?\ extended-length paths which don't follow NTFS
+// reparse points (junctions/symlinks). Copying the dist here ensures Tauri
+// finds it at ./dist without traversing any junctions.
+const CLIENT_DIST = path.join(CLIENT_DIR, "dist");
+const TAURI_DIST = path.join(ROOT_DIR, "crates", "annex-desktop", "dist");
+
+if (!fs.existsSync(path.join(CLIENT_DIST, "index.html"))) {
+  console.error(`[build-desktop] ERROR: client dist not found at ${CLIENT_DIST}`);
+  process.exit(1);
+}
+
+if (fs.existsSync(TAURI_DIST)) {
+  fs.rmSync(TAURI_DIST, { recursive: true });
+}
+fs.cpSync(CLIENT_DIST, TAURI_DIST, { recursive: true });
+log("Copied client dist to Tauri project directory.");
+
 log("All done.");
