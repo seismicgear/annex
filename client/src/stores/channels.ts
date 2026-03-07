@@ -35,7 +35,7 @@ interface ChannelsState {
   /** Select a channel and load its history. */
   selectChannel: (pseudonymId: string, channelId: string) => Promise<void>;
   /** Connect WebSocket for real-time messages. Optional baseUrl for cross-server. */
-  connectWs: (pseudonymId: string, baseUrl?: string) => void;
+  connectWs: (pseudonymId: string, baseUrl?: string, sessionToken?: string | null) => void;
   /** Send a message to the active channel. */
   sendMessage: (content: string, replyTo?: string | null) => void;
   /** Edit a message in the active channel. */
@@ -105,11 +105,11 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     set({ messages: messages.reverse(), hasMoreMessages: messages.length >= PAGE_SIZE });
   },
 
-  connectWs: (pseudonymId: string, baseUrl?: string) => {
+  connectWs: (pseudonymId: string, baseUrl?: string, sessionToken?: string | null) => {
     const existing = get().ws;
     if (existing) existing.disconnect();
 
-    const ws = new AnnexWebSocket(pseudonymId, baseUrl);
+    const ws = new AnnexWebSocket(pseudonymId, baseUrl, sessionToken ?? null);
 
     ws.onStatus((connected) => set({ wsConnected: connected }));
 

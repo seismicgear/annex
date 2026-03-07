@@ -17,6 +17,7 @@ export class AnnexWebSocket {
   private ws: WebSocket | null = null;
   private pseudonymId: string;
   private baseUrl: string;
+  private sessionToken: string | null;
   private messageHandlers: Set<WsMessageHandler> = new Set();
   private statusHandlers: Set<WsStatusHandler> = new Set();
   private reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
@@ -28,30 +29,31 @@ export class AnnexWebSocket {
   /**
    * @param pseudonymId — identity pseudonym for auth
    * @param baseUrl — server base URL (e.g. "https://annex.example.com"). Empty for current origin.
+   * @param sessionToken — HMAC-signed token. If provided, connects with ?token= instead of ?pseudonym=.
    */
-  constructor(pseudonymId: string, baseUrl = '') {
+  constructor(pseudonymId: string, baseUrl = '', sessionToken: string | null = null) {
     this.pseudonymId = pseudonymId;
     this.baseUrl = baseUrl.replace(/\/+$/, '');
+    this.sessionToken = sessionToken;
   }
 
   /** Connect to the WebSocket server. */
   connect(): void {
     this.intentionalClose = false;
 
+    // Build auth query parameter: prefer signed token over raw pseudonym.
+    const authParam = this.sessionToken
+      ? `token=${encodeURIComponent(this.sessionToken)}`
+      : `pseudonym=${encodeURIComponent(this.pseudonymId)}`;
+
     let url: string;
     if (this.baseUrl) {
-      // Cross-server: convert http(s) URL to ws(s) URL.
-      // In Tauri host mode, baseUrl is http://127.0.0.1:<port> which becomes
-      // ws://127.0.0.1:<port>. Chromium treats 127.0.0.1 as "potentially
-      // trustworthy" so ws:// from an https:// secure context is allowed.
-      // AUDIT-TAURI: Verify this works on Linux WebKitGTK which may enforce
-      // stricter mixed-content rules than Chromium/WebView2.
       const wsBase = this.baseUrl.replace(/^http/, 'ws');
-      url = `${wsBase}/ws?pseudonym=${encodeURIComponent(this.pseudonymId)}`;
+      url = `${wsBase}/ws?${authParam}`;
     } else {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const host = window.location.host;
-      url = `${protocol}//${host}/ws?pseudonym=${encodeURIComponent(this.pseudonymId)}`;
+      url = `${protocol}//${host}/ws?${authParam}`;
     }
 
     this.ws = new WebSocket(url);

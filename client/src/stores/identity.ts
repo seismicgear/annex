@@ -88,7 +88,15 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
     // Prefer a fully registered identity (has pseudonymId).
     const ready = identities.find((i) => i.pseudonymId !== null);
     if (ready) {
-      set({ storedIdentities: identities, identity: ready, phase: 'ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
+      // Check if the session token is still valid. If expired, re-register
+      // to get a fresh token (silent re-verification via ZK proof).
+      if (ready.sessionToken && !api.isTokenExpired(ready.sessionToken)) {
+        api.setSessionToken(ready.sessionToken);
+        set({ storedIdentities: identities, identity: ready, phase: 'ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
+      } else {
+        // Token expired or missing — need to re-verify to get a fresh one.
+        set({ storedIdentities: identities, identity: ready, phase: 'keys_ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
+      }
       return;
     }
     // Otherwise select one that has keys but isn't registered yet.
@@ -129,6 +137,7 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
         nodeId,
         commitmentHex,
         pseudonymId: null,
+        sessionToken: null,
         serverSlug: '',
         leafIndex: null,
         createdAt: new Date().toISOString(),
@@ -202,6 +211,8 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
       );
 
       identity.pseudonymId = verification.pseudonymId;
+      identity.sessionToken = verification.sessionToken;
+      api.setSessionToken(verification.sessionToken);
       await db.saveIdentity(identity);
 
       const identities = await db.listIdentities();
@@ -241,7 +252,13 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
     const identity = await db.getIdentity(id);
     if (!identity) return;
     if (identity.pseudonymId) {
-      set({ identity, phase: 'ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
+      if (identity.sessionToken && !api.isTokenExpired(identity.sessionToken)) {
+        api.setSessionToken(identity.sessionToken);
+        set({ identity, phase: 'ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
+      } else {
+        // Token expired — need to re-verify
+        set({ identity, phase: 'keys_ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
+      }
     } else if (identity.sk) {
       set({ identity, phase: 'keys_ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
     }

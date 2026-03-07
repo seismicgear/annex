@@ -122,6 +122,10 @@ pub struct VerifyMembershipResponse {
     /// The derived pseudonym ID.
     #[serde(rename = "pseudonymId")]
     pub pseudonym_id: String,
+    /// HMAC-signed session token for authenticated API calls.
+    /// Clients must send this as `Authorization: Bearer <token>`.
+    #[serde(rename = "sessionToken")]
+    pub session_token: String,
 }
 
 /// Response body for identity query.
@@ -385,6 +389,7 @@ pub async fn verify_membership_handler(
     Extension(state): Extension<Arc<AppState>>,
     Json(payload): Json<VerifyMembershipRequest>,
 ) -> Result<Json<VerifyMembershipResponse>, ApiError> {
+    let ws_token_secret = state.ws_token_secret.clone();
     let result = tokio::task::spawn_blocking(move || {
         let conn = state
             .pool
@@ -630,9 +635,16 @@ pub async fn verify_membership_handler(
     .await
     .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
 
+    let session_token = crate::api_ws::generate_session_token(
+        &result,
+        &ws_token_secret,
+        crate::api_ws::SESSION_TOKEN_TTL_SECS,
+    );
+
     Ok(Json(VerifyMembershipResponse {
         ok: true,
         pseudonym_id: result,
+        session_token,
     }))
 }
 

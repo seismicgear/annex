@@ -35,6 +35,16 @@ export class ApiError extends Error {
  */
 let _apiBaseUrl = '';
 
+/**
+ * HMAC-signed session token for authenticated API calls.
+ * Set after ZK verify-membership or loaded from IndexedDB on cold start.
+ * Used as `Authorization: Bearer <token>` when enforce_zk_proofs is enabled.
+ */
+let _sessionToken: string | null = null;
+
+/** Auto-refresh interval handle. */
+let _refreshInterval: ReturnType<typeof setInterval> | null = null;
+
 /** Set the API base URL for cross-server requests. Empty string for current origin. */
 export function setApiBaseUrl(baseUrl: string): void {
   _apiBaseUrl = baseUrl.replace(/\/+$/, '');
@@ -115,7 +125,74 @@ export async function requestRemote<T>(
   return res.json() as Promise<T>;
 }
 
+/** Set the session token (after verify-membership or token refresh). */
+export function setSessionToken(token: string | null): void {
+  _sessionToken = token;
+}
+
+/** Get the current session token. */
+export function getSessionToken(): string | null {
+  return _sessionToken;
+}
+
+/**
+ * Check whether an HMAC session token has expired.
+ * Token format: base64(pseudonym|expires_unix_secs|hmac_signature)
+ */
+export function isTokenExpired(token: string): boolean {
+  try {
+    const decoded = atob(token.replace(/-/g, '+').replace(/_/g, '/'));
+    const parts = decoded.split('|');
+    if (parts.length !== 3) return true;
+    const expires = parseInt(parts[1], 10);
+    if (isNaN(expires)) return true;
+    // Treat as expired 30 seconds early to avoid edge-case races
+    return Date.now() / 1000 >= expires - 30;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Refresh the session token by calling POST /api/ws/token with the current
+ * Bearer auth. Returns the new token on success.
+ */
+export async function refreshSessionToken(): Promise<string> {
+  const res = await request<{ token: string }>('/api/ws/token', {
+    method: 'POST',
+  });
+  _sessionToken = res.token;
+  return res.token;
+}
+
+/**
+ * Start auto-refreshing the session token at 80% of the given TTL.
+ * Call stopTokenRefresh() to cancel.
+ */
+export function startTokenRefresh(ttlSecs: number, onError?: (err: unknown) => void): void {
+  stopTokenRefresh();
+  const intervalMs = ttlSecs * 0.8 * 1000;
+  _refreshInterval = setInterval(async () => {
+    try {
+      await refreshSessionToken();
+    } catch (err) {
+      onError?.(err);
+    }
+  }, intervalMs);
+}
+
+/** Stop auto-refreshing the session token. */
+export function stopTokenRefresh(): void {
+  if (_refreshInterval !== null) {
+    clearInterval(_refreshInterval);
+    _refreshInterval = null;
+  }
+}
+
 function authHeaders(pseudonymId: string): Record<string, string> {
+  if (_sessionToken) {
+    return { 'Authorization': `Bearer ${_sessionToken}` };
+  }
   return { 'X-Annex-Pseudonym': pseudonymId };
 }
 
@@ -420,7 +497,7 @@ export async function uploadServerImage(
   const url = _apiBaseUrl ? `${_apiBaseUrl}/api/admin/server/image` : '/api/admin/server/image';
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'X-Annex-Pseudonym': pseudonymId },
+    headers: authHeaders(pseudonymId),
     body: formData,
   });
   if (!res.ok) {
@@ -447,7 +524,7 @@ export async function uploadChatImage(
     : `/api/channels/${channelId}/upload`;
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'X-Annex-Pseudonym': pseudonymId },
+    headers: authHeaders(pseudonymId),
     body: formData,
   });
   if (!res.ok) {

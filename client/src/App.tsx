@@ -30,7 +30,7 @@ import { StartupModeSelector } from '@/components/StartupModeSelector';
 import { clearWebStartupMode } from '@/lib/startup-prefs';
 import { parseLegacyInviteFromUrl, clearInviteFromUrl, createInviteLink } from '@/lib/invite';
 import { getPersonasForIdentity } from '@/lib/personas';
-import { getApiBaseUrl, getServerSummary, setApiBaseUrl, redeemInvite, setPublicUrl } from '@/lib/api';
+import { getApiBaseUrl, getServerSummary, setApiBaseUrl, redeemInvite, setPublicUrl, getSessionToken, startTokenRefresh, stopTokenRefresh } from '@/lib/api';
 import { cancelMembershipProofGeneration, isProofGenerationInFlight } from '@/lib/zk';
 import type { ProvingStatus } from '@/stores/identity';
 import { isTauri, getStartupMode as tauriGetStartupMode, listenForInvite, saveStartupMode, getTunnelUrl } from '@/lib/tauri';
@@ -318,14 +318,24 @@ export default function App() {
     }
   }, [phase, serverReady]);
 
-  // Connect WebSocket and load permissions when identity is ready
+  // Connect WebSocket, load permissions, and start token refresh when identity is ready
   useEffect(() => {
     if (phase === 'ready' && identity?.pseudonymId) {
       const baseUrl = getApiBaseUrl();
-      connectWs(identity.pseudonymId, baseUrl || undefined);
+      const sessionToken = getSessionToken();
+      connectWs(identity.pseudonymId, baseUrl || undefined, sessionToken);
       loadPermissions();
       fetchServerImage();
-      return () => disconnectWs();
+
+      // Auto-refresh session token at 80% of 1-hour TTL (~48 min)
+      startTokenRefresh(3600, (err) => {
+        console.error('session token refresh failed', err);
+      });
+
+      return () => {
+        disconnectWs();
+        stopTokenRefresh();
+      };
     }
   }, [phase, identity?.pseudonymId, connectWs, disconnectWs, loadPermissions, fetchServerImage]);
 

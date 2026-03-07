@@ -88,6 +88,11 @@ vi.mock('@/lib/personas', () => ({ getPersonasForIdentity: vi.fn(async () => [])
 vi.mock('@/lib/api', () => ({
   getApiBaseUrl: vi.fn(() => 'http://localhost:3000'),
   setApiBaseUrl: vi.fn(),
+  setSessionToken: vi.fn(),
+  getSessionToken: vi.fn(() => null),
+  isTokenExpired: vi.fn(() => false),
+  startTokenRefresh: vi.fn(),
+  stopTokenRefresh: vi.fn(),
   register: vi.fn(async () => ({
     identityId: 1,
     leafIndex: 0,
@@ -98,6 +103,7 @@ vi.mock('@/lib/api', () => ({
   verifyMembership: vi.fn(async () => ({
     ok: true,
     pseudonymId: 'pseudo-123',
+    sessionToken: 'test-session-token',
   })),
   getIdentityInfo: vi.fn(async () => ({
     pseudonymId: 'pseudo-123',
@@ -166,6 +172,7 @@ const FAKE_IDENTITY: StoredIdentity = {
   nodeId: 1,
   commitmentHex: '0xabc',
   pseudonymId: 'pseudo-123',
+  sessionToken: 'test-session-token',
   serverSlug: 'default',
   leafIndex: 0,
   createdAt: '2025-01-01T00:00:00Z',

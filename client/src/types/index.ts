@@ -27,6 +27,8 @@ export interface StoredIdentity {
   commitmentHex: string;
   /** Pseudonym ID received after membership verification. */
   pseudonymId: string | null;
+  /** HMAC-signed session token for authenticated API calls. */
+  sessionToken: string | null;
   /** The server slug this identity is registered on. */
   serverSlug: string;
   /** Merkle leaf index assigned during registration. */
@@ -48,6 +50,7 @@ export interface RegistrationResponse {
 export interface VerifyMembershipResponse {
   ok: boolean;
   pseudonymId: string;
+  sessionToken: string;
 }
 
 /** Capability flags from server. */
