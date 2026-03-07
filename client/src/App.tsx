@@ -357,9 +357,20 @@ export default function App() {
 
         // Auto-refresh session token at 80% of 1-hour TTL (~48 min).
         // Persist each refreshed token to IndexedDB so cold starts work.
-        startTokenRefresh(3600, async (err) => {
-          console.error('session token refresh failed', err);
-        });
+        startTokenRefresh(
+          3600,
+          async (newToken) => {
+            const cur = useIdentityStore.getState().identity;
+            if (cur) {
+              const updated = { ...cur, sessionToken: newToken };
+              await saveIdentity(updated);
+              useIdentityStore.setState({ identity: updated });
+            }
+          },
+          async (err) => {
+            console.error('session token refresh failed', err);
+          },
+        );
       })();
 
       return () => {

@@ -179,12 +179,17 @@ export async function refreshSessionToken(): Promise<string> {
  * Start auto-refreshing the session token at 80% of the given TTL.
  * Call stopTokenRefresh() to cancel.
  */
-export function startTokenRefresh(ttlSecs: number, onError?: (err: unknown) => void): void {
+export function startTokenRefresh(
+  ttlSecs: number,
+  onRefreshed?: (newToken: string) => void,
+  onError?: (err: unknown) => void,
+): void {
   stopTokenRefresh();
   const intervalMs = ttlSecs * 0.8 * 1000;
   _refreshInterval = setInterval(async () => {
     try {
-      await refreshSessionToken();
+      const newToken = await refreshSessionToken();
+      onRefreshed?.(newToken);
     } catch (err) {
       onError?.(err);
     }
