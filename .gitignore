@@ -21,6 +21,9 @@ assets/voices/
 assets/models/
 assets/whisper/
 
+# Tauri build output (copied from client/dist by build-desktop.js)
+crates/annex-desktop/dist/
+
 # Node modules (ZK toolchain)
 node_modules/
 
