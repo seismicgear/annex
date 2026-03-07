@@ -456,24 +456,7 @@ export default function App() {
   // Gate 2: Server not yet selected → Screen 2 (startup mode selector).
   // The server is NOT started yet — StartupModeSelector handles starting
   // the embedded server if the user picks "Host a Server".
-  //
-  // When a protocol invite is pending, bypass this gate entirely — the
-  // invite processing effect will set the API base URL and mark the
-  // server ready automatically. Show a connecting indicator instead.
   if (!serverReady) {
-    if (pendingProtocolInvite && identity?.sk) {
-      return (
-        <div className="app">
-          <main className="app-main setup">
-            <div className="startup-mode-selector">
-              <h2>Annex</h2>
-              <div className="startup-loading">Connecting via invite...</div>
-            </div>
-          </main>
-        </div>
-      );
-    }
-
     return (
       <div className="app">
         <main className="app-main setup">
