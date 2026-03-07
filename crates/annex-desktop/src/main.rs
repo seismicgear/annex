@@ -1492,7 +1492,7 @@ fn media_keepalive_on_window_event(window: &tauri::Window, event: &tauri::Window
                     // SAFETY: SetIsVisible is a standard COM call on the UI thread.
                     // The async_runtime dispatches this closure to the main thread
                     // via PostMessage, so we are on the correct apartment.
-                    unsafe { wv.controller().SetIsVisible(true.into()).ok() }
+                    unsafe { wv.controller().SetIsVisible(true.into()).ok(); }
                 });
             }
         });
