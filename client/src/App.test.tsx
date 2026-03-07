@@ -88,7 +88,6 @@ vi.mock('@/lib/personas', () => ({ getPersonasForIdentity: vi.fn(async () => [])
 vi.mock('@/lib/api', () => ({
   getApiBaseUrl: vi.fn(() => 'http://localhost:3000'),
   setApiBaseUrl: vi.fn(),
-  setPublicUrl: vi.fn(async () => {}),
   register: vi.fn(async () => ({
     identityId: 1,
     leafIndex: 0,

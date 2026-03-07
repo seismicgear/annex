@@ -30,7 +30,7 @@ import { StartupModeSelector } from '@/components/StartupModeSelector';
 import { clearWebStartupMode } from '@/lib/startup-prefs';
 import { parseLegacyInviteFromUrl, clearInviteFromUrl } from '@/lib/invite';
 import { getPersonasForIdentity } from '@/lib/personas';
-import { getApiBaseUrl, getServerSummary, setPublicUrl } from '@/lib/api';
+import { getApiBaseUrl, getServerSummary } from '@/lib/api';
 import { cancelMembershipProofGeneration, isProofGenerationInFlight } from '@/lib/zk';
 import type { ProvingStatus } from '@/stores/identity';
 import { isTauri, getStartupMode as tauriGetStartupMode } from '@/lib/tauri';
@@ -78,7 +78,6 @@ export default function App() {
   const [identityChecked, setIdentityChecked] = useState(false);
 
   const [serverReady, setServerReady] = useState(false);
-  const [tunnelUrl, setTunnelUrl] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<AppView>('chat');
   const [adminMenuOpen, setAdminMenuOpen] = useState(false);
   const [startupErrorDetails, setStartupErrorDetails] = useState<string | null>(null);
@@ -101,7 +100,6 @@ export default function App() {
     setStartupErrorDetails(null);
     setProvingFailures(0);
     setServerReady(false);
-    setTunnelUrl(null);
   };
 
   useEffect(() => {
@@ -226,7 +224,6 @@ export default function App() {
     if (phase === 'uninitialized' && prevPhase !== 'uninitialized' && serverReady) {
       clearWebStartupMode();
       setServerReady(false);
-      setTunnelUrl(null);
       serverSaved.current = false;
     }
   }, [phase, serverReady]);
@@ -241,16 +238,6 @@ export default function App() {
       return () => disconnectWs();
     }
   }, [phase, identity?.pseudonymId, connectWs, disconnectWs, loadPermissions, fetchServerImage]);
-
-  // Push tunnel URL to the server so invite links, federation, and relay
-  // paths use the globally-reachable address instead of localhost.
-  useEffect(() => {
-    if (tunnelUrl && phase === 'ready' && identity?.pseudonymId && canModerate) {
-      setPublicUrl(identity.pseudonymId, tunnelUrl).catch(() => {
-        // Non-fatal: admin-only endpoint — will fail for non-admins silently
-      });
-    }
-  }, [tunnelUrl, phase, identity?.pseudonymId, canModerate]);
 
   // Auto-save current server to the node hub on first identity ready
   useEffect(() => {
@@ -382,7 +369,7 @@ export default function App() {
       <div className="app">
         <main className="app-main setup">
           <StartupModeSelector
-            onReady={(url) => { setTunnelUrl(url ?? null); setServerReady(true); }}
+            onReady={() => { setServerReady(true); }}
           />
         </main>
       </div>
@@ -602,7 +589,7 @@ export default function App() {
         </div>
       </div>
 
-      <StatusBar tunnelUrl={tunnelUrl} />
+      <StatusBar />
     </div>
   );
 }
