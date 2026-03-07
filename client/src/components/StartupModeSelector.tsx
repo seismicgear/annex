@@ -19,6 +19,7 @@ import {
   startLocalLiveKit,
   getStartupMode,
   clearStartupMode,
+  startTunnel,
 } from '@/lib/tauri';
 import { setApiBaseUrl } from '@/lib/api';
 import { clearWebStartupMode } from '@/lib/startup-prefs';
@@ -39,6 +40,7 @@ type Phase =
   | 'choose'
   | 'starting_voice'
   | 'starting_server'
+  | 'starting_tunnel'
   | 'connecting'
   | 'error';
 
@@ -88,6 +90,16 @@ export function StartupModeSelector({ onReady }: Props) {
         setPhase('starting_server');
         const url = await startEmbeddedServer();
         setApiBaseUrl(url);
+
+        // Auto-start tunnel to make the server publicly reachable.
+        // The tunnel URL is used as the server's public URL for invite links.
+        setPhase('starting_tunnel');
+        try {
+          await startTunnel();
+        } catch (tunnelErr) {
+          console.warn('Auto-tunnel failed (invite links may be unavailable):', tunnelErr);
+        }
+
         if (!skipSave) {
           await saveStartupMode({ startup_mode: { mode: 'host' } });
         }
@@ -257,6 +269,18 @@ export function StartupModeSelector({ onReady }: Props) {
     );
   }
 
+  if (phase === 'starting_tunnel') {
+    return (
+      <div className="startup-mode-selector">
+        <h2>Annex</h2>
+        <div className="startup-loading">Setting up public access...</div>
+        <p className="tunnel-hint">
+          Establishing a public URL so others can connect to your server.
+        </p>
+      </div>
+    );
+  }
+
   if (phase === 'connecting') {
     return (
       <div className="startup-mode-selector">
@@ -290,8 +314,8 @@ export function StartupModeSelector({ onReady }: Props) {
           <div className="startup-option">
             <h3>Host a Server</h3>
             <p>
-              Run your own Annex server on this device. Set a public URL in
-              Server Settings so others can connect to you.
+              Run your own Annex server on this device. A public URL is
+              automatically configured so others can connect to you.
             </p>
             <button className="primary-btn" onClick={() => applyHost(false)}>
               Start Hosting

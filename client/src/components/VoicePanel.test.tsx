@@ -46,6 +46,7 @@ const mockGetPlatformMediaStatus = vi.fn().mockResolvedValue({
 vi.mock('@/lib/tauri', () => ({
   isTauri: () => true,
   getPlatformMediaStatus: (...args: unknown[]) => mockGetPlatformMediaStatus(...args),
+  setMediaKeepalive: vi.fn(async () => {}),
 }));
 
 vi.mock('@livekit/components-react', () => ({

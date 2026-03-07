@@ -39,11 +39,20 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
   useEffect(() => {
     api
       .getServer(pseudonymId)
-      .then((s) => {
+      .then(async (s) => {
         setLabel(s.label);
         setSlug(s.slug);
         setPublicUrl(s.public_url);
         setPublicUrlInput(s.public_url);
+        // Auto-generate an invite link if a public URL is already configured
+        if (s.public_url) {
+          try {
+            const result = await createInviteLink(api.getApiBaseUrl(), pseudonymId);
+            setInviteUrl(result.url);
+          } catch {
+            // Non-critical — user can create one manually
+          }
+        }
       })
       .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setLoading(false));
@@ -78,6 +87,15 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
       setPublicUrl(resp.public_url);
       setPublicUrlInput(resp.public_url);
       setSuccess('Public URL saved.');
+      // Auto-generate an invite link when a public URL is first set
+      if (resp.public_url && !inviteUrl) {
+        try {
+          const result = await createInviteLink(api.getApiBaseUrl(), pseudonymId);
+          setInviteUrl(result.url);
+        } catch {
+          // Non-critical — user can still click "Create Invite Link" manually
+        }
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -256,13 +274,19 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
   const [newProhibited, setNewProhibited] = useState('');
   const [newCapability, setNewCapability] = useState('');
 
-  useEffect(() => {
+  const loadPolicy = useCallback(() => {
+    setLoading(true);
+    setError(null);
     api
       .getPolicy(pseudonymId)
       .then(setPolicy)
       .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setLoading(false));
   }, [pseudonymId]);
+
+  useEffect(() => {
+    loadPolicy();
+  }, [loadPolicy]);
 
   const handleSave = async () => {
     if (!policy) return;
@@ -280,7 +304,12 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
   };
 
   if (loading) return <p>Loading policy...</p>;
-  if (!policy) return <p className="error-message">Failed to load policy</p>;
+  if (!policy) return (
+    <div>
+      <p className="error-message">{error || 'Failed to load policy'}</p>
+      <button className="primary-btn" onClick={loadPolicy}>Retry</button>
+    </div>
+  );
 
   return (
     <div className="policy-editor">

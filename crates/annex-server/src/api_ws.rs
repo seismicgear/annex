@@ -31,6 +31,11 @@ use uuid::Uuid;
 /// Tokens are single-use: the short TTL limits replay risk for unused tokens.
 const WS_TOKEN_TTL_SECS: u64 = 60;
 
+/// Duration for which a REST session token is valid (1 hour).
+/// Issued by verify-membership after ZK proof verification. The client
+/// auto-refreshes before expiry via `POST /api/ws/token`.
+pub const SESSION_TOKEN_TTL_SECS: u64 = 3600;
+
 /// Derive a 32-byte HMAC key for WebSocket session tokens from the server's
 /// Ed25519 signing key. Uses SHA-256 with a domain-separation prefix so the
 /// derived key is independent of any other use of the signing key.
@@ -45,12 +50,12 @@ pub fn derive_ws_token_secret(signing_key: &ed25519_dalek::SigningKey) -> [u8; 3
     secret
 }
 
-/// Generates an HMAC-SHA256 signed WebSocket session token.
+/// Generates an HMAC-SHA256 signed session token with a configurable TTL.
 ///
 /// Token format: `base64(pseudonym|expires_unix_secs|hmac_signature)`
 /// The token binds the pseudonym to a time window, preventing both
 /// impersonation (different pseudonym) and replay (after expiry).
-fn generate_ws_token(pseudonym: &str, secret: &[u8; 32]) -> String {
+pub fn generate_session_token(pseudonym: &str, secret: &[u8; 32], ttl_secs: u64) -> String {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
 
@@ -58,7 +63,7 @@ fn generate_ws_token(pseudonym: &str, secret: &[u8; 32]) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
-        + WS_TOKEN_TTL_SECS;
+        + ttl_secs;
 
     let payload = format!("{}|{}", pseudonym, expires);
 
@@ -459,7 +464,7 @@ pub async fn create_ws_token_handler(
         crate::middleware::IdentityContext,
     >,
 ) -> Result<axum::Json<serde_json::Value>, StatusCode> {
-    let token = generate_ws_token(&identity.pseudonym_id, &state.ws_token_secret);
+    let token = generate_session_token(&identity.pseudonym_id, &state.ws_token_secret, WS_TOKEN_TTL_SECS);
     Ok(axum::Json(serde_json::json!({
         "token": token,
         "expires_in_secs": WS_TOKEN_TTL_SECS,
