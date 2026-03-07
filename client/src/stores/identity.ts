@@ -61,7 +61,7 @@ interface IdentityState {
   /** Generate ZK identity keys locally (no network requests). */
   generateLocalKeys: (roleCode: number) => Promise<void>;
   /** Register existing local keys with a server (requires network). */
-  registerWithServer: (serverSlug: string) => Promise<void>;
+  registerWithServer: (serverSlug: string, inviteCode?: string) => Promise<void>;
   /** Select an existing identity by ID. */
   selectIdentity: (id: string) => Promise<void>;
   /** Export current identity for backup. */
