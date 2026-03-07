@@ -129,6 +129,7 @@ export function ChannelList() {
     channels,
     activeChannelId,
     loading,
+    error,
     loadChannels,
     selectChannel,
   } = useChannelsStore();
@@ -148,6 +149,17 @@ export function ChannelList() {
 
   if (loading) {
     return <div className="channel-list loading">Loading channels...</div>;
+  }
+
+  if (error) {
+    return (
+      <div className="channel-list loading">
+        <p className="error-message">{error}</p>
+        <button className="primary-btn" onClick={() => loadChannels(identity.pseudonymId!)}>
+          Retry
+        </button>
+      </div>
+    );
   }
 
   return (

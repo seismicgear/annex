@@ -21,6 +21,8 @@ interface ChannelsState {
   wsConnected: boolean;
   /** Loading state for channel list. */
   loading: boolean;
+  /** Error message from loading channels. */
+  error: string | null;
   /** Whether older messages are currently being fetched. */
   loadingOlder: boolean;
   /** Whether there are more older messages to load. */
@@ -58,14 +60,21 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
   messages: [],
   wsConnected: false,
   loading: false,
+  error: null,
   loadingOlder: false,
   hasMoreMessages: true,
   ws: null,
 
   loadChannels: async (pseudonymId: string) => {
-    set({ loading: true });
-    const channels = await api.listChannels(pseudonymId);
-    set({ channels, loading: false });
+    set({ loading: true, error: null });
+    try {
+      const channels = await api.listChannels(pseudonymId);
+      set({ channels });
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : String(err) });
+    } finally {
+      set({ loading: false });
+    }
   },
 
   selectChannel: async (pseudonymId: string, channelId: string) => {
