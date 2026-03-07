@@ -6,6 +6,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 
 export interface StartupPrefsHost {
   startup_mode: { mode: 'host' };
@@ -97,4 +98,15 @@ export async function getPlatformMediaStatus(): Promise<PlatformMediaStatus> {
  */
 export async function setMediaKeepalive(active: boolean): Promise<void> {
   await invoke('set_media_keepalive', { active });
+}
+
+// ── Deep-link invite listener ──
+
+export async function listenForInvite(
+  callback: (invite: { server: string; code: string }) => void,
+): Promise<() => void> {
+  const unlisten = await listen<{ server: string; code: string }>('annex-invite', (event) => {
+    callback(event.payload);
+  });
+  return unlisten;
 }

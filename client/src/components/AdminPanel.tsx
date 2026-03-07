@@ -10,6 +10,7 @@ import { useChannelsStore } from '@/stores/channels';
 import { useServersStore } from '@/stores/servers';
 import { InfoTip } from '@/components/InfoTip';
 import * as api from '@/lib/api';
+import { createInviteLink } from '@/lib/invite';
 import type { ServerPolicy, AccessMode } from '@/types';
 import type { MemberInfo } from '@/lib/api';
 
@@ -24,6 +25,8 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [inviteUrl, setInviteUrl] = useState('');
+  const [creatingInvite, setCreatingInvite] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
@@ -104,14 +107,24 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
   };
 
   const hasPublicUrl = !!publicUrl;
-  const shareUrl = hasPublicUrl
-    ? `${publicUrl}/#/invite?server=${encodeURIComponent(slug)}&label=${encodeURIComponent(label)}`
-    : '';
+
+  const handleCreateInvite = async () => {
+    setCreatingInvite(true);
+    setError(null);
+    try {
+      const result = await createInviteLink(api.getApiBaseUrl(), pseudonymId);
+      setInviteUrl(result.url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCreatingInvite(false);
+    }
+  };
 
   const handleCopyLink = async () => {
-    if (!shareUrl) return;
+    if (!inviteUrl) return;
     try {
-      await navigator.clipboard.writeText(shareUrl);
+      await navigator.clipboard.writeText(inviteUrl);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch { /* clipboard denied */ }
@@ -192,19 +205,25 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
       <div className="policy-section">
         <h4>Share Server</h4>
         {hasPublicUrl ? (
-          <p className="field-hint">Send this link to invite people to your server.</p>
+          <>
+            <p className="field-hint">Create an invite link to share with others.</p>
+            {inviteUrl ? (
+              <div className="share-link-row">
+                <input type="text" value={inviteUrl} readOnly className="share-link-input" />
+                <button className="primary-btn" onClick={handleCopyLink}>
+                  {copied ? 'Copied!' : 'Copy Link'}
+                </button>
+              </div>
+            ) : (
+              <button className="primary-btn" onClick={handleCreateInvite} disabled={creatingInvite}>
+                {creatingInvite ? 'Creating...' : 'Create Invite Link'}
+              </button>
+            )}
+          </>
         ) : (
           <p className="field-hint" style={{ color: 'var(--warning-color, #f0ad4e)' }}>
             Set a Public URL above to generate a shareable invite link.
           </p>
-        )}
-        {hasPublicUrl && (
-          <div className="share-link-row">
-            <input type="text" value={shareUrl} readOnly className="share-link-input" />
-            <button className="primary-btn" onClick={handleCopyLink}>
-              {copied ? 'Copied!' : 'Copy Link'}
-            </button>
-          </div>
         )}
       </div>
 

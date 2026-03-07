@@ -30,11 +30,11 @@ import { StartupModeSelector } from '@/components/StartupModeSelector';
 import { clearWebStartupMode } from '@/lib/startup-prefs';
 import { parseLegacyInviteFromUrl, clearInviteFromUrl } from '@/lib/invite';
 import { getPersonasForIdentity } from '@/lib/personas';
-import { getApiBaseUrl, getServerSummary, setPublicUrl } from '@/lib/api';
+import { getApiBaseUrl, getServerSummary, setApiBaseUrl, redeemInvite } from '@/lib/api';
 import { cancelMembershipProofGeneration, isProofGenerationInFlight } from '@/lib/zk';
 import type { ProvingStatus } from '@/stores/identity';
-import { isTauri, getStartupMode as tauriGetStartupMode } from '@/lib/tauri';
-import type { LegacyInvitePayload } from '@/types';
+import { isTauri, getStartupMode as tauriGetStartupMode, listenForInvite, saveStartupMode } from '@/lib/tauri';
+import type { LegacyInvitePayload, InvitePayload } from '@/types';
 import './App.css';
 
 type AppView = 'chat' | 'federation' | 'events' | 'admin-policy' | 'admin-channels' | 'admin-members' | 'admin-server';
@@ -78,7 +78,6 @@ export default function App() {
   const [identityChecked, setIdentityChecked] = useState(false);
 
   const [serverReady, setServerReady] = useState(false);
-  const [tunnelUrl, setTunnelUrl] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<AppView>('chat');
   const [adminMenuOpen, setAdminMenuOpen] = useState(false);
   const [startupErrorDetails, setStartupErrorDetails] = useState<string | null>(null);
@@ -87,6 +86,8 @@ export default function App() {
   const [pendingInvite, setPendingInvite] = useState<LegacyInvitePayload | null>(
     () => parseLegacyInviteFromUrl(),
   );
+  const [pendingProtocolInvite, setPendingProtocolInvite] = useState<InvitePayload | null>(null);
+  const [pendingInviteCode, setPendingInviteCode] = useState<string | null>(null);
   const inviteProcessed = useRef(false);
   const serverSaved = useRef(false);
   const prevPhaseRef = useRef(phase);
@@ -101,7 +102,6 @@ export default function App() {
     setStartupErrorDetails(null);
     setProvingFailures(0);
     setServerReady(false);
-    setTunnelUrl(null);
   };
 
   useEffect(() => {
@@ -151,6 +151,90 @@ export default function App() {
     loadServers();
   }, [loadIdentities, loadServers, inTauri]);
 
+  // ── Listen for annex:// deep-link invite events (Tauri only) ──
+  useEffect(() => {
+    if (!inTauri) return;
+    let unlisten: (() => void) | null = null;
+    listenForInvite((invite) => {
+      setPendingProtocolInvite(invite);
+    }).then((fn) => { unlisten = fn; });
+    return () => { unlisten?.(); };
+  }, [inTauri]);
+
+  // ── Process protocol invite: validate, switch server, trigger registration ──
+  useEffect(() => {
+    if (!pendingProtocolInvite || !identity?.sk) return;
+    if (phase !== 'keys_ready' && phase !== 'ready') return;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        // 1. Validate invite code with target server
+        let result;
+        try {
+          result = await redeemInvite(pendingProtocolInvite.server, pendingProtocolInvite.code);
+        } catch (fetchErr) {
+          if (cancelled) return;
+          // Distinguish network errors from server-side rejections
+          const isNetworkError = fetchErr instanceof TypeError && /failed to fetch/i.test(fetchErr.message);
+          const message = isNetworkError
+            ? `Could not reach server at ${pendingProtocolInvite.server}. Check your connection and try again.`
+            : (fetchErr instanceof Error ? fetchErr.message : 'Invite validation failed');
+          useIdentityStore.setState({ phase: 'error', error: message });
+          setPendingProtocolInvite(null);
+          return;
+        }
+        if (cancelled) return;
+
+        // 2. Add remote server and switch API target
+        const { addRemoteServer } = useServersStore.getState();
+        const server = await addRemoteServer(pendingProtocolInvite.server);
+        if (!server) {
+          if (cancelled) return;
+          useIdentityStore.setState({
+            phase: 'error',
+            error: `Failed to connect to server at ${pendingProtocolInvite.server}.`,
+          });
+          setPendingProtocolInvite(null);
+          return;
+        }
+        setApiBaseUrl(pendingProtocolInvite.server);
+
+        // 3. Persist startup preference so returning users auto-connect
+        if (inTauri) {
+          saveStartupMode({
+            startup_mode: { mode: 'client', server_url: pendingProtocolInvite.server },
+          }).catch(() => {});
+        }
+
+        // 4. Reset identity phase so auto-register effect fires
+        if (phase === 'ready') {
+          useIdentityStore.setState({
+            phase: 'keys_ready',
+            proofInFlight: false,
+            provingStatus: 'idle',
+            error: null,
+            errorDetails: null,
+          });
+        }
+
+        // 5. Store invite code for registration, mark server ready
+        setPendingInviteCode(pendingProtocolInvite.code);
+        setServerReady(true);
+        setPendingProtocolInvite(null);
+      } catch (err) {
+        if (cancelled) return;
+        useIdentityStore.setState({
+          phase: 'error',
+          error: err instanceof Error ? err.message : 'Invite validation failed',
+        });
+        setPendingProtocolInvite(null);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [pendingProtocolInvite, identity?.sk, phase, inTauri]);
+
   // ── Register identity with server after user selects a server ──
   // Only fires when phase is exactly 'keys_ready' (keys exist, not yet
   // registered) and the user has explicitly picked a server on Screen 2.
@@ -173,7 +257,8 @@ export default function App() {
         try {
           const summary = await getServerSummary();
           if (!cancelled) {
-            await registerWithServer(summary.slug);
+            await registerWithServer(summary.slug, pendingInviteCode ?? undefined);
+            setPendingInviteCode(null);
           }
           return;
         } catch (err) {
@@ -214,7 +299,7 @@ export default function App() {
       }
     })();
     return () => { cancelled = true; };
-  }, [serverReady, phase, identity?.sk, registerWithServer, inTauri]);
+  }, [serverReady, phase, identity?.sk, registerWithServer, inTauri, pendingInviteCode]);
 
   // When the user logs out, return to the mode selector.
   // We track the previous phase so we only reset when phase *transitions*
@@ -226,7 +311,6 @@ export default function App() {
     if (phase === 'uninitialized' && prevPhase !== 'uninitialized' && serverReady) {
       clearWebStartupMode();
       setServerReady(false);
-      setTunnelUrl(null);
       serverSaved.current = false;
     }
   }, [phase, serverReady]);
@@ -241,16 +325,6 @@ export default function App() {
       return () => disconnectWs();
     }
   }, [phase, identity?.pseudonymId, connectWs, disconnectWs, loadPermissions, fetchServerImage]);
-
-  // Push tunnel URL to the server so invite links, federation, and relay
-  // paths use the globally-reachable address instead of localhost.
-  useEffect(() => {
-    if (tunnelUrl && phase === 'ready' && identity?.pseudonymId && canModerate) {
-      setPublicUrl(identity.pseudonymId, tunnelUrl).catch(() => {
-        // Non-fatal: admin-only endpoint — will fail for non-admins silently
-      });
-    }
-  }, [tunnelUrl, phase, identity?.pseudonymId, canModerate]);
 
   // Auto-save current server to the node hub on first identity ready
   useEffect(() => {
@@ -366,6 +440,11 @@ export default function App() {
               Joining {pendingInvite.label ?? pendingInvite.channelId}...
             </span>
           )}
+          {pendingProtocolInvite && (
+            <span className="invite-banner">
+              Invite received — create your identity to continue.
+            </span>
+          )}
         </header>
         <main className="app-main setup">
           <IdentitySetup />
@@ -382,7 +461,7 @@ export default function App() {
       <div className="app">
         <main className="app-main setup">
           <StartupModeSelector
-            onReady={(url) => { setTunnelUrl(url ?? null); setServerReady(true); }}
+            onReady={() => { setServerReady(true); }}
           />
         </main>
       </div>
@@ -602,7 +681,7 @@ export default function App() {
         </div>
       </div>
 
-      <StatusBar tunnelUrl={tunnelUrl} />
+      <StatusBar />
     </div>
   );
 }

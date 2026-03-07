@@ -2,7 +2,7 @@
  * Startup mode selector — shown on every deployment type (Tauri, web, Docker).
  *
  * Lets the user choose between:
- *   - Tauri: "Host a Server" (embedded Axum + cloudflared tunnel) or "Connect to a Server"
+ *   - Tauri: "Host a Server" (embedded Axum) or "Connect to a Server"
  *   - Web/Docker: "Use this server" (current origin) or "Connect to another server"
  *
  * The choice is persisted (Tauri: disk via IPC, Web: localStorage) so
@@ -14,7 +14,6 @@ import { useState, useEffect, useCallback } from 'react';
 import {
   isTauri,
   startEmbeddedServer,
-  startTunnel,
   saveStartupMode,
   getLiveKitConfig,
   startLocalLiveKit,
@@ -32,7 +31,7 @@ interface WebPrefs {
 }
 
 interface Props {
-  onReady: (tunnelUrl?: string) => void;
+  onReady: () => void;
 }
 
 type Phase =
@@ -40,8 +39,6 @@ type Phase =
   | 'choose'
   | 'starting_voice'
   | 'starting_server'
-  | 'creating_tunnel'
-  | 'tunnel_ready'
   | 'connecting'
   | 'error';
 
@@ -67,8 +64,6 @@ function saveWebPrefs(prefs: WebPrefs): void {
 export function StartupModeSelector({ onReady }: Props) {
   const [phase, setPhase] = useState<Phase>('loading');
   const [remoteUrl, setRemoteUrl] = useState('');
-  const [tunnelUrl, setTunnelUrl] = useState('');
-  const [copied, setCopied] = useState(false);
   const [error, setError] = useState('');
   const inTauri = isTauri();
 
@@ -96,15 +91,7 @@ export function StartupModeSelector({ onReady }: Props) {
         if (!skipSave) {
           await saveStartupMode({ startup_mode: { mode: 'host' } });
         }
-        setPhase('creating_tunnel');
-        try {
-          const pubUrl = await startTunnel();
-          setTunnelUrl(pubUrl);
-          onReady(pubUrl);
-        } catch (tunnelErr) {
-          console.warn('Tunnel creation failed:', tunnelErr);
-          onReady();
-        }
+        onReady();
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
         setPhase('error');
@@ -231,22 +218,11 @@ export function StartupModeSelector({ onReady }: Props) {
     }
     setPhase('choose');
     setError('');
-    setTunnelUrl('');
   };
 
   const handleClientSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     applyRemote(remoteUrl, false);
-  };
-
-  const handleCopyUrl = async () => {
-    try {
-      await navigator.clipboard.writeText(tunnelUrl);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // Fallback: select the input text
-    }
   };
 
   // ── Render phases ──
@@ -277,56 +253,6 @@ export function StartupModeSelector({ onReady }: Props) {
       <div className="startup-mode-selector">
         <h2>Annex</h2>
         <div className="startup-loading">Starting server...</div>
-      </div>
-    );
-  }
-
-  if (phase === 'creating_tunnel') {
-    return (
-      <div className="startup-mode-selector">
-        <h2>Annex</h2>
-        <div className="startup-loading">Generating public URL...</div>
-        <p className="tunnel-hint">
-          This may take a moment on first launch while the tunnel binary is
-          downloaded.
-        </p>
-      </div>
-    );
-  }
-
-  if (phase === 'tunnel_ready') {
-    return (
-      <div className="startup-mode-selector">
-        <h2>Annex</h2>
-        <p className="startup-description">
-          Your server is running. Share this URL with others to let them
-          connect:
-        </p>
-
-        <div className="tunnel-url-card">
-          <div className="tunnel-url-display">
-            <input
-              type="text"
-              readOnly
-              value={tunnelUrl}
-              className="tunnel-url-input"
-              onClick={(e) => (e.target as HTMLInputElement).select()}
-            />
-            <button
-              className="tunnel-copy-btn"
-              onClick={handleCopyUrl}
-            >
-              {copied ? 'Copied!' : 'Copy'}
-            </button>
-          </div>
-          <p className="tunnel-url-note">
-            This URL is active as long as Annex is running on this device.
-          </p>
-        </div>
-
-        <button className="primary-btn tunnel-continue-btn" onClick={() => onReady()}>
-          Continue to Annex
-        </button>
       </div>
     );
   }
@@ -364,8 +290,8 @@ export function StartupModeSelector({ onReady }: Props) {
           <div className="startup-option">
             <h3>Host a Server</h3>
             <p>
-              Run your own Annex server on this device. A public URL will be
-              generated automatically so others can connect to you.
+              Run your own Annex server on this device. Set a public URL in
+              Server Settings so others can connect to you.
             </p>
             <button className="primary-btn" onClick={() => applyHost(false)}>
               Start Hosting
