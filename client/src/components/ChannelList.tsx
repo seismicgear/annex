@@ -27,13 +27,11 @@ function ChannelItem({
   channel,
   active,
   pseudonymId,
-  serverSlug,
   onSelect,
 }: {
   channel: Channel;
   active: boolean;
   pseudonymId: string;
-  serverSlug: string;
   onSelect: () => void;
 }) {
   const { joinChannel, leaveChannel, loadChannels } = useChannelsStore();
@@ -175,7 +173,6 @@ export function ChannelList() {
           channel={ch}
           active={activeChannelId === ch.channel_id}
           pseudonymId={identity.pseudonymId!}
-          serverSlug={identity.serverSlug}
           onSelect={() => handleSelect(ch.channel_id)}
         />
       ))}
