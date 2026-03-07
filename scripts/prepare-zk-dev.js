@@ -4,7 +4,7 @@ const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
-const ROOT_DIR = path.resolve(__dirname, '..');
+const ROOT_DIR = execSync('git rev-parse --show-toplevel', { encoding: 'utf-8' }).trim();
 const ZK_DIR = path.join(ROOT_DIR, 'zk');
 const CLIENT_DIR = path.join(ROOT_DIR, 'client');
 
