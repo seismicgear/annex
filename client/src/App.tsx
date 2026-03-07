@@ -88,6 +88,7 @@ export default function App() {
   );
   const [pendingProtocolInvite, setPendingProtocolInvite] = useState<InvitePayload | null>(null);
   const [pendingInviteCode, setPendingInviteCode] = useState<string | null>(null);
+  const [pendingServerSlug, setPendingServerSlug] = useState<string | null>(null);
   const inviteProcessed = useRef(false);
   const serverSaved = useRef(false);
   const prevPhaseRef = useRef(phase);
@@ -170,9 +171,9 @@ export default function App() {
     (async () => {
       try {
         // 1. Validate invite code with target server
-        let result;
+        let redeemResult;
         try {
-          result = await redeemInvite(pendingProtocolInvite.server, pendingProtocolInvite.code);
+          redeemResult = await redeemInvite(pendingProtocolInvite.server, pendingProtocolInvite.code);
         } catch (fetchErr) {
           if (cancelled) return;
           // Distinguish network errors from server-side rejections
@@ -218,8 +219,9 @@ export default function App() {
           });
         }
 
-        // 5. Store invite code for registration, mark server ready
+        // 5. Store invite code + slug for registration, mark server ready
         setPendingInviteCode(pendingProtocolInvite.code);
+        setPendingServerSlug(redeemResult.serverSlug);
         setServerReady(true);
         setPendingProtocolInvite(null);
       } catch (err) {
@@ -255,10 +257,11 @@ export default function App() {
       for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         if (cancelled) return;
         try {
-          const summary = await getServerSummary();
+          const slug = pendingServerSlug ?? (await getServerSummary()).slug;
           if (!cancelled) {
-            await registerWithServer(summary.slug, pendingInviteCode ?? undefined);
+            await registerWithServer(slug, pendingInviteCode ?? undefined);
             setPendingInviteCode(null);
+            setPendingServerSlug(null);
           }
           return;
         } catch (err) {
@@ -299,7 +302,7 @@ export default function App() {
       }
     })();
     return () => { cancelled = true; };
-  }, [serverReady, phase, identity?.sk, registerWithServer, inTauri, pendingInviteCode]);
+  }, [serverReady, phase, identity?.sk, registerWithServer, inTauri, pendingInviteCode, pendingServerSlug]);
 
   // When the user logs out, return to the mode selector.
   // We track the previous phase so we only reset when phase *transitions*
