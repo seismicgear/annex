@@ -88,15 +88,12 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
     // Prefer a fully registered identity (has pseudonymId).
     const ready = identities.find((i) => i.pseudonymId !== null);
     if (ready) {
-      // Check if the session token is still valid. If expired, re-register
-      // to get a fresh token (silent re-verification via ZK proof).
-      if (ready.sessionToken && !api.isTokenExpired(ready.sessionToken)) {
+      // Set whatever token we have (even expired). The App.tsx effect will
+      // call /api/session/refresh if it's expired before making API calls.
+      if (ready.sessionToken) {
         api.setSessionToken(ready.sessionToken);
-        set({ storedIdentities: identities, identity: ready, phase: 'ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
-      } else {
-        // Token expired or missing — need to re-verify to get a fresh one.
-        set({ storedIdentities: identities, identity: ready, phase: 'keys_ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
       }
+      set({ storedIdentities: identities, identity: ready, phase: 'ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
       return;
     }
     // Otherwise select one that has keys but isn't registered yet.
@@ -252,13 +249,10 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
     const identity = await db.getIdentity(id);
     if (!identity) return;
     if (identity.pseudonymId) {
-      if (identity.sessionToken && !api.isTokenExpired(identity.sessionToken)) {
+      if (identity.sessionToken) {
         api.setSessionToken(identity.sessionToken);
-        set({ identity, phase: 'ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
-      } else {
-        // Token expired — need to re-verify
-        set({ identity, phase: 'keys_ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
       }
+      set({ identity, phase: 'ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
     } else if (identity.sk) {
       set({ identity, phase: 'keys_ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
     }
