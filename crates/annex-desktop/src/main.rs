@@ -63,6 +63,12 @@ json = false
 # Override with ANNEX_CORS_ORIGINS env var if needed.
 allowed_origins = ["tauri://localhost", "https://tauri.localhost", "http://tauri.localhost"]
 
+[security]
+# Desktop mode uses X-Annex-Pseudonym header authentication.
+# ZK proof enforcement requires HMAC Bearer tokens which the desktop client
+# does not send, so it must be disabled for the embedded server.
+enforce_zk_proofs = false
+
 # [livekit]
 # Uncomment and configure to enable voice channels (LiveKit WebRTC).
 # url = "ws://localhost:7880"
@@ -1618,6 +1624,16 @@ fn main() {
             );
         }
 
+        // Disable ZK proof enforcement for the desktop embedded server.
+        // The desktop client authenticates via X-Annex-Pseudonym headers
+        // (the proof was already verified during registration). With
+        // enforce_zk_proofs=true (the default), the auth middleware rejects
+        // X-Annex-Pseudonym and requires HMAC-signed Bearer tokens, which
+        // the client doesn't send — causing 401 on every API call.
+        if std::env::var("ANNEX_ENFORCE_ZK_PROOFS").is_err() {
+            std::env::set_var("ANNEX_ENFORCE_ZK_PROOFS", "false");
+        }
+
         // Load LiveKit API secret from OS keychain if not already in env.
         // This injects the secret before any server thread reads the config.
         if std::env::var("ANNEX_LIVEKIT_API_SECRET").is_err() {
@@ -1717,6 +1733,10 @@ mod tests {
         );
         assert!(contents.contains("[logging]"), "missing [logging] section");
         assert!(contents.contains("[cors]"), "missing [cors] section");
+        assert!(
+            contents.contains("[security]"),
+            "missing [security] section"
+        );
 
         // Verify the livekit comment block is present
         assert!(
@@ -1773,6 +1793,13 @@ mod tests {
         assert_eq!(
             cfg.livekit.token_ttl_seconds, 3600,
             "livekit.token_ttl_seconds should default to 3600"
+        );
+
+        // Desktop config must disable ZK proof enforcement so the client
+        // can authenticate via X-Annex-Pseudonym headers.
+        assert!(
+            !cfg.security.enforce_zk_proofs,
+            "enforce_zk_proofs must be false in desktop config"
         );
     }
 
