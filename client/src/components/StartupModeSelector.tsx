@@ -11,7 +11,16 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
-import { isTauri } from '@/lib/tauri';
+import {
+  isTauri,
+  startEmbeddedServer,
+  startTunnel,
+  saveStartupMode,
+  getLiveKitConfig,
+  startLocalLiveKit,
+  getStartupMode,
+  clearStartupMode,
+} from '@/lib/tauri';
 import { setApiBaseUrl } from '@/lib/api';
 import { clearWebStartupMode } from '@/lib/startup-prefs';
 
@@ -67,7 +76,6 @@ export function StartupModeSelector({ onReady }: Props) {
   const applyHost = useCallback(
     async (skipSave: boolean) => {
       if (!inTauri) return;
-      const { startEmbeddedServer, startTunnel, saveStartupMode, getLiveKitConfig, startLocalLiveKit } = await import('@/lib/tauri');
       setError('');
       try {
         // Auto-configure voice: start a local LiveKit server if not already configured.
@@ -138,7 +146,6 @@ export function StartupModeSelector({ onReady }: Props) {
       setApiBaseUrl(normalized);
       if (!skipSave) {
         if (inTauri) {
-          const { saveStartupMode } = await import('@/lib/tauri');
           await saveStartupMode({
             startup_mode: { mode: 'client', server_url: normalized },
           });
@@ -173,7 +180,6 @@ export function StartupModeSelector({ onReady }: Props) {
     (async () => {
       try {
         if (inTauri) {
-          const { getStartupMode } = await import('@/lib/tauri');
           const prefs = await getStartupMode();
           if (cancelled) return;
           if (!prefs) {
@@ -219,7 +225,6 @@ export function StartupModeSelector({ onReady }: Props) {
 
   const handleReset = async () => {
     if (inTauri) {
-      const { clearStartupMode } = await import('@/lib/tauri');
       await clearStartupMode().catch(() => {});
     } else {
       clearWebStartupMode();
