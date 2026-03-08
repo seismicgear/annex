@@ -31,10 +31,10 @@ import { clearWebStartupMode } from '@/lib/startup-prefs';
 import { parseLegacyInviteFromUrl, clearInviteFromUrl, createInviteLink } from '@/lib/invite';
 import { getPersonasForIdentity } from '@/lib/personas';
 import { getApiBaseUrl, getServerSummary, setApiBaseUrl, redeemInvite, setPublicUrl, getSessionToken, isTokenExpired, refreshSessionToken, startTokenRefresh, stopTokenRefresh } from '@/lib/api';
-import { saveIdentity } from '@/lib/db';
+import { saveIdentity, clearAllDatabases } from '@/lib/db';
 import { cancelMembershipProofGeneration, isProofGenerationInFlight } from '@/lib/zk';
 import type { ProvingStatus } from '@/stores/identity';
-import { isTauri, getStartupMode as tauriGetStartupMode, listenForInvite, saveStartupMode, getTunnelUrl } from '@/lib/tauri';
+import { isTauri, getStartupMode as tauriGetStartupMode, listenForInvite, saveStartupMode, getTunnelUrl, resetServerData } from '@/lib/tauri';
 import type { LegacyInvitePayload, InvitePayload } from '@/types';
 import './App.css';
 
@@ -141,8 +141,20 @@ export default function App() {
   useEffect(() => {
     loadIdentities()
       .then(() => inTauri ? tauriGetStartupMode().catch(() => null) : undefined)
-      .then((startupPrefs) => {
+      .then(async (startupPrefs) => {
         if (inTauri && startupPrefs === null) {
+          // Fresh install detected (no startup_prefs.json). Clear ALL stale
+          // data from a previous installation so the user starts clean:
+          //   1. IndexedDB databases (identities, servers, personas)
+          //   2. Server data directory (database, uploads, config)
+          // Without this, old identities persist in the server DB and the
+          // new identity won't be recognised as the server founder/admin.
+          try {
+            await clearAllDatabases();
+            await resetServerData();
+          } catch (e) {
+            console.warn('fresh install cleanup failed (non-fatal):', e);
+          }
           const { phase: currentPhase } = useIdentityStore.getState();
           if (currentPhase === 'ready') {
             useIdentityStore.getState().logout();

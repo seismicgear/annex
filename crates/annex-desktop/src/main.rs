@@ -256,6 +256,58 @@ fn clear_startup_mode(state: tauri::State<'_, AppManagedState>) -> Result<(), St
     Ok(())
 }
 
+/// Reset server data directory (database, uploads, config) for a clean start.
+///
+/// Called by the frontend when it detects a fresh install (no startup_prefs.json)
+/// to ensure stale data from a previous installation is removed before the
+/// embedded server starts. Without this, old identities remain in the database
+/// and the new identity won't be recognised as the server founder.
+#[tauri::command]
+fn reset_server_data(state: tauri::State<'_, AppManagedState>) -> Result<(), String> {
+    // Only reset if the server is NOT already running.
+    {
+        let guard = state.server.lock().map_err(|e| e.to_string())?;
+        if guard.is_some() {
+            return Err("Cannot reset server data while the server is running".into());
+        }
+    }
+
+    let data_dir = &state.data_dir;
+
+    // Remove the database file.
+    let db_path = data_dir.join("annex.db");
+    if db_path.exists() {
+        std::fs::remove_file(&db_path).map_err(|e| format!("failed to remove database: {e}"))?;
+        tracing::info!("reset_server_data: removed {}", db_path.display());
+    }
+    // SQLite WAL/SHM files
+    for ext in &["annex.db-wal", "annex.db-shm"] {
+        let p = data_dir.join(ext);
+        if p.exists() {
+            let _ = std::fs::remove_file(&p);
+        }
+    }
+
+    // Remove uploads directory.
+    let uploads_dir = data_dir.join("uploads");
+    if uploads_dir.exists() {
+        std::fs::remove_dir_all(&uploads_dir)
+            .map_err(|e| format!("failed to remove uploads: {e}"))?;
+        tracing::info!("reset_server_data: removed {}", uploads_dir.display());
+    }
+
+    // Remove config so it is regenerated with fresh defaults.
+    let config_path = data_dir.join("config.toml");
+    if config_path.exists() {
+        std::fs::remove_file(&config_path)
+            .map_err(|e| format!("failed to remove config: {e}"))?;
+        tracing::info!("reset_server_data: removed {}", config_path.display());
+    }
+
+    tracing::info!("reset_server_data: complete");
+    Ok(())
+}
+
 /// Start the embedded Axum server. Returns the server URL on success.
 /// Idempotent — returns existing URL if already running.
 #[tauri::command]
@@ -1683,6 +1735,7 @@ fn main() {
             get_startup_mode,
             save_startup_mode,
             clear_startup_mode,
+            reset_server_data,
             start_embedded_server,
             start_tunnel,
             stop_tunnel,

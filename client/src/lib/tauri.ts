@@ -38,6 +38,17 @@ export async function clearStartupMode(): Promise<void> {
   await invoke('clear_startup_mode');
 }
 
+/**
+ * Reset server data directory (database, uploads, config).
+ *
+ * Called on fresh install detection to ensure stale data from a previous
+ * installation doesn't persist. Must be called before the embedded server
+ * starts.
+ */
+export async function resetServerData(): Promise<void> {
+  await invoke('reset_server_data');
+}
+
 /** Start the embedded Axum server. Returns the server URL. */
 export async function startEmbeddedServer(): Promise<string> {
   return invoke<string>('start_embedded_server');

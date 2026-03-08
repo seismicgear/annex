@@ -153,20 +153,40 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
 
   sendMessage: (content: string, replyTo: string | null = null) => {
     const { ws, activeChannelId } = get();
-    if (!ws || !activeChannelId) return;
-    ws.send(activeChannelId, content, replyTo);
+    if (!ws || !activeChannelId) {
+      console.error('[channels] sendMessage failed: no WebSocket or active channel', {
+        wsExists: !!ws,
+        wsConnected: ws?.connected ?? false,
+        activeChannelId,
+      });
+      return;
+    }
+    try {
+      ws.send(activeChannelId, content, replyTo);
+    } catch (err) {
+      console.error('[channels] sendMessage threw:', err);
+      set({ error: err instanceof Error ? err.message : 'Failed to send message' });
+    }
   },
 
   editMessage: (messageId: string, content: string) => {
     const { ws, activeChannelId } = get();
     if (!ws || !activeChannelId) return;
-    ws.editMessage(activeChannelId, messageId, content);
+    try {
+      ws.editMessage(activeChannelId, messageId, content);
+    } catch (err) {
+      console.error('[channels] editMessage threw:', err);
+    }
   },
 
   deleteMessage: (messageId: string) => {
     const { ws, activeChannelId } = get();
     if (!ws || !activeChannelId) return;
-    ws.deleteMessage(activeChannelId, messageId);
+    try {
+      ws.deleteMessage(activeChannelId, messageId);
+    } catch (err) {
+      console.error('[channels] deleteMessage threw:', err);
+    }
   },
 
   loadOlderMessages: async (pseudonymId: string) => {

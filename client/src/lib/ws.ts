@@ -56,9 +56,12 @@ export class AnnexWebSocket {
       url = `${protocol}//${host}/ws?${authParam}`;
     }
 
+    console.info('[ws] connecting to', url.replace(/token=[^&]+/, 'token=***'));
+
     this.ws = new WebSocket(url);
 
     this.ws.onopen = () => {
+      console.info('[ws] connected');
       this.reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
       // Re-subscribe to all tracked channels on (re)connect
       for (const channelId of this.subscribedChannels) {
@@ -67,14 +70,16 @@ export class AnnexWebSocket {
       this.notifyStatus(true);
     };
 
-    this.ws.onclose = () => {
+    this.ws.onclose = (event) => {
+      console.warn('[ws] closed', { code: event.code, reason: event.reason, wasClean: event.wasClean });
       this.notifyStatus(false);
       if (!this.intentionalClose) {
         this.scheduleReconnect();
       }
     };
 
-    this.ws.onerror = () => {
+    this.ws.onerror = (event) => {
+      console.error('[ws] error', event);
       // onclose will fire after onerror
     };
 
