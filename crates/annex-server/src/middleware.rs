@@ -248,10 +248,15 @@ impl Default for RateLimiter {
 ///
 /// Sets standard security response headers on every response to prevent
 /// common web attacks (XSS, clickjacking, MIME sniffing, etc.).
+///
+/// CSP and Permissions-Policy are only set on HTML document responses.
+/// Setting them on API (JSON) responses is unnecessary and can confuse
+/// some WebView implementations (e.g. Tauri desktop mode).
 pub async fn security_headers_middleware(req: Request<Body>, next: Next) -> Response {
     let mut response = next.run(req).await;
     let headers = response.headers_mut();
 
+    // Always set universal security headers on all responses.
     headers.insert(
         header::HeaderName::from_static("x-content-type-options"),
         header::HeaderValue::from_static("nosniff"),
@@ -268,22 +273,37 @@ pub async fn security_headers_middleware(req: Request<Body>, next: Next) -> Resp
         header::HeaderName::from_static("x-xss-protection"),
         header::HeaderValue::from_static("1; mode=block"),
     );
-    headers.insert(
-        header::HeaderName::from_static("permissions-policy"),
-        header::HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
-    );
-    headers.insert(
-        header::HeaderName::from_static("content-security-policy"),
-        header::HeaderValue::from_static(
-            "default-src 'self'; \
-             script-src 'self' 'wasm-unsafe-eval'; \
-             connect-src 'self' ws: wss:; \
-             img-src 'self' data: blob:; \
-             style-src 'self' 'unsafe-inline'; \
-             frame-ancestors 'none'; \
-             object-src 'none'",
-        ),
-    );
+
+    // Only set CSP and Permissions-Policy on HTML document responses.
+    // API responses (JSON, WebSocket upgrades) don't need these headers,
+    // and some WebView2/WebKitGTK implementations may incorrectly apply
+    // them to the hosting document context.
+    let is_html = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map_or(false, |ct| ct.contains("text/html"));
+
+    if is_html {
+        headers.insert(
+            header::HeaderName::from_static("permissions-policy"),
+            header::HeaderValue::from_static(
+                "camera=(self), microphone=(self), display-capture=(self), geolocation=()",
+            ),
+        );
+        headers.insert(
+            header::HeaderName::from_static("content-security-policy"),
+            header::HeaderValue::from_static(
+                "default-src 'self'; \
+                 script-src 'self' 'wasm-unsafe-eval'; \
+                 connect-src 'self' ws: wss:; \
+                 img-src 'self' data: blob:; \
+                 media-src 'self' blob: data: mediastream:; \
+                 style-src 'self' 'unsafe-inline'; \
+                 frame-ancestors 'none'; \
+                 object-src 'none'",
+            ),
+        );
+    }
 
     response
 }

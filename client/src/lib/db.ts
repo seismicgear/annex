@@ -79,3 +79,28 @@ export async function importIdentity(json: string): Promise<StoredIdentity> {
   await saveIdentity(identity);
   return identity;
 }
+
+/**
+ * Delete all Annex IndexedDB databases (identities, servers, personas).
+ *
+ * Used during fresh-install detection in Tauri mode to ensure stale data
+ * from a previous installation is fully removed. Also resets internal
+ * connection handles so subsequent calls re-open fresh databases.
+ */
+export async function clearAllDatabases(): Promise<void> {
+  const DB_NAMES = ['annex-identity', 'annex-servers', 'annex-personas'];
+  // Close any open connection handles first.
+  dbPromise = null;
+  for (const name of DB_NAMES) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const req = indexedDB.deleteDatabase(name);
+        req.onsuccess = () => resolve();
+        req.onerror = () => reject(req.error);
+        req.onblocked = () => resolve(); // Best-effort
+      });
+    } catch {
+      // Non-fatal — database may not exist yet.
+    }
+  }
+}
