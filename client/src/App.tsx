@@ -30,7 +30,8 @@ import { StartupModeSelector } from '@/components/StartupModeSelector';
 import { clearWebStartupMode } from '@/lib/startup-prefs';
 import { parseLegacyInviteFromUrl, clearInviteFromUrl, createInviteLink } from '@/lib/invite';
 import { getPersonasForIdentity } from '@/lib/personas';
-import { getApiBaseUrl, getServerSummary, setApiBaseUrl, redeemInvite, setPublicUrl, getSessionToken, startTokenRefresh, stopTokenRefresh } from '@/lib/api';
+import { getApiBaseUrl, getServerSummary, setApiBaseUrl, redeemInvite, setPublicUrl, getSessionToken, setSessionToken, isTokenExpired, refreshSessionToken, startTokenRefresh, stopTokenRefresh } from '@/lib/api';
+import { saveIdentity } from '@/lib/db';
 import { cancelMembershipProofGeneration, isProofGenerationInFlight } from '@/lib/zk';
 import type { ProvingStatus } from '@/stores/identity';
 import { isTauri, getStartupMode as tauriGetStartupMode, listenForInvite, saveStartupMode, getTunnelUrl } from '@/lib/tauri';
@@ -318,21 +319,62 @@ export default function App() {
     }
   }, [phase, serverReady]);
 
-  // Connect WebSocket, load permissions, and start token refresh when identity is ready
+  // Connect WebSocket, load permissions, and start token refresh when identity is ready.
+  // If the session token is expired (cold start), refresh it first via /api/session/refresh.
   useEffect(() => {
     if (phase === 'ready' && identity?.pseudonymId) {
-      const baseUrl = getApiBaseUrl();
-      const sessionToken = getSessionToken();
-      connectWs(identity.pseudonymId, baseUrl || undefined, sessionToken);
-      loadPermissions();
-      fetchServerImage();
+      let cancelled = false;
 
-      // Auto-refresh session token at 80% of 1-hour TTL (~48 min)
-      startTokenRefresh(3600, (err) => {
-        console.error('session token refresh failed', err);
-      });
+      (async () => {
+        // Refresh expired tokens before making any API calls
+        const currentToken = getSessionToken();
+        if (currentToken && isTokenExpired(currentToken)) {
+          try {
+            const newToken = await refreshSessionToken();
+            if (cancelled) return;
+            // Persist refreshed token to IndexedDB
+            if (identity) {
+              const updated = { ...identity, sessionToken: newToken };
+              await saveIdentity(updated);
+              useIdentityStore.setState({ identity: updated });
+            }
+          } catch (err) {
+            if (cancelled) return;
+            console.error('session token refresh failed on startup', err);
+            // Token refresh failed — session is invalid.
+            // Fall back to re-registration by resetting phase.
+            useIdentityStore.setState({ phase: 'keys_ready' });
+            return;
+          }
+        }
+
+        if (cancelled) return;
+        const baseUrl = getApiBaseUrl();
+        const sessionToken = getSessionToken();
+        connectWs(identity.pseudonymId!, baseUrl || undefined, sessionToken);
+        loadPermissions();
+        fetchServerImage();
+
+        // Auto-refresh session token at 80% of 1-hour TTL (~48 min).
+        // Persist each refreshed token to IndexedDB so cold starts work.
+        startTokenRefresh(
+          3600,
+          async (newToken) => {
+            const cur = useIdentityStore.getState().identity;
+            if (cur) {
+              const updated = { ...cur, sessionToken: newToken };
+              await saveIdentity(updated);
+              useIdentityStore.setState({ identity: updated });
+            }
+          },
+          async (err) => {
+            console.error('session token refresh failed', err);
+          },
+        );
+      })();
 
       return () => {
+        cancelled = true;
         disconnectWs();
         stopTokenRefresh();
       };

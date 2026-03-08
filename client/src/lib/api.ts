@@ -154,27 +154,42 @@ export function isTokenExpired(token: string): boolean {
 }
 
 /**
- * Refresh the session token by calling POST /api/ws/token with the current
- * Bearer auth. Returns the new token on success.
+ * Refresh the session token using the current valid Bearer auth.
+ * Calls POST /api/session/refresh which accepts expired-but-validly-signed tokens.
  */
 export async function refreshSessionToken(): Promise<string> {
-  const res = await request<{ token: string }>('/api/ws/token', {
+  if (!_sessionToken) {
+    throw new Error('No session token to refresh');
+  }
+  const url = _apiBaseUrl ? `${_apiBaseUrl}/api/session/refresh` : '/api/session/refresh';
+  const res = await fetch(url, {
     method: 'POST',
+    headers: { 'Authorization': `Bearer ${_sessionToken}` },
   });
-  _sessionToken = res.token;
-  return res.token;
+  if (!res.ok) {
+    const body = await res.text();
+    throw new ApiError(res.status, body);
+  }
+  const data = await res.json() as { sessionToken: string };
+  _sessionToken = data.sessionToken;
+  return data.sessionToken;
 }
 
 /**
  * Start auto-refreshing the session token at 80% of the given TTL.
  * Call stopTokenRefresh() to cancel.
  */
-export function startTokenRefresh(ttlSecs: number, onError?: (err: unknown) => void): void {
+export function startTokenRefresh(
+  ttlSecs: number,
+  onRefreshed?: (newToken: string) => void,
+  onError?: (err: unknown) => void,
+): void {
   stopTokenRefresh();
   const intervalMs = ttlSecs * 0.8 * 1000;
   _refreshInterval = setInterval(async () => {
     try {
-      await refreshSessionToken();
+      const newToken = await refreshSessionToken();
+      onRefreshed?.(newToken);
     } catch (err) {
       onError?.(err);
     }

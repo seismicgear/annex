@@ -127,6 +127,42 @@ pub fn verify_ws_token_for_auth(token: &str, secret: &[u8; 32]) -> Result<String
     verify_ws_token(token, secret)
 }
 
+/// Verify HMAC signature of a session token but allow expired tokens.
+/// Used by the session refresh endpoint to re-issue tokens for returning users
+/// whose session expired while the app was closed.
+pub fn verify_token_allow_expired(token: &str, secret: &[u8; 32]) -> Result<String, StatusCode> {
+    use base64::Engine;
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(token.as_bytes())
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+    let token_str = String::from_utf8(decoded).map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+    let parts: Vec<&str> = token_str.splitn(3, '|').collect();
+    if parts.len() != 3 {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let pseudonym = parts[0];
+    let expires_str = parts[1];
+    let sig_hex = parts[2];
+
+    // Verify HMAC — proves the token was issued by this server
+    let payload = format!("{}|{}", pseudonym, expires_str);
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC key length is valid");
+    mac.update(payload.as_bytes());
+    let provided_sig = hex::decode(sig_hex).map_err(|_| StatusCode::UNAUTHORIZED)?;
+    mac.verify_slice(&provided_sig)
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+    // Intentionally skip expiry check — caller handles the security implications
+
+    Ok(pseudonym.to_string())
+}
+
 /// Query parameters for the WebSocket connection.
 ///
 /// Accepts either a signed `token` (preferred) or a raw `pseudonym`
@@ -451,6 +487,54 @@ impl ConnectionManager {
             }
         }
     }
+}
+
+/// `POST /api/session/refresh` — re-issues a session token for a returning user
+/// whose previous token has expired. Accepts expired-but-validly-signed tokens.
+///
+/// This does NOT go through `auth_middleware` (which rejects expired tokens).
+/// Instead it manually verifies the HMAC signature (proving the token was issued
+/// by this server) and confirms the identity is still active before issuing
+/// a fresh session token.
+pub async fn refresh_session_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+) -> Result<axum::Json<serde_json::Value>, StatusCode> {
+    // Extract Bearer token from Authorization header
+    let auth_val = headers
+        .get("Authorization")
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let auth_str = auth_val.to_str().map_err(|_| StatusCode::UNAUTHORIZED)?;
+    let token = auth_str
+        .strip_prefix("Bearer ")
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    // Verify HMAC (but allow expired)
+    let pseudonym = verify_token_allow_expired(token, &state.ws_token_secret)?;
+
+    // Verify identity is still active in the database
+    let server_id = state.server_id;
+    let pool = state.pool.clone();
+    let pseudonym_clone = pseudonym.clone();
+    let identity = tokio::task::spawn_blocking(move || {
+        let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        annex_identity::get_platform_identity(&conn, server_id, &pseudonym_clone)
+            .map_err(|_| StatusCode::UNAUTHORIZED)
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+
+    if !identity.active {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    // Issue fresh session token
+    let new_token =
+        generate_session_token(&pseudonym, &state.ws_token_secret, SESSION_TOKEN_TTL_SECS);
+    Ok(axum::Json(serde_json::json!({
+        "sessionToken": new_token,
+        "expires_in_secs": SESSION_TOKEN_TTL_SECS,
+    })))
 }
 
 /// `POST /api/ws/token` — issues a short-lived, HMAC-signed WebSocket session

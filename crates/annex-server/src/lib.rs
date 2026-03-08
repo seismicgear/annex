@@ -857,6 +857,10 @@ pub fn app(state: AppState) -> Router {
             "/api/zk/verify-membership",
             post(api::verify_membership_handler),
         )
+        .route(
+            "/api/session/refresh",
+            post(api_ws::refresh_session_handler),
+        )
         .route("/api/registry/topics", get(api::get_topics_handler))
         .route("/api/registry/roles", get(api::get_roles_handler))
         .route(
