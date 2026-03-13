@@ -281,7 +281,7 @@ pub async fn security_headers_middleware(req: Request<Body>, next: Next) -> Resp
     let is_html = headers
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
-        .map_or(false, |ct| ct.contains("text/html"));
+        .is_some_and(|ct| ct.contains("text/html"));
 
     if is_html {
         headers.insert(
