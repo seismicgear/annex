@@ -387,7 +387,12 @@ fn resolve_signing_key(db_path: &str) -> Result<SigningKey, StartupError> {
                 let hex_key = hex_key.trim();
                 match hex::decode(hex_key) {
                     Ok(bytes) if bytes.len() == 32 => {
-                        let byte_array: [u8; 32] = bytes.try_into().unwrap();
+                        let byte_array: [u8; 32] = bytes.try_into().map_err(|v: Vec<u8>| {
+                            StartupError::InvalidSigningKey(format!(
+                                "expected 32 bytes, got {}",
+                                v.len()
+                            ))
+                        })?;
                         tracing::info!(path = %key_file.display(), "loaded signing key from persistent file");
                         return Ok(SigningKey::from_bytes(&byte_array));
                     }

@@ -700,7 +700,7 @@ fn build_image_response(content_type: &str, body: Vec<u8>) -> Response {
             Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .body(axum::body::Body::empty())
-                .unwrap()
+                .expect("building a minimal 500 response with no custom headers is infallible")
         })
 }
 
