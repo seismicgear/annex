@@ -605,6 +605,7 @@ pub async fn join_voice_channel_handler(
     Extension(IdentityContext(identity)): Extension<IdentityContext>,
     headers: axum::http::HeaderMap,
     Path(channel_id): Path<String>,
+    connect_info: axum::extract::ConnectInfo<std::net::SocketAddr>,
 ) -> Result<Json<JoinVoiceResponse>, (StatusCode, String)> {
     // 0. ZK proof enforcement — bind proof to authenticated identity
     let commitment = lookup_commitment(&state.pool, &identity.pseudonym_id)
@@ -628,7 +629,17 @@ pub async fn join_voice_channel_handler(
         )
     })?;
 
-    if !state.voice_service.is_enabled() || state.voice_service.get_public_url().is_empty() {
+    // Determine whether this is a local (loopback) client. If so, we can
+    // serve the internal loopback LiveKit URL even when no public URL exists.
+    let is_local_client = connect_info.0.ip().is_loopback();
+    let livekit_url = if is_local_client {
+        // Local clients (Tauri host mode) get the raw URL even if it's loopback
+        state.voice_service.get_url_for_local_client().to_string()
+    } else {
+        state.voice_service.get_public_url().to_string()
+    };
+
+    if !state.voice_service.is_enabled() || livekit_url.is_empty() {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             serde_json::json!({
@@ -731,7 +742,7 @@ pub async fn join_voice_channel_handler(
 
     Ok(Json(JoinVoiceResponse {
         token,
-        url: state.voice_service.get_public_url().to_string(),
+        url: livekit_url,
         ice_servers,
     }))
 }

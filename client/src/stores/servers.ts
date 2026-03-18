@@ -62,23 +62,25 @@ export const useServersStore = create<ServersState>((set, get) => ({
     const server = servers.find((s) => s.id === serverId);
     if (!server) return;
 
-    // Immediate: update active server for instant UI transition
-    set({ activeServerId: serverId, switching: true });
+    // Leave or forcibly clear any active voice session BEFORE changing
+    // activeServerId. This prevents the old LiveKitRoom from being rendered
+    // under the new server's state.
+    const voiceStore = useVoiceStore.getState();
+    if (voiceStore.connectedChannelId || voiceStore.voiceToken) {
+      const oldIdentity = useIdentityStore.getState().identity;
+      if (oldIdentity?.pseudonymId) {
+        // Best-effort: try to leave gracefully on the old server
+        await voiceStore.leaveCall(oldIdentity.pseudonymId).catch(() => {});
+      }
+      // Force-reset regardless of leaveCall result
+      voiceStore.forceReset();
+    }
+
+    // Immediate: update active server for instant UI transition.
+    // Clear serverImageUrl so stale imagery from the previous server is never shown.
+    set({ activeServerId: serverId, switching: true, serverImageUrl: null });
 
     try {
-      // Leave or forcibly clear any active voice session before switching.
-      // The voice token/URL belong to the old server context and would be
-      // invalid after the identity/API base change.
-      const voiceStore = useVoiceStore.getState();
-      if (voiceStore.connectedChannelId || voiceStore.voiceToken) {
-        const oldIdentity = useIdentityStore.getState().identity;
-        if (oldIdentity?.pseudonymId) {
-          // Best-effort: try to leave gracefully on the old server
-          await voiceStore.leaveCall(oldIdentity.pseudonymId).catch(() => {});
-        }
-        // Force-reset regardless of leaveCall result
-        voiceStore.forceReset();
-      }
 
       // Set API base URL for cross-server requests
       api.setApiBaseUrl(server.baseUrl);
@@ -218,7 +220,8 @@ export const useServersStore = create<ServersState>((set, get) => ({
       const resp = await api.getServerImage();
       set({ serverImageUrl: resp.image_url ? api.resolveUrl(resp.image_url) : null });
     } catch {
-      // No image set — leave as null
+      // Fetch failed — clear any stale image from the previous server
+      set({ serverImageUrl: null });
     }
   },
 }));

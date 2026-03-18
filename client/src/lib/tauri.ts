@@ -93,7 +93,8 @@ export async function startLocalLiveKit(): Promise<{ url: string }> {
 
 export interface PlatformMediaStatus {
   screen_share_available: boolean;
-  camera_mic_available: boolean;
+  /** Tri-state: `true`/`"available"` = verified, `"unknown"` = may need grant, `false`/`"blocked"` = unavailable. */
+  camera_mic_available: boolean | 'available' | 'unknown' | 'blocked';
   warnings: string[];
   display_server: string;
 }

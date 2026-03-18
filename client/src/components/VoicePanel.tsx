@@ -40,12 +40,25 @@ import { isTauri, getPlatformMediaStatus, setMediaKeepalive, type PlatformMediaS
 
 // ── Helpers ──
 
-/** Try to set the audio output device on an HTMLMediaElement (setSinkId). */
+/** Try to set the audio output device on an HTMLMediaElement (setSinkId).
+ *  When `deviceId` is null/empty, resets to the system default ('').
+ */
 function trySetSinkId(el: HTMLMediaElement, deviceId: string | null): void {
-  if (!deviceId) return;
   if (typeof (el as any).setSinkId === 'function') {
-    (el as any).setSinkId(deviceId).catch(() => {});
+    (el as any).setSinkId(deviceId || '').catch(() => {});
   }
+}
+
+/** Apply current audio preferences (deafen, volume, output device) to a single audio element. */
+function applyAudioPrefs(
+  el: HTMLAudioElement,
+  deafened: boolean,
+  outputVolume: number,
+  outputDeviceId: string | null,
+): void {
+  el.muted = deafened;
+  el.volume = deafened ? 0 : Math.max(0, Math.min(1, outputVolume / 100));
+  trySetSinkId(el, outputDeviceId);
 }
 
 /** Check whether setSinkId is supported in this browser/webview. */
@@ -104,18 +117,23 @@ function MediaControls({
   platformWarnings: string[];
 }) {
   const { localParticipant, isMicrophoneEnabled, isCameraEnabled, isScreenShareEnabled } = useLocalParticipant();
-  const { micMuted, setMicMuted, deafened } = useVoiceStore();
+  const { micMuted, setMicMuted, deafened, cameraDeviceId } = useVoiceStore();
 
   const micEnabled = isMicrophoneEnabled;
   const camEnabled = isCameraEnabled;
   const screenEnabled = isScreenShareEnabled;
 
-  // Platform capability checks
+  // Platform capability checks — treat 'unknown' as available but with guidance
   const canScreenShare = mediaStatus?.screen_share_available !== false;
-  const canCameraMic = mediaStatus?.camera_mic_available !== false;
+  const cameraMicStatus = mediaStatus?.camera_mic_available;
+  const canCameraMic = cameraMicStatus !== false;
+  const cameraMicUnknown = cameraMicStatus === 'unknown';
 
   // Error state for media toggle failures
   const [mediaError, setMediaError] = useState<string | null>(null);
+
+  // Track whether a stale-camera confirmation is pending
+  const [staleCameraPrompt, setStaleCameraPrompt] = useState(false);
 
   // Listen for device hot-plug events during an active call.
   const [deviceNotice, setDeviceNotice] = useState<string | null>(null);
@@ -172,11 +190,32 @@ function MediaControls({
     }
     try {
       setMediaError(null);
-      await localParticipant.setCameraEnabled(!camEnabled);
+      setStaleCameraPrompt(false);
+      if (!camEnabled && cameraDeviceId) {
+        // Try to enable with the saved camera device
+        try {
+          await localParticipant.setCameraEnabled(true, { deviceId: cameraDeviceId });
+        } catch (deviceErr) {
+          // The selected camera may have been disconnected — surface an error
+          // and ask the user to confirm fallback to default.
+          if (deviceErr instanceof DOMException && (deviceErr.name === 'NotFoundError' || deviceErr.name === 'OverconstrainedError')) {
+            setMediaError(`Saved camera not found. Click the camera button again to use the default camera, or change your camera in Audio Settings.`);
+            setStaleCameraPrompt(true);
+            return;
+          }
+          throw deviceErr;
+        }
+      } else if (!camEnabled && staleCameraPrompt) {
+        // User confirmed fallback after stale camera error
+        setStaleCameraPrompt(false);
+        await localParticipant.setCameraEnabled(true);
+      } else {
+        await localParticipant.setCameraEnabled(!camEnabled);
+      }
     } catch (err) {
       setMediaError(mediaErrorMessage(err, camEnabled ? 'Turn off camera' : 'Turn on camera'));
     }
-  }, [localParticipant, camEnabled, canCameraMic]);
+  }, [localParticipant, camEnabled, canCameraMic, cameraDeviceId, staleCameraPrompt]);
 
   const toggleScreen = useCallback(async () => {
     if (!canScreenShare && !screenEnabled) {
@@ -207,7 +246,9 @@ function MediaControls({
 
   const cameraMicTitle = !canCameraMic
     ? 'Camera/microphone unavailable on this platform'
-    : undefined;
+    : cameraMicUnknown
+      ? 'Camera/microphone permission could not be verified — may require manual grant'
+      : undefined;
 
   return (
     <div className="media-controls">
@@ -224,6 +265,11 @@ function MediaControls({
           >
             &times;
           </button>
+        </div>
+      )}
+      {cameraMicUnknown && (
+        <div className="device-notice" role="status">
+          Camera/microphone permission status unknown — you may need to grant access in your OS settings.
         </div>
       )}
       {deafened && (
@@ -449,6 +495,7 @@ function ParticipantGrid() {
  */
 function useTauriMediaRestore(onScreenShareInterrupted?: () => void) {
   const { localParticipant } = useLocalParticipant();
+  const cameraDeviceId = useVoiceStore((s) => s.cameraDeviceId);
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -493,7 +540,8 @@ function useTauriMediaRestore(onScreenShareInterrupted?: () => void) {
           if (pub?.track?.mediaStreamTrack?.readyState === 'ended') {
             try {
               await lp.setCameraEnabled(false);
-              await lp.setCameraEnabled(true);
+              const camOpts = cameraDeviceId ? { deviceId: cameraDeviceId } : undefined;
+              await lp.setCameraEnabled(true, camOpts);
             } catch { /* best effort */ }
           }
         }
@@ -525,7 +573,7 @@ function useTauriMediaRestore(onScreenShareInterrupted?: () => void) {
       document.removeEventListener('visibilitychange', restoreMedia);
       window.removeEventListener('focus', restoreMedia);
     };
-  }, [localParticipant, onScreenShareInterrupted]);
+  }, [localParticipant, onScreenShareInterrupted, cameraDeviceId]);
 }
 
 /**
@@ -537,7 +585,7 @@ function useTauriMediaRestore(onScreenShareInterrupted?: () => void) {
  */
 function useVoiceStoreSync() {
   const { localParticipant } = useLocalParticipant();
-  const { inputDeviceId, outputDeviceId, outputVolume, deafened } = useVoiceStore();
+  const { inputDeviceId, outputDeviceId, outputVolume, deafened, cameraDeviceId } = useVoiceStore();
 
   // Apply input device selection when it changes
   useEffect(() => {
@@ -552,33 +600,36 @@ function useVoiceStoreSync() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inputDeviceId]);
 
+  // When cameraDeviceId changes during an active call and camera is already on,
+  // republish the camera track with the new device.
+  useEffect(() => {
+    if (!cameraDeviceId) return;
+    const lp = localParticipant as LocalParticipant;
+    if (!lp.isCameraEnabled) return;
+    lp.setCameraEnabled(false)
+      .then(() => lp.setCameraEnabled(true, { deviceId: cameraDeviceId }))
+      .catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cameraDeviceId]);
+
   // Apply output device and volume to all <audio> elements rendered by RoomAudioRenderer.
   // Also handles deafen by muting those elements.
+  // When outputDeviceId is null/empty, reset to system default via setSinkId('').
   useEffect(() => {
     const audioElements = document.querySelectorAll<HTMLAudioElement>('audio[data-lk-source]');
     audioElements.forEach((el) => {
-      // Deafen: mute all remote audio
-      el.muted = deafened;
-      // Output volume (0–1 scale)
-      el.volume = deafened ? 0 : Math.max(0, Math.min(1, outputVolume / 100));
-      // Output device
-      if (outputDeviceId) {
-        trySetSinkId(el, outputDeviceId);
-      }
+      applyAudioPrefs(el, deafened, outputVolume, outputDeviceId);
     });
 
     // Also handle any audio elements inside livekit containers that may not have data-lk-source
     const lkAudioElements = document.querySelectorAll<HTMLAudioElement>('[data-testid="livekit-room"] audio, .lk-room-container audio');
     lkAudioElements.forEach((el) => {
-      el.muted = deafened;
-      el.volume = deafened ? 0 : Math.max(0, Math.min(1, outputVolume / 100));
-      if (outputDeviceId) {
-        trySetSinkId(el, outputDeviceId);
-      }
+      applyAudioPrefs(el, deafened, outputVolume, outputDeviceId);
     });
   }, [deafened, outputVolume, outputDeviceId]);
 
   // Set up a MutationObserver to catch dynamically added audio elements.
+  // Handles both direct <audio> nodes and container nodes with <audio> descendants.
   // Capture current values in a ref so the observer callback always uses fresh state.
   const deafenedRef = useRef(deafened);
   const outputVolumeRef = useRef(outputVolume);
@@ -588,16 +639,19 @@ function useVoiceStoreSync() {
   outputDeviceIdRef.current = outputDeviceId;
 
   useEffect(() => {
+    const applyToAudio = (el: HTMLAudioElement) => {
+      applyAudioPrefs(el, deafenedRef.current, outputVolumeRef.current, outputDeviceIdRef.current);
+    };
+
     const observer = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
         for (const node of mutation.addedNodes) {
           if (node instanceof HTMLAudioElement) {
-            const d = deafenedRef.current;
-            const vol = outputVolumeRef.current;
-            const outId = outputDeviceIdRef.current;
-            node.muted = d;
-            node.volume = d ? 0 : Math.max(0, Math.min(1, vol / 100));
-            if (outId) trySetSinkId(node, outId);
+            applyToAudio(node);
+          } else if (node instanceof HTMLElement) {
+            // Scan descendants for <audio> elements inside container nodes
+            const nested = node.querySelectorAll<HTMLAudioElement>('audio');
+            nested.forEach(applyToAudio);
           }
         }
       }
@@ -718,11 +772,22 @@ export function VoicePanel() {
   } = useVoiceStore();
 
   // Track the server ID that was active when the call was joined.
-  // If activeServerId changes, the token is stale.
+  // Capture only on session establishment (transition from no token to active token),
+  // not on every activeServerId update, to prevent a later server switch from
+  // overwriting the stored value.
   const callServerIdRef = useRef<string | null>(null);
+  const prevTokenRef = useRef<string | null>(null);
   useEffect(() => {
-    if (voiceToken && connectedChannelId) {
+    const hadToken = !!prevTokenRef.current;
+    const hasToken = !!voiceToken;
+    prevTokenRef.current = voiceToken;
+    // Only set the ref when a new session starts (no token → token)
+    if (!hadToken && hasToken && connectedChannelId) {
       callServerIdRef.current = activeServerId;
+    }
+    // Clear when the session ends
+    if (!hasToken) {
+      callServerIdRef.current = null;
     }
   }, [voiceToken, connectedChannelId, activeServerId]);
 

@@ -679,7 +679,11 @@ async fn health(Extension(state): Extension<Arc<AppState>>) -> Json<Value> {
 /// "voice disabled by admin" and "voice enabled but needs LiveKit setup".
 async fn voice_config_status(Extension(state): Extension<Arc<AppState>>) -> Json<Value> {
     let infrastructure_ready = state.voice_service.is_enabled();
+    // get_public_url() now returns "" for loopback-only URLs, so
+    // has_public_url is false when only a loopback endpoint exists.
     let has_public_url = !state.voice_service.get_public_url().is_empty();
+    // Also report whether a URL for local clients exists (includes loopback)
+    let has_local_url = !state.voice_service.get_url_for_local_client().is_empty();
     let policy_enabled = state
         .policy
         .read()
@@ -690,6 +694,8 @@ async fn voice_config_status(Extension(state): Extension<Arc<AppState>>) -> Json
         "Voice is disabled in the server policy. An admin can enable it in Server Policy settings."
     } else if !infrastructure_ready {
         "Voice is enabled by policy but LiveKit is not configured. Set livekit.url, livekit.api_key, and livekit.api_secret in config.toml or use ANNEX_LIVEKIT_* environment variables."
+    } else if !has_public_url && has_local_url {
+        "LiveKit is configured with a loopback-only URL. Voice works for local clients but remote clients cannot connect. Set livekit.public_url to a publicly reachable address."
     } else if !has_public_url {
         "LiveKit URL is configured but no public URL is set. Clients may not be able to connect."
     } else {
@@ -701,6 +707,7 @@ async fn voice_config_status(Extension(state): Extension<Arc<AppState>>) -> Json
         "policy_enabled": policy_enabled,
         "infrastructure_ready": infrastructure_ready,
         "has_public_url": has_public_url,
+        "has_local_url": has_local_url,
         "setup_hint": setup_hint
     }))
 }
