@@ -210,31 +210,56 @@ pub async fn revoke_federation_handler(
 // ── Server Settings ──
 
 #[derive(Debug, Deserialize)]
-pub struct RenameServerRequest {
-    pub label: String,
+pub struct UpdateServerRequest {
+    pub label: Option<String>,
+    pub description: Option<String>,
 }
 
 /// Handler for `PATCH /api/admin/server`.
 pub async fn rename_server_handler(
     Extension(state): Extension<Arc<AppState>>,
     Extension(IdentityContext(identity)): Extension<IdentityContext>,
-    Json(body): Json<RenameServerRequest>,
+    Json(body): Json<UpdateServerRequest>,
 ) -> Result<Response, ApiError> {
     if !identity.can_moderate {
         return Err(ApiError::Forbidden(
-            "insufficient permissions to rename server".to_string(),
+            "insufficient permissions to update server".to_string(),
         ));
     }
 
-    let label = body.label.trim().to_string();
-    if label.is_empty() || label.len() > 128 {
+    let label = body.label.map(|l| {
+        let trimmed = l.trim().to_string();
+        trimmed
+    });
+    if let Some(ref l) = label {
+        if l.is_empty() || l.len() > 128 {
+            return Err(ApiError::BadRequest(
+                "label must be 1–128 characters".to_string(),
+            ));
+        }
+    }
+
+    let description = body.description.map(|d| {
+        let trimmed = d.trim().to_string();
+        trimmed
+    });
+    if let Some(ref d) = description {
+        if d.len() > 300 {
+            return Err(ApiError::BadRequest(
+                "description must be at most 300 characters".to_string(),
+            ));
+        }
+    }
+
+    if label.is_none() && description.is_none() {
         return Err(ApiError::BadRequest(
-            "label must be 1–128 characters".to_string(),
+            "at least one of label or description must be provided".to_string(),
         ));
     }
 
     let state_clone = state.clone();
     let label_clone = label.clone();
+    let description_clone = description.clone();
     let moderator = identity.pseudonym_id.clone();
 
     tokio::task::spawn_blocking(move || {
@@ -243,17 +268,36 @@ pub async fn rename_server_handler(
             .get()
             .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
 
-        conn.execute(
-            "UPDATE servers SET label = ?1 WHERE id = ?2",
-            rusqlite::params![label_clone, state_clone.server_id],
-        )
-        .map_err(|e| ApiError::InternalServerError(format!("failed to update label: {}", e)))?;
+        if let Some(ref l) = label_clone {
+            conn.execute(
+                "UPDATE servers SET label = ?1 WHERE id = ?2",
+                rusqlite::params![l, state_clone.server_id],
+            )
+            .map_err(|e| ApiError::InternalServerError(format!("failed to update label: {}", e)))?;
+        }
+
+        if let Some(ref d) = description_clone {
+            conn.execute(
+                "UPDATE servers SET description = ?1 WHERE id = ?2",
+                rusqlite::params![d, state_clone.server_id],
+            )
+            .map_err(|e| {
+                ApiError::InternalServerError(format!("failed to update description: {}", e))
+            })?;
+        }
+
+        let event_desc = match (&label_clone, &description_clone) {
+            (Some(l), Some(_)) => format!("Server renamed to \"{}\" and description updated", l),
+            (Some(l), None) => format!("Server renamed to \"{}\"", l),
+            (None, Some(_)) => "Server description updated".to_string(),
+            (None, None) => unreachable!(),
+        };
 
         let observe_payload = EventPayload::ModerationAction {
             moderator_pseudonym: moderator.clone(),
-            action_type: "server_rename".to_string(),
+            action_type: "server_update".to_string(),
             target_pseudonym: None,
-            description: format!("Server renamed to \"{}\"", label_clone),
+            description: event_desc,
         };
         crate::emit_and_broadcast(
             &conn,
@@ -268,7 +312,14 @@ pub async fn rename_server_handler(
     .await
     .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
 
-    Ok(AxumJson(serde_json::json!({ "status": "ok", "label": label })).into_response())
+    let mut resp = serde_json::json!({ "status": "ok" });
+    if let Some(l) = label {
+        resp["label"] = serde_json::Value::String(l);
+    }
+    if let Some(d) = description {
+        resp["description"] = serde_json::Value::String(d);
+    }
+    Ok(AxumJson(resp).into_response())
 }
 
 /// Handler for `GET /api/admin/server`.
@@ -281,15 +332,21 @@ pub async fn get_server_handler(
     }
 
     let state_clone = state.clone();
-    let (slug, label) = tokio::task::spawn_blocking(move || {
+    let (slug, label, description) = tokio::task::spawn_blocking(move || {
         let conn = state_clone
             .pool
             .get()
             .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
         conn.query_row(
-            "SELECT slug, label FROM servers WHERE id = ?1",
+            "SELECT slug, label, description FROM servers WHERE id = ?1",
             rusqlite::params![state_clone.server_id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
         )
         .map_err(|e| ApiError::InternalServerError(format!("failed to read server: {}", e)))
     })
@@ -299,6 +356,7 @@ pub async fn get_server_handler(
     Ok(AxumJson(serde_json::json!({
         "slug": slug,
         "label": label,
+        "description": description,
         "public_url": state.get_public_url(),
     }))
     .into_response())
