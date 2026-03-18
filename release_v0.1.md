@@ -53,7 +53,7 @@ First packaged release of Annex — a self-hosted, federated communication platf
 - Tauri-based desktop app with zero-interaction startup
 - Mode selection dialog (create server, join server, or both)
 - Auto-detection of public URL from request traffic
-- Cloudflared tunnel integration for instant sharing
+- Annex router integration for automatic public endpoint provisioning
 
 ### Security (hardened in this release)
 - SSRF protection on all outbound HTTP (private IP blocking, DNS rebinding checks)

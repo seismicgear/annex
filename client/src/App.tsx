@@ -34,7 +34,7 @@ import { getApiBaseUrl, getServerSummary, setApiBaseUrl, redeemInvite, setPublic
 import { saveIdentity, clearAllDatabases } from '@/lib/db';
 import { cancelMembershipProofGeneration, isProofGenerationInFlight } from '@/lib/zk';
 import type { ProvingStatus } from '@/stores/identity';
-import { isTauri, getStartupMode as tauriGetStartupMode, listenForInvite, saveStartupMode, getTunnelUrl, resetServerData, clearStartupMode as clearTauriStartupMode, getPendingInvite, checkFirstRunCompleted, markFirstRunCompleted } from '@/lib/tauri';
+import { isTauri, getStartupMode as tauriGetStartupMode, listenForInvite, saveStartupMode, getPublicEndpoint, resetServerData, clearStartupMode as clearTauriStartupMode, getPendingInvite, checkFirstRunCompleted, markFirstRunCompleted } from '@/lib/tauri';
 import type { LegacyInvitePayload, InvitePayload } from '@/types';
 import './App.css';
 
@@ -405,16 +405,16 @@ export default function App() {
     }
   }, [phase, identity?.pseudonymId, connectWs, disconnectWs, loadPermissions, fetchServerImage]);
 
-  // Auto-set tunnel URL as public URL and create invite link (Tauri host mode)
+  // Auto-set public endpoint as server public URL and create invite link (Tauri host mode)
   useEffect(() => {
     if (!inTauri || phase !== 'ready' || !identity?.pseudonymId) return;
     let cancelled = false;
     (async () => {
       try {
-        const tunnelUrl = await getTunnelUrl();
-        if (cancelled || !tunnelUrl) return;
-        // Set the tunnel URL as the server's public URL
-        await setPublicUrl(identity.pseudonymId!, tunnelUrl);
+        const endpointUrl = await getPublicEndpoint();
+        if (cancelled || !endpointUrl) return;
+        // Set the router-provided URL as the server's public URL
+        await setPublicUrl(identity.pseudonymId!, endpointUrl);
         // Pre-create an invite link so it's ready when the user visits settings
         await createInviteLink(getApiBaseUrl(), identity.pseudonymId!).catch(() => {});
       } catch {
@@ -802,8 +802,8 @@ export default function App() {
           {degradedStartup.voiceFailed && (
             <span>Server started, but voice is unavailable{degradedStartup.voiceError ? `: ${degradedStartup.voiceError}` : ''}.</span>
           )}
-          {degradedStartup.tunnelFailed && (
-            <span>Server started, but public invites are unavailable{degradedStartup.tunnelError ? `: ${degradedStartup.tunnelError}` : ''}.</span>
+          {degradedStartup.publicEndpointFailed && (
+            <span>Server started, but public invites are unavailable{degradedStartup.publicEndpointError ? `: ${degradedStartup.publicEndpointError}` : ''}.</span>
           )}
           <button onClick={() => setDegradedStartup(null)} className="dismiss-banner-btn" aria-label="Dismiss">&times;</button>
         </div>

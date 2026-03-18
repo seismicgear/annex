@@ -54,14 +54,14 @@ export async function startEmbeddedServer(): Promise<string> {
   return invoke<string>('start_embedded_server');
 }
 
-/** Start a cloudflared tunnel to expose the local server. Returns the public URL. */
-export async function startTunnel(): Promise<string> {
-  return invoke<string>('start_tunnel');
+/** Register with the Annex router to acquire a public endpoint. Returns the public URL. */
+export async function acquirePublicEndpoint(): Promise<string> {
+  return invoke<string>('acquire_public_endpoint');
 }
 
-/** Get the current tunnel URL, if a tunnel is active. */
-export async function getTunnelUrl(): Promise<string | null> {
-  return invoke<string | null>('get_tunnel_url');
+/** Get the current public endpoint URL, if a router session is active. */
+export async function getPublicEndpoint(): Promise<string | null> {
+  return invoke<string | null>('get_public_endpoint');
 }
 
 /** Open a native save dialog and export identity JSON to disk. */

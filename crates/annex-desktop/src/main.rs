@@ -156,10 +156,16 @@ struct ServerState {
     url: String,
 }
 
-/// Tracks the cloudflared tunnel process.
-struct TunnelState {
-    url: String,
-    child: std::process::Child,
+/// Tracks an Annex router session that provides a public endpoint for the
+/// embedded server. Unlike the old cloudflared tunnel, this is a first-party
+/// integration with the Annex routing layer.
+struct RouterSessionState {
+    /// The publicly-reachable HTTPS base URL returned by the router.
+    public_url: String,
+    /// Optional public LiveKit WebSocket URL if the router supports proxying LiveKit.
+    public_livekit_url: Option<String>,
+    /// Session identifier used to release the endpoint on shutdown.
+    session_id: String,
 }
 
 /// Tracks a locally-managed LiveKit server process.
@@ -173,7 +179,7 @@ struct AppManagedState {
     data_dir: PathBuf,
     config_path: PathBuf,
     server: Mutex<Option<ServerState>>,
-    tunnel: Mutex<Option<TunnelState>>,
+    router_session: Mutex<Option<RouterSessionState>>,
     livekit: Mutex<Option<LiveKitProcessState>>,
     /// Buffered cold-start invite parsed before the React listener mounts.
     /// Consumed exactly once via the `get_pending_invite` command.
@@ -423,157 +429,45 @@ async fn start_embedded_server(state: tauri::State<'_, AppManagedState>) -> Resu
     Ok(url)
 }
 
-// ── Tunnel management ──
+// ── Public endpoint provisioning (Annex router) ──
 
-/// Returns the platform-specific cloudflared binary name.
-fn cloudflared_binary_name() -> &'static str {
-    if cfg!(target_os = "windows") {
-        "cloudflared.exe"
-    } else {
-        "cloudflared"
-    }
+/// Default Annex router URL. Override with the `ANNEX_ROUTER_URL` environment
+/// variable for custom deployments.
+const DEFAULT_ROUTER_URL: &str = "https://router.annex.net";
+
+/// Resolve the Annex router base URL from the environment or use the default.
+fn router_base_url() -> String {
+    std::env::var("ANNEX_ROUTER_URL").unwrap_or_else(|_| DEFAULT_ROUTER_URL.to_string())
 }
 
-/// Returns the download URL for cloudflared on this platform, if supported.
-fn cloudflared_download_url() -> Option<&'static str> {
-    if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        Some("https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64")
-    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
-        Some("https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64")
-    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
-        Some("https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-amd64.tgz")
-    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        Some("https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-arm64.tgz")
-    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        Some("https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe")
-    } else {
-        None
-    }
+/// Response from the Annex router when registering a local server.
+#[derive(Debug, Clone, Deserialize)]
+struct RouterRegistrationResponse {
+    /// Publicly-reachable HTTPS base URL for the Annex server.
+    public_url: String,
+    /// Optional publicly-reachable WebSocket URL for LiveKit.
+    /// `None` if the router does not proxy LiveKit traffic.
+    public_livekit_url: Option<String>,
+    /// Session identifier used for heartbeats and release.
+    session_id: String,
 }
 
-/// Searches PATH for the cloudflared binary.
-fn find_cloudflared_in_path() -> Option<PathBuf> {
-    let name = cloudflared_binary_name();
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths).find_map(|dir| {
-            let full = dir.join(name);
-            if full.is_file() {
-                Some(full)
-            } else {
-                None
-            }
-        })
-    })
-}
-
-/// Ensures cloudflared is available: checks PATH, then the local bin cache,
-/// and downloads it if necessary. Returns the path to the binary.
-async fn ensure_cloudflared(data_dir: &Path) -> Result<PathBuf, String> {
-    // 1. Check PATH
-    if let Some(path) = find_cloudflared_in_path() {
-        tracing::info!(path = %path.display(), "found cloudflared in PATH");
-        return Ok(path);
-    }
-
-    // 2. Check local bin cache
-    let bin_dir = data_dir.join("bin");
-    let cf_path = bin_dir.join(cloudflared_binary_name());
-    if cf_path.exists() {
-        tracing::info!(path = %cf_path.display(), "using cached cloudflared");
-        return Ok(cf_path);
-    }
-
-    // 3. Download
-    let url = cloudflared_download_url()
-        .ok_or_else(|| "cloudflared download not supported on this platform".to_string())?;
-
-    tracing::info!(%url, "downloading cloudflared");
-
-    std::fs::create_dir_all(&bin_dir)
-        .map_err(|e| format!("failed to create bin directory: {e}"))?;
-
-    let resp = reqwest::get(url)
-        .await
-        .map_err(|e| format!("cloudflared download failed: {e}"))?;
-
-    if !resp.status().is_success() {
-        return Err(format!(
-            "cloudflared download failed: HTTP {}",
-            resp.status()
-        ));
-    }
-
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| format!("cloudflared download read failed: {e}"))?;
-
-    if url.ends_with(".tgz") {
-        // macOS: extract tarball
-        let tgz_path = bin_dir.join("cloudflared.tgz");
-        std::fs::write(&tgz_path, &bytes)
-            .map_err(|e| format!("failed to write cloudflared archive: {e}"))?;
-        let output = std::process::Command::new("tar")
-            .args([
-                "xzf",
-                &tgz_path.to_string_lossy(),
-                "-C",
-                &bin_dir.to_string_lossy(),
-            ])
-            .output()
-            .map_err(|e| format!("tar extract failed: {e}"))?;
-        if !output.status.success() {
-            return Err(format!(
-                "tar extract failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            ));
-        }
-        let _ = std::fs::remove_file(&tgz_path);
-    } else {
-        std::fs::write(&cf_path, &bytes)
-            .map_err(|e| format!("failed to write cloudflared binary: {e}"))?;
-    }
-
-    // Make executable on Unix
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&cf_path, std::fs::Permissions::from_mode(0o755))
-            .map_err(|e| format!("failed to set cloudflared permissions: {e}"))?;
-    }
-
-    tracing::info!(path = %cf_path.display(), "cloudflared downloaded successfully");
-    Ok(cf_path)
-}
-
-/// Extract a trycloudflare.com URL from a line of cloudflared output.
-fn extract_tunnel_url(line: &str) -> Option<String> {
-    // cloudflared outputs lines like:
-    //   | https://random-words-here.trycloudflare.com |
-    // or in log format:
-    //   ... https://random-words-here.trycloudflare.com ...
-    for word in line.split_whitespace() {
-        let trimmed = word.trim_matches('|').trim();
-        if trimmed.contains(".trycloudflare.com") && trimmed.starts_with("https://") {
-            return Some(trimmed.to_string());
-        }
-    }
-    None
-}
-
-/// Start a cloudflared quick tunnel to expose the local server.
-/// Returns the public tunnel URL (e.g. https://random.trycloudflare.com).
+/// Register the local embedded server with the Annex router to acquire a
+/// public endpoint. Returns the public URL so the frontend can feed it
+/// into the existing `PUT /api/admin/public-url` flow.
 #[tauri::command]
-async fn start_tunnel(state: tauri::State<'_, AppManagedState>) -> Result<String, String> {
-    // Check if tunnel is already running
+async fn acquire_public_endpoint(
+    state: tauri::State<'_, AppManagedState>,
+) -> Result<String, String> {
+    // Return cached session if already registered.
     {
-        let guard = state.tunnel.lock().map_err(|e| e.to_string())?;
-        if let Some(ref t) = *guard {
-            return Ok(t.url.clone());
+        let guard = state.router_session.lock().map_err(|e| e.to_string())?;
+        if let Some(ref session) = *guard {
+            return Ok(session.public_url.clone());
         }
     }
 
-    // Get the server port from the running embedded server
+    // Get the server port from the running embedded server.
     let port: u16 = {
         let guard = state.server.lock().map_err(|e| e.to_string())?;
         let srv = guard
@@ -586,120 +480,118 @@ async fn start_tunnel(state: tauri::State<'_, AppManagedState>) -> Result<String
             .ok_or_else(|| format!("could not parse port from server URL: {}", srv.url))?
     };
 
-    // Ensure cloudflared is available
-    let cf_path = ensure_cloudflared(&state.data_dir).await?;
+    let router_url = router_base_url();
+    let register_url = format!("{router_url}/v1/register");
 
-    tracing::info!(%port, path = %cf_path.display(), "starting cloudflared tunnel");
+    tracing::info!(%port, %router_url, "registering with Annex router for public endpoint");
 
-    // Spawn cloudflared
-    let mut child = std::process::Command::new(&cf_path)
-        .args(["tunnel", "--url", &format!("http://127.0.0.1:{port}")])
-        .stderr(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| format!("failed to start cloudflared: {e}"))?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("HTTP client error: {e}"))?;
 
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or("failed to capture cloudflared stderr")?;
-
-    // Read stderr in a background thread to find the tunnel URL.
-    // The thread continues draining stderr after finding the URL to keep the
-    // pipe open and prevent cloudflared from receiving SIGPIPE.
-    let (tx, rx) = tokio::sync::oneshot::channel::<Result<String, String>>();
-    std::thread::spawn(move || {
-        use std::io::{BufRead, BufReader};
-        let reader = BufReader::new(stderr);
-        let mut tx = Some(tx);
-        for line in reader.lines() {
-            match line {
-                Ok(line) => {
-                    tracing::debug!(line = %line, "cloudflared");
-                    if let Some(sender) = tx.take() {
-                        if let Some(url) = extract_tunnel_url(&line) {
-                            let _ = sender.send(Ok(url));
-                            // Continue reading to keep the pipe open
-                        } else {
-                            tx = Some(sender);
-                        }
-                    }
-                }
-                Err(e) => {
-                    if let Some(sender) = tx.take() {
-                        let _ = sender.send(Err(format!("cloudflared stderr read error: {e}")));
-                    }
-                    return;
-                }
-            }
-        }
-        if let Some(sender) = tx.take() {
-            let _ = sender.send(Err(
-                "cloudflared exited without providing a tunnel URL".to_string()
-            ));
-        }
+    let body = serde_json::json!({
+        "local_port": port,
+        "protocol": "https",
     });
 
-    // Wait for the URL with a 30-second timeout
-    let url = tokio::time::timeout(std::time::Duration::from_secs(30), rx)
+    let resp = client
+        .post(&register_url)
+        .json(&body)
+        .send()
         .await
-        .map_err(|_| "tunnel creation timed out after 30 seconds".to_string())?
-        .map_err(|_| "tunnel URL channel was dropped".to_string())??;
+        .map_err(|e| format!("Annex router registration failed: {e}"))?;
 
-    tracing::info!(%url, "tunnel established");
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        return Err(format!(
+            "Annex router returned HTTP {status}: {body_text}"
+        ));
+    }
 
-    // If a local LiveKit server is running, update ANNEX_LIVEKIT_PUBLIC_URL
-    // so that remote clients receive a reachable WebSocket URL instead of
-    // ws://127.0.0.1:*. The tunnel URL is HTTPS, so the LiveKit public URL
-    // becomes wss://<tunnel-host> on the standard port via the same tunnel.
-    //
-    // Note: This only works if the tunnel also forwards the LiveKit port.
-    // Currently cloudflared tunnels only the Annex HTTP server, so LiveKit
-    // remains local-only for remote clients. The frontend should treat
-    // desktop host voice as local-only until a dedicated LiveKit tunnel is
-    // provisioned.
+    let registration: RouterRegistrationResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("failed to parse router response: {e}"))?;
+
+    tracing::info!(
+        public_url = %registration.public_url,
+        public_livekit_url = ?registration.public_livekit_url,
+        session_id = %registration.session_id,
+        "public endpoint acquired from Annex router"
+    );
+
+    // If the router returned a public LiveKit URL and LiveKit is running
+    // locally, log the availability. The frontend will use this via
+    // get_public_endpoint to inform the server.
     {
         let lk_guard = state.livekit.lock().map_err(|e| e.to_string())?;
         if lk_guard.is_some() {
-            tracing::info!(
-                "LiveKit is running locally but tunnel only covers HTTP server. \
-                 Remote voice/video requires a separate LiveKit tunnel or public deployment."
-            );
+            if registration.public_livekit_url.is_some() {
+                tracing::info!(
+                    "Annex router is proxying LiveKit — remote voice will be available"
+                );
+            } else {
+                tracing::info!(
+                    "LiveKit is running locally but the Annex router does not proxy LiveKit. \
+                     Remote voice/video will be unavailable; text and invites will work."
+                );
+            }
         }
     }
 
-    // Store tunnel state
+    let public_url = registration.public_url.clone();
+
+    // Store router session state.
     {
-        let mut guard = state.tunnel.lock().map_err(|e| e.to_string())?;
-        *guard = Some(TunnelState {
-            url: url.clone(),
-            child,
+        let mut guard = state.router_session.lock().map_err(|e| e.to_string())?;
+        *guard = Some(RouterSessionState {
+            public_url: registration.public_url,
+            public_livekit_url: registration.public_livekit_url,
+            session_id: registration.session_id,
         });
     }
 
-    Ok(url)
+    Ok(public_url)
 }
 
-/// Stop the cloudflared tunnel if running.
+/// Release the public endpoint and end the router session.
 #[tauri::command]
-fn stop_tunnel(state: tauri::State<'_, AppManagedState>) -> Result<(), String> {
-    let mut guard = state.tunnel.lock().map_err(|e| e.to_string())?;
-    if let Some(mut tunnel) = guard.take() {
-        tracing::info!(url = %tunnel.url, "stopping tunnel");
-        let _ = tunnel.child.kill();
-        let _ = tunnel.child.wait();
+fn release_public_endpoint(state: tauri::State<'_, AppManagedState>) -> Result<(), String> {
+    let mut guard = state.router_session.lock().map_err(|e| e.to_string())?;
+    if let Some(session) = guard.take() {
+        tracing::info!(
+            public_url = %session.public_url,
+            session_id = %session.session_id,
+            "releasing public endpoint"
+        );
+        // Fire-and-forget release to the router. Non-fatal if it fails —
+        // the router will expire the session on its own timeout.
+        let router_url = router_base_url();
+        let release_url = format!("{router_url}/v1/release");
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .ok();
+        if let Some(client) = client {
+            let _ = client
+                .post(&release_url)
+                .json(&serde_json::json!({ "session_id": session.session_id }))
+                .send();
+        }
     }
     Ok(())
 }
 
-/// Get the current tunnel URL, if a tunnel is active.
+/// Get the current public endpoint URL, if a router session is active.
 #[tauri::command]
-fn get_tunnel_url(state: tauri::State<'_, AppManagedState>) -> Option<String> {
+fn get_public_endpoint(state: tauri::State<'_, AppManagedState>) -> Option<String> {
     state
-        .tunnel
+        .router_session
         .lock()
         .ok()
-        .and_then(|guard| guard.as_ref().map(|t| t.url.clone()))
+        .and_then(|guard| guard.as_ref().map(|s| s.public_url.clone()))
 }
 
 /// Open a save-file dialog and write the provided JSON to the selected path.
@@ -1276,18 +1168,17 @@ async fn start_local_livekit(
     // calls (token generation, room management). ANNEX_LIVEKIT_PUBLIC_URL is
     // the browser-facing WebSocket URL sent to clients in join responses.
     //
-    // For local-only use, both point at loopback. When a tunnel is later
-    // established (start_tunnel), the frontend should derive and set the
-    // public LiveKit URL through the server's public URL configuration.
-    // For now, set the public URL to empty so the server reports voice as
-    // "not externally reachable" until a proper public endpoint is configured.
-    // Local clients connecting to http://127.0.0.1 will still get the
-    // loopback URL, which works for same-machine access.
+    // For local-only use, both point at loopback. When a public endpoint
+    // is later acquired (acquire_public_endpoint), the router may return a
+    // public LiveKit URL. If it does, the frontend should set
+    // ANNEX_LIVEKIT_PUBLIC_URL via the server API. Local clients connecting
+    // to http://127.0.0.1 will still get the loopback URL, which works for
+    // same-machine access.
     unsafe {
         std::env::set_var("ANNEX_LIVEKIT_URL", &lk_url);
         // Public URL defaults to the loopback URL — sufficient for local
-        // hosting. When a tunnel is available, the frontend sets a proper
-        // public URL via the server API.
+        // hosting. When a public endpoint is acquired via the Annex router,
+        // the frontend sets a proper public URL via the server API.
         std::env::set_var("ANNEX_LIVEKIT_PUBLIC_URL", &lk_url);
         std::env::set_var("ANNEX_LIVEKIT_API_KEY", &api_key);
         std::env::set_var("ANNEX_LIVEKIT_API_SECRET", &api_secret);
@@ -1876,7 +1767,7 @@ fn main() {
             data_dir,
             config_path,
             server: Mutex::new(None),
-            tunnel: Mutex::new(None),
+            router_session: Mutex::new(None),
             livekit: Mutex::new(None),
             pending_invite: Mutex::new(None),
         })
@@ -1957,9 +1848,9 @@ fn main() {
             check_first_run_completed,
             mark_first_run_completed,
             start_embedded_server,
-            start_tunnel,
-            stop_tunnel,
-            get_tunnel_url,
+            acquire_public_endpoint,
+            release_public_endpoint,
+            get_public_endpoint,
             export_identity_json,
             get_livekit_config,
             start_local_livekit,

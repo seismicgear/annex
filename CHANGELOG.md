@@ -23,7 +23,7 @@ First packaged release. Developer preview — not all features are production-re
 - Federation protocol: VRP handshake, Merkle root exchange, signed message relay, RTX transport
 - Agent framework: VRP handshake, alignment classification, capability contracts, voice profiles
 - Observability: append-only event log, SSE streaming, public summary APIs
-- Tauri desktop app with auto-start server, cloudflared tunnel, zero-click startup
+- Tauri desktop app with auto-start server, Annex router public endpoint, zero-click startup
 - Docker image with multi-stage build and non-root user
 - Deploy scripts for Linux/macOS (`deploy.sh`) and Windows (`deploy.ps1`)
 - TOML config file + environment variable overrides

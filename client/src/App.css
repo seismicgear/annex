@@ -3522,9 +3522,10 @@
   margin: 0;
 }
 
-/* ── Tunnel URL Display ── */
+/* ── Endpoint / startup hint text ── */
 
-.tunnel-hint {
+.tunnel-hint,
+.endpoint-hint {
   color: #666;
   font-size: 0.8rem;
   margin: 0.5rem 0 0;

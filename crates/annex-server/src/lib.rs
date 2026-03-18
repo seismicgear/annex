@@ -695,7 +695,7 @@ async fn voice_config_status(Extension(state): Extension<Arc<AppState>>) -> Json
     } else if !infrastructure_ready {
         "Voice is enabled by policy but LiveKit is not configured. Set livekit.url, livekit.api_key, and livekit.api_secret in config.toml or use ANNEX_LIVEKIT_* environment variables."
     } else if !has_public_url && has_local_url {
-        "LiveKit is configured with a loopback-only URL. Voice works for the host but remote users who join via invite will not be able to connect to calls. Set livekit.public_url in config.toml to a publicly reachable WebSocket address, or use a tunnel that also forwards the LiveKit port."
+        "LiveKit is configured with a loopback-only URL. Voice works for the host but remote users who join via invite will not be able to connect to calls. Set livekit.public_url in config.toml to a publicly reachable WebSocket address, or set ANNEX_LIVEKIT_PUBLIC_URL."
     } else if !has_public_url {
         "LiveKit URL is configured but no public URL is set. Clients may not be able to connect."
     } else {

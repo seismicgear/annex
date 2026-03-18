@@ -19,7 +19,7 @@ import {
   startLocalLiveKit,
   getStartupMode,
   clearStartupMode,
-  startTunnel,
+  acquirePublicEndpoint,
   checkLiveKitReachable,
 } from '@/lib/tauri';
 import { setApiBaseUrl } from '@/lib/api';
@@ -37,9 +37,9 @@ interface WebPrefs {
 /** Describes which optional subsystems failed during host startup. */
 export interface DegradedStartupInfo {
   voiceFailed: boolean;
-  tunnelFailed: boolean;
+  publicEndpointFailed: boolean;
   voiceError?: string;
-  tunnelError?: string;
+  publicEndpointError?: string;
 }
 
 interface Props {
@@ -51,7 +51,7 @@ type Phase =
   | 'choose'
   | 'starting_voice'
   | 'starting_server'
-  | 'starting_tunnel'
+  | 'acquiring_endpoint'
   | 'connecting'
   | 'error';
 
@@ -85,7 +85,7 @@ export function StartupModeSelector({ onReady }: Props) {
     async (skipSave: boolean) => {
       if (!inTauri) return;
       setError('');
-      const degraded: DegradedStartupInfo = { voiceFailed: false, tunnelFailed: false };
+      const degraded: DegradedStartupInfo = { voiceFailed: false, publicEndpointFailed: false };
       try {
         // Auto-configure voice: start a local LiveKit server if not already configured.
         // If configured but unreachable, fall back to starting a local instance.
@@ -113,21 +113,22 @@ export function StartupModeSelector({ onReady }: Props) {
         const url = await startEmbeddedServer();
         setApiBaseUrl(url);
 
-        // Auto-start tunnel to make the server publicly reachable.
-        // The tunnel URL is used as the server's public URL for invite links.
-        setPhase('starting_tunnel');
+        // Acquire a public endpoint via the Annex router so the server is
+        // reachable from the internet. The returned URL is used as the
+        // server's public URL for invite links.
+        setPhase('acquiring_endpoint');
         try {
-          await startTunnel();
-        } catch (tunnelErr) {
-          degraded.tunnelFailed = true;
-          degraded.tunnelError = tunnelErr instanceof Error ? tunnelErr.message : String(tunnelErr);
-          console.warn('Auto-tunnel failed (invite links may be unavailable):', tunnelErr);
+          await acquirePublicEndpoint();
+        } catch (endpointErr) {
+          degraded.publicEndpointFailed = true;
+          degraded.publicEndpointError = endpointErr instanceof Error ? endpointErr.message : String(endpointErr);
+          console.warn('Public endpoint acquisition failed (invite links may be unavailable):', endpointErr);
         }
 
         if (!skipSave) {
           await saveStartupMode({ startup_mode: { mode: 'host' } });
         }
-        onReady(degraded.voiceFailed || degraded.tunnelFailed ? degraded : undefined);
+        onReady(degraded.voiceFailed || degraded.publicEndpointFailed ? degraded : undefined);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
         setPhase('error');
@@ -311,13 +312,14 @@ export function StartupModeSelector({ onReady }: Props) {
     );
   }
 
-  if (phase === 'starting_tunnel') {
+  if (phase === 'acquiring_endpoint') {
     return (
       <div className="startup-mode-selector">
         <h2>Annex</h2>
         <div className="startup-loading">Setting up public access...</div>
-        <p className="tunnel-hint">
-          Establishing a public URL so others can connect to your server.
+        <p className="endpoint-hint">
+          Acquiring a public endpoint from the Annex router so others can
+          connect to your server.
         </p>
       </div>
     );

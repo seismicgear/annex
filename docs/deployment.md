@@ -34,6 +34,8 @@ All configuration can be overridden via environment variables. Set them in `dock
 | `ANNEX_LIVEKIT_URL` | (none) | LiveKit server WebSocket URL |
 | `ANNEX_LIVEKIT_API_KEY` | (none) | LiveKit API key |
 | `ANNEX_LIVEKIT_API_SECRET` | (none) | LiveKit API secret |
+| `ANNEX_PUBLIC_URL` | (none) | Publicly-reachable server URL (for invites, federation) |
+| `ANNEX_LIVEKIT_PUBLIC_URL` | (none) | Public WebSocket URL for LiveKit (remote voice clients) |
 | `ANNEX_LOG_LEVEL` | `info` | Log level (trace/debug/info/warn/error) |
 | `ANNEX_LOG_JSON` | `false` | JSON log output for log aggregation |
 
@@ -151,6 +153,30 @@ docker compose logs -f annex
 ```
 
 With `ANNEX_LOG_JSON=true`, logs are structured JSON suitable for ingestion by Elasticsearch, Loki, or similar.
+
+## Public Access
+
+For production deployments, Annex needs to be reachable from the internet for invite links and federation to work.
+
+### Reverse proxy (recommended)
+
+Run behind a reverse proxy (nginx, Caddy) with TLS. Set `ANNEX_PUBLIC_URL` to your public domain:
+
+```bash
+ANNEX_PUBLIC_URL=https://annex.example.com
+```
+
+If LiveKit is also publicly accessible, set:
+
+```bash
+ANNEX_LIVEKIT_PUBLIC_URL=wss://livekit.example.com
+```
+
+The server uses `ANNEX_PUBLIC_URL` for invite links and federation signatures. It uses `ANNEX_LIVEKIT_PUBLIC_URL` for the WebSocket URL sent to remote voice clients. Both are auto-detected from trusted forwarded headers (`X-Forwarded-Host`, `X-Forwarded-Proto`) when present.
+
+### Desktop host mode
+
+The Tauri desktop app automatically acquires a public endpoint from the Annex router when hosting a server. No manual configuration is needed — the router-provided URL is set as the server's public URL automatically.
 
 ## Security Notes
 
