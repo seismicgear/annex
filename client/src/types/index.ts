@@ -77,6 +77,8 @@ export interface Channel {
   channel_type: ChannelType;
   topic: string | null;
   federation_scope: FederationScope;
+  /** Whether the current user is a member of this channel (from API or local cache). */
+  is_member?: boolean;
 }
 
 /** Message from API or WebSocket. */

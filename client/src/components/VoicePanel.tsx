@@ -155,17 +155,21 @@ function MediaControls({
 
   // Sync voice store micMuted → LiveKit room state.
   // When micMuted changes in the store (from StatusBar or here), apply to LiveKit.
+  // On failure, revert the store to match the real LiveKit participant state.
   useEffect(() => {
     const lp = localParticipant as LocalParticipant;
     if (!lp) return;
     const shouldBeEnabled = !micMuted;
     if (lp.isMicrophoneEnabled !== shouldBeEnabled) {
+      const priorEnabled = lp.isMicrophoneEnabled;
       lp.setMicrophoneEnabled(shouldBeEnabled).catch((err) => {
         console.warn('[VoicePanel] mic sync failed:', err);
+        // Revert store to match the real LiveKit microphone state
+        setMicMuted(!priorEnabled);
         setMediaError(mediaErrorMessage(err, 'Microphone toggle'));
       });
     }
-  }, [micMuted, localParticipant]);
+  }, [micMuted, localParticipant, setMicMuted]);
 
   // Sync LiveKit mic state → store when LiveKit state changes externally.
   useEffect(() => {
@@ -888,7 +892,11 @@ export function VoicePanel() {
     isJoining,
     getJoinError,
     clearChannelCallState,
+    joiningAnyCall,
+    lastFailedChannelId,
+    dismissConnectionError,
   } = useVoiceStore();
+  const permissionsStatus = useIdentityStore((s) => s.permissionsStatus);
 
   // Track the server ID that was active when the call was joined.
   // Capture only on session establishment (transition from no token to active token),
@@ -918,16 +926,22 @@ export function VoicePanel() {
     callServerIdRef.current !== activeServerId
   );
 
-  // Query platform media capabilities once (PipeWire, xdg-desktop-portal).
+  // Query platform media capabilities, refreshable on window focus / panel open.
   const [mediaStatus, setMediaStatus] = useState<PlatformMediaStatus | null>(null);
-  useEffect(() => {
+  const refreshMediaStatus = useCallback(() => {
     if (!isTauri()) return;
-    let cancelled = false;
     getPlatformMediaStatus()
-      .then((status) => { if (!cancelled) setMediaStatus(status); })
+      .then((status) => setMediaStatus(status))
       .catch(() => { /* non-fatal: desktop-only command */ });
-    return () => { cancelled = true; };
   }, []);
+
+  // Initial load + refresh on window focus / app resume
+  useEffect(() => {
+    refreshMediaStatus();
+    const onFocus = () => refreshMediaStatus();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [refreshMediaStatus]);
 
   const platformWarnings = mediaStatus?.warnings ?? [];
 
@@ -935,7 +949,10 @@ export function VoicePanel() {
   const isVoiceCapable =
     activeChannel?.channel_type === 'Voice' || activeChannel?.channel_type === 'Hybrid';
   const isVoiceAllowed = permissions?.capabilities.can_voice ?? true;
-  const canJoinVoice = isVoiceAllowed;
+  const permissionsLoading = permissionsStatus === 'loading';
+  const permissionsError = permissionsStatus === 'error';
+  // Treat missing/loading permissions as unknown (disable join until resolved)
+  const canJoinVoice = isVoiceAllowed && !permissionsLoading;
 
   // Clear stale call state when switching away from a channel so the next
   // channel does not inherit the previous channel's status or errors.
@@ -1091,22 +1108,41 @@ export function VoicePanel() {
     ? 'Voice is disabled by server policy for your identity.'
     : null;
 
+  // Show connectionError when the active channel matches the last failed channel
+  const showConnectionError = !!(connectionError && lastFailedChannelId && lastFailedChannelId === activeChannelId);
+  // Distinguish join-time vs dropped-call errors for the user
+  const connectionErrorLabel = connectionState === 'failed' && showConnectionError
+    ? connectionError
+    : null;
+
   return (
     <div className="voice-panel disconnected">
       <PlatformMediaWarning mediaStatus={mediaStatus} />
+      {permissionsLoading && (
+        <div className="voice-permissions-notice" role="status">Checking voice permissions…</div>
+      )}
+      {permissionsError && (
+        <div className="voice-permissions-notice voice-error" role="status">
+          Failed to check permissions. Voice may not be available.
+        </div>
+      )}
       <button
         onClick={handleJoin}
-        disabled={joining || !canJoinVoice}
+        disabled={joining || !canJoinVoice || joiningAnyCall}
         className="voice-join-btn"
-        title={unavailableReason ?? undefined}
+        title={unavailableReason ?? (permissionsLoading ? 'Checking voice permissions…' : undefined)}
       >
         {buttonText}
       </button>
-      {(lastJoinError || unavailableReason) && (
+      {(lastJoinError || unavailableReason || connectionErrorLabel) && (
         <div className="voice-error" role="alert">
+          {connectionErrorLabel && !lastJoinError && <p>{connectionErrorLabel}</p>}
           {lastJoinError && <p>{lastJoinError}</p>}
-          {!lastJoinError && unavailableReason && <p>{unavailableReason}</p>}
+          {!lastJoinError && !connectionErrorLabel && unavailableReason && <p>{unavailableReason}</p>}
           {setupHint && <p className="voice-setup-hint">{setupHint}</p>}
+          {connectionErrorLabel && (
+            <button onClick={dismissConnectionError} className="media-error-dismiss" aria-label="Dismiss">&times;</button>
+          )}
         </div>
       )}
     </div>

@@ -789,6 +789,10 @@ pub fn app(state: AppState) -> Router {
             put(api_admin::set_public_url_handler),
         )
         .route(
+            "/api/admin/livekit-public-url",
+            put(api_admin::set_livekit_public_url_handler),
+        )
+        .route(
             "/api/admin/federation/{id}",
             delete(api_admin::revoke_federation_handler),
         )

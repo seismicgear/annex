@@ -3,12 +3,16 @@ use crate::error::VoiceError;
 use livekit_api::access_token::{AccessToken, VideoGrants};
 use livekit_api::services::room::{CreateRoomOptions, RoomClient};
 use livekit_protocol::Room;
+use std::sync::RwLock;
 use std::time::Duration;
 
 #[derive(Debug)]
 pub struct VoiceService {
     config: LiveKitConfig,
     room_client: RoomClient,
+    /// Runtime-updatable public URL override. When set (non-empty), takes
+    /// precedence over `config.public_url` for browser-facing URLs.
+    runtime_public_url: RwLock<String>,
 }
 
 impl VoiceService {
@@ -18,6 +22,7 @@ impl VoiceService {
         Self {
             config,
             room_client,
+            runtime_public_url: RwLock::new(String::new()),
         }
     }
 
@@ -46,14 +51,19 @@ impl VoiceService {
     /// (127.0.0.1 / localhost / [::1]), because remote clients cannot reach it.
     /// Local clients (Tauri host mode connecting to its own server) still receive
     /// the loopback URL through the internal `get_url()` path.
-    pub fn get_public_url(&self) -> &str {
-        let url = if self.config.public_url.is_empty() {
-            &self.config.url
+    ///
+    /// Checks the runtime-updatable override first, then falls back to config.
+    pub fn get_public_url(&self) -> String {
+        let runtime = self.runtime_public_url.read().unwrap_or_else(|p| p.into_inner());
+        let url = if !runtime.is_empty() {
+            runtime.clone()
+        } else if !self.config.public_url.is_empty() {
+            self.config.public_url.clone()
         } else {
-            &self.config.public_url
+            self.config.url.clone()
         };
-        if Self::is_loopback_url(url) {
-            ""
+        if Self::is_loopback_url(&url) {
+            String::new()
         } else {
             url
         }
@@ -61,12 +71,21 @@ impl VoiceService {
 
     /// Returns the public URL without the loopback guard, for local-only use
     /// (e.g. Tauri host mode where the client is on the same machine).
-    pub fn get_url_for_local_client(&self) -> &str {
-        if self.config.public_url.is_empty() {
-            &self.config.url
+    pub fn get_url_for_local_client(&self) -> String {
+        let runtime = self.runtime_public_url.read().unwrap_or_else(|p| p.into_inner());
+        if !runtime.is_empty() {
+            runtime.clone()
+        } else if self.config.public_url.is_empty() {
+            self.config.url.clone()
         } else {
-            &self.config.public_url
+            self.config.public_url.clone()
         }
+    }
+
+    /// Set the public URL at runtime (e.g. from Tauri after acquiring a public endpoint).
+    pub fn set_public_url(&self, url: String) {
+        let mut w = self.runtime_public_url.write().unwrap_or_else(|p| p.into_inner());
+        *w = url;
     }
 
     /// Check whether a URL points to a loopback/private-only address.

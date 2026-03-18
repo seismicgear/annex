@@ -498,6 +498,17 @@ export async function setPublicUrl(
   });
 }
 
+export async function setLivekitPublicUrl(
+  pseudonymId: string,
+  publicLivekitUrl: string,
+): Promise<{ status: string; public_livekit_url: string }> {
+  return request<{ status: string; public_livekit_url: string }>('/api/admin/livekit-public-url', {
+    method: 'PUT',
+    headers: authHeaders(pseudonymId),
+    body: JSON.stringify({ public_livekit_url: publicLivekitUrl }),
+  });
+}
+
 // ── Member Management ──
 
 export interface MemberInfo {

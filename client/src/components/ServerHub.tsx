@@ -129,9 +129,18 @@ export function ServerHub() {
   const activeServerId = useServersStore((s) => s.activeServerId);
   const switching = useServersStore((s) => s.switching);
   const switchServer = useServersStore((s) => s.switchServer);
+  const switchError = useServersStore((s) => s.switchError);
   const beginRemoteRegistration = useServersStore((s) => s.beginRemoteRegistration);
   const serverImageUrl = useServersStore((s) => s.serverImageUrl);
   const [showAddDialog, setShowAddDialog] = useState(false);
+
+  const handleSwitch = useCallback(async (serverId: string) => {
+    try {
+      await switchServer(serverId);
+    } catch {
+      // Error is captured in switchError state — no need to re-throw
+    }
+  }, [switchServer]);
 
   const handleAdd = useCallback(async (baseUrl: string) => {
     const server = await beginRemoteRegistration(baseUrl);
@@ -143,6 +152,11 @@ export function ServerHub() {
   return (
     <>
       <nav className={`server-hub ${switching ? 'switching' : ''}`}>
+        {switchError && (
+          <div className="server-hub-error" role="alert" title={switchError}>
+            <span>!</span>
+          </div>
+        )}
         <div className="server-hub-list">
           {servers.map((server) => (
             <ServerIcon
@@ -150,7 +164,7 @@ export function ServerHub() {
               server={server}
               isActive={server.id === activeServerId}
               imageUrl={server.id === activeServerId ? serverImageUrl : null}
-              onClick={() => switchServer(server.id)}
+              onClick={() => handleSwitch(server.id)}
             />
           ))}
         </div>

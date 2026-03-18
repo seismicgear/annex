@@ -10,6 +10,7 @@ let identityState: {
 let channelsState: {
   channels: Array<{ channel_id: string; channel_type: string; name: string; federation_scope?: string }>;
   activeChannelId: string | null;
+  joinedChannelIds: Set<string>;
   loading: boolean;
   error: string | null;
   loadChannels: ReturnType<typeof vi.fn>;
@@ -50,6 +51,7 @@ describe('ChannelList', () => {
         { channel_id: 'ch-1', channel_type: 'Text', name: 'general' },
       ],
       activeChannelId: null,
+      joinedChannelIds: new Set<string>(),
       loading: false,
       error: null,
       loadChannels: vi.fn(async () => {}),
@@ -97,5 +99,29 @@ describe('ChannelList', () => {
     });
 
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('shows leave action for joined-but-inactive channel', () => {
+    // Channel is joined but not the active (selected) channel
+    channelsState.joinedChannelIds = new Set(['ch-1']);
+    channelsState.activeChannelId = null;
+
+    render(<ChannelList />);
+
+    // Should show leave button (not join) because user is a member
+    expect(screen.getByTitle('Leave channel')).toBeInTheDocument();
+    expect(screen.queryByTitle('Join channel')).not.toBeInTheDocument();
+  });
+
+  it('shows join action for non-member channel', () => {
+    // Channel is not joined (not a member)
+    channelsState.joinedChannelIds = new Set();
+    channelsState.activeChannelId = 'ch-1'; // selected but not joined
+
+    render(<ChannelList />);
+
+    // Should show join button because user is not a member
+    expect(screen.getByTitle('Join channel')).toBeInTheDocument();
+    expect(screen.queryByTitle('Leave channel')).not.toBeInTheDocument();
   });
 });

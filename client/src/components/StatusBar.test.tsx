@@ -24,6 +24,8 @@ let voiceState: {
   leaveCall: ReturnType<typeof vi.fn>;
   toggleDeafen: ReturnType<typeof vi.fn>;
   toggleMicMuted: ReturnType<typeof vi.fn>;
+  micToggleError: string | null;
+  clearMicToggleError: ReturnType<typeof vi.fn>;
 };
 
 vi.mock('@/stores/identity', () => ({
@@ -85,6 +87,8 @@ describe('StatusBar voice strip', () => {
       leaveCall: vi.fn(async () => {}),
       toggleDeafen: vi.fn(),
       toggleMicMuted: vi.fn(),
+      micToggleError: null,
+      clearMicToggleError: vi.fn(),
     };
   });
 

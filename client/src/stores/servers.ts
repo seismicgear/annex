@@ -25,6 +25,8 @@ interface ServersState {
   serverImageUrl: string | null;
   /** Server ID of the placeholder currently being registered (for App.tsx to track). */
   pendingRegistrationServerId: string | null;
+  /** Error from the last failed server switch, if any. */
+  switchError: string | null;
 
   /** Load saved servers from IndexedDB. */
   loadServers: () => Promise<void>;
@@ -62,6 +64,7 @@ export const useServersStore = create<ServersState>((set, get) => ({
   switching: false,
   serverImageUrl: null,
   pendingRegistrationServerId: null,
+  switchError: null,
 
   loadServers: async () => {
     const servers = await serversDb.listServers();
@@ -78,15 +81,19 @@ export const useServersStore = create<ServersState>((set, get) => ({
     // Guard: don't switch to a server that hasn't been registered yet
     if (!server.identityId) return;
 
+    // Capture prior state for rollback on failure
+    const prevServerId = activeServerId;
+    const prevApiBaseUrl = api.getApiBaseUrl();
+    const prevIdentity = useIdentityStore.getState().identity;
+
     // Leave or forcibly clear any active voice session BEFORE changing
     // activeServerId. This prevents the old LiveKitRoom from being rendered
     // under the new server's state.
     const voiceStore = useVoiceStore.getState();
     if (voiceStore.connectedChannelId || voiceStore.voiceToken) {
-      const oldIdentity = useIdentityStore.getState().identity;
-      if (oldIdentity?.pseudonymId) {
+      if (prevIdentity?.pseudonymId) {
         // Best-effort: try to leave gracefully on the old server
-        await voiceStore.leaveCall(oldIdentity.pseudonymId).catch(() => {});
+        await voiceStore.leaveCall(prevIdentity.pseudonymId).catch(() => {});
       }
       // Force-reset regardless of leaveCall result
       voiceStore.forceReset();
@@ -99,7 +106,7 @@ export const useServersStore = create<ServersState>((set, get) => ({
 
     // Immediate: update active server for instant UI transition.
     // Clear serverImageUrl so stale imagery from the previous server is never shown.
-    set({ activeServerId: serverId, switching: true, serverImageUrl: null });
+    set({ activeServerId: serverId, switching: true, serverImageUrl: null, switchError: null });
 
     try {
 
@@ -112,8 +119,7 @@ export const useServersStore = create<ServersState>((set, get) => ({
 
       const identity = useIdentityStore.getState().identity;
       if (!identity?.pseudonymId) {
-        set({ switching: false });
-        return;
+        throw new Error('Identity selection failed — no pseudonym available.');
       }
 
       // Reconnect WebSocket to the target server with the session token
@@ -135,8 +141,23 @@ export const useServersStore = create<ServersState>((set, get) => ({
         .catch(() => { /* stale summary retained */ });
       get().fetchServerImage();
 
-    } finally {
       set({ switching: false });
+    } catch (err) {
+      // Rollback: restore previous server context
+      api.setApiBaseUrl(prevApiBaseUrl);
+      if (prevIdentity?.id) {
+        await useIdentityStore.getState().selectIdentity(prevIdentity.id).catch(() => {});
+      }
+      // Reconnect WS to previous server
+      const restoredIdentity = useIdentityStore.getState().identity;
+      if (restoredIdentity?.pseudonymId) {
+        channelsStore.connectWs(restoredIdentity.pseudonymId, prevApiBaseUrl || undefined, restoredIdentity.sessionToken ?? null);
+        channelsStore.loadChannels(restoredIdentity.pseudonymId).catch(() => {});
+      }
+
+      const errorMessage = err instanceof Error ? err.message : 'Server switch failed';
+      set({ activeServerId: prevServerId, switching: false, switchError: errorMessage });
+      throw err;
     }
   },
 

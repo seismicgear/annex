@@ -30,7 +30,7 @@ import { StartupModeSelector, type DegradedStartupInfo } from '@/components/Star
 import { clearWebStartupMode } from '@/lib/startup-prefs';
 import { parseLegacyInviteFromUrl, clearInviteFromUrl, createInviteLink } from '@/lib/invite';
 import { getPersonasForIdentity } from '@/lib/personas';
-import { getApiBaseUrl, getServerSummary, setApiBaseUrl, redeemInvite, setPublicUrl, getSessionToken, setSessionToken, isTokenExpired, refreshSessionToken, startTokenRefresh, stopTokenRefresh } from '@/lib/api';
+import { getApiBaseUrl, getServerSummary, setApiBaseUrl, redeemInvite, setPublicUrl, setLivekitPublicUrl, getSessionToken, setSessionToken, isTokenExpired, refreshSessionToken, startTokenRefresh, stopTokenRefresh } from '@/lib/api';
 import { saveIdentity, clearAllDatabases } from '@/lib/db';
 import { cancelMembershipProofGeneration, isProofGenerationInFlight } from '@/lib/zk';
 import type { ProvingStatus } from '@/stores/identity';
@@ -167,9 +167,22 @@ export default function App() {
           } catch (e) {
             console.warn('fresh install cleanup failed (non-fatal):', e);
           }
+          // Clear in-memory identity state regardless of phase — both
+          // 'ready' (fully registered) and 'keys_ready' (local keys only)
+          // need to be reset so the user starts with IdentitySetup.
           const { phase: currentPhase } = useIdentityStore.getState();
-          if (currentPhase === 'ready') {
-            useIdentityStore.getState().logout();
+          if (currentPhase === 'ready' || currentPhase === 'keys_ready') {
+            useIdentityStore.setState({
+              identity: null,
+              phase: 'uninitialized',
+              permissions: null,
+              permissionsStatus: 'idle',
+              proofInFlight: false,
+              provingStatus: 'idle',
+              error: null,
+              errorDetails: null,
+            });
+            api.setSessionToken(null);
           }
         }
         setIdentityChecked(true);
@@ -388,6 +401,7 @@ export default function App() {
 
         // Auto-refresh session token at 80% of 1-hour TTL (~48 min).
         // Persist each refreshed token to IndexedDB so cold starts work.
+        // Also update the active WebSocket so reconnects use the fresh token.
         startTokenRefresh(
           3600,
           async (newToken) => {
@@ -397,6 +411,8 @@ export default function App() {
               await saveIdentity(updated);
               useIdentityStore.setState({ identity: updated });
             }
+            // Propagate to active WebSocket so reconnects use the refreshed token
+            useChannelsStore.getState().updateWsSessionToken(newToken);
           },
           async (err) => {
             console.error('session token refresh failed', err);
@@ -422,10 +438,14 @@ export default function App() {
         if (cancelled || !endpointInfo) return;
         // Set the router-provided URL as the server's public URL
         await setPublicUrl(identity.pseudonymId!, endpointInfo.public_url);
-        // If the router returned a public URL but no LiveKit URL, remote
-        // voice/video will not work. Set the degraded flag so the host sees
-        // a warning banner.
-        if (!endpointInfo.public_livekit_url) {
+        // Push the LiveKit public URL into the running server so remote
+        // voice join responses return a globally-reachable URL.
+        if (endpointInfo.public_livekit_url) {
+          await setLivekitPublicUrl(identity.pseudonymId!, endpointInfo.public_livekit_url).catch(() => {
+            // Non-fatal: remote voice may use fallback URL
+          });
+        } else {
+          // No LiveKit URL from router — remote voice/video will not work.
           setDegradedStartup((prev) => ({
             voiceFailed: prev?.voiceFailed ?? false,
             publicEndpointFailed: prev?.publicEndpointFailed ?? false,

@@ -36,6 +36,8 @@ export function StatusBar() {
     leaveCall,
     toggleDeafen,
     toggleMicMuted,
+    micToggleError,
+    clearMicToggleError,
   } = useVoiceStore();
 
   const [showDeviceLink, setShowDeviceLink] = useState(false);
@@ -125,6 +127,12 @@ export function StatusBar() {
               <span className="voice-status-channel">{channelLabel}</span>
             </div>
           </div>
+          {micToggleError && (
+            <div className="voice-status-error" role="alert">
+              <span>{micToggleError}</span>
+              <button onClick={clearMicToggleError} className="media-error-dismiss" aria-label="Dismiss">&times;</button>
+            </div>
+          )}
           <div className="voice-status-controls">
             <button
               className={`voice-status-btn ${micMuted ? 'muted' : ''}`}
