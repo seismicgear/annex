@@ -33,7 +33,7 @@ export type ProvingStatus =
   | 'computing_witness'
   | 'generating_proof';
 
-export type PermissionsStatus = 'idle' | 'loading' | 'ready' | 'error';
+export type PermissionsStatus = 'idle' | 'loading' | 'ready' | 'error' | 'denied';
 
 interface IdentityState {
   /** Current lifecycle phase. */
@@ -124,14 +124,18 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
     try {
       const info = await api.getIdentityInfo(identity.pseudonymId);
       set({ permissions: info, permissionsStatus: 'ready', permissionsPseudonymId: identity.pseudonymId });
-    } catch {
+    } catch (err) {
+      // Distinguish authoritative "denied/forbidden" from transient errors
+      const isAuthoritative = err instanceof api.ApiError && (err.status === 403 || err.status === 401);
+      const status: PermissionsStatus = isAuthoritative ? 'denied' : 'error';
+
       // If the pseudonym changed since the last successful fetch, clear
       // stale permissions so capabilities from the previous server don't
       // bleed into the current context.
       if (permissionsPseudonymId !== identity.pseudonymId) {
-        set({ permissions: null, permissionsStatus: 'error', permissionsPseudonymId: null });
+        set({ permissions: null, permissionsStatus: status, permissionsPseudonymId: null });
       } else {
-        set({ permissionsStatus: 'error' });
+        set({ permissionsStatus: status });
       }
     }
   },

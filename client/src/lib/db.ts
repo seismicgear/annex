@@ -97,8 +97,15 @@ export function exportIdentity(identity: StoredIdentity): string {
 /** Import an identity from a backup JSON string. */
 export async function importIdentity(json: string): Promise<StoredIdentity> {
   const identity: StoredIdentity = JSON.parse(json);
-  if (!identity.sk || !identity.commitmentHex || !identity.roleCode) {
-    throw new Error('Invalid identity backup: missing required fields');
+  // Valid key material requires sk and roleCode. commitmentHex is required
+  // for registered identities, but locally recovered-but-unregistered
+  // identities with valid key material (sk + commitmentHex + nodeId) are
+  // also accepted even when pseudonymId is null.
+  if (!identity.sk || !identity.roleCode) {
+    throw new Error('Invalid identity backup: missing required fields (sk, roleCode)');
+  }
+  if (!identity.commitmentHex && !identity.nodeId) {
+    throw new Error('Invalid identity backup: missing key material (commitmentHex or nodeId)');
   }
   await saveIdentity(identity);
   return identity;

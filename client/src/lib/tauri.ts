@@ -124,6 +124,15 @@ export async function startLocalLiveKit(): Promise<{ url: string }> {
   return invoke<{ url: string }>('start_local_livekit');
 }
 
+/**
+ * Clear LiveKit environment variables so the embedded server does not
+ * pick up the dev fallback URL when LiveKit actually failed to start.
+ * Must be called BEFORE startEmbeddedServer().
+ */
+export async function clearLiveKitEnv(): Promise<void> {
+  return invoke<void>('clear_livekit_env');
+}
+
 // ── Platform media status ──
 
 export interface PlatformMediaStatus {

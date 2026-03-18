@@ -1207,6 +1207,22 @@ async fn start_local_livekit(
     Ok(serde_json::json!({ "url": lk_url, "port": port }))
 }
 
+/// Clear LiveKit env vars so the embedded server does not pick up the dev
+/// fallback URL when LiveKit actually failed to start. Must be called BEFORE
+/// `start_embedded_server`.
+#[tauri::command]
+fn clear_livekit_env() {
+    // SAFETY: Called before the embedded server is started, so no concurrent
+    // reads of these env vars are happening.
+    unsafe {
+        std::env::set_var("ANNEX_LIVEKIT_URL", "");
+        std::env::set_var("ANNEX_LIVEKIT_PUBLIC_URL", "");
+        std::env::set_var("ANNEX_LIVEKIT_API_KEY", "");
+        std::env::set_var("ANNEX_LIVEKIT_API_SECRET", "");
+    }
+    tracing::info!("cleared livekit env vars (voice startup failed)");
+}
+
 /// Stop the local LiveKit server if running.
 ///
 /// Not currently registered in the invoke handler. Retained for future use.
@@ -1872,6 +1888,7 @@ fn main() {
             export_identity_json,
             get_livekit_config,
             start_local_livekit,
+            clear_livekit_env,
             check_livekit_reachable,
             get_platform_media_status,
             set_media_keepalive,

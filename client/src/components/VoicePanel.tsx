@@ -905,6 +905,10 @@ export function VoicePanel() {
     dismissConnectionError,
   } = useVoiceStore();
   const permissionsStatus = useIdentityStore((s) => s.permissionsStatus);
+  const loadPermissions = useIdentityStore((s) => s.loadPermissions);
+  const voiceSessionDisabled = useVoiceStore((s) => s.voiceSessionDisabled);
+  const voiceSessionDisabledReason = useVoiceStore((s) => s.voiceSessionDisabledReason);
+  const [retryingPermissions, setRetryingPermissions] = useState(false);
 
   // Track the server ID that was active when the call was joined.
   // Capture only on session establishment (transition from no token to active token),
@@ -953,6 +957,23 @@ export function VoicePanel() {
 
   const platformWarnings = mediaStatus?.warnings ?? [];
 
+  // Retry permissions on window focus when in error state
+  useEffect(() => {
+    if (permissionsStatus !== 'error') return;
+    const onFocus = () => { void loadPermissions(); };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [permissionsStatus, loadPermissions]);
+
+  const handleRetryPermissions = useCallback(async () => {
+    setRetryingPermissions(true);
+    try {
+      await loadPermissions();
+    } finally {
+      setRetryingPermissions(false);
+    }
+  }, [loadPermissions]);
+
   const activeChannel = channels.find((c) => c.channel_id === activeChannelId);
   const isVoiceCapable =
     activeChannel?.channel_type === 'Voice' || activeChannel?.channel_type === 'Hybrid';
@@ -961,9 +982,11 @@ export function VoicePanel() {
   const isVoiceAllowed = permissions?.capabilities.can_voice === true;
   const permissionsLoading = permissionsStatus === 'loading';
   const permissionsError = permissionsStatus === 'error';
+  const permissionsDenied = permissionsStatus === 'denied';
   const permissionsReady = permissionsStatus === 'ready';
-  // Voice join requires: permissions loaded successfully AND can_voice === true.
-  const canJoinVoice = isVoiceAllowed && permissionsReady;
+  // Voice join requires: permissions loaded successfully AND can_voice === true
+  // AND voice was not disabled at startup.
+  const canJoinVoice = isVoiceAllowed && permissionsReady && !voiceSessionDisabled;
 
   // Clear stale call state when switching away from a channel so the next
   // channel does not inherit the previous channel's status or errors.
@@ -1115,13 +1138,17 @@ export function VoicePanel() {
       ? 'Join Call'
       : 'Create Call';
 
-  const unavailableReason = permissionsError
-    ? 'Could not verify voice permissions. Retry or reconnect to the server.'
-    : !permissionsReady
-      ? 'Checking voice permissions…'
-      : !isVoiceAllowed
-        ? 'Voice is disabled by server policy for your identity.'
-        : null;
+  const unavailableReason = voiceSessionDisabled
+    ? (voiceSessionDisabledReason ?? 'Voice is not available for this session.')
+    : permissionsDenied
+      ? 'Voice is not allowed for your identity on this server.'
+      : permissionsError
+        ? null // Handled by the inline retry UI below
+        : !permissionsReady
+          ? 'Checking voice permissions…'
+          : !isVoiceAllowed
+            ? 'Voice is disabled by server policy for your identity.'
+            : null;
 
   // Show connectionError when the active channel matches the last failed channel
   const showConnectionError = !!(connectionError && lastFailedChannelId && lastFailedChannelId === activeChannelId);
@@ -1138,12 +1165,25 @@ export function VoicePanel() {
       )}
       {permissionsError && (
         <div className="voice-permissions-notice voice-error" role="status">
-          Failed to check permissions. Voice may not be available.
+          Could not verify voice permissions right now.
+          <button
+            type="button"
+            className="inline-action-btn"
+            onClick={handleRetryPermissions}
+            disabled={retryingPermissions}
+          >
+            {retryingPermissions ? 'Retrying...' : 'Retry'}
+          </button>
+        </div>
+      )}
+      {voiceSessionDisabled && (
+        <div className="voice-permissions-notice voice-error" role="status">
+          {voiceSessionDisabledReason ?? 'Voice is not available for this session.'}
         </div>
       )}
       <button
         onClick={handleJoin}
-        disabled={joining || !canJoinVoice || joiningAnyCall}
+        disabled={joining || !canJoinVoice || joiningAnyCall || retryingPermissions}
         className="voice-join-btn"
         title={unavailableReason ?? (permissionsLoading ? 'Checking voice permissions…' : undefined)}
       >

@@ -17,6 +17,7 @@ import {
   saveStartupMode,
   getLiveKitConfig,
   startLocalLiveKit,
+  clearLiveKitEnv,
   getStartupMode,
   clearStartupMode,
   acquirePublicEndpoint,
@@ -26,8 +27,10 @@ import {
 } from '@/lib/tauri';
 import { setApiBaseUrl, fetchWithTimeout } from '@/lib/api';
 import { clearWebStartupMode } from '@/lib/startup-prefs';
+import { normalizeServerUrl } from '@/lib/url';
 import { useServersStore } from '@/stores/servers';
 import { useIdentityStore } from '@/stores/identity';
+import { useVoiceStore } from '@/stores/voice';
 
 const STORAGE_KEY = 'annex:startup-mode';
 
@@ -111,6 +114,15 @@ export function StartupModeSelector({ onReady }: Props) {
           degraded.voiceFailed = true;
           degraded.voiceError = voiceErr instanceof Error ? voiceErr.message : String(voiceErr);
           console.warn('Auto-configure voice failed (voice may be unavailable):', voiceErr);
+          // Clear LiveKit env vars so the embedded server does not pick up
+          // the dev fallback URL when LiveKit actually failed to start.
+          try { await clearLiveKitEnv(); } catch { /* best effort */ }
+          // Propagate disabled state to the voice store so VoicePanel knows
+          // not to offer Join/Create Call with stale fallback config.
+          useVoiceStore.getState().setVoiceSessionDisabled(
+            true,
+            `Voice unavailable: ${degraded.voiceError}`,
+          );
         }
 
         setPhase('starting_server');
@@ -154,16 +166,9 @@ export function StartupModeSelector({ onReady }: Props) {
   const applyRemote = useCallback(
     async (url: string, skipSave: boolean) => {
       setError('');
-      let normalized = url.trim();
-      if (!/^https?:\/\//i.test(normalized)) {
-        normalized = `https://${normalized}`;
-      }
+      let normalized: string;
       try {
-        const parsed = new URL(normalized);
-        if (!['http:', 'https:'].includes(parsed.protocol)) {
-          setError('Only http and https URLs are supported.');
-          return;
-        }
+        normalized = normalizeServerUrl(url);
       } catch {
         setError('Invalid URL format.');
         return;
@@ -179,11 +184,11 @@ export function StartupModeSelector({ onReady }: Props) {
         const isTimeout = err instanceof Error && /timed out/i.test(err.message);
         const isCorsLikely = err instanceof TypeError && /failed to fetch/i.test(err.message);
         if (isTimeout) {
-          setError('Server did not respond in time. Check the URL and verify the server is running.');
+          setError(`Server at ${normalized} did not respond in time. Check the URL and verify the server is running.`);
         } else if (inTauri && isCorsLikely) {
           setError(desktopCorsGuidance());
         } else {
-          setError('Could not reach server. Check the URL and try again.');
+          setError(`Could not reach server at ${normalized}. Check the URL and try again.`);
         }
         setPhase('choose');
         return;
