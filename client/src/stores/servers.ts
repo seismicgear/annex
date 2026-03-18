@@ -28,8 +28,8 @@ interface ServersState {
   loadServers: () => Promise<void>;
   /** Switch to a different server context. Immediate UI + async crypto. */
   switchServer: (serverId: string) => Promise<void>;
-  /** Register the current origin as a saved server for an identity. */
-  saveCurrentServer: (identityId: string, slug: string, label: string) => Promise<void>;
+  /** Register the current server as a saved server for an identity. */
+  saveCurrentServer: (identityId: string, slug: string, label: string, baseUrl?: string) => Promise<void>;
   /** Add a remote server via federation hopping. Returns the new server ID. */
   addRemoteServer: (baseUrl: string) => Promise<SavedServer | null>;
   /** Remove a saved server. */
@@ -103,8 +103,10 @@ export const useServersStore = create<ServersState>((set, get) => ({
         return;
       }
 
-      // Reconnect WebSocket to the target server
-      channelsStore.connectWs(identity.pseudonymId, server.baseUrl);
+      // Reconnect WebSocket to the target server with the session token
+      // for authenticated connections (matches the startup path in App.tsx).
+      const sessionToken = identity.sessionToken ?? null;
+      channelsStore.connectWs(identity.pseudonymId, server.baseUrl, sessionToken);
 
       // Load channels and permissions for the new server
       await channelsStore.loadChannels(identity.pseudonymId);
@@ -125,15 +127,37 @@ export const useServersStore = create<ServersState>((set, get) => ({
     }
   },
 
-  saveCurrentServer: async (identityId: string, slug: string, label: string) => {
-    // Check if already saved
-    const existing = await serversDb.getServerByIdentityId(identityId);
-    if (existing) {
-      set((state) => ({ activeServerId: existing.id, servers: state.servers }));
+  saveCurrentServer: async (identityId: string, slug: string, label: string, baseUrl?: string) => {
+    const effectiveBaseUrl = baseUrl ?? '';
+
+    // Check if already saved by identity
+    const existingByIdentity = await serversDb.getServerByIdentityId(identityId);
+    if (existingByIdentity) {
+      set((state) => ({ activeServerId: existingByIdentity.id, servers: state.servers }));
       return;
     }
 
-    const server = serversDb.createServerEntry('', slug, label, identityId);
+    // Look for a placeholder entry created by addRemoteServer() for this
+    // same remote server (matching baseUrl or slug with empty identityId).
+    // Update it in-place instead of creating a duplicate.
+    let server: import('@/types').SavedServer | null = null;
+    if (effectiveBaseUrl) {
+      const { servers } = get();
+      const placeholder = servers.find(
+        (s) => s.identityId === '' && (s.baseUrl === effectiveBaseUrl || s.slug === slug),
+      );
+      if (placeholder) {
+        placeholder.identityId = identityId;
+        placeholder.label = label;
+        placeholder.baseUrl = effectiveBaseUrl;
+        placeholder.lastConnectedAt = new Date().toISOString();
+        server = placeholder;
+      }
+    }
+
+    if (!server) {
+      server = serversDb.createServerEntry(effectiveBaseUrl, slug, label, identityId);
+    }
 
     // Try to fetch and cache the server summary
     try {
@@ -184,15 +208,16 @@ export const useServersStore = create<ServersState>((set, get) => ({
     const servers = await serversDb.listServers();
 
     if (activeServerId === serverId) {
-      // Switch back to the first available server or null
       const fallback = servers[0] ?? null;
-      set({ servers, activeServerId: fallback?.id ?? null });
-
       if (fallback) {
-        // Re-connect to fallback server
-        get().switchServer(fallback.id);
+        // Update the server list but let switchServer handle activeServerId.
+        // Setting activeServerId here would cause switchServer to short-circuit
+        // (same-server guard) and skip the full reconnect path.
+        set({ servers });
+        await get().switchServer(fallback.id);
       } else {
         // No servers left — reset to current origin
+        set({ servers, activeServerId: null });
         api.setApiBaseUrl('');
       }
     } else {

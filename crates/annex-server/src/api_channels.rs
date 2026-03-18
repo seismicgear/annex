@@ -629,9 +629,11 @@ pub async fn join_voice_channel_handler(
         )
     })?;
 
-    // Determine whether this is a local (loopback) client. If so, we can
-    // serve the internal loopback LiveKit URL even when no public URL exists.
-    let is_local_client = connect_info.0.ip().is_loopback();
+    // Determine whether this is a local (loopback) client. For proxied
+    // deployments, also check X-Forwarded-For: if the header is present the
+    // real client is remote even when connect_info shows loopback.
+    let has_forwarded_for = headers.get("x-forwarded-for").is_some();
+    let is_local_client = connect_info.0.ip().is_loopback() && !has_forwarded_for;
     let livekit_url = if is_local_client {
         // Local clients (Tauri host mode) get the raw URL even if it's loopback
         state.voice_service.get_url_for_local_client().to_string()
