@@ -43,6 +43,9 @@ function getJoinErrorMessage(error: unknown): JoinError {
   return { display: 'Failed to join voice', code: null, setupHint: null };
 }
 
+/** LiveKit room connection lifecycle state. */
+export type ConnectionState = 'idle' | 'connecting' | 'connected' | 'failed';
+
 export interface VoiceState {
   /** LiveKit access token for the current session. */
   voiceToken: string | null;
@@ -52,8 +55,12 @@ export interface VoiceState {
   iceServers: api.IceServerConfig[];
   /** Channel ID the call is connected to. */
   connectedChannelId: string | null;
-  /** Whether a join is in progress. */
-  joining: boolean;
+  /** Per-channel join-in-progress status (keyed by channelId). */
+  joiningByChannel: Record<string, boolean>;
+  /** LiveKit room connection state. */
+  connectionState: ConnectionState;
+  /** Error string from connection failure. */
+  connectionError: string | null;
   /** Per-channel call-active status (keyed by channelId). */
   callActiveByChannel: Record<string, boolean>;
   /** Per-channel join error (keyed by channelId). */
@@ -87,12 +94,18 @@ export interface VoiceState {
   setInputVolume: (vol: number) => void;
   setOutputVolume: (vol: number) => void;
   setCameraDevice: (deviceId: string | null) => void;
+  /** Update the LiveKit room connection state. */
+  setConnectionState: (state: ConnectionState, error?: string | null) => void;
+  /** Shared async mic toggle — updates store only after LiveKit succeeds. */
+  toggleMicAsync: (localParticipant: unknown) => Promise<void>;
   /** Check if a call is active on a channel (for polling). */
   checkCallActive: (pseudonymId: string, channelId: string) => Promise<void>;
   /** Get call-active status for a specific channel. */
   isCallActive: (channelId: string) => boolean;
   /** Get join error for a specific channel. */
   getJoinError: (channelId: string) => JoinError | null;
+  /** Check if a join is in progress for a specific channel. */
+  isJoining: (channelId: string) => boolean;
   /** Clear cached call status for a channel (used on channel switch). */
   clearChannelCallState: (channelId: string) => void;
   /** Force-clear all voice session state (used by server switching). */
@@ -123,7 +136,9 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   livekitUrl: null,
   iceServers: [],
   connectedChannelId: null,
-  joining: false,
+  joiningByChannel: {},
+  connectionState: 'idle' as ConnectionState,
+  connectionError: null,
   callActiveByChannel: {},
   joinErrorByChannel: {},
   deafened: false,
@@ -137,23 +152,25 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
 
   joinCall: async (pseudonymId, channelId) => {
     set((s) => ({
-      joining: true,
+      joiningByChannel: { ...s.joiningByChannel, [channelId]: true },
       joinErrorByChannel: { ...s.joinErrorByChannel, [channelId]: null },
     }));
     try {
-      const { token, url, ice_servers } = await api.joinVoice(pseudonymId, channelId);
+      const { token, url, ice_servers } = await api.joinVoice(pseudonymId, channelId, 30_000);
       set((s) => ({
         voiceToken: token,
         livekitUrl: url,
         iceServers: ice_servers ?? [],
         connectedChannelId: channelId,
-        joining: false,
+        joiningByChannel: { ...s.joiningByChannel, [channelId]: false },
         joinErrorByChannel: { ...s.joinErrorByChannel, [channelId]: null },
+        connectionState: 'connecting' as ConnectionState,
+        connectionError: null,
       }));
     } catch (error) {
       const details = getJoinErrorMessage(error);
       set((s) => ({
-        joining: false,
+        joiningByChannel: { ...s.joiningByChannel, [channelId]: false },
         joinErrorByChannel: { ...s.joinErrorByChannel, [channelId]: details },
       }));
     }
@@ -172,6 +189,8 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       iceServers: [],
       connectedChannelId: null,
       deafened: false,
+      connectionState: 'idle' as ConnectionState,
+      connectionError: null,
       // Clear call-active status for the channel we just left
       callActiveByChannel: connectedChannelId
         ? { ...s.callActiveByChannel, [connectedChannelId]: false }
@@ -203,6 +222,30 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     set({ cameraDeviceId: deviceId });
     saveAudioSettings({ cameraDeviceId: deviceId });
   },
+  setConnectionState: (state, error = null) => {
+    set({ connectionState: state, connectionError: error ?? null });
+    // If the room failed or disconnected unexpectedly, reconcile store state
+    if (state === 'failed') {
+      set({
+        voiceToken: null,
+        livekitUrl: null,
+        iceServers: [],
+        connectedChannelId: null,
+      });
+    }
+  },
+  toggleMicAsync: async (localParticipant: unknown) => {
+    const lp = localParticipant as { isMicrophoneEnabled: boolean; setMicrophoneEnabled: (v: boolean) => Promise<void> };
+    const shouldEnable = !lp.isMicrophoneEnabled;
+    try {
+      await lp.setMicrophoneEnabled(shouldEnable);
+      set({ micMuted: !shouldEnable });
+    } catch (err) {
+      // Keep previous store state — do not flip micMuted on failure
+      console.warn('[voice] toggleMicAsync failed:', err);
+      throw err;
+    }
+  },
   checkCallActive: async (pseudonymId, channelId) => {
     try {
       const status = await api.getVoiceStatus(pseudonymId, channelId);
@@ -221,11 +264,15 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   getJoinError: (channelId) => {
     return get().joinErrorByChannel[channelId] ?? null;
   },
+  isJoining: (channelId) => {
+    return get().joiningByChannel[channelId] ?? false;
+  },
   clearChannelCallState: (channelId) => {
     set((s) => {
       const { [channelId]: _active, ...restActive } = s.callActiveByChannel;
       const { [channelId]: _error, ...restErrors } = s.joinErrorByChannel;
-      return { callActiveByChannel: restActive, joinErrorByChannel: restErrors };
+      const { [channelId]: _joining, ...restJoining } = s.joiningByChannel;
+      return { callActiveByChannel: restActive, joinErrorByChannel: restErrors, joiningByChannel: restJoining };
     });
   },
   forceReset: () => {
@@ -234,7 +281,9 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       livekitUrl: null,
       iceServers: [],
       connectedChannelId: null,
-      joining: false,
+      joiningByChannel: {},
+      connectionState: 'idle' as ConnectionState,
+      connectionError: null,
       callActiveByChannel: {},
       joinErrorByChannel: {},
       deafened: false,

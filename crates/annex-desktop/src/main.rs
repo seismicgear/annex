@@ -584,14 +584,24 @@ fn release_public_endpoint(state: tauri::State<'_, AppManagedState>) -> Result<(
     Ok(())
 }
 
-/// Get the current public endpoint URL, if a router session is active.
+/// Public endpoint info returned to the frontend.
+#[derive(Debug, Clone, Serialize)]
+struct PublicEndpointInfo {
+    public_url: String,
+    public_livekit_url: Option<String>,
+}
+
+/// Get the current public endpoint info, if a router session is active.
 #[tauri::command]
-fn get_public_endpoint(state: tauri::State<'_, AppManagedState>) -> Option<String> {
+fn get_public_endpoint(state: tauri::State<'_, AppManagedState>) -> Option<PublicEndpointInfo> {
     state
         .router_session
         .lock()
         .ok()
-        .and_then(|guard| guard.as_ref().map(|s| s.public_url.clone()))
+        .and_then(|guard| guard.as_ref().map(|s| PublicEndpointInfo {
+            public_url: s.public_url.clone(),
+            public_livekit_url: s.public_livekit_url.clone(),
+        }))
 }
 
 /// Open a save-file dialog and write the provided JSON to the selected path.
@@ -1525,7 +1535,15 @@ fn get_platform_media_status() -> PlatformMediaStatus {
              Grant permission in System Settings → Privacy & Security if prompted."
                 .into(),
         );
+        warnings.push(
+            "Screen sharing requires Screen Recording permission. \
+             Enable it in System Settings → Privacy & Security → Screen Recording if prompted."
+                .into(),
+        );
         PlatformMediaStatus {
+            // macOS Screen Recording permission cannot be verified from Rust —
+            // report as boolean true but the frontend knows to treat macOS
+            // screen sharing as potentially requiring a grant.
             screen_share_available: true,
             camera_mic_available: MediaReadiness::Unknown,
             warnings,

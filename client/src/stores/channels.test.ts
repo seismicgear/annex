@@ -20,9 +20,26 @@ vi.mock('@/lib/ws', () => ({
   })),
 }));
 
+const mockLeaveCall = vi.fn(async () => {});
+const mockForceReset = vi.fn();
+const mockClearChannelCallState = vi.fn();
+vi.mock('@/stores/voice', () => ({
+  useVoiceStore: {
+    getState: () => ({
+      connectedChannelId: 'ch1',
+      leaveCall: mockLeaveCall,
+      forceReset: mockForceReset,
+      clearChannelCallState: mockClearChannelCallState,
+    }),
+  },
+}));
+
 describe('channels store', () => {
   beforeEach(() => {
     vi.resetModules();
+    mockLeaveCall.mockClear();
+    mockForceReset.mockClear();
+    mockClearChannelCallState.mockClear();
   });
 
   it('resetServerState clears all per-server transient state', async () => {
@@ -34,6 +51,7 @@ describe('channels store', () => {
       activeChannelId: 'ch1',
       messages: [{ message_id: 'msg1', channel_id: 'ch1', sender_pseudonym: 'p1', content: 'hello', reply_to_message_id: null, created_at: '', edited_at: null, deleted_at: null }],
       error: 'some error',
+      composerError: 'send failed',
       loadingOlder: true,
       hasMoreMessages: false,
     });
@@ -46,6 +64,7 @@ describe('channels store', () => {
     expect(state.activeChannelId).toBeNull();
     expect(state.messages).toEqual([]);
     expect(state.error).toBeNull();
+    expect(state.composerError).toBeNull();
     expect(state.loadingOlder).toBe(false);
     expect(state.hasMoreMessages).toBe(true);
   });
@@ -65,5 +84,67 @@ describe('channels store', () => {
 
     expect(useChannelsStore.getState().channels).toEqual([]);
     expect(useChannelsStore.getState().error).toBe('network error');
+  });
+
+  it('clearComposerError clears only the composer error', async () => {
+    const { useChannelsStore } = await import('./channels');
+
+    useChannelsStore.setState({
+      error: 'channel list error',
+      composerError: 'send failed',
+    });
+
+    useChannelsStore.getState().clearComposerError();
+
+    expect(useChannelsStore.getState().composerError).toBeNull();
+    expect(useChannelsStore.getState().error).toBe('channel list error');
+  });
+
+  it('leaveChannel cleans up voice state when leaving a connected call channel', async () => {
+    const apiModule = await import('@/lib/api');
+    vi.mocked(apiModule.leaveChannel).mockResolvedValueOnce(undefined);
+
+    const { useChannelsStore } = await import('./channels');
+
+    useChannelsStore.setState({
+      activeChannelId: 'ch1',
+      messages: [{ message_id: 'msg1', channel_id: 'ch1', sender_pseudonym: 'p1', content: 'hello', reply_to_message_id: null, created_at: '', edited_at: null, deleted_at: null }],
+    });
+
+    await useChannelsStore.getState().leaveChannel('p1', 'ch1');
+
+    // Voice cleanup should have been called
+    expect(mockLeaveCall).toHaveBeenCalledWith('p1');
+    expect(mockForceReset).toHaveBeenCalled();
+    expect(mockClearChannelCallState).toHaveBeenCalledWith('ch1');
+
+    // Active channel should be cleared
+    expect(useChannelsStore.getState().activeChannelId).toBeNull();
+    expect(useChannelsStore.getState().messages).toEqual([]);
+  });
+
+  it('sendMessage sets composerError on throw', async () => {
+    const { useChannelsStore } = await import('./channels');
+
+    // Simulate being connected with a WS that throws on send
+    const mockWs = {
+      onStatus: vi.fn(),
+      onMessage: vi.fn(),
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+      subscribe: vi.fn(),
+      unsubscribe: vi.fn(),
+      send: vi.fn(() => { throw new Error('send failed'); }),
+      connected: true,
+    };
+    useChannelsStore.setState({
+      ws: mockWs as any,
+      activeChannelId: 'chan-1',
+      wsConnected: true,
+    });
+
+    useChannelsStore.getState().sendMessage('hello');
+
+    expect(useChannelsStore.getState().composerError).toBe('send failed');
   });
 });

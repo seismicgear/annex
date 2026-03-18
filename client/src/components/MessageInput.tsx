@@ -51,7 +51,7 @@ export function MessageInput() {
   const [preview, setPreview] = useState<FilePreview | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const { activeChannelId, wsConnected, sendMessage } = useChannelsStore();
+  const { activeChannelId, wsConnected, sendMessage, composerError, clearComposerError } = useChannelsStore();
   const identity = useIdentityStore((s) => s.identity);
 
   const handleSubmit = async (e: FormEvent) => {
@@ -89,11 +89,10 @@ export function MessageInput() {
     // Regular text message
     const trimmed = content.trim();
     if (!trimmed) return;
-    const { error: sendError } = useChannelsStore.getState();
     sendMessage(trimmed);
-    // Only clear the input if no error was set during send
-    const { error: postSendError } = useChannelsStore.getState();
-    if (!postSendError || postSendError === sendError) {
+    // Only clear the input if no composer error was set during send
+    const { composerError: postSendError } = useChannelsStore.getState();
+    if (!postSendError) {
       setContent('');
     }
   };
@@ -143,6 +142,18 @@ export function MessageInput() {
 
   return (
     <div className="message-input-wrapper">
+      {composerError && (
+        <div className="upload-error-bar composer-error" role="alert">
+          <span>{composerError}</span>
+          <button
+            onClick={clearComposerError}
+            className="composer-error-dismiss"
+            aria-label="Dismiss"
+          >
+            &times;
+          </button>
+        </div>
+      )}
       {uploadError && (
         <div className="upload-error-bar">{uploadError}</div>
       )}

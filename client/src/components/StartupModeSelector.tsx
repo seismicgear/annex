@@ -21,8 +21,9 @@ import {
   clearStartupMode,
   acquirePublicEndpoint,
   checkLiveKitReachable,
+  desktopCorsGuidance,
 } from '@/lib/tauri';
-import { setApiBaseUrl } from '@/lib/api';
+import { setApiBaseUrl, fetchWithTimeout } from '@/lib/api';
 import { clearWebStartupMode } from '@/lib/startup-prefs';
 import { useServersStore } from '@/stores/servers';
 import { useIdentityStore } from '@/stores/identity';
@@ -38,6 +39,8 @@ interface WebPrefs {
 export interface DegradedStartupInfo {
   voiceFailed: boolean;
   publicEndpointFailed: boolean;
+  /** True when the router was reached but does not proxy LiveKit. */
+  livekitRouteUnavailable: boolean;
   voiceError?: string;
   publicEndpointError?: string;
 }
@@ -85,7 +88,7 @@ export function StartupModeSelector({ onReady }: Props) {
     async (skipSave: boolean) => {
       if (!inTauri) return;
       setError('');
-      const degraded: DegradedStartupInfo = { voiceFailed: false, publicEndpointFailed: false };
+      const degraded: DegradedStartupInfo = { voiceFailed: false, publicEndpointFailed: false, livekitRouteUnavailable: false };
       try {
         // Auto-configure voice: start a local LiveKit server if not already configured.
         // If configured but unreachable, fall back to starting a local instance.
@@ -128,7 +131,7 @@ export function StartupModeSelector({ onReady }: Props) {
         if (!skipSave) {
           await saveStartupMode({ startup_mode: { mode: 'host' } });
         }
-        onReady(degraded.voiceFailed || degraded.publicEndpointFailed ? degraded : undefined);
+        onReady(degraded.voiceFailed || degraded.publicEndpointFailed || degraded.livekitRouteUnavailable ? degraded : undefined);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
         setPhase('error');
@@ -159,17 +162,16 @@ export function StartupModeSelector({ onReady }: Props) {
       setPhase('connecting');
 
       try {
-        const resp = await fetch(`${normalized}/api/public/server/summary`);
+        const resp = await fetchWithTimeout(`${normalized}/api/public/server/summary`, undefined, 15_000);
         if (!resp.ok) throw new Error(`Server responded with ${resp.status}`);
       } catch (err) {
-        // Distinguish CORS / network errors for better desktop diagnostics
+        // Distinguish CORS / network / timeout errors for better diagnostics
+        const isTimeout = err instanceof Error && /timed out/i.test(err.message);
         const isCorsLikely = err instanceof TypeError && /failed to fetch/i.test(err.message);
-        if (inTauri && isCorsLikely) {
-          setError(
-            'Could not reach server — this may be a CORS/origin configuration issue. ' +
-            'The remote server needs to allow Tauri desktop origins. ' +
-            'Ask the server admin to add tauri://localhost to their CORS allowed_origins.',
-          );
+        if (isTimeout) {
+          setError('Server did not respond in time. Check the URL and verify the server is running.');
+        } else if (inTauri && isCorsLikely) {
+          setError(desktopCorsGuidance());
         } else {
           setError('Could not reach server. Check the URL and try again.');
         }
@@ -360,8 +362,9 @@ export function StartupModeSelector({ onReady }: Props) {
             <p>
               Run your own Annex server on this device. A public URL is
               automatically configured so others can connect to you.
-              Voice/video calls work locally; remote voice requires a
-              separate LiveKit deployment.
+              Voice/video calls work locally. Remote voice is available
+              only when the router also proxies LiveKit traffic or a
+              separate LiveKit deployment is configured.
             </p>
             <button className="primary-btn" onClick={() => applyHost(false)}>
               Start Hosting

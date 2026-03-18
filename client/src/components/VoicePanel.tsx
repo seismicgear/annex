@@ -28,9 +28,10 @@ import {
   useTracks,
   VideoTrack,
   useLocalParticipant,
+  useConnectionState,
 } from '@livekit/components-react';
 import '@livekit/components-styles';
-import { Track, type LocalParticipant } from 'livekit-client';
+import { Track, ConnectionState as LKConnectionState, type LocalParticipant } from 'livekit-client';
 import { useIdentityStore } from '@/stores/identity';
 import { useChannelsStore } from '@/stores/channels';
 import { useVoiceStore } from '@/stores/voice';
@@ -117,14 +118,14 @@ function MediaControls({
   platformWarnings: string[];
 }) {
   const { localParticipant, isMicrophoneEnabled, isCameraEnabled, isScreenShareEnabled } = useLocalParticipant();
-  const { micMuted, setMicMuted, deafened, cameraDeviceId } = useVoiceStore();
+  const { micMuted, setMicMuted, deafened, cameraDeviceId, setCameraDevice } = useVoiceStore();
 
   const micEnabled = isMicrophoneEnabled;
   const camEnabled = isCameraEnabled;
   const screenEnabled = isScreenShareEnabled;
 
   // Platform capability checks — treat 'unknown' as available but with guidance
-  const canScreenShare = mediaStatus?.screen_share_available !== false;
+  const canScreenShare = mediaStatus?.screen_share_available !== false && mediaStatus?.screen_share_available !== 'blocked';
   const cameraMicStatus = mediaStatus?.camera_mic_available;
   const canCameraMic = cameraMicStatus !== false;
   const cameraMicUnknown = cameraMicStatus === 'unknown';
@@ -157,7 +158,10 @@ function MediaControls({
     if (!lp) return;
     const shouldBeEnabled = !micMuted;
     if (lp.isMicrophoneEnabled !== shouldBeEnabled) {
-      lp.setMicrophoneEnabled(shouldBeEnabled).catch(() => {});
+      lp.setMicrophoneEnabled(shouldBeEnabled).catch((err) => {
+        console.warn('[VoicePanel] mic sync failed:', err);
+        setMediaError(mediaErrorMessage(err, 'Microphone toggle'));
+      });
     }
   }, [micMuted, localParticipant]);
 
@@ -190,19 +194,14 @@ function MediaControls({
     }
     try {
       setMediaError(null);
-      if (!camEnabled && staleCameraPrompt) {
-        // User confirmed fallback after stale camera error — use default camera
-        setStaleCameraPrompt(false);
-        await localParticipant.setCameraEnabled(true);
-      } else if (!camEnabled && cameraDeviceId) {
+      if (!camEnabled && cameraDeviceId) {
         // Try to enable with the saved camera device
         try {
           await localParticipant.setCameraEnabled(true, { deviceId: cameraDeviceId });
+          setStaleCameraPrompt(false);
         } catch (deviceErr) {
-          // The selected camera may have been disconnected — surface an error
-          // and ask the user to confirm fallback to default.
+          // The selected camera may have been disconnected — show inline recovery UI
           if (deviceErr instanceof DOMException && (deviceErr.name === 'NotFoundError' || deviceErr.name === 'OverconstrainedError')) {
-            setMediaError(`Saved camera not found. Click the camera button again to use the default camera, or change your camera in Audio Settings.`);
             setStaleCameraPrompt(true);
             return;
           }
@@ -215,34 +214,78 @@ function MediaControls({
     } catch (err) {
       setMediaError(mediaErrorMessage(err, camEnabled ? 'Turn off camera' : 'Turn on camera'));
     }
-  }, [localParticipant, camEnabled, canCameraMic, cameraDeviceId, staleCameraPrompt]);
+  }, [localParticipant, camEnabled, canCameraMic, cameraDeviceId]);
+
+  // Recovery action: clear saved device and retry with default camera
+  const handleCameraFallback = useCallback(async () => {
+    setStaleCameraPrompt(false);
+    setCameraDevice(null);
+    try {
+      await localParticipant.setCameraEnabled(true);
+    } catch (err) {
+      setMediaError(mediaErrorMessage(err, 'Turn on camera'));
+    }
+  }, [localParticipant, setCameraDevice]);
+
+  // Clear stale camera state when camera starts, device changes, or call ends
+  useEffect(() => {
+    if (camEnabled) setStaleCameraPrompt(false);
+  }, [camEnabled]);
+
+  // Determine macOS-specific screen share readiness
+  const screenShareStatus = mediaStatus?.screen_share_available;
+  const isMacScreenShareUnknown = mediaStatus?.display_server === 'macos' && screenShareStatus !== false;
 
   const toggleScreen = useCallback(async () => {
     if (!canScreenShare && !screenEnabled) {
-      const hint = platformWarnings.length > 0
-        ? platformWarnings[0]
-        : 'Screen sharing is unavailable on this platform.';
-      setMediaError(hint);
+      // macOS: provide targeted Screen Recording guidance
+      if (mediaStatus?.display_server === 'macos') {
+        setMediaError(
+          'Screen sharing requires Screen Recording permission. ' +
+          'Enable it in System Settings → Privacy & Security → Screen Recording, then restart the app.',
+        );
+      } else {
+        const hint = platformWarnings.length > 0
+          ? platformWarnings[0]
+          : 'Screen sharing is unavailable on this platform.';
+        setMediaError(hint);
+      }
       return;
     }
     try {
       setMediaError(null);
       await localParticipant.setScreenShareEnabled(!screenEnabled);
     } catch (err) {
-      // Screen share cancelled by user is not an error
-      if (err instanceof DOMException && err.name === 'AbortError') return;
-      const hint = platformWarnings.length > 0
-        ? `Screen sharing failed. ${platformWarnings[0]}`
-        : mediaErrorMessage(err, screenEnabled ? 'Stop sharing' : 'Share screen');
-      setMediaError(hint);
+      // Distinguish user-cancel from real AbortError failures
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        // Check if this looks like a user cancellation vs a runtime failure.
+        // User cancels from the screen picker typically have a generic message.
+        const isLikelyUserCancel = !err.message || /user/i.test(err.message) || err.message === 'AbortError';
+        if (isLikelyUserCancel) return;
+        // Runtime AbortError — surface with platform guidance
+      }
+      // macOS: map failures to Screen Recording message
+      if (mediaStatus?.display_server === 'macos') {
+        setMediaError(
+          'Screen sharing failed — Screen Recording permission may be required. ' +
+          'Enable it in System Settings → Privacy & Security → Screen Recording, then restart the app.',
+        );
+      } else {
+        const hint = platformWarnings.length > 0
+          ? `Screen sharing failed. ${platformWarnings[0]}`
+          : mediaErrorMessage(err, screenEnabled ? 'Stop sharing' : 'Share screen');
+        setMediaError(hint);
+      }
     }
-  }, [localParticipant, screenEnabled, canScreenShare, platformWarnings]);
+  }, [localParticipant, screenEnabled, canScreenShare, platformWarnings, mediaStatus]);
 
   const screenShareTitle = !canScreenShare
     ? 'Screen sharing is unavailable on this platform'
-    : screenEnabled
-      ? 'Stop sharing'
-      : 'Share screen';
+    : isMacScreenShareUnknown && !screenEnabled
+      ? 'Share screen (Screen Recording permission may be required)'
+      : screenEnabled
+        ? 'Stop sharing'
+        : 'Share screen';
 
   const cameraMicTitle = !canCameraMic
     ? 'Camera/microphone unavailable on this platform'
@@ -267,9 +310,24 @@ function MediaControls({
           </button>
         </div>
       )}
+      {staleCameraPrompt && (
+        <div className="media-error stale-camera-recovery" role="alert">
+          <span>Saved camera not found or disconnected.</span>
+          <div className="stale-camera-actions">
+            <button onClick={handleCameraFallback} className="stale-camera-btn">
+              Use default camera
+            </button>
+          </div>
+        </div>
+      )}
       {cameraMicUnknown && (
         <div className="device-notice" role="status">
           Camera/microphone permission status unknown — you may need to grant access in your OS settings.
+        </div>
+      )}
+      {isMacScreenShareUnknown && !screenEnabled && (
+        <div className="device-notice" role="status">
+          Screen Recording permission may be required on macOS. Enable it in System Settings if sharing fails.
         </div>
       )}
       {deafened && (
@@ -673,7 +731,25 @@ function RoomContent({
   platformWarnings: string[];
 }) {
   const { localParticipant, isScreenShareEnabled } = useLocalParticipant();
+  const lkConnectionState = useConnectionState();
+  const { setConnectionState } = useVoiceStore();
   const [screenShareInterrupted, setScreenShareInterrupted] = useState(false);
+
+  // Sync LiveKit connection state to the voice store
+  useEffect(() => {
+    switch (lkConnectionState) {
+      case LKConnectionState.Connected:
+        setConnectionState('connected');
+        break;
+      case LKConnectionState.Connecting:
+      case LKConnectionState.Reconnecting:
+        setConnectionState('connecting');
+        break;
+      case LKConnectionState.Disconnected:
+        setConnectionState('idle');
+        break;
+    }
+  }, [lkConnectionState, setConnectionState]);
 
   // Layer 1: Tell the Rust backend to keep the webview alive during the call.
   // This prevents WebView2 from setting IsVisible=false on minimize, which
@@ -763,11 +839,11 @@ export function VoicePanel() {
     livekitUrl,
     iceServers,
     connectedChannelId,
-    joining,
     joinCall,
     leaveCall,
     checkCallActive,
     isCallActive,
+    isJoining,
     getJoinError,
     clearChannelCallState,
   } = useVoiceStore();
@@ -830,7 +906,8 @@ export function VoicePanel() {
     }
   }, [activeChannelId, clearChannelCallState]);
 
-  // Derive per-channel call-active status and join error.
+  // Derive per-channel join-in-progress, call-active status, and join error.
+  const joining = activeChannelId ? isJoining(activeChannelId) : false;
   const callActive = activeChannelId ? isCallActive(activeChannelId) : false;
   const lastJoinErrorDetails = activeChannelId ? getJoinError(activeChannelId) : null;
   const lastJoinError = lastJoinErrorDetails?.display ?? null;
@@ -913,6 +990,9 @@ export function VoicePanel() {
     };
   }, [iceServers]);
 
+  const connectionState = useVoiceStore((s) => s.connectionState);
+  const connectionError = useVoiceStore((s) => s.connectionError);
+
   // If connected to a call, always show the LiveKitRoom (even on non-voice channels).
   // But NOT if the token is stale from a server switch.
   if (voiceToken && livekitUrl && connectedChannelId && !isTokenStale) {
@@ -920,11 +1000,20 @@ export function VoicePanel() {
     const connectedChannel = channels.find((c) => c.channel_id === connectedChannelId);
     const channelLabel = connectedChannel?.name ?? connectedChannelId.slice(0, 12);
 
+    const headerText = connectionState === 'connecting'
+      ? 'Joining...'
+      : 'Voice Connected';
+
     return (
       <div className="voice-panel connected">
         <div className="voice-connected-header">
-          Voice Connected — <strong>{channelLabel}</strong>
+          {headerText} — <strong>{channelLabel}</strong>
         </div>
+        {connectionError && (
+          <div className="voice-error" role="alert">
+            <p>{connectionError}</p>
+          </div>
+        )}
         <LiveKitRoom
           serverUrl={livekitUrl}
           token={voiceToken}

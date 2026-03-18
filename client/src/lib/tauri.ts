@@ -8,6 +8,41 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
+// ── Desktop origin constants ──
+
+/**
+ * All Tauri origins that a remote Annex server must allow in its CORS
+ * `allowed_origins` list for the desktop app to connect.
+ *
+ * Keep in sync with `crates/annex-desktop/src/main.rs` and
+ * `crates/annex-desktop/tauri.conf.json`.
+ */
+export const TAURI_DESKTOP_ORIGINS = [
+  'tauri://localhost',
+  'https://tauri.localhost',
+  'http://tauri.localhost',
+] as const;
+
+/**
+ * Human-readable CORS guidance for desktop users connecting to a remote server.
+ * Used by StartupModeSelector and other error paths.
+ */
+export function desktopCorsGuidance(): string {
+  const origins = TAURI_DESKTOP_ORIGINS.join(', ');
+  return (
+    'Could not reach server — this may be a CORS/origin configuration issue. ' +
+    'The remote server needs to allow Tauri desktop origins in its CORS allowed_origins. ' +
+    `Ask the server admin to add all desktop origins: ${origins}`
+  );
+}
+
+// ── Public endpoint response ──
+
+export interface PublicEndpointInfo {
+  public_url: string;
+  public_livekit_url: string | null;
+}
+
 export interface StartupPrefsHost {
   startup_mode: { mode: 'host' };
 }
@@ -59,9 +94,9 @@ export async function acquirePublicEndpoint(): Promise<string> {
   return invoke<string>('acquire_public_endpoint');
 }
 
-/** Get the current public endpoint URL, if a router session is active. */
-export async function getPublicEndpoint(): Promise<string | null> {
-  return invoke<string | null>('get_public_endpoint');
+/** Get the current public endpoint info, if a router session is active. */
+export async function getPublicEndpoint(): Promise<PublicEndpointInfo | null> {
+  return invoke<PublicEndpointInfo | null>('get_public_endpoint');
 }
 
 /** Open a native save dialog and export identity JSON to disk. */
@@ -92,7 +127,8 @@ export async function startLocalLiveKit(): Promise<{ url: string }> {
 // ── Platform media status ──
 
 export interface PlatformMediaStatus {
-  screen_share_available: boolean;
+  /** Screen sharing readiness: boolean or tri-state string. */
+  screen_share_available: boolean | 'available' | 'unknown' | 'blocked';
   /** Tri-state: `true`/`"available"` = verified, `"unknown"` = may need grant, `false`/`"blocked"` = unavailable. */
   camera_mic_available: boolean | 'available' | 'unknown' | 'blocked';
   warnings: string[];

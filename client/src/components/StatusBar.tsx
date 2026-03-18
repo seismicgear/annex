@@ -8,7 +8,7 @@
  * social recovery setup, identity export, audio settings, and logout.
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useIdentityStore } from '@/stores/identity';
 import { useChannelsStore } from '@/stores/channels';
 import { useVoiceStore } from '@/stores/voice';
