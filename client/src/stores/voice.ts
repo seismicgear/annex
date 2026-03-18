@@ -54,12 +54,10 @@ export interface VoiceState {
   connectedChannelId: string | null;
   /** Whether a join is in progress. */
   joining: boolean;
-  /** Whether a call is active on the current channel (for Join vs Create). */
-  callActive: boolean;
-  /** Most recent join failure shown in the UI. */
-  lastJoinError: string | null;
-  /** Structured join error with code and setup hint. */
-  lastJoinErrorDetails: JoinError | null;
+  /** Per-channel call-active status (keyed by channelId). */
+  callActiveByChannel: Record<string, boolean>;
+  /** Per-channel join error (keyed by channelId). */
+  joinErrorByChannel: Record<string, JoinError | null>;
   /** Whether the user has self-deafened (output muted). */
   deafened: boolean;
   /** Whether the local microphone is muted (shared source of truth). */
@@ -91,6 +89,12 @@ export interface VoiceState {
   setCameraDevice: (deviceId: string | null) => void;
   /** Check if a call is active on a channel (for polling). */
   checkCallActive: (pseudonymId: string, channelId: string) => Promise<void>;
+  /** Get call-active status for a specific channel. */
+  isCallActive: (channelId: string) => boolean;
+  /** Get join error for a specific channel. */
+  getJoinError: (channelId: string) => JoinError | null;
+  /** Clear cached call status for a channel (used on channel switch). */
+  clearChannelCallState: (channelId: string) => void;
   /** Force-clear all voice session state (used by server switching). */
   forceReset: () => void;
 }
@@ -120,9 +124,8 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   iceServers: [],
   connectedChannelId: null,
   joining: false,
-  callActive: false,
-  lastJoinError: null,
-  lastJoinErrorDetails: null,
+  callActiveByChannel: {},
+  joinErrorByChannel: {},
   deafened: false,
   micMuted: false,
 
@@ -133,21 +136,26 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   cameraDeviceId: (saved.cameraDeviceId as string) ?? null,
 
   joinCall: async (pseudonymId, channelId) => {
-    set({ joining: true, lastJoinError: null, lastJoinErrorDetails: null });
+    set((s) => ({
+      joining: true,
+      joinErrorByChannel: { ...s.joinErrorByChannel, [channelId]: null },
+    }));
     try {
       const { token, url, ice_servers } = await api.joinVoice(pseudonymId, channelId);
-      set({
+      set((s) => ({
         voiceToken: token,
         livekitUrl: url,
         iceServers: ice_servers ?? [],
         connectedChannelId: channelId,
         joining: false,
-        lastJoinError: null,
-        lastJoinErrorDetails: null,
-      });
+        joinErrorByChannel: { ...s.joinErrorByChannel, [channelId]: null },
+      }));
     } catch (error) {
       const details = getJoinErrorMessage(error);
-      set({ joining: false, lastJoinError: details.display, lastJoinErrorDetails: details });
+      set((s) => ({
+        joining: false,
+        joinErrorByChannel: { ...s.joinErrorByChannel, [channelId]: details },
+      }));
     }
   },
 
@@ -158,15 +166,17 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
         await api.leaveVoice(pseudonymId, connectedChannelId);
       } catch { /* best effort */ }
     }
-    set({
+    set((s) => ({
       voiceToken: null,
       livekitUrl: null,
       iceServers: [],
       connectedChannelId: null,
-      lastJoinError: null,
-      lastJoinErrorDetails: null,
       deafened: false,
-    });
+      // Clear call-active status for the channel we just left
+      callActiveByChannel: connectedChannelId
+        ? { ...s.callActiveByChannel, [connectedChannelId]: false }
+        : s.callActiveByChannel,
+    }));
   },
 
   toggleDeafen: () => set((s) => ({ deafened: !s.deafened })),
@@ -196,10 +206,27 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   checkCallActive: async (pseudonymId, channelId) => {
     try {
       const status = await api.getVoiceStatus(pseudonymId, channelId);
-      set({ callActive: status.active });
+      set((s) => ({
+        callActiveByChannel: { ...s.callActiveByChannel, [channelId]: status.active },
+      }));
     } catch {
-      set({ callActive: false });
+      set((s) => ({
+        callActiveByChannel: { ...s.callActiveByChannel, [channelId]: false },
+      }));
     }
+  },
+  isCallActive: (channelId) => {
+    return get().callActiveByChannel[channelId] ?? false;
+  },
+  getJoinError: (channelId) => {
+    return get().joinErrorByChannel[channelId] ?? null;
+  },
+  clearChannelCallState: (channelId) => {
+    set((s) => {
+      const { [channelId]: _active, ...restActive } = s.callActiveByChannel;
+      const { [channelId]: _error, ...restErrors } = s.joinErrorByChannel;
+      return { callActiveByChannel: restActive, joinErrorByChannel: restErrors };
+    });
   },
   forceReset: () => {
     set({
@@ -208,9 +235,8 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       iceServers: [],
       connectedChannelId: null,
       joining: false,
-      callActive: false,
-      lastJoinError: null,
-      lastJoinErrorDetails: null,
+      callActiveByChannel: {},
+      joinErrorByChannel: {},
       deafened: false,
       micMuted: false,
     });

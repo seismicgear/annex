@@ -24,6 +24,8 @@ import {
 } from '@/lib/tauri';
 import { setApiBaseUrl } from '@/lib/api';
 import { clearWebStartupMode } from '@/lib/startup-prefs';
+import { useServersStore } from '@/stores/servers';
+import { useIdentityStore } from '@/stores/identity';
 
 const STORAGE_KEY = 'annex:startup-mode';
 
@@ -184,6 +186,14 @@ export function StartupModeSelector({ onReady }: Props) {
           saveWebPrefs({ mode: 'remote', server_url: normalized });
         }
       }
+
+      // Resolve server-to-identity: if we have a saved server for this URL
+      // with a registered identity, select that identity before proceeding.
+      const existing = useServersStore.getState().findServerByBaseUrl(normalized);
+      if (existing?.identityId) {
+        await useIdentityStore.getState().selectIdentity(existing.identityId);
+      }
+
       onReady();
     },
     [onReady, inTauri],
@@ -348,6 +358,8 @@ export function StartupModeSelector({ onReady }: Props) {
             <p>
               Run your own Annex server on this device. A public URL is
               automatically configured so others can connect to you.
+              Voice/video calls work locally; remote voice requires a
+              separate LiveKit deployment.
             </p>
             <button className="primary-btn" onClick={() => applyHost(false)}>
               Start Hosting

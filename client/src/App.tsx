@@ -92,7 +92,8 @@ export default function App() {
   const [pendingInviteCode, setPendingInviteCode] = useState<string | null>(null);
   const [pendingServerSlug, setPendingServerSlug] = useState<string | null>(null);
   const inviteProcessed = useRef(false);
-  const serverSaved = useRef(false);
+  /** Track which identity+server pairs have already been saved to avoid duplicates. */
+  const savedServerKeys = useRef(new Set<string>());
   const prevPhaseRef = useRef(phase);
   const canModerate = permissions?.capabilities.can_moderate === true;
 
@@ -216,9 +217,9 @@ export default function App() {
         }
         if (cancelled) return;
 
-        // 2. Add remote server and switch API target
-        const { addRemoteServer } = useServersStore.getState();
-        const server = await addRemoteServer(pendingProtocolInvite.server);
+        // 2. Add remote server, clone identity, and switch API target
+        const { beginRemoteRegistration } = useServersStore.getState();
+        const server = await beginRemoteRegistration(pendingProtocolInvite.server);
         if (!server) {
           if (cancelled) return;
           useIdentityStore.setState({
@@ -228,7 +229,6 @@ export default function App() {
           setPendingProtocolInvite(null);
           return;
         }
-        setApiBaseUrl(pendingProtocolInvite.server);
 
         // 3. Persist startup preference so returning users auto-connect
         if (inTauri) {
@@ -237,18 +237,8 @@ export default function App() {
           }).catch(() => {});
         }
 
-        // 4. Reset identity phase so auto-register effect fires
-        if (phase === 'ready') {
-          useIdentityStore.setState({
-            phase: 'keys_ready',
-            proofInFlight: false,
-            provingStatus: 'idle',
-            error: null,
-            errorDetails: null,
-          });
-        }
-
-        // 5. Store invite code + slug for registration, mark server ready
+        // 4. Store invite code + slug for registration, mark server ready
+        // (beginRemoteRegistration already reset phase to keys_ready)
         setPendingInviteCode(pendingProtocolInvite.code);
         setPendingServerSlug(redeemResult.serverSlug);
         setServerReady(true);
@@ -348,7 +338,7 @@ export default function App() {
       }
       clearWebStartupMode();
       setServerReady(false);
-      serverSaved.current = false;
+      savedServerKeys.current.clear();
     }
   }, [phase, serverReady]);
 
@@ -434,34 +424,52 @@ export default function App() {
     return () => { cancelled = true; };
   }, [inTauri, phase, identity?.pseudonymId]);
 
-  // Auto-save current server to the node hub on first identity ready.
-  // Passes the active API base URL so remote servers are persisted with
-  // their actual endpoint rather than ''.
+  // Auto-save current server to the node hub on every successful registration.
+  // Keyed by identity+baseUrl so it runs for 2nd, 3rd servers (not just first).
+  // Also fulfills the placeholder entry if beginRemoteRegistration was used.
   useEffect(() => {
-    if (phase === 'ready' && identity?.pseudonymId && identity.id && !serverSaved.current) {
-      serverSaved.current = true;
-      const activeBaseUrl = getApiBaseUrl();
-      saveCurrentServer(identity.id, identity.serverSlug, identity.serverSlug, activeBaseUrl)
-        .then(() => {
-          // Mark first-run as completed so subsequent launches skip cleanup
-          if (inTauri) markFirstRunCompleted().catch(() => {});
-          return getPersonasForIdentity(identity.id).then((personas) => {
-            if (personas.length > 0) {
-              const server = useServersStore.getState().getActiveServer();
-              if (server && !server.personaId) {
-                useServersStore.getState().setServerPersona(
-                  server.id,
-                  personas[0].id,
-                  personas[0].accentColor,
-                );
-              }
-            }
-          });
-        })
-        .catch(() => {
-          // Non-fatal: server hub entry may not be saved on first load
-        });
-    }
+    if (phase !== 'ready' || !identity?.pseudonymId || !identity.id) return;
+
+    const activeBaseUrl = getApiBaseUrl();
+    const saveKey = `${identity.id}:${activeBaseUrl}`;
+    if (savedServerKeys.current.has(saveKey)) return;
+    savedServerKeys.current.add(saveKey);
+
+    const pendingServerId = useServersStore.getState().pendingRegistrationServerId;
+
+    (async () => {
+      try {
+        // If a placeholder was being tracked, fulfill it directly
+        if (pendingServerId) {
+          await useServersStore.getState().fulfillPlaceholder(
+            pendingServerId,
+            identity.id,
+            identity.serverSlug,
+          );
+        } else {
+          await saveCurrentServer(identity.id, identity.serverSlug, identity.serverSlug, activeBaseUrl);
+        }
+
+        // Mark first-run as completed so subsequent launches skip cleanup
+        if (inTauri) markFirstRunCompleted().catch(() => {});
+
+        const personas = await getPersonasForIdentity(identity.id);
+        if (personas.length > 0) {
+          const server = useServersStore.getState().getActiveServer();
+          if (server && !server.personaId) {
+            useServersStore.getState().setServerPersona(
+              server.id,
+              personas[0].id,
+              personas[0].accentColor,
+            );
+          }
+        }
+      } catch {
+        // Non-fatal: server hub entry may not be saved
+        // Remove key so it can be retried
+        savedServerKeys.current.delete(saveKey);
+      }
+    })();
   }, [phase, identity?.pseudonymId, identity?.id, identity?.serverSlug, saveCurrentServer, inTauri]);
 
   // Apply persona isolation — dynamic CSS custom properties per server context

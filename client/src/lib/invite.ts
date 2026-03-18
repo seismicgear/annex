@@ -83,31 +83,20 @@ export function parseProtocolInvite(rawUrl: string): InvitePayload | null {
 /**
  * Create a new invite by calling the server API.
  *
+ * Uses the shared auth plumbing from api.ts so the Bearer token and any
+ * required proof headers are sent consistently (required for secure desktop
+ * builds where X-Annex-Pseudonym alone is insufficient).
+ *
  * Returns the full monolithannex.com shareable URL.
  */
 export async function createInviteLink(
-  apiBaseUrl: string,
+  _apiBaseUrl: string,
   pseudonymId: string,
   options?: { maxUses?: number; expiresInHours?: number },
 ): Promise<{ code: string; url: string; expiresAt?: string }> {
-  const response = await fetch(`${apiBaseUrl}/api/invites`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Annex-Pseudonym': pseudonymId,
-    },
-    body: JSON.stringify({
-      maxUses: options?.maxUses,
-      expiresInHours: options?.expiresInHours,
-    }),
-  });
-
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    throw new Error(body.error || `Failed to create invite: ${response.status}`);
-  }
-
-  return response.json();
+  // Dynamically import to avoid circular dependency at module level
+  const api = await import('@/lib/api');
+  return api.createInvite(pseudonymId, options);
 }
 
 /** Clear the invite state from the URL without a page reload. */

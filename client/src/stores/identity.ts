@@ -69,6 +69,8 @@ interface IdentityState {
   exportCurrent: () => string | null;
   /** Import an identity from backup JSON. */
   importBackup: (json: string) => Promise<void>;
+  /** Clone the current identity for use on a different server. */
+  cloneForServer: () => Promise<string | null>;
   /** Clear the current identity selection (logout). */
   logout: () => void;
 }
@@ -211,6 +213,8 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
       identity.pseudonymId = verification.pseudonymId;
       identity.sessionToken = verification.sessionToken;
       api.setSessionToken(verification.sessionToken);
+      // Cache the ZK proof so protected endpoints can include it
+      api.setZkProofPayload(JSON.stringify({ proof, publicSignals }));
       await db.saveIdentity(identity);
 
       const identities = await db.listIdentities();
@@ -276,6 +280,16 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
       api.setSessionToken(null);
       set({ storedIdentities: identities });
     }
+  },
+
+  cloneForServer: async () => {
+    const { identity } = get();
+    if (!identity) return null;
+    const cloned = await db.cloneIdentityForServer(identity.id);
+    if (!cloned) return null;
+    const identities = await db.listIdentities();
+    set({ storedIdentities: identities });
+    return cloned.id;
   },
 
   logout: () => {

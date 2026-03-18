@@ -375,7 +375,8 @@ function MessageBubble({
 
 export function MessageView() {
   const identity = useIdentityStore((s) => s.identity);
-  const { messages, activeChannelId, loadOlderMessages, loadingOlder, hasMoreMessages } = useChannelsStore();
+  const { messages, activeChannelId, loadOlderMessages, loadingOlder, hasMoreMessages, historyLoading, historyError } = useChannelsStore();
+  const selectChannel = useChannelsStore((s) => s.selectChannel);
   const loadVisibleUsernames = useUsernameStore((s) => s.loadVisibleUsernames);
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -440,6 +441,40 @@ export function MessageView() {
     return (
       <div className="message-view empty">
         <p>Select a channel to start chatting</p>
+      </div>
+    );
+  }
+
+  if (historyLoading) {
+    return (
+      <div className="message-view empty">
+        <p>Loading channel history...</p>
+      </div>
+    );
+  }
+
+  if (historyError) {
+    return (
+      <div className="message-view empty">
+        <p className="error-message">{historyError}</p>
+        <button
+          className="primary-btn"
+          onClick={() => {
+            if (identity?.pseudonymId && activeChannelId) {
+              selectChannel(identity.pseudonymId, activeChannelId);
+            }
+          }}
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  if (messages.length === 0 && !loadingOlder) {
+    return (
+      <div className="message-view empty">
+        <p>No messages yet — be the first to say something!</p>
       </div>
     );
   }

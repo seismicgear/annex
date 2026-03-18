@@ -764,12 +764,12 @@ export function VoicePanel() {
     iceServers,
     connectedChannelId,
     joining,
-    callActive,
-    lastJoinError,
-    lastJoinErrorDetails,
     joinCall,
     leaveCall,
     checkCallActive,
+    isCallActive,
+    getJoinError,
+    clearChannelCallState,
   } = useVoiceStore();
 
   // Track the server ID that was active when the call was joined.
@@ -818,6 +818,22 @@ export function VoicePanel() {
     activeChannel?.channel_type === 'Voice' || activeChannel?.channel_type === 'Hybrid';
   const isVoiceAllowed = permissions?.capabilities.can_voice ?? true;
   const canJoinVoice = isVoiceAllowed;
+
+  // Clear stale call state when switching away from a channel so the next
+  // channel does not inherit the previous channel's status or errors.
+  const prevChannelRef = useRef<string | null>(null);
+  useEffect(() => {
+    const prev = prevChannelRef.current;
+    prevChannelRef.current = activeChannelId;
+    if (prev && prev !== activeChannelId) {
+      clearChannelCallState(prev);
+    }
+  }, [activeChannelId, clearChannelCallState]);
+
+  // Derive per-channel call-active status and join error.
+  const callActive = activeChannelId ? isCallActive(activeChannelId) : false;
+  const lastJoinErrorDetails = activeChannelId ? getJoinError(activeChannelId) : null;
+  const lastJoinError = lastJoinErrorDetails?.display ?? null;
 
   // Poll voice status to determine if a call is active (Create vs Join).
   useEffect(() => {

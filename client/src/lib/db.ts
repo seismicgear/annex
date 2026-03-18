@@ -65,6 +65,30 @@ export async function updateIdentityPseudonym(
   }
 }
 
+/**
+ * Clone an existing identity for registration on a different server.
+ * Copies the key material (sk, roleCode, nodeId, commitmentHex) into a
+ * new record with a fresh UUID and cleared server-specific fields.
+ */
+export async function cloneIdentityForServer(sourceId: string): Promise<StoredIdentity | undefined> {
+  const source = await getIdentity(sourceId);
+  if (!source) return undefined;
+  const cloned: StoredIdentity = {
+    id: crypto.randomUUID(),
+    sk: source.sk,
+    roleCode: source.roleCode,
+    nodeId: source.nodeId,
+    commitmentHex: source.commitmentHex,
+    pseudonymId: null,
+    sessionToken: null,
+    serverSlug: '',
+    leafIndex: null,
+    createdAt: new Date().toISOString(),
+  };
+  await saveIdentity(cloned);
+  return cloned;
+}
+
 /** Export an identity for backup (JSON string). */
 export function exportIdentity(identity: StoredIdentity): string {
   return JSON.stringify(identity, null, 2);
