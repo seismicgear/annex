@@ -211,4 +211,67 @@ describe('identity store — API auth state sync', () => {
 
     expect(mockSetSessionToken).toHaveBeenCalledWith(null);
   });
+
+  it('loadIdentities selects the most recently used ready identity', async () => {
+    vi.resetModules();
+    mockSetSessionToken.mockClear();
+
+    mockListIdentities.mockResolvedValueOnce([
+      { id: '1', sk: 'a', pseudonymId: 'p1', sessionToken: 'tok1', commitmentHex: 'c1', roleCode: 0, nodeId: 'n1', serverSlug: 's1', leafIndex: 0, createdAt: '2024-01-01', lastUsedAt: '2024-01-01' },
+      { id: '2', sk: 'b', pseudonymId: 'p2', sessionToken: 'tok2', commitmentHex: 'c2', roleCode: 0, nodeId: 'n2', serverSlug: 's2', leafIndex: 0, createdAt: '2024-01-02', lastUsedAt: '2024-06-01' },
+    ]);
+
+    const { useIdentityStore } = await import('./identity');
+    await useIdentityStore.getState().loadIdentities();
+
+    // Should select the identity with the most recent lastUsedAt
+    expect(useIdentityStore.getState().identity?.id).toBe('2');
+    expect(mockSetSessionToken).toHaveBeenCalledWith('tok2');
+  });
+
+  it('selectIdentity clears permissions from previous identity', async () => {
+    vi.resetModules();
+    mockSetSessionToken.mockClear();
+
+    const identity = { id: '1', sk: 'abc', pseudonymId: 'p1', sessionToken: 'tok1', commitmentHex: 'c1', roleCode: 0, nodeId: 'n1', serverSlug: 's1', leafIndex: 0, createdAt: '' };
+    mockGetIdentity.mockResolvedValueOnce(identity);
+
+    const { useIdentityStore } = await import('./identity');
+
+    // Pre-set permissions from a previous server
+    useIdentityStore.setState({
+      permissions: { pseudonymId: 'old-p', participantType: 'HUMAN', active: true, capabilities: { can_voice: true, can_moderate: true, can_invite: true, can_federate: false, can_bridge: false } } as any,
+      permissionsStatus: 'ready',
+      permissionsPseudonymId: 'old-p',
+    });
+
+    await useIdentityStore.getState().selectIdentity('1');
+
+    expect(useIdentityStore.getState().permissions).toBeNull();
+    expect(useIdentityStore.getState().permissionsStatus).toBe('idle');
+    expect(useIdentityStore.getState().permissionsPseudonymId).toBeNull();
+  });
+
+  it('loadPermissions clears stale permissions when pseudonym changed and request fails', async () => {
+    vi.resetModules();
+
+    const apiModule = await import('@/lib/api');
+    vi.mocked(apiModule.getIdentityInfo).mockRejectedValueOnce(new Error('network error'));
+
+    const { useIdentityStore } = await import('./identity');
+
+    // Simulate: permissions from server A (pseudonym 'p-old'), now on server B (pseudonym 'p-new')
+    useIdentityStore.setState({
+      identity: { id: '1', sk: 'abc', pseudonymId: 'p-new', sessionToken: 'tok', commitmentHex: 'c1', roleCode: 0, nodeId: 'n1', serverSlug: 's2', leafIndex: 0, createdAt: '' } as any,
+      permissions: { pseudonymId: 'p-old', capabilities: { can_voice: true, can_moderate: true } } as any,
+      permissionsStatus: 'ready',
+      permissionsPseudonymId: 'p-old',
+    });
+
+    await useIdentityStore.getState().loadPermissions();
+
+    // Permissions should be cleared because the pseudonym changed
+    expect(useIdentityStore.getState().permissions).toBeNull();
+    expect(useIdentityStore.getState().permissionsStatus).toBe('error');
+  });
 });

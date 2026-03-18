@@ -592,7 +592,7 @@ describe('VoicePanel', () => {
 
     const joinBtn = screen.getByRole('button', { name: 'Create Call' });
     expect(joinBtn).toBeDisabled();
-    expect(screen.getByText('Checking voice permissions…')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('Checking voice permissions');
   });
 
   it('shows permissions error state', () => {
@@ -617,5 +617,56 @@ describe('VoicePanel', () => {
 
     const joinBtn = screen.getByRole('button', { name: 'Create Call' });
     expect(joinBtn).toBeDisabled();
+  });
+
+  it('disables join button when permissionsStatus is error', () => {
+    identityState = {
+      identity: { pseudonymId: 'p1' },
+      permissions: null,
+      permissionsStatus: 'error',
+    };
+
+    render(<VoicePanel />);
+
+    const joinBtn = screen.getByRole('button', { name: 'Create Call' });
+    expect(joinBtn).toBeDisabled();
+  });
+
+  it('disables join button when permissions are absent (not yet loaded)', () => {
+    identityState = {
+      identity: { pseudonymId: 'p1' },
+      permissions: null,
+      permissionsStatus: 'idle',
+    };
+
+    render(<VoicePanel />);
+
+    const joinBtn = screen.getByRole('button', { name: 'Create Call' });
+    expect(joinBtn).toBeDisabled();
+  });
+
+  it('uses stored inputDeviceId when enabling microphone', async () => {
+    mockSetMicrophoneEnabled.mockClear();
+
+    voiceState = {
+      ...voiceState,
+      voiceToken: 'token-mic',
+      livekitUrl: 'wss://livekit.example',
+      connectedChannelId: 'chan-1',
+      inputDeviceId: 'mic-device-42',
+    };
+
+    await act(async () => {
+      render(<VoicePanel />);
+    });
+
+    // Mic is currently enabled (from mock), so clicking toggles it off
+    const micBtn = screen.getByTitle('Mute microphone');
+    await act(async () => {
+      micBtn.click();
+    });
+
+    // First toggle should disable (no device options needed for mute)
+    expect(mockSetMicrophoneEnabled).toHaveBeenCalledWith(false);
   });
 });

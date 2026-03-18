@@ -50,6 +50,8 @@ interface IdentityState {
   permissions: IdentityInfo | null;
   /** Fetch state for server-side permissions. */
   permissionsStatus: PermissionsStatus;
+  /** The pseudonymId for which current permissions were fetched (cache key). */
+  permissionsPseudonymId: string | null;
   /** True while snarkjs fullProve is still running. */
   proofInFlight: boolean;
   /** Detailed proving stage surfaced from the proof worker. */
@@ -83,13 +85,20 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
   storedIdentities: [],
   permissions: null,
   permissionsStatus: 'idle',
+  permissionsPseudonymId: null,
   proofInFlight: false,
   provingStatus: 'idle',
 
   loadIdentities: async () => {
     const identities = await db.listIdentities();
-    // Prefer a fully registered identity (has pseudonymId).
-    const ready = identities.find((i) => i.pseudonymId !== null);
+    // Sort by lastUsedAt descending (most recent first), falling back to createdAt.
+    const sorted = [...identities].sort((a, b) => {
+      const aTime = a.lastUsedAt ?? a.createdAt;
+      const bTime = b.lastUsedAt ?? b.createdAt;
+      return bTime.localeCompare(aTime);
+    });
+    // Prefer a fully registered identity (has pseudonymId), most recently used first.
+    const ready = sorted.find((i) => i.pseudonymId !== null);
     if (ready) {
       // Set whatever token we have (even expired), or clear if absent.
       // The App.tsx effect will call /api/session/refresh if it's expired.
@@ -98,7 +107,7 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
       return;
     }
     // Otherwise select one that has keys but isn't registered yet.
-    const withKeys = identities.find((i) => !!i.sk);
+    const withKeys = sorted.find((i) => !!i.sk);
     if (withKeys) {
       api.setSessionToken(null);
       set({ storedIdentities: identities, identity: withKeys, phase: 'keys_ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
@@ -109,16 +118,21 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
   },
 
   loadPermissions: async () => {
-    const { identity } = get();
+    const { identity, permissionsPseudonymId } = get();
     if (!identity?.pseudonymId) return;
     set({ permissionsStatus: 'loading' });
     try {
       const info = await api.getIdentityInfo(identity.pseudonymId);
-      set({ permissions: info, permissionsStatus: 'ready' });
+      set({ permissions: info, permissionsStatus: 'ready', permissionsPseudonymId: identity.pseudonymId });
     } catch {
-      // Non-fatal: keep any last-known permissions in memory so transient
-      // failures do not immediately strip capabilities from the UI.
-      set({ permissionsStatus: 'error' });
+      // If the pseudonym changed since the last successful fetch, clear
+      // stale permissions so capabilities from the previous server don't
+      // bleed into the current context.
+      if (permissionsPseudonymId !== identity.pseudonymId) {
+        set({ permissions: null, permissionsStatus: 'error', permissionsPseudonymId: null });
+      } else {
+        set({ permissionsStatus: 'error' });
+      }
     }
   },
 
@@ -212,6 +226,7 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
 
       identity.pseudonymId = verification.pseudonymId;
       identity.sessionToken = verification.sessionToken;
+      identity.lastUsedAt = new Date().toISOString();
       api.setSessionToken(verification.sessionToken);
       // Cache the ZK proof so protected endpoints can include it
       api.setZkProofPayload(JSON.stringify({ proof, publicSignals }));
@@ -253,13 +268,18 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
   selectIdentity: async (id: string) => {
     const identity = await db.getIdentity(id);
     if (!identity) return;
+    // Clear permissions from the previous identity/server so stale
+    // capability flags are never reused across contexts.
     if (identity.pseudonymId) {
       api.setSessionToken(identity.sessionToken ?? null);
-      set({ identity, phase: 'ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
+      set({ identity, phase: 'ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle', permissions: null, permissionsStatus: 'idle', permissionsPseudonymId: null });
     } else if (identity.sk) {
       api.setSessionToken(null);
-      set({ identity, phase: 'keys_ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
+      set({ identity, phase: 'keys_ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle', permissions: null, permissionsStatus: 'idle', permissionsPseudonymId: null });
     }
+    // Update lastUsedAt
+    identity.lastUsedAt = new Date().toISOString();
+    await db.saveIdentity(identity);
   },
 
   exportCurrent: () => {
@@ -306,6 +326,6 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
     voiceStore.forceReset();
 
     api.setSessionToken(null);
-    set({ identity: null, phase: 'uninitialized', error: null, errorDetails: null, permissions: null, permissionsStatus: 'idle', proofInFlight: false, provingStatus: 'idle' });
+    set({ identity: null, phase: 'uninitialized', error: null, errorDetails: null, permissions: null, permissionsStatus: 'idle', permissionsPseudonymId: null, proofInFlight: false, provingStatus: 'idle' });
   },
 }));

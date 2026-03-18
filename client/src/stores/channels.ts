@@ -11,6 +11,16 @@ import { useVoiceStore } from '@/stores/voice';
 /** Number of messages per pagination page. */
 const PAGE_SIZE = 50;
 
+/** A message that has been sent to the server but not yet acknowledged. */
+export interface PendingSend {
+  /** Client-generated request ID sent in the WS frame. */
+  clientRequestId: string;
+  /** The message content (for restoring the composer on failure). */
+  content: string;
+  /** Timestamp when the send was initiated. */
+  sentAt: number;
+}
+
 interface ChannelsState {
   /** All available channels. */
   channels: Channel[];
@@ -38,6 +48,8 @@ interface ChannelsState {
   hasMoreMessages: boolean;
   /** The WebSocket instance (internal). */
   ws: AnnexWebSocket | null;
+  /** Messages awaiting server acknowledgement, keyed by clientRequestId. */
+  pendingSends: Map<string, PendingSend>;
 
   /** Load channel list from server. */
   loadChannels: (pseudonymId: string) => Promise<void>;
@@ -45,8 +57,12 @@ interface ChannelsState {
   selectChannel: (pseudonymId: string, channelId: string) => Promise<void>;
   /** Connect WebSocket for real-time messages. Optional baseUrl for cross-server. */
   connectWs: (pseudonymId: string, baseUrl?: string, sessionToken?: string | null) => void;
-  /** Send a message to the active channel. Returns true if the frame was queued locally. */
-  sendMessage: (content: string, replyTo?: string | null) => boolean;
+  /** Send a message to the active channel. Returns the client request ID if queued, or null on failure. */
+  sendMessage: (content: string, replyTo?: string | null) => string | null;
+  /** Resolve a pending send (called when server echo or error arrives). */
+  resolvePendingSend: (clientRequestId: string) => PendingSend | undefined;
+  /** Get the pending send for a given request ID. */
+  getPendingSend: (clientRequestId: string) => PendingSend | undefined;
   /** Edit a message in the active channel. */
   editMessage: (messageId: string, content: string) => void;
   /** Delete a message in the active channel. */
@@ -83,6 +99,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
   loadingOlder: false,
   hasMoreMessages: true,
   ws: null,
+  pendingSends: new Map<string, PendingSend>(),
 
   loadChannels: async (pseudonymId: string) => {
     set({ loading: true, error: null });
@@ -152,9 +169,14 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     ws.onStatus((connected) => set({ wsConnected: connected }));
 
     ws.onMessage((frame: WsReceiveFrame) => {
-      // Handle error frames — route to composerError for chat-flow errors
+      // Handle error frames — route to composerError for chat-flow errors.
+      // If the error carries a clientRequestId, resolve the pending send
+      // so the composer can restore the draft.
       if (frame.type === 'error') {
         const errorMsg = frame.message ?? frame.error ?? 'Unknown WebSocket error';
+        if (frame.clientRequestId) {
+          get().resolvePendingSend(frame.clientRequestId);
+        }
         set({ composerError: errorMsg });
         return;
       }
@@ -162,6 +184,10 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       if (frame.channelId !== get().activeChannelId) return;
 
       if (frame.type === 'message') {
+        // Resolve the pending send when the server echoes our message back.
+        if (frame.clientRequestId) {
+          get().resolvePendingSend(frame.clientRequestId);
+        }
         const msg: Message = {
           message_id: frame.messageId ?? '',
           channel_id: frame.channelId,
@@ -196,21 +222,44 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     set({ ws });
   },
 
-  sendMessage: (content: string, replyTo: string | null = null): boolean => {
+  sendMessage: (content: string, replyTo: string | null = null): string | null => {
     const { ws, activeChannelId } = get();
     if (!ws || !activeChannelId) {
       set({ composerError: 'Cannot send — not connected to the server.' });
-      return false;
+      return null;
     }
     set({ composerError: null });
     try {
-      ws.send(activeChannelId, content, replyTo);
-      return true;
+      const clientRequestId = ws.send(activeChannelId, content, replyTo);
+      const pending: PendingSend = { clientRequestId, content, sentAt: Date.now() };
+      set((s) => {
+        const next = new Map(s.pendingSends);
+        next.set(clientRequestId, pending);
+        return { pendingSends: next };
+      });
+      return clientRequestId;
     } catch (err) {
       console.error('[channels] sendMessage threw:', err);
       set({ composerError: err instanceof Error ? err.message : 'Failed to send message' });
-      return false;
+      return null;
     }
+  },
+
+  resolvePendingSend: (clientRequestId: string): PendingSend | undefined => {
+    const { pendingSends } = get();
+    const pending = pendingSends.get(clientRequestId);
+    if (pending) {
+      set((s) => {
+        const next = new Map(s.pendingSends);
+        next.delete(clientRequestId);
+        return { pendingSends: next };
+      });
+    }
+    return pending;
+  },
+
+  getPendingSend: (clientRequestId: string): PendingSend | undefined => {
+    return get().pendingSends.get(clientRequestId);
   },
 
   editMessage: (messageId: string, content: string) => {
@@ -329,6 +378,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       loadingOlder: false,
       hasMoreMessages: true,
       ws: null,
+      pendingSends: new Map<string, PendingSend>(),
     });
   },
 }));

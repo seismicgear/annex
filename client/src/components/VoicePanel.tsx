@@ -118,7 +118,7 @@ function MediaControls({
   platformWarnings: string[];
 }) {
   const { localParticipant, isMicrophoneEnabled, isCameraEnabled, isScreenShareEnabled } = useLocalParticipant();
-  const { micMuted, setMicMuted, deafened, cameraDeviceId, setCameraDevice } = useVoiceStore();
+  const { micMuted, setMicMuted, deafened, cameraDeviceId, setCameraDevice, inputDeviceId } = useVoiceStore();
 
   const micEnabled = isMicrophoneEnabled;
   const camEnabled = isCameraEnabled;
@@ -186,12 +186,20 @@ function MediaControls({
     }
     try {
       setMediaError(null);
-      await localParticipant.setMicrophoneEnabled(!micEnabled);
+      if (micEnabled) {
+        // Muting — no device options needed
+        await localParticipant.setMicrophoneEnabled(false);
+      } else {
+        // Enabling — pass the stored input device so first-time enable
+        // and post-mute unmute both respect the selected device.
+        const opts = inputDeviceId ? { deviceId: inputDeviceId } : undefined;
+        await localParticipant.setMicrophoneEnabled(true, opts);
+      }
       setMicMuted(micEnabled); // toggling: if was enabled, now muted
     } catch (err) {
       setMediaError(mediaErrorMessage(err, micEnabled ? 'Mute microphone' : 'Unmute microphone'));
     }
-  }, [localParticipant, micEnabled, canCameraMic, setMicMuted]);
+  }, [localParticipant, micEnabled, canCameraMic, setMicMuted, inputDeviceId]);
 
   const toggleCamera = useCallback(async () => {
     if (!canCameraMic) {
@@ -948,11 +956,14 @@ export function VoicePanel() {
   const activeChannel = channels.find((c) => c.channel_id === activeChannelId);
   const isVoiceCapable =
     activeChannel?.channel_type === 'Voice' || activeChannel?.channel_type === 'Hybrid';
-  const isVoiceAllowed = permissions?.capabilities.can_voice ?? true;
+  // Only allow voice when permissions have been positively resolved as true.
+  // Do NOT default to true when permissions are absent — require explicit confirmation.
+  const isVoiceAllowed = permissions?.capabilities.can_voice === true;
   const permissionsLoading = permissionsStatus === 'loading';
   const permissionsError = permissionsStatus === 'error';
-  // Treat missing/loading permissions as unknown (disable join until resolved)
-  const canJoinVoice = isVoiceAllowed && !permissionsLoading;
+  const permissionsReady = permissionsStatus === 'ready';
+  // Voice join requires: permissions loaded successfully AND can_voice === true.
+  const canJoinVoice = isVoiceAllowed && permissionsReady;
 
   // Clear stale call state when switching away from a channel so the next
   // channel does not inherit the previous channel's status or errors.
@@ -1104,9 +1115,13 @@ export function VoicePanel() {
       ? 'Join Call'
       : 'Create Call';
 
-  const unavailableReason = !isVoiceAllowed
-    ? 'Voice is disabled by server policy for your identity.'
-    : null;
+  const unavailableReason = permissionsError
+    ? 'Could not verify voice permissions. Retry or reconnect to the server.'
+    : !permissionsReady
+      ? 'Checking voice permissions…'
+      : !isVoiceAllowed
+        ? 'Voice is disabled by server policy for your identity.'
+        : null;
 
   // Show connectionError when the active channel matches the last failed channel
   const showConnectionError = !!(connectionError && lastFailedChannelId && lastFailedChannelId === activeChannelId);

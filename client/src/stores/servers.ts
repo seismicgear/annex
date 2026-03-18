@@ -106,6 +106,8 @@ export const useServersStore = create<ServersState>((set, get) => ({
 
     // Immediate: update active server for instant UI transition.
     // Clear serverImageUrl so stale imagery from the previous server is never shown.
+    // Clear permissions immediately so the UI does not reuse stale capability flags.
+    useIdentityStore.setState({ permissions: null, permissionsStatus: 'idle', permissionsPseudonymId: null });
     set({ activeServerId: serverId, switching: true, serverImageUrl: null, switchError: null });
 
     try {
@@ -113,7 +115,7 @@ export const useServersStore = create<ServersState>((set, get) => ({
       // Set API base URL for cross-server requests
       api.setApiBaseUrl(server.baseUrl);
 
-      // Switch identity context
+      // Switch identity context (also clears permissions in selectIdentity)
       const identityStore = useIdentityStore.getState();
       await identityStore.selectIdentity(server.identityId);
 
@@ -148,11 +150,12 @@ export const useServersStore = create<ServersState>((set, get) => ({
       if (prevIdentity?.id) {
         await useIdentityStore.getState().selectIdentity(prevIdentity.id).catch(() => {});
       }
-      // Reconnect WS to previous server
+      // Reconnect WS to previous server and restore permissions
       const restoredIdentity = useIdentityStore.getState().identity;
       if (restoredIdentity?.pseudonymId) {
         channelsStore.connectWs(restoredIdentity.pseudonymId, prevApiBaseUrl || undefined, restoredIdentity.sessionToken ?? null);
         channelsStore.loadChannels(restoredIdentity.pseudonymId).catch(() => {});
+        useIdentityStore.getState().loadPermissions().catch(() => {});
       }
 
       const errorMessage = err instanceof Error ? err.message : 'Server switch failed';
