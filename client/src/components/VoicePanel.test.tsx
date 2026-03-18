@@ -41,7 +41,8 @@ vi.mock('@/stores/channels', () => ({
 }));
 
 vi.mock('@/stores/voice', () => ({
-  useVoiceStore: () => voiceState,
+  useVoiceStore: (selector?: (state: VoiceStoreSnapshot) => unknown) =>
+    selector ? selector(voiceState) : voiceState,
 }));
 
 vi.mock('@/stores/servers', () => ({
@@ -65,6 +66,10 @@ vi.mock('@/lib/tauri', () => ({
   setMediaKeepalive: vi.fn(async () => {}),
 }));
 
+const mockSetCameraEnabled = vi.fn(async () => {});
+const mockSetMicrophoneEnabled = vi.fn(async () => {});
+const mockSetScreenShareEnabled = vi.fn(async () => {});
+
 vi.mock('@livekit/components-react', () => ({
   LiveKitRoom: ({ children }: { children: ReactNode }) => <div data-testid="livekit-room">{children}</div>,
   RoomAudioRenderer: () => null,
@@ -77,9 +82,9 @@ vi.mock('@livekit/components-react', () => ({
       isMicrophoneEnabled: true,
       isCameraEnabled: false,
       isScreenShareEnabled: false,
-      setMicrophoneEnabled: vi.fn(),
-      setCameraEnabled: vi.fn(),
-      setScreenShareEnabled: vi.fn(),
+      setMicrophoneEnabled: mockSetMicrophoneEnabled,
+      setCameraEnabled: mockSetCameraEnabled,
+      setScreenShareEnabled: mockSetScreenShareEnabled,
       trackPublications: new Map(),
     },
     isMicrophoneEnabled: true,
@@ -100,6 +105,10 @@ vi.mock('livekit-client', () => ({
 
 describe('VoicePanel', () => {
   beforeEach(() => {
+    mockSetCameraEnabled.mockClear();
+    mockSetMicrophoneEnabled.mockClear();
+    mockSetScreenShareEnabled.mockClear();
+
     identityState = {
       identity: { pseudonymId: 'p1' },
       permissions: { capabilities: { can_voice: true } },
@@ -246,5 +255,90 @@ describe('VoicePanel', () => {
     // Should NOT show the connected room since the server switched
     // (The ref-based check means the first render with token sets the ref,
     // but the stale check compares ref vs current activeServerId)
+  });
+
+  it('uses stored cameraDeviceId when enabling camera', async () => {
+    mockSetCameraEnabled.mockClear();
+
+    voiceState = {
+      ...voiceState,
+      voiceToken: 'token-cam',
+      livekitUrl: 'wss://livekit.example',
+      connectedChannelId: 'chan-1',
+      cameraDeviceId: 'webcam-42',
+    };
+
+    await act(async () => {
+      render(<VoicePanel />);
+    });
+
+    // Click the camera toggle button (camera is off, so it should enable)
+    const camBtn = screen.getByTitle('Turn on camera');
+    await act(async () => {
+      camBtn.click();
+    });
+
+    // setCameraEnabled should be called with the saved device ID
+    expect(mockSetCameraEnabled).toHaveBeenCalledWith(true, { deviceId: 'webcam-42' });
+  });
+
+  it('applies audio prefs to dynamically added container with audio child', async () => {
+    voiceState = {
+      ...voiceState,
+      voiceToken: 'token-sync',
+      livekitUrl: 'wss://livekit.example',
+      connectedChannelId: 'chan-1',
+      deafened: true,
+      outputVolume: 50,
+      outputDeviceId: 'speaker-1',
+    };
+
+    await act(async () => {
+      render(<VoicePanel />);
+    });
+
+    // Simulate LiveKit inserting a container with an <audio> child after mount
+    const container = document.createElement('div');
+    const audio = document.createElement('audio');
+    container.appendChild(audio);
+
+    await act(async () => {
+      document.body.appendChild(container);
+      // Give MutationObserver a tick to fire
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    // The audio element should have deafen/volume applied
+    expect(audio.muted).toBe(true);
+    expect(audio.volume).toBe(0);
+
+    // Cleanup
+    document.body.removeChild(container);
+  });
+
+  it('resets to default output when outputDeviceId is null', async () => {
+    voiceState = {
+      ...voiceState,
+      voiceToken: 'token-sink',
+      livekitUrl: 'wss://livekit.example',
+      connectedChannelId: 'chan-1',
+      outputDeviceId: null,
+    };
+
+    // Add an audio element with data-lk-source for the sync effect to find
+    const audio = document.createElement('audio');
+    audio.setAttribute('data-lk-source', 'microphone');
+    // Mock setSinkId
+    (audio as any).setSinkId = vi.fn(async () => {});
+    document.body.appendChild(audio);
+
+    await act(async () => {
+      render(<VoicePanel />);
+    });
+
+    // setSinkId should be called with '' to reset to default
+    expect((audio as any).setSinkId).toHaveBeenCalledWith('');
+
+    document.body.removeChild(audio);
   });
 });

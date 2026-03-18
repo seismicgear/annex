@@ -37,15 +37,17 @@ function ChannelItem({
   const { joinChannel, leaveChannel, loadChannels } = useChannelsStore();
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const handleJoin = async (e: React.MouseEvent) => {
     e.stopPropagation();
     setBusy(true);
+    setActionError(null);
     try {
       await joinChannel(pseudonymId, channel.channel_id);
       await loadChannels(pseudonymId);
-    } catch {
-      // Join failed — user can retry
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to join channel');
     } finally {
       setBusy(false);
     }
@@ -54,11 +56,12 @@ function ChannelItem({
   const handleLeave = async (e: React.MouseEvent) => {
     e.stopPropagation();
     setBusy(true);
+    setActionError(null);
     try {
       await leaveChannel(pseudonymId, channel.channel_id);
       await loadChannels(pseudonymId);
-    } catch {
-      // Leave failed — user can retry
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to leave channel');
     } finally {
       setBusy(false);
     }
@@ -66,14 +69,15 @@ function ChannelItem({
 
   const handleCopyInvite = async (e: React.MouseEvent) => {
     e.stopPropagation();
+    setActionError(null);
     try {
       const apiBase = getApiBaseUrl();
       const { url } = await createInviteLink(apiBase, pseudonymId);
       await navigator.clipboard.writeText(url);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // Invite creation failed or clipboard access denied
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to copy invite link');
     }
   };
 
@@ -118,6 +122,18 @@ function ChannelItem({
           </button>
         )}
       </div>
+      {actionError && (
+        <div className="channel-action-error" role="alert">
+          <span>{actionError}</span>
+          <button
+            onClick={(e) => { e.stopPropagation(); setActionError(null); }}
+            className="channel-error-dismiss"
+            aria-label="Dismiss"
+          >
+            &times;
+          </button>
+        </div>
+      )}
     </div>
   );
 }

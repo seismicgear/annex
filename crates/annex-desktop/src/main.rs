@@ -1348,14 +1348,28 @@ fn set_dark_window_border(window: &tauri::WebviewWindow) {
 
 // ── Platform media capability checks ──
 
+/// Tri-state media readiness: the runtime permission model on desktop webviews
+/// cannot always be verified from Rust, so we expose `unknown` instead of
+/// falsely claiming `true`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum MediaReadiness {
+    /// Permission verified or platform guarantees availability.
+    Available,
+    /// Cannot verify from Rust — the webview may prompt at runtime.
+    Unknown,
+    /// Known to be unavailable / blocked.
+    Blocked,
+}
+
 /// Status of platform media capabilities, exposed to the frontend so users
 /// see actionable guidance instead of silent failures.
 #[derive(Debug, Clone, Serialize)]
 struct PlatformMediaStatus {
-    /// True if screen sharing is expected to work.
+    /// Whether screen sharing is expected to work.
     screen_share_available: bool,
-    /// True if camera/mic are expected to work.
-    camera_mic_available: bool,
+    /// Camera/mic readiness: `available`, `unknown`, or `blocked`.
+    camera_mic_available: MediaReadiness,
     /// Human-readable warnings for missing dependencies.
     warnings: Vec<String>,
     /// Display session type (e.g. "wayland", "x11", "windows", "macos").
@@ -1469,26 +1483,48 @@ fn get_platform_media_status() -> PlatformMediaStatus {
             } else {
                 true
             },
-            camera_mic_available: true,
+            // Linux getUserMedia generally works, but Rust cannot verify the
+            // runtime browser permission — report as available (PipeWire
+            // audio capture is the only real dependency, and mic works even
+            // without PipeWire on ALSA-backed kernels).
+            camera_mic_available: MediaReadiness::Available,
             warnings,
             display_server,
         }
     }
     #[cfg(target_os = "macos")]
     {
+        // macOS WebKit auto-prompts for camera/mic, but Rust cannot
+        // verify TCC permission state at this layer — report unknown
+        // and let the webview handle the prompt.
+        let mut warnings = Vec::new();
+        warnings.push(
+            "Camera/microphone access will be requested when you first enable them. \
+             Grant permission in System Settings → Privacy & Security if prompted."
+                .into(),
+        );
         PlatformMediaStatus {
             screen_share_available: true,
-            camera_mic_available: true,
-            warnings: vec![],
+            camera_mic_available: MediaReadiness::Unknown,
+            warnings,
             display_server: "macos".into(),
         }
     }
     #[cfg(target_os = "windows")]
     {
+        // Windows WebView2 may silently deny getUserMedia without a
+        // PermissionRequested handler. Report as unknown so the frontend
+        // shows guidance rather than silently failing.
+        let mut warnings = Vec::new();
+        warnings.push(
+            "Camera/microphone permission may need to be granted in Windows Settings → \
+             Privacy & security → Camera / Microphone if the webview does not prompt."
+                .into(),
+        );
         PlatformMediaStatus {
             screen_share_available: true,
-            camera_mic_available: true,
-            warnings: vec![],
+            camera_mic_available: MediaReadiness::Unknown,
+            warnings,
             display_server: "windows".into(),
         }
     }
@@ -1496,7 +1532,7 @@ fn get_platform_media_status() -> PlatformMediaStatus {
     {
         PlatformMediaStatus {
             screen_share_available: false,
-            camera_mic_available: false,
+            camera_mic_available: MediaReadiness::Blocked,
             warnings: vec!["Unsupported platform.".into()],
             display_server: "unknown".into(),
         }
@@ -1942,16 +1978,15 @@ mod tests {
             !status.display_server.is_empty(),
             "display_server should not be empty"
         );
-        // The warnings list should be valid (possibly empty).
-        // On CI (no Wayland), Linux may have warnings; macOS/Windows should have none.
+        // The warnings list should be valid (possibly empty on Linux X11).
+        // macOS/Windows now report camera_mic as `unknown` with guidance warnings.
         #[cfg(not(target_os = "linux"))]
         {
-            assert!(
-                status.warnings.is_empty(),
-                "macOS/Windows should have no media warnings"
-            );
             assert!(status.screen_share_available);
-            assert!(status.camera_mic_available);
+            assert!(
+                matches!(status.camera_mic_available, MediaReadiness::Unknown),
+                "macOS/Windows should report camera_mic as unknown"
+            );
         }
     }
 

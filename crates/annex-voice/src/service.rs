@@ -41,12 +41,44 @@ impl VoiceService {
 
     /// Returns the browser-facing URL. Falls back to the internal URL if no
     /// public URL is configured.
+    ///
+    /// Returns an empty string if the resolved URL is loopback-only
+    /// (127.0.0.1 / localhost / [::1]), because remote clients cannot reach it.
+    /// Local clients (Tauri host mode connecting to its own server) still receive
+    /// the loopback URL through the internal `get_url()` path.
     pub fn get_public_url(&self) -> &str {
+        let url = if self.config.public_url.is_empty() {
+            &self.config.url
+        } else {
+            &self.config.public_url
+        };
+        if Self::is_loopback_url(url) {
+            ""
+        } else {
+            url
+        }
+    }
+
+    /// Returns the public URL without the loopback guard, for local-only use
+    /// (e.g. Tauri host mode where the client is on the same machine).
+    pub fn get_url_for_local_client(&self) -> &str {
         if self.config.public_url.is_empty() {
             &self.config.url
         } else {
             &self.config.public_url
         }
+    }
+
+    /// Check whether a URL points to a loopback/private-only address.
+    fn is_loopback_url(url: &str) -> bool {
+        // Strip ws:// / wss:// / http:// / https:// prefix to get the host
+        let stripped = url
+            .trim_start_matches("ws://")
+            .trim_start_matches("wss://")
+            .trim_start_matches("http://")
+            .trim_start_matches("https://");
+        let host = stripped.split(':').next().unwrap_or("");
+        host == "127.0.0.1" || host == "localhost" || host == "::1" || host == "[::1]"
     }
 
     pub async fn create_room(&self, name: &str) -> Result<Room, VoiceError> {

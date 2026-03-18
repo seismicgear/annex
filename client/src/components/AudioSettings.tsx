@@ -14,6 +14,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useVoiceStore } from '@/stores/voice';
+import { isTauri } from '@/lib/tauri';
 
 interface DeviceInfo {
   deviceId: string;
@@ -120,6 +121,11 @@ export function AudioSettings({ onClose }: { onClose: () => void }) {
         {!permissionGranted && (
           <p className="settings-note">
             Grant microphone/camera access to see device names.
+            {isTauri() && (
+              <> On desktop, your OS may need to grant this app camera and microphone
+              permissions separately. Check your system privacy settings if devices are
+              not listed below.</>
+            )}
           </p>
         )}
 
