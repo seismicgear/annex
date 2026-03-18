@@ -1277,6 +1277,78 @@ fn get_local_livekit_url(state: tauri::State<'_, AppManagedState>) -> Option<Str
 
 /// Force the window to use dark mode chrome and a black border.
 ///
+/// Register a WebView2 `PermissionRequested` handler so that camera,
+/// microphone, and related media-capture permissions are explicitly allowed
+/// instead of relying on WebView2's default (which silently denies them).
+///
+/// Handled permission types (WebView2 `COREWEBVIEW2_PERMISSION_KIND` enum):
+///   - Camera (3)
+///   - Microphone (4)
+///   - ClipboardRead (6)
+///
+/// All other permission requests are left at the default state.
+///
+/// This must be called during setup, before getUserMedia() is invoked from
+/// the frontend. Without this handler, WebView2 silently returns
+/// `NotAllowedError` for media capture.
+#[cfg(target_os = "windows")]
+fn setup_webview2_media_permissions(window: &tauri::WebviewWindow) {
+    let result = window.with_webview(|wv| {
+        unsafe {
+            use webview2_com::PermissionRequestedEventHandler;
+            use webview2_com::Microsoft::Web::WebView2::Win32::*;
+
+            let webview = match wv.controller().CoreWebView2() {
+                Ok(wv2) => wv2,
+                Err(e) => {
+                    tracing::warn!("could not access CoreWebView2 — media permission handler not installed: {e}");
+                    return;
+                }
+            };
+
+            // Permission kind constants from WebView2 SDK:
+            // Camera = 3, Microphone = 4, ClipboardRead = 6
+            let handler = PermissionRequestedEventHandler::create(Box::new(
+                move |_sender, args| -> windows::core::Result<()> {
+                    if let Some(args) = args {
+                        let kind = args.PermissionKind()?;
+                        let uri = args.Uri()?.to_string();
+
+                        // COREWEBVIEW2_PERMISSION_KIND values:
+                        // Camera = 3, Microphone = 4, ClipboardRead = 6
+                        if kind.0 == 3 || kind.0 == 4 || kind.0 == 6 {
+                            let kind_name = match kind.0 {
+                                3 => "Camera",
+                                4 => "Microphone",
+                                6 => "ClipboardRead",
+                                _ => "Unknown",
+                            };
+                            tracing::info!(kind = kind_name, uri = %uri, "WebView2 permission allowed");
+                            args.SetState(COREWEBVIEW2_PERMISSION_STATE_ALLOW)?;
+                        } else {
+                            tracing::debug!(kind = kind.0, uri = %uri, "WebView2 permission left at default");
+                        }
+                    }
+                    Ok(())
+                },
+            ));
+
+            let mut token = windows::Win32::System::WinRT::EventRegistrationToken::default();
+            match webview.add_PermissionRequested(&handler, &mut token) {
+                Ok(()) => {
+                    tracing::info!("WebView2 PermissionRequested handler installed for Camera/Microphone/ClipboardRead");
+                }
+                Err(e) => {
+                    tracing::warn!("failed to register PermissionRequested handler: {e}");
+                }
+            }
+        }
+    });
+    if let Err(e) = result {
+        tracing::warn!("with_webview failed for media permission setup: {e}");
+    }
+}
+
 /// Two DWM attributes are set:
 ///   1. `DWMWA_USE_IMMERSIVE_DARK_MODE` (20) — forces the title bar and
 ///      window border to use dark-mode colors regardless of the system
@@ -1512,18 +1584,20 @@ fn get_platform_media_status() -> PlatformMediaStatus {
     }
     #[cfg(target_os = "windows")]
     {
-        // Windows WebView2 may silently deny getUserMedia without a
-        // PermissionRequested handler. Report as unknown so the frontend
-        // shows guidance rather than silently failing.
+        // The WebView2 PermissionRequested handler is installed at startup
+        // (see setup_webview2_media_permissions) so getUserMedia requests for
+        // Camera and Microphone are explicitly allowed. If the OS-level
+        // privacy toggle is off, the user still needs to grant in Windows
+        // Settings, but the webview layer will no longer silently deny.
         let mut warnings = Vec::new();
         warnings.push(
-            "Camera/microphone permission may need to be granted in Windows Settings → \
-             Privacy & security → Camera / Microphone if the webview does not prompt."
+            "Camera/microphone requests are handled by the app. If devices are not \
+             detected, check Windows Settings → Privacy & security → Camera / Microphone."
                 .into(),
         );
         PlatformMediaStatus {
             screen_share_available: true,
-            camera_mic_available: MediaReadiness::Unknown,
+            camera_mic_available: MediaReadiness::Available,
             warnings,
             display_server: "windows".into(),
         }
@@ -1756,6 +1830,7 @@ fn main() {
             {
                 if let Some(window) = app.get_webview_window("main") {
                     set_dark_window_border(&window);
+                    setup_webview2_media_permissions(&window);
                 }
             }
 
@@ -1979,13 +2054,22 @@ mod tests {
             "display_server should not be empty"
         );
         // The warnings list should be valid (possibly empty on Linux X11).
-        // macOS/Windows now report camera_mic as `unknown` with guidance warnings.
-        #[cfg(not(target_os = "linux"))]
+        // macOS reports camera_mic as `unknown`; Windows reports `available`
+        // because the PermissionRequested handler is installed at startup.
+        #[cfg(target_os = "macos")]
         {
             assert!(status.screen_share_available);
             assert!(
                 matches!(status.camera_mic_available, MediaReadiness::Unknown),
-                "macOS/Windows should report camera_mic as unknown"
+                "macOS should report camera_mic as unknown"
+            );
+        }
+        #[cfg(target_os = "windows")]
+        {
+            assert!(status.screen_share_available);
+            assert!(
+                matches!(status.camera_mic_available, MediaReadiness::Available),
+                "Windows should report camera_mic as available (permission handler installed)"
             );
         }
     }
@@ -2018,6 +2102,20 @@ mod tests {
             ["wayland", "x11", "unknown"].contains(&ds.as_str()),
             "display_server should be wayland, x11, or unknown, got: {ds}"
         );
+    }
+
+    /// Verify that the Windows media status reflects the PermissionRequested
+    /// handler being installed (camera_mic reports Available, not Unknown).
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_media_status_reports_available_with_permission_handler() {
+        let status = get_platform_media_status();
+        assert_eq!(status.display_server, "windows");
+        assert!(
+            matches!(status.camera_mic_available, MediaReadiness::Available),
+            "Windows should report camera_mic as Available when permission handler is installed"
+        );
+        assert!(status.screen_share_available);
     }
 
     #[test]

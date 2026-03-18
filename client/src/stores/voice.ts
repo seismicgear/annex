@@ -9,24 +9,38 @@
 import { create } from 'zustand';
 import * as api from '@/lib/api';
 
-function getJoinErrorMessage(error: unknown): string {
+export interface JoinError {
+  /** Human-readable display message. */
+  display: string;
+  /** Machine-readable error code (e.g. 'voice_not_configured'). */
+  code: string | null;
+  /** Server-provided setup guidance, if any. */
+  setupHint: string | null;
+}
+
+function getJoinErrorMessage(error: unknown): JoinError {
   if (error instanceof api.ApiError) {
     const body = error.message?.trim();
-    if (!body) return `Failed to join voice (${error.status})`;
+    if (!body) return { display: `Failed to join voice (${error.status})`, code: null, setupHint: null };
 
     try {
-      const parsed = JSON.parse(body) as { error?: string; message?: string };
-      return parsed.error ?? parsed.message ?? body;
+      const parsed = JSON.parse(body) as { error?: string; message?: string; setup_hint?: string };
+      const display = parsed.message ?? parsed.error ?? body;
+      return {
+        display,
+        code: parsed.error ?? null,
+        setupHint: parsed.setup_hint ?? null,
+      };
     } catch {
-      return body;
+      return { display: body, code: null, setupHint: null };
     }
   }
 
   if (error instanceof Error && error.message) {
-    return error.message;
+    return { display: error.message, code: null, setupHint: null };
   }
 
-  return 'Failed to join voice';
+  return { display: 'Failed to join voice', code: null, setupHint: null };
 }
 
 export interface VoiceState {
@@ -44,6 +58,8 @@ export interface VoiceState {
   callActive: boolean;
   /** Most recent join failure shown in the UI. */
   lastJoinError: string | null;
+  /** Structured join error with code and setup hint. */
+  lastJoinErrorDetails: JoinError | null;
   /** Whether the user has self-deafened (output muted). */
   deafened: boolean;
   /** Whether the local microphone is muted (shared source of truth). */
@@ -106,6 +122,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   joining: false,
   callActive: false,
   lastJoinError: null,
+  lastJoinErrorDetails: null,
   deafened: false,
   micMuted: false,
 
@@ -116,7 +133,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   cameraDeviceId: (saved.cameraDeviceId as string) ?? null,
 
   joinCall: async (pseudonymId, channelId) => {
-    set({ joining: true, lastJoinError: null });
+    set({ joining: true, lastJoinError: null, lastJoinErrorDetails: null });
     try {
       const { token, url, ice_servers } = await api.joinVoice(pseudonymId, channelId);
       set({
@@ -126,9 +143,11 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
         connectedChannelId: channelId,
         joining: false,
         lastJoinError: null,
+        lastJoinErrorDetails: null,
       });
     } catch (error) {
-      set({ joining: false, lastJoinError: getJoinErrorMessage(error) });
+      const details = getJoinErrorMessage(error);
+      set({ joining: false, lastJoinError: details.display, lastJoinErrorDetails: details });
     }
   },
 
@@ -145,6 +164,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       iceServers: [],
       connectedChannelId: null,
       lastJoinError: null,
+      lastJoinErrorDetails: null,
       deafened: false,
     });
   },
@@ -190,6 +210,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       joining: false,
       callActive: false,
       lastJoinError: null,
+      lastJoinErrorDetails: null,
       deafened: false,
       micMuted: false,
     });

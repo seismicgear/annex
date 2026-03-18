@@ -30,7 +30,7 @@ import { StartupModeSelector, type DegradedStartupInfo } from '@/components/Star
 import { clearWebStartupMode } from '@/lib/startup-prefs';
 import { parseLegacyInviteFromUrl, clearInviteFromUrl, createInviteLink } from '@/lib/invite';
 import { getPersonasForIdentity } from '@/lib/personas';
-import { getApiBaseUrl, getServerSummary, setApiBaseUrl, redeemInvite, setPublicUrl, getSessionToken, isTokenExpired, refreshSessionToken, startTokenRefresh, stopTokenRefresh } from '@/lib/api';
+import { getApiBaseUrl, getServerSummary, setApiBaseUrl, redeemInvite, setPublicUrl, getSessionToken, setSessionToken, isTokenExpired, refreshSessionToken, startTokenRefresh, stopTokenRefresh } from '@/lib/api';
 import { saveIdentity, clearAllDatabases } from '@/lib/db';
 import { cancelMembershipProofGeneration, isProofGenerationInFlight } from '@/lib/zk';
 import type { ProvingStatus } from '@/stores/identity';
@@ -360,7 +360,8 @@ export default function App() {
             if (cancelled) return;
             console.error('session token refresh failed on startup', err);
             // Token refresh failed — session is invalid.
-            // Fall back to re-registration by resetting phase.
+            // Clear the stale in-memory token and fall back to re-registration.
+            setSessionToken(null);
             useIdentityStore.setState({ phase: 'keys_ready' });
             return;
           }

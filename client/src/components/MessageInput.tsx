@@ -89,8 +89,13 @@ export function MessageInput() {
     // Regular text message
     const trimmed = content.trim();
     if (!trimmed) return;
+    const { error: sendError } = useChannelsStore.getState();
     sendMessage(trimmed);
-    setContent('');
+    // Only clear the input if no error was set during send
+    const { error: postSendError } = useChannelsStore.getState();
+    if (!postSendError || postSendError === sendError) {
+      setContent('');
+    }
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {

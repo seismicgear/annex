@@ -11,6 +11,7 @@ type VoiceStoreSnapshot = {
   joining: boolean;
   callActive: boolean;
   lastJoinError: string | null;
+  lastJoinErrorDetails: { display: string; code: string | null; setupHint: string | null } | null;
   deafened: boolean;
   micMuted: boolean;
   inputDeviceId: string | null;
@@ -131,6 +132,7 @@ describe('VoicePanel', () => {
       joining: false,
       callActive: false,
       lastJoinError: null,
+      lastJoinErrorDetails: null,
       deafened: false,
       micMuted: false,
       inputDeviceId: null,
