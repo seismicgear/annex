@@ -108,6 +108,8 @@ export interface VoiceState {
   isJoining: (channelId: string) => boolean;
   /** Clear cached call status for a channel (used on channel switch). */
   clearChannelCallState: (channelId: string) => void;
+  /** Handle an unexpected disconnect — clears session state and records a user-visible error. */
+  handleUnexpectedDisconnect: (errorMessage?: string) => void;
   /** Force-clear all voice session state (used by server switching). */
   forceReset: () => void;
 }
@@ -224,7 +226,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   },
   setConnectionState: (state, error = null) => {
     set({ connectionState: state, connectionError: error ?? null });
-    // If the room failed or disconnected unexpectedly, reconcile store state
+    // If the room failed, reconcile store state
     if (state === 'failed') {
       set({
         voiceToken: null,
@@ -273,6 +275,16 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       const { [channelId]: _error, ...restErrors } = s.joinErrorByChannel;
       const { [channelId]: _joining, ...restJoining } = s.joiningByChannel;
       return { callActiveByChannel: restActive, joinErrorByChannel: restErrors, joiningByChannel: restJoining };
+    });
+  },
+  handleUnexpectedDisconnect: (errorMessage?: string) => {
+    set({
+      voiceToken: null,
+      livekitUrl: null,
+      iceServers: [],
+      connectedChannelId: null,
+      connectionState: 'failed' as ConnectionState,
+      connectionError: errorMessage ?? 'Voice disconnected unexpectedly.',
     });
   },
   forceReset: () => {

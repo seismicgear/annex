@@ -711,12 +711,18 @@ export interface JoinVoiceResponse {
   ice_servers: IceServerConfig[];
 }
 
+/** Build the full URL for a voice endpoint, using _apiBaseUrl consistently. */
+function voiceUrl(channelId: string, action: 'join' | 'leave' | 'status'): string {
+  const path = `/api/channels/${channelId}/voice/${action}`;
+  return _apiBaseUrl ? `${_apiBaseUrl}${path}` : path;
+}
+
 export async function joinVoice(
   pseudonymId: string,
   channelId: string,
   timeoutMs?: number,
 ): Promise<JoinVoiceResponse> {
-  const url = _apiBaseUrl ? `${_apiBaseUrl}/api/channels/${channelId}/voice/join` : `/api/channels/${channelId}/voice/join`;
+  const url = voiceUrl(channelId, 'join');
   const resp = await fetchWithTimeout(url, {
     method: 'POST',
     headers: new Headers({
@@ -735,20 +741,30 @@ export async function leaveVoice(
   pseudonymId: string,
   channelId: string,
 ): Promise<void> {
-  await request<unknown>(`/api/channels/${channelId}/voice/leave`, {
+  const url = voiceUrl(channelId, 'leave');
+  const resp = await fetch(url, {
     method: 'POST',
-    headers: authHeaders(pseudonymId),
+    headers: new Headers(authHeaders(pseudonymId)),
   });
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new ApiError(resp.status, body);
+  }
 }
 
 export async function getVoiceStatus(
   pseudonymId: string,
   channelId: string,
 ): Promise<{ participants: number; active: boolean }> {
-  return request<{ participants: number; active: boolean }>(
-    `/api/channels/${channelId}/voice/status`,
-    { headers: authHeaders(pseudonymId) },
-  );
+  const url = voiceUrl(channelId, 'status');
+  const resp = await fetch(url, {
+    headers: new Headers(authHeaders(pseudonymId)),
+  });
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new ApiError(resp.status, body);
+  }
+  return resp.json() as Promise<{ participants: number; active: boolean }>;
 }
 
 // ── Voice configuration status ──

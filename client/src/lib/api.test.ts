@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { getServerSummary, register, setApiBaseUrl, verifyMembership } from '@/lib/api';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { getServerSummary, register, setApiBaseUrl, verifyMembership, joinVoice, leaveVoice, getVoiceStatus, setSessionToken } from '@/lib/api';
 
 function okJsonResponse(body: unknown): Response {
   return {
@@ -73,5 +73,53 @@ describe('request header behavior', () => {
 
     expect(registerHeaders.get('Content-Type')).toBe('application/json');
     expect(verifyHeaders.get('Content-Type')).toBe('application/json');
+  });
+});
+
+describe('voice endpoints use _apiBaseUrl', () => {
+  const REMOTE_URL = 'https://remote.annex.example';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setApiBaseUrl(REMOTE_URL);
+    setSessionToken(null);
+    global.fetch = vi.fn();
+  });
+
+  afterEach(() => {
+    setApiBaseUrl('');
+  });
+
+  it('joinVoice targets the remote host', async () => {
+    vi.mocked(global.fetch).mockResolvedValue(
+      okJsonResponse({ token: 'tok', url: 'wss://lk', ice_servers: [] }),
+    );
+
+    await joinVoice('pseudo-1', 'chan-1');
+
+    const url = vi.mocked(global.fetch).mock.calls[0][0] as string;
+    expect(url).toBe(`${REMOTE_URL}/api/channels/chan-1/voice/join`);
+  });
+
+  it('leaveVoice targets the remote host', async () => {
+    vi.mocked(global.fetch).mockResolvedValue(
+      okJsonResponse({}),
+    );
+
+    await leaveVoice('pseudo-1', 'chan-1');
+
+    const url = vi.mocked(global.fetch).mock.calls[0][0] as string;
+    expect(url).toBe(`${REMOTE_URL}/api/channels/chan-1/voice/leave`);
+  });
+
+  it('getVoiceStatus targets the remote host', async () => {
+    vi.mocked(global.fetch).mockResolvedValue(
+      okJsonResponse({ participants: 2, active: true }),
+    );
+
+    await getVoiceStatus('pseudo-1', 'chan-1');
+
+    const url = vi.mocked(global.fetch).mock.calls[0][0] as string;
+    expect(url).toBe(`${REMOTE_URL}/api/channels/chan-1/voice/status`);
   });
 });

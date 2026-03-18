@@ -30,6 +30,7 @@ export function StatusBar() {
   const {
     voiceToken,
     connectedChannelId,
+    connectionState,
     deafened,
     micMuted,
     leaveCall,
@@ -103,7 +104,9 @@ export function StatusBar() {
 
   if (!identity) return null;
 
-  const inCall = !!(voiceToken && connectedChannelId);
+  // Only show voice strip when actually connected or connecting — not when
+  // a stale token remains after a failed/disconnected session.
+  const inCall = !!(voiceToken && connectedChannelId && (connectionState === 'connected' || connectionState === 'connecting'));
   const connectedChannel = channels.find((c) => c.channel_id === connectedChannelId);
   const channelLabel = connectedChannel?.name ?? connectedChannelId?.slice(0, 12) ?? '';
 
