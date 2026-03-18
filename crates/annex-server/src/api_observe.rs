@@ -194,6 +194,8 @@ pub struct ServerSummaryResponse {
     pub slug: String,
     /// The server's display label.
     pub label: String,
+    /// The server's description (used for OG meta tag previews on invite links).
+    pub description: String,
     /// The server's public URL (may be auto-detected from request headers).
     pub public_url: String,
     /// Member counts by node type (e.g., `{"Human": 5, "AiAgent": 3}`).
@@ -222,11 +224,11 @@ pub async fn get_server_summary_handler(
         let conn = pool.get().map_err(|e| e.to_string())?;
 
         // Server metadata
-        let (slug, label): (String, String) = conn
+        let (slug, label, description): (String, String, String) = conn
             .query_row(
-                "SELECT slug, label FROM servers WHERE id = ?1",
+                "SELECT slug, label, description FROM servers WHERE id = ?1",
                 params![server_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .map_err(|e| format!("failed to query server: {}", e))?;
 
@@ -285,6 +287,7 @@ pub async fn get_server_summary_handler(
         Ok::<_, String>((
             slug,
             label,
+            description,
             members_map,
             total_active,
             channel_count,
@@ -313,6 +316,7 @@ pub async fn get_server_summary_handler(
     let (
         slug,
         label,
+        description,
         members_map,
         total_active,
         channel_count,
@@ -323,6 +327,7 @@ pub async fn get_server_summary_handler(
     Ok(Json(ServerSummaryResponse {
         slug,
         label,
+        description,
         public_url: state.get_public_url(),
         members_by_type: serde_json::Value::Object(members_map),
         total_active_members: total_active,

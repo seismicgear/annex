@@ -287,33 +287,39 @@ pub async fn create_invite_handler(
         ));
     }
 
-    // Fetch server label for social preview
-    let server_label = {
+    // Fetch server label and description for social preview
+    let (server_label, server_description) = {
         let state_clone = state.clone();
         tokio::task::spawn_blocking(move || {
             let conn = state_clone.pool.get().map_err(|e| {
                 ApiError::InternalServerError(format!("db connection failed: {}", e))
             })?;
-            let label: String = conn
+            let (label, description): (String, String) = conn
                 .query_row(
-                    "SELECT label FROM servers WHERE id = ?1",
+                    "SELECT label, description FROM servers WHERE id = ?1",
                     [state_clone.server_id],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .map_err(|e| {
-                    ApiError::InternalServerError(format!("failed to fetch server label: {}", e))
+                    ApiError::InternalServerError(format!("failed to fetch server metadata: {}", e))
                 })?;
-            Ok::<String, ApiError>(label)
+            Ok::<(String, String), ApiError>((label, description))
         })
         .await
         .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??
+    };
+
+    let desc = if server_description.is_empty() {
+        None
+    } else {
+        Some(server_description.as_str())
     };
 
     let invite = InvitePayload::new(
         &public_url,
         &code,
         Some(&server_label),
-        None::<String>,
+        desc,
     );
 
     let url = invite.to_invite_url_with_base(&invite_base_url).map_err(|e| {
@@ -353,16 +359,21 @@ pub async fn list_invites_handler(
             ApiError::InternalServerError(format!("db connection failed: {}", e))
         })?;
 
-        // Fetch server label once
-        let server_label: String = conn
+        // Fetch server label and description once
+        let (server_label, server_description): (String, String) = conn
             .query_row(
-                "SELECT label FROM servers WHERE id = ?1",
+                "SELECT label, description FROM servers WHERE id = ?1",
                 [state_clone.server_id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .map_err(|e| {
-                ApiError::InternalServerError(format!("failed to fetch server label: {}", e))
+                ApiError::InternalServerError(format!("failed to fetch server metadata: {}", e))
             })?;
+        let desc_for_payload: Option<&str> = if server_description.is_empty() {
+            None
+        } else {
+            Some(&server_description)
+        };
 
         let mut stmt = conn
             .prepare(
@@ -399,7 +410,7 @@ pub async fn list_invites_handler(
                     &public_url,
                     &code,
                     Some(&server_label),
-                    None::<String>,
+                    desc_for_payload,
                 );
                 invite
                     .to_invite_url_with_base(&invite_base_url)
