@@ -40,6 +40,13 @@ type VoiceStoreSnapshot = {
   forceReset: ReturnType<typeof vi.fn>;
   dismissConnectionError: ReturnType<typeof vi.fn>;
   clearMicToggleError: ReturnType<typeof vi.fn>;
+  voiceSessionDisabled: boolean;
+  voiceSessionDisabledReason: string | null;
+  setVoiceSessionDisabled: ReturnType<typeof vi.fn>;
+  setInputDevice: ReturnType<typeof vi.fn>;
+  setOutputDevice: ReturnType<typeof vi.fn>;
+  setInputVolume: ReturnType<typeof vi.fn>;
+  setOutputVolume: ReturnType<typeof vi.fn>;
 };
 
 let identityState: { identity: { pseudonymId: string } | null; permissions: { capabilities: { can_voice: boolean } } | null; permissionsStatus: string };
@@ -55,10 +62,15 @@ vi.mock('@/stores/channels', () => ({
   useChannelsStore: (selector: (state: typeof channelsState) => unknown) => selector(channelsState),
 }));
 
-vi.mock('@/stores/voice', () => ({
-  useVoiceStore: (selector?: (state: VoiceStoreSnapshot) => unknown) =>
-    selector ? selector(voiceState) : voiceState,
-}));
+vi.mock('@/stores/voice', () => {
+  const fn = (selector?: (state: any) => unknown) =>
+    selector ? selector(voiceState) : voiceState;
+  fn.getState = () => voiceState;
+  fn.setState = vi.fn((partial: any) => {
+    Object.assign(voiceState, typeof partial === 'function' ? partial(voiceState) : partial);
+  });
+  return { useVoiceStore: fn };
+});
 
 vi.mock('@/stores/servers', () => ({
   useServersStore: (selector: (state: typeof serversState) => unknown) => selector(serversState),
@@ -167,6 +179,13 @@ function defaultVoiceState(): VoiceStoreSnapshot {
     forceReset: vi.fn(),
     dismissConnectionError: vi.fn(),
     clearMicToggleError: vi.fn(),
+    voiceSessionDisabled: false,
+    voiceSessionDisabledReason: null,
+    setVoiceSessionDisabled: vi.fn(),
+    setInputDevice: vi.fn(),
+    setOutputDevice: vi.fn(),
+    setInputVolume: vi.fn(),
+    setOutputVolume: vi.fn(),
   };
 }
 
@@ -604,7 +623,7 @@ describe('VoicePanel', () => {
 
     render(<VoicePanel />);
 
-    expect(screen.getByText(/Failed to check permissions/)).toBeInTheDocument();
+    expect(screen.getByText(/Could not verify voice permissions/)).toBeInTheDocument();
   });
 
   it('join button is disabled when joiningAnyCall is true', () => {
@@ -668,5 +687,71 @@ describe('VoicePanel', () => {
 
     // First toggle should disable (no device options needed for mute)
     expect(mockSetMicrophoneEnabled).toHaveBeenCalledWith(false);
+  });
+
+  it('shows disconnect recovery banner on text channels when voice previously failed', () => {
+    // Active channel is Text, but a previous voice call on a different channel failed
+    channelsState = {
+      activeChannelId: 'chan-text',
+      channels: [
+        { channel_id: 'chan-text', channel_type: 'Text', name: 'General Chat' },
+        { channel_id: 'chan-voice', channel_type: 'Voice', name: 'Voice Room' },
+      ],
+    };
+
+    voiceState = {
+      ...voiceState,
+      voiceToken: null,
+      livekitUrl: null,
+      connectedChannelId: null,
+      connectionState: 'failed',
+      connectionError: 'Voice disconnected — the connection was lost.',
+      lastFailedChannelId: 'chan-voice',
+    };
+
+    render(<VoicePanel />);
+
+    // Should show disconnect banner even though active channel is Text
+    expect(screen.getByRole('alert')).toHaveTextContent(/Voice disconnected.*Voice Room/);
+    // Dismiss button should be available
+    expect(screen.getByLabelText('Dismiss')).toBeInTheDocument();
+  });
+
+  it('disables join button and shows reason when voiceSessionDisabled is true', () => {
+    voiceState = {
+      ...voiceState,
+      voiceSessionDisabled: true,
+      voiceSessionDisabledReason: 'Voice unavailable: LiveKit failed to start',
+    };
+
+    render(<VoicePanel />);
+
+    const joinBtn = screen.getByRole('button', { name: 'Create Call' });
+    expect(joinBtn).toBeDisabled();
+    // The reason text appears in both the status notice and the error area
+    const matches = screen.getAllByText(/Voice unavailable: LiveKit failed to start/);
+    expect(matches.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('re-enables join button when voiceSessionDisabled is cleared after retry', () => {
+    // First render: voice disabled from host failure
+    voiceState = {
+      ...voiceState,
+      voiceSessionDisabled: true,
+      voiceSessionDisabledReason: 'Voice unavailable: LiveKit failed to start',
+    };
+
+    const { rerender } = render(<VoicePanel />);
+    expect(screen.getByRole('button', { name: 'Create Call' })).toBeDisabled();
+
+    // Second render: voice re-enabled after successful retry
+    voiceState = {
+      ...voiceState,
+      voiceSessionDisabled: false,
+      voiceSessionDisabledReason: null,
+    };
+
+    rerender(<VoicePanel />);
+    expect(screen.getByRole('button', { name: 'Create Call' })).not.toBeDisabled();
   });
 });

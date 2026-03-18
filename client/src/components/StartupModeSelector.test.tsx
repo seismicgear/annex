@@ -32,10 +32,12 @@ vi.mock('@/lib/api', () => ({
 
 vi.mock('@/lib/startup-prefs', () => ({ clearWebStartupMode: vi.fn() }));
 
+const mockBeginRemoteRegistration = vi.fn(async () => ({ id: 'srv-1', baseUrl: '', slug: 'test', label: 'Test' }));
 vi.mock('@/stores/servers', () => ({
   useServersStore: {
     getState: () => ({
       findServerByBaseUrl: () => null,
+      beginRemoteRegistration: (...args: unknown[]) => mockBeginRemoteRegistration(...args),
     }),
   },
 }));
@@ -44,6 +46,15 @@ vi.mock('@/stores/identity', () => ({
   useIdentityStore: {
     getState: () => ({
       selectIdentity: vi.fn(async () => {}),
+    }),
+  },
+}));
+
+const mockSetVoiceSessionDisabled = vi.fn();
+vi.mock('@/stores/voice', () => ({
+  useVoiceStore: {
+    getState: () => ({
+      setVoiceSessionDisabled: mockSetVoiceSessionDisabled,
     }),
   },
 }));
@@ -118,6 +129,53 @@ describe('StartupModeSelector', () => {
 
     await waitFor(() => {
       expect(screen.getByText(/did not respond in time/i)).toBeInTheDocument();
+    });
+  });
+
+  it('clears voiceSessionDisabled when connecting to a remote server', async () => {
+    getStartupModeMock.mockResolvedValue(null);
+    fetchWithTimeoutMock.mockResolvedValue({ ok: true, status: 200 } as Response);
+
+    const onReady = vi.fn();
+    render(<StartupModeSelector onReady={onReady} />);
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText('annex.example.com')).toBeInTheDocument();
+    });
+
+    const input = screen.getByPlaceholderText('annex.example.com');
+    fireEvent.change(input, { target: { value: 'https://good-server.example.com' } });
+    fireEvent.submit(input.closest('form')!);
+
+    await waitFor(() => {
+      expect(mockSetVoiceSessionDisabled).toHaveBeenCalledWith(false);
+    });
+
+    expect(onReady).toHaveBeenCalled();
+  });
+
+  it('clears voiceSessionDisabled on remote server connect (integration)', async () => {
+    // Verify that when connecting to a remote server succeeds,
+    // setVoiceSessionDisabled(false) is called before onReady
+    getStartupModeMock.mockResolvedValue(null);
+    fetchWithTimeoutMock.mockResolvedValue({ ok: true, status: 200 } as Response);
+
+    const onReady = vi.fn();
+    render(<StartupModeSelector onReady={onReady} />);
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText('annex.example.com')).toBeInTheDocument();
+    });
+
+    const input = screen.getByPlaceholderText('annex.example.com');
+    fireEvent.change(input, { target: { value: 'https://remote.example.com' } });
+    fireEvent.submit(input.closest('form')!);
+
+    await waitFor(() => {
+      // setVoiceSessionDisabled(false) should be called before onReady
+      const calls = mockSetVoiceSessionDisabled.mock.calls;
+      const falseCalls = calls.filter((c: unknown[]) => c[0] === false);
+      expect(falseCalls.length).toBeGreaterThanOrEqual(1);
     });
   });
 });

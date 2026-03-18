@@ -13,6 +13,7 @@ import { useState, useCallback } from 'react';
 import { useServersStore } from '@/stores/servers';
 import { resolveUrl } from '@/lib/api';
 import { normalizeServerUrl } from '@/lib/url';
+import { useIdentityStore } from '@/stores/identity';
 import type { SavedServer } from '@/types';
 
 interface AddServerDialogProps {
@@ -82,37 +83,59 @@ function AddServerDialog({ onClose, onAdd }: AddServerDialogProps) {
   );
 }
 
-function ServerIcon({ server, isActive, imageUrl, onClick }: {
+function ServerIcon({ server, isActive, imageUrl, onClick, onRetry, onRemove }: {
   server: SavedServer;
   isActive: boolean;
   imageUrl?: string | null;
   onClick: () => void;
+  onRetry?: () => void;
+  onRemove?: () => void;
 }) {
   const initial = server.label.charAt(0).toUpperCase();
   const memberCount = server.cachedSummary?.total_active_members;
   const isPending = !server.identityId;
+  const phase = useIdentityStore((s) => s.phase);
+  // A placeholder is "failed" when registration is no longer in progress
+  const isFailed = isPending && phase !== 'keys_ready' && phase !== 'registering' && phase !== 'proving' && phase !== 'verifying';
 
   return (
     <div className="server-hub-item-wrapper">
       <div className={`server-hub-pill ${isActive ? 'active' : ''}`} />
       <button
-        className={`server-hub-icon ${isActive ? 'active' : ''} ${imageUrl ? 'has-image' : ''} ${isPending ? 'pending' : ''}`}
+        className={`server-hub-icon ${isActive ? 'active' : ''} ${imageUrl ? 'has-image' : ''} ${isPending ? 'pending' : ''} ${isFailed ? 'failed' : ''}`}
         style={{
           '--server-accent': server.accentColor,
-          ...(isPending ? { opacity: 0.5 } : {}),
+          ...(isPending && !isFailed ? { opacity: 0.5 } : {}),
+          ...(isFailed ? { opacity: 0.6 } : {}),
         } as React.CSSProperties}
-        onClick={onClick}
-        disabled={isPending}
-        title={isPending
-          ? `${server.label} — registration pending`
-          : `${server.label}${server.slug ? ` (${server.slug})` : ''}${memberCount ? ` — ${memberCount} online` : ''}`}
+        onClick={isFailed ? undefined : onClick}
+        disabled={isPending && !isFailed}
+        title={isFailed
+          ? `${server.label} — registration failed (right-click to retry or remove)`
+          : isPending
+            ? `${server.label} — registration pending`
+            : `${server.label}${server.slug ? ` (${server.slug})` : ''}${memberCount ? ` — ${memberCount} online` : ''}`}
       >
         {imageUrl ? (
           <img src={resolveUrl(imageUrl)} alt={server.label} className="server-hub-image" />
         ) : (
-          <span className="server-hub-initial">{initial}</span>
+          <span className="server-hub-initial">{isFailed ? '!' : initial}</span>
         )}
       </button>
+      {isFailed && (
+        <div className="server-hub-failed-actions">
+          {onRetry && (
+            <button className="server-hub-retry-btn" onClick={onRetry} title="Retry registration">
+              Retry
+            </button>
+          )}
+          {onRemove && (
+            <button className="server-hub-remove-btn" onClick={onRemove} title="Remove server">
+              &times;
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -124,6 +147,7 @@ export function ServerHub() {
   const switchServer = useServersStore((s) => s.switchServer);
   const switchError = useServersStore((s) => s.switchError);
   const beginRemoteRegistration = useServersStore((s) => s.beginRemoteRegistration);
+  const removeServer = useServersStore((s) => s.removeServer);
   const serverImageUrl = useServersStore((s) => s.serverImageUrl);
   const [showAddDialog, setShowAddDialog] = useState(false);
 
@@ -139,6 +163,17 @@ export function ServerHub() {
     const server = await beginRemoteRegistration(baseUrl);
     if (!server) throw new Error('Failed to add server');
   }, [beginRemoteRegistration]);
+
+  const handleRetry = useCallback(async (server: SavedServer) => {
+    // Remove the stale placeholder and re-initiate registration
+    await removeServer(server.id).catch(() => {});
+    const newServer = await beginRemoteRegistration(server.baseUrl);
+    if (!newServer) throw new Error('Failed to retry registration');
+  }, [beginRemoteRegistration, removeServer]);
+
+  const handleRemove = useCallback(async (serverId: string) => {
+    await removeServer(serverId);
+  }, [removeServer]);
 
   if (servers.length === 0) return null;
 
@@ -158,6 +193,8 @@ export function ServerHub() {
               isActive={server.id === activeServerId}
               imageUrl={server.id === activeServerId ? serverImageUrl : null}
               onClick={() => handleSwitch(server.id)}
+              onRetry={() => handleRetry(server)}
+              onRemove={() => handleRemove(server.id)}
             />
           ))}
         </div>

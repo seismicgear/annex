@@ -257,6 +257,7 @@ export default function App() {
             phase: 'error',
             error: `Failed to connect to server at ${pendingProtocolInvite.server}.`,
           });
+          useServersStore.getState().cleanupFailedRegistration();
           setPendingProtocolInvite(null);
           return;
         }
@@ -280,6 +281,7 @@ export default function App() {
           phase: 'error',
           error: err instanceof Error ? err.message : 'Invite validation failed',
         });
+        useServersStore.getState().cleanupFailedRegistration();
         setPendingProtocolInvite(null);
       }
     })();
@@ -349,6 +351,10 @@ export default function App() {
           phase: 'error',
           error: safeDiagnostic,
         });
+
+        // Clean up the placeholder server entry so the hub does not strand
+        // a permanently disabled icon after a failed registration.
+        useServersStore.getState().cleanupFailedRegistration();
       }
     })();
     return () => { cancelled = true; };

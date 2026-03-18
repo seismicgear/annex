@@ -36,6 +36,8 @@ export function SocialRecoveryDialog({ onClose }: Props) {
   const [recoveryConfig, setRecoveryConfig] = useState<RecoveryConfig | null>(null);
   const [generatedShards, setGeneratedShards] = useState<RecoveryShard[]>([]);
   const [copiedShard, setCopiedShard] = useState<number | null>(null);
+  /** Shard JSON shown in a read-only fallback field when clipboard write fails. */
+  const [fallbackShardText, setFallbackShardText] = useState<string | null>(null);
 
   // Recovery state
   const [recoveryShards, setRecoveryShards] = useState<Array<{ index: string; data: string }>>([
@@ -99,9 +101,16 @@ export function SocialRecoveryDialog({ onClose }: Props) {
       data: shard.data,
       for: identity?.pseudonymId?.slice(0, 12),
     });
-    await navigator.clipboard.writeText(shardData);
-    setCopiedShard(shard.index);
-    setTimeout(() => setCopiedShard(null), 2000);
+    setFallbackShardText(null);
+    try {
+      await navigator.clipboard.writeText(shardData);
+      setCopiedShard(shard.index);
+      setTimeout(() => setCopiedShard(null), 2000);
+    } catch {
+      // Clipboard API denied (e.g. Tauri webview) — show inline fallback
+      setFallbackShardText(shardData);
+      setError('Clipboard access denied. Copy the shard data manually from the field below.');
+    }
   };
 
   const updateRecoveryShard = (idx: number, field: 'index' | 'data', value: string) => {
@@ -304,6 +313,27 @@ export function SocialRecoveryDialog({ onClose }: Props) {
                 </div>
               ))}
             </div>
+
+            {error && <div className="error-message">{error}</div>}
+            {fallbackShardText && (
+              <div className="shard-fallback" onClick={(e) => e.stopPropagation()}>
+                <input
+                  type="text"
+                  readOnly
+                  value={fallbackShardText}
+                  className="share-link-input"
+                  autoFocus
+                  onFocus={(e) => e.target.select()}
+                />
+                <button
+                  onClick={(e) => { e.stopPropagation(); setFallbackShardText(null); setError(null); }}
+                  className="channel-error-dismiss"
+                  aria-label="Dismiss"
+                >
+                  &times;
+                </button>
+              </div>
+            )}
 
             <div className="dialog-actions">
               <button className="primary-btn" onClick={onClose}>

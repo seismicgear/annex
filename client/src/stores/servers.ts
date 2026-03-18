@@ -56,6 +56,12 @@ interface ServersState {
    * Shared by ServerHub, FederationPanel, and protocol invite paths.
    */
   beginRemoteRegistration: (baseUrl: string) => Promise<SavedServer | null>;
+  /**
+   * Clean up a failed remote registration: remove the placeholder server
+   * entry and clear pendingRegistrationServerId so the hub does not strand
+   * a disabled icon.
+   */
+  cleanupFailedRegistration: (serverId?: string) => Promise<void>;
 }
 
 export const useServersStore = create<ServersState>((set, get) => ({
@@ -357,5 +363,19 @@ export const useServersStore = create<ServersState>((set, get) => ({
     });
 
     return server;
+  },
+
+  cleanupFailedRegistration: async (serverId?: string) => {
+    const targetId = serverId ?? get().pendingRegistrationServerId;
+    if (!targetId) {
+      // Just clear the tracking state even if no server to remove
+      set({ pendingRegistrationServerId: null });
+      return;
+    }
+
+    // Remove the placeholder entry from IndexedDB and in-memory state
+    await serversDb.removeServer(targetId).catch(() => {});
+    const servers = await serversDb.listServers();
+    set({ servers, pendingRegistrationServerId: null });
   },
 }));

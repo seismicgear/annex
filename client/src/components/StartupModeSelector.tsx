@@ -94,6 +94,10 @@ export function StartupModeSelector({ onReady }: Props) {
       setError('');
       const degraded: DegradedStartupInfo = { voiceFailed: false, publicEndpointFailed: false, livekitRouteUnavailable: false };
       try {
+        // Clear any stale voice-disabled state from a previous failed attempt
+        // so a successful startup does not inherit old failure flags.
+        useVoiceStore.getState().setVoiceSessionDisabled(false);
+
         // Auto-configure voice: start a local LiveKit server if not already configured.
         // If configured but unreachable, fall back to starting a local instance.
         // Must happen BEFORE startEmbeddedServer so env vars are picked up.
@@ -205,14 +209,27 @@ export function StartupModeSelector({ onReady }: Props) {
         }
       }
 
+      // Clear any stale voice-disabled state from a previous host-mode failure
+      // so connecting to a remote server does not inherit the disabled flag.
+      useVoiceStore.getState().setVoiceSessionDisabled(false);
+
       // Resolve server-to-identity: if we have a saved server for this URL
       // with a registered identity, select that identity before proceeding.
       const existing = useServersStore.getState().findServerByBaseUrl(normalized);
       if (existing?.identityId) {
         await useIdentityStore.getState().selectIdentity(existing.identityId);
+        onReady();
+      } else {
+        // No existing identity for this server — route through remote
+        // registration so App.tsx Gate 3 creates a proper identity/server pair.
+        const server = await useServersStore.getState().beginRemoteRegistration(normalized);
+        if (!server) {
+          setError('Failed to begin registration with the remote server.');
+          setPhase('choose');
+          return;
+        }
+        onReady();
       }
-
-      onReady();
     },
     [onReady, inTauri],
   );
@@ -222,6 +239,8 @@ export function StartupModeSelector({ onReady }: Props) {
     (skipSave: boolean) => {
       // Empty base URL = relative paths = current origin
       setApiBaseUrl('');
+      // Clear any stale voice-disabled state from a previous startup failure.
+      useVoiceStore.getState().setVoiceSessionDisabled(false);
       if (!skipSave) {
         saveWebPrefs({ mode: 'local' });
       }
@@ -288,6 +307,9 @@ export function StartupModeSelector({ onReady }: Props) {
     } else {
       clearWebStartupMode();
     }
+    // Clear stale voice-disabled state so returning to the chooser
+    // does not preserve a previous host-start failure.
+    useVoiceStore.getState().setVoiceSessionDisabled(false);
     setPhase('choose');
     setError('');
   };
