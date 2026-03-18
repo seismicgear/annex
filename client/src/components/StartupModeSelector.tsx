@@ -20,6 +20,7 @@ import {
   getStartupMode,
   clearStartupMode,
   startTunnel,
+  checkLiveKitReachable,
 } from '@/lib/tauri';
 import { setApiBaseUrl } from '@/lib/api';
 import { clearWebStartupMode } from '@/lib/startup-prefs';
@@ -85,12 +86,20 @@ export function StartupModeSelector({ onReady }: Props) {
       const degraded: DegradedStartupInfo = { voiceFailed: false, tunnelFailed: false };
       try {
         // Auto-configure voice: start a local LiveKit server if not already configured.
+        // If configured but unreachable, fall back to starting a local instance.
         // Must happen BEFORE startEmbeddedServer so env vars are picked up.
         setPhase('starting_voice');
         try {
           const lkConfig = await getLiveKitConfig();
           if (!lkConfig.configured) {
             await startLocalLiveKit();
+          } else {
+            // Verify the configured endpoint is actually reachable
+            const reachCheck = await checkLiveKitReachable(lkConfig.url);
+            if (!reachCheck.reachable) {
+              console.warn('Configured LiveKit unreachable, starting local fallback:', reachCheck.error);
+              await startLocalLiveKit();
+            }
           }
         } catch (voiceErr) {
           degraded.voiceFailed = true;
@@ -149,8 +158,18 @@ export function StartupModeSelector({ onReady }: Props) {
       try {
         const resp = await fetch(`${normalized}/api/public/server/summary`);
         if (!resp.ok) throw new Error(`Server responded with ${resp.status}`);
-      } catch {
-        setError('Could not reach server. Check the URL and try again.');
+      } catch (err) {
+        // Distinguish CORS / network errors for better desktop diagnostics
+        const isCorsLikely = err instanceof TypeError && /failed to fetch/i.test(err.message);
+        if (inTauri && isCorsLikely) {
+          setError(
+            'Could not reach server — this may be a CORS/origin configuration issue. ' +
+            'The remote server needs to allow Tauri desktop origins. ' +
+            'Ask the server admin to add tauri://localhost to their CORS allowed_origins.',
+          );
+        } else {
+          setError('Could not reach server. Check the URL and try again.');
+        }
         setPhase('choose');
         return;
       }

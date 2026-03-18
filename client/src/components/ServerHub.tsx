@@ -11,7 +11,8 @@
 
 import { useState, useCallback } from 'react';
 import { useServersStore } from '@/stores/servers';
-import { resolveUrl } from '@/lib/api';
+import { useIdentityStore } from '@/stores/identity';
+import { resolveUrl, setApiBaseUrl } from '@/lib/api';
 import type { SavedServer } from '@/types';
 
 interface AddServerDialogProps {
@@ -136,8 +137,19 @@ export function ServerHub() {
   const handleAdd = useCallback(async (baseUrl: string) => {
     const server = await addRemoteServer(baseUrl);
     if (!server) throw new Error('Failed to add server');
-    // Don't auto-switch: server has no identity yet (identityId is empty).
-    // The user needs to complete registration before the icon becomes fully usable.
+
+    // Immediately begin registration on the remote server: switch the API
+    // target and reset identity phase to 'keys_ready' so the auto-register
+    // effect in App.tsx fires. This prevents leaving the user with a
+    // disabled placeholder icon and no follow-up action.
+    setApiBaseUrl(baseUrl);
+    useIdentityStore.setState({
+      phase: 'keys_ready',
+      proofInFlight: false,
+      provingStatus: 'idle',
+      error: null,
+      errorDetails: null,
+    });
   }, [addRemoteServer]);
 
   if (servers.length === 0) return null;

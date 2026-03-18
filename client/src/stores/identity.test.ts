@@ -35,6 +35,19 @@ vi.mock('@/lib/zk', () => ({
   ZkProofCancelledError: class extends Error {},
 }));
 
+const mockLeaveCall = vi.fn(async () => {});
+const mockForceReset = vi.fn();
+vi.mock('./voice', () => ({
+  useVoiceStore: {
+    getState: () => ({
+      connectedChannelId: 'ch-1',
+      voiceToken: 'voice-tok-1',
+      leaveCall: (...args: unknown[]) => mockLeaveCall(...args),
+      forceReset: (...args: unknown[]) => mockForceReset(...args),
+    }),
+  },
+}));
+
 describe('identity store — API auth state sync', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -144,6 +157,29 @@ describe('identity store — API auth state sync', () => {
     const { useIdentityStore } = await import('./identity');
     useIdentityStore.getState().logout();
 
+    expect(mockSetSessionToken).toHaveBeenCalledWith(null);
+    expect(useIdentityStore.getState().phase).toBe('uninitialized');
+  });
+
+  it('logout tears down voice state before clearing identity', async () => {
+    vi.resetModules();
+    mockSetSessionToken.mockClear();
+    mockLeaveCall.mockClear();
+    mockForceReset.mockClear();
+
+    const { useIdentityStore } = await import('./identity');
+
+    // Set up an identity with a pseudonymId (simulating an active session)
+    useIdentityStore.setState({
+      identity: { id: '1', sk: 'abc', pseudonymId: 'p1', sessionToken: 'tok1', commitmentHex: 'c1', roleCode: 0, nodeId: 'n1', serverSlug: 's1', leafIndex: 0, createdAt: '' } as any,
+      phase: 'ready',
+    });
+
+    useIdentityStore.getState().logout();
+
+    // Voice teardown should happen before token is cleared
+    expect(mockLeaveCall).toHaveBeenCalledWith('p1');
+    expect(mockForceReset).toHaveBeenCalled();
     expect(mockSetSessionToken).toHaveBeenCalledWith(null);
     expect(useIdentityStore.getState().phase).toBe('uninitialized');
   });

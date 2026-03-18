@@ -117,6 +117,39 @@ export async function setMediaKeepalive(active: boolean): Promise<void> {
   await invoke('set_media_keepalive', { active });
 }
 
+// ── Cold-start invite retrieval ──
+
+/**
+ * Retrieve and clear a buffered cold-start invite from managed Rust state.
+ *
+ * During app launch the deep-link URL may arrive before the React event
+ * listener mounts. This command fetches the invite that was parsed during
+ * Tauri's `setup()` phase. Returns `null` if no invite was buffered.
+ * The buffer is cleared on read so the invite is processed exactly once.
+ */
+export async function getPendingInvite(): Promise<{ server: string; code: string } | null> {
+  return invoke<{ server: string; code: string } | null>('get_pending_invite');
+}
+
+// ── First-run installation marker ──
+
+/** Check whether first-run initialization has completed previously. */
+export async function checkFirstRunCompleted(): Promise<boolean> {
+  return invoke<boolean>('check_first_run_completed');
+}
+
+/** Write the first-run marker so subsequent launches skip fresh-install cleanup. */
+export async function markFirstRunCompleted(): Promise<void> {
+  await invoke('mark_first_run_completed');
+}
+
+// ── LiveKit reachability check ──
+
+/** Check if a LiveKit server is reachable at the given URL. */
+export async function checkLiveKitReachable(url: string): Promise<{ reachable: boolean; error?: string }> {
+  return invoke<{ reachable: boolean; error?: string }>('check_livekit_reachable', { url });
+}
+
 // ── Deep-link invite listener ──
 
 export async function listenForInvite(

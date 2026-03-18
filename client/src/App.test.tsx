@@ -28,6 +28,7 @@ vi.mock('@/lib/db', () => ({
   updateIdentityPseudonym: vi.fn(async () => {}),
   exportIdentity: vi.fn(() => '{}'),
   importIdentity: vi.fn(async () => ({})),
+  clearAllDatabases: vi.fn(async () => {}),
 }));
 
 vi.mock('@/lib/servers', () => ({
@@ -158,9 +159,13 @@ vi.mock('@/lib/tauri', () => ({
   getTunnelUrl: vi.fn(async () => null),
   getLiveKitConfig: vi.fn(async () => ({ configured: false, url: '', api_key: '', has_api_secret: false, token_ttl_seconds: 3600 })),
   startLocalLiveKit: vi.fn(async () => ({ url: 'ws://127.0.0.1:7880' })),
+  checkLiveKitReachable: vi.fn(async () => ({ reachable: true })),
   exportIdentityJson: vi.fn(async () => null),
   getPlatformMediaStatus: vi.fn(async () => ({ screen_share_available: true, camera_mic_available: true, warnings: [], display_server: 'test' })),
   listenForInvite: vi.fn(async () => () => {}),
+  getPendingInvite: vi.fn(async () => null),
+  checkFirstRunCompleted: vi.fn(async () => false),
+  markFirstRunCompleted: vi.fn(async () => {}),
 }));
 
 // ── Helpers ──
@@ -209,6 +214,8 @@ beforeEach(async () => {
   const tauriMock = await import('@/lib/tauri');
   vi.mocked(tauriMock.getStartupMode).mockResolvedValue(null);
   vi.mocked(tauriMock.startEmbeddedServer).mockResolvedValue('http://127.0.0.1:9999');
+  vi.mocked(tauriMock.checkFirstRunCompleted).mockResolvedValue(false);
+  vi.mocked(tauriMock.getPendingInvite).mockResolvedValue(null);
   global.fetch = vi.fn(async () => ({ ok: true, status: 200 } as Response));
 });
 
@@ -332,6 +339,8 @@ describe('App startup flow', () => {
       vi.mocked(tauri.getStartupMode).mockResolvedValue({
         startup_mode: { mode: 'host' },
       });
+      // Returning user: first_run_completed exists (skip destructive cleanup)
+      vi.mocked(tauri.checkFirstRunCompleted).mockResolvedValue(true);
 
       const App = (await import('./App')).default;
       render(<App />);
@@ -458,6 +467,7 @@ describe('App startup flow', () => {
       vi.mocked(tauri.getStartupMode).mockResolvedValue({
         startup_mode: { mode: 'client', server_url: 'https://unreachable.invalid' },
       });
+      vi.mocked(tauri.checkFirstRunCompleted).mockResolvedValue(true);
       // Make the server health check fail so auto-resume falls back to selector
       global.fetch = vi.fn(async () => { throw new Error('network'); });
       const App = (await import('./App')).default;
@@ -519,6 +529,42 @@ describe('App startup flow', () => {
 
       // Retry should NOT immediately re-trigger registration
       expect(api.getServerSummary).toHaveBeenCalledTimes(callsBefore);
+    });
+  });
+
+  describe('Fresh install gating — first_run_completed marker', () => {
+    it('Tauri: first_run_completed=true skips destructive cleanup on relaunch', async () => {
+      tauriEnabled = true;
+      const dbMock = await import('@/lib/db');
+      vi.mocked(dbMock.listIdentities).mockResolvedValue([FAKE_IDENTITY]);
+      const tauri = await import('@/lib/tauri');
+      // first_run_completed exists — this is a returning user after logout
+      vi.mocked(tauri.checkFirstRunCompleted).mockResolvedValue(true);
+
+      const App = (await import('./App')).default;
+      render(<App />);
+
+      // Should NOT have called clearAllDatabases or resetServerData
+      await waitFor(() => {
+        expect(screen.getByText('Choose how to use Annex. Remembered values are shown as suggestions.')).toBeInTheDocument();
+      });
+      expect(dbMock.clearAllDatabases).not.toHaveBeenCalled();
+    });
+
+    it('Tauri: first_run_completed=false triggers fresh install cleanup', async () => {
+      tauriEnabled = true;
+      const dbMock = await import('@/lib/db');
+      vi.mocked(dbMock.listIdentities).mockResolvedValue([]);
+      const tauri = await import('@/lib/tauri');
+      vi.mocked(tauri.checkFirstRunCompleted).mockResolvedValue(false);
+
+      const App = (await import('./App')).default;
+      render(<App />);
+
+      // clearAllDatabases should be called for fresh install
+      await waitFor(() => {
+        expect(dbMock.clearAllDatabases).toHaveBeenCalled();
+      });
     });
   });
 });

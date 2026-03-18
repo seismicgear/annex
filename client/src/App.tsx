@@ -34,7 +34,7 @@ import { getApiBaseUrl, getServerSummary, setApiBaseUrl, redeemInvite, setPublic
 import { saveIdentity, clearAllDatabases } from '@/lib/db';
 import { cancelMembershipProofGeneration, isProofGenerationInFlight } from '@/lib/zk';
 import type { ProvingStatus } from '@/stores/identity';
-import { isTauri, getStartupMode as tauriGetStartupMode, listenForInvite, saveStartupMode, getTunnelUrl, resetServerData, clearStartupMode as clearTauriStartupMode } from '@/lib/tauri';
+import { isTauri, getStartupMode as tauriGetStartupMode, listenForInvite, saveStartupMode, getTunnelUrl, resetServerData, clearStartupMode as clearTauriStartupMode, getPendingInvite, checkFirstRunCompleted, markFirstRunCompleted } from '@/lib/tauri';
 import type { LegacyInvitePayload, InvitePayload } from '@/types';
 import './App.css';
 
@@ -134,18 +134,21 @@ export default function App() {
   }, [proofInFlight]);
 
   // ── Load identities + servers on mount (all modes) ──
-  // In Tauri mode, after loading identities we also check whether startup
-  // preferences (startup_prefs.json) exist.  If they don't, the user has
-  // never completed the full setup flow — reset identity selection so
-  // IdentitySetup renders first, even if IndexedDB has a valid identity
-  // from a previous install.  Returning users with saved prefs skip this.
+  // In Tauri mode, after loading identities we check the dedicated
+  // first_run_completed marker (NOT startup_prefs.json). If the marker
+  // is absent the user has never completed initial setup — reset identity
+  // selection so IdentitySetup renders first, even if IndexedDB has a
+  // valid identity from a previous install. This avoids the old bug where
+  // logout (which clears startup_prefs.json) would trigger destructive
+  // cleanup on next launch.
   useEffect(() => {
     loadIdentities()
-      .then(() => inTauri ? tauriGetStartupMode().catch(() => null) : undefined)
-      .then(async (startupPrefs) => {
-        if (inTauri && startupPrefs === null) {
-          // Fresh install detected (no startup_prefs.json). Clear ALL stale
-          // data from a previous installation so the user starts clean:
+      .then(() => inTauri ? checkFirstRunCompleted().catch(() => true) : undefined)
+      .then(async (firstRunDone) => {
+        if (inTauri && firstRunDone === false) {
+          // Fresh install detected (no first_run_completed marker). Clear
+          // ALL stale data from a previous installation so the user starts
+          // clean:
           //   1. IndexedDB databases (identities, servers, personas)
           //   2. Server data directory (database, uploads, config)
           // Without this, old identities persist in the server DB and the
@@ -167,9 +170,21 @@ export default function App() {
   }, [loadIdentities, loadServers, inTauri]);
 
   // ── Listen for annex:// deep-link invite events (Tauri only) ──
+  // Also fetch any buffered cold-start invite that arrived before this
+  // listener mounted. The Rust backend buffers it in managed state so
+  // it's not lost if the React tree hasn't rendered yet.
   useEffect(() => {
     if (!inTauri) return;
     let unlisten: (() => void) | null = null;
+
+    // Fetch buffered cold-start invite (arrives before listener mounts)
+    getPendingInvite()
+      .then((invite) => {
+        if (invite) setPendingProtocolInvite(invite);
+      })
+      .catch(() => {}); // Non-fatal — runtime listener covers future invites
+
+    // Runtime listener for subsequent deep-link events
     listenForInvite((invite) => {
       setPendingProtocolInvite(invite);
     }).then((fn) => { unlisten = fn; });
@@ -419,13 +434,18 @@ export default function App() {
     return () => { cancelled = true; };
   }, [inTauri, phase, identity?.pseudonymId]);
 
-  // Auto-save current server to the node hub on first identity ready
+  // Auto-save current server to the node hub on first identity ready.
+  // Passes the active API base URL so remote servers are persisted with
+  // their actual endpoint rather than ''.
   useEffect(() => {
     if (phase === 'ready' && identity?.pseudonymId && identity.id && !serverSaved.current) {
       serverSaved.current = true;
-      saveCurrentServer(identity.id, identity.serverSlug, identity.serverSlug)
-        .then(() =>
-          getPersonasForIdentity(identity.id).then((personas) => {
+      const activeBaseUrl = getApiBaseUrl();
+      saveCurrentServer(identity.id, identity.serverSlug, identity.serverSlug, activeBaseUrl)
+        .then(() => {
+          // Mark first-run as completed so subsequent launches skip cleanup
+          if (inTauri) markFirstRunCompleted().catch(() => {});
+          return getPersonasForIdentity(identity.id).then((personas) => {
             if (personas.length > 0) {
               const server = useServersStore.getState().getActiveServer();
               if (server && !server.personaId) {
@@ -436,13 +456,13 @@ export default function App() {
                 );
               }
             }
-          }),
-        )
+          });
+        })
         .catch(() => {
           // Non-fatal: server hub entry may not be saved on first load
         });
     }
-  }, [phase, identity?.pseudonymId, identity?.id, identity?.serverSlug, saveCurrentServer]);
+  }, [phase, identity?.pseudonymId, identity?.id, identity?.serverSlug, saveCurrentServer, inTauri]);
 
   // Apply persona isolation — dynamic CSS custom properties per server context
   useEffect(() => {

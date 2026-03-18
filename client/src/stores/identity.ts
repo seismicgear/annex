@@ -15,6 +15,7 @@ import type { StoredIdentity, IdentityInfo } from '@/types';
 import * as db from '@/lib/db';
 import * as zk from '@/lib/zk';
 import * as api from '@/lib/api';
+import { useVoiceStore } from './voice';
 
 export type IdentityPhase =
   | 'uninitialized'
@@ -279,6 +280,17 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
 
   logout: () => {
     void zk.cancelMembershipProofGeneration();
+
+    // Tear down voice state BEFORE clearing identity / session token.
+    // This ensures we attempt a graceful leaveCall while credentials are
+    // still valid, and force-resets all voice UI state regardless.
+    const voiceStore = useVoiceStore.getState();
+    const { identity: currentIdentity } = get();
+    if (currentIdentity?.pseudonymId && (voiceStore.connectedChannelId || voiceStore.voiceToken)) {
+      void voiceStore.leaveCall(currentIdentity.pseudonymId).catch(() => {});
+    }
+    voiceStore.forceReset();
+
     api.setSessionToken(null);
     set({ identity: null, phase: 'uninitialized', error: null, errorDetails: null, permissions: null, permissionsStatus: 'idle', proofInFlight: false, provingStatus: 'idle' });
   },

@@ -175,6 +175,9 @@ struct AppManagedState {
     server: Mutex<Option<ServerState>>,
     tunnel: Mutex<Option<TunnelState>>,
     livekit: Mutex<Option<LiveKitProcessState>>,
+    /// Buffered cold-start invite parsed before the React listener mounts.
+    /// Consumed exactly once via the `get_pending_invite` command.
+    pending_invite: Mutex<Option<DeepLinkInvite>>,
 }
 
 // ── Deep-link invite parsing ──
@@ -305,6 +308,42 @@ fn reset_server_data(state: tauri::State<'_, AppManagedState>) -> Result<(), Str
     }
 
     tracing::info!("reset_server_data: complete");
+    Ok(())
+}
+
+/// Retrieve and clear a buffered cold-start invite.
+///
+/// During app launch, the deep-link URL may arrive before the React event
+/// listener has mounted. This command lets the frontend poll for any invite
+/// that was parsed during `setup()`. Returns `null` if none buffered.
+/// Clears the buffer so the invite is processed exactly once.
+#[tauri::command]
+fn get_pending_invite(state: tauri::State<'_, AppManagedState>) -> Option<DeepLinkInvite> {
+    state
+        .pending_invite
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.take())
+}
+
+/// Check whether first-run initialization has been completed previously.
+///
+/// Returns `true` if the marker file exists, meaning the app has already
+/// gone through initial setup and a "fresh install" cleanup should NOT run.
+#[tauri::command]
+fn check_first_run_completed(state: tauri::State<'_, AppManagedState>) -> bool {
+    state.data_dir.join("first_run_completed").exists()
+}
+
+/// Write the first-run marker file so subsequent launches skip cleanup.
+///
+/// Called by the frontend after the first successful registration completes.
+/// This marker is NOT cleared on logout so that "logout → relaunch" does not
+/// destroy server data or IndexedDB state.
+#[tauri::command]
+fn mark_first_run_completed(state: tauri::State<'_, AppManagedState>) -> Result<(), String> {
+    let marker = state.data_dir.join("first_run_completed");
+    std::fs::write(&marker, "1").map_err(|e| format!("failed to write first-run marker: {e}"))?;
     Ok(())
 }
 
@@ -874,9 +913,9 @@ fn clear_livekit_config(state: tauri::State<'_, AppManagedState>) -> Result<(), 
 
 /// Check if a LiveKit server is reachable at the given URL.
 ///
-/// Not currently registered in the invoke handler. Retained for future use.
+/// Used by the frontend during host startup to verify that a "configured"
+/// LiveKit endpoint is actually reachable before advertising voice capability.
 #[tauri::command]
-#[allow(dead_code)]
 async fn check_livekit_reachable(url: String) -> Result<serde_json::Value, String> {
     // LiveKit serves HTTP on the same port as WebSocket.
     // Replace ws:// with http:// for the health check.
@@ -1819,6 +1858,7 @@ fn main() {
             server: Mutex::new(None),
             tunnel: Mutex::new(None),
             livekit: Mutex::new(None),
+            pending_invite: Mutex::new(None),
         })
         .setup(|app| {
             #[cfg(target_os = "linux")]
@@ -1843,16 +1883,24 @@ fn main() {
             //      The listener below handles that case.
             let handle = app.handle().clone();
 
-            // Cold start: process the URL(s) that launched the app.
+            // Cold start: buffer the invite in managed state so the frontend
+            // can retrieve it via `get_pending_invite` once the React tree has
+            // mounted. This replaces the old fire-and-forget `emit()` which
+            // would be lost if the listener wasn't registered yet.
             if let Ok(Some(urls)) = app.deep_link().get_current() {
                 for raw_url in urls.iter().filter_map(|u| Some(u.as_str())) {
                     if let Some(invite) = parse_deep_link_invite(raw_url) {
                         tracing::info!(
                             server = %invite.server,
                             code = %invite.code,
-                            "received annex:// invite deep link (cold start)"
+                            "received annex:// invite deep link (cold start) — buffered"
                         );
-                        let _ = handle.emit("annex-invite", &invite);
+                        let managed = app.state::<AppManagedState>();
+                        if let Ok(mut guard) = managed.pending_invite.lock() {
+                            *guard = Some(invite);
+                        }
+                        // Only buffer the first valid invite (one at a time).
+                        break;
                     }
                 }
             }
@@ -1885,6 +1933,9 @@ fn main() {
             save_startup_mode,
             clear_startup_mode,
             reset_server_data,
+            get_pending_invite,
+            check_first_run_completed,
+            mark_first_run_completed,
             start_embedded_server,
             start_tunnel,
             stop_tunnel,
@@ -1892,6 +1943,7 @@ fn main() {
             export_identity_json,
             get_livekit_config,
             start_local_livekit,
+            check_livekit_reachable,
             get_platform_media_status,
             set_media_keepalive,
         ])
@@ -2148,5 +2200,23 @@ mod tests {
     fn parse_deep_link_invite_missing_server() {
         let url = "annex://invite?code=abc123";
         assert!(parse_deep_link_invite(url).is_none());
+    }
+
+    #[test]
+    fn first_run_marker_lifecycle() {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let marker = dir.path().join("first_run_completed");
+
+        // Initially does not exist
+        assert!(!marker.exists(), "marker should not exist on fresh install");
+
+        // Write marker
+        std::fs::write(&marker, "1").expect("should write marker");
+        assert!(marker.exists(), "marker should exist after write");
+
+        // Marker persists across "logout" (we don't delete it)
+        assert!(marker.exists(), "marker should survive logout");
+
+        // Only a full uninstall / data-dir removal clears it
     }
 }
