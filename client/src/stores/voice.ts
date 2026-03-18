@@ -46,12 +46,16 @@ export interface VoiceState {
   lastJoinError: string | null;
   /** Whether the user has self-deafened (output muted). */
   deafened: boolean;
+  /** Whether the local microphone is muted (shared source of truth). */
+  micMuted: boolean;
 
   /** Audio settings persisted across sessions. */
   inputDeviceId: string | null;
   outputDeviceId: string | null;
   inputVolume: number;   // 0–100
   outputVolume: number;  // 0–100
+  /** Camera device ID (persisted). */
+  cameraDeviceId: string | null;
 
   /** Join a voice call on the given channel. */
   joinCall: (pseudonymId: string, channelId: string) => Promise<void>;
@@ -59,13 +63,20 @@ export interface VoiceState {
   leaveCall: (pseudonymId: string) => Promise<void>;
   /** Toggle self-deafen state. */
   toggleDeafen: () => void;
+  /** Toggle microphone mute (shared source of truth). */
+  toggleMicMuted: () => void;
+  /** Set microphone muted state explicitly. */
+  setMicMuted: (muted: boolean) => void;
   /** Update audio settings. */
   setInputDevice: (deviceId: string | null) => void;
   setOutputDevice: (deviceId: string | null) => void;
   setInputVolume: (vol: number) => void;
   setOutputVolume: (vol: number) => void;
+  setCameraDevice: (deviceId: string | null) => void;
   /** Check if a call is active on a channel (for polling). */
   checkCallActive: (pseudonymId: string, channelId: string) => Promise<void>;
+  /** Force-clear all voice session state (used by server switching). */
+  forceReset: () => void;
 }
 
 /** Load saved audio settings from localStorage. */
@@ -96,11 +107,13 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   callActive: false,
   lastJoinError: null,
   deafened: false,
+  micMuted: false,
 
   inputDeviceId: (saved.inputDeviceId as string) ?? null,
   outputDeviceId: (saved.outputDeviceId as string) ?? null,
   inputVolume: (saved.inputVolume as number) ?? 100,
   outputVolume: (saved.outputVolume as number) ?? 100,
+  cameraDeviceId: (saved.cameraDeviceId as string) ?? null,
 
   joinCall: async (pseudonymId, channelId) => {
     set({ joining: true, lastJoinError: null });
@@ -137,6 +150,8 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   },
 
   toggleDeafen: () => set((s) => ({ deafened: !s.deafened })),
+  toggleMicMuted: () => set((s) => ({ micMuted: !s.micMuted })),
+  setMicMuted: (muted) => set({ micMuted: muted }),
 
   setInputDevice: (deviceId) => {
     set({ inputDeviceId: deviceId });
@@ -154,6 +169,10 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     set({ outputVolume: vol });
     saveAudioSettings({ outputVolume: vol });
   },
+  setCameraDevice: (deviceId) => {
+    set({ cameraDeviceId: deviceId });
+    saveAudioSettings({ cameraDeviceId: deviceId });
+  },
   checkCallActive: async (pseudonymId, channelId) => {
     try {
       const status = await api.getVoiceStatus(pseudonymId, channelId);
@@ -161,5 +180,18 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     } catch {
       set({ callActive: false });
     }
+  },
+  forceReset: () => {
+    set({
+      voiceToken: null,
+      livekitUrl: null,
+      iceServers: [],
+      connectedChannelId: null,
+      joining: false,
+      callActive: false,
+      lastJoinError: null,
+      deafened: false,
+      micMuted: false,
+    });
   },
 }));

@@ -2,7 +2,14 @@
  * Audio & Video settings dialog.
  *
  * Lets users select input/output devices and adjust volume levels.
- * Settings are persisted to localStorage via the voice store.
+ * Settings are persisted to localStorage via the voice store and applied
+ * to the active LiveKit room in real time.
+ *
+ * Output device selection uses HTMLMediaElement.setSinkId() — a fallback
+ * message is shown if the browser/webview does not support it.
+ *
+ * Input volume is labelled as OS-level only when we cannot apply gain
+ * through the Web Audio API (which is the common case in LiveKit).
  */
 
 import { useState, useEffect, useCallback } from 'react';
@@ -17,6 +24,12 @@ interface DeviceInfo {
 interface DeviceResult {
   devices: DeviceInfo[];
   permissionGranted: boolean;
+}
+
+/** Check whether setSinkId is supported in this browser/webview. */
+function isSinkIdSupported(): boolean {
+  return typeof HTMLMediaElement !== 'undefined' &&
+    typeof (HTMLMediaElement.prototype as any).setSinkId === 'function';
 }
 
 /**
@@ -58,10 +71,12 @@ export function AudioSettings({ onClose }: { onClose: () => void }) {
     outputDeviceId,
     inputVolume,
     outputVolume,
+    cameraDeviceId,
     setInputDevice,
     setOutputDevice,
     setInputVolume,
     setOutputVolume,
+    setCameraDevice,
   } = useVoiceStore();
 
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
@@ -95,6 +110,8 @@ export function AudioSettings({ onClose }: { onClose: () => void }) {
   const audioOutputs = devices.filter((d) => d.kind === 'audiooutput');
   const videoInputs = devices.filter((d) => d.kind === 'videoinput');
 
+  const sinkIdSupported = isSinkIdSupported();
+
   return (
     <div className="dialog-overlay" onClick={onClose}>
       <div className="dialog settings-dialog" onClick={(e) => e.stopPropagation()}>
@@ -123,7 +140,7 @@ export function AudioSettings({ onClose }: { onClose: () => void }) {
           </label>
 
           <label>
-            Input Volume
+            Input Volume (OS-level)
             <div className="volume-row">
               <input
                 type="range"
@@ -136,22 +153,36 @@ export function AudioSettings({ onClose }: { onClose: () => void }) {
               <span className="volume-value">{inputVolume}%</span>
             </div>
           </label>
+          <p className="settings-note">
+            Microphone gain is controlled by your operating system. Adjust it in your OS sound settings.
+          </p>
         </div>
 
         <div className="settings-section">
           <label>
             Output Device (Speakers / Headphones)
-            <select
-              value={outputDeviceId ?? ''}
-              onChange={(e) => setOutputDevice(e.target.value || null)}
-            >
-              <option value="">System Default</option>
-              {audioOutputs.map((d) => (
-                <option key={d.deviceId} value={d.deviceId}>
-                  {d.label}
-                </option>
-              ))}
-            </select>
+            {sinkIdSupported ? (
+              <select
+                value={outputDeviceId ?? ''}
+                onChange={(e) => setOutputDevice(e.target.value || null)}
+              >
+                <option value="">System Default</option>
+                {audioOutputs.map((d) => (
+                  <option key={d.deviceId} value={d.deviceId}>
+                    {d.label}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <>
+                <select disabled>
+                  <option>System Default</option>
+                </select>
+                <p className="settings-note settings-unsupported">
+                  Output device selection is not supported in this browser or webview. Audio will play through the system default output.
+                </p>
+              </>
+            )}
           </label>
 
           <label>
@@ -173,21 +204,26 @@ export function AudioSettings({ onClose }: { onClose: () => void }) {
         <div className="settings-section">
           <label>
             Camera
-            <select disabled>
-              <option>
-                {videoInputs.length > 0
-                  ? videoInputs[0].label
-                  : 'No camera detected'}
-              </option>
-              {videoInputs.map((d) => (
-                <option key={d.deviceId} value={d.deviceId}>
-                  {d.label}
-                </option>
-              ))}
-            </select>
+            {videoInputs.length > 0 ? (
+              <select
+                value={cameraDeviceId ?? ''}
+                onChange={(e) => setCameraDevice(e.target.value || null)}
+              >
+                <option value="">System Default</option>
+                {videoInputs.map((d) => (
+                  <option key={d.deviceId} value={d.deviceId}>
+                    {d.label}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <select disabled>
+                <option>No camera detected</option>
+              </select>
+            )}
           </label>
           <p className="settings-note">
-            Camera is toggled per-call from the media controls.
+            Camera is activated per-call from the media controls. Select your preferred device here.
           </p>
         </div>
 

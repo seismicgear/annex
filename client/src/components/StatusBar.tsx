@@ -31,8 +31,10 @@ export function StatusBar() {
     voiceToken,
     connectedChannelId,
     deafened,
+    micMuted,
     leaveCall,
     toggleDeafen,
+    toggleMicMuted,
   } = useVoiceStore();
 
   const [showDeviceLink, setShowDeviceLink] = useState(false);
@@ -40,10 +42,6 @@ export function StatusBar() {
   const [showRecovery, setShowRecovery] = useState(false);
   const [showAudioSettings, setShowAudioSettings] = useState(false);
   const [activePersona, setActivePersona] = useState<Persona | null>(null);
-  // Local mic muted state — tracks whether the user toggled mute from the status bar.
-  // The actual LiveKit mute is handled inside VoicePanel's MediaControls; this is
-  // a secondary quick-toggle that mirrors the intent.
-  const [micMuted, setMicMuted] = useState(false);
   const [exportStatus, setExportStatus] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
 
   // Load active persona for display
@@ -127,7 +125,7 @@ export function StatusBar() {
           <div className="voice-status-controls">
             <button
               className={`voice-status-btn ${micMuted ? 'muted' : ''}`}
-              onClick={() => setMicMuted((m) => !m)}
+              onClick={toggleMicMuted}
               title={micMuted ? 'Unmute microphone' : 'Mute microphone'}
             >
               <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">

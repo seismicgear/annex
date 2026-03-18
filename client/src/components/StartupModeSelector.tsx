@@ -31,8 +31,16 @@ interface WebPrefs {
   server_url?: string;
 }
 
+/** Describes which optional subsystems failed during host startup. */
+export interface DegradedStartupInfo {
+  voiceFailed: boolean;
+  tunnelFailed: boolean;
+  voiceError?: string;
+  tunnelError?: string;
+}
+
 interface Props {
-  onReady: () => void;
+  onReady: (degraded?: DegradedStartupInfo) => void;
 }
 
 type Phase =
@@ -74,6 +82,7 @@ export function StartupModeSelector({ onReady }: Props) {
     async (skipSave: boolean) => {
       if (!inTauri) return;
       setError('');
+      const degraded: DegradedStartupInfo = { voiceFailed: false, tunnelFailed: false };
       try {
         // Auto-configure voice: start a local LiveKit server if not already configured.
         // Must happen BEFORE startEmbeddedServer so env vars are picked up.
@@ -84,6 +93,8 @@ export function StartupModeSelector({ onReady }: Props) {
             await startLocalLiveKit();
           }
         } catch (voiceErr) {
+          degraded.voiceFailed = true;
+          degraded.voiceError = voiceErr instanceof Error ? voiceErr.message : String(voiceErr);
           console.warn('Auto-configure voice failed (voice may be unavailable):', voiceErr);
         }
 
@@ -97,13 +108,15 @@ export function StartupModeSelector({ onReady }: Props) {
         try {
           await startTunnel();
         } catch (tunnelErr) {
+          degraded.tunnelFailed = true;
+          degraded.tunnelError = tunnelErr instanceof Error ? tunnelErr.message : String(tunnelErr);
           console.warn('Auto-tunnel failed (invite links may be unavailable):', tunnelErr);
         }
 
         if (!skipSave) {
           await saveStartupMode({ startup_mode: { mode: 'host' } });
         }
-        onReady();
+        onReady(degraded.voiceFailed || degraded.tunnelFailed ? degraded : undefined);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
         setPhase('error');
