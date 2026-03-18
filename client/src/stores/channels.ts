@@ -6,6 +6,7 @@ import { create } from 'zustand';
 import type { Channel, Message, WsReceiveFrame } from '@/types';
 import * as api from '@/lib/api';
 import { AnnexWebSocket } from '@/lib/ws';
+import { useVoiceStore } from '@/stores/voice';
 
 /** Number of messages per pagination page. */
 const PAGE_SIZE = 50;
@@ -23,6 +24,8 @@ interface ChannelsState {
   loading: boolean;
   /** Error message from loading channels. */
   error: string | null;
+  /** Error message from send/edit/delete operations (shown inline near composer). */
+  composerError: string | null;
   /** Whether channel history is currently loading. */
   historyLoading: boolean;
   /** Error message from loading channel history (distinct from channel list error). */
@@ -54,6 +57,8 @@ interface ChannelsState {
   joinChannel: (pseudonymId: string, channelId: string) => Promise<void>;
   /** Leave a channel. */
   leaveChannel: (pseudonymId: string, channelId: string) => Promise<void>;
+  /** Clear the composer error (on successful send, channel switch, or dismissal). */
+  clearComposerError: () => void;
   /** Disconnect WebSocket. */
   disconnectWs: () => void;
   /** Reset all per-server transient state to initial values. */
@@ -67,6 +72,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
   wsConnected: false,
   loading: false,
   error: null,
+  composerError: null,
   historyLoading: false,
   historyError: null,
   loadingOlder: false,
@@ -93,7 +99,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       ws.unsubscribe(prevChannelId);
     }
 
-    set({ activeChannelId: channelId, messages: [], loadingOlder: false, hasMoreMessages: true, historyLoading: true, historyError: null });
+    set({ activeChannelId: channelId, messages: [], loadingOlder: false, hasMoreMessages: true, historyLoading: true, historyError: null, composerError: null });
 
     // Auto-join the channel (idempotent — no-op if already a member).
     // Must be a member before fetching messages or joining voice.
@@ -131,10 +137,10 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     ws.onStatus((connected) => set({ wsConnected: connected }));
 
     ws.onMessage((frame: WsReceiveFrame) => {
-      // Handle error frames even when they have no matching channelId
+      // Handle error frames — route to composerError for chat-flow errors
       if (frame.type === 'error') {
         const errorMsg = frame.message ?? frame.error ?? 'Unknown WebSocket error';
-        set({ error: errorMsg });
+        set({ composerError: errorMsg });
         return;
       }
 
@@ -185,11 +191,12 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       });
       return;
     }
+    set({ composerError: null });
     try {
       ws.send(activeChannelId, content, replyTo);
     } catch (err) {
       console.error('[channels] sendMessage threw:', err);
-      set({ error: err instanceof Error ? err.message : 'Failed to send message' });
+      set({ composerError: err instanceof Error ? err.message : 'Failed to send message' });
     }
   },
 
@@ -243,10 +250,25 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
 
   leaveChannel: async (pseudonymId, channelId) => {
     await api.leaveChannel(pseudonymId, channelId);
+
+    // If the user is in a voice call on this channel, leave it too.
+    const voiceStore = useVoiceStore.getState();
+    if (voiceStore.connectedChannelId === channelId) {
+      try {
+        await voiceStore.leaveCall(pseudonymId);
+      } catch { /* best effort */ }
+      voiceStore.forceReset();
+    }
+    voiceStore.clearChannelCallState(channelId);
+
     const { activeChannelId } = get();
     if (activeChannelId === channelId) {
       set({ activeChannelId: null, messages: [] });
     }
+  },
+
+  clearComposerError: () => {
+    set({ composerError: null });
   },
 
   disconnectWs: () => {
@@ -269,6 +291,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       wsConnected: false,
       loading: false,
       error: null,
+      composerError: null,
       historyLoading: false,
       historyError: null,
       loadingOlder: false,

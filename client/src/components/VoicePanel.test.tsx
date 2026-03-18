@@ -8,7 +8,9 @@ type VoiceStoreSnapshot = {
   livekitUrl: string | null;
   iceServers: Array<{ urls: string[]; username?: string; credential?: string }>;
   connectedChannelId: string | null;
-  joining: boolean;
+  joiningByChannel: Record<string, boolean>;
+  connectionState: string;
+  connectionError: string | null;
   callActiveByChannel: Record<string, boolean>;
   joinErrorByChannel: Record<string, { display: string; code: string | null; setupHint: string | null } | null>;
   deafened: boolean;
@@ -22,11 +24,15 @@ type VoiceStoreSnapshot = {
   leaveCall: ReturnType<typeof vi.fn>;
   checkCallActive: ReturnType<typeof vi.fn>;
   isCallActive: ReturnType<typeof vi.fn>;
+  isJoining: ReturnType<typeof vi.fn>;
   getJoinError: ReturnType<typeof vi.fn>;
   clearChannelCallState: ReturnType<typeof vi.fn>;
   toggleDeafen: ReturnType<typeof vi.fn>;
   toggleMicMuted: ReturnType<typeof vi.fn>;
   setMicMuted: ReturnType<typeof vi.fn>;
+  setCameraDevice: ReturnType<typeof vi.fn>;
+  setConnectionState: ReturnType<typeof vi.fn>;
+  toggleMicAsync: ReturnType<typeof vi.fn>;
   forceReset: ReturnType<typeof vi.fn>;
 };
 
@@ -94,6 +100,7 @@ vi.mock('@livekit/components-react', () => ({
     isCameraEnabled: false,
     isScreenShareEnabled: false,
   }),
+  useConnectionState: () => 'connected',
 }));
 
 vi.mock('livekit-client', () => ({
@@ -104,7 +111,48 @@ vi.mock('livekit-client', () => ({
       Microphone: 'mic',
     },
   },
+  ConnectionState: {
+    Connected: 'connected',
+    Connecting: 'connecting',
+    Reconnecting: 'reconnecting',
+    Disconnected: 'disconnected',
+  },
 }));
+
+function defaultVoiceState(): VoiceStoreSnapshot {
+  return {
+    voiceToken: null,
+    livekitUrl: null,
+    iceServers: [],
+    connectedChannelId: null,
+    joiningByChannel: {},
+    connectionState: 'idle',
+    connectionError: null,
+    callActiveByChannel: {},
+    joinErrorByChannel: {},
+    deafened: false,
+    micMuted: false,
+    inputDeviceId: null,
+    outputDeviceId: null,
+    inputVolume: 100,
+    outputVolume: 100,
+    cameraDeviceId: null,
+    joinCall: vi.fn(async () => {}),
+    leaveCall: vi.fn(async () => {}),
+    checkCallActive: vi.fn(async () => {}),
+    isCallActive: vi.fn((channelId: string) => voiceState.callActiveByChannel[channelId] ?? false),
+    isJoining: vi.fn((channelId: string) => voiceState.joiningByChannel[channelId] ?? false),
+    getJoinError: vi.fn((channelId: string) => voiceState.joinErrorByChannel[channelId] ?? null),
+    clearChannelCallState: vi.fn(),
+    toggleDeafen: vi.fn(),
+    toggleMicMuted: vi.fn(),
+    setMicMuted: vi.fn(),
+    setCameraDevice: vi.fn(),
+    setConnectionState: vi.fn(),
+    toggleMicAsync: vi.fn(async () => {}),
+    forceReset: vi.fn(),
+  };
+}
 
 describe('VoicePanel', () => {
   beforeEach(() => {
@@ -126,32 +174,7 @@ describe('VoicePanel', () => {
       activeServerId: 'server-1',
     };
 
-    voiceState = {
-      voiceToken: null,
-      livekitUrl: null,
-      iceServers: [],
-      connectedChannelId: null,
-      joining: false,
-      callActiveByChannel: {},
-      joinErrorByChannel: {},
-      deafened: false,
-      micMuted: false,
-      inputDeviceId: null,
-      outputDeviceId: null,
-      inputVolume: 100,
-      outputVolume: 100,
-      cameraDeviceId: null,
-      joinCall: vi.fn(async () => {}),
-      leaveCall: vi.fn(async () => {}),
-      checkCallActive: vi.fn(async () => {}),
-      isCallActive: vi.fn((channelId: string) => voiceState.callActiveByChannel[channelId] ?? false),
-      getJoinError: vi.fn((channelId: string) => voiceState.joinErrorByChannel[channelId] ?? null),
-      clearChannelCallState: vi.fn(),
-      toggleDeafen: vi.fn(),
-      toggleMicMuted: vi.fn(),
-      setMicMuted: vi.fn(),
-      forceReset: vi.fn(),
-    };
+    voiceState = defaultVoiceState();
   });
 
   it('renders disconnected and connected states across rerenders without hook-order issues', () => {
@@ -259,8 +282,6 @@ describe('VoicePanel', () => {
     render(<VoicePanel />);
 
     // Should NOT show the connected room since the server switched
-    // (The ref-based check means the first render with token sets the ref,
-    // but the stale check compares ref vs current activeServerId)
   });
 
   it('uses stored cameraDeviceId when enabling camera', async () => {
@@ -286,6 +307,59 @@ describe('VoicePanel', () => {
 
     // setCameraEnabled should be called with the saved device ID
     expect(mockSetCameraEnabled).toHaveBeenCalledWith(true, { deviceId: 'webcam-42' });
+  });
+
+  it('shows stale camera recovery UI when saved device is not found', async () => {
+    mockSetCameraEnabled.mockClear();
+    mockSetCameraEnabled.mockRejectedValueOnce(
+      Object.assign(new DOMException('device not found', 'NotFoundError'), {}),
+    );
+
+    voiceState = {
+      ...voiceState,
+      voiceToken: 'token-cam',
+      livekitUrl: 'wss://livekit.example',
+      connectedChannelId: 'chan-1',
+      cameraDeviceId: 'stale-webcam',
+    };
+
+    await act(async () => {
+      render(<VoicePanel />);
+    });
+
+    const camBtn = screen.getByTitle('Turn on camera');
+    await act(async () => {
+      camBtn.click();
+    });
+
+    // Should show recovery UI instead of generic error
+    expect(screen.getByText(/Saved camera not found/)).toBeInTheDocument();
+    expect(screen.getByText('Use default camera')).toBeInTheDocument();
+  });
+
+  it('shows error UI when screen share throws AbortError (non-user-cancel)', async () => {
+    mockSetScreenShareEnabled.mockRejectedValueOnce(
+      new DOMException('Screen recording blocked', 'AbortError'),
+    );
+
+    voiceState = {
+      ...voiceState,
+      voiceToken: 'token-screen',
+      livekitUrl: 'wss://livekit.example',
+      connectedChannelId: 'chan-1',
+    };
+
+    await act(async () => {
+      render(<VoicePanel />);
+    });
+
+    const screenBtn = screen.getByTitle('Share screen');
+    await act(async () => {
+      screenBtn.click();
+    });
+
+    // Should show an error since the message doesn't look like a user cancel
+    expect(screen.getByRole('alert')).toBeInTheDocument();
   });
 
   it('applies audio prefs to dynamically added container with audio child', async () => {
@@ -346,5 +420,18 @@ describe('VoicePanel', () => {
     expect((audio as any).setSinkId).toHaveBeenCalledWith('');
 
     document.body.removeChild(audio);
+  });
+
+  it('shows per-channel joining state only for the active channel', () => {
+    voiceState = {
+      ...voiceState,
+      joiningByChannel: { 'chan-1': true },
+      isJoining: vi.fn((channelId: string) => channelId === 'chan-1'),
+    };
+
+    render(<VoicePanel />);
+
+    expect(screen.getByRole('button', { name: 'Joining...' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Joining...' })).toBeDisabled();
   });
 });

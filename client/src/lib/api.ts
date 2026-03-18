@@ -78,6 +78,33 @@ export function resolveUrl(path: string): string {
   return _apiBaseUrl ? `${_apiBaseUrl}${path}` : path;
 }
 
+/**
+ * Fetch with a bounded timeout using AbortController.
+ * @param url - The request URL
+ * @param init - Fetch init options
+ * @param timeoutMs - Timeout in milliseconds (default: none)
+ */
+export async function fetchWithTimeout(
+  url: string,
+  init?: RequestInit,
+  timeoutMs?: number,
+): Promise<Response> {
+  if (!timeoutMs) return fetch(url, init);
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new Error(`Request timed out after ${timeoutMs}ms`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const url = _apiBaseUrl ? `${_apiBaseUrl}${path}` : path;
   const method = (options?.method ?? 'GET').toUpperCase();
@@ -687,14 +714,21 @@ export interface JoinVoiceResponse {
 export async function joinVoice(
   pseudonymId: string,
   channelId: string,
+  timeoutMs?: number,
 ): Promise<JoinVoiceResponse> {
-  return request<JoinVoiceResponse>(
-    `/api/channels/${channelId}/voice/join`,
-    {
-      method: 'POST',
-      headers: authHeaders(pseudonymId),
-    },
-  );
+  const url = _apiBaseUrl ? `${_apiBaseUrl}/api/channels/${channelId}/voice/join` : `/api/channels/${channelId}/voice/join`;
+  const resp = await fetchWithTimeout(url, {
+    method: 'POST',
+    headers: new Headers({
+      ...authHeaders(pseudonymId),
+      'Content-Type': 'application/json',
+    }),
+  }, timeoutMs);
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new ApiError(resp.status, body);
+  }
+  return resp.json() as Promise<JoinVoiceResponse>;
 }
 
 export async function leaveVoice(

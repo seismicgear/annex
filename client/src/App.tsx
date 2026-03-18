@@ -411,10 +411,19 @@ export default function App() {
     let cancelled = false;
     (async () => {
       try {
-        const endpointUrl = await getPublicEndpoint();
-        if (cancelled || !endpointUrl) return;
+        const endpointInfo = await getPublicEndpoint();
+        if (cancelled || !endpointInfo) return;
         // Set the router-provided URL as the server's public URL
-        await setPublicUrl(identity.pseudonymId!, endpointUrl);
+        await setPublicUrl(identity.pseudonymId!, endpointInfo.public_url);
+        // If the router returned a public LiveKit URL, the frontend can note
+        // it for degraded-startup diagnostics. The server already uses it
+        // internally for voice join responses to remote clients.
+        if (!endpointInfo.public_livekit_url && degradedStartup) {
+          setDegradedStartup((prev) => prev ? {
+            ...prev,
+            publicEndpointFailed: prev.publicEndpointFailed,
+          } : prev);
+        }
         // Pre-create an invite link so it's ready when the user visits settings
         await createInviteLink(getApiBaseUrl(), identity.pseudonymId!).catch(() => {});
       } catch {
@@ -804,6 +813,9 @@ export default function App() {
           )}
           {degradedStartup.publicEndpointFailed && (
             <span>Server started, but public invites are unavailable{degradedStartup.publicEndpointError ? `: ${degradedStartup.publicEndpointError}` : ''}.</span>
+          )}
+          {degradedStartup.livekitRouteUnavailable && (
+            <span>Public endpoint acquired, but remote voice/video is unavailable — the router does not proxy LiveKit traffic.</span>
           )}
           <button onClick={() => setDegradedStartup(null)} className="dismiss-banner-btn" aria-label="Dismiss">&times;</button>
         </div>

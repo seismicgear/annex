@@ -88,9 +88,31 @@ function filenameFromUrl(url: string): string {
   return parts[parts.length - 1] || 'download';
 }
 
+/**
+ * Parse a message timestamp that may be either:
+ * - SQLite-style: "YYYY-MM-DD HH:MM:SS" (no timezone, assumed UTC)
+ * - RFC3339: "2025-01-01T00:00:00Z" or "2025-01-01T00:00:00+00:00"
+ *
+ * Returns epoch ms, or NaN for malformed values.
+ */
+export function parseMessageTimestamp(ts: string): number {
+  if (!ts) return NaN;
+  // If already has a timezone indicator (Z, +, -), parse directly
+  if (/[Zz]$/.test(ts) || /[+-]\d{2}:\d{2}$/.test(ts)) {
+    return new Date(ts).getTime();
+  }
+  // If it contains 'T', it's an ISO-style string without timezone — treat as UTC
+  if (ts.includes('T')) {
+    return new Date(ts + 'Z').getTime();
+  }
+  // SQLite-style "YYYY-MM-DD HH:MM:SS" — append Z for UTC
+  return new Date(ts + 'Z').getTime();
+}
+
 /** Returns whether a message is still within the edit/delete window. */
 function isWithinEditWindow(createdAt: string): boolean {
-  const created = new Date(createdAt + 'Z').getTime();
+  const created = parseMessageTimestamp(createdAt);
+  if (isNaN(created)) return false;
   return Date.now() - created < EDIT_WINDOW_MS;
 }
 
@@ -107,7 +129,8 @@ function MessageBubble({
   selfPersona: Persona | null;
   onImageClick: (url: string) => void;
 }) {
-  const time = new Date(message.created_at).toLocaleTimeString();
+  const createdMs = parseMessageTimestamp(message.created_at);
+  const time = isNaN(createdMs) ? '??' : new Date(createdMs).toLocaleTimeString();
   const isDeleted = !!message.deleted_at;
   const { text, imageUrls, videoUrls, fileUrls } = parseMessageContent(
     isDeleted ? '' : message.content,
@@ -138,7 +161,11 @@ function MessageBubble({
       return;
     }
     setCanModify(true);
-    const created = new Date(message.created_at + 'Z').getTime();
+    const created = parseMessageTimestamp(message.created_at);
+    if (isNaN(created)) {
+      setCanModify(false);
+      return;
+    }
     const remaining = EDIT_WINDOW_MS - (Date.now() - created);
     const timer = setTimeout(() => setCanModify(false), remaining);
     return () => clearTimeout(timer);
@@ -355,7 +382,10 @@ function MessageBubble({
                 <div key={edit.id} className="edit-history-item">
                   <div className="edit-history-content">{edit.old_content}</div>
                   <div className="edit-history-time">
-                    {new Date(edit.edited_at + 'Z').toLocaleString()}
+                    {(() => {
+                      const ms = parseMessageTimestamp(edit.edited_at);
+                      return isNaN(ms) ? '??' : new Date(ms).toLocaleString();
+                    })()}
                   </div>
                 </div>
               ))}
