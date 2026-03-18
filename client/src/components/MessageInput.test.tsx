@@ -8,6 +8,7 @@ let channelsState: {
   sendMessage: ReturnType<typeof vi.fn>;
   composerError: string | null;
   clearComposerError: ReturnType<typeof vi.fn>;
+  pendingSends: Map<string, unknown>;
 };
 
 let identityState: {
@@ -37,9 +38,10 @@ describe('MessageInput', () => {
     channelsState = {
       activeChannelId: 'chan-1',
       wsConnected: true,
-      sendMessage: vi.fn(() => true),
+      sendMessage: vi.fn(() => 'req-1'),
       composerError: null,
       clearComposerError: vi.fn(),
+      pendingSends: new Map(),
     };
 
     identityState = {
@@ -62,8 +64,8 @@ describe('MessageInput', () => {
     expect(textarea).toHaveValue('');
   });
 
-  it('keeps content when sendMessage returns false (socket unavailable)', async () => {
-    channelsState.sendMessage = vi.fn(() => false);
+  it('keeps content when sendMessage returns null (socket unavailable)', async () => {
+    channelsState.sendMessage = vi.fn(() => null);
 
     render(<MessageInput />);
 
@@ -79,13 +81,13 @@ describe('MessageInput', () => {
     expect(textarea).toHaveValue('lost message');
   });
 
-  it('keeps content when synchronous send sets composerError', async () => {
-    channelsState.sendMessage = vi.fn(() => {
-      channelsState.composerError = 'WebSocket is not connected';
-      return true;
-    });
+  it('restores draft when async error resolves the pending send', async () => {
+    // sendMessage returns a request ID and adds it to pendingSends
+    const reqId = 'req-err-1';
+    channelsState.pendingSends = new Map([[reqId, { clientRequestId: reqId, content: 'retry me', sentAt: Date.now() }]]);
+    channelsState.sendMessage = vi.fn(() => reqId);
 
-    render(<MessageInput />);
+    const { rerender } = render(<MessageInput />);
 
     const textarea = screen.getByPlaceholderText('Type a message...');
     fireEvent.change(textarea, { target: { value: 'retry me' } });
@@ -95,8 +97,20 @@ describe('MessageInput', () => {
       fireEvent.click(sendBtn);
     });
 
-    // Content should remain because composerError was set
+    // Composer should be optimistically cleared
+    expect(textarea).toHaveValue('');
+
+    // Simulate the server returning an error — pending send removed, composerError set
+    channelsState.pendingSends = new Map();
+    channelsState.composerError = 'Rate limit exceeded';
+
+    await act(async () => {
+      rerender(<MessageInput />);
+    });
+
+    // Draft should be restored and error shown
     expect(textarea).toHaveValue('retry me');
+    expect(screen.getByRole('alert')).toHaveTextContent('Rate limit exceeded');
   });
 
   it('displays composerError banner from store', () => {

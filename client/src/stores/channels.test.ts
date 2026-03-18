@@ -147,4 +147,53 @@ describe('channels store', () => {
 
     expect(useChannelsStore.getState().composerError).toBe('send failed');
   });
+
+  it('sendMessage returns clientRequestId and tracks pending send', async () => {
+    const { useChannelsStore } = await import('./channels');
+
+    const mockWs = {
+      onStatus: vi.fn(),
+      onMessage: vi.fn(),
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+      subscribe: vi.fn(),
+      unsubscribe: vi.fn(),
+      send: vi.fn(() => 'req-123'),
+      connected: true,
+    };
+    useChannelsStore.setState({
+      ws: mockWs as any,
+      activeChannelId: 'chan-1',
+      wsConnected: true,
+    });
+
+    const reqId = useChannelsStore.getState().sendMessage('hello');
+    expect(reqId).toBe('req-123');
+    expect(useChannelsStore.getState().pendingSends.has('req-123')).toBe(true);
+    expect(useChannelsStore.getState().pendingSends.get('req-123')?.content).toBe('hello');
+  });
+
+  it('resolvePendingSend removes and returns the pending entry', async () => {
+    const { useChannelsStore } = await import('./channels');
+
+    const pending = { clientRequestId: 'req-1', content: 'test', sentAt: Date.now() };
+    useChannelsStore.setState({
+      pendingSends: new Map([['req-1', pending]]),
+    });
+
+    const resolved = useChannelsStore.getState().resolvePendingSend('req-1');
+    expect(resolved).toEqual(pending);
+    expect(useChannelsStore.getState().pendingSends.has('req-1')).toBe(false);
+  });
+
+  it('resetServerState clears pendingSends', async () => {
+    const { useChannelsStore } = await import('./channels');
+
+    useChannelsStore.setState({
+      pendingSends: new Map([['req-1', { clientRequestId: 'req-1', content: 'test', sentAt: Date.now() }]]),
+    });
+
+    useChannelsStore.getState().resetServerState();
+    expect(useChannelsStore.getState().pendingSends.size).toBe(0);
+  });
 });

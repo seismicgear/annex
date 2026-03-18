@@ -35,6 +35,8 @@ export interface StoredIdentity {
   leafIndex: number | null;
   /** Timestamp of creation. */
   createdAt: string;
+  /** Timestamp of last use (selected, registered, or imported). */
+  lastUsedAt?: string;
 }
 
 /** Registration response from POST /api/registry/register. */
@@ -108,6 +110,8 @@ export interface WsSendFrame {
   content?: string;
   replyTo?: string | null;
   messageId?: string;
+  /** Client-generated request ID for correlating server ack/error frames. */
+  clientRequestId?: string;
 }
 
 /** WebSocket frame received from server. */
@@ -128,6 +132,8 @@ export interface WsReceiveFrame {
   // Error fields
   error?: string;
   message?: string;
+  /** Echoed client request ID from the originating send frame. */
+  clientRequestId?: string;
 }
 
 /** Agent info from GET /api/public/agents or /api/agents/:id. */

@@ -167,6 +167,16 @@ export default function App() {
           } catch (e) {
             console.warn('fresh install cleanup failed (non-fatal):', e);
           }
+          // Clear in-memory server state so the UI reflects the emptied IndexedDB.
+          useServersStore.setState({
+            servers: [],
+            activeServerId: null,
+            serverImageUrl: null,
+            pendingRegistrationServerId: null,
+            switchError: null,
+          });
+          // Re-load servers from the now-empty IndexedDB so the store is consistent.
+          await loadServers();
           // Clear in-memory identity state regardless of phase — both
           // 'ready' (fully registered) and 'keys_ready' (local keys only)
           // need to be reset so the user starts with IdentitySetup.
@@ -177,6 +187,7 @@ export default function App() {
               phase: 'uninitialized',
               permissions: null,
               permissionsStatus: 'idle',
+              permissionsPseudonymId: null,
               proofInFlight: false,
               provingStatus: 'idle',
               error: null,

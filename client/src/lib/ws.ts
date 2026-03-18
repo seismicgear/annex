@@ -108,18 +108,21 @@ export class AnnexWebSocket {
     this.ws.send(JSON.stringify({ type: 'unsubscribe', channelId }));
   }
 
-  /** Send a message to a channel. */
-  send(channelId: string, content: string, replyTo: string | null = null): void {
+  /** Send a message to a channel. Returns the client-generated request ID. */
+  send(channelId: string, content: string, replyTo: string | null = null): string {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error('WebSocket is not connected');
     }
+    const clientRequestId = crypto.randomUUID();
     const frame: WsSendFrame = {
       type: 'message',
       channelId,
       content,
       replyTo,
+      clientRequestId,
     };
     this.ws.send(JSON.stringify(frame));
+    return clientRequestId;
   }
 
   /** Edit a message in a channel. */

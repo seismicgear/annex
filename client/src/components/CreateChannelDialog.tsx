@@ -13,7 +13,8 @@ import type { ChannelType } from '@/types';
 
 const CHANNEL_TYPES: { value: ChannelType; label: string; description: string }[] = [
   { value: 'Text', label: 'Text', description: 'A text-only chat channel for messages' },
-  { value: 'Voice', label: 'Voice', description: 'A voice/video channel with built-in text chat' },
+  { value: 'Voice', label: 'Voice', description: 'A voice-first channel for real-time audio/video calls' },
+  { value: 'Hybrid', label: 'Hybrid', description: 'Combines text chat and voice/video in one channel' },
   { value: 'Agent', label: 'Agent', description: 'A channel where AI agents can participate and respond' },
   { value: 'Broadcast', label: 'Broadcast', description: 'One-to-many announcements — only moderators can post' },
 ];

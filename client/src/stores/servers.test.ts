@@ -52,13 +52,17 @@ vi.mock('@/lib/api', () => ({
 }));
 
 vi.mock('./identity', () => ({
-  useIdentityStore: {
-    getState: () => ({
-      identity: { pseudonymId: 'p1', sessionToken: 'session-tok-1' },
-      selectIdentity: (...args: unknown[]) => mockSelectIdentity(...args),
-      loadPermissions: (...args: unknown[]) => mockLoadPermissions(...args),
-    }),
-  },
+  useIdentityStore: Object.assign(
+    () => ({}),
+    {
+      getState: () => ({
+        identity: { pseudonymId: 'p1', sessionToken: 'session-tok-1' },
+        selectIdentity: (...args: unknown[]) => mockSelectIdentity(...args),
+        loadPermissions: (...args: unknown[]) => mockLoadPermissions(...args),
+      }),
+      setState: vi.fn(),
+    },
+  ),
 }));
 
 vi.mock('./channels', () => ({

@@ -15,8 +15,8 @@ import type { Channel } from '@/types';
 
 const CHANNEL_TYPE_ICONS: Record<string, { icon: string; tooltip: string }> = {
   Text: { icon: '#', tooltip: 'Text channel — chat with messages' },
-  Voice: { icon: '🔊', tooltip: 'Voice channel — real-time audio/video with text chat' },
-  Hybrid: { icon: '🔊', tooltip: 'Voice channel — real-time audio/video with text chat' },
+  Voice: { icon: '🔊', tooltip: 'Voice channel — voice-first real-time audio/video' },
+  Hybrid: { icon: '🎙️', tooltip: 'Hybrid channel — text chat and voice/video combined' },
   Agent: { icon: '🤖', tooltip: 'Agent channel — AI agents can participate here' },
   Broadcast: { icon: '📢', tooltip: 'Broadcast channel — announcements from moderators' },
 };
@@ -153,6 +153,9 @@ export function ChannelList() {
     selectChannel,
   } = useChannelsStore();
   const [showCreate, setShowCreate] = useState(false);
+  // Declare all hooks before any conditional returns so hook order stays
+  // constant across renders (identity present, absent, or switching).
+  const [selectError, setSelectError] = useState<string | null>(null);
 
   useEffect(() => {
     if (identity?.pseudonymId) {
@@ -161,8 +164,6 @@ export function ChannelList() {
   }, [identity?.pseudonymId, loadChannels]);
 
   if (!identity?.pseudonymId) return null;
-
-  const [selectError, setSelectError] = useState<string | null>(null);
 
   const handleSelect = async (channelId: string) => {
     setSelectError(null);
