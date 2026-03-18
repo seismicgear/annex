@@ -18,6 +18,7 @@ let channelsState: {
 let voiceState: {
   voiceToken: string | null;
   connectedChannelId: string | null;
+  connectionState: string;
   deafened: boolean;
   micMuted: boolean;
   leaveCall: ReturnType<typeof vi.fn>;
@@ -78,6 +79,7 @@ describe('StatusBar voice strip', () => {
     voiceState = {
       voiceToken: 'token-123',
       connectedChannelId: 'chan-1',
+      connectionState: 'connected',
       deafened: false,
       micMuted: false,
       leaveCall: vi.fn(async () => {}),
@@ -132,5 +134,21 @@ describe('StatusBar voice strip', () => {
     render(<StatusBar />);
     const deafenButton = screen.getByTitle('Undeafen — resume hearing others');
     expect(deafenButton.className).toContain('muted');
+  });
+
+  it('does not render voice strip when connection state is failed (stale token)', () => {
+    voiceState.voiceToken = 'token-stale';
+    voiceState.connectedChannelId = 'chan-1';
+    voiceState.connectionState = 'failed';
+    render(<StatusBar />);
+    expect(screen.queryByText('Voice Connected')).not.toBeInTheDocument();
+  });
+
+  it('does not render voice strip when connection state is idle', () => {
+    voiceState.voiceToken = 'token-leftover';
+    voiceState.connectedChannelId = 'chan-1';
+    voiceState.connectionState = 'idle';
+    render(<StatusBar />);
+    expect(screen.queryByText('Voice Connected')).not.toBeInTheDocument();
   });
 });

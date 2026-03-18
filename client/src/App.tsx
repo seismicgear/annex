@@ -102,6 +102,13 @@ export default function App() {
       await cancelMembershipProofGeneration('Proof generation cancelled before retry.');
     }
 
+    // Clear persisted startup preferences so the user lands on the chooser
+    // instead of auto-resuming the mode that just failed.
+    if (isTauri()) {
+      clearTauriStartupMode().catch(() => {});
+    }
+    clearWebStartupMode();
+
     useIdentityStore.setState({ phase: 'keys_ready', proofInFlight: false, provingStatus: 'idle', error: null, errorDetails: null });
     setStartupErrorDetails(null);
     setProvingFailures(0);
@@ -415,14 +422,17 @@ export default function App() {
         if (cancelled || !endpointInfo) return;
         // Set the router-provided URL as the server's public URL
         await setPublicUrl(identity.pseudonymId!, endpointInfo.public_url);
-        // If the router returned a public LiveKit URL, the frontend can note
-        // it for degraded-startup diagnostics. The server already uses it
-        // internally for voice join responses to remote clients.
-        if (!endpointInfo.public_livekit_url && degradedStartup) {
-          setDegradedStartup((prev) => prev ? {
-            ...prev,
-            publicEndpointFailed: prev.publicEndpointFailed,
-          } : prev);
+        // If the router returned a public URL but no LiveKit URL, remote
+        // voice/video will not work. Set the degraded flag so the host sees
+        // a warning banner.
+        if (!endpointInfo.public_livekit_url) {
+          setDegradedStartup((prev) => ({
+            voiceFailed: prev?.voiceFailed ?? false,
+            publicEndpointFailed: prev?.publicEndpointFailed ?? false,
+            livekitRouteUnavailable: true,
+            voiceError: prev?.voiceError,
+            publicEndpointError: prev?.publicEndpointError,
+          }));
         }
         // Pre-create an invite link so it's ready when the user visits settings
         await createInviteLink(getApiBaseUrl(), identity.pseudonymId!).catch(() => {});

@@ -43,8 +43,8 @@ interface ChannelsState {
   selectChannel: (pseudonymId: string, channelId: string) => Promise<void>;
   /** Connect WebSocket for real-time messages. Optional baseUrl for cross-server. */
   connectWs: (pseudonymId: string, baseUrl?: string, sessionToken?: string | null) => void;
-  /** Send a message to the active channel. */
-  sendMessage: (content: string, replyTo?: string | null) => void;
+  /** Send a message to the active channel. Returns true if the frame was queued locally. */
+  sendMessage: (content: string, replyTo?: string | null) => boolean;
   /** Edit a message in the active channel. */
   editMessage: (messageId: string, content: string) => void;
   /** Delete a message in the active channel. */
@@ -181,22 +181,20 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     set({ ws });
   },
 
-  sendMessage: (content: string, replyTo: string | null = null) => {
+  sendMessage: (content: string, replyTo: string | null = null): boolean => {
     const { ws, activeChannelId } = get();
     if (!ws || !activeChannelId) {
-      console.error('[channels] sendMessage failed: no WebSocket or active channel', {
-        wsExists: !!ws,
-        wsConnected: ws?.connected ?? false,
-        activeChannelId,
-      });
-      return;
+      set({ composerError: 'Cannot send — not connected to the server.' });
+      return false;
     }
     set({ composerError: null });
     try {
       ws.send(activeChannelId, content, replyTo);
+      return true;
     } catch (err) {
       console.error('[channels] sendMessage threw:', err);
       set({ composerError: err instanceof Error ? err.message : 'Failed to send message' });
+      return false;
     }
   },
 

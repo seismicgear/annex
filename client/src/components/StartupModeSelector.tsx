@@ -20,6 +20,7 @@ import {
   getStartupMode,
   clearStartupMode,
   acquirePublicEndpoint,
+  getPublicEndpoint,
   checkLiveKitReachable,
   desktopCorsGuidance,
 } from '@/lib/tauri';
@@ -122,6 +123,15 @@ export function StartupModeSelector({ onReady }: Props) {
         setPhase('acquiring_endpoint');
         try {
           await acquirePublicEndpoint();
+          // Check whether the router proxies LiveKit traffic
+          try {
+            const epInfo = await getPublicEndpoint();
+            if (epInfo && !epInfo.public_livekit_url) {
+              degraded.livekitRouteUnavailable = true;
+            }
+          } catch {
+            // Non-fatal — the endpoint query may not be available yet
+          }
         } catch (endpointErr) {
           degraded.publicEndpointFailed = true;
           degraded.publicEndpointError = endpointErr instanceof Error ? endpointErr.message : String(endpointErr);

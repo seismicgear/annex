@@ -73,9 +73,12 @@ export function MessageInput() {
         const msgContent = text
           ? `${text}\n${resp.url}`
           : resp.url;
-        sendMessage(msgContent);
-        setContent('');
-        setPreview(null);
+        const sent = sendMessage(msgContent);
+        // Only clear content and preview if the send was accepted locally
+        if (sent) {
+          setContent('');
+          setPreview(null);
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         setUploadError(`Upload failed: ${msg}`);
@@ -89,11 +92,13 @@ export function MessageInput() {
     // Regular text message
     const trimmed = content.trim();
     if (!trimmed) return;
-    sendMessage(trimmed);
-    // Only clear the input if no composer error was set during send
-    const { composerError: postSendError } = useChannelsStore.getState();
-    if (!postSendError) {
-      setContent('');
+    const sent = sendMessage(trimmed);
+    // Only clear the input if the send was accepted locally (no synchronous error)
+    if (sent) {
+      const { composerError: postSendError } = useChannelsStore.getState();
+      if (!postSendError) {
+        setContent('');
+      }
     }
   };
 

@@ -124,10 +124,12 @@ function MediaControls({
   const camEnabled = isCameraEnabled;
   const screenEnabled = isScreenShareEnabled;
 
-  // Platform capability checks — treat 'unknown' as available but with guidance
+  // Platform capability checks — treat 'unknown' as available but with guidance;
+  // treat 'blocked' as unavailable (same as false).
   const canScreenShare = mediaStatus?.screen_share_available !== false && mediaStatus?.screen_share_available !== 'blocked';
   const cameraMicStatus = mediaStatus?.camera_mic_available;
-  const canCameraMic = cameraMicStatus !== false;
+  const canCameraMic = cameraMicStatus !== false && cameraMicStatus !== 'blocked';
+  const cameraMicBlocked = cameraMicStatus === 'blocked';
   const cameraMicUnknown = cameraMicStatus === 'unknown';
 
   // Error state for media toggle failures
@@ -287,11 +289,13 @@ function MediaControls({
         ? 'Stop sharing'
         : 'Share screen';
 
-  const cameraMicTitle = !canCameraMic
-    ? 'Camera/microphone unavailable on this platform'
-    : cameraMicUnknown
-      ? 'Camera/microphone permission could not be verified — may require manual grant'
-      : undefined;
+  const cameraMicTitle = cameraMicBlocked
+    ? 'Camera/microphone blocked — check your OS privacy settings to allow access'
+    : !canCameraMic
+      ? 'Camera/microphone unavailable on this platform'
+      : cameraMicUnknown
+        ? 'Camera/microphone permission could not be verified — may require manual grant'
+        : undefined;
 
   return (
     <div className="media-controls">
@@ -320,7 +324,12 @@ function MediaControls({
           </div>
         </div>
       )}
-      {cameraMicUnknown && (
+      {cameraMicBlocked && (
+        <div className="media-error" role="alert">
+          Camera and microphone are blocked. Check your OS privacy settings to allow access.
+        </div>
+      )}
+      {cameraMicUnknown && !cameraMicBlocked && (
         <div className="device-notice" role="status">
           Camera/microphone permission status unknown — you may need to grant access in your OS settings.
         </div>
@@ -474,13 +483,15 @@ function ScreenShareView() {
 /** Participant grid with video tiles or audio-only avatars. */
 function ParticipantGrid() {
   const participants = useParticipants();
-  const micTracks = useTracks([Track.Source.Microphone]);
   const camTracks = useTracks([Track.Source.Camera]);
 
+  // Use LiveKit's active-speaker data: participant.isSpeaking reflects
+  // audio-level analysis, not just unmuted status. This prevents marking
+  // every unmuted participant as speaking.
   const speakingIds = new Set(
-    micTracks
-      .filter((t) => t.publication?.isMuted === false)
-      .map((t) => t.participant.identity),
+    participants
+      .filter((p) => p.isSpeaking)
+      .map((p) => p.identity),
   );
 
   const cameraByIdentity = new Map(
@@ -732,8 +743,10 @@ function RoomContent({
 }) {
   const { localParticipant, isScreenShareEnabled } = useLocalParticipant();
   const lkConnectionState = useConnectionState();
-  const { setConnectionState } = useVoiceStore();
+  const { setConnectionState, handleUnexpectedDisconnect, connectionState: storeConnectionState } = useVoiceStore();
   const [screenShareInterrupted, setScreenShareInterrupted] = useState(false);
+  // Track whether the user intentionally left (via the leave button).
+  const intentionalLeaveRef = useRef(false);
 
   // Sync LiveKit connection state to the voice store
   useEffect(() => {
@@ -746,10 +759,23 @@ function RoomContent({
         setConnectionState('connecting');
         break;
       case LKConnectionState.Disconnected:
-        setConnectionState('idle');
+        // Distinguish intentional leave from unexpected disconnect.
+        // If the user clicked "Leave", the store is already cleared by leaveCall().
+        // Otherwise, this is an unexpected disconnect — clean up stale session state.
+        if (intentionalLeaveRef.current) {
+          setConnectionState('idle');
+        } else if (storeConnectionState === 'connected' || storeConnectionState === 'connecting') {
+          handleUnexpectedDisconnect('Voice disconnected — the connection was lost.');
+        }
         break;
     }
-  }, [lkConnectionState, setConnectionState]);
+  }, [lkConnectionState, setConnectionState, handleUnexpectedDisconnect, storeConnectionState]);
+
+  // Wrap onLeave so the disconnect handler knows this was intentional.
+  const handleLeaveInternal = useCallback(() => {
+    intentionalLeaveRef.current = true;
+    onLeave();
+  }, [onLeave]);
 
   // Layer 1: Tell the Rust backend to keep the webview alive during the call.
   // This prevents WebView2 from setting IsVisible=false on minimize, which
@@ -775,13 +801,29 @@ function RoomContent({
     if (isScreenShareEnabled) setScreenShareInterrupted(false);
   }, [isScreenShareEnabled]);
 
+  // Error state for screen share resume failures
+  const [resumeError, setResumeError] = useState<string | null>(null);
+
   // Layer 3: Resume banner — the button click provides the user gesture
   // needed for getDisplayMedia() in browsers that require it.
   const resumeScreenShare = useCallback(async () => {
-    setScreenShareInterrupted(false);
+    setResumeError(null);
     try {
       await (localParticipant as LocalParticipant).setScreenShareEnabled(true);
-    } catch { /* user cancelled the picker or error — stay dismissed */ }
+      // Only clear the interrupted banner after success
+      setScreenShareInterrupted(false);
+    } catch (err) {
+      // Distinguish user-cancel from actual runtime failure
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        const isLikelyUserCancel = !err.message || /user/i.test(err.message) || err.message === 'AbortError';
+        if (isLikelyUserCancel) {
+          // User cancelled the picker — keep the recovery affordance visible
+          return;
+        }
+      }
+      // Real failure — surface error but keep the banner visible for retry
+      setResumeError(mediaErrorMessage(err, 'Resume screen share'));
+    }
   }, [localParticipant]);
 
   return (
@@ -789,12 +831,12 @@ function RoomContent({
       <RoomAudioRenderer />
       {screenShareInterrupted && (
         <div className="screen-share-interrupted" role="alert">
-          <span>Screen share was interrupted</span>
+          <span>{resumeError ?? 'Screen share was interrupted'}</span>
           <button onClick={resumeScreenShare} className="screen-share-resume-btn">
             Resume Sharing
           </button>
           <button
-            onClick={() => setScreenShareInterrupted(false)}
+            onClick={() => { setScreenShareInterrupted(false); setResumeError(null); }}
             className="screen-share-dismiss-btn"
             aria-label="Dismiss"
           >
@@ -807,7 +849,7 @@ function RoomContent({
       <ScreenShareView />
       <ParticipantGrid />
       <MediaControls
-        onLeave={onLeave}
+        onLeave={handleLeaveInternal}
         mediaStatus={mediaStatus}
         platformWarnings={platformWarnings}
       />
@@ -994,7 +1036,8 @@ export function VoicePanel() {
   const connectionError = useVoiceStore((s) => s.connectionError);
 
   // If connected to a call, always show the LiveKitRoom (even on non-voice channels).
-  // But NOT if the token is stale from a server switch.
+  // But NOT if the token is stale from a server switch, and NOT if the
+  // connection has failed (session state was already cleared by the store).
   if (voiceToken && livekitUrl && connectedChannelId && !isTokenStale) {
     // Find the channel name for the connected call
     const connectedChannel = channels.find((c) => c.channel_id === connectedChannelId);
@@ -1002,7 +1045,9 @@ export function VoicePanel() {
 
     const headerText = connectionState === 'connecting'
       ? 'Joining...'
-      : 'Voice Connected';
+      : connectionState === 'failed'
+        ? 'Voice Disconnected'
+        : 'Voice Connected';
 
     return (
       <div className="voice-panel connected">
