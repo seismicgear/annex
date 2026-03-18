@@ -23,6 +23,10 @@ interface ChannelsState {
   loading: boolean;
   /** Error message from loading channels. */
   error: string | null;
+  /** Whether channel history is currently loading. */
+  historyLoading: boolean;
+  /** Error message from loading channel history (distinct from channel list error). */
+  historyError: string | null;
   /** Whether older messages are currently being fetched. */
   loadingOlder: boolean;
   /** Whether there are more older messages to load. */
@@ -63,6 +67,8 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
   wsConnected: false,
   loading: false,
   error: null,
+  historyLoading: false,
+  historyError: null,
   loadingOlder: false,
   hasMoreMessages: true,
   ws: null,
@@ -87,7 +93,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       ws.unsubscribe(prevChannelId);
     }
 
-    set({ activeChannelId: channelId, messages: [], loadingOlder: false, hasMoreMessages: true });
+    set({ activeChannelId: channelId, messages: [], loadingOlder: false, hasMoreMessages: true, historyLoading: true, historyError: null });
 
     // Auto-join the channel (idempotent — no-op if already a member).
     // Must be a member before fetching messages or joining voice.
@@ -103,8 +109,17 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       ws.subscribe(channelId);
     }
 
-    const messages = await api.getMessages(pseudonymId, channelId, undefined, PAGE_SIZE);
-    set({ messages: messages.reverse(), hasMoreMessages: messages.length >= PAGE_SIZE });
+    try {
+      const messages = await api.getMessages(pseudonymId, channelId, undefined, PAGE_SIZE);
+      set({ messages: messages.reverse(), hasMoreMessages: messages.length >= PAGE_SIZE, historyLoading: false, historyError: null });
+    } catch (err) {
+      // Keep the channel selected but surface the history error so the
+      // message pane can show a retry affordance instead of staying blank.
+      set({
+        historyLoading: false,
+        historyError: err instanceof Error ? err.message : 'Failed to load channel history',
+      });
+    }
   },
 
   connectWs: (pseudonymId: string, baseUrl?: string, sessionToken?: string | null) => {
@@ -254,6 +269,8 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       wsConnected: false,
       loading: false,
       error: null,
+      historyLoading: false,
+      historyError: null,
       loadingOlder: false,
       hasMoreMessages: true,
       ws: null,

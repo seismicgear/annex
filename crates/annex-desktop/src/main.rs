@@ -648,6 +648,26 @@ async fn start_tunnel(state: tauri::State<'_, AppManagedState>) -> Result<String
 
     tracing::info!(%url, "tunnel established");
 
+    // If a local LiveKit server is running, update ANNEX_LIVEKIT_PUBLIC_URL
+    // so that remote clients receive a reachable WebSocket URL instead of
+    // ws://127.0.0.1:*. The tunnel URL is HTTPS, so the LiveKit public URL
+    // becomes wss://<tunnel-host> on the standard port via the same tunnel.
+    //
+    // Note: This only works if the tunnel also forwards the LiveKit port.
+    // Currently cloudflared tunnels only the Annex HTTP server, so LiveKit
+    // remains local-only for remote clients. The frontend should treat
+    // desktop host voice as local-only until a dedicated LiveKit tunnel is
+    // provisioned.
+    {
+        let lk_guard = state.livekit.lock().map_err(|e| e.to_string())?;
+        if lk_guard.is_some() {
+            tracing::info!(
+                "LiveKit is running locally but tunnel only covers HTTP server. \
+                 Remote voice/video requires a separate LiveKit tunnel or public deployment."
+            );
+        }
+    }
+
     // Store tunnel state
     {
         let mut guard = state.tunnel.lock().map_err(|e| e.to_string())?;

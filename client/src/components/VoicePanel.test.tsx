@@ -9,9 +9,8 @@ type VoiceStoreSnapshot = {
   iceServers: Array<{ urls: string[]; username?: string; credential?: string }>;
   connectedChannelId: string | null;
   joining: boolean;
-  callActive: boolean;
-  lastJoinError: string | null;
-  lastJoinErrorDetails: { display: string; code: string | null; setupHint: string | null } | null;
+  callActiveByChannel: Record<string, boolean>;
+  joinErrorByChannel: Record<string, { display: string; code: string | null; setupHint: string | null } | null>;
   deafened: boolean;
   micMuted: boolean;
   inputDeviceId: string | null;
@@ -22,6 +21,9 @@ type VoiceStoreSnapshot = {
   joinCall: ReturnType<typeof vi.fn>;
   leaveCall: ReturnType<typeof vi.fn>;
   checkCallActive: ReturnType<typeof vi.fn>;
+  isCallActive: ReturnType<typeof vi.fn>;
+  getJoinError: ReturnType<typeof vi.fn>;
+  clearChannelCallState: ReturnType<typeof vi.fn>;
   toggleDeafen: ReturnType<typeof vi.fn>;
   toggleMicMuted: ReturnType<typeof vi.fn>;
   setMicMuted: ReturnType<typeof vi.fn>;
@@ -130,9 +132,8 @@ describe('VoicePanel', () => {
       iceServers: [],
       connectedChannelId: null,
       joining: false,
-      callActive: false,
-      lastJoinError: null,
-      lastJoinErrorDetails: null,
+      callActiveByChannel: {},
+      joinErrorByChannel: {},
       deafened: false,
       micMuted: false,
       inputDeviceId: null,
@@ -143,6 +144,9 @@ describe('VoicePanel', () => {
       joinCall: vi.fn(async () => {}),
       leaveCall: vi.fn(async () => {}),
       checkCallActive: vi.fn(async () => {}),
+      isCallActive: vi.fn((channelId: string) => voiceState.callActiveByChannel[channelId] ?? false),
+      getJoinError: vi.fn((channelId: string) => voiceState.joinErrorByChannel[channelId] ?? null),
+      clearChannelCallState: vi.fn(),
       toggleDeafen: vi.fn(),
       toggleMicMuted: vi.fn(),
       setMicMuted: vi.fn(),

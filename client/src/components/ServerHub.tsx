@@ -11,8 +11,7 @@
 
 import { useState, useCallback } from 'react';
 import { useServersStore } from '@/stores/servers';
-import { useIdentityStore } from '@/stores/identity';
-import { resolveUrl, setApiBaseUrl } from '@/lib/api';
+import { resolveUrl } from '@/lib/api';
 import type { SavedServer } from '@/types';
 
 interface AddServerDialogProps {
@@ -130,27 +129,14 @@ export function ServerHub() {
   const activeServerId = useServersStore((s) => s.activeServerId);
   const switching = useServersStore((s) => s.switching);
   const switchServer = useServersStore((s) => s.switchServer);
-  const addRemoteServer = useServersStore((s) => s.addRemoteServer);
+  const beginRemoteRegistration = useServersStore((s) => s.beginRemoteRegistration);
   const serverImageUrl = useServersStore((s) => s.serverImageUrl);
   const [showAddDialog, setShowAddDialog] = useState(false);
 
   const handleAdd = useCallback(async (baseUrl: string) => {
-    const server = await addRemoteServer(baseUrl);
+    const server = await beginRemoteRegistration(baseUrl);
     if (!server) throw new Error('Failed to add server');
-
-    // Immediately begin registration on the remote server: switch the API
-    // target and reset identity phase to 'keys_ready' so the auto-register
-    // effect in App.tsx fires. This prevents leaving the user with a
-    // disabled placeholder icon and no follow-up action.
-    setApiBaseUrl(baseUrl);
-    useIdentityStore.setState({
-      phase: 'keys_ready',
-      proofInFlight: false,
-      provingStatus: 'idle',
-      error: null,
-      errorDetails: null,
-    });
-  }, [addRemoteServer]);
+  }, [beginRemoteRegistration]);
 
   if (servers.length === 0) return null;
 

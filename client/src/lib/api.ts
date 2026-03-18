@@ -42,6 +42,13 @@ let _apiBaseUrl = '';
  */
 let _sessionToken: string | null = null;
 
+/**
+ * Cached ZK membership proof payload (JSON string of { proof, publicSignals }).
+ * Set after successful registration/verification. Sent as `x-annex-zk-proof`
+ * on routes that require `verify_zk_membership_header`.
+ */
+let _zkProofPayload: string | null = null;
+
 /** Auto-refresh interval handle. */
 let _refreshInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -135,6 +142,16 @@ export function getSessionToken(): string | null {
   return _sessionToken;
 }
 
+/** Cache the latest ZK proof payload for use in protected API calls. */
+export function setZkProofPayload(payload: string | null): void {
+  _zkProofPayload = payload;
+}
+
+/** Get the cached ZK proof payload. */
+export function getZkProofPayload(): string | null {
+  return _zkProofPayload;
+}
+
 /**
  * Check whether an HMAC session token has expired.
  * Token format: base64(pseudonym|expires_unix_secs|hmac_signature)
@@ -205,10 +222,16 @@ export function stopTokenRefresh(): void {
 }
 
 function authHeaders(pseudonymId: string): Record<string, string> {
+  const headers: Record<string, string> = {};
   if (_sessionToken) {
-    return { 'Authorization': `Bearer ${_sessionToken}` };
+    headers['Authorization'] = `Bearer ${_sessionToken}`;
+  } else {
+    headers['X-Annex-Pseudonym'] = pseudonymId;
   }
-  return { 'X-Annex-Pseudonym': pseudonymId };
+  if (_zkProofPayload) {
+    headers['x-annex-zk-proof'] = _zkProofPayload;
+  }
+  return headers;
 }
 
 // ── Identity & Registration ──
@@ -629,6 +652,22 @@ export async function getRemoteFederationPeers(
   baseUrl: string,
 ): Promise<{ peers: FederationPeer[] }> {
   return requestRemote<{ peers: FederationPeer[] }>(baseUrl, '/api/public/federation/peers');
+}
+
+// ── Invites ──
+
+export async function createInvite(
+  pseudonymId: string,
+  options?: { maxUses?: number; expiresInHours?: number },
+): Promise<{ code: string; url: string; expiresAt?: string }> {
+  return request<{ code: string; url: string; expiresAt?: string }>('/api/invites', {
+    method: 'POST',
+    headers: authHeaders(pseudonymId),
+    body: JSON.stringify({
+      maxUses: options?.maxUses,
+      expiresInHours: options?.expiresInHours,
+    }),
+  });
 }
 
 // ── Voice ──

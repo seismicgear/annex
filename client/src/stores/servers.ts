@@ -23,6 +23,8 @@ interface ServersState {
   switching: boolean;
   /** Image URL for the active server (not persisted). */
   serverImageUrl: string | null;
+  /** Server ID of the placeholder currently being registered (for App.tsx to track). */
+  pendingRegistrationServerId: string | null;
 
   /** Load saved servers from IndexedDB. */
   loadServers: () => Promise<void>;
@@ -42,6 +44,16 @@ interface ServersState {
   setServerImageUrl: (url: string | null) => void;
   /** Fetch and cache the active server's image URL. */
   fetchServerImage: () => Promise<void>;
+  /** Find a saved server by its base URL. */
+  findServerByBaseUrl: (baseUrl: string) => SavedServer | undefined;
+  /** Fulfill a placeholder entry with the real identityId and make it active. */
+  fulfillPlaceholder: (serverId: string, identityId: string, label?: string) => Promise<void>;
+  /**
+   * Begin remote registration: clone identity, add placeholder server,
+   * set API target, and trigger the registration state machine.
+   * Shared by ServerHub, FederationPanel, and protocol invite paths.
+   */
+  beginRemoteRegistration: (baseUrl: string) => Promise<SavedServer | null>;
 }
 
 export const useServersStore = create<ServersState>((set, get) => ({
@@ -49,6 +61,7 @@ export const useServersStore = create<ServersState>((set, get) => ({
   activeServerId: null,
   switching: false,
   serverImageUrl: null,
+  pendingRegistrationServerId: null,
 
   loadServers: async () => {
     const servers = await serversDb.listServers();
@@ -254,5 +267,71 @@ export const useServersStore = create<ServersState>((set, get) => ({
       // Fetch failed — clear any stale image from the previous server
       set({ serverImageUrl: null });
     }
+  },
+
+  findServerByBaseUrl: (baseUrl: string) => {
+    const { servers } = get();
+    return servers.find((s) => s.baseUrl === baseUrl);
+  },
+
+  fulfillPlaceholder: async (serverId: string, identityId: string, label?: string) => {
+    const { servers } = get();
+    const server = servers.find((s) => s.id === serverId);
+    if (!server) return;
+
+    server.identityId = identityId;
+    server.lastConnectedAt = new Date().toISOString();
+    if (label) server.label = label;
+
+    // Try to refresh cached summary
+    try {
+      const summary = await api.getServerSummary();
+      server.cachedSummary = summary;
+      server.label = summary.label || server.label;
+    } catch {
+      // Non-fatal
+    }
+
+    await serversDb.saveServer(server);
+    const allServers = await serversDb.listServers();
+    set({ servers: allServers, activeServerId: serverId, pendingRegistrationServerId: null });
+  },
+
+  beginRemoteRegistration: async (baseUrl: string) => {
+    const identityStore = useIdentityStore.getState();
+
+    // 1. Add remote server placeholder (or return existing)
+    const server = await get().addRemoteServer(baseUrl);
+    if (!server) return null;
+
+    // If the server already has an identity, just switch to it
+    if (server.identityId) {
+      await get().switchServer(server.id);
+      return server;
+    }
+
+    // 2. Clone or derive a new identity record for this server
+    const clonedId = await identityStore.cloneForServer();
+    if (!clonedId) return null;
+
+    // 3. Select the new identity so registration uses it (not the current one)
+    await identityStore.selectIdentity(clonedId);
+
+    // 4. Record which placeholder is being fulfilled
+    set({ pendingRegistrationServerId: server.id });
+
+    // 5. Set API base URL for the target server
+    api.setApiBaseUrl(baseUrl);
+
+    // 6. Reset identity phase to 'keys_ready' so the auto-register effect fires
+    useIdentityStore.setState({
+      phase: 'keys_ready',
+      proofInFlight: false,
+      provingStatus: 'idle',
+      error: null,
+      errorDetails: null,
+    });
+
+    return server;
   },
 }));

@@ -159,8 +159,15 @@ export function ChannelList() {
 
   if (!identity?.pseudonymId) return null;
 
-  const handleSelect = (channelId: string) => {
-    selectChannel(identity.pseudonymId!, channelId);
+  const [selectError, setSelectError] = useState<string | null>(null);
+
+  const handleSelect = async (channelId: string) => {
+    setSelectError(null);
+    try {
+      await selectChannel(identity.pseudonymId!, channelId);
+    } catch (err) {
+      setSelectError(err instanceof Error ? err.message : 'Failed to select channel');
+    }
   };
 
   if (loading) {
@@ -192,6 +199,18 @@ export function ChannelList() {
           </button>
         )}
       </div>
+      {selectError && (
+        <div className="channel-action-error" role="alert">
+          <span>{selectError}</span>
+          <button
+            onClick={() => setSelectError(null)}
+            className="channel-error-dismiss"
+            aria-label="Dismiss"
+          >
+            &times;
+          </button>
+        </div>
+      )}
       {channels.length === 0 && (
         <p className="no-channels">No channels available</p>
       )}

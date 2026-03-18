@@ -18,16 +18,19 @@ interface PeerDetailProps {
   onClose: () => void;
 }
 
+type JoinPhase = 'idle' | 'adding' | 'registering' | 'complete' | 'error';
+
 function PeerDetail({ peer, onClose }: PeerDetailProps) {
   const [summary, setSummary] = useState<ServerSummary | null>(null);
   const [loading, setLoading] = useState(true);
-  const [joining, setJoining] = useState(false);
-  const [joined, setJoined] = useState(false);
-  const addRemoteServer = useServersStore((s) => s.addRemoteServer);
+  const [joinPhase, setJoinPhase] = useState<JoinPhase>('idle');
+  const [joinError, setJoinError] = useState<string | null>(null);
+  const beginRemoteRegistration = useServersStore((s) => s.beginRemoteRegistration);
   const servers = useServersStore((s) => s.servers);
 
+  // Only show "already joined" if the server has a real identityId (not a placeholder)
   const alreadyJoined = servers.some(
-    (s) => s.baseUrl === peer.base_url || s.slug === summary?.slug,
+    (s) => s.identityId && (s.baseUrl === peer.base_url || s.slug === summary?.slug),
   );
 
   useEffect(() => {
@@ -40,16 +43,27 @@ function PeerDetail({ peer, onClose }: PeerDetailProps) {
   }, [peer.base_url]);
 
   const handleJoin = useCallback(async () => {
-    setJoining(true);
+    setJoinPhase('adding');
+    setJoinError(null);
     try {
-      const server = await addRemoteServer(peer.base_url);
-      if (server) setJoined(true);
-    } catch {
-      // Join failed — user can retry via the Explore button
-    } finally {
-      setJoining(false);
+      const server = await beginRemoteRegistration(peer.base_url);
+      if (server) {
+        if (server.identityId) {
+          // Already had identity — direct switch completed
+          setJoinPhase('complete');
+        } else {
+          // Registration kicked off — App.tsx auto-register effect will handle it
+          setJoinPhase('registering');
+        }
+      } else {
+        setJoinError('Could not reach server.');
+        setJoinPhase('error');
+      }
+    } catch (err) {
+      setJoinError(err instanceof Error ? err.message : 'Join failed');
+      setJoinPhase('error');
     }
-  }, [peer.base_url, addRemoteServer]);
+  }, [peer.base_url, beginRemoteRegistration]);
 
   return (
     <div className="dialog-overlay" onClick={onClose}>
@@ -93,18 +107,24 @@ function PeerDetail({ peer, onClose }: PeerDetailProps) {
           <p className="error-text">Could not reach server at {peer.base_url}</p>
         )}
 
+        {joinError && (
+          <p className="error-text">{joinError}</p>
+        )}
         <div className="dialog-actions">
           <button onClick={onClose}>Close</button>
-          {summary && !alreadyJoined && !joined && (
+          {summary && !alreadyJoined && joinPhase !== 'complete' && joinPhase !== 'registering' && (
             <button
               className="primary-btn"
               onClick={handleJoin}
-              disabled={joining}
+              disabled={joinPhase === 'adding'}
             >
-              {joining ? 'Joining...' : 'Join this Server'}
+              {joinPhase === 'adding' ? 'Adding server...' : joinPhase === 'error' ? 'Retry' : 'Join this Server'}
             </button>
           )}
-          {(alreadyJoined || joined) && (
+          {joinPhase === 'registering' && (
+            <span className="joined-badge">Registration in progress...</span>
+          )}
+          {(alreadyJoined || joinPhase === 'complete') && (
             <span className="joined-badge">Already in server list</span>
           )}
         </div>
