@@ -666,30 +666,55 @@ function useTauriMediaRestore(onScreenShareInterrupted?: () => void) {
  */
 function useVoiceStoreSync() {
   const { localParticipant } = useLocalParticipant();
-  const { inputDeviceId, outputDeviceId, outputVolume, deafened, cameraDeviceId } = useVoiceStore();
+  const { inputDeviceId, outputDeviceId, outputVolume, deafened, cameraDeviceId, setInputDevice, setCameraDevice } = useVoiceStore();
 
-  // Apply input device selection when it changes (including reset to System Default)
+  // Apply input device selection when it changes (including reset to System Default).
+  // On failure, roll back the store to the previous device ID and surface the error.
+  const prevInputDeviceRef = useRef(inputDeviceId);
   useEffect(() => {
+    const prevDeviceId = prevInputDeviceRef.current;
+    prevInputDeviceRef.current = inputDeviceId;
+
     const lp = localParticipant as LocalParticipant;
     if (!lp.isMicrophoneEnabled) return;
     // Re-publish microphone with the selected device, or default constraints
     const opts = inputDeviceId ? { deviceId: inputDeviceId } : undefined;
     lp.setMicrophoneEnabled(false)
       .then(() => lp.setMicrophoneEnabled(true, opts))
-      .catch((err) => { console.warn('[VoicePanel] mic device switch failed:', err); });
+      .catch((err) => {
+        console.warn('[VoicePanel] mic device switch failed:', err);
+        // Roll back to the previous working device ID
+        setInputDevice(prevDeviceId);
+        useVoiceStore.getState().setMicMuted(!lp.isMicrophoneEnabled);
+        useVoiceStore.setState({
+          micToggleError: mediaErrorMessage(err, 'Microphone device switch'),
+        });
+      });
   // Only run when inputDeviceId changes, not on every mic toggle
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inputDeviceId]);
 
   // When cameraDeviceId changes during an active call and camera is already on,
   // republish the camera track with the new device (or default constraints).
+  // On failure, roll back and surface the error.
+  const prevCameraDeviceRef = useRef(cameraDeviceId);
   useEffect(() => {
+    const prevDeviceId = prevCameraDeviceRef.current;
+    prevCameraDeviceRef.current = cameraDeviceId;
+
     const lp = localParticipant as LocalParticipant;
     if (!lp.isCameraEnabled) return;
     const opts = cameraDeviceId ? { deviceId: cameraDeviceId } : undefined;
     lp.setCameraEnabled(false)
       .then(() => lp.setCameraEnabled(true, opts))
-      .catch((err) => { console.warn('[VoicePanel] camera device switch failed:', err); });
+      .catch((err) => {
+        console.warn('[VoicePanel] camera device switch failed:', err);
+        // Roll back to the previous working device ID
+        setCameraDevice(prevDeviceId);
+        useVoiceStore.setState({
+          micToggleError: mediaErrorMessage(err, 'Camera device switch'),
+        });
+      });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cameraDeviceId]);
 
@@ -1129,8 +1154,27 @@ export function VoicePanel() {
     );
   }
 
-  // Only show the join button on voice-capable channels
-  if (!isVoiceCapable || !activeChannelId) return null;
+  // Show a persistent disconnect banner even on non-voice channels so the
+  // user can see that a previous voice call was unexpectedly disconnected.
+  const failedChannel = lastFailedChannelId
+    ? channels.find((c) => c.channel_id === lastFailedChannelId)
+    : null;
+  if (!isVoiceCapable || !activeChannelId) {
+    // Even on text channels, show a disconnect recovery banner if applicable
+    if (connectionError && lastFailedChannelId) {
+      return (
+        <div className="voice-panel disconnected voice-disconnect-banner">
+          <div className="voice-error" role="alert">
+            <p>
+              Voice disconnected{failedChannel ? ` from ${failedChannel.name}` : ''}: {connectionError}
+            </p>
+            <button onClick={dismissConnectionError} className="media-error-dismiss" aria-label="Dismiss">&times;</button>
+          </div>
+        </div>
+      );
+    }
+    return null;
+  }
 
   const buttonText = joining
     ? 'Joining...'

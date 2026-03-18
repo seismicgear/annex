@@ -257,6 +257,46 @@ describe('servers store', () => {
 
   // ── addRemoteServer + registration flow ──
 
+  it('cleanupFailedRegistration removes placeholder and clears pendingRegistrationServerId', async () => {
+    const { useServersStore } = await import('./servers');
+
+    const placeholder = {
+      id: 'pending-fail',
+      baseUrl: 'https://failed.example.com',
+      slug: 'failed',
+      label: 'Failed Server',
+      identityId: '',
+      personaId: null,
+      accentColor: '#e63946',
+      vrpTopic: 'annex:server:failed:v1',
+      lastConnectedAt: null,
+      cachedSummary: null,
+    };
+
+    useServersStore.setState({
+      servers: [placeholder as any],
+      pendingRegistrationServerId: 'pending-fail',
+    });
+
+    // After cleanup, the list should be empty
+    mockListServers.mockResolvedValueOnce([]);
+
+    await useServersStore.getState().cleanupFailedRegistration();
+
+    expect(mockRemoveServer).toHaveBeenCalledWith('pending-fail');
+    expect(useServersStore.getState().pendingRegistrationServerId).toBeNull();
+  });
+
+  it('cleanupFailedRegistration clears state even with no target server', async () => {
+    const { useServersStore } = await import('./servers');
+
+    useServersStore.setState({ pendingRegistrationServerId: null });
+    await useServersStore.getState().cleanupFailedRegistration();
+    expect(useServersStore.getState().pendingRegistrationServerId).toBeNull();
+    // removeServer should not have been called
+    expect(mockRemoveServer).not.toHaveBeenCalled();
+  });
+
   it('addRemoteServer creates placeholder then saveCurrentServer fills it', async () => {
     const { useServersStore } = await import('./servers');
 

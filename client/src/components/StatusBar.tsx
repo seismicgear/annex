@@ -38,6 +38,9 @@ export function StatusBar() {
     toggleMicMuted,
     micToggleError,
     clearMicToggleError,
+    lastFailedChannelId,
+    connectionError,
+    dismissConnectionError,
   } = useVoiceStore();
 
   const [showDeviceLink, setShowDeviceLink] = useState(false);
@@ -176,6 +179,28 @@ export function StatusBar() {
               </svg>
             </button>
           </div>
+        </div>
+      )}
+
+      {/* ── Persistent voice-disconnected strip ── */}
+      {!inCall && connectionError && lastFailedChannelId && (
+        <div className="voice-status-strip voice-status-disconnected">
+          <div className="voice-status-info">
+            <span className="voice-status-dot disconnected" />
+            <div className="voice-status-text">
+              <span className="voice-status-label">Voice Disconnected</span>
+              <span className="voice-status-channel">
+                {channels.find((c) => c.channel_id === lastFailedChannelId)?.name ?? lastFailedChannelId.slice(0, 12)}
+              </span>
+            </div>
+          </div>
+          <button
+            className="voice-status-btn disconnect"
+            onClick={dismissConnectionError}
+            title="Dismiss"
+          >
+            &times;
+          </button>
         </div>
       )}
 
