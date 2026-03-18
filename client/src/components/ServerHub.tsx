@@ -12,6 +12,7 @@
 import { useState, useCallback } from 'react';
 import { useServersStore } from '@/stores/servers';
 import { resolveUrl } from '@/lib/api';
+import { normalizeServerUrl } from '@/lib/url';
 import type { SavedServer } from '@/types';
 
 interface AddServerDialogProps {
@@ -30,17 +31,9 @@ function AddServerDialog({ onClose, onAdd }: AddServerDialogProps) {
     if (!trimmed) return;
 
     // Normalize and validate URL
-    let baseUrl = trimmed;
-    if (!/^https?:\/\//i.test(baseUrl)) {
-      baseUrl = `https://${baseUrl}`;
-    }
+    let baseUrl: string;
     try {
-      const parsed = new URL(baseUrl);
-      // Block non-HTTP protocols that could have been injected
-      if (!['http:', 'https:'].includes(parsed.protocol)) {
-        setError('Only http and https URLs are supported.');
-        return;
-      }
+      baseUrl = normalizeServerUrl(trimmed);
     } catch {
       setError('Invalid URL format.');
       return;
@@ -52,7 +45,7 @@ function AddServerDialog({ onClose, onAdd }: AddServerDialogProps) {
       await onAdd(baseUrl);
       onClose();
     } catch {
-      setError('Could not reach server. Check the URL and try again.');
+      setError(`Could not reach server at ${baseUrl}. Check the URL and try again.`);
     } finally {
       setAdding(false);
     }

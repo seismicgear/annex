@@ -20,11 +20,15 @@ interface DeviceInfo {
   deviceId: string;
   label: string;
   kind: MediaDeviceKind;
+  /** True when the label is a placeholder (permission not yet granted). */
+  labelMissing: boolean;
 }
 
 interface DeviceResult {
   devices: DeviceInfo[];
-  permissionGranted: boolean;
+  /** Per-kind permission status: 'granted' | 'prompt' | 'denied'. */
+  micPermission: PermissionState | 'unknown';
+  cameraPermission: PermissionState | 'unknown';
 }
 
 /** Check whether setSinkId is supported in this browser/webview. */
@@ -33,44 +37,61 @@ function isSinkIdSupported(): boolean {
     typeof (HTMLMediaElement.prototype as any).setSinkId === 'function';
 }
 
-/**
- * Enumerate media devices. Pure async — no React state calls.
- *
- * AUDIT-TAURI: In Tauri webviews, getUserMedia may behave differently than
- * in a browser. On Windows WebView2 without a PermissionRequested handler,
- * getUserMedia can silently return null (NotAllowedError). The catch block
- * handles this gracefully (limited labels shown), but verify on hardware
- * that the dialog prompts or auto-grants permission correctly.
- */
-async function enumerateMediaDevices(): Promise<DeviceResult> {
-  // Guard: media device APIs may be absent in some webviews/contexts
-  if (!navigator.mediaDevices || typeof navigator.mediaDevices.enumerateDevices !== 'function') {
-    return { devices: [], permissionGranted: false };
-  }
-
-  let permissionGranted = false;
+/** Query the Permissions API for a specific device kind, if supported. */
+async function queryDevicePermission(kind: 'microphone' | 'camera'): Promise<PermissionState | 'unknown'> {
   try {
-    if (typeof navigator.mediaDevices.getUserMedia === 'function') {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true }).catch(
-        () => navigator.mediaDevices.getUserMedia({ audio: true }),
-      );
-      permissionGranted = true;
-      stream.getTracks().forEach((t) => t.stop());
+    if (navigator.permissions && typeof navigator.permissions.query === 'function') {
+      const result = await navigator.permissions.query({ name: kind as PermissionName });
+      return result.state;
     }
   } catch {
-    // Permission denied — continue with limited labels.
+    // Permissions API may not support this name in all browsers
   }
+  return 'unknown';
+}
+
+/**
+ * Enumerate media devices without triggering getUserMedia on dialog open.
+ *
+ * Calls navigator.mediaDevices.enumerateDevices() first. Missing labels
+ * are treated as a permissions limitation, not as missing hardware.
+ */
+async function enumerateMediaDevices(): Promise<DeviceResult> {
+  if (!navigator.mediaDevices || typeof navigator.mediaDevices.enumerateDevices !== 'function') {
+    return { devices: [], micPermission: 'unknown', cameraPermission: 'unknown' };
+  }
+
+  const [micPerm, cameraPerm] = await Promise.all([
+    queryDevicePermission('microphone'),
+    queryDevicePermission('camera'),
+  ]);
+
   const list = await navigator.mediaDevices.enumerateDevices();
   return {
-    permissionGranted,
+    micPermission: micPerm,
+    cameraPermission: cameraPerm,
     devices: list
       .filter((d) => d.kind === 'audioinput' || d.kind === 'audiooutput' || d.kind === 'videoinput')
       .map((d) => ({
         deviceId: d.deviceId,
         label: d.label || `${d.kind} (${d.deviceId.slice(0, 8)})`,
         kind: d.kind,
+        labelMissing: !d.label,
       })),
   };
+}
+
+/**
+ * Request permission for a specific media type via getUserMedia, then
+ * re-enumerate to get proper labels.
+ */
+async function requestDeviceAccess(audio: boolean, video: boolean): Promise<DeviceResult> {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw new Error('getUserMedia not available');
+  }
+  const stream = await navigator.mediaDevices.getUserMedia({ audio, video });
+  stream.getTracks().forEach((t) => t.stop());
+  return enumerateMediaDevices();
 }
 
 export function AudioSettings({ onClose }: { onClose: () => void }) {
@@ -88,8 +109,17 @@ export function AudioSettings({ onClose }: { onClose: () => void }) {
   } = useVoiceStore();
 
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
-  const [permissionGranted, setPermissionGranted] = useState(false);
+  const [micPermission, setMicPermission] = useState<PermissionState | 'unknown'>('unknown');
+  const [cameraPermission, setCameraPermission] = useState<PermissionState | 'unknown'>('unknown');
   const [enumError, setEnumError] = useState<string | null>(null);
+  const [requestingMic, setRequestingMic] = useState(false);
+  const [requestingCamera, setRequestingCamera] = useState(false);
+
+  const applyResult = useCallback((result: DeviceResult) => {
+    setDevices(result.devices);
+    setMicPermission(result.micPermission);
+    setCameraPermission(result.cameraPermission);
+  }, []);
 
   const refreshDevices = useCallback(() => {
     let cancelled = false;
@@ -97,17 +127,15 @@ export function AudioSettings({ onClose }: { onClose: () => void }) {
     enumerateMediaDevices()
       .then((result) => {
         if (cancelled) return;
-        setPermissionGranted(result.permissionGranted);
-        setDevices(result.devices);
+        applyResult(result);
       })
       .catch((err) => {
         if (cancelled) return;
         setDevices([]);
-        setPermissionGranted(false);
         setEnumError(err instanceof Error ? err.message : 'Failed to enumerate media devices');
       });
     return () => { cancelled = true; };
-  }, []);
+  }, [applyResult]);
 
   // Enumerate on mount.
   useEffect(() => refreshDevices(), [refreshDevices]);
@@ -123,9 +151,53 @@ export function AudioSettings({ onClose }: { onClose: () => void }) {
     };
   }, [refreshDevices]);
 
+  const handleRequestMicAccess = async () => {
+    setRequestingMic(true);
+    setEnumError(null);
+    try {
+      const result = await requestDeviceAccess(true, false);
+      applyResult(result);
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'NotAllowedError') {
+        setMicPermission('denied');
+      } else {
+        setEnumError(err instanceof Error ? err.message : 'Failed to request mic access');
+      }
+    } finally {
+      setRequestingMic(false);
+    }
+  };
+
+  const handleRequestCameraAccess = async () => {
+    setRequestingCamera(true);
+    setEnumError(null);
+    try {
+      const result = await requestDeviceAccess(false, true);
+      applyResult(result);
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'NotAllowedError') {
+        setCameraPermission('denied');
+      } else {
+        setEnumError(err instanceof Error ? err.message : 'Failed to request camera access');
+      }
+    } finally {
+      setRequestingCamera(false);
+    }
+  };
+
   const audioInputs = devices.filter((d) => d.kind === 'audioinput');
   const audioOutputs = devices.filter((d) => d.kind === 'audiooutput');
   const videoInputs = devices.filter((d) => d.kind === 'videoinput');
+
+  // Determine whether labels are missing per-kind
+  const micLabelsMissing = audioInputs.length > 0 && audioInputs.every((d) => d.labelMissing);
+  const cameraLabelsMissing = videoInputs.length > 0 && videoInputs.every((d) => d.labelMissing);
+
+  // Determine per-kind permission states for UI
+  const micNeedsPermission = micPermission === 'prompt' || (micPermission === 'unknown' && micLabelsMissing);
+  const micDenied = micPermission === 'denied';
+  const cameraNeedsPermission = cameraPermission === 'prompt' || (cameraPermission === 'unknown' && cameraLabelsMissing);
+  const cameraDenied = cameraPermission === 'denied';
 
   const sinkIdSupported = isSinkIdSupported();
 
@@ -141,20 +213,27 @@ export function AudioSettings({ onClose }: { onClose: () => void }) {
           </p>
         )}
 
-        {!permissionGranted && !enumError && (
-          <p className="settings-note">
-            Grant microphone/camera access to see device names.
-            {isTauri() && (
-              <> On desktop, your OS may need to grant this app camera and microphone
-              permissions separately. Check your system privacy settings if devices are
-              not listed below.</>
-            )}
-          </p>
-        )}
-
         <div className="settings-section">
           <label>
             Input Device (Microphone)
+            {micDenied && (
+              <p className="settings-note settings-unsupported">
+                Microphone permission was denied. Allow microphone access in your browser or OS settings to see device names.
+              </p>
+            )}
+            {micNeedsPermission && !micDenied && (
+              <p className="settings-note">
+                Microphone permission has not been granted. Device names are hidden.
+                <button
+                  type="button"
+                  className="inline-action-btn"
+                  onClick={handleRequestMicAccess}
+                  disabled={requestingMic}
+                >
+                  {requestingMic ? 'Requesting...' : 'Request microphone access'}
+                </button>
+              </p>
+            )}
             <select
               value={inputDeviceId ?? ''}
               onChange={(e) => setInputDevice(e.target.value || null)}
@@ -233,6 +312,24 @@ export function AudioSettings({ onClose }: { onClose: () => void }) {
         <div className="settings-section">
           <label>
             Camera
+            {cameraDenied && (
+              <p className="settings-note settings-unsupported">
+                Camera permission was denied. Allow camera access in your browser or OS settings to see device names.
+              </p>
+            )}
+            {cameraNeedsPermission && !cameraDenied && (
+              <p className="settings-note">
+                Camera permission has not been granted. Device names are hidden.
+                <button
+                  type="button"
+                  className="inline-action-btn"
+                  onClick={handleRequestCameraAccess}
+                  disabled={requestingCamera}
+                >
+                  {requestingCamera ? 'Requesting...' : 'Request camera access'}
+                </button>
+              </p>
+            )}
             {videoInputs.length > 0 ? (
               <select
                 value={cameraDeviceId ?? ''}
@@ -244,6 +341,10 @@ export function AudioSettings({ onClose }: { onClose: () => void }) {
                     {d.label}
                   </option>
                 ))}
+              </select>
+            ) : cameraNeedsPermission || cameraDenied ? (
+              <select disabled>
+                <option>Grant camera permission to see devices</option>
               </select>
             ) : (
               <select disabled>

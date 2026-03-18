@@ -13,6 +13,9 @@ pub struct VoiceService {
     /// Runtime-updatable public URL override. When set (non-empty), takes
     /// precedence over `config.public_url` for browser-facing URLs.
     runtime_public_url: RwLock<String>,
+    /// Explicitly disabled at runtime (e.g. desktop startup detected LiveKit
+    /// failure). When true, `is_enabled()` returns false regardless of config.
+    runtime_disabled: RwLock<bool>,
 }
 
 impl VoiceService {
@@ -23,11 +26,25 @@ impl VoiceService {
             config,
             room_client,
             runtime_public_url: RwLock::new(String::new()),
+            runtime_disabled: RwLock::new(false),
         }
     }
 
+    /// Returns true if voice is considered available.
+    ///
+    /// A non-empty URL is necessary but not sufficient: if the service was
+    /// explicitly disabled at runtime (e.g. desktop startup detected LiveKit
+    /// was unreachable), this returns false even when the fallback dev URL
+    /// is present in the config.
     pub fn is_enabled(&self) -> bool {
-        !self.config.url.is_empty()
+        let disabled = *self.runtime_disabled.read().unwrap_or_else(|p| p.into_inner());
+        !disabled && !self.config.url.is_empty()
+    }
+
+    /// Mark voice as disabled at runtime (e.g. LiveKit failed to start on desktop).
+    pub fn set_runtime_disabled(&self, disabled: bool) {
+        let mut w = self.runtime_disabled.write().unwrap_or_else(|p| p.into_inner());
+        *w = disabled;
     }
 
     pub fn get_url(&self) -> &str {

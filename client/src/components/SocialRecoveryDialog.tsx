@@ -9,6 +9,7 @@
 import { useState, type FormEvent } from 'react';
 import { useIdentityStore } from '@/stores/identity';
 import { splitSecretKey, reconstructSecretKey } from '@/lib/shamir';
+import * as zk from '@/lib/zk';
 import type { RecoveryConfig, RecoveryShard } from '@/types';
 
 interface Props {
@@ -43,6 +44,7 @@ export function SocialRecoveryDialog({ onClose }: Props) {
     { index: '', data: '' },
   ]);
   const [recoveredSk, setRecoveredSk] = useState<string | null>(null);
+  const [importSuccess, setImportSuccess] = useState(false);
 
   const updateGuardian = (idx: number, field: 'pseudonymId' | 'label', value: string) => {
     setGuardians((g) => g.map((item, i) => (i === idx ? { ...item, [field]: value } : item)));
@@ -134,22 +136,32 @@ export function SocialRecoveryDialog({ onClose }: Props) {
 
   const handleImportRecovered = async () => {
     if (!recoveredSk) return;
-    // Build a minimal identity backup that can be completed through re-registration
-    const backup = JSON.stringify({
-      id: crypto.randomUUID(),
-      sk: recoveredSk,
-      roleCode: 1,
-      nodeId: 0,
-      commitmentHex: '',
-      pseudonymId: null,
-      serverSlug: 'default',
-      leafIndex: null,
-      createdAt: new Date().toISOString(),
-    });
+    setError(null);
 
     try {
+      // Recompute the missing fields from the recovered secret key using
+      // the same key-derivation path as normal identity creation.
+      await zk.initPoseidon();
+      const sk = BigInt('0x' + recoveredSk);
+      const nodeId = zk.generateNodeId();
+      const roleCode = 1; // Human
+      const commitmentHex = await zk.computeCommitment(sk, roleCode, nodeId);
+
+      const backup = JSON.stringify({
+        id: crypto.randomUUID(),
+        sk: recoveredSk,
+        roleCode,
+        nodeId,
+        commitmentHex,
+        pseudonymId: null,
+        sessionToken: null,
+        serverSlug: '',
+        leafIndex: null,
+        createdAt: new Date().toISOString(),
+      });
+
       await importBackup(backup);
-      onClose();
+      setImportSuccess(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to import recovered key');
     }
@@ -349,7 +361,7 @@ export function SocialRecoveryDialog({ onClose }: Props) {
           </form>
         )}
 
-        {mode === 'recover' && recoveredSk && (
+        {mode === 'recover' && recoveredSk && !importSuccess && (
           <div className="recovery-result">
             <div className="success-message">Key reconstructed successfully!</div>
             <p className="recovery-hint">
@@ -361,6 +373,22 @@ export function SocialRecoveryDialog({ onClose }: Props) {
               <button onClick={() => setMode('choose')}>Back</button>
               <button className="primary-btn" onClick={handleImportRecovered}>
                 Import Recovered Key
+              </button>
+            </div>
+          </div>
+        )}
+
+        {mode === 'recover' && importSuccess && (
+          <div className="recovery-result">
+            <div className="success-message">Identity restored locally!</div>
+            <p className="recovery-hint">
+              Your identity keys have been recovered and saved to this device.
+              To use this identity on a server, you still need to register it
+              — go to the server connection screen and complete registration.
+            </p>
+            <div className="dialog-actions">
+              <button className="primary-btn" onClick={onClose}>
+                Done
               </button>
             </div>
           </div>

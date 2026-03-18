@@ -87,6 +87,13 @@ export interface VoiceState {
   /** Camera device ID (persisted). */
   cameraDeviceId: string | null;
 
+  /** True when voice was unavailable at startup (e.g. LiveKit failed to start). */
+  voiceSessionDisabled: boolean;
+  /** Reason voice is disabled for this session. */
+  voiceSessionDisabledReason: string | null;
+  /** Mark voice as disabled for this session. */
+  setVoiceSessionDisabled: (disabled: boolean, reason?: string) => void;
+
   /** Join a voice call on the given channel. */
   joinCall: (pseudonymId: string, channelId: string) => Promise<void>;
   /** Leave the current voice call. */
@@ -168,6 +175,13 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   inputVolume: (saved.inputVolume as number) ?? 100,
   outputVolume: (saved.outputVolume as number) ?? 100,
   cameraDeviceId: (saved.cameraDeviceId as string) ?? null,
+
+  voiceSessionDisabled: false,
+  voiceSessionDisabledReason: null,
+  setVoiceSessionDisabled: (disabled, reason) => set({
+    voiceSessionDisabled: disabled,
+    voiceSessionDisabledReason: reason ?? null,
+  }),
 
   joinCall: async (pseudonymId, channelId) => {
     const requestId = get().activeJoinRequestId + 1;
@@ -348,6 +362,8 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       lastFailedChannelId: null,
       joiningAnyCall: false,
       micToggleError: null,
+      voiceSessionDisabled: false,
+      voiceSessionDisabledReason: null,
     });
   },
   dismissConnectionError: () => {

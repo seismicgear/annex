@@ -40,6 +40,7 @@ function ChannelItem({
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [fallbackInviteUrl, setFallbackInviteUrl] = useState<string | null>(null);
 
   const handleJoin = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -72,14 +73,21 @@ function ChannelItem({
   const handleCopyInvite = async (e: React.MouseEvent) => {
     e.stopPropagation();
     setActionError(null);
+    setFallbackInviteUrl(null);
     try {
       const apiBase = getApiBaseUrl();
       const { url } = await createInviteLink(apiBase, pseudonymId);
-      await navigator.clipboard.writeText(url);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      // Store URL in state before attempting clipboard write
+      try {
+        await navigator.clipboard.writeText(url);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      } catch {
+        // Clipboard API denied (e.g. Tauri) — show inline fallback
+        setFallbackInviteUrl(url);
+      }
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Failed to copy invite link');
+      setActionError(err instanceof Error ? err.message : 'Failed to create invite link');
     }
   };
 
@@ -129,6 +137,25 @@ function ChannelItem({
           <span>{actionError}</span>
           <button
             onClick={(e) => { e.stopPropagation(); setActionError(null); }}
+            className="channel-error-dismiss"
+            aria-label="Dismiss"
+          >
+            &times;
+          </button>
+        </div>
+      )}
+      {fallbackInviteUrl && (
+        <div className="channel-invite-fallback" onClick={(e) => e.stopPropagation()}>
+          <input
+            type="text"
+            readOnly
+            value={fallbackInviteUrl}
+            className="share-link-input"
+            autoFocus
+            onFocus={(e) => e.target.select()}
+          />
+          <button
+            onClick={(e) => { e.stopPropagation(); setFallbackInviteUrl(null); }}
             className="channel-error-dismiss"
             aria-label="Dismiss"
           >
