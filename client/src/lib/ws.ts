@@ -175,6 +175,11 @@ export class AnnexWebSocket {
     }
   }
 
+  /** Update the session token so future reconnects use the fresh value. */
+  setSessionToken(token: string | null): void {
+    this.sessionToken = token;
+  }
+
   /** Whether the socket is currently connected. */
   get connected(): boolean {
     return this.ws?.readyState === WebSocket.OPEN;

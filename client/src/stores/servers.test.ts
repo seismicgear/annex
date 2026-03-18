@@ -41,8 +41,10 @@ const mockGetRemoteServerSummary = vi.fn(async () => ({
   label: 'Remote Server',
   total_active_members: 5,
 }));
+let mockCurrentApiBaseUrl = '';
 vi.mock('@/lib/api', () => ({
-  setApiBaseUrl: (...args: unknown[]) => mockSetApiBaseUrl(...args),
+  setApiBaseUrl: (...args: unknown[]) => { mockCurrentApiBaseUrl = args[0] as string; mockSetApiBaseUrl(...args); },
+  getApiBaseUrl: () => mockCurrentApiBaseUrl,
   getServerImage: (...args: unknown[]) => mockGetServerImage(...args),
   getServerSummary: vi.fn(async () => ({ slug: 'test', label: 'Test' })),
   getRemoteServerSummary: (...args: unknown[]) => mockGetRemoteServerSummary(...args),

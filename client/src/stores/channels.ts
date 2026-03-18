@@ -16,6 +16,8 @@ interface ChannelsState {
   channels: Channel[];
   /** Currently selected channel ID. */
   activeChannelId: string | null;
+  /** Set of channel IDs the user is currently a member of. */
+  joinedChannelIds: Set<string>;
   /** Messages for the active channel (newest last). */
   messages: Message[];
   /** Whether the WebSocket is connected. */
@@ -61,6 +63,8 @@ interface ChannelsState {
   clearComposerError: () => void;
   /** Disconnect WebSocket. */
   disconnectWs: () => void;
+  /** Update the active WebSocket's session token (for reconnect freshness). */
+  updateWsSessionToken: (token: string | null) => void;
   /** Reset all per-server transient state to initial values. */
   resetServerState: () => void;
 }
@@ -68,6 +72,7 @@ interface ChannelsState {
 export const useChannelsStore = create<ChannelsState>((set, get) => ({
   channels: [],
   activeChannelId: null,
+  joinedChannelIds: new Set<string>(),
   messages: [],
   wsConnected: false,
   loading: false,
@@ -83,7 +88,12 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       const channels = await api.listChannels(pseudonymId);
-      set({ channels });
+      // Build joined set from is_member flag if available
+      const joined = new Set<string>();
+      for (const ch of channels) {
+        if (ch.is_member) joined.add(ch.channel_id);
+      }
+      set({ channels, joinedChannelIds: joined });
     } catch (err) {
       set({ channels: [], error: err instanceof Error ? err.message : String(err) });
     } finally {
@@ -105,6 +115,11 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     // Must be a member before fetching messages or joining voice.
     try {
       await api.joinChannel(pseudonymId, channelId);
+      set((s) => {
+        const joined = new Set(s.joinedChannelIds);
+        joined.add(channelId);
+        return { joinedChannelIds: joined };
+      });
     } catch {
       // May fail for capability restrictions; still try to load messages
       // in case the user is already a member from a previous session.
@@ -244,10 +259,21 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
 
   joinChannel: async (pseudonymId, channelId) => {
     await api.joinChannel(pseudonymId, channelId);
+    set((s) => {
+      const joined = new Set(s.joinedChannelIds);
+      joined.add(channelId);
+      return { joinedChannelIds: joined };
+    });
   },
 
   leaveChannel: async (pseudonymId, channelId) => {
     await api.leaveChannel(pseudonymId, channelId);
+
+    set((s) => {
+      const joined = new Set(s.joinedChannelIds);
+      joined.delete(channelId);
+      return { joinedChannelIds: joined };
+    });
 
     // If the user is in a voice call on this channel, leave it too.
     const voiceStore = useVoiceStore.getState();
@@ -277,6 +303,13 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     }
   },
 
+  updateWsSessionToken: (token: string | null) => {
+    const { ws } = get();
+    if (ws) {
+      ws.setSessionToken(token);
+    }
+  },
+
   resetServerState: () => {
     const { ws } = get();
     if (ws) {
@@ -285,6 +318,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     set({
       channels: [],
       activeChannelId: null,
+      joinedChannelIds: new Set<string>(),
       messages: [],
       wsConnected: false,
       loading: false,

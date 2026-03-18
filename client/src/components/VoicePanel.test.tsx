@@ -15,6 +15,9 @@ type VoiceStoreSnapshot = {
   joinErrorByChannel: Record<string, { display: string; code: string | null; setupHint: string | null } | null>;
   deafened: boolean;
   micMuted: boolean;
+  lastFailedChannelId: string | null;
+  joiningAnyCall: boolean;
+  micToggleError: string | null;
   inputDeviceId: string | null;
   outputDeviceId: string | null;
   inputVolume: number;
@@ -35,9 +38,11 @@ type VoiceStoreSnapshot = {
   handleUnexpectedDisconnect: ReturnType<typeof vi.fn>;
   toggleMicAsync: ReturnType<typeof vi.fn>;
   forceReset: ReturnType<typeof vi.fn>;
+  dismissConnectionError: ReturnType<typeof vi.fn>;
+  clearMicToggleError: ReturnType<typeof vi.fn>;
 };
 
-let identityState: { identity: { pseudonymId: string } | null; permissions: { capabilities: { can_voice: boolean } } | null };
+let identityState: { identity: { pseudonymId: string } | null; permissions: { capabilities: { can_voice: boolean } } | null; permissionsStatus: string };
 let channelsState: { activeChannelId: string | null; channels: Array<{ channel_id: string; channel_type: string; name: string }> };
 let voiceState: VoiceStoreSnapshot;
 let serversState: { activeServerId: string | null };
@@ -137,6 +142,9 @@ function defaultVoiceState(): VoiceStoreSnapshot {
     joinErrorByChannel: {},
     deafened: false,
     micMuted: false,
+    lastFailedChannelId: null,
+    joiningAnyCall: false,
+    micToggleError: null,
     inputDeviceId: null,
     outputDeviceId: null,
     inputVolume: 100,
@@ -157,6 +165,8 @@ function defaultVoiceState(): VoiceStoreSnapshot {
     handleUnexpectedDisconnect: vi.fn(),
     toggleMicAsync: vi.fn(async () => {}),
     forceReset: vi.fn(),
+    dismissConnectionError: vi.fn(),
+    clearMicToggleError: vi.fn(),
   };
 }
 
@@ -171,6 +181,7 @@ describe('VoicePanel', () => {
     identityState = {
       identity: { pseudonymId: 'p1' },
       permissions: { capabilities: { can_voice: true } },
+      permissionsStatus: 'ready',
     };
 
     channelsState = {
@@ -549,5 +560,62 @@ describe('VoicePanel', () => {
 
     // With empty participants from the mock, no speaking indicators should be present
     expect(screen.queryByClassName?.('speaking-indicator') ?? null).toBeNull();
+  });
+
+  it('shows connectionError in disconnected state after unexpected disconnect', () => {
+    // Simulate: call was on chan-1, then unexpected disconnect
+    voiceState = {
+      ...voiceState,
+      voiceToken: null,
+      livekitUrl: null,
+      connectedChannelId: null,
+      connectionState: 'failed',
+      connectionError: 'Voice disconnected — the connection was lost.',
+      lastFailedChannelId: 'chan-1',
+    };
+
+    render(<VoicePanel />);
+
+    // The error should be visible in the disconnected state
+    expect(screen.getByRole('alert')).toHaveTextContent('Voice disconnected — the connection was lost.');
+    expect(screen.getByRole('button', { name: 'Create Call' })).toBeInTheDocument();
+  });
+
+  it('disables join button when permissions are loading', () => {
+    identityState = {
+      identity: { pseudonymId: 'p1' },
+      permissions: null,
+      permissionsStatus: 'loading',
+    };
+
+    render(<VoicePanel />);
+
+    const joinBtn = screen.getByRole('button', { name: 'Create Call' });
+    expect(joinBtn).toBeDisabled();
+    expect(screen.getByText('Checking voice permissions…')).toBeInTheDocument();
+  });
+
+  it('shows permissions error state', () => {
+    identityState = {
+      identity: { pseudonymId: 'p1' },
+      permissions: null,
+      permissionsStatus: 'error',
+    };
+
+    render(<VoicePanel />);
+
+    expect(screen.getByText(/Failed to check permissions/)).toBeInTheDocument();
+  });
+
+  it('join button is disabled when joiningAnyCall is true', () => {
+    voiceState = {
+      ...voiceState,
+      joiningAnyCall: true,
+    };
+
+    render(<VoicePanel />);
+
+    const joinBtn = screen.getByRole('button', { name: 'Create Call' });
+    expect(joinBtn).toBeDisabled();
   });
 });

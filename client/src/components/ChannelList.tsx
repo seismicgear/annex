@@ -26,11 +26,13 @@ const DEFAULT_CHANNEL_ICON = { icon: '#', tooltip: 'Channel' };
 function ChannelItem({
   channel,
   active,
+  isMember,
   pseudonymId,
   onSelect,
 }: {
   channel: Channel;
   active: boolean;
+  isMember: boolean;
   pseudonymId: string;
   onSelect: () => void;
 }) {
@@ -102,7 +104,7 @@ function ChannelItem({
         >
           {copied ? '!' : 'i'}
         </button>
-        {active ? (
+        {isMember ? (
           <button
             className="channel-action-btn leave-btn"
             onClick={handleLeave}
@@ -144,6 +146,7 @@ export function ChannelList() {
   const {
     channels,
     activeChannelId,
+    joinedChannelIds,
     loading,
     error,
     loadChannels,
@@ -219,6 +222,7 @@ export function ChannelList() {
           key={ch.channel_id}
           channel={ch}
           active={activeChannelId === ch.channel_id}
+          isMember={joinedChannelIds.has(ch.channel_id)}
           pseudonymId={identity.pseudonymId!}
           onSelect={() => handleSelect(ch.channel_id)}
         />

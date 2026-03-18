@@ -400,6 +400,41 @@ pub async fn set_public_url_handler(
     Ok(AxumJson(serde_json::json!({ "status": "ok", "public_url": url })).into_response())
 }
 
+// ── LiveKit Public URL (runtime update for Tauri) ──
+
+#[derive(Debug, Deserialize)]
+pub struct SetLivekitPublicUrlRequest {
+    pub public_livekit_url: String,
+}
+
+/// Handler for `PUT /api/admin/livekit-public-url`.
+///
+/// Allows the Tauri host to push the router-provided public LiveKit URL
+/// into the running server so remote voice join responses return a
+/// globally-reachable URL instead of a loopback address.
+pub async fn set_livekit_public_url_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(IdentityContext(identity)): Extension<IdentityContext>,
+    Json(body): Json<SetLivekitPublicUrlRequest>,
+) -> Result<Response, ApiError> {
+    if !identity.can_moderate {
+        return Err(ApiError::Forbidden("insufficient permissions".to_string()));
+    }
+
+    let url = body.public_livekit_url.trim().to_string();
+    if !url.is_empty() && !url.starts_with("ws://") && !url.starts_with("wss://") && !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err(ApiError::BadRequest(
+            "public_livekit_url must start with ws://, wss://, http://, or https://".to_string(),
+        ));
+    }
+
+    state.voice_service.set_public_url(url.clone());
+
+    tracing::info!(public_livekit_url = %url, "LiveKit public URL updated via admin API");
+
+    Ok(AxumJson(serde_json::json!({ "status": "ok", "public_livekit_url": url })).into_response())
+}
+
 // ── Member Management ──
 
 #[derive(Debug, Serialize)]

@@ -70,6 +70,15 @@ export interface VoiceState {
   /** Whether the local microphone is muted (shared source of truth). */
   micMuted: boolean;
 
+  /** Channel ID that last failed (persisted after room teardown so VoicePanel can show error). */
+  lastFailedChannelId: string | null;
+  /** Monotonic join request counter — only the latest join can commit state. */
+  activeJoinRequestId: number;
+  /** True while any join request is in flight (disables join buttons globally). */
+  joiningAnyCall: boolean;
+  /** User-visible error from the last mic toggle failure. */
+  micToggleError: string | null;
+
   /** Audio settings persisted across sessions. */
   inputDeviceId: string | null;
   outputDeviceId: string | null;
@@ -112,6 +121,10 @@ export interface VoiceState {
   handleUnexpectedDisconnect: (errorMessage?: string) => void;
   /** Force-clear all voice session state (used by server switching). */
   forceReset: () => void;
+  /** Dismiss the persisted failure state (lastFailedChannelId + connectionError). */
+  dismissConnectionError: () => void;
+  /** Clear the mic toggle error. */
+  clearMicToggleError: () => void;
 }
 
 /** Load saved audio settings from localStorage. */
@@ -145,6 +158,10 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   joinErrorByChannel: {},
   deafened: false,
   micMuted: false,
+  lastFailedChannelId: null,
+  activeJoinRequestId: 0,
+  joiningAnyCall: false,
+  micToggleError: null,
 
   inputDeviceId: (saved.inputDeviceId as string) ?? null,
   outputDeviceId: (saved.outputDeviceId as string) ?? null,
@@ -153,12 +170,21 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   cameraDeviceId: (saved.cameraDeviceId as string) ?? null,
 
   joinCall: async (pseudonymId, channelId) => {
+    const requestId = get().activeJoinRequestId + 1;
     set((s) => ({
+      activeJoinRequestId: requestId,
+      joiningAnyCall: true,
       joiningByChannel: { ...s.joiningByChannel, [channelId]: true },
       joinErrorByChannel: { ...s.joinErrorByChannel, [channelId]: null },
+      // Clear stale failure state on fresh join attempt
+      lastFailedChannelId: null,
+      connectionError: null,
+      micToggleError: null,
     }));
     try {
       const { token, url, ice_servers } = await api.joinVoice(pseudonymId, channelId, 30_000);
+      // Only commit if this is still the latest join request
+      if (get().activeJoinRequestId !== requestId) return;
       set((s) => ({
         voiceToken: token,
         livekitUrl: url,
@@ -168,12 +194,17 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
         joinErrorByChannel: { ...s.joinErrorByChannel, [channelId]: null },
         connectionState: 'connecting' as ConnectionState,
         connectionError: null,
+        joiningAnyCall: false,
+        lastFailedChannelId: null,
       }));
     } catch (error) {
+      // Only commit if this is still the latest join request
+      if (get().activeJoinRequestId !== requestId) return;
       const details = getJoinErrorMessage(error);
       set((s) => ({
         joiningByChannel: { ...s.joiningByChannel, [channelId]: false },
         joinErrorByChannel: { ...s.joinErrorByChannel, [channelId]: details },
+        joiningAnyCall: false,
       }));
     }
   },
@@ -193,6 +224,8 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       deafened: false,
       connectionState: 'idle' as ConnectionState,
       connectionError: null,
+      lastFailedChannelId: null,
+      micToggleError: null,
       // Clear call-active status for the channel we just left
       callActiveByChannel: connectedChannelId
         ? { ...s.callActiveByChannel, [connectedChannelId]: false }
@@ -226,13 +259,15 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   },
   setConnectionState: (state, error = null) => {
     set({ connectionState: state, connectionError: error ?? null });
-    // If the room failed, reconcile store state
+    // If the room failed, preserve channel ID for error display, then clear session
     if (state === 'failed') {
+      const { connectedChannelId } = get();
       set({
         voiceToken: null,
         livekitUrl: null,
         iceServers: [],
         connectedChannelId: null,
+        lastFailedChannelId: connectedChannelId,
       });
     }
   },
@@ -241,9 +276,10 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     const shouldEnable = !lp.isMicrophoneEnabled;
     try {
       await lp.setMicrophoneEnabled(shouldEnable);
-      set({ micMuted: !shouldEnable });
+      set({ micMuted: !shouldEnable, micToggleError: null });
     } catch (err) {
-      // Keep previous store state — do not flip micMuted on failure
+      // Explicitly restore store to match real LiveKit state
+      set({ micMuted: !lp.isMicrophoneEnabled, micToggleError: err instanceof Error ? err.message : 'Microphone toggle failed' });
       console.warn('[voice] toggleMicAsync failed:', err);
       throw err;
     }
@@ -274,15 +310,24 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       const { [channelId]: _active, ...restActive } = s.callActiveByChannel;
       const { [channelId]: _error, ...restErrors } = s.joinErrorByChannel;
       const { [channelId]: _joining, ...restJoining } = s.joiningByChannel;
-      return { callActiveByChannel: restActive, joinErrorByChannel: restErrors, joiningByChannel: restJoining };
+      return {
+        callActiveByChannel: restActive,
+        joinErrorByChannel: restErrors,
+        joiningByChannel: restJoining,
+        // Clear failure state when switching away from the failed channel
+        lastFailedChannelId: s.lastFailedChannelId === channelId ? null : s.lastFailedChannelId,
+        connectionError: s.lastFailedChannelId === channelId ? null : s.connectionError,
+      };
     });
   },
   handleUnexpectedDisconnect: (errorMessage?: string) => {
+    const { connectedChannelId } = get();
     set({
       voiceToken: null,
       livekitUrl: null,
       iceServers: [],
       connectedChannelId: null,
+      lastFailedChannelId: connectedChannelId,
       connectionState: 'failed' as ConnectionState,
       connectionError: errorMessage ?? 'Voice disconnected unexpectedly.',
     });
@@ -300,6 +345,15 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       joinErrorByChannel: {},
       deafened: false,
       micMuted: false,
+      lastFailedChannelId: null,
+      joiningAnyCall: false,
+      micToggleError: null,
     });
+  },
+  dismissConnectionError: () => {
+    set({ lastFailedChannelId: null, connectionError: null });
+  },
+  clearMicToggleError: () => {
+    set({ micToggleError: null });
   },
 }));
