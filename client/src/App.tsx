@@ -26,7 +26,7 @@ import { FederationPanel } from '@/components/FederationPanel';
 import { EventLog } from '@/components/EventLog';
 import { AdminPanel } from '@/components/AdminPanel';
 import { ServerHub } from '@/components/ServerHub';
-import { StartupModeSelector } from '@/components/StartupModeSelector';
+import { StartupModeSelector, type DegradedStartupInfo } from '@/components/StartupModeSelector';
 import { clearWebStartupMode } from '@/lib/startup-prefs';
 import { parseLegacyInviteFromUrl, clearInviteFromUrl, createInviteLink } from '@/lib/invite';
 import { getPersonasForIdentity } from '@/lib/personas';
@@ -34,7 +34,7 @@ import { getApiBaseUrl, getServerSummary, setApiBaseUrl, redeemInvite, setPublic
 import { saveIdentity, clearAllDatabases } from '@/lib/db';
 import { cancelMembershipProofGeneration, isProofGenerationInFlight } from '@/lib/zk';
 import type { ProvingStatus } from '@/stores/identity';
-import { isTauri, getStartupMode as tauriGetStartupMode, listenForInvite, saveStartupMode, getTunnelUrl, resetServerData } from '@/lib/tauri';
+import { isTauri, getStartupMode as tauriGetStartupMode, listenForInvite, saveStartupMode, getTunnelUrl, resetServerData, clearStartupMode as clearTauriStartupMode } from '@/lib/tauri';
 import type { LegacyInvitePayload, InvitePayload } from '@/types';
 import './App.css';
 
@@ -79,6 +79,7 @@ export default function App() {
   const [identityChecked, setIdentityChecked] = useState(false);
 
   const [serverReady, setServerReady] = useState(false);
+  const [degradedStartup, setDegradedStartup] = useState<DegradedStartupInfo | null>(null);
   const [activeView, setActiveView] = useState<AppView>('chat');
   const [adminMenuOpen, setAdminMenuOpen] = useState(false);
   const [startupErrorDetails, setStartupErrorDetails] = useState<string | null>(null);
@@ -325,6 +326,11 @@ export default function App() {
     prevPhaseRef.current = phase;
 
     if (phase === 'uninitialized' && prevPhase !== 'uninitialized' && serverReady) {
+      // Clear startup preferences for the appropriate platform.
+      // Desktop (Tauri) uses disk-based startup_prefs.json; web uses localStorage.
+      if (isTauri()) {
+        clearTauriStartupMode().catch(() => {});
+      }
       clearWebStartupMode();
       setServerReady(false);
       serverSaved.current = false;
@@ -547,7 +553,10 @@ export default function App() {
       <div className="app">
         <main className="app-main setup">
           <StartupModeSelector
-            onReady={() => { setServerReady(true); }}
+            onReady={(degraded) => {
+              setServerReady(true);
+              if (degraded) setDegradedStartup(degraded);
+            }}
           />
         </main>
       </div>
@@ -759,6 +768,17 @@ export default function App() {
         )}
       </header>
 
+      {degradedStartup && (
+        <div className="degraded-startup-banner" role="status">
+          {degradedStartup.voiceFailed && (
+            <span>Server started, but voice is unavailable{degradedStartup.voiceError ? `: ${degradedStartup.voiceError}` : ''}.</span>
+          )}
+          {degradedStartup.tunnelFailed && (
+            <span>Server started, but public invites are unavailable{degradedStartup.tunnelError ? `: ${degradedStartup.tunnelError}` : ''}.</span>
+          )}
+          <button onClick={() => setDegradedStartup(null)} className="dismiss-banner-btn" aria-label="Dismiss">&times;</button>
+        </div>
+      )}
       <div className="app-with-hub">
         {servers.length > 0 && <ServerHub />}
         <div className="app-main-content" key={activeServer?.id ?? 'default'}>

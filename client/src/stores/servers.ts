@@ -12,6 +12,7 @@ import * as serversDb from '@/lib/servers';
 import * as api from '@/lib/api';
 import { useIdentityStore } from './identity';
 import { useChannelsStore } from './channels';
+import { useVoiceStore } from './voice';
 
 interface ServersState {
   /** All saved server connections. */
@@ -65,6 +66,20 @@ export const useServersStore = create<ServersState>((set, get) => ({
     set({ activeServerId: serverId, switching: true });
 
     try {
+      // Leave or forcibly clear any active voice session before switching.
+      // The voice token/URL belong to the old server context and would be
+      // invalid after the identity/API base change.
+      const voiceStore = useVoiceStore.getState();
+      if (voiceStore.connectedChannelId || voiceStore.voiceToken) {
+        const oldIdentity = useIdentityStore.getState().identity;
+        if (oldIdentity?.pseudonymId) {
+          // Best-effort: try to leave gracefully on the old server
+          await voiceStore.leaveCall(oldIdentity.pseudonymId).catch(() => {});
+        }
+        // Force-reset regardless of leaveCall result
+        voiceStore.forceReset();
+      }
+
       // Set API base URL for cross-server requests
       api.setApiBaseUrl(server.baseUrl);
 

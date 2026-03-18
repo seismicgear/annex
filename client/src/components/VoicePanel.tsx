@@ -13,9 +13,14 @@
  *
  * Call state lives in the voice store so the call persists across
  * tab and channel switches (like Discord).
+ *
+ * The shared voice store is the single source of truth for:
+ * - micMuted / deafened state (reflected by both StatusBar and in-call controls)
+ * - input/output device IDs, volume levels
+ * Device selection is applied to the LiveKit room when connected.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   LiveKitRoom,
   RoomAudioRenderer,
@@ -29,8 +34,45 @@ import { Track, type LocalParticipant } from 'livekit-client';
 import { useIdentityStore } from '@/stores/identity';
 import { useChannelsStore } from '@/stores/channels';
 import { useVoiceStore } from '@/stores/voice';
+import { useServersStore } from '@/stores/servers';
 import * as api from '@/lib/api';
 import { isTauri, getPlatformMediaStatus, setMediaKeepalive, type PlatformMediaStatus } from '@/lib/tauri';
+
+// ── Helpers ──
+
+/** Try to set the audio output device on an HTMLMediaElement (setSinkId). */
+function trySetSinkId(el: HTMLMediaElement, deviceId: string | null): void {
+  if (!deviceId) return;
+  if (typeof (el as any).setSinkId === 'function') {
+    (el as any).setSinkId(deviceId).catch(() => {});
+  }
+}
+
+/** Check whether setSinkId is supported in this browser/webview. */
+function isSinkIdSupported(): boolean {
+  return typeof HTMLMediaElement !== 'undefined' &&
+    typeof (HTMLMediaElement.prototype as any).setSinkId === 'function';
+}
+
+/** Produce a user-friendly error message from a media toggle failure. */
+function mediaErrorMessage(err: unknown, action: string): string {
+  if (err instanceof DOMException) {
+    if (err.name === 'NotAllowedError') {
+      return `${action}: permission denied. Check your browser/OS settings.`;
+    }
+    if (err.name === 'NotFoundError') {
+      return `${action}: no device found. Is your device connected?`;
+    }
+    if (err.name === 'AbortError' || err.name === 'NotReadableError') {
+      return `${action}: device may be in use by another application.`;
+    }
+    return `${action}: ${err.message}`;
+  }
+  if (err instanceof Error) return `${action}: ${err.message}`;
+  return `${action} failed`;
+}
+
+// ── Components ──
 
 /** Local media status bar shown above the controls. */
 function LocalMediaStatus() {
@@ -52,15 +94,30 @@ function LocalMediaStatus() {
 }
 
 /** Controls bar rendered inside the LiveKit room context. */
-function MediaControls({ onLeave }: { onLeave: () => void }) {
+function MediaControls({
+  onLeave,
+  mediaStatus,
+  platformWarnings,
+}: {
+  onLeave: () => void;
+  mediaStatus: PlatformMediaStatus | null;
+  platformWarnings: string[];
+}) {
   const { localParticipant, isMicrophoneEnabled, isCameraEnabled, isScreenShareEnabled } = useLocalParticipant();
+  const { micMuted, setMicMuted, deafened } = useVoiceStore();
 
   const micEnabled = isMicrophoneEnabled;
   const camEnabled = isCameraEnabled;
   const screenEnabled = isScreenShareEnabled;
 
+  // Platform capability checks
+  const canScreenShare = mediaStatus?.screen_share_available !== false;
+  const canCameraMic = mediaStatus?.camera_mic_available !== false;
+
+  // Error state for media toggle failures
+  const [mediaError, setMediaError] = useState<string | null>(null);
+
   // Listen for device hot-plug events during an active call.
-  // Shows a transient notification so the user knows a device was added/removed.
   const [deviceNotice, setDeviceNotice] = useState<string | null>(null);
   useEffect(() => {
     if (!navigator.mediaDevices?.addEventListener) return;
@@ -75,27 +132,110 @@ function MediaControls({ onLeave }: { onLeave: () => void }) {
     };
   }, []);
 
+  // Sync voice store micMuted → LiveKit room state.
+  // When micMuted changes in the store (from StatusBar or here), apply to LiveKit.
+  useEffect(() => {
+    const lp = localParticipant as LocalParticipant;
+    if (!lp) return;
+    const shouldBeEnabled = !micMuted;
+    if (lp.isMicrophoneEnabled !== shouldBeEnabled) {
+      lp.setMicrophoneEnabled(shouldBeEnabled).catch(() => {});
+    }
+  }, [micMuted, localParticipant]);
+
+  // Sync LiveKit mic state → store when LiveKit state changes externally.
+  useEffect(() => {
+    if (micMuted !== !micEnabled) {
+      setMicMuted(!micEnabled);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [micEnabled]);
+
   const toggleMic = useCallback(async () => {
-    await localParticipant.setMicrophoneEnabled(!micEnabled);
-  }, [localParticipant, micEnabled]);
+    if (!canCameraMic) {
+      setMediaError('Microphone is unavailable on this platform.');
+      return;
+    }
+    try {
+      setMediaError(null);
+      await localParticipant.setMicrophoneEnabled(!micEnabled);
+      setMicMuted(micEnabled); // toggling: if was enabled, now muted
+    } catch (err) {
+      setMediaError(mediaErrorMessage(err, micEnabled ? 'Mute microphone' : 'Unmute microphone'));
+    }
+  }, [localParticipant, micEnabled, canCameraMic, setMicMuted]);
 
   const toggleCamera = useCallback(async () => {
-    await localParticipant.setCameraEnabled(!camEnabled);
-  }, [localParticipant, camEnabled]);
+    if (!canCameraMic) {
+      setMediaError('Camera is unavailable on this platform.');
+      return;
+    }
+    try {
+      setMediaError(null);
+      await localParticipant.setCameraEnabled(!camEnabled);
+    } catch (err) {
+      setMediaError(mediaErrorMessage(err, camEnabled ? 'Turn off camera' : 'Turn on camera'));
+    }
+  }, [localParticipant, camEnabled, canCameraMic]);
 
   const toggleScreen = useCallback(async () => {
-    await localParticipant.setScreenShareEnabled(!screenEnabled);
-  }, [localParticipant, screenEnabled]);
+    if (!canScreenShare && !screenEnabled) {
+      const hint = platformWarnings.length > 0
+        ? platformWarnings[0]
+        : 'Screen sharing is unavailable on this platform.';
+      setMediaError(hint);
+      return;
+    }
+    try {
+      setMediaError(null);
+      await localParticipant.setScreenShareEnabled(!screenEnabled);
+    } catch (err) {
+      // Screen share cancelled by user is not an error
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      const hint = platformWarnings.length > 0
+        ? `Screen sharing failed. ${platformWarnings[0]}`
+        : mediaErrorMessage(err, screenEnabled ? 'Stop sharing' : 'Share screen');
+      setMediaError(hint);
+    }
+  }, [localParticipant, screenEnabled, canScreenShare, platformWarnings]);
+
+  const screenShareTitle = !canScreenShare
+    ? 'Screen sharing is unavailable on this platform'
+    : screenEnabled
+      ? 'Stop sharing'
+      : 'Share screen';
+
+  const cameraMicTitle = !canCameraMic
+    ? 'Camera/microphone unavailable on this platform'
+    : undefined;
 
   return (
     <div className="media-controls">
       {deviceNotice && (
         <div className="device-notice" role="status">{deviceNotice}</div>
       )}
+      {mediaError && (
+        <div className="media-error" role="alert">
+          <span>{mediaError}</span>
+          <button
+            onClick={() => setMediaError(null)}
+            className="media-error-dismiss"
+            aria-label="Dismiss"
+          >
+            &times;
+          </button>
+        </div>
+      )}
+      {deafened && (
+        <div className="deafen-notice" role="status">
+          You are deafened — all incoming audio is muted.
+        </div>
+      )}
       <button
         className={`media-control-btn ${micEnabled ? 'active' : 'muted'}`}
         onClick={toggleMic}
-        title={micEnabled ? 'Mute microphone' : 'Unmute microphone'}
+        disabled={!canCameraMic}
+        title={cameraMicTitle ?? (micEnabled ? 'Mute microphone' : 'Unmute microphone')}
       >
         <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
           {micEnabled ? (
@@ -112,7 +252,8 @@ function MediaControls({ onLeave }: { onLeave: () => void }) {
       <button
         className={`media-control-btn ${camEnabled ? 'active' : 'muted'}`}
         onClick={toggleCamera}
-        title={camEnabled ? 'Turn off camera' : 'Turn on camera'}
+        disabled={!canCameraMic}
+        title={cameraMicTitle ?? (camEnabled ? 'Turn off camera' : 'Turn on camera')}
       >
         <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
           {camEnabled ? (
@@ -127,9 +268,10 @@ function MediaControls({ onLeave }: { onLeave: () => void }) {
       </button>
 
       <button
-        className={`media-control-btn screen-btn ${screenEnabled ? 'active sharing' : ''}`}
+        className={`media-control-btn screen-btn ${screenEnabled ? 'active sharing' : ''} ${!canScreenShare ? 'disabled-cap' : ''}`}
         onClick={toggleScreen}
-        title={screenEnabled ? 'Stop sharing' : 'Share screen'}
+        disabled={!canScreenShare && !screenEnabled}
+        title={screenShareTitle}
       >
         <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
           <path d="M0 3.5A1.5 1.5 0 011.5 2h13A1.5 1.5 0 0116 3.5v7a1.5 1.5 0 01-1.5 1.5H10v1h2v1H4v-1h2v-1H1.5A1.5 1.5 0 010 10.5v-7zM1.5 3a.5.5 0 00-.5.5v7a.5.5 0 00.5.5h13a.5.5 0 00.5-.5v-7a.5.5 0 00-.5-.5h-13z"/>
@@ -386,8 +528,96 @@ function useTauriMediaRestore(onScreenShareInterrupted?: () => void) {
   }, [localParticipant, onScreenShareInterrupted]);
 }
 
+/**
+ * Apply voice store settings to the active LiveKit room:
+ * - Input device selection via media constraints
+ * - Output device via setSinkId on audio elements
+ * - Output volume on audio elements
+ * - Deafen by muting all remote audio elements
+ */
+function useVoiceStoreSync() {
+  const { localParticipant } = useLocalParticipant();
+  const { inputDeviceId, outputDeviceId, outputVolume, deafened } = useVoiceStore();
+
+  // Apply input device selection when it changes
+  useEffect(() => {
+    if (!inputDeviceId) return;
+    const lp = localParticipant as LocalParticipant;
+    if (!lp.isMicrophoneEnabled) return;
+    // Re-publish microphone with the selected device
+    lp.setMicrophoneEnabled(false)
+      .then(() => lp.setMicrophoneEnabled(true, { deviceId: inputDeviceId }))
+      .catch(() => {});
+  // Only run when inputDeviceId changes, not on every mic toggle
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inputDeviceId]);
+
+  // Apply output device and volume to all <audio> elements rendered by RoomAudioRenderer.
+  // Also handles deafen by muting those elements.
+  useEffect(() => {
+    const audioElements = document.querySelectorAll<HTMLAudioElement>('audio[data-lk-source]');
+    audioElements.forEach((el) => {
+      // Deafen: mute all remote audio
+      el.muted = deafened;
+      // Output volume (0–1 scale)
+      el.volume = deafened ? 0 : Math.max(0, Math.min(1, outputVolume / 100));
+      // Output device
+      if (outputDeviceId) {
+        trySetSinkId(el, outputDeviceId);
+      }
+    });
+
+    // Also handle any audio elements inside livekit containers that may not have data-lk-source
+    const lkAudioElements = document.querySelectorAll<HTMLAudioElement>('[data-testid="livekit-room"] audio, .lk-room-container audio');
+    lkAudioElements.forEach((el) => {
+      el.muted = deafened;
+      el.volume = deafened ? 0 : Math.max(0, Math.min(1, outputVolume / 100));
+      if (outputDeviceId) {
+        trySetSinkId(el, outputDeviceId);
+      }
+    });
+  }, [deafened, outputVolume, outputDeviceId]);
+
+  // Set up a MutationObserver to catch dynamically added audio elements.
+  // Capture current values in a ref so the observer callback always uses fresh state.
+  const deafenedRef = useRef(deafened);
+  const outputVolumeRef = useRef(outputVolume);
+  const outputDeviceIdRef = useRef(outputDeviceId);
+  deafenedRef.current = deafened;
+  outputVolumeRef.current = outputVolume;
+  outputDeviceIdRef.current = outputDeviceId;
+
+  useEffect(() => {
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        for (const node of mutation.addedNodes) {
+          if (node instanceof HTMLAudioElement) {
+            const d = deafenedRef.current;
+            const vol = outputVolumeRef.current;
+            const outId = outputDeviceIdRef.current;
+            node.muted = d;
+            node.volume = d ? 0 : Math.max(0, Math.min(1, vol / 100));
+            if (outId) trySetSinkId(node, outId);
+          }
+        }
+      }
+    });
+
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, []);
+}
+
 /** Room content rendered inside the LiveKitRoom context. */
-function RoomContent({ onLeave }: { onLeave: () => void }) {
+function RoomContent({
+  onLeave,
+  mediaStatus,
+  platformWarnings,
+}: {
+  onLeave: () => void;
+  mediaStatus: PlatformMediaStatus | null;
+  platformWarnings: string[];
+}) {
   const { localParticipant, isScreenShareEnabled } = useLocalParticipant();
   const [screenShareInterrupted, setScreenShareInterrupted] = useState(false);
 
@@ -406,6 +636,9 @@ function RoomContent({ onLeave }: { onLeave: () => void }) {
     setScreenShareInterrupted(true);
   }, []);
   useTauriMediaRestore(handleScreenShareInterrupted);
+
+  // Sync voice store settings (device selection, volume, deafen) to the room.
+  useVoiceStoreSync();
 
   // Clear the interrupted banner when the user manually re-enables screen share.
   useEffect(() => {
@@ -443,7 +676,11 @@ function RoomContent({ onLeave }: { onLeave: () => void }) {
       <LocalSelfView />
       <ScreenShareView />
       <ParticipantGrid />
-      <MediaControls onLeave={onLeave} />
+      <MediaControls
+        onLeave={onLeave}
+        mediaStatus={mediaStatus}
+        platformWarnings={platformWarnings}
+      />
     </>
   );
 }
@@ -465,6 +702,7 @@ export function VoicePanel() {
   const permissions = useIdentityStore((s) => s.permissions);
   const activeChannelId = useChannelsStore((s) => s.activeChannelId);
   const channels = useChannelsStore((s) => s.channels);
+  const activeServerId = useServersStore((s) => s.activeServerId);
 
   const {
     voiceToken,
@@ -479,6 +717,23 @@ export function VoicePanel() {
     checkCallActive,
   } = useVoiceStore();
 
+  // Track the server ID that was active when the call was joined.
+  // If activeServerId changes, the token is stale.
+  const callServerIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (voiceToken && connectedChannelId) {
+      callServerIdRef.current = activeServerId;
+    }
+  }, [voiceToken, connectedChannelId, activeServerId]);
+
+  // Guard: if the active server changed since we joined, the token is stale.
+  const isTokenStale = !!(
+    voiceToken &&
+    connectedChannelId &&
+    callServerIdRef.current !== null &&
+    callServerIdRef.current !== activeServerId
+  );
+
   // Query platform media capabilities once (PipeWire, xdg-desktop-portal).
   const [mediaStatus, setMediaStatus] = useState<PlatformMediaStatus | null>(null);
   useEffect(() => {
@@ -489,6 +744,8 @@ export function VoicePanel() {
       .catch(() => { /* non-fatal: desktop-only command */ });
     return () => { cancelled = true; };
   }, []);
+
+  const platformWarnings = mediaStatus?.warnings ?? [];
 
   const activeChannel = channels.find((c) => c.channel_id === activeChannelId);
   const isVoiceCapable =
@@ -565,7 +822,8 @@ export function VoicePanel() {
   }, [iceServers]);
 
   // If connected to a call, always show the LiveKitRoom (even on non-voice channels).
-  if (voiceToken && livekitUrl && connectedChannelId) {
+  // But NOT if the token is stale from a server switch.
+  if (voiceToken && livekitUrl && connectedChannelId && !isTokenStale) {
     // Find the channel name for the connected call
     const connectedChannel = channels.find((c) => c.channel_id === connectedChannelId);
     const channelLabel = connectedChannel?.name ?? connectedChannelId.slice(0, 12);
@@ -584,7 +842,11 @@ export function VoicePanel() {
           options={roomOptions}
           connectOptions={connectOptions}
         >
-          <RoomContent onLeave={handleLeave} />
+          <RoomContent
+            onLeave={handleLeave}
+            mediaStatus={mediaStatus}
+            platformWarnings={platformWarnings}
+          />
         </LiveKitRoom>
       </div>
     );

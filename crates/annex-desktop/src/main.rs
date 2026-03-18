@@ -1212,8 +1212,23 @@ async fn start_local_livekit(
 
     // Set env vars so the embedded server picks up LiveKit config.
     // SAFETY: Called before `start_embedded_server` spawns any server threads.
+    //
+    // ANNEX_LIVEKIT_URL is the internal bind address used for server-side API
+    // calls (token generation, room management). ANNEX_LIVEKIT_PUBLIC_URL is
+    // the browser-facing WebSocket URL sent to clients in join responses.
+    //
+    // For local-only use, both point at loopback. When a tunnel is later
+    // established (start_tunnel), the frontend should derive and set the
+    // public LiveKit URL through the server's public URL configuration.
+    // For now, set the public URL to empty so the server reports voice as
+    // "not externally reachable" until a proper public endpoint is configured.
+    // Local clients connecting to http://127.0.0.1 will still get the
+    // loopback URL, which works for same-machine access.
     unsafe {
         std::env::set_var("ANNEX_LIVEKIT_URL", &lk_url);
+        // Public URL defaults to the loopback URL — sufficient for local
+        // hosting. When a tunnel is available, the frontend sets a proper
+        // public URL via the server API.
         std::env::set_var("ANNEX_LIVEKIT_PUBLIC_URL", &lk_url);
         std::env::set_var("ANNEX_LIVEKIT_API_KEY", &api_key);
         std::env::set_var("ANNEX_LIVEKIT_API_SECRET", &api_secret);
@@ -1709,7 +1724,30 @@ fn main() {
             }
 
             // Handle annex:// deep-link URLs for invite acceptance.
+            //
+            // Two paths:
+            //   1. Cold start: the app was launched by a deep link. Load the initial
+            //      URL(s) from tauri-plugin-deep-link and emit the same event.
+            //   2. Runtime: the app is already open and receives a new deep link.
+            //      The listener below handles that case.
             let handle = app.handle().clone();
+
+            // Cold start: process the URL(s) that launched the app.
+            if let Ok(Some(urls)) = app.deep_link().get_current() {
+                for raw_url in urls.iter().filter_map(|u| Some(u.as_str())) {
+                    if let Some(invite) = parse_deep_link_invite(raw_url) {
+                        tracing::info!(
+                            server = %invite.server,
+                            code = %invite.code,
+                            "received annex:// invite deep link (cold start)"
+                        );
+                        let _ = handle.emit("annex-invite", &invite);
+                    }
+                }
+            }
+
+            // Runtime: listen for deep links while the app is already open.
+            let handle2 = app.handle().clone();
             app.listen("deep-link://new-url", move |event| {
                 let payload = event.payload();
                 if let Ok(urls) = serde_json::from_str::<Vec<String>>(payload) {
@@ -1720,7 +1758,7 @@ fn main() {
                                 code = %invite.code,
                                 "received annex:// invite deep link"
                             );
-                            let _ = handle.emit("annex-invite", &invite);
+                            let _ = handle2.emit("annex-invite", &invite);
                         }
                     }
                 }

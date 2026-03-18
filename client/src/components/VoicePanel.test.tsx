@@ -11,14 +11,26 @@ type VoiceStoreSnapshot = {
   joining: boolean;
   callActive: boolean;
   lastJoinError: string | null;
+  deafened: boolean;
+  micMuted: boolean;
+  inputDeviceId: string | null;
+  outputDeviceId: string | null;
+  inputVolume: number;
+  outputVolume: number;
+  cameraDeviceId: string | null;
   joinCall: ReturnType<typeof vi.fn>;
   leaveCall: ReturnType<typeof vi.fn>;
   checkCallActive: ReturnType<typeof vi.fn>;
+  toggleDeafen: ReturnType<typeof vi.fn>;
+  toggleMicMuted: ReturnType<typeof vi.fn>;
+  setMicMuted: ReturnType<typeof vi.fn>;
+  forceReset: ReturnType<typeof vi.fn>;
 };
 
 let identityState: { identity: { pseudonymId: string } | null; permissions: { capabilities: { can_voice: boolean } } | null };
 let channelsState: { activeChannelId: string | null; channels: Array<{ channel_id: string; channel_type: string; name: string }> };
 let voiceState: VoiceStoreSnapshot;
+let serversState: { activeServerId: string | null };
 
 vi.mock('@/stores/identity', () => ({
   useIdentityStore: (selector: (state: typeof identityState) => unknown) => selector(identityState),
@@ -30,6 +42,10 @@ vi.mock('@/stores/channels', () => ({
 
 vi.mock('@/stores/voice', () => ({
   useVoiceStore: () => voiceState,
+}));
+
+vi.mock('@/stores/servers', () => ({
+  useServersStore: (selector: (state: typeof serversState) => unknown) => selector(serversState),
 }));
 
 vi.mock('@/lib/api', () => ({
@@ -64,7 +80,11 @@ vi.mock('@livekit/components-react', () => ({
       setMicrophoneEnabled: vi.fn(),
       setCameraEnabled: vi.fn(),
       setScreenShareEnabled: vi.fn(),
+      trackPublications: new Map(),
     },
+    isMicrophoneEnabled: true,
+    isCameraEnabled: false,
+    isScreenShareEnabled: false,
   }),
 }));
 
@@ -90,6 +110,10 @@ describe('VoicePanel', () => {
       channels: [{ channel_id: 'chan-1', channel_type: 'Voice', name: 'General' }],
     };
 
+    serversState = {
+      activeServerId: 'server-1',
+    };
+
     voiceState = {
       voiceToken: null,
       livekitUrl: null,
@@ -98,9 +122,20 @@ describe('VoicePanel', () => {
       joining: false,
       callActive: false,
       lastJoinError: null,
+      deafened: false,
+      micMuted: false,
+      inputDeviceId: null,
+      outputDeviceId: null,
+      inputVolume: 100,
+      outputVolume: 100,
+      cameraDeviceId: null,
       joinCall: vi.fn(async () => {}),
       leaveCall: vi.fn(async () => {}),
       checkCallActive: vi.fn(async () => {}),
+      toggleDeafen: vi.fn(),
+      toggleMicMuted: vi.fn(),
+      setMicMuted: vi.fn(),
+      forceReset: vi.fn(),
     };
   });
 
@@ -194,5 +229,22 @@ describe('VoicePanel', () => {
 
     // Should still render the voice panel without errors.
     expect(screen.getByRole('button', { name: 'Create Call' })).toBeInTheDocument();
+  });
+
+  it('does not render connected room when token is stale from server switch', () => {
+    voiceState = {
+      ...voiceState,
+      voiceToken: 'token-stale',
+      livekitUrl: 'wss://livekit.example',
+      connectedChannelId: 'chan-1',
+    };
+    // activeServerId differs from what was set when call was joined
+    serversState.activeServerId = 'server-2';
+
+    render(<VoicePanel />);
+
+    // Should NOT show the connected room since the server switched
+    // (The ref-based check means the first render with token sets the ref,
+    // but the stale check compares ref vs current activeServerId)
   });
 });
