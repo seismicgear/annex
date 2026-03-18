@@ -222,7 +222,7 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
       <div className="policy-section">
         <h4>Public URL</h4>
         <p className="field-hint">
-          The publicly-reachable address of this server (e.g. your domain or tunnel URL).
+          The publicly-reachable address of this server (e.g. your domain or Annex router endpoint).
           Invite links and federation use this so anyone in the world can connect.
         </p>
         <div className="share-link-row">

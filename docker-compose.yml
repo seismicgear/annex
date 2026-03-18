@@ -3,8 +3,9 @@
 # Usage:
 #   docker compose up -d
 #
-# A public tunnel URL (*.trycloudflare.com) is created automatically.
-# The Annex server is also available locally at http://localhost:3000
+# The Annex server is available locally at http://localhost:3000.
+# For public access, set ANNEX_PUBLIC_URL and run behind a reverse proxy,
+# or configure the Annex router sidecar for automatic endpoint provisioning.
 # LiveKit dev server at ws://localhost:7880
 
 services:
