@@ -88,20 +88,20 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
     // Prefer a fully registered identity (has pseudonymId).
     const ready = identities.find((i) => i.pseudonymId !== null);
     if (ready) {
-      // Set whatever token we have (even expired). The App.tsx effect will
-      // call /api/session/refresh if it's expired before making API calls.
-      if (ready.sessionToken) {
-        api.setSessionToken(ready.sessionToken);
-      }
+      // Set whatever token we have (even expired), or clear if absent.
+      // The App.tsx effect will call /api/session/refresh if it's expired.
+      api.setSessionToken(ready.sessionToken ?? null);
       set({ storedIdentities: identities, identity: ready, phase: 'ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
       return;
     }
     // Otherwise select one that has keys but isn't registered yet.
     const withKeys = identities.find((i) => !!i.sk);
     if (withKeys) {
+      api.setSessionToken(null);
       set({ storedIdentities: identities, identity: withKeys, phase: 'keys_ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
       return;
     }
+    api.setSessionToken(null);
     set({ storedIdentities: identities, identity: null, phase: 'uninitialized', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
   },
 
@@ -249,11 +249,10 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
     const identity = await db.getIdentity(id);
     if (!identity) return;
     if (identity.pseudonymId) {
-      if (identity.sessionToken) {
-        api.setSessionToken(identity.sessionToken);
-      }
+      api.setSessionToken(identity.sessionToken ?? null);
       set({ identity, phase: 'ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
     } else if (identity.sk) {
+      api.setSessionToken(null);
       set({ identity, phase: 'keys_ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
     }
   },
@@ -267,16 +266,20 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
     const identity = await db.importIdentity(json);
     const identities = await db.listIdentities();
     if (identity.pseudonymId) {
+      api.setSessionToken(identity.sessionToken ?? null);
       set({ storedIdentities: identities, identity, phase: 'ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
     } else if (identity.sk) {
+      api.setSessionToken(null);
       set({ storedIdentities: identities, identity, phase: 'keys_ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
     } else {
+      api.setSessionToken(null);
       set({ storedIdentities: identities });
     }
   },
 
   logout: () => {
     void zk.cancelMembershipProofGeneration();
+    api.setSessionToken(null);
     set({ identity: null, phase: 'uninitialized', error: null, errorDetails: null, permissions: null, permissionsStatus: 'idle', proofInFlight: false, provingStatus: 'idle' });
   },
 }));

@@ -43,13 +43,20 @@ function isSinkIdSupported(): boolean {
  * that the dialog prompts or auto-grants permission correctly.
  */
 async function enumerateMediaDevices(): Promise<DeviceResult> {
+  // Guard: media device APIs may be absent in some webviews/contexts
+  if (!navigator.mediaDevices || typeof navigator.mediaDevices.enumerateDevices !== 'function') {
+    return { devices: [], permissionGranted: false };
+  }
+
   let permissionGranted = false;
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true }).catch(
-      () => navigator.mediaDevices.getUserMedia({ audio: true }),
-    );
-    permissionGranted = true;
-    stream.getTracks().forEach((t) => t.stop());
+    if (typeof navigator.mediaDevices.getUserMedia === 'function') {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true }).catch(
+        () => navigator.mediaDevices.getUserMedia({ audio: true }),
+      );
+      permissionGranted = true;
+      stream.getTracks().forEach((t) => t.stop());
+    }
   } catch {
     // Permission denied — continue with limited labels.
   }
@@ -82,14 +89,23 @@ export function AudioSettings({ onClose }: { onClose: () => void }) {
 
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [permissionGranted, setPermissionGranted] = useState(false);
+  const [enumError, setEnumError] = useState<string | null>(null);
 
   const refreshDevices = useCallback(() => {
     let cancelled = false;
-    enumerateMediaDevices().then((result) => {
-      if (cancelled) return;
-      setPermissionGranted(result.permissionGranted);
-      setDevices(result.devices);
-    });
+    setEnumError(null);
+    enumerateMediaDevices()
+      .then((result) => {
+        if (cancelled) return;
+        setPermissionGranted(result.permissionGranted);
+        setDevices(result.devices);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setDevices([]);
+        setPermissionGranted(false);
+        setEnumError(err instanceof Error ? err.message : 'Failed to enumerate media devices');
+      });
     return () => { cancelled = true; };
   }, []);
 
@@ -118,7 +134,14 @@ export function AudioSettings({ onClose }: { onClose: () => void }) {
       <div className="dialog settings-dialog" onClick={(e) => e.stopPropagation()}>
         <h3>Audio & Video Settings</h3>
 
-        {!permissionGranted && (
+        {enumError && (
+          <p className="settings-note settings-unsupported">
+            Could not enumerate media devices: {enumError}.
+            {isTauri() && <> This platform or webview may not expose media device APIs. Check your OS privacy settings.</>}
+          </p>
+        )}
+
+        {!permissionGranted && !enumError && (
           <p className="settings-note">
             Grant microphone/camera access to see device names.
             {isTauri() && (

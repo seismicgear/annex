@@ -171,7 +171,7 @@ function MediaControls({
 
   const toggleMic = useCallback(async () => {
     if (!canCameraMic) {
-      setMediaError('Microphone is unavailable on this platform.');
+      setMediaError('Microphone is unavailable on this platform. Check your browser/OS privacy settings.');
       return;
     }
     try {
@@ -185,13 +185,16 @@ function MediaControls({
 
   const toggleCamera = useCallback(async () => {
     if (!canCameraMic) {
-      setMediaError('Camera is unavailable on this platform.');
+      setMediaError('Camera is unavailable on this platform. Check your browser/OS privacy settings.');
       return;
     }
     try {
       setMediaError(null);
-      setStaleCameraPrompt(false);
-      if (!camEnabled && cameraDeviceId) {
+      if (!camEnabled && staleCameraPrompt) {
+        // User confirmed fallback after stale camera error — use default camera
+        setStaleCameraPrompt(false);
+        await localParticipant.setCameraEnabled(true);
+      } else if (!camEnabled && cameraDeviceId) {
         // Try to enable with the saved camera device
         try {
           await localParticipant.setCameraEnabled(true, { deviceId: cameraDeviceId });
@@ -205,11 +208,8 @@ function MediaControls({
           }
           throw deviceErr;
         }
-      } else if (!camEnabled && staleCameraPrompt) {
-        // User confirmed fallback after stale camera error
-        setStaleCameraPrompt(false);
-        await localParticipant.setCameraEnabled(true);
       } else {
+        setStaleCameraPrompt(false);
         await localParticipant.setCameraEnabled(!camEnabled);
       }
     } catch (err) {
@@ -587,28 +587,28 @@ function useVoiceStoreSync() {
   const { localParticipant } = useLocalParticipant();
   const { inputDeviceId, outputDeviceId, outputVolume, deafened, cameraDeviceId } = useVoiceStore();
 
-  // Apply input device selection when it changes
+  // Apply input device selection when it changes (including reset to System Default)
   useEffect(() => {
-    if (!inputDeviceId) return;
     const lp = localParticipant as LocalParticipant;
     if (!lp.isMicrophoneEnabled) return;
-    // Re-publish microphone with the selected device
+    // Re-publish microphone with the selected device, or default constraints
+    const opts = inputDeviceId ? { deviceId: inputDeviceId } : undefined;
     lp.setMicrophoneEnabled(false)
-      .then(() => lp.setMicrophoneEnabled(true, { deviceId: inputDeviceId }))
-      .catch(() => {});
+      .then(() => lp.setMicrophoneEnabled(true, opts))
+      .catch((err) => { console.warn('[VoicePanel] mic device switch failed:', err); });
   // Only run when inputDeviceId changes, not on every mic toggle
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inputDeviceId]);
 
   // When cameraDeviceId changes during an active call and camera is already on,
-  // republish the camera track with the new device.
+  // republish the camera track with the new device (or default constraints).
   useEffect(() => {
-    if (!cameraDeviceId) return;
     const lp = localParticipant as LocalParticipant;
     if (!lp.isCameraEnabled) return;
+    const opts = cameraDeviceId ? { deviceId: cameraDeviceId } : undefined;
     lp.setCameraEnabled(false)
-      .then(() => lp.setCameraEnabled(true, { deviceId: cameraDeviceId }))
-      .catch(() => {});
+      .then(() => lp.setCameraEnabled(true, opts))
+      .catch((err) => { console.warn('[VoicePanel] camera device switch failed:', err); });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cameraDeviceId]);
 
@@ -766,6 +766,7 @@ export function VoicePanel() {
     joining,
     callActive,
     lastJoinError,
+    lastJoinErrorDetails,
     joinCall,
     leaveCall,
     checkCallActive,
@@ -842,10 +843,20 @@ export function VoicePanel() {
     await leaveCall(pseudonymId);
   }, [pseudonymId, leaveCall]);
 
-  // Fetch setup guidance from server when error indicates voice is not configured.
+  // Use setup hint from structured error, or fetch from server as fallback.
   const [setupHint, setSetupHint] = useState<string | null>(null);
   useEffect(() => {
-    if (!lastJoinError?.includes('not configured')) {
+    // Prefer the structured setup_hint from the join response
+    if (lastJoinErrorDetails?.setupHint) {
+      setSetupHint(lastJoinErrorDetails.setupHint);
+      return;
+    }
+
+    const isVoiceNotConfigured =
+      lastJoinErrorDetails?.code === 'voice_not_configured' ||
+      lastJoinError?.includes('not configured');
+
+    if (!isVoiceNotConfigured) {
       setSetupHint(null);
       return;
     }
@@ -864,7 +875,7 @@ export function VoicePanel() {
     return () => {
       cancelled = true;
     };
-  }, [lastJoinError]);
+  }, [lastJoinError, lastJoinErrorDetails]);
 
   // Prevent LiveKit from disconnecting when the Tauri webview fires page-leave events.
   const roomOptions = useMemo(() => {
@@ -943,14 +954,9 @@ export function VoicePanel() {
       </button>
       {(lastJoinError || unavailableReason) && (
         <div className="voice-error" role="alert">
-          {setupHint ? (
-            <>
-              <p>Voice is not configured on this server.</p>
-              <p className="voice-setup-hint">{setupHint}</p>
-            </>
-          ) : (
-            lastJoinError ?? unavailableReason
-          )}
+          {lastJoinError && <p>{lastJoinError}</p>}
+          {!lastJoinError && unavailableReason && <p>{unavailableReason}</p>}
+          {setupHint && <p className="voice-setup-hint">{setupHint}</p>}
         </div>
       )}
     </div>

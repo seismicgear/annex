@@ -105,13 +105,27 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
+    if (!file) {
+      e.target.value = '';
+      return;
+    }
     const allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-    if (!allowed.includes(file.type)) return;
-    if (file.size > 10 * 1024 * 1024) return;
+    if (!allowed.includes(file.type)) {
+      setSuccess(null);
+      setError('Unsupported file type. Accepted formats: JPEG, PNG, GIF, WebP.');
+      e.target.value = '';
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      setSuccess(null);
+      setError('File too large. Maximum size is 10 MB.');
+      e.target.value = '';
+      return;
+    }
 
     setUploadingImage(true);
     setError(null);
+    setSuccess(null);
     try {
       const resp = await api.uploadServerImage(pseudonymId, file);
       setServerImageUrl(api.resolveUrl(resp.url));
@@ -144,8 +158,16 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
     try {
       await navigator.clipboard.writeText(inviteUrl);
       setCopied(true);
+      setError(null);
       setTimeout(() => setCopied(false), 2000);
-    } catch { /* clipboard denied */ }
+    } catch {
+      // Clipboard API denied — select the input so the user can copy manually
+      setError('Could not copy to clipboard. Please select the link and copy manually.');
+      const input = document.querySelector<HTMLInputElement>('.share-link-input');
+      if (input) {
+        input.select();
+      }
+    }
   };
 
   if (loading) return <p>Loading server settings...</p>;

@@ -62,6 +62,9 @@ export const useServersStore = create<ServersState>((set, get) => ({
     const server = servers.find((s) => s.id === serverId);
     if (!server) return;
 
+    // Guard: don't switch to a server that hasn't been registered yet
+    if (!server.identityId) return;
+
     // Leave or forcibly clear any active voice session BEFORE changing
     // activeServerId. This prevents the old LiveKitRoom from being rendered
     // under the new server's state.
@@ -75,6 +78,11 @@ export const useServersStore = create<ServersState>((set, get) => ({
       // Force-reset regardless of leaveCall result
       voiceStore.forceReset();
     }
+
+    // Clear all per-server transient state before switching so the UI
+    // never shows stale channels/messages from the previous server.
+    const channelsStore = useChannelsStore.getState();
+    channelsStore.resetServerState();
 
     // Immediate: update active server for instant UI transition.
     // Clear serverImageUrl so stale imagery from the previous server is never shown.
@@ -96,8 +104,6 @@ export const useServersStore = create<ServersState>((set, get) => ({
       }
 
       // Reconnect WebSocket to the target server
-      const channelsStore = useChannelsStore.getState();
-      channelsStore.disconnectWs();
       channelsStore.connectWs(identity.pseudonymId, server.baseUrl);
 
       // Load channels and permissions for the new server

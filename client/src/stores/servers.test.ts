@@ -34,6 +34,7 @@ vi.mock('./channels', () => ({
       disconnectWs: vi.fn(),
       connectWs: vi.fn(),
       loadChannels: vi.fn(async () => {}),
+      resetServerState: vi.fn(),
     }),
   },
 }));
@@ -65,6 +66,21 @@ describe('servers store', () => {
     // fetchServerImage should clear it on error
     await useServersStore.getState().fetchServerImage();
     expect(useServersStore.getState().serverImageUrl).toBeNull();
+  });
+
+  it('switchServer does not proceed for servers without identityId', async () => {
+    const { useServersStore } = await import('./servers');
+
+    // Add a server with empty identityId (pending registration)
+    useServersStore.setState({
+      servers: [{ id: 'pending-1', baseUrl: 'https://remote.example.com', slug: 'remote', label: 'Remote', identityId: '', cachedSummary: null, personaId: null, accentColor: '#e63946', lastConnectedAt: null } as any],
+      activeServerId: null,
+    });
+
+    await useServersStore.getState().switchServer('pending-1');
+
+    // Should not have changed active server (guard blocked it)
+    expect(useServersStore.getState().activeServerId).toBeNull();
   });
 
   it('fetchServerImage sets null when server has no image', async () => {

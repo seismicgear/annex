@@ -97,17 +97,22 @@ function ServerIcon({ server, isActive, imageUrl, onClick }: {
 }) {
   const initial = server.label.charAt(0).toUpperCase();
   const memberCount = server.cachedSummary?.total_active_members;
+  const isPending = !server.identityId;
 
   return (
     <div className="server-hub-item-wrapper">
       <div className={`server-hub-pill ${isActive ? 'active' : ''}`} />
       <button
-        className={`server-hub-icon ${isActive ? 'active' : ''} ${imageUrl ? 'has-image' : ''}`}
+        className={`server-hub-icon ${isActive ? 'active' : ''} ${imageUrl ? 'has-image' : ''} ${isPending ? 'pending' : ''}`}
         style={{
           '--server-accent': server.accentColor,
+          ...(isPending ? { opacity: 0.5 } : {}),
         } as React.CSSProperties}
         onClick={onClick}
-        title={`${server.label}${server.slug ? ` (${server.slug})` : ''}${memberCount ? ` — ${memberCount} online` : ''}`}
+        disabled={isPending}
+        title={isPending
+          ? `${server.label} — registration pending`
+          : `${server.label}${server.slug ? ` (${server.slug})` : ''}${memberCount ? ` — ${memberCount} online` : ''}`}
       >
         {imageUrl ? (
           <img src={resolveUrl(imageUrl)} alt={server.label} className="server-hub-image" />
@@ -131,6 +136,8 @@ export function ServerHub() {
   const handleAdd = useCallback(async (baseUrl: string) => {
     const server = await addRemoteServer(baseUrl);
     if (!server) throw new Error('Failed to add server');
+    // Don't auto-switch: server has no identity yet (identityId is empty).
+    // The user needs to complete registration before the icon becomes fully usable.
   }, [addRemoteServer]);
 
   if (servers.length === 0) return null;

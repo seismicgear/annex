@@ -52,6 +52,8 @@ interface ChannelsState {
   leaveChannel: (pseudonymId: string, channelId: string) => Promise<void>;
   /** Disconnect WebSocket. */
   disconnectWs: () => void;
+  /** Reset all per-server transient state to initial values. */
+  resetServerState: () => void;
 }
 
 export const useChannelsStore = create<ChannelsState>((set, get) => ({
@@ -71,7 +73,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       const channels = await api.listChannels(pseudonymId);
       set({ channels });
     } catch (err) {
-      set({ error: err instanceof Error ? err.message : String(err) });
+      set({ channels: [], error: err instanceof Error ? err.message : String(err) });
     } finally {
       set({ loading: false });
     }
@@ -114,6 +116,13 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     ws.onStatus((connected) => set({ wsConnected: connected }));
 
     ws.onMessage((frame: WsReceiveFrame) => {
+      // Handle error frames even when they have no matching channelId
+      if (frame.type === 'error') {
+        const errorMsg = frame.message ?? frame.error ?? 'Unknown WebSocket error';
+        set({ error: errorMsg });
+        return;
+      }
+
       if (frame.channelId !== get().activeChannelId) return;
 
       if (frame.type === 'message') {
@@ -231,5 +240,23 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       ws.disconnect();
       set({ ws: null, wsConnected: false });
     }
+  },
+
+  resetServerState: () => {
+    const { ws } = get();
+    if (ws) {
+      ws.disconnect();
+    }
+    set({
+      channels: [],
+      activeChannelId: null,
+      messages: [],
+      wsConnected: false,
+      loading: false,
+      error: null,
+      loadingOlder: false,
+      hasMoreMessages: true,
+      ws: null,
+    });
   },
 }));
