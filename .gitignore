@@ -35,6 +35,16 @@ node_modules/
 *~
 .DS_Store
 
+# Playwright E2E test artifacts
+client/e2e-results/
+client/e2e-report/
+
+# Server signing keys (auto-generated)
+signing.key
+
+# Client ZK artifacts (copied from zk/ by prepare-zk-dev.js)
+client/public/zk/
+
 # Environment files
 .env
 .env.*
