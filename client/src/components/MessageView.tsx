@@ -478,7 +478,7 @@ export function MessageView() {
   const handleScroll = () => {
     const el = containerRef.current;
     if (!el || !pseudonymId) return;
-    if (el.scrollTop === 0 && messageCount > 0 && !loadingOlder && hasMoreMessages) {
+    if (el.scrollTop <= 1 && messageCount > 0 && !loadingOlder && hasMoreMessages) {
       // Save scroll height so the effect can restore position after prepend
       prevScrollHeight.current = el.scrollHeight;
       loadOlderMessages(pseudonymId);
