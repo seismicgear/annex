@@ -47,6 +47,24 @@ cd client && npm test
 cd client && npx vitest run src/stores/channels.test.ts
 ```
 
+### E2E visual tests (Playwright)
+```bash
+# Start the E2E server (builds client + starts Axum on port 3000)
+bash scripts/e2e-server.sh start
+
+# Run E2E tests
+cd client && npm run test:e2e
+
+# Stop the server when done
+bash scripts/e2e-server.sh stop
+
+# Run a specific E2E test file
+cd client && npx playwright test e2e/startup.spec.ts
+
+# Screenshots are saved to client/e2e-results/ on failure
+# HTML report is generated at client/e2e-report/
+```
+
 ### Linting
 ```bash
 cargo fmt --all --check
@@ -82,10 +100,18 @@ cd client && npm run lint
 | `annex-observe` | Event logging, audit trail |
 
 ### Frontend (`client/`)
-- Vitest + React Testing Library + jsdom
+- Vitest + React Testing Library + jsdom for unit tests
+- Playwright for E2E visual tests in `client/e2e/`
 - Stores in `src/stores/` (Zustand)
 - API client in `src/lib/api.ts`
 - ZK proof generation in `src/lib/zk.ts`
+
+### E2E Test Architecture
+- Server: `scripts/e2e-server.sh` starts a real Axum server with fresh DB + built client
+- Tests: Playwright in `client/e2e/` uses Chromium headless against `http://127.0.0.1:3000`
+- Flow: Each test gets a fresh browser context (clean IndexedDB) and goes through the full
+  identity creation → server selection → ZK proof → main UI flow
+- Startup flow: IdentitySetup (create keys) → StartupModeSelector (use this server) → Chat UI
 
 ## ZK Keys
 
