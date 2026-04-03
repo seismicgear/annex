@@ -45,8 +45,8 @@ import { isTauri, getPlatformMediaStatus, setMediaKeepalive, type PlatformMediaS
  *  When `deviceId` is null/empty, resets to the system default ('').
  */
 function trySetSinkId(el: HTMLMediaElement, deviceId: string | null): void {
-  if (typeof (el as any).setSinkId === 'function') {
-    (el as any).setSinkId(deviceId || '').catch(() => {});
+  if (typeof (el as unknown as Record<string, unknown>).setSinkId === 'function') {
+    ((el as unknown as Record<string, (...args: unknown[]) => Promise<void>>).setSinkId)(deviceId || '').catch(() => {});
   }
 }
 
@@ -60,12 +60,6 @@ function applyAudioPrefs(
   el.muted = deafened;
   el.volume = deafened ? 0 : Math.max(0, Math.min(1, outputVolume / 100));
   trySetSinkId(el, outputDeviceId);
-}
-
-/** Check whether setSinkId is supported in this browser/webview. */
-function isSinkIdSupported(): boolean {
-  return typeof HTMLMediaElement !== 'undefined' &&
-    typeof (HTMLMediaElement.prototype as any).setSinkId === 'function';
 }
 
 /** Produce a user-friendly error message from a media toggle failure. */
@@ -833,10 +827,9 @@ function RoomContent({
   // Sync voice store settings (device selection, volume, deafen) to the room.
   useVoiceStoreSync();
 
-  // Clear the interrupted banner when the user manually re-enables screen share.
-  useEffect(() => {
-    if (isScreenShareEnabled) setScreenShareInterrupted(false);
-  }, [isScreenShareEnabled]);
+  // The interrupted banner auto-hides when screen share re-enables (see
+  // showScreenShareInterrupted below), so no effect/ref clearing is needed.
+  const showScreenShareInterrupted = screenShareInterrupted && !isScreenShareEnabled;
 
   // Error state for screen share resume failures
   const [resumeError, setResumeError] = useState<string | null>(null);
@@ -866,7 +859,7 @@ function RoomContent({
   return (
     <>
       <RoomAudioRenderer />
-      {screenShareInterrupted && (
+      {showScreenShareInterrupted && (
         <div className="screen-share-interrupted" role="alert">
           <span>{resumeError ?? 'Screen share was interrupted'}</span>
           <button onClick={resumeScreenShare} className="screen-share-resume-btn">

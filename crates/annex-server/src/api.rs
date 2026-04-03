@@ -206,9 +206,10 @@ pub async fn register_handler(
 
     // Enforce access_mode policy
     let access_mode = {
-        let policy = state.policy.read().map_err(|_| {
-            ApiError::InternalServerError("policy lock poisoned".to_string())
-        })?;
+        let policy = state
+            .policy
+            .read()
+            .map_err(|_| ApiError::InternalServerError("policy lock poisoned".to_string()))?;
         policy.access_mode.clone()
     };
 

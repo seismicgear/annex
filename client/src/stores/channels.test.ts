@@ -47,7 +47,7 @@ describe('channels store', () => {
 
     // Simulate some state from server A
     useChannelsStore.setState({
-      channels: [{ channel_id: 'ch1', name: 'general', channel_type: 'Text', federation_scope: 'local' } as any],
+      channels: [{ channel_id: 'ch1', name: 'general', channel_type: 'Text', federation_scope: 'local' } as unknown as import('./channels').Channel],
       activeChannelId: 'ch1',
       messages: [{ message_id: 'msg1', channel_id: 'ch1', sender_pseudonym: 'p1', content: 'hello', reply_to_message_id: null, created_at: '', edited_at: null, deleted_at: null }],
       error: 'some error',
@@ -77,7 +77,7 @@ describe('channels store', () => {
 
     // Set some initial channels
     useChannelsStore.setState({
-      channels: [{ channel_id: 'old', name: 'old', channel_type: 'Text', federation_scope: 'local' } as any],
+      channels: [{ channel_id: 'old', name: 'old', channel_type: 'Text', federation_scope: 'local' } as Record<string, unknown>],
     });
 
     await useChannelsStore.getState().loadChannels('p1');
@@ -138,7 +138,7 @@ describe('channels store', () => {
       connected: true,
     };
     useChannelsStore.setState({
-      ws: mockWs as any,
+      ws: mockWs as unknown,
       activeChannelId: 'chan-1',
       wsConnected: true,
     });
@@ -162,7 +162,7 @@ describe('channels store', () => {
       connected: true,
     };
     useChannelsStore.setState({
-      ws: mockWs as any,
+      ws: mockWs as unknown,
       activeChannelId: 'chan-1',
       wsConnected: true,
     });

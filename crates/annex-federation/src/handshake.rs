@@ -166,8 +166,7 @@ mod tests {
         };
 
         // Remote anchor with different prohibited actions
-        let remote_anchor =
-            VrpAnchorSnapshot::new(&[], &["spam".to_string()]).unwrap();
+        let remote_anchor = VrpAnchorSnapshot::new(&[], &["spam".to_string()]).unwrap();
         let contract = VrpCapabilitySharingContract {
             required_capabilities: vec![],
             offered_capabilities: vec![],
@@ -179,10 +178,7 @@ mod tests {
         };
 
         let result = process_incoming_handshake(&mut conn, 1, &policy, 10, &handshake);
-        assert!(
-            result.is_err(),
-            "Conflict handshake must be rejected"
-        );
+        assert!(result.is_err(), "Conflict handshake must be rejected");
         assert!(
             matches!(result.unwrap_err(), HandshakeError::AlignmentConflict),
             "Error must be AlignmentConflict"

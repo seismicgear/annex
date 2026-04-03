@@ -308,8 +308,7 @@ fn reset_server_data(state: tauri::State<'_, AppManagedState>) -> Result<(), Str
     // Remove config so it is regenerated with fresh defaults.
     let config_path = data_dir.join("config.toml");
     if config_path.exists() {
-        std::fs::remove_file(&config_path)
-            .map_err(|e| format!("failed to remove config: {e}"))?;
+        std::fs::remove_file(&config_path).map_err(|e| format!("failed to remove config: {e}"))?;
         tracing::info!("reset_server_data: removed {}", config_path.display());
     }
 
@@ -505,9 +504,7 @@ async fn acquire_public_endpoint(
     if !resp.status().is_success() {
         let status = resp.status();
         let body_text = resp.text().await.unwrap_or_default();
-        return Err(format!(
-            "Annex router returned HTTP {status}: {body_text}"
-        ));
+        return Err(format!("Annex router returned HTTP {status}: {body_text}"));
     }
 
     let registration: RouterRegistrationResponse = resp
@@ -529,9 +526,7 @@ async fn acquire_public_endpoint(
         let lk_guard = state.livekit.lock().map_err(|e| e.to_string())?;
         if lk_guard.is_some() {
             if registration.public_livekit_url.is_some() {
-                tracing::info!(
-                    "Annex router is proxying LiveKit — remote voice will be available"
-                );
+                tracing::info!("Annex router is proxying LiveKit — remote voice will be available");
             } else {
                 tracing::info!(
                     "LiveKit is running locally but the Annex router does not proxy LiveKit. \
@@ -594,14 +589,12 @@ struct PublicEndpointInfo {
 /// Get the current public endpoint info, if a router session is active.
 #[tauri::command]
 fn get_public_endpoint(state: tauri::State<'_, AppManagedState>) -> Option<PublicEndpointInfo> {
-    state
-        .router_session
-        .lock()
-        .ok()
-        .and_then(|guard| guard.as_ref().map(|s| PublicEndpointInfo {
+    state.router_session.lock().ok().and_then(|guard| {
+        guard.as_ref().map(|s| PublicEndpointInfo {
             public_url: s.public_url.clone(),
             public_livekit_url: s.public_livekit_url.clone(),
-        }))
+        })
+    })
 }
 
 /// Open a save-file dialog and write the provided JSON to the selected path.
@@ -1653,7 +1646,9 @@ fn media_keepalive_on_window_event(window: &tauri::Window, event: &tauri::Window
                     // SAFETY: SetIsVisible is a standard COM call on the UI thread.
                     // The async_runtime dispatches this closure to the main thread
                     // via PostMessage, so we are on the correct apartment.
-                    unsafe { wv.controller().SetIsVisible(true.into()).ok(); }
+                    unsafe {
+                        wv.controller().SetIsVisible(true.into()).ok();
+                    }
                 });
             }
         });

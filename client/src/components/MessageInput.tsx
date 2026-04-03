@@ -6,7 +6,7 @@
  * for privacy. Videos and files are MIME-verified server-side.
  */
 
-import { useState, useRef, useEffect, useCallback, type FormEvent, type KeyboardEvent } from 'react';
+import { useState, useRef, useEffect, type FormEvent, type KeyboardEvent } from 'react';
 import { useChannelsStore } from '@/stores/channels';
 import { useIdentityStore } from '@/stores/identity';
 import * as api from '@/lib/api';

@@ -21,7 +21,7 @@ const mockIdentity = {
 };
 
 vi.mock('@/stores/identity', () => ({
-  useIdentityStore: (selector: (state: any) => unknown) => selector({
+  useIdentityStore: (selector: (state: Record<string, unknown>) => unknown) => selector({
     identity: mockIdentity,
     importBackup: vi.fn(async () => {}),
   }),

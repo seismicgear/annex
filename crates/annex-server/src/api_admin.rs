@@ -422,7 +422,12 @@ pub async fn set_livekit_public_url_handler(
     }
 
     let url = body.public_livekit_url.trim().to_string();
-    if !url.is_empty() && !url.starts_with("ws://") && !url.starts_with("wss://") && !url.starts_with("http://") && !url.starts_with("https://") {
+    if !url.is_empty()
+        && !url.starts_with("ws://")
+        && !url.starts_with("wss://")
+        && !url.starts_with("http://")
+        && !url.starts_with("https://")
+    {
         return Err(ApiError::BadRequest(
             "public_livekit_url must start with ws://, wss://, http://, or https://".to_string(),
         ));

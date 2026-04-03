@@ -29,7 +29,7 @@ function isPrivateIp(host: string): boolean {
  * Throws if the result is not a valid URL or uses a non-HTTP protocol.
  */
 export function normalizeServerUrl(input: string): string {
-  let url = input.trim();
+  const url = input.trim();
   if (!url) throw new Error('Empty URL');
 
   // If protocol is already specified, validate and return

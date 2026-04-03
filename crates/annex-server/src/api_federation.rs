@@ -636,8 +636,8 @@ pub async fn federation_handshake_handler(
         // 1b. Verify Ed25519 signature over the handshake payload.
         // This binds the handshake to the claimed server identity, preventing
         // forged handshakes from unauthenticated peers.
-        let handshake_json = serde_json::to_string(&payload.handshake)
-            .map_err(FederationError::Serialization)?;
+        let handshake_json =
+            serde_json::to_string(&payload.handshake).map_err(FederationError::Serialization)?;
         let signing_payload = format!("{}\n{}", payload.base_url, handshake_json);
 
         let public_key_bytes = hex::decode(&public_key_hex).map_err(|e| {
@@ -870,7 +870,8 @@ pub async fn attest_membership_handler(
         let node_type = match payload.participant_type.as_str() {
             "HUMAN" => {
                 return Err(FederationError::ZkVerification(
-                    "HUMAN participant_type is not permitted via federation attestation".to_string(),
+                    "HUMAN participant_type is not permitted via federation attestation"
+                        .to_string(),
                 ));
             }
             "AI_AGENT" => NodeType::AiAgent,
