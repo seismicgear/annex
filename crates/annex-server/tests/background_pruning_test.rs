@@ -8,6 +8,8 @@
 //! - The interval calculation is correct (threshold/2, clamped to [1, 60])
 //! - The task continues after errors
 
+mod common;
+
 use annex_db::{create_pool, run_migrations, DbRuntimeSettings};
 use annex_graph::{ensure_graph_node, update_node_activity};
 use annex_identity::MerkleTree;
@@ -16,10 +18,6 @@ use annex_types::{NodeType, PresenceEvent, ServerPolicy};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::Duration;
-
-fn load_vkey() -> Arc<annex_identity::zk::VerifyingKey<annex_identity::zk::Bn254>> {
-    Arc::new(annex_identity::zk::generate_dummy_vkey())
-}
 
 fn setup_state() -> (Arc<AppState>, annex_db::DbPool) {
     let pool = create_pool(":memory:", DbRuntimeSettings::default())
@@ -43,7 +41,7 @@ fn setup_state() -> (Arc<AppState>, annex_db::DbPool) {
     let state = Arc::new(AppState {
         pool: pool.clone(),
         merkle_tree: Arc::new(Mutex::new(tree)),
-        membership_vkey: load_vkey(),
+        membership_vkey: common::load_vkey_or_dummy(),
         server_id: 1,
         signing_key: Arc::new(ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng)),
         public_url: std::sync::Arc::new(std::sync::RwLock::new(

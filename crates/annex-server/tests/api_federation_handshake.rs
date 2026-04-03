@@ -1,3 +1,5 @@
+mod common;
+
 use annex_db::{create_pool, DbRuntimeSettings};
 use annex_identity::MerkleTree;
 use annex_server::{app, middleware::RateLimiter, AppState};
@@ -15,11 +17,6 @@ use ed25519_dalek::{Signer, SigningKey};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, RwLock};
 use tower::ServiceExt;
-
-// Mock or load vkey
-fn load_vkey() -> Arc<annex_identity::zk::VerifyingKey<annex_identity::zk::Bn254>> {
-    Arc::new(annex_identity::zk::generate_dummy_vkey())
-}
 
 /// Generates a remote signing key and returns both the key and the hex-encoded public key.
 fn generate_remote_key() -> (SigningKey, String) {
@@ -65,7 +62,7 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool, SigningKey) {
     let state = AppState {
         pool: pool.clone(),
         merkle_tree: Arc::new(Mutex::new(tree)),
-        membership_vkey: load_vkey(),
+        membership_vkey: common::load_vkey_or_dummy(),
         server_id: 1,
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,

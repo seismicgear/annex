@@ -3,6 +3,8 @@
 //! - `DELETE /api/rtx/subscribe`
 //! - `GET /api/rtx/subscriptions`
 
+mod common;
+
 use annex_db::{create_pool, DbRuntimeSettings};
 use annex_identity::MerkleTree;
 use annex_server::{app, middleware::RateLimiter, AppState};
@@ -16,18 +18,6 @@ use serde_json::Value;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, RwLock};
 use tower::ServiceExt;
-
-fn load_vkey() -> Arc<annex_identity::zk::VerifyingKey<annex_identity::zk::Bn254>> {
-    let vkey_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../zk/keys/membership_vkey.json");
-    if !vkey_path.exists() {
-        panic!("vkey not found at {:?}", vkey_path);
-    }
-    let vkey_json = std::fs::read_to_string(vkey_path).expect("failed to read vkey");
-    annex_identity::zk::parse_verification_key(&vkey_json)
-        .map(Arc::new)
-        .expect("failed to parse vkey")
-}
 
 async fn setup_app() -> (axum::Router, annex_db::DbPool) {
     let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
@@ -48,7 +38,7 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool) {
     let state = AppState {
         pool: pool.clone(),
         merkle_tree: Arc::new(Mutex::new(tree)),
-        membership_vkey: load_vkey(),
+        membership_vkey: common::load_vkey_or_dummy(),
         server_id: 1,
         signing_key: Arc::new(ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng)),
         public_url: std::sync::Arc::new(std::sync::RwLock::new(

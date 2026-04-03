@@ -1,3 +1,5 @@
+mod common;
+
 use annex_db::{create_pool, DbRuntimeSettings};
 use annex_identity::MerkleTree;
 use annex_server::{
@@ -16,14 +18,6 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, RwLock};
 use tower::ServiceExt;
 
-fn load_vkey() -> Arc<annex_identity::zk::VerifyingKey<annex_identity::zk::Bn254>> {
-    let vkey_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../zk/keys/membership_vkey.json");
-    let vkey_json = std::fs::read_to_string(vkey_path).expect("failed to read vkey");
-    let vk = annex_identity::zk::parse_verification_key(&vkey_json).expect("failed to parse vkey");
-    Arc::new(vk)
-}
-
 #[tokio::test]
 async fn test_get_path_success() {
     // 1. Setup
@@ -36,7 +30,7 @@ async fn test_get_path_success() {
     let state = AppState {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
-        membership_vkey: load_vkey(),
+        membership_vkey: common::load_vkey_or_dummy(),
         server_id: 1,
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,
@@ -125,7 +119,7 @@ async fn test_get_path_not_found() {
     let state = AppState {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
-        membership_vkey: load_vkey(),
+        membership_vkey: common::load_vkey_or_dummy(),
         server_id: 1,
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,

@@ -1,88 +1,21 @@
+mod common;
+
 use annex_channels::{
     add_member, create_channel, create_message, CreateChannelParams, CreateMessageParams,
     Message as ChannelMessage,
 };
-use annex_db::{create_pool, run_migrations, DbRuntimeSettings};
-use annex_identity::MerkleTree;
-use annex_server::{app, middleware::RateLimiter, AppState};
-use annex_types::{ChannelType, FederationScope, ServerPolicy};
+use annex_types::{ChannelType, FederationScope};
 use axum::{
     body::Body,
     extract::ConnectInfo,
     http::{Request, StatusCode},
 };
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex, RwLock};
 use tower::ServiceExt;
-
-// Helper to load verification key
-fn load_vkey() -> Arc<annex_identity::zk::VerifyingKey<annex_identity::zk::Bn254>> {
-    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    // If running from crates/annex-server
-    let path1 = manifest.join("../../zk/keys/membership_vkey.json");
-    // If running from root
-    let path2 = std::path::Path::new("zk/keys/membership_vkey.json");
-
-    let vkey_json = std::fs::read_to_string(&path1)
-        .or_else(|_| std::fs::read_to_string(path2))
-        .unwrap_or_else(|_| panic!("failed to read vkey from {:?} or {:?}", path1, path2));
-
-    let vk = annex_identity::zk::parse_verification_key(&vkey_json).expect("failed to parse vkey");
-    Arc::new(vk)
-}
-
-async fn setup_app() -> (axum::Router, annex_db::DbPool) {
-    let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
-    {
-        let conn = pool.get().unwrap();
-        run_migrations(&conn).unwrap();
-        // Create server
-        let policy = ServerPolicy::default();
-        let policy_json = serde_json::to_string(&policy).unwrap();
-        conn.execute(
-            "INSERT INTO servers (slug, label, policy_json) VALUES ('test', 'Test', ?1)",
-            [policy_json],
-        )
-        .unwrap();
-    }
-
-    let tree = MerkleTree::new(20).unwrap();
-    let state = AppState {
-        pool: pool.clone(),
-        merkle_tree: Arc::new(Mutex::new(tree)),
-        membership_vkey: load_vkey(),
-        server_id: 1,
-        signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
-            &mut rand::rngs::OsRng,
-        )),
-        public_url: std::sync::Arc::new(std::sync::RwLock::new(
-            "http://localhost:3000".to_string(),
-        )),
-        policy: Arc::new(RwLock::new(ServerPolicy::default())),
-        rate_limiter: RateLimiter::new(),
-        connection_manager: annex_server::api_ws::ConnectionManager::new(),
-        presence_tx: tokio::sync::broadcast::channel(100).0,
-        voice_service: Arc::new(annex_voice::VoiceService::new(
-            annex_voice::LiveKitConfig::default(),
-        )),
-        tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper", "bark")),
-        stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),
-        voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
-        observe_tx: tokio::sync::broadcast::channel(256).0,
-        upload_dir: std::env::temp_dir().to_string_lossy().into_owned(),
-        preview_cache: annex_server::api_link_preview::PreviewCache::new(),
-        cors_origins: vec![],
-        enforce_zk_proofs: false,
-        invite_base_url: "https://monolithannex.com/invite".to_string(),
-        ws_token_secret: std::sync::Arc::new([0u8; 32]),
-    };
-
-    (app(state), pool)
-}
 
 #[tokio::test]
 async fn test_get_history_success() {
-    let (app, pool) = setup_app().await;
+    let (app, pool) = common::setup_test_app().await;
 
     {
         let conn = pool.get().unwrap();
@@ -234,7 +167,7 @@ async fn test_get_history_success() {
 
 #[tokio::test]
 async fn test_get_history_forbidden() {
-    let (app, pool) = setup_app().await;
+    let (app, pool) = common::setup_test_app().await;
 
     {
         let conn = pool.get().unwrap();
