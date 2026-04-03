@@ -33,10 +33,18 @@ export function IdentitySettings({ onClose }: Props) {
   const [accentColor, setAccentColor] = useState(personas.randomAccentColor());
 
   // ── Username state ──
+  const currentUsername = useUsernameStore((s) => pseudonymId ? s.getDisplayName(pseudonymId) : null);
   const [username, setUsername] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+
+  // Pre-populate the username field from the visible usernames cache
+  useEffect(() => {
+    if (currentUsername && !username) {
+      setUsername(currentUsername);
+    }
+  }, [currentUsername]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Grants state ──
   const [grantees, setGrantees] = useState<string[]>([]);
