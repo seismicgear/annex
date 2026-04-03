@@ -218,17 +218,28 @@ pub async fn delete_username_handler(
             .get()
             .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
 
-        conn.execute(
+        // Wrap in transaction so profile + grants are deleted atomically.
+        // Without this, a crash between the two deletes would leave
+        // orphaned grant rows in the database.
+        let tx = conn.unchecked_transaction().map_err(|e| {
+            ApiError::InternalServerError(format!("failed to begin transaction: {}", e))
+        })?;
+
+        tx.execute(
             "DELETE FROM user_profiles WHERE server_id = ?1 AND pseudonym_id = ?2",
             rusqlite::params![server_id, pseudonym],
         )
         .map_err(|e| ApiError::InternalServerError(format!("failed to delete username: {}", e)))?;
 
-        conn.execute(
+        tx.execute(
             "DELETE FROM username_grants WHERE server_id = ?1 AND granter_pseudonym = ?2",
             rusqlite::params![server_id, pseudonym],
         )
         .map_err(|e| ApiError::InternalServerError(format!("failed to delete grants: {}", e)))?;
+
+        tx.commit().map_err(|e| {
+            ApiError::InternalServerError(format!("failed to commit transaction: {}", e))
+        })?;
 
         Ok::<(), ApiError>(())
     })

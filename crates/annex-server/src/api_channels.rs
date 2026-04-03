@@ -295,13 +295,13 @@ pub async fn get_channel_history_handler(
         return Err(StatusCode::FORBIDDEN);
     }
 
-    // 2. Fetch Messages (cap limit to 200 to prevent oversize responses)
+    // 2. Fetch Messages (cap limit to 100 to match the inner function's cap)
     let messages = tokio::task::spawn_blocking({
         let pool = state.pool.clone();
         let server_id = state.server_id;
         let cid = channel_id.clone();
         let before = params.before;
-        let limit = params.limit.map(|l| l.min(200));
+        let limit = params.limit.map(|l| l.min(100));
         move || {
             let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
             list_messages(&conn, server_id, &cid, before, limit)

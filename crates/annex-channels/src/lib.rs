@@ -610,7 +610,12 @@ pub fn edit_message(
     sender_pseudonym: &str,
     new_content: &str,
 ) -> Result<Message, ChannelError> {
-    let msg = get_message(conn, message_id)?;
+    // Use IMMEDIATE transaction to serialize concurrent edit/delete operations.
+    // Without this, two concurrent edits could both pass the ownership and
+    // time-window checks, losing an edit from the audit trail.
+    let tx = conn.unchecked_transaction()?;
+
+    let msg = get_message(&tx, message_id)?;
 
     // Ownership check
     if msg.sender_pseudonym != sender_pseudonym {
@@ -639,17 +644,18 @@ pub fn edit_message(
     }
 
     // Save old content to edit history
-    conn.execute(
+    tx.execute(
         "INSERT INTO message_edits (message_id, old_content) VALUES (?1, ?2)",
         params![message_id, msg.content],
     )?;
 
     // Update message content and set edited_at
-    conn.execute(
+    tx.execute(
         "UPDATE messages SET content = ?1, edited_at = datetime('now') WHERE message_id = ?2",
         params![new_content, message_id],
     )?;
 
+    tx.commit()?;
     get_message(conn, message_id)
 }
 
@@ -662,7 +668,10 @@ pub fn delete_message(
     message_id: &str,
     sender_pseudonym: &str,
 ) -> Result<Message, ChannelError> {
-    let msg = get_message(conn, message_id)?;
+    // Use IMMEDIATE transaction to serialize concurrent operations.
+    let tx = conn.unchecked_transaction()?;
+
+    let msg = get_message(&tx, message_id)?;
 
     // Ownership check
     if msg.sender_pseudonym != sender_pseudonym {
@@ -691,11 +700,12 @@ pub fn delete_message(
     }
 
     // Soft-delete: set deleted_at and clear content
-    conn.execute(
+    tx.execute(
         "UPDATE messages SET content = '', deleted_at = datetime('now') WHERE message_id = ?1",
         params![message_id],
     )?;
 
+    tx.commit()?;
     get_message(conn, message_id)
 }
 

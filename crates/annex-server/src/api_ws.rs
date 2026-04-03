@@ -127,9 +127,12 @@ pub fn verify_ws_token_for_auth(token: &str, secret: &[u8; 32]) -> Result<String
     verify_ws_token(token, secret)
 }
 
-/// Verify HMAC signature of a session token but allow expired tokens.
+/// Verify HMAC signature of a session token but allow recently-expired tokens.
 /// Used by the session refresh endpoint to re-issue tokens for returning users
 /// whose session expired while the app was closed.
+///
+/// Allows tokens expired up to 7 days ago. Tokens older than that are rejected
+/// to limit the replay window if a token is ever leaked.
 pub fn verify_token_allow_expired(token: &str, secret: &[u8; 32]) -> Result<String, StatusCode> {
     use base64::Engine;
     use hmac::{Hmac, Mac};
@@ -158,7 +161,18 @@ pub fn verify_token_allow_expired(token: &str, secret: &[u8; 32]) -> Result<Stri
     mac.verify_slice(&provided_sig)
         .map_err(|_| StatusCode::UNAUTHORIZED)?;
 
-    // Intentionally skip expiry check — caller handles the security implications
+    // Allow recently-expired tokens (up to 7 days) for session refresh.
+    // This limits the replay window if a token is ever leaked while still
+    // accommodating users who haven't opened the app in a few days.
+    const MAX_EXPIRED_AGE_SECS: u64 = 7 * 24 * 60 * 60; // 7 days
+    let expires: u64 = expires_str.parse().map_err(|_| StatusCode::UNAUTHORIZED)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    if now > expires + MAX_EXPIRED_AGE_SECS {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
 
     Ok(pseudonym.to_string())
 }
