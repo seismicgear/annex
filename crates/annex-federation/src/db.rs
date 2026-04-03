@@ -74,18 +74,20 @@ pub fn create_agreement(
     Ok(id)
 }
 
-/// Retrieves the active federation agreement for a remote instance.
+/// Retrieves the active federation agreement for a remote instance,
+/// scoped to the local server to prevent cross-tenant leakage.
 pub fn get_agreement(
     conn: &Connection,
+    local_server_id: i64,
     remote_instance_id: i64,
 ) -> Result<Option<FederationAgreement>> {
     let mut stmt = conn.prepare(
         "SELECT id, local_server_id, remote_instance_id, alignment_status, transfer_scope, agreement_json, remote_handshake_json, active, created_at, updated_at
          FROM federation_agreements
-         WHERE remote_instance_id = ?1 AND active = 1",
+         WHERE local_server_id = ?1 AND remote_instance_id = ?2 AND active = 1",
     )?;
 
-    let mut rows = stmt.query(params![remote_instance_id])?;
+    let mut rows = stmt.query(params![local_server_id, remote_instance_id])?;
 
     if let Some(row) = rows.next()? {
         let agreement_json_str: String = row.get(5)?;

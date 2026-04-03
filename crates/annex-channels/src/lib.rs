@@ -252,17 +252,24 @@ pub fn update_channel(
 /// integrity. The caller is expected to manage transaction boundaries if
 /// atomicity with other operations is required.
 pub fn delete_channel(conn: &Connection, channel_id: &str) -> Result<(), ChannelError> {
+    // Wrap in a transaction so partial failures don't lose messages
+    // while leaving the channel intact.
+    let tx = conn.unchecked_transaction()?;
+
     // Delete child rows first to satisfy FK constraints.
-    conn.execute("DELETE FROM messages WHERE channel_id = ?1", [channel_id])?;
-    conn.execute(
+    tx.execute("DELETE FROM messages WHERE channel_id = ?1", [channel_id])?;
+    tx.execute(
         "DELETE FROM channel_members WHERE channel_id = ?1",
         [channel_id],
     )?;
 
-    let count = conn.execute("DELETE FROM channels WHERE channel_id = ?1", [channel_id])?;
+    let count = tx.execute("DELETE FROM channels WHERE channel_id = ?1", [channel_id])?;
     if count == 0 {
+        // Rollback is automatic on drop
         return Err(ChannelError::NotFound(channel_id.to_string()));
     }
+
+    tx.commit()?;
     Ok(())
 }
 

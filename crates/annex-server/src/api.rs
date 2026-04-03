@@ -213,45 +213,20 @@ pub async fn register_handler(
         policy.access_mode.clone()
     };
 
-    if access_mode == "invite_only" {
+    // Pre-validate invite code format before the blocking task.
+    // The actual atomically-safe validation + use_count increment happens
+    // inside the same transaction as registration (below).
+    let invite_code_for_registration = if access_mode == "invite_only" {
         let invite_code = payload.invite_code.as_deref().unwrap_or("").trim();
         if invite_code.is_empty() {
             return Err(ApiError::Forbidden(
                 "This server requires an invite code to register.".to_string(),
             ));
         }
-        // Validate the invite code exists and is still usable
-        let code_owned = invite_code.to_string();
-        let server_id = state.server_id;
-        let state_check = state.clone();
-        tokio::task::spawn_blocking(move || {
-            let conn = state_check.pool.get().map_err(|e| {
-                ApiError::InternalServerError(format!("db connection failed: {}", e))
-            })?;
-            let row: Result<(Option<i64>, i64, Option<String>), _> = conn.query_row(
-                "SELECT max_uses, use_count, expires_at FROM invite_codes WHERE server_id = ?1 AND code = ?2",
-                rusqlite::params![server_id, code_owned],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            );
-            let (max_uses, use_count, expires_at) = row.map_err(|_| {
-                ApiError::Forbidden("Invalid or expired invite code.".to_string())
-            })?;
-            if let Some(ref exp) = expires_at {
-                let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                if *exp < now {
-                    return Err(ApiError::Forbidden("Invalid or expired invite code.".to_string()));
-                }
-            }
-            if let Some(max) = max_uses {
-                if use_count >= max {
-                    return Err(ApiError::Forbidden("Invalid or expired invite code.".to_string()));
-                }
-            }
-            Ok::<(), ApiError>(())
-        })
-        .await
-        .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
-    }
+        Some(invite_code.to_string())
+    } else {
+        None
+    };
 
     let result =
         tokio::task::spawn_blocking(move || {
@@ -259,6 +234,60 @@ pub async fn register_handler(
             let mut conn = state.pool.get().map_err(|e| {
                 ApiError::InternalServerError(format!("db connection failed: {}", e))
             })?;
+
+            // Validate and atomically claim the invite code inside the same
+            // connection as registration. This prevents TOCTOU races where
+            // two concurrent requests both pass validation before either
+            // increments use_count.
+            if let Some(ref code) = invite_code_for_registration {
+                let row: Result<(Option<i64>, i64, Option<String>), _> = conn.query_row(
+                    "SELECT max_uses, use_count, expires_at FROM invite_codes WHERE server_id = ?1 AND code = ?2",
+                    rusqlite::params![state.server_id, code],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                );
+                let (max_uses, use_count, expires_at) = row.map_err(|_| {
+                    ApiError::Forbidden("Invalid or expired invite code.".to_string())
+                })?;
+                if let Some(ref exp) = expires_at {
+                    if let Ok(exp_dt) =
+                        chrono::NaiveDateTime::parse_from_str(exp, "%Y-%m-%d %H:%M:%S")
+                    {
+                        let now = chrono::Utc::now().naive_utc();
+                        if exp_dt < now {
+                            return Err(ApiError::Forbidden(
+                                "Invalid or expired invite code.".to_string(),
+                            ));
+                        }
+                    }
+                }
+                if let Some(max) = max_uses {
+                    if use_count >= max {
+                        return Err(ApiError::Forbidden(
+                            "Invalid or expired invite code.".to_string(),
+                        ));
+                    }
+                }
+
+                // Atomically increment use_count. The WHERE clause re-checks
+                // max_uses to prevent races: if another request incremented
+                // use_count between our SELECT and this UPDATE, the condition
+                // `use_count < max_uses` will fail and 0 rows will be updated.
+                let updated = conn
+                    .execute(
+                        "UPDATE invite_codes SET use_count = use_count + 1 \
+                         WHERE server_id = ?1 AND code = ?2 \
+                         AND (max_uses IS NULL OR use_count < max_uses)",
+                        rusqlite::params![state.server_id, code],
+                    )
+                    .map_err(|e| {
+                        ApiError::InternalServerError(format!("invite update failed: {}", e))
+                    })?;
+                if updated == 0 {
+                    return Err(ApiError::Forbidden(
+                        "Invalid or expired invite code.".to_string(),
+                    ));
+                }
+            }
 
             // Lock Merkle Tree
             let mut tree = state.merkle_tree.lock().map_err(|_| {
@@ -281,7 +310,6 @@ pub async fn register_handler(
                     ApiError::Conflict(e.to_string())
                 }
                 annex_identity::IdentityError::TreeFull => {
-                    // Tree full is conceptually a 507 Insufficient Storage, but 500 is fine too
                     ApiError::InternalServerError(e.to_string())
                 }
                 _ => ApiError::InternalServerError(e.to_string()),
