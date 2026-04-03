@@ -193,7 +193,7 @@ export default function App() {
               error: null,
               errorDetails: null,
             });
-            api.setSessionToken(null);
+            setSessionToken(null);
           }
         }
         setIdentityChecked(true);
@@ -219,7 +219,8 @@ export default function App() {
     // Runtime listener for subsequent deep-link events
     listenForInvite((invite) => {
       setPendingProtocolInvite(invite);
-    }).then((fn) => { unlisten = fn; });
+    }).then((fn) => { unlisten = fn; })
+      .catch(() => {}); // Non-fatal — deep-link listener unavailable
     return () => { unlisten?.(); };
   }, [inTauri]);
 
