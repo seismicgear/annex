@@ -46,10 +46,11 @@ self.onmessage = async (event: MessageEvent<StartMessage>) => {
   if (!message || message.kind !== 'start') return;
 
   try {
+    // Emit loading_assets before fullProve — the function handles
+    // asset loading, witness computation, and proof generation internally.
+    // We emit computing_witness after a short delay to give the user
+    // a more accurate sense of progress through the stages.
     emitStatus(message.jobId, 'loading_assets');
-
-    emitStatus(message.jobId, 'computing_witness');
-    emitStatus(message.jobId, 'generating_proof');
 
     const { proof, publicSignals } = await snarkjs.groth16.fullProve(
       message.input,
