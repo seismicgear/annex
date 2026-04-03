@@ -195,6 +195,8 @@ pub enum IncomingMessage {
         content: String,
         #[serde(rename = "replyTo")]
         reply_to: Option<String>,
+        #[serde(rename = "clientRequestId")]
+        client_request_id: Option<String>,
     },
     #[serde(rename = "edit_message")]
     EditMessage {
@@ -236,6 +238,11 @@ pub struct WsMessagePayload {
     pub edited_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deleted_at: Option<String>,
+    /// Echoed client request ID for correlating the server response with the
+    /// original send. Only present on the direct reply to the sender, not on
+    /// broadcast copies to other subscribers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_request_id: Option<String>,
 }
 
 impl From<Message> for WsMessagePayload {
@@ -249,6 +256,7 @@ impl From<Message> for WsMessagePayload {
             created_at: m.created_at,
             edited_at: m.edited_at,
             deleted_at: m.deleted_at,
+            client_request_id: None,
         }
     }
 }
@@ -272,7 +280,11 @@ pub enum OutgoingMessage {
         text: String,
     },
     #[serde(rename = "error")]
-    Error { message: String },
+    Error {
+        message: String,
+        #[serde(rename = "clientRequestId", skip_serializing_if = "Option::is_none")]
+        client_request_id: Option<String>,
+    },
 }
 
 /// Type alias for session map to satisfy clippy complexity checks.
@@ -711,7 +723,20 @@ async fn check_ws_membership(
 
 /// Sends a JSON-serialized error message over the WebSocket sender channel.
 fn send_ws_error(tx: &mpsc::Sender<String>, message: String) {
-    match serde_json::to_string(&OutgoingMessage::Error { message }) {
+    send_ws_error_with_id(tx, message, None);
+}
+
+/// Sends a JSON-serialized error message with an optional client request ID
+/// so the frontend can correlate the error with the original send request.
+fn send_ws_error_with_id(
+    tx: &mpsc::Sender<String>,
+    message: String,
+    client_request_id: Option<String>,
+) {
+    match serde_json::to_string(&OutgoingMessage::Error {
+        message,
+        client_request_id,
+    }) {
         Ok(json) => {
             if let Err(e) = tx.try_send(json) {
                 tracing::warn!("failed to send WebSocket error to client: {}", e);
@@ -823,19 +848,25 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                         channel_id,
                         content,
                         reply_to,
+                        client_request_id,
                     } => {
                         // 0. Validate content length
                         if content.trim().is_empty() {
-                            send_ws_error(&tx, "Message content must not be empty".to_string());
+                            send_ws_error_with_id(
+                                &tx,
+                                "Message content must not be empty".to_string(),
+                                client_request_id,
+                            );
                             continue;
                         }
                         if content.len() > MAX_WS_MESSAGE_CONTENT_LEN {
-                            send_ws_error(
+                            send_ws_error_with_id(
                                 &tx,
                                 format!(
                                     "Message content exceeds maximum length of {} bytes",
                                     MAX_WS_MESSAGE_CONTENT_LEN
                                 ),
+                                client_request_id,
                             );
                             continue;
                         }
@@ -851,9 +882,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                         {
                             MembershipResult::Allowed => {}
                             MembershipResult::Denied => {
-                                send_ws_error(
+                                send_ws_error_with_id(
                                     &tx,
                                     format!("Not a member of channel {}", channel_id),
+                                    client_request_id,
                                 );
                                 continue;
                             }
@@ -864,9 +896,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                     "message membership check failed: {}",
                                     e
                                 );
-                                send_ws_error(
+                                send_ws_error_with_id(
                                     &tx,
                                     "Internal error checking channel membership".to_string(),
+                                    client_request_id,
                                 );
                                 continue;
                             }
@@ -902,7 +935,8 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                         match res {
                             Ok(Ok((message, is_federated))) => {
                                 // Broadcast via WebSocket (camelCase payload)
-                                let ws_payload: WsMessagePayload = message.clone().into();
+                                let mut ws_payload: WsMessagePayload = message.clone().into();
+                                ws_payload.client_request_id = client_request_id.clone();
                                 let broadcast_channel_id = message.channel_id.clone();
                                 let out = OutgoingMessage::Message(ws_payload);
                                 match serde_json::to_string(&out) {
@@ -936,9 +970,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                     "failed to persist message: {}",
                                     e
                                 );
-                                send_ws_error(
+                                send_ws_error_with_id(
                                     &tx,
                                     "Failed to send message: internal error".to_string(),
+                                    client_request_id,
                                 );
                             }
                             Err(e) => {
@@ -948,9 +983,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                     "message persist task failed: {}",
                                     e
                                 );
-                                send_ws_error(
+                                send_ws_error_with_id(
                                     &tx,
                                     "Failed to send message: internal error".to_string(),
+                                    client_request_id,
                                 );
                             }
                         }
@@ -1443,6 +1479,7 @@ mod tests {
             created_at: "2025-01-01T00:00:00Z".to_string(),
             edited_at: None,
             deleted_at: None,
+            client_request_id: None,
         };
 
         let json = serde_json::to_value(&payload).expect("serialization should not fail");
@@ -1475,6 +1512,25 @@ mod tests {
         assert!(
             json.get("message_id").is_none(),
             "snake_case message_id should not be present"
+        );
+
+        // Verify clientRequestId is omitted when None
+        assert!(
+            json.get("clientRequestId").is_none(),
+            "clientRequestId should be omitted when None"
+        );
+
+        // Verify clientRequestId is present when Some
+        let payload_with_id = WsMessagePayload {
+            client_request_id: Some("req-123".to_string()),
+            ..payload
+        };
+        let json_with_id =
+            serde_json::to_value(&payload_with_id).expect("serialization should not fail");
+        assert_eq!(
+            json_with_id.get("clientRequestId").and_then(|v| v.as_str()),
+            Some("req-123"),
+            "clientRequestId should be echoed when present"
         );
     }
 
@@ -1513,6 +1569,7 @@ mod tests {
             created_at: "2025-01-01T00:00:00Z".to_string(),
             edited_at: None,
             deleted_at: None,
+            client_request_id: None,
         };
 
         let out = OutgoingMessage::Message(payload);
