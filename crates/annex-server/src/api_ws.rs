@@ -548,7 +548,11 @@ pub async fn create_ws_token_handler(
         crate::middleware::IdentityContext,
     >,
 ) -> Result<axum::Json<serde_json::Value>, StatusCode> {
-    let token = generate_session_token(&identity.pseudonym_id, &state.ws_token_secret, WS_TOKEN_TTL_SECS);
+    let token = generate_session_token(
+        &identity.pseudonym_id,
+        &state.ws_token_secret,
+        WS_TOKEN_TTL_SECS,
+    );
     Ok(axum::Json(serde_json::json!({
         "token": token,
         "expires_in_secs": WS_TOKEN_TTL_SECS,

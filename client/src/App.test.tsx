@@ -587,7 +587,7 @@ describe('App startup flow', () => {
       vi.mocked(tauri.getPublicEndpoint).mockResolvedValue({
         public_url: 'https://host.router.annex.net',
         public_livekit_url: null,
-      } as any);
+      } as { public_url: string; public_livekit_url: string | null });
 
       const App = (await import('./App')).default;
       render(<App />);

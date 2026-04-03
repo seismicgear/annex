@@ -453,7 +453,56 @@ async fn test_voice_config_status_disabled() {
 
 #[tokio::test]
 async fn test_voice_config_status_enabled() {
-    let (app, _pool) = setup_app().await;
+    // Build an app whose LiveKit config has a non-loopback public URL so the
+    // endpoint reports "ready" instead of the loopback-only warning.
+    let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
+    {
+        let conn = pool.get().unwrap();
+        run_migrations(&conn).unwrap();
+        let policy = ServerPolicy::default();
+        let policy_json = serde_json::to_string(&policy).unwrap();
+        conn.execute(
+            "INSERT INTO servers (slug, label, policy_json) VALUES ('test', 'Test', ?1)",
+            [policy_json],
+        )
+        .unwrap();
+    }
+
+    let tree = MerkleTree::new(20).unwrap();
+    let mut livekit_config =
+        annex_voice::LiveKitConfig::new("http://localhost:7880", "devkey", "devsecret");
+    livekit_config.public_url = "wss://livekit.example.com".to_string();
+    let voice_service = annex_voice::VoiceService::new(livekit_config);
+
+    let state = AppState {
+        pool: pool.clone(),
+        merkle_tree: Arc::new(Mutex::new(tree)),
+        membership_vkey: common::load_vkey_or_dummy(),
+        server_id: 1,
+        signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
+            &mut rand::rngs::OsRng,
+        )),
+        public_url: std::sync::Arc::new(std::sync::RwLock::new(
+            "http://localhost:3000".to_string(),
+        )),
+        policy: Arc::new(RwLock::new(ServerPolicy::default())),
+        rate_limiter: RateLimiter::new(),
+        connection_manager: annex_server::api_ws::ConnectionManager::new(),
+        presence_tx: tokio::sync::broadcast::channel(100).0,
+        voice_service: Arc::new(voice_service),
+        tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper", "bark")),
+        stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),
+        voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        observe_tx: tokio::sync::broadcast::channel(256).0,
+        upload_dir: std::env::temp_dir().to_string_lossy().into_owned(),
+        preview_cache: annex_server::api_link_preview::PreviewCache::new(),
+        cors_origins: vec![],
+        enforce_zk_proofs: false,
+        invite_base_url: "https://monolithannex.com/invite".to_string(),
+        ws_token_secret: std::sync::Arc::new([0u8; 32]),
+    };
+
+    let app_router = app(state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
     let mut request = Request::builder()
@@ -463,7 +512,7 @@ async fn test_voice_config_status_enabled() {
         .unwrap();
     request.extensions_mut().insert(ConnectInfo(addr));
 
-    let response = app.oneshot(request).await.unwrap();
+    let response = app_router.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
     let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)

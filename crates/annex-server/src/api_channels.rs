@@ -257,7 +257,10 @@ pub async fn delete_channel_handler(
 
     // Unsubscribe all WebSocket subscribers from the deleted channel to prevent
     // stale subscriptions from receiving messages on a non-existent channel.
-    state.connection_manager.unsubscribe_channel(&channel_id).await;
+    state
+        .connection_manager
+        .unsubscribe_channel(&channel_id)
+        .await;
 
     Ok(Json(json!({"status": "deleted"})))
 }
@@ -363,8 +366,7 @@ pub async fn join_channel_handler(
     // Agent channels are restricted to AI agents only. Allowing humans into
     // Agent channels would let them bypass agent-specific policy controls
     // (alignment checks, VRP handshake requirements, transfer scope).
-    if channel.channel_type == ChannelType::Agent
-        && identity.participant_type != RoleCode::AiAgent
+    if channel.channel_type == ChannelType::Agent && identity.participant_type != RoleCode::AiAgent
     {
         return Err(StatusCode::FORBIDDEN);
     }

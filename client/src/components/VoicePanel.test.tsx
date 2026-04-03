@@ -63,10 +63,10 @@ vi.mock('@/stores/channels', () => ({
 }));
 
 vi.mock('@/stores/voice', () => {
-  const fn = (selector?: (state: any) => unknown) =>
+  const fn = (selector?: (state: typeof voiceState) => unknown) =>
     selector ? selector(voiceState) : voiceState;
   fn.getState = () => voiceState;
-  fn.setState = vi.fn((partial: any) => {
+  fn.setState = vi.fn((partial: Partial<typeof voiceState> | ((s: typeof voiceState) => Partial<typeof voiceState>)) => {
     Object.assign(voiceState, typeof partial === 'function' ? partial(voiceState) : partial);
   });
   return { useVoiceStore: fn };
@@ -447,7 +447,7 @@ describe('VoicePanel', () => {
     const audio = document.createElement('audio');
     audio.setAttribute('data-lk-source', 'microphone');
     // Mock setSinkId
-    (audio as any).setSinkId = vi.fn(async () => {});
+    (audio as unknown as Record<string, unknown>).setSinkId = vi.fn(async () => {});
     document.body.appendChild(audio);
 
     await act(async () => {
@@ -455,7 +455,7 @@ describe('VoicePanel', () => {
     });
 
     // setSinkId should be called with '' to reset to default
-    expect((audio as any).setSinkId).toHaveBeenCalledWith('');
+    expect((audio as unknown as Record<string, unknown>).setSinkId).toHaveBeenCalledWith('');
 
     document.body.removeChild(audio);
   });

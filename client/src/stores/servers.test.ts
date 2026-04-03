@@ -29,7 +29,7 @@ vi.mock('@/lib/servers', () => ({
   listServers: (...args: unknown[]) => mockListServers(...args),
   saveServer: (...args: unknown[]) => mockSaveServer(...args),
   getServerByIdentityId: (...args: unknown[]) => mockGetServerByIdentityId(...args),
-  createServerEntry: (...args: unknown[]) => (mockCreateServerEntry as any)(...args),
+  createServerEntry: (...args: unknown[]) => (mockCreateServerEntry as (...a: unknown[]) => unknown)(...args),
   removeServer: (...args: unknown[]) => mockRemoveServer(...args),
   updateCachedSummary: vi.fn(async () => {}),
   getServerBySlug: vi.fn(async () => undefined),
@@ -123,7 +123,7 @@ describe('servers store', () => {
     const { useServersStore } = await import('./servers');
 
     useServersStore.setState({
-      servers: [{ id: 'pending-1', baseUrl: 'https://remote.example.com', slug: 'remote', label: 'Remote', identityId: '', cachedSummary: null, personaId: null, accentColor: '#e63946', lastConnectedAt: null } as any],
+      servers: [{ id: 'pending-1', baseUrl: 'https://remote.example.com', slug: 'remote', label: 'Remote', identityId: '', cachedSummary: null, personaId: null, accentColor: '#e63946', lastConnectedAt: null } as Record<string, unknown>],
       activeServerId: null,
     });
 
@@ -274,7 +274,7 @@ describe('servers store', () => {
     };
 
     useServersStore.setState({
-      servers: [placeholder as any],
+      servers: [placeholder as Record<string, unknown>],
       pendingRegistrationServerId: 'pending-fail',
     });
 

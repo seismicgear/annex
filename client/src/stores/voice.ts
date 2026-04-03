@@ -321,9 +321,9 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   },
   clearChannelCallState: (channelId) => {
     set((s) => {
-      const { [channelId]: _active, ...restActive } = s.callActiveByChannel;
-      const { [channelId]: _error, ...restErrors } = s.joinErrorByChannel;
-      const { [channelId]: _joining, ...restJoining } = s.joiningByChannel;
+      const restActive = Object.fromEntries(Object.entries(s.callActiveByChannel).filter(([k]) => k !== channelId));
+      const restErrors = Object.fromEntries(Object.entries(s.joinErrorByChannel).filter(([k]) => k !== channelId));
+      const restJoining = Object.fromEntries(Object.entries(s.joiningByChannel).filter(([k]) => k !== channelId));
       return {
         callActiveByChannel: restActive,
         joinErrorByChannel: restErrors,

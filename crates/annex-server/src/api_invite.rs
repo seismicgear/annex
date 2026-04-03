@@ -315,16 +315,13 @@ pub async fn create_invite_handler(
         Some(server_description.as_str())
     };
 
-    let invite = InvitePayload::new(
-        &public_url,
-        &code,
-        Some(&server_label),
-        desc,
-    );
+    let invite = InvitePayload::new(&public_url, &code, Some(&server_label), desc);
 
-    let url = invite.to_invite_url_with_base(&invite_base_url).map_err(|e| {
-        ApiError::InternalServerError(format!("failed to generate invite URL: {}", e))
-    })?;
+    let url = invite
+        .to_invite_url_with_base(&invite_base_url)
+        .map_err(|e| {
+            ApiError::InternalServerError(format!("failed to generate invite URL: {}", e))
+        })?;
 
     Ok(Json(CreateInviteResponse {
         code,
@@ -355,9 +352,10 @@ pub async fn list_invites_handler(
 
     let state_clone = state.clone();
     let entries = tokio::task::spawn_blocking(move || {
-        let conn = state_clone.pool.get().map_err(|e| {
-            ApiError::InternalServerError(format!("db connection failed: {}", e))
-        })?;
+        let conn = state_clone
+            .pool
+            .get()
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
 
         // Fetch server label and description once
         let (server_label, server_description): (String, String) = conn
@@ -401,17 +399,12 @@ pub async fn list_invites_handler(
 
         let mut entries = Vec::new();
         for row in rows {
-            let (code, created_by, max_uses, use_count, expires_at, created_at) = row.map_err(
-                |e| ApiError::InternalServerError(format!("failed to read row: {}", e)),
-            )?;
+            let (code, created_by, max_uses, use_count, expires_at, created_at) = row
+                .map_err(|e| ApiError::InternalServerError(format!("failed to read row: {}", e)))?;
 
             let url = if !public_url.is_empty() {
-                let invite = InvitePayload::new(
-                    &public_url,
-                    &code,
-                    Some(&server_label),
-                    desc_for_payload,
-                );
+                let invite =
+                    InvitePayload::new(&public_url, &code, Some(&server_label), desc_for_payload);
                 invite
                     .to_invite_url_with_base(&invite_base_url)
                     .unwrap_or_default()
@@ -550,9 +543,10 @@ pub async fn delete_invite_handler(
 
     let state_clone = state.clone();
     tokio::task::spawn_blocking(move || {
-        let conn = state_clone.pool.get().map_err(|e| {
-            ApiError::InternalServerError(format!("db connection failed: {}", e))
-        })?;
+        let conn = state_clone
+            .pool
+            .get()
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
 
         let deleted = conn
             .execute(
@@ -617,7 +611,9 @@ mod tests {
             Some("A cool sovereign server"),
         );
         let url = payload.to_invite_url().unwrap();
-        let encoded_part = url.strip_prefix("https://monolithannex.com/invite/").unwrap();
+        let encoded_part = url
+            .strip_prefix("https://monolithannex.com/invite/")
+            .unwrap();
         assert!(!encoded_part.contains('+'));
         assert!(!encoded_part.contains('/'));
         assert!(!encoded_part.contains('='));
@@ -658,7 +654,9 @@ mod tests {
             Some("A cool sovereign server"),
         );
         let url = original.to_invite_url().unwrap();
-        let encoded_part = url.strip_prefix("https://monolithannex.com/invite/").unwrap();
+        let encoded_part = url
+            .strip_prefix("https://monolithannex.com/invite/")
+            .unwrap();
 
         let decoded_bytes = URL_SAFE_NO_PAD.decode(encoded_part).unwrap();
         let decoded: InvitePayload = serde_json::from_slice(&decoded_bytes).unwrap();

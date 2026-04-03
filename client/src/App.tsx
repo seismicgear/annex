@@ -30,11 +30,11 @@ import { StartupModeSelector, type DegradedStartupInfo } from '@/components/Star
 import { clearWebStartupMode } from '@/lib/startup-prefs';
 import { parseLegacyInviteFromUrl, clearInviteFromUrl, createInviteLink } from '@/lib/invite';
 import { getPersonasForIdentity } from '@/lib/personas';
-import { getApiBaseUrl, getServerSummary, setApiBaseUrl, redeemInvite, setPublicUrl, setLivekitPublicUrl, getSessionToken, setSessionToken, isTokenExpired, refreshSessionToken, startTokenRefresh, stopTokenRefresh } from '@/lib/api';
+import { getApiBaseUrl, getServerSummary, redeemInvite, setPublicUrl, setLivekitPublicUrl, getSessionToken, setSessionToken, isTokenExpired, refreshSessionToken, startTokenRefresh, stopTokenRefresh } from '@/lib/api';
 import { saveIdentity, clearAllDatabases } from '@/lib/db';
 import { cancelMembershipProofGeneration, isProofGenerationInFlight } from '@/lib/zk';
 import type { ProvingStatus } from '@/stores/identity';
-import { isTauri, getStartupMode as tauriGetStartupMode, listenForInvite, saveStartupMode, getPublicEndpoint, resetServerData, clearStartupMode as clearTauriStartupMode, getPendingInvite, checkFirstRunCompleted, markFirstRunCompleted } from '@/lib/tauri';
+import { isTauri, listenForInvite, saveStartupMode, getPublicEndpoint, resetServerData, clearStartupMode as clearTauriStartupMode, getPendingInvite, checkFirstRunCompleted, markFirstRunCompleted } from '@/lib/tauri';
 import type { LegacyInvitePayload, InvitePayload } from '@/types';
 import './App.css';
 
@@ -393,8 +393,9 @@ export default function App() {
             const newToken = await refreshSessionToken();
             if (cancelled) return;
             // Persist refreshed token to IndexedDB
-            if (identity) {
-              const updated = { ...identity, sessionToken: newToken };
+            const currentIdentity = useIdentityStore.getState().identity;
+            if (currentIdentity) {
+              const updated = { ...currentIdentity, sessionToken: newToken };
               await saveIdentity(updated);
               useIdentityStore.setState({ identity: updated });
             }

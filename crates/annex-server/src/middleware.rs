@@ -539,9 +539,7 @@ pub fn verify_zk_membership_header(
     // does not match the pseudonym's registered commitment.
     if let Some(expected) = expected_commitment_hex {
         if payload.commitment_hex != expected {
-            tracing::warn!(
-                "ZK proof commitment does not match authenticated identity"
-            );
+            tracing::warn!("ZK proof commitment does not match authenticated identity");
             return Err(StatusCode::FORBIDDEN);
         }
     }
@@ -647,7 +645,9 @@ mod tests {
 
     #[test]
     fn pseudonym_format_rejects_sql_injection() {
-        assert!(!is_valid_pseudonym_format("'; DROP TABLE platform_identities; --"));
+        assert!(!is_valid_pseudonym_format(
+            "'; DROP TABLE platform_identities; --"
+        ));
     }
 
     #[test]

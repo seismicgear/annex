@@ -37,13 +37,19 @@ impl VoiceService {
     /// was unreachable), this returns false even when the fallback dev URL
     /// is present in the config.
     pub fn is_enabled(&self) -> bool {
-        let disabled = *self.runtime_disabled.read().unwrap_or_else(|p| p.into_inner());
+        let disabled = *self
+            .runtime_disabled
+            .read()
+            .unwrap_or_else(|p| p.into_inner());
         !disabled && !self.config.url.is_empty()
     }
 
     /// Mark voice as disabled at runtime (e.g. LiveKit failed to start on desktop).
     pub fn set_runtime_disabled(&self, disabled: bool) {
-        let mut w = self.runtime_disabled.write().unwrap_or_else(|p| p.into_inner());
+        let mut w = self
+            .runtime_disabled
+            .write()
+            .unwrap_or_else(|p| p.into_inner());
         *w = disabled;
     }
 
@@ -71,7 +77,10 @@ impl VoiceService {
     ///
     /// Checks the runtime-updatable override first, then falls back to config.
     pub fn get_public_url(&self) -> String {
-        let runtime = self.runtime_public_url.read().unwrap_or_else(|p| p.into_inner());
+        let runtime = self
+            .runtime_public_url
+            .read()
+            .unwrap_or_else(|p| p.into_inner());
         let url = if !runtime.is_empty() {
             runtime.clone()
         } else if !self.config.public_url.is_empty() {
@@ -89,7 +98,10 @@ impl VoiceService {
     /// Returns the public URL without the loopback guard, for local-only use
     /// (e.g. Tauri host mode where the client is on the same machine).
     pub fn get_url_for_local_client(&self) -> String {
-        let runtime = self.runtime_public_url.read().unwrap_or_else(|p| p.into_inner());
+        let runtime = self
+            .runtime_public_url
+            .read()
+            .unwrap_or_else(|p| p.into_inner());
         if !runtime.is_empty() {
             runtime.clone()
         } else if self.config.public_url.is_empty() {
@@ -101,7 +113,10 @@ impl VoiceService {
 
     /// Set the public URL at runtime (e.g. from Tauri after acquiring a public endpoint).
     pub fn set_public_url(&self, url: String) {
-        let mut w = self.runtime_public_url.write().unwrap_or_else(|p| p.into_inner());
+        let mut w = self
+            .runtime_public_url
+            .write()
+            .unwrap_or_else(|p| p.into_inner());
         *w = url;
     }
 

@@ -95,6 +95,8 @@ function filenameFromUrl(url: string): string {
  *
  * Returns epoch ms, or NaN for malformed values.
  */
+// exported for testing — see MessageView.test.tsx
+// eslint-disable-next-line react-refresh/only-export-components
 export function parseMessageTimestamp(ts: string): number {
   if (!ts) return NaN;
   // If already has a timezone indicator (Z, +, -), parse directly

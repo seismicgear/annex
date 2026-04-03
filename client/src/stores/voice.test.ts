@@ -165,7 +165,7 @@ describe('voice store', () => {
     const { useVoiceStore } = await import('./voice');
 
     // Make joinVoice return slowly for chan-1, instantly for chan-2
-    let resolveFirst: ((val: any) => void) | null = null;
+    let resolveFirst: ((val: unknown) => void) | null = null;
     vi.mocked(apiMod.joinVoice)
       .mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve; }))
       .mockResolvedValueOnce({ token: 'tok-2', url: 'wss://lk-2', ice_servers: [] });

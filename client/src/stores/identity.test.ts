@@ -6,11 +6,21 @@ const mockGetIdentity = vi.fn(async () => null);
 const mockImportIdentity = vi.fn(async (json: string) => JSON.parse(json));
 const mockSaveIdentity = vi.fn(async () => {});
 
+class MockApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
 vi.mock('@/lib/api', () => ({
   setSessionToken: (...args: unknown[]) => mockSetSessionToken(...args),
   register: vi.fn(async () => ({ leafIndex: 0, pathElements: [], pathIndexBits: [] })),
   verifyMembership: vi.fn(async () => ({ pseudonymId: 'p1', sessionToken: 'tok1' })),
   getIdentityInfo: vi.fn(async () => ({})),
+  ApiError: MockApiError,
 }));
 
 vi.mock('@/lib/db', () => ({
@@ -171,7 +181,7 @@ describe('identity store — API auth state sync', () => {
 
     // Set up an identity with a pseudonymId (simulating an active session)
     useIdentityStore.setState({
-      identity: { id: '1', sk: 'abc', pseudonymId: 'p1', sessionToken: 'tok1', commitmentHex: 'c1', roleCode: 0, nodeId: 'n1', serverSlug: 's1', leafIndex: 0, createdAt: '' } as any,
+      identity: { id: '1', sk: 'abc', pseudonymId: 'p1', sessionToken: 'tok1', commitmentHex: 'c1', roleCode: 0, nodeId: 'n1', serverSlug: 's1', leafIndex: 0, createdAt: '' } as Record<string, unknown>,
       phase: 'ready',
     });
 
@@ -240,7 +250,7 @@ describe('identity store — API auth state sync', () => {
 
     // Pre-set permissions from a previous server
     useIdentityStore.setState({
-      permissions: { pseudonymId: 'old-p', participantType: 'HUMAN', active: true, capabilities: { can_voice: true, can_moderate: true, can_invite: true, can_federate: false, can_bridge: false } } as any,
+      permissions: { pseudonymId: 'old-p', participantType: 'HUMAN', active: true, capabilities: { can_voice: true, can_moderate: true, can_invite: true, can_federate: false, can_bridge: false } } as Record<string, unknown>,
       permissionsStatus: 'ready',
       permissionsPseudonymId: 'old-p',
     });
@@ -262,8 +272,8 @@ describe('identity store — API auth state sync', () => {
 
     // Simulate: permissions from server A (pseudonym 'p-old'), now on server B (pseudonym 'p-new')
     useIdentityStore.setState({
-      identity: { id: '1', sk: 'abc', pseudonymId: 'p-new', sessionToken: 'tok', commitmentHex: 'c1', roleCode: 0, nodeId: 'n1', serverSlug: 's2', leafIndex: 0, createdAt: '' } as any,
-      permissions: { pseudonymId: 'p-old', capabilities: { can_voice: true, can_moderate: true } } as any,
+      identity: { id: '1', sk: 'abc', pseudonymId: 'p-new', sessionToken: 'tok', commitmentHex: 'c1', roleCode: 0, nodeId: 'n1', serverSlug: 's2', leafIndex: 0, createdAt: '' } as Record<string, unknown>,
+      permissions: { pseudonymId: 'p-old', capabilities: { can_voice: true, can_moderate: true } } as Record<string, unknown>,
       permissionsStatus: 'ready',
       permissionsPseudonymId: 'p-old',
     });

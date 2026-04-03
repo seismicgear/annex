@@ -18,8 +18,7 @@ async fn start_server() -> String {
         let conn = pool.get().unwrap();
         annex_identity::MerkleTree::restore(&conn, 20).unwrap()
     };
-    let state =
-        common::build_app_state(pool, tree, annex_types::ServerPolicy::default());
+    let state = common::build_app_state(pool, tree, annex_types::ServerPolicy::default());
 
     let router = app(state);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
