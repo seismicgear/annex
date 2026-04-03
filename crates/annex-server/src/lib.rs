@@ -481,22 +481,27 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
         MerkleTree::restore(&conn, config.server.merkle_tree_depth)?
     };
 
-    // Get Server ID and Policy (auto-seed if no server row exists)
-    let (server_id, policy): (i64, ServerPolicy) = {
+    // Get Server ID, Policy, and persisted public URL (auto-seed if no server row exists)
+    let (server_id, policy, db_public_url): (i64, ServerPolicy, String) = {
         let conn = pool.get()?;
         let existing = conn
-            .query_row("SELECT id, policy_json FROM servers LIMIT 1", [], |row| {
-                let id: i64 = row.get(0)?;
-                let policy_json: String = row.get(1)?;
-                let policy: ServerPolicy = serde_json::from_str(&policy_json).map_err(|e| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        1,
-                        rusqlite::types::Type::Text,
-                        Box::new(e),
-                    )
-                })?;
-                Ok((id, policy))
-            })
+            .query_row(
+                "SELECT id, policy_json, public_url FROM servers LIMIT 1",
+                [],
+                |row| {
+                    let id: i64 = row.get(0)?;
+                    let policy_json: String = row.get(1)?;
+                    let public_url: String = row.get(2)?;
+                    let policy: ServerPolicy = serde_json::from_str(&policy_json).map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            1,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?;
+                    Ok((id, policy, public_url))
+                },
+            )
             .optional()?;
 
         match existing {
@@ -537,7 +542,7 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
                     }
                 }
 
-                (id, default_policy)
+                (id, default_policy, String::new())
             }
         }
     };
@@ -610,7 +615,12 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
         membership_vkey: Arc::new(membership_vkey),
         server_id,
         signing_key: Arc::new(signing_key),
-        public_url: Arc::new(RwLock::new(config.server.public_url.clone())),
+        // Config/env public_url takes precedence; fall back to DB-persisted value
+        public_url: Arc::new(RwLock::new(if config.server.public_url.is_empty() {
+            db_public_url
+        } else {
+            config.server.public_url.clone()
+        })),
         policy: Arc::new(RwLock::new(policy)),
         rate_limiter: RateLimiter::new(),
         connection_manager: api_ws::ConnectionManager::new(),

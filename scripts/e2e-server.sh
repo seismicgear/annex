@@ -12,6 +12,7 @@ cd "$REPO_ROOT"
 
 PID_FILE="/tmp/annex-e2e-server.pid"
 LOG_FILE="/tmp/annex-e2e-server.log"
+DB_DIR_FILE="/tmp/annex-e2e-server.dbdir"
 PORT=3000
 
 start_server() {
@@ -33,6 +34,7 @@ start_server() {
     # Use a fresh DB for each E2E run
     local db_dir
     db_dir=$(mktemp -d /tmp/annex-e2e-XXXXXX)
+    echo "$db_dir" > "$DB_DIR_FILE"
 
     echo "[e2e] Starting server (db: $db_dir, log: $LOG_FILE)..."
     ANNEX_CLIENT_DIR=client/dist \
@@ -74,6 +76,16 @@ stop_server() {
             kill -9 "$pid" 2>/dev/null || true
         fi
         rm -f "$PID_FILE"
+    fi
+
+    # Clean up temp database directory
+    if [ -f "$DB_DIR_FILE" ]; then
+        local db_dir
+        db_dir=$(cat "$DB_DIR_FILE")
+        if [ -d "$db_dir" ]; then
+            rm -rf "$db_dir"
+        fi
+        rm -f "$DB_DIR_FILE"
     fi
 
     # Also kill any stray server processes on the E2E port

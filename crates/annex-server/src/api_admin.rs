@@ -390,12 +390,33 @@ pub async fn set_public_url_handler(
         ));
     }
 
+    // Persist to database so the URL survives server restarts
+    let url_clone = url.clone();
+    let state_clone = state.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = state_clone
+            .pool
+            .get()
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
+        conn.execute(
+            "UPDATE servers SET public_url = ?1 WHERE id = ?2",
+            rusqlite::params![url_clone, state_clone.server_id],
+        )
+        .map_err(|e| {
+            ApiError::InternalServerError(format!("failed to persist public_url: {}", e))
+        })?;
+        Ok::<(), ApiError>(())
+    })
+    .await
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+
+    // Update in-memory state
     {
         let mut current = state.public_url.write().unwrap_or_else(|p| p.into_inner());
         *current = url.clone();
     }
 
-    tracing::info!(public_url = %url, "public URL updated via admin API");
+    tracing::info!(public_url = %url, "public URL updated via admin API (persisted)");
 
     Ok(AxumJson(serde_json::json!({ "status": "ok", "public_url": url })).into_response())
 }
