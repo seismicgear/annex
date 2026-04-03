@@ -50,6 +50,24 @@ vi.mock('@/lib/zk', () => {
       this.name = 'ZkProofAssetsError';
     }
   }
+  class ZkProofTimeoutError extends Error {
+    constructor(message: string) {
+      super(message);
+      this.name = 'ZkProofTimeoutError';
+    }
+  }
+  class ZkProofInFlightError extends Error {
+    constructor(message: string) {
+      super(message);
+      this.name = 'ZkProofInFlightError';
+    }
+  }
+  class ZkProofCancelledError extends Error {
+    constructor(message: string) {
+      super(message);
+      this.name = 'ZkProofCancelledError';
+    }
+  }
   return {
     initPoseidon: vi.fn(async () => {}),
     generateSecretKey: vi.fn(() => BigInt(42)),
@@ -59,6 +77,9 @@ vi.mock('@/lib/zk', () => {
     cancelMembershipProofGeneration: vi.fn(async () => {}),
     isProofGenerationInFlight: vi.fn(() => false),
     ZkProofAssetsError,
+    ZkProofTimeoutError,
+    ZkProofInFlightError,
+    ZkProofCancelledError,
   };
 });
 
@@ -166,6 +187,8 @@ vi.mock('@/lib/tauri', () => ({
   getPendingInvite: vi.fn(async () => null),
   checkFirstRunCompleted: vi.fn(async () => false),
   markFirstRunCompleted: vi.fn(async () => {}),
+  resetServerData: vi.fn(async () => {}),
+  clearLiveKitEnv: vi.fn(async () => {}),
 }));
 
 // ── Helpers ──

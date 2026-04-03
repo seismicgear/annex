@@ -227,11 +227,11 @@ export function SocialRecoveryDialog({ onClose }: Props) {
                   onChange={(e) => {
                     const val = parseInt(e.target.value, 10);
                     setTotalShards(val);
-                    // Ensure enough guardian slots
-                    while (guardians.length < val) {
-                      guardians.push({ pseudonymId: '', label: '' });
+                    // Ensure enough guardian slots (immutable update)
+                    if (guardians.length < val) {
+                      const extra = Array.from({ length: val - guardians.length }, () => ({ pseudonymId: '', label: '' }));
+                      setGuardians([...guardians, ...extra]);
                     }
-                    setGuardians([...guardians]);
                   }}
                 />
               </label>

@@ -108,11 +108,11 @@ pub async fn create_channel_handler(
     if payload.channel_id.len() > MAX_CHANNEL_ID_LEN || payload.channel_id.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
     }
-    if payload.name.len() > MAX_CHANNEL_NAME_LEN || payload.name.is_empty() {
+    if payload.name.len() > MAX_CHANNEL_NAME_LEN || payload.name.trim().is_empty() {
         return Err(StatusCode::BAD_REQUEST);
     }
     if let Some(ref t) = payload.topic {
-        if t.len() > MAX_TOPIC_LEN {
+        if t.len() > MAX_TOPIC_LEN || t.trim().is_empty() {
             return Err(StatusCode::BAD_REQUEST);
         }
     }

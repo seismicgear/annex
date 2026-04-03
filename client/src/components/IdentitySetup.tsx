@@ -40,6 +40,8 @@ export function IdentitySetup() {
     const file = fileInputRef.current?.files?.[0];
     if (!file) return;
     const text = await file.text();
+    // Reset input so the same file can be re-selected
+    if (fileInputRef.current) fileInputRef.current.value = '';
     await importBackup(text);
   };
 

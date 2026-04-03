@@ -825,6 +825,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                         reply_to,
                     } => {
                         // 0. Validate content length
+                        if content.trim().is_empty() {
+                            send_ws_error(&tx, "Message content must not be empty".to_string());
+                            continue;
+                        }
                         if content.len() > MAX_WS_MESSAGE_CONTENT_LEN {
                             send_ws_error(
                                 &tx,
@@ -956,6 +960,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                         message_id,
                         content,
                     } => {
+                        if content.trim().is_empty() {
+                            send_ws_error(&tx, "Message content must not be empty".to_string());
+                            continue;
+                        }
                         if content.len() > MAX_WS_MESSAGE_CONTENT_LEN {
                             send_ws_error(
                                 &tx,

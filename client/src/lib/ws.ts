@@ -168,6 +168,8 @@ export class AnnexWebSocket {
   disconnect(): void {
     this.intentionalClose = true;
     this.subscribedChannels.clear();
+    this.messageHandlers.clear();
+    this.statusHandlers.clear();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;

@@ -174,6 +174,16 @@ export function MessageInput() {
     setUploadError(null);
   };
 
+  // Revoke video object URLs on unmount to prevent memory leaks
+  useEffect(() => {
+    return () => {
+      if (preview?.dataUrl && isVideo(preview.file)) {
+        URL.revokeObjectURL(preview.dataUrl);
+      }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   if (!activeChannelId) return null;
 
   return (

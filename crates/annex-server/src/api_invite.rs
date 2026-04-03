@@ -484,9 +484,15 @@ pub async fn redeem_invite_handler(
 
         // Check expiration
         if let Some(ref exp) = expires_at {
-            let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-            if *exp < now {
-                return Err(ApiError::BadRequest("Invalid or expired invite code".to_string()));
+            if let Ok(exp_dt) =
+                chrono::NaiveDateTime::parse_from_str(exp, "%Y-%m-%d %H:%M:%S")
+            {
+                let now = chrono::Utc::now().naive_utc();
+                if exp_dt < now {
+                    return Err(ApiError::BadRequest(
+                        "Invalid or expired invite code".to_string(),
+                    ));
+                }
             }
         }
 
