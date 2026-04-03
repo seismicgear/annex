@@ -8,6 +8,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import * as api from '@/lib/api';
 import { useUsernameStore } from '@/stores/usernames';
+import { useServersStore } from '@/stores/servers';
 import type { AgentInfo, ServerSummary, ParticipantType } from '@/types';
 
 const TYPE_LABELS: Record<ParticipantType, string> = {
@@ -58,11 +59,13 @@ export function MemberList() {
   const [summary, setSummary] = useState<ServerSummary | null>(null);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [selectedAgent, setSelectedAgent] = useState<AgentInfo | null>(null);
+  const activeServerId = useServersStore((s) => s.activeServerId);
+  const getDisplayName = useUsernameStore((s) => s.getDisplayName);
 
   useEffect(() => {
     api.getServerSummary().then(setSummary).catch(console.error);
     api.getPublicAgents().then((r) => setAgents(r.agents)).catch(console.error);
-  }, []);
+  }, [activeServerId]);
 
   const handleAgentClick = useCallback((agent: AgentInfo) => {
     setSelectedAgent(agent);
@@ -92,7 +95,7 @@ export function MemberList() {
         <div className="agent-list">
           <h4>Active Agents</h4>
           {agents.map((agent) => {
-            const name = useUsernameStore.getState().getDisplayName(agent.pseudonym_id);
+            const name = getDisplayName(agent.pseudonym_id);
             return (
               <button
                 key={agent.pseudonym_id}

@@ -136,14 +136,16 @@ function MediaControls({
   const [deviceNotice, setDeviceNotice] = useState<string | null>(null);
   useEffect(() => {
     if (!navigator.mediaDevices?.addEventListener) return;
+    let noticeTimer: ReturnType<typeof setTimeout> | null = null;
     const handler = () => {
       setDeviceNotice('Audio/video device changed. Open Audio Settings to select.');
-      const timer = setTimeout(() => setDeviceNotice(null), 5000);
-      return () => clearTimeout(timer);
+      if (noticeTimer) clearTimeout(noticeTimer);
+      noticeTimer = setTimeout(() => setDeviceNotice(null), 5000);
     };
     navigator.mediaDevices.addEventListener('devicechange', handler);
     return () => {
       navigator.mediaDevices.removeEventListener('devicechange', handler);
+      if (noticeTimer) clearTimeout(noticeTimer);
     };
   }, []);
 

@@ -227,6 +227,8 @@ export function SocialRecoveryDialog({ onClose }: Props) {
                   onChange={(e) => {
                     const val = parseInt(e.target.value, 10);
                     setTotalShards(val);
+                    // Clamp threshold if it now exceeds the new total
+                    if (threshold > val) setThreshold(val);
                     // Ensure enough guardian slots (immutable update)
                     if (guardians.length < val) {
                       const extra = Array.from({ length: val - guardians.length }, () => ({ pseudonymId: '', label: '' }));

@@ -174,14 +174,19 @@ export function MessageInput() {
     setUploadError(null);
   };
 
+  // Track latest preview in a ref so the unmount cleanup can access
+  // the current value rather than the stale initial render closure.
+  const previewRef = useRef(preview);
+  previewRef.current = preview;
+
   // Revoke video object URLs on unmount to prevent memory leaks
   useEffect(() => {
     return () => {
-      if (preview?.dataUrl && isVideo(preview.file)) {
-        URL.revokeObjectURL(preview.dataUrl);
+      const p = previewRef.current;
+      if (p?.dataUrl && isVideo(p.file)) {
+        URL.revokeObjectURL(p.dataUrl);
       }
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   if (!activeChannelId) return null;

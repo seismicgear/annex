@@ -231,9 +231,11 @@ export function IdentitySettings({ onClose }: Props) {
     }
   };
 
-  if (!pseudonymId) return null;
+  const activeServer = useServersStore((s) =>
+    s.servers.find((srv) => srv.id === s.activeServerId) ?? null,
+  );
 
-  const activeServer = useServersStore.getState().getActiveServer();
+  if (!pseudonymId) return null;
 
   return (
     <div className="dialog-overlay" onClick={onClose}>
