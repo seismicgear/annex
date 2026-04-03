@@ -64,7 +64,7 @@ interface IdentityState {
   /** Generate ZK identity keys locally (no network requests). */
   generateLocalKeys: (roleCode: number) => Promise<void>;
   /** Register existing local keys with a server (requires network). */
-  registerWithServer: (serverSlug: string, inviteCode?: string) => Promise<void>;
+  registerWithServer: (serverSlug: string, inviteCode?: string, serverPassword?: string) => Promise<void>;
   /** Select an existing identity by ID. */
   selectIdentity: (id: string) => Promise<void>;
   /** Export current identity for backup. */
@@ -172,7 +172,7 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
     }
   },
 
-  registerWithServer: async (serverSlug: string, inviteCode?: string) => {
+  registerWithServer: async (serverSlug: string, inviteCode?: string, serverPassword?: string) => {
     if (zk.isProofGenerationInFlight()) {
       await zk.cancelMembershipProofGeneration('Proof generation cancelled before retry.');
     }
@@ -197,7 +197,7 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
 
       // Register commitment with server.
       set({ phase: 'registering', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
-      const reg = await api.register(identity.commitmentHex, identity.roleCode, identity.nodeId, inviteCode);
+      const reg = await api.register(identity.commitmentHex, identity.roleCode, identity.nodeId, inviteCode, serverPassword);
       identity.leafIndex = reg.leafIndex;
       await db.saveIdentity(identity);
 

@@ -36,6 +36,9 @@ pub struct RegisterRequest {
     /// Optional invite code for invite-only servers.
     #[serde(default, rename = "inviteCode")]
     pub invite_code: Option<String>,
+    /// Optional server password for password-protected servers.
+    #[serde(default, rename = "serverPassword")]
+    pub server_password: Option<String>,
 }
 
 /// Response body for successful registration.
@@ -227,6 +230,23 @@ pub async fn register_handler(
     } else {
         None
     };
+
+    // Enforce password access mode
+    if access_mode == "password" {
+        let expected_password = {
+            let policy = state
+                .policy
+                .read()
+                .map_err(|_| ApiError::InternalServerError("policy lock poisoned".to_string()))?;
+            policy.access_password.clone()
+        };
+        let provided = payload.server_password.as_deref().unwrap_or("").trim();
+        if provided.is_empty() || provided != expected_password {
+            return Err(ApiError::Forbidden(
+                "This server requires a password to register.".to_string(),
+            ));
+        }
+    }
 
     let result =
         tokio::task::spawn_blocking(move || {

@@ -208,6 +208,10 @@ pub struct ServerSummaryResponse {
     pub federation_peer_count: i64,
     /// Number of active agents.
     pub active_agent_count: i64,
+    /// Server access mode: "public", "invite_only", or "password".
+    /// Exposed so clients can show appropriate UI (e.g., password prompt)
+    /// before attempting registration.
+    pub access_mode: String,
 }
 
 /// Handler for `GET /api/public/server/summary`.
@@ -324,6 +328,13 @@ pub async fn get_server_summary_handler(
         active_agent_count,
     ) = summary;
 
+    let access_mode = state
+        .policy
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .access_mode
+        .clone();
+
     Ok(Json(ServerSummaryResponse {
         slug,
         label,
@@ -334,6 +345,7 @@ pub async fn get_server_summary_handler(
         channel_count,
         federation_peer_count,
         active_agent_count,
+        access_mode,
     }))
 }
 

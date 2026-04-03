@@ -164,6 +164,8 @@ export interface ServerSummary {
   channel_count: number;
   federation_peer_count: number;
   active_agent_count: number;
+  /** Server access mode: "public", "invite_only", or "password". */
+  access_mode?: AccessMode;
 }
 
 /** Graph node for presence. */

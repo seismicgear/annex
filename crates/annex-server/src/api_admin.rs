@@ -54,6 +54,18 @@ pub async fn update_policy_handler(
         ));
     }
 
+    // Validate access_mode to prevent typos from silently breaking access control.
+    // An unrecognized value would be treated as "public" by the register handler,
+    // potentially opening the server to unrestricted registrations.
+    const VALID_ACCESS_MODES: &[&str] = &["public", "invite_only", "password"];
+    if !VALID_ACCESS_MODES.contains(&new_policy.access_mode.as_str()) {
+        return Err(ApiError::BadRequest(format!(
+            "invalid access_mode '{}'. Must be one of: {}",
+            new_policy.access_mode,
+            VALID_ACCESS_MODES.join(", ")
+        )));
+    }
+
     let version_id = Uuid::new_v4().to_string();
     let policy_json = serde_json::to_string(&new_policy)
         .map_err(|e| ApiError::BadRequest(format!("failed to serialize policy: {}", e)))?;
