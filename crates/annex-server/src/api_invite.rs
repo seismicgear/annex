@@ -503,12 +503,17 @@ pub async fn redeem_invite_handler(
             }
         }
 
-        // Increment use_count
-        conn.execute(
-            "UPDATE invite_codes SET use_count = use_count + 1 WHERE id = ?1",
+        // Atomically increment use_count. The WHERE clause re-checks
+        // max_uses to prevent TOCTOU races between concurrent requests.
+        let updated = conn.execute(
+            "UPDATE invite_codes SET use_count = use_count + 1 WHERE id = ?1 \
+             AND (max_uses IS NULL OR use_count < max_uses)",
             [invite_id],
         )
         .map_err(|e| ApiError::InternalServerError(format!("failed to update invite: {}", e)))?;
+        if updated == 0 {
+            return Err(ApiError::BadRequest("Invalid or expired invite code".to_string()));
+        }
 
         // Fetch server slug and label
         let (slug, label): (String, String) = conn

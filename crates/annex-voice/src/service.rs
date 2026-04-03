@@ -176,11 +176,21 @@ impl VoiceService {
     }
 
     /// Returns the number of participants currently in a room.
-    /// Returns 0 if the room does not exist.
+    /// Returns 0 if the room does not exist or is unreachable.
     pub async fn participant_count(&self, room_name: &str) -> Result<u32, VoiceError> {
         match self.room_client.list_participants(room_name).await {
             Ok(participants) => Ok(participants.len() as u32),
-            Err(_) => Ok(0), // Room doesn't exist yet
+            Err(e) => {
+                // Log at debug level since "room not found" is a normal case
+                // for rooms that haven't been created yet. Genuine errors
+                // (network, auth) will be visible with RUST_LOG=debug.
+                tracing::debug!(
+                    room = room_name,
+                    error = %e,
+                    "list_participants failed (room may not exist yet), returning 0"
+                );
+                Ok(0)
+            }
         }
     }
 }
