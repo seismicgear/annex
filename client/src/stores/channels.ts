@@ -294,6 +294,11 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
         messages: [...older.reverse(), ...state.messages],
         hasMoreMessages: older.length >= PAGE_SIZE,
       }));
+    } catch (err) {
+      console.warn('[channels] loadOlderMessages failed:', err);
+      // Stop trying to load more if the request failed to prevent
+      // infinite retry loops on scroll.
+      set({ hasMoreMessages: false });
     } finally {
       set({ loadingOlder: false });
     }
