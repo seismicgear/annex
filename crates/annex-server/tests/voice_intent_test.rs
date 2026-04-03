@@ -8,6 +8,8 @@
 //! - Voice client creation and audio publishing
 //! - Voice session read/write lock interaction
 
+mod common;
+
 use annex_channels::{add_member, create_channel, CreateChannelParams};
 use annex_db::{create_pool, run_migrations, DbRuntimeSettings};
 use annex_identity::MerkleTree;
@@ -19,23 +21,6 @@ use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, RwLock};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
-
-fn load_vkey() -> Arc<annex_identity::zk::VerifyingKey<annex_identity::zk::Bn254>> {
-    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let path1 = manifest.join("../../zk/keys/membership_vkey.json");
-    let path2 = std::path::Path::new("zk/keys/membership_vkey.json");
-
-    let vkey_json = std::fs::read_to_string(&path1).or_else(|_| std::fs::read_to_string(path2));
-
-    match vkey_json {
-        Ok(json) => {
-            let vk =
-                annex_identity::zk::parse_verification_key(&json).expect("failed to parse vkey");
-            Arc::new(vk)
-        }
-        Err(_) => Arc::new(annex_identity::zk::generate_dummy_vkey()),
-    }
-}
 
 /// Shared setup that creates an AppState with a mock TTS binary and model file.
 ///
@@ -112,7 +97,7 @@ async fn setup_app_with_mock_tts(
     let state = AppState {
         pool: pool.clone(),
         merkle_tree: Arc::new(Mutex::new(tree)),
-        membership_vkey: load_vkey(),
+        membership_vkey: common::load_vkey_or_dummy(),
         server_id: 1,
         signing_key: Arc::new(ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng)),
         public_url: std::sync::Arc::new(std::sync::RwLock::new(
@@ -433,7 +418,7 @@ async fn test_voice_intent_tts_profile_not_found() {
     let state = AppState {
         pool: pool.clone(),
         merkle_tree: Arc::new(Mutex::new(tree)),
-        membership_vkey: load_vkey(),
+        membership_vkey: common::load_vkey_or_dummy(),
         server_id: 1,
         signing_key: Arc::new(ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng)),
         public_url: std::sync::Arc::new(std::sync::RwLock::new(

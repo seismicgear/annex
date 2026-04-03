@@ -1,3 +1,5 @@
+mod common;
+
 use annex_channels::{create_channel, is_member, list_messages, CreateChannelParams};
 use annex_db::{create_pool, run_migrations, DbRuntimeSettings};
 use annex_identity::MerkleTree;
@@ -15,22 +17,6 @@ use std::sync::{Arc, Mutex, RwLock};
 use tokio::net::TcpListener;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use tower::ServiceExt;
-
-// Helper to load verification key
-fn load_vkey() -> Arc<annex_identity::zk::VerifyingKey<annex_identity::zk::Bn254>> {
-    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    // If running from crates/annex-server
-    let path1 = manifest.join("../../zk/keys/membership_vkey.json");
-    // If running from root
-    let path2 = std::path::Path::new("zk/keys/membership_vkey.json");
-
-    let vkey_json = std::fs::read_to_string(&path1)
-        .or_else(|_| std::fs::read_to_string(path2))
-        .unwrap_or_else(|_| panic!("failed to read vkey from {:?} or {:?}", path1, path2));
-
-    let vk = annex_identity::zk::parse_verification_key(&vkey_json).expect("failed to parse vkey");
-    Arc::new(vk)
-}
 
 async fn setup_app() -> (axum::Router, annex_db::DbPool) {
     let db_id = uuid::Uuid::new_v4();
@@ -53,7 +39,7 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool) {
     let state = AppState {
         pool: pool.clone(),
         merkle_tree: Arc::new(Mutex::new(tree)),
-        membership_vkey: load_vkey(),
+        membership_vkey: common::load_vkey_or_dummy(),
         server_id: 1,
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,
@@ -293,7 +279,7 @@ async fn test_ws_subscription_enforcement() {
     let state = AppState {
         pool: pool.clone(),
         merkle_tree: Arc::new(Mutex::new(tree)),
-        membership_vkey: load_vkey(),
+        membership_vkey: common::load_vkey_or_dummy(),
         server_id: 1,
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,
@@ -445,7 +431,7 @@ async fn test_ws_message_enforcement() {
     let state = AppState {
         pool: pool.clone(),
         merkle_tree: Arc::new(Mutex::new(tree)),
-        membership_vkey: load_vkey(),
+        membership_vkey: common::load_vkey_or_dummy(),
         server_id: 1,
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,

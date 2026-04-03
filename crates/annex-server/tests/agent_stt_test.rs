@@ -1,3 +1,5 @@
+mod common;
+
 use annex_channels::create_channel;
 use annex_db::{create_pool, run_migrations, DbRuntimeSettings};
 use annex_identity::MerkleTree;
@@ -9,10 +11,6 @@ use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::{Arc, Mutex, RwLock};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
-
-fn load_vkey() -> Arc<annex_identity::zk::VerifyingKey<annex_identity::zk::Bn254>> {
-    Arc::new(annex_identity::zk::generate_dummy_vkey())
-}
 
 async fn setup_app_with_mock_stt(
     mock_stt_path: std::path::PathBuf,
@@ -45,7 +43,7 @@ async fn setup_app_with_mock_stt(
     let state = AppState {
         pool: pool.clone(),
         merkle_tree: Arc::new(Mutex::new(tree)),
-        membership_vkey: load_vkey(),
+        membership_vkey: common::load_vkey_or_dummy(),
         server_id: 1,
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,

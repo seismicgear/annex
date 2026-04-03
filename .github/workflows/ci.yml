@@ -5,14 +5,49 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
 
 jobs:
-  check:
-    name: Check
+  # Fast server checks — no WebKitGTK needed, matches what Claude Code runs locally
+  check-server:
+    name: Check (Server)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node.js (for ZK key generation)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: zk/package-lock.json
+
+      - name: Generate ZK keys
+        run: |
+          cd zk && npm ci
+          node scripts/build-circuits.js
+          node scripts/setup-groth16.js
+
+      - name: cargo fmt
+        run: cargo fmt --all --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --exclude annex-desktop --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace --exclude annex-desktop
+
+  # Desktop build check — requires WebKitGTK and system dependencies
+  check-desktop:
+    name: Check (Desktop)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,12 +67,11 @@ jobs:
             libgtk-3-dev \
             libsoup-3.0-dev \
             javascriptcoregtk-4.1-dev \
-            libpipewire-0.3-dev \
-            libxdg-desktop-portal-dev
+            libpipewire-0.3-dev
 
       - name: Verify WebKitGTK version (>= 2.40 required for WebRTC)
         run: |
-          version=$(pkg-config --modversion webkitgtk-4.1)
+          version=$(pkg-config --modversion webkit2gtk-4.1)
           echo "WebKitGTK version: $version"
           major=$(echo "$version" | cut -d. -f1)
           minor=$(echo "$version" | cut -d. -f2)
@@ -46,17 +80,27 @@ jobs:
             exit 1
           fi
 
-      - name: cargo fmt
-        run: cargo fmt --all --check
-
-      - name: cargo clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-      - name: cargo test
-        run: cargo test --all
-
       - name: cargo build (release)
         run: cargo build --release
+
+  # Frontend tests
+  test-frontend:
+    name: Frontend Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: client/package-lock.json
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run lint
 
   build-windows:
     name: Build (Windows)

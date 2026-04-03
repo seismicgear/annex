@@ -1,0 +1,10 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "command": "bash scripts/claude-setup.sh",
+        "timeout": 300
+      }
+    ]
+  }
+}

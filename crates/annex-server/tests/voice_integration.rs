@@ -1,3 +1,5 @@
+mod common;
+
 use annex_channels::{add_member, create_channel};
 use annex_db::{create_pool, run_migrations, DbRuntimeSettings};
 use annex_identity::MerkleTree;
@@ -12,11 +14,6 @@ use serde_json::Value;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, RwLock};
 use tower::ServiceExt;
-
-fn load_vkey() -> Arc<annex_identity::zk::VerifyingKey<annex_identity::zk::Bn254>> {
-    let vk = annex_identity::zk::generate_dummy_vkey();
-    Arc::new(vk)
-}
 
 async fn setup_app() -> (axum::Router, annex_db::DbPool) {
     let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
@@ -44,7 +41,7 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool) {
     let state = AppState {
         pool: pool.clone(),
         merkle_tree: Arc::new(Mutex::new(tree)),
-        membership_vkey: load_vkey(),
+        membership_vkey: common::load_vkey_or_dummy(),
         server_id: 1,
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,
@@ -347,7 +344,7 @@ async fn setup_app_voice_disabled() -> axum::Router {
     let state = AppState {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
-        membership_vkey: load_vkey(),
+        membership_vkey: common::load_vkey_or_dummy(),
         server_id: 1,
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,
@@ -525,7 +522,7 @@ async fn test_voice_join_not_configured_returns_structured_error() {
     let state = AppState {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
-        membership_vkey: load_vkey(),
+        membership_vkey: common::load_vkey_or_dummy(),
         server_id: 1,
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,

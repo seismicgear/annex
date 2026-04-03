@@ -1,3 +1,5 @@
+mod common;
+
 use annex_db::{create_pool, DbRuntimeSettings};
 use annex_identity::{generate_commitment, MerkleTree, RoleCode};
 use annex_server::{
@@ -23,21 +25,6 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex, RwLock};
 use tower::ServiceExt;
-
-fn load_vkey() -> Arc<annex_identity::zk::VerifyingKey<annex_identity::zk::Bn254>> {
-    let vkey_path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../zk/keys/membership_vkey.json");
-    // If running in CI or stripped env, ensure keys exist or skip
-    if !vkey_path.exists() {
-        panic!(
-            "ZK keys not found at {:?}. Run 'npm run setup' in zk/ directory first.",
-            vkey_path
-        );
-    }
-    let vkey_json = fs::read_to_string(vkey_path).expect("failed to read vkey");
-    let vk = annex_identity::zk::parse_verification_key(&vkey_json).expect("failed to parse vkey");
-    Arc::new(vk)
-}
 
 #[tokio::test]
 async fn test_agent_connection_flow_end_to_end() {
@@ -69,7 +56,7 @@ async fn test_agent_connection_flow_end_to_end() {
     let state = AppState {
         pool: pool.clone(),
         merkle_tree: Arc::new(Mutex::new(tree)),
-        membership_vkey: load_vkey(),
+        membership_vkey: common::load_vkey_or_dummy(),
         server_id: 1,
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,

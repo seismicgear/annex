@@ -1,3 +1,5 @@
+mod common;
+
 use annex_db::{create_pool, DbRuntimeSettings};
 use annex_identity::MerkleTree;
 use annex_server::{app, middleware::RateLimiter, AppState};
@@ -14,26 +16,6 @@ use axum::{
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, RwLock};
 use tower::ServiceExt; // for oneshot
-
-fn load_vkey() -> Arc<annex_identity::zk::VerifyingKey<annex_identity::zk::Bn254>> {
-    // This path assumes running from workspace root or crate root correctly resolved by cargo
-    // The test in api_registry uses this path:
-    let vkey_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../zk/keys/membership_vkey.json");
-
-    // If the file doesn't exist (e.g. fresh clone), we might need to regenerate or mock.
-    // However, existing tests rely on it. We assume it exists or is generated.
-    // If it fails, CI/dev env needs to run `npm run setup`.
-    if !vkey_path.exists() {
-        // Fallback or panic? Existing tests panic.
-        panic!("vkey not found at {:?}", vkey_path);
-    }
-
-    let vkey_json = std::fs::read_to_string(vkey_path).expect("failed to read vkey");
-    annex_identity::zk::parse_verification_key(&vkey_json)
-        .map(Arc::new)
-        .expect("failed to parse vkey")
-}
 
 async fn setup_app() -> (axum::Router, annex_db::DbPool) {
     let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
@@ -57,7 +39,7 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool) {
     let state = AppState {
         pool: pool.clone(),
         merkle_tree: Arc::new(Mutex::new(tree)),
-        membership_vkey: load_vkey(),
+        membership_vkey: common::load_vkey_or_dummy(),
         server_id: 1,
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,
