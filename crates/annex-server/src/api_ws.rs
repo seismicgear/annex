@@ -1451,14 +1451,27 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                         }
                     }
                     IncomingMessage::Typing { channel_id } => {
-                        // Broadcast typing indicator to all channel subscribers except the typer.
-                        let out = OutgoingMessage::Typing {
-                            channel_id: channel_id.clone(),
-                            pseudonym_id: pseudonym.clone(),
-                        };
-                        if let Ok(json) = serde_json::to_string(&out) {
-                            // Use broadcast but the typer will ignore their own typing events
-                            state.connection_manager.broadcast(&channel_id, json).await;
+                        // Verify membership before broadcasting typing indicator
+                        match check_ws_membership(
+                            state.pool.clone(),
+                            state.server_id,
+                            &channel_id,
+                            &pseudonym,
+                        )
+                        .await
+                        {
+                            MembershipResult::Allowed => {
+                                let out = OutgoingMessage::Typing {
+                                    channel_id: channel_id.clone(),
+                                    pseudonym_id: pseudonym.clone(),
+                                };
+                                if let Ok(json) = serde_json::to_string(&out) {
+                                    state.connection_manager.broadcast(&channel_id, json).await;
+                                }
+                            }
+                            _ => {
+                                // Silently ignore typing from non-members
+                            }
                         }
                     }
                     IncomingMessage::Resume { channel_id, last_message_id } => {

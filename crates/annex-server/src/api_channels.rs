@@ -962,9 +962,14 @@ pub async fn get_message_edits_handler(
 }
 
 /// GET /api/messages/search
+/// GET /api/messages/search
+///
+/// Searches messages by content. When `channel_id` is specified, enforces
+/// channel membership to prevent leaking private channel data. When omitted,
+/// searches only channels the user is a member of.
 pub async fn search_messages_handler(
     Extension(state): Extension<Arc<AppState>>,
-    Extension(IdentityContext(_identity)): Extension<IdentityContext>,
+    Extension(IdentityContext(identity)): Extension<IdentityContext>,
     Query(params): Query<SearchParams>,
 ) -> Result<Json<Vec<Message>>, StatusCode> {
     if params.q.trim().is_empty() {
@@ -974,16 +979,69 @@ pub async fn search_messages_handler(
         return Err(StatusCode::BAD_REQUEST);
     }
 
+    // If a specific channel is requested, verify membership
+    if let Some(ref cid) = params.channel_id {
+        let member = tokio::task::spawn_blocking({
+            let pool = state.pool.clone();
+            let server_id = state.server_id;
+            let cid = cid.clone();
+            let pid = identity.pseudonym_id.clone();
+            move || {
+                let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                is_member(&conn, server_id, &cid, &pid)
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+            }
+        })
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+
+        if !member {
+            return Err(StatusCode::FORBIDDEN);
+        }
+    }
+
     let messages = tokio::task::spawn_blocking({
         let pool = state.pool.clone();
         let server_id = state.server_id;
         let query = params.q.clone();
         let channel_id = params.channel_id.clone();
+        let pseudonym_id = identity.pseudonym_id.clone();
         let limit = params.limit.unwrap_or(20).min(50);
         move || {
             let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            search_messages(&conn, server_id, channel_id.as_deref(), &query, limit)
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+
+            // When no channel_id is specified, only search channels the user is a member of
+            if channel_id.is_none() {
+                // Get all channels the user is a member of
+                let mut stmt = conn.prepare(
+                    "SELECT channel_id FROM channel_members WHERE server_id = ?1 AND pseudonym_id = ?2"
+                ).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                let member_channels: Vec<String> = stmt.query_map(
+                    rusqlite::params![server_id, pseudonym_id],
+                    |row| row.get(0),
+                ).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+                .filter_map(|r| r.ok())
+                .collect();
+
+                if member_channels.is_empty() {
+                    return Ok(vec![]);
+                }
+
+                // Search across all member channels
+                let mut all_results = Vec::new();
+                for cid in &member_channels {
+                    let mut results = search_messages(&conn, server_id, Some(cid), &query, limit)
+                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                    all_results.append(&mut results);
+                }
+                // Sort by created_at descending and limit
+                all_results.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+                all_results.truncate(limit as usize);
+                Ok(all_results)
+            } else {
+                search_messages(&conn, server_id, channel_id.as_deref(), &query, limit)
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+            }
         }
     })
     .await

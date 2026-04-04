@@ -163,12 +163,10 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
   },
 
   selectChannel: async (pseudonymId: string, channelId: string) => {
-    const { ws, activeChannelId: prevChannelId } = get();
-
-    // Unsubscribe from the previous channel's real-time updates.
-    if (ws && prevChannelId && prevChannelId !== channelId) {
-      ws.unsubscribe(prevChannelId);
-    }
+    const { ws } = get();
+    // Note: we intentionally do NOT unsubscribe from the previous channel.
+    // Staying subscribed to all joined channels lets us receive messages
+    // for non-active channels and increment unread counts accurately.
 
     set({ activeChannelId: channelId, messages: [], loadingOlder: false, hasMoreMessages: true, historyLoading: true, historyError: null, composerError: null, typingUsers: [], replyToMessage: null });
 
