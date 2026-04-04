@@ -103,7 +103,8 @@ pub async fn publish_handler(
             }
 
             // 6. Extract redacted topics from capability contract and enforce
-            let redacted_topics = extract_redacted_topics(&capability_contract_json);
+            let redacted_topics = extract_redacted_topics(&capability_contract_json)
+                .map_err(ApiError::InternalServerError)?;
             check_redacted_topics(&bundle, &redacted_topics)
                 .map_err(|e| ApiError::Forbidden(e.to_string()))?;
 
@@ -601,19 +602,18 @@ pub async fn get_subscription_handler(
 ///
 /// The `redacted_topics` field may or may not be present in the stored JSON
 /// (backward compatibility with contracts created before this field existed).
-/// If the JSON is entirely unparseable (data corruption), logs a warning and
-/// returns an empty list. This is a fail-open decision: corrupted contracts
-/// lose their redaction restrictions. Operators should monitor for this warning
-/// and repair the underlying data.
-fn extract_redacted_topics(contract_json: &str) -> Vec<String> {
+/// If the JSON is entirely unparseable (data corruption), returns an error
+/// to fail closed — preventing unauthorized knowledge transfer through
+/// topics that should be redacted.
+fn extract_redacted_topics(contract_json: &str) -> Result<Vec<String>, String> {
     serde_json::from_str::<annex_vrp::VrpCapabilitySharingContract>(contract_json)
         .map(|c| c.redacted_topics)
-        .unwrap_or_else(|e| {
+        .map_err(|e| {
             tracing::warn!(
-                "corrupted capability contract JSON, redacted topics unavailable: {}",
+                "corrupted capability contract JSON, rejecting publish: {}",
                 e
             );
-            Vec::new()
+            format!("corrupted capability contract: {}", e)
         })
 }
 
@@ -1145,36 +1145,33 @@ mod tests {
     #[test]
     fn test_extract_redacted_topics_with_field() {
         let json = r#"{"required_capabilities":[],"offered_capabilities":[],"redacted_topics":["politics","finance"]}"#;
-        let topics = extract_redacted_topics(json);
+        let topics = extract_redacted_topics(json).unwrap();
         assert_eq!(topics, vec!["politics", "finance"]);
     }
 
     #[test]
     fn test_extract_redacted_topics_without_field() {
         let json = r#"{"required_capabilities":[],"offered_capabilities":[]}"#;
-        let topics = extract_redacted_topics(json);
+        let topics = extract_redacted_topics(json).unwrap();
         assert!(topics.is_empty());
     }
 
     #[test]
     fn test_extract_redacted_topics_invalid_json() {
-        // Corrupted JSON returns empty vec (fail-open) and logs a warning.
-        let topics = extract_redacted_topics("not json");
-        assert!(topics.is_empty());
+        // Corrupted JSON now fails closed (returns Err) to prevent bypass.
+        assert!(extract_redacted_topics("not json").is_err());
     }
 
     #[test]
     fn test_extract_redacted_topics_truncated_json() {
         // Simulates data corruption: truncated JSON string.
-        let topics = extract_redacted_topics(r#"{"required_capabilities":["#);
-        assert!(topics.is_empty());
+        assert!(extract_redacted_topics(r#"{"required_capabilities":["#).is_err());
     }
 
     #[test]
     fn test_extract_redacted_topics_wrong_type() {
         // JSON is valid but wrong shape — field is a string, not array.
-        let topics = extract_redacted_topics(r#"{"redacted_topics": "not_an_array"}"#);
-        assert!(topics.is_empty());
+        assert!(extract_redacted_topics(r#"{"redacted_topics": "not_an_array"}"#).is_err());
     }
 
     #[test]

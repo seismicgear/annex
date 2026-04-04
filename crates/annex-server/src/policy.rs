@@ -270,12 +270,12 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
                     "SELECT fa.id, i.base_url, fa.alignment_status, fa.transfer_scope, fa.remote_handshake_json, fa.remote_instance_id
                      FROM federation_agreements fa
                      JOIN instances i ON fa.remote_instance_id = i.id
-                     WHERE fa.active = 1",
+                     WHERE fa.active = 1 AND fa.local_server_id = ?1",
                 )
                 .map_err(|e| ApiError::InternalServerError(format!("prepare failed: {}", e)))?;
 
             let iter = stmt
-                .query_map([], |row| {
+                .query_map(rusqlite::params![state_clone.server_id], |row| {
                     Ok((
                         row.get::<_, i64>(0)?,
                         row.get::<_, String>(1)?,

@@ -948,7 +948,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
 
                         match res {
                             Ok(Ok((message, is_federated))) => {
-                                // Broadcast via WebSocket (camelCase payload)
+                                // Broadcast via WebSocket (camelCase payload).
+                                // clientRequestId is included in the broadcast for
+                                // the sender's pending-send correlation. Other clients
+                                // ignore unrecognized IDs (random UUIDs, no information leak).
                                 let mut ws_payload: WsMessagePayload = message.clone().into();
                                 ws_payload.client_request_id = client_request_id.clone();
                                 let broadcast_channel_id = message.channel_id.clone();
@@ -1183,7 +1186,11 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                             continue;
                         }
 
-                        // Validate text length before expensive TTS synthesis
+                        // Validate text before expensive TTS synthesis
+                        if text.trim().is_empty() {
+                            send_ws_error(&tx, "VoiceIntent text must not be empty".to_string());
+                            continue;
+                        }
                         if text.len() > MAX_VOICE_INTENT_TEXT_LEN {
                             send_ws_error(
                                 &tx,
