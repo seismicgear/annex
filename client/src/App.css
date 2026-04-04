@@ -3694,3 +3694,12 @@
   font-weight: 700;
   color: var(--text-primary, #e0e0e0);
 }
+
+/* ── Edit Countdown ── */
+
+.edit-countdown {
+  font-size: 0.6rem;
+  color: var(--warning-color, #f0ad4e);
+  margin-left: 0.2rem;
+  font-weight: 600;
+}

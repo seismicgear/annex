@@ -150,27 +150,34 @@ function MessageBubble({
   const [canModify, setCanModify] = useState(
     isSelf && !isDeleted && isWithinEditWindow(message.created_at),
   );
+  const [editSecondsLeft, setEditSecondsLeft] = useState<number | null>(null);
   const editInputRef = useRef<HTMLTextAreaElement>(null);
 
-  // Timer: update canModify when window expires
+  // Timer: update canModify when window expires, show countdown in last 30s
   useEffect(() => {
     if (!isSelf || isDeleted) {
       setCanModify(false);
+      setEditSecondsLeft(null);
       return;
     }
-    if (!isWithinEditWindow(message.created_at)) {
+    const created = parseMessageTimestamp(message.created_at);
+    if (isNaN(created) || !isWithinEditWindow(message.created_at)) {
       setCanModify(false);
+      setEditSecondsLeft(null);
       return;
     }
     setCanModify(true);
-    const created = parseMessageTimestamp(message.created_at);
-    if (isNaN(created)) {
-      setCanModify(false);
-      return;
-    }
-    const remaining = EDIT_WINDOW_MS - (Date.now() - created);
-    const timer = setTimeout(() => setCanModify(false), remaining);
-    return () => clearTimeout(timer);
+    const tick = () => {
+      const remaining = Math.max(0, Math.ceil((EDIT_WINDOW_MS - (Date.now() - created)) / 1000));
+      setEditSecondsLeft(remaining <= 30 ? remaining : null);
+      if (remaining <= 0) {
+        setCanModify(false);
+        setEditSecondsLeft(null);
+      }
+    };
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
   }, [isSelf, isDeleted, message.created_at]);
 
   // Focus edit input when editing starts and place cursor at end.
@@ -286,11 +293,14 @@ function MessageBubble({
         <span className="timestamp">{time}</span>
         {canModify && !editing && (
           <span className="message-actions">
-            <button className="msg-action-btn edit-btn" onClick={handleEdit} title="Edit message">
+            <button className="msg-action-btn edit-btn" onClick={handleEdit} title={editSecondsLeft !== null ? `Edit (${editSecondsLeft}s left)` : 'Edit message'}>
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
                 <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
               </svg>
+              {editSecondsLeft !== null && (
+                <span className="edit-countdown">{editSecondsLeft}s</span>
+              )}
             </button>
             <button
               className={`msg-action-btn delete-btn ${confirmingDelete ? 'confirming' : ''}`}
