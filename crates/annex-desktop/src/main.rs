@@ -1387,9 +1387,8 @@ fn set_dark_window_border(window: &tauri::WebviewWindow) {
 /// Tri-state media readiness: the runtime permission model on desktop webviews
 /// cannot always be verified from Rust, so we expose `unknown` instead of
 /// falsely claiming `true`.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
-#[allow(dead_code)] // Variants used for serialization completeness
 enum MediaReadiness {
     /// Permission verified or platform guarantees availability.
     Available,
