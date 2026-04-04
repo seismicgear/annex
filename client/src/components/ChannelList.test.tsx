@@ -58,6 +58,7 @@ describe('ChannelList', () => {
       selectChannel: vi.fn(),
       joinChannel: vi.fn(async () => {}),
       leaveChannel: vi.fn(async () => {}),
+      unreadCounts: {},
     };
   });
 

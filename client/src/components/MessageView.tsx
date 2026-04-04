@@ -261,7 +261,7 @@ function MessageBubble({
   );
 
   return (
-    <div className={`message ${isSelf ? 'self' : ''} ${isDeleted ? 'deleted' : ''}`}>
+    <div className={`message ${isSelf ? 'self' : ''} ${isDeleted ? 'deleted' : ''} ${message.pending ? 'pending' : ''} ${message.failed ? 'failed' : ''}`}>
       <div className="message-header">
         {avatar ? (
           <img className="message-avatar" src={avatar} alt="" />
@@ -307,6 +307,24 @@ function MessageBubble({
                 </svg>
               )}
             </button>
+          </span>
+        )}
+        {message.pending && (
+          <span className="message-status pending-status">sending...</span>
+        )}
+        {message.failed && (
+          <span className="message-status failed-status">
+            failed
+            <button className="msg-retry-btn" onClick={() => {
+              if (message.clientRequestId) {
+                useChannelsStore.getState().retryMessage(message.clientRequestId, pseudonymId);
+              }
+            }} title="Retry sending">retry</button>
+            <button className="msg-dismiss-btn" onClick={() => {
+              if (message.clientRequestId) {
+                useChannelsStore.getState().dismissFailedMessage(message.clientRequestId);
+              }
+            }} title="Dismiss">dismiss</button>
           </span>
         )}
       </div>
@@ -423,7 +441,7 @@ function MessageBubble({
 
 export function MessageView() {
   const identity = useIdentityStore((s) => s.identity);
-  const { messages, activeChannelId, loadOlderMessages, loadingOlder, hasMoreMessages, historyLoading, historyError } = useChannelsStore();
+  const { messages, activeChannelId, loadOlderMessages, loadingOlder, hasMoreMessages, historyLoading, historyError, typingUsers } = useChannelsStore();
   const selectChannel = useChannelsStore((s) => s.selectChannel);
   const loadVisibleUsernames = useUsernameStore((s) => s.loadVisibleUsernames);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -532,7 +550,7 @@ export function MessageView() {
       <div className="message-view" ref={containerRef} onScroll={handleScroll}>
         {messages.map((msg: Message) => (
           <MessageBubble
-            key={msg.message_id}
+            key={msg.clientRequestId ?? msg.message_id}
             message={msg}
             isSelf={msg.sender_pseudonym === identity?.pseudonymId}
             pseudonymId={identity?.pseudonymId ?? ''}
@@ -540,6 +558,15 @@ export function MessageView() {
             onImageClick={setLightboxUrl}
           />
         ))}
+        {typingUsers.length > 0 && (
+          <div className="typing-indicator">
+            {typingUsers.length === 1
+              ? `${typingUsers[0].pseudonymId.slice(0, 12)}... is typing...`
+              : typingUsers.length <= 3
+                ? `${typingUsers.map((u) => u.pseudonymId.slice(0, 8) + '...').join(', ')} are typing...`
+                : 'Several people are typing...'}
+          </div>
+        )}
         <div ref={bottomRef} />
       </div>
 

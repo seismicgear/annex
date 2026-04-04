@@ -3624,3 +3624,73 @@
   padding: 0.75rem;
   font-size: 0.95rem;
 }
+
+/* ── Optimistic / Failed Message States ── */
+
+.message.pending {
+  opacity: 0.6;
+}
+
+.message.failed {
+  border-left: 3px solid var(--error-color, #e63946);
+  opacity: 0.8;
+}
+
+.message-status {
+  font-size: 0.7rem;
+  margin-left: 0.5rem;
+}
+
+.pending-status {
+  color: var(--text-muted, #888);
+  font-style: italic;
+}
+
+.failed-status {
+  color: var(--error-color, #e63946);
+}
+
+.msg-retry-btn, .msg-dismiss-btn {
+  background: none;
+  border: none;
+  color: var(--persona-accent, #e63946);
+  cursor: pointer;
+  font-size: 0.7rem;
+  text-decoration: underline;
+  margin-left: 0.3rem;
+  padding: 0;
+}
+
+.msg-dismiss-btn {
+  color: var(--text-muted, #888);
+}
+
+/* ── Typing Indicator ── */
+
+.typing-indicator {
+  font-size: 0.75rem;
+  color: var(--text-muted, #888);
+  padding: 0.25rem 1rem;
+  font-style: italic;
+  min-height: 1.25rem;
+}
+
+/* ── Unread Badge ── */
+
+.unread-badge {
+  background: var(--persona-accent, #e63946);
+  color: #fff;
+  font-size: 0.65rem;
+  font-weight: 700;
+  border-radius: 9px;
+  padding: 0.1rem 0.35rem;
+  margin-left: auto;
+  min-width: 1rem;
+  text-align: center;
+  line-height: 1.2;
+}
+
+.channel-item.has-unread .channel-name {
+  font-weight: 700;
+  color: var(--text-primary, #e0e0e0);
+}

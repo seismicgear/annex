@@ -11,6 +11,15 @@ import { useVoiceStore } from '@/stores/voice';
 /** Number of messages per pagination page. */
 const PAGE_SIZE = 50;
 
+/** Maximum messages to keep in the rendered window to prevent unbounded memory growth. */
+const MAX_MESSAGE_WINDOW = 200;
+
+/** Typing indicator timeout in milliseconds. */
+const TYPING_TIMEOUT_MS = 5_000;
+
+/** Minimum interval between sending typing frames (debounce). */
+const TYPING_DEBOUNCE_MS = 3_000;
+
 /** A message that has been sent to the server but not yet acknowledged. */
 export interface PendingSend {
   /** Client-generated request ID sent in the WS frame. */
@@ -19,6 +28,13 @@ export interface PendingSend {
   content: string;
   /** Timestamp when the send was initiated. */
   sentAt: number;
+}
+
+/** Typing state for a channel. */
+interface TypingUser {
+  pseudonymId: string;
+  /** Timestamp when the typing indicator was last received. */
+  lastTypedAt: number;
 }
 
 interface ChannelsState {
@@ -50,6 +66,12 @@ interface ChannelsState {
   ws: AnnexWebSocket | null;
   /** Messages awaiting server acknowledgement, keyed by clientRequestId. */
   pendingSends: Map<string, PendingSend>;
+  /** Users currently typing in the active channel. */
+  typingUsers: TypingUser[];
+  /** Unread message count per channel. */
+  unreadCounts: Record<string, number>;
+  /** Last read message ID per channel. */
+  lastReadMessageIds: Record<string, string>;
 
   /** Load channel list from server. */
   loadChannels: (pseudonymId: string) => Promise<void>;
@@ -58,7 +80,7 @@ interface ChannelsState {
   /** Connect WebSocket for real-time messages. Optional baseUrl for cross-server. */
   connectWs: (pseudonymId: string, baseUrl?: string, sessionToken?: string | null) => void;
   /** Send a message to the active channel. Returns the client request ID if queued, or null on failure. */
-  sendMessage: (content: string, replyTo?: string | null) => string | null;
+  sendMessage: (content: string, pseudonymId: string, replyTo?: string | null) => string | null;
   /** Resolve a pending send (called when server echo or error arrives). */
   resolvePendingSend: (clientRequestId: string) => PendingSend | undefined;
   /** Get the pending send for a given request ID. */
@@ -83,7 +105,21 @@ interface ChannelsState {
   updateWsSessionToken: (token: string | null) => void;
   /** Reset all per-server transient state to initial values. */
   resetServerState: () => void;
+  /** Send a typing indicator for the active channel (debounced). */
+  sendTyping: () => void;
+  /** Mark the active channel as read (updates lastReadMessageIds). */
+  markChannelRead: (channelId: string) => void;
+  /** Retry a failed optimistic message. */
+  retryMessage: (clientRequestId: string, pseudonymId: string) => void;
+  /** Dismiss a failed optimistic message. */
+  dismissFailedMessage: (clientRequestId: string) => void;
 }
+
+/** Timestamp of the last typing frame sent (module-level to survive store resets). */
+let lastTypingSentAt = 0;
+
+/** Typing cleanup interval handle. */
+let typingCleanupInterval: ReturnType<typeof setInterval> | null = null;
 
 export const useChannelsStore = create<ChannelsState>((set, get) => ({
   channels: [],
@@ -100,6 +136,9 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
   hasMoreMessages: true,
   ws: null,
   pendingSends: new Map<string, PendingSend>(),
+  typingUsers: [],
+  unreadCounts: {},
+  lastReadMessageIds: {},
 
   loadChannels: async (pseudonymId: string) => {
     set({ loading: true, error: null });
@@ -126,7 +165,10 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       ws.unsubscribe(prevChannelId);
     }
 
-    set({ activeChannelId: channelId, messages: [], loadingOlder: false, hasMoreMessages: true, historyLoading: true, historyError: null, composerError: null });
+    set({ activeChannelId: channelId, messages: [], loadingOlder: false, hasMoreMessages: true, historyLoading: true, historyError: null, composerError: null, typingUsers: [] });
+
+    // Mark the channel as read
+    get().markChannelRead(channelId);
 
     // Auto-join the channel (idempotent — no-op if already a member).
     // Must be a member before fetching messages or joining voice.
@@ -147,7 +189,12 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     // are silently dropped when the history response replaces the array.
     try {
       const messages = await api.getMessages(pseudonymId, channelId, undefined, PAGE_SIZE);
-      set({ messages: messages.reverse(), hasMoreMessages: messages.length >= PAGE_SIZE, historyLoading: false, historyError: null });
+      const reversed = messages.reverse();
+      set({ messages: reversed, hasMoreMessages: messages.length >= PAGE_SIZE, historyLoading: false, historyError: null });
+      // Track the newest message ID for resume
+      if (reversed.length > 0 && ws) {
+        ws.trackLastMessageId(channelId, reversed[reversed.length - 1].message_id);
+      }
     } catch (err) {
       // Keep the channel selected but surface the history error so the
       // message pane can show a retry affordance instead of staying blank.
@@ -168,6 +215,12 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     const existing = get().ws;
     if (existing) existing.disconnect();
 
+    // Clear typing cleanup interval
+    if (typingCleanupInterval) {
+      clearInterval(typingCleanupInterval);
+      typingCleanupInterval = null;
+    }
+
     const ws = new AnnexWebSocket(pseudonymId, baseUrl, sessionToken ?? null);
 
     ws.onStatus((connected) => set({ wsConnected: connected }));
@@ -175,17 +228,83 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     ws.onMessage((frame: WsReceiveFrame) => {
       // Handle error frames — route to composerError for chat-flow errors.
       // If the error carries a clientRequestId, resolve the pending send
-      // so the composer can restore the draft.
+      // and mark the optimistic message as failed.
       if (frame.type === 'error') {
         const errorMsg = frame.message ?? frame.error ?? 'Unknown WebSocket error';
         if (frame.clientRequestId) {
           get().resolvePendingSend(frame.clientRequestId);
+          // Mark the optimistic message as failed
+          set((state) => ({
+            messages: state.messages.map((m) =>
+              m.clientRequestId === frame.clientRequestId
+                ? { ...m, pending: false, failed: true }
+                : m,
+            ),
+            composerError: errorMsg,
+          }));
+        } else {
+          set({ composerError: errorMsg });
         }
-        set({ composerError: errorMsg });
         return;
       }
 
-      if (frame.channelId !== get().activeChannelId) return;
+      // Handle channel lifecycle events (server-wide, not per-channel)
+      if (frame.type === 'channel_created' && frame.channel) {
+        set((state) => {
+          // Avoid duplicates
+          if (state.channels.some((c) => c.channel_id === frame.channel!.channel_id)) {
+            return state;
+          }
+          return { channels: [...state.channels, frame.channel!] };
+        });
+        return;
+      }
+      if (frame.type === 'channel_deleted' && frame.channelId) {
+        set((state) => ({
+          channels: state.channels.filter((c) => c.channel_id !== frame.channelId),
+        }));
+        // If the deleted channel was active, clear the view
+        if (get().activeChannelId === frame.channelId) {
+          set({ activeChannelId: null, messages: [], typingUsers: [] });
+        }
+        return;
+      }
+
+      // Handle typing indicators
+      if (frame.type === 'typing' && frame.pseudonymId && frame.channelId) {
+        // Ignore own typing echoes
+        if (frame.pseudonymId === pseudonymId) return;
+        // Only show typing for active channel
+        if (frame.channelId !== get().activeChannelId) return;
+        set((state) => {
+          const now = Date.now();
+          const existing = state.typingUsers.find((u) => u.pseudonymId === frame.pseudonymId);
+          if (existing) {
+            return { typingUsers: state.typingUsers.map((u) => u.pseudonymId === frame.pseudonymId ? { ...u, lastTypedAt: now } : u) };
+          }
+          return { typingUsers: [...state.typingUsers, { pseudonymId: frame.pseudonymId!, lastTypedAt: now }] };
+        });
+        return;
+      }
+
+      // Handle resume acknowledgement
+      if (frame.type === 'resumed') {
+        // Resume complete — no action needed, messages were already processed as normal frames
+        return;
+      }
+
+      if (frame.channelId !== get().activeChannelId) {
+        // Increment unread count for non-active channels
+        if (frame.type === 'message' && frame.channelId) {
+          set((state) => ({
+            unreadCounts: {
+              ...state.unreadCounts,
+              [frame.channelId!]: (state.unreadCounts[frame.channelId!] ?? 0) + 1,
+            },
+          }));
+        }
+        return;
+      }
 
       if (frame.type === 'message') {
         // Resolve the pending send when the server echoes our message back.
@@ -202,14 +321,40 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
           edited_at: frame.editedAt ?? null,
           deleted_at: frame.deletedAt ?? null,
         };
-        // Deduplicate: skip if a message with the same ID already exists
-        // (can happen on WS reconnection or race with history load).
         set((state) => {
+          // If this message confirms an optimistic send, replace it
+          if (frame.clientRequestId) {
+            const hasOptimistic = state.messages.some((m) => m.clientRequestId === frame.clientRequestId);
+            if (hasOptimistic) {
+              const updated = state.messages.map((m) =>
+                m.clientRequestId === frame.clientRequestId
+                  ? { ...msg } // Replace optimistic with confirmed
+                  : m,
+              );
+              return { messages: updated };
+            }
+          }
+          // Deduplicate: skip if a message with the same ID already exists
           if (msg.message_id && state.messages.some((m) => m.message_id === msg.message_id)) {
             return state;
           }
-          return { messages: [...state.messages, msg] };
+          let messages = [...state.messages, msg];
+          // Trim to sliding window — remove oldest when exceeding cap
+          if (messages.length > MAX_MESSAGE_WINDOW) {
+            messages = messages.slice(messages.length - MAX_MESSAGE_WINDOW);
+          }
+          return { messages };
         });
+        // Track last message ID for resume
+        if (msg.message_id && ws) {
+          ws.trackLastMessageId(frame.channelId!, msg.message_id);
+        }
+        // Clear typing indicator for the sender
+        if (frame.senderPseudonym) {
+          set((state) => ({
+            typingUsers: state.typingUsers.filter((u) => u.pseudonymId !== frame.senderPseudonym),
+          }));
+        }
       } else if (frame.type === 'message_edited') {
         set((state) => ({
           messages: state.messages.map((m) =>
@@ -231,9 +376,21 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
 
     ws.connect();
     set({ ws });
+
+    // Start typing cleanup interval — remove stale typing indicators every second
+    typingCleanupInterval = setInterval(() => {
+      const now = Date.now();
+      set((state) => {
+        const filtered = state.typingUsers.filter((u) => now - u.lastTypedAt < TYPING_TIMEOUT_MS);
+        if (filtered.length !== state.typingUsers.length) {
+          return { typingUsers: filtered };
+        }
+        return state;
+      });
+    }, 1000);
   },
 
-  sendMessage: (content: string, replyTo: string | null = null): string | null => {
+  sendMessage: (content: string, pseudonymId: string, replyTo: string | null = null): string | null => {
     const { ws, activeChannelId } = get();
     if (!ws || !activeChannelId) {
       set({ composerError: 'Cannot send — not connected to the server.' });
@@ -243,10 +400,21 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     try {
       const clientRequestId = ws.send(activeChannelId, content, replyTo);
       const pending: PendingSend = { clientRequestId, content, sentAt: Date.now() };
+      // Add optimistic message to the list immediately
+      const optimisticMsg: Message = {
+        message_id: '', // Will be assigned by server
+        channel_id: activeChannelId,
+        sender_pseudonym: pseudonymId,
+        content,
+        reply_to_message_id: replyTo ?? null,
+        created_at: new Date().toISOString(),
+        pending: true,
+        clientRequestId,
+      };
       set((s) => {
         const next = new Map(s.pendingSends);
         next.set(clientRequestId, pending);
-        return { pendingSends: next };
+        return { pendingSends: next, messages: [...s.messages, optimisticMsg] };
       });
       return clientRequestId;
     } catch (err) {
@@ -299,7 +467,9 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
 
     set({ loadingOlder: true });
     try {
-      const oldest = messages[0];
+      // Find the oldest non-pending message for cursor
+      const oldest = messages.find((m) => !m.pending && !m.failed);
+      if (!oldest) { set({ loadingOlder: false }); return; }
       const older = await api.getMessages(pseudonymId, activeChannelId, oldest.message_id, PAGE_SIZE);
       set((state) => ({
         messages: [...older.reverse(), ...state.messages],
@@ -316,10 +486,8 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
   },
 
   createChannel: async (pseudonymId, name, channelType, topic, federated) => {
-    // The server returns {"status": "created"}, not a Channel object,
-    // so we don't optimistically add to the list. The caller should
-    // call loadChannels() after to refresh the full list.
     await api.createChannel(pseudonymId, name, channelType, topic, federated);
+    // Channel list will be updated via WS channel_created event
   },
 
   joinChannel: async (pseudonymId, channelId) => {
@@ -352,7 +520,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
 
     const { activeChannelId } = get();
     if (activeChannelId === channelId) {
-      set({ activeChannelId: null, messages: [] });
+      set({ activeChannelId: null, messages: [], typingUsers: [] });
     }
   },
 
@@ -365,6 +533,10 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     if (ws) {
       ws.disconnect();
       set({ ws: null, wsConnected: false });
+    }
+    if (typingCleanupInterval) {
+      clearInterval(typingCleanupInterval);
+      typingCleanupInterval = null;
     }
   },
 
@@ -379,6 +551,10 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     const { ws } = get();
     if (ws) {
       ws.disconnect();
+    }
+    if (typingCleanupInterval) {
+      clearInterval(typingCleanupInterval);
+      typingCleanupInterval = null;
     }
     set({
       channels: [],
@@ -395,6 +571,48 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       hasMoreMessages: true,
       ws: null,
       pendingSends: new Map<string, PendingSend>(),
+      typingUsers: [],
+      unreadCounts: {},
+      lastReadMessageIds: {},
     });
+  },
+
+  sendTyping: () => {
+    const { ws, activeChannelId } = get();
+    if (!ws || !activeChannelId) return;
+    const now = Date.now();
+    if (now - lastTypingSentAt < TYPING_DEBOUNCE_MS) return;
+    lastTypingSentAt = now;
+    ws.sendTyping(activeChannelId);
+  },
+
+  markChannelRead: (channelId: string) => {
+    const { messages } = get();
+    const lastMsg = messages[messages.length - 1];
+    set((state) => ({
+      unreadCounts: { ...state.unreadCounts, [channelId]: 0 },
+      lastReadMessageIds: lastMsg
+        ? { ...state.lastReadMessageIds, [channelId]: lastMsg.message_id }
+        : state.lastReadMessageIds,
+    }));
+  },
+
+  retryMessage: (clientRequestId: string, pseudonymId: string) => {
+    const { messages, ws, activeChannelId } = get();
+    const failedMsg = messages.find((m) => m.clientRequestId === clientRequestId && m.failed);
+    if (!failedMsg || !ws || !activeChannelId) return;
+
+    // Remove the failed message and re-send
+    set((state) => ({
+      messages: state.messages.filter((m) => m.clientRequestId !== clientRequestId),
+      composerError: null,
+    }));
+    get().sendMessage(failedMsg.content, pseudonymId, failedMsg.reply_to_message_id);
+  },
+
+  dismissFailedMessage: (clientRequestId: string) => {
+    set((state) => ({
+      messages: state.messages.filter((m) => m.clientRequestId !== clientRequestId),
+    }));
   },
 }));

@@ -9,6 +9,7 @@ let channelsState: {
   composerError: string | null;
   clearComposerError: ReturnType<typeof vi.fn>;
   pendingSends: Map<string, unknown>;
+  sendTyping: ReturnType<typeof vi.fn>;
 };
 
 let identityState: {
@@ -42,6 +43,7 @@ describe('MessageInput', () => {
       composerError: null,
       clearComposerError: vi.fn(),
       pendingSends: new Map(),
+      sendTyping: vi.fn(),
     };
 
     identityState = {
@@ -60,7 +62,7 @@ describe('MessageInput', () => {
       fireEvent.click(sendBtn);
     });
 
-    expect(channelsState.sendMessage).toHaveBeenCalledWith('hello');
+    expect(channelsState.sendMessage).toHaveBeenCalledWith('hello', 'p1');
     expect(textarea).toHaveValue('');
   });
 
@@ -81,8 +83,9 @@ describe('MessageInput', () => {
     expect(textarea).toHaveValue('lost message');
   });
 
-  it('restores draft when async error resolves the pending send', async () => {
-    // sendMessage returns a request ID and adds it to pendingSends
+  it('shows composer error when pending send resolves with error', async () => {
+    // With optimistic UI, failed messages stay in the message list (not restored to composer).
+    // The composer just shows the error banner.
     const reqId = 'req-err-1';
     channelsState.pendingSends = new Map([[reqId, { clientRequestId: reqId, content: 'retry me', sentAt: Date.now() }]]);
     channelsState.sendMessage = vi.fn(() => reqId);
@@ -100,7 +103,7 @@ describe('MessageInput', () => {
     // Composer should be optimistically cleared
     expect(textarea).toHaveValue('');
 
-    // Simulate the server returning an error — pending send removed, composerError set
+    // Simulate the server returning an error
     channelsState.pendingSends = new Map();
     channelsState.composerError = 'Rate limit exceeded';
 
@@ -108,8 +111,7 @@ describe('MessageInput', () => {
       rerender(<MessageInput />);
     });
 
-    // Draft should be restored and error shown
-    expect(textarea).toHaveValue('retry me');
+    // Error shown in banner (draft stays in failed message in message list, not restored to composer)
     expect(screen.getByRole('alert')).toHaveTextContent('Rate limit exceeded');
   });
 

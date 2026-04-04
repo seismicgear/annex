@@ -117,6 +117,10 @@ pub async fn create_channel_handler(
         }
     }
 
+    // Clone fields needed after the move into CreateChannelParams
+    let broadcast_name = payload.name.clone();
+    let broadcast_topic = payload.topic.clone();
+
     let params = CreateChannelParams {
         server_id: state.server_id,
         channel_id: payload.channel_id.clone(),
@@ -162,6 +166,20 @@ pub async fn create_channel_handler(
             );
             // We log but don't fail the request since the DB record was created successfully.
         }
+    }
+
+    // Broadcast channel_created event to all connected users so their
+    // channel lists update in real-time without requiring a manual refresh.
+    let channel_json = json!({
+        "channel_id": payload.channel_id,
+        "name": broadcast_name,
+        "channel_type": format!("{:?}", payload.channel_type),
+        "topic": broadcast_topic,
+        "federation_scope": format!("{:?}", payload.federation_scope),
+    });
+    let out = crate::api_ws::OutgoingMessage::ChannelCreated { channel: channel_json };
+    if let Ok(broadcast_json) = serde_json::to_string(&out) {
+        state.connection_manager.broadcast_all(broadcast_json).await;
     }
 
     Ok(Json(json!({"status": "created"})))
@@ -284,6 +302,14 @@ pub async fn delete_channel_handler(
         .connection_manager
         .unsubscribe_channel(&channel_id)
         .await;
+
+    // Broadcast channel_deleted event to all connected users
+    let out = crate::api_ws::OutgoingMessage::ChannelDeleted {
+        channel_id: channel_id.clone(),
+    };
+    if let Ok(broadcast_json) = serde_json::to_string(&out) {
+        state.connection_manager.broadcast_all(broadcast_json).await;
+    }
 
     Ok(Json(json!({"status": "deleted"})))
 }

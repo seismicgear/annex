@@ -28,12 +28,14 @@ function ChannelItem({
   active,
   isMember,
   pseudonymId,
+  unreadCount,
   onSelect,
 }: {
   channel: Channel;
   active: boolean;
   isMember: boolean;
   pseudonymId: string;
+  unreadCount: number;
   onSelect: () => void;
 }) {
   const { joinChannel, leaveChannel, loadChannels } = useChannelsStore();
@@ -92,7 +94,7 @@ function ChannelItem({
   };
 
   return (
-    <div className={`channel-item ${active ? 'active' : ''}`}>
+    <div className={`channel-item ${active ? 'active' : ''} ${unreadCount > 0 ? 'has-unread' : ''}`}>
       <button className="channel-select" onClick={onSelect}>
         <span className="channel-icon" title={(CHANNEL_TYPE_ICONS[channel.channel_type] ?? DEFAULT_CHANNEL_ICON).tooltip}>
           {(CHANNEL_TYPE_ICONS[channel.channel_type] ?? DEFAULT_CHANNEL_ICON).icon}
@@ -102,6 +104,9 @@ function ChannelItem({
           <span className="federation-badge" title="Federated — messages in this channel are shared with connected partner servers">
             F
           </span>
+        )}
+        {unreadCount > 0 && (
+          <span className="unread-badge">{unreadCount > 99 ? '99+' : unreadCount}</span>
         )}
       </button>
       <div className="channel-actions">
@@ -178,6 +183,7 @@ export function ChannelList() {
     error,
     loadChannels,
     selectChannel,
+    unreadCounts,
   } = useChannelsStore();
   const [showCreate, setShowCreate] = useState(false);
   // Declare all hooks before any conditional returns so hook order stays
@@ -252,6 +258,7 @@ export function ChannelList() {
           active={activeChannelId === ch.channel_id}
           isMember={joinedChannelIds.has(ch.channel_id)}
           pseudonymId={identity.pseudonymId!}
+          unreadCount={unreadCounts[ch.channel_id] ?? 0}
           onSelect={() => handleSelect(ch.channel_id)}
         />
       ))}
