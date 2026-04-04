@@ -25,6 +25,10 @@ export class AnnexWebSocket {
   private intentionalClose = false;
   /** Channels we should be subscribed to — re-sent on (re)connect. */
   private subscribedChannels: Set<string> = new Set();
+  /** Last received message ID per channel — used for resume on reconnect. */
+  private lastMessageIds: Map<string, string> = new Map();
+  /** Whether this is a reconnection (not the first connect). */
+  private hasConnectedBefore = false;
 
   /**
    * @param pseudonymId — identity pseudonym for auth
@@ -67,6 +71,15 @@ export class AnnexWebSocket {
       for (const channelId of this.subscribedChannels) {
         this.ws!.send(JSON.stringify({ type: 'subscribe', channelId }));
       }
+      // Resume: replay missed messages on reconnect
+      if (this.hasConnectedBefore) {
+        for (const [channelId, lastMessageId] of this.lastMessageIds) {
+          if (this.subscribedChannels.has(channelId)) {
+            this.ws!.send(JSON.stringify({ type: 'resume', channelId, lastMessageId }));
+          }
+        }
+      }
+      this.hasConnectedBefore = true;
       this.notifyStatus(true);
     };
 
@@ -152,6 +165,17 @@ export class AnnexWebSocket {
     this.ws.send(JSON.stringify(frame));
   }
 
+  /** Track the last received message ID for a channel (used for resume). */
+  trackLastMessageId(channelId: string, messageId: string): void {
+    this.lastMessageIds.set(channelId, messageId);
+  }
+
+  /** Send a typing indicator for a channel. */
+  sendTyping(channelId: string): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({ type: 'typing', channelId }));
+  }
+
   /** Register a handler for incoming messages. */
   onMessage(handler: WsMessageHandler): () => void {
     this.messageHandlers.add(handler);
@@ -168,6 +192,8 @@ export class AnnexWebSocket {
   disconnect(): void {
     this.intentionalClose = true;
     this.subscribedChannels.clear();
+    this.lastMessageIds.clear();
+    this.hasConnectedBefore = false;
     this.messageHandlers.clear();
     this.statusHandlers.clear();
     if (this.reconnectTimer) {

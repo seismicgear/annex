@@ -122,6 +122,12 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     headers,
   });
   if (!res.ok) {
+    // Enhance rate limit errors with Retry-After guidance
+    if (res.status === 429) {
+      const retryAfter = res.headers.get('Retry-After');
+      const waitMsg = retryAfter ? ` Try again in ${retryAfter} seconds.` : ' Please wait and try again.';
+      throw new ApiError(429, `Rate limit exceeded.${waitMsg}`);
+    }
     const body = await res.text();
     throw new ApiError(res.status, body);
   }
@@ -389,6 +395,23 @@ export async function getMessages(
   const qs = params.toString();
   return request<Message[]>(
     `/api/channels/${channelId}/messages${qs ? '?' + qs : ''}`,
+    { headers: authHeaders(pseudonymId) },
+  );
+}
+
+// ── Message Search ──
+
+export async function searchMessages(
+  pseudonymId: string,
+  query: string,
+  channelId?: string,
+  limit?: number,
+): Promise<Message[]> {
+  const params = new URLSearchParams({ q: query });
+  if (channelId) params.set('channel_id', channelId);
+  if (limit) params.set('limit', limit.toString());
+  return request<Message[]>(
+    `/api/messages/search?${params}`,
     { headers: authHeaders(pseudonymId) },
   );
 }

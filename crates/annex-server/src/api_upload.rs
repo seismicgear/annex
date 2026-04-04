@@ -148,7 +148,7 @@ fn max_size_for_category(policy: &annex_types::ServerPolicy, category: UploadCat
         UploadCategory::Video => policy.max_video_size_mb,
         UploadCategory::File => policy.max_file_size_mb,
     };
-    mb as usize * 1024 * 1024
+    (mb as usize).saturating_mul(1024 * 1024)
 }
 
 /// Checks whether a given upload category is enabled in the server policy.
@@ -244,7 +244,10 @@ fn strip_png_metadata(data: &[u8]) -> Vec<u8> {
     while i + 12 <= data.len() {
         let length = u32::from_be_bytes([data[i], data[i + 1], data[i + 2], data[i + 3]]) as usize;
         let chunk_type = &data[i + 4..i + 8];
-        let total = 12 + length; // 4 length + 4 type + data + 4 CRC
+        let total = match 12usize.checked_add(length) {
+            Some(t) => t,
+            None => break, // Malformed chunk — stop processing
+        };
 
         if i + total > data.len() {
             // Partial chunk — copy rest

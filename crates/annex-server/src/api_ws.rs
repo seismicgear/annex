@@ -233,6 +233,21 @@ pub enum IncomingMessage {
         channel_id: String,
         text: String,
     },
+    /// Typing indicator — broadcast to channel subscribers.
+    #[serde(rename = "typing")]
+    Typing {
+        #[serde(rename = "channelId")]
+        channel_id: String,
+    },
+    /// Resume protocol — replay missed messages since the given message ID.
+    #[serde(rename = "resume")]
+    Resume {
+        #[serde(rename = "channelId")]
+        channel_id: String,
+        /// The last message ID the client successfully received.
+        #[serde(rename = "lastMessageId")]
+        last_message_id: String,
+    },
 }
 
 /// Outgoing WebSocket message payload with camelCase field names.
@@ -298,6 +313,30 @@ pub enum OutgoingMessage {
         message: String,
         #[serde(rename = "clientRequestId", skip_serializing_if = "Option::is_none")]
         client_request_id: Option<String>,
+    },
+    /// Typing indicator — broadcast to channel subscribers (except the typer).
+    #[serde(rename = "typing")]
+    Typing {
+        #[serde(rename = "channelId")]
+        channel_id: String,
+        #[serde(rename = "pseudonymId")]
+        pseudonym_id: String,
+    },
+    /// Channel lifecycle events — broadcast to all connected users.
+    #[serde(rename = "channel_created")]
+    ChannelCreated { channel: serde_json::Value },
+    #[serde(rename = "channel_deleted")]
+    ChannelDeleted {
+        #[serde(rename = "channelId")]
+        channel_id: String,
+    },
+    /// Resume acknowledgement — tells the client how many messages were replayed.
+    #[serde(rename = "resumed")]
+    Resumed {
+        #[serde(rename = "channelId")]
+        channel_id: String,
+        #[serde(rename = "missedCount")]
+        missed_count: usize,
     },
 }
 
@@ -496,6 +535,16 @@ impl ConnectionManager {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    /// Broadcasts a message string to ALL connected sessions (server-wide events).
+    pub async fn broadcast_all(&self, message_json: String) {
+        let sessions = self.sessions.read().await;
+        for (_, (_, sender)) in sessions.iter() {
+            if let Err(e) = sender.try_send(message_json.clone()) {
+                tracing::warn!("dropping broadcast_all message for slow consumer: {}", e);
             }
         }
     }
@@ -1396,6 +1445,127 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                             }
                             Err(e) => {
                                 send_ws_error(&tx, format!("TTS failed: {e}"));
+                            }
+                        }
+                    }
+                    IncomingMessage::Typing { channel_id } => {
+                        // Verify membership before broadcasting typing indicator
+                        match check_ws_membership(
+                            state.pool.clone(),
+                            state.server_id,
+                            &channel_id,
+                            &pseudonym,
+                        )
+                        .await
+                        {
+                            MembershipResult::Allowed => {
+                                let out = OutgoingMessage::Typing {
+                                    channel_id: channel_id.clone(),
+                                    pseudonym_id: pseudonym.clone(),
+                                };
+                                if let Ok(json) = serde_json::to_string(&out) {
+                                    state.connection_manager.broadcast(&channel_id, json).await;
+                                }
+                            }
+                            _ => {
+                                // Silently ignore typing from non-members
+                            }
+                        }
+                    }
+                    IncomingMessage::Resume {
+                        channel_id,
+                        last_message_id,
+                    } => {
+                        // Replay missed messages since the given message_id.
+                        let state_clone = state.clone();
+                        let pseudonym_clone = pseudonym.clone();
+                        let tx_clone = tx.clone();
+                        let channel_id_for_ack = channel_id.clone();
+
+                        let res = tokio::task::spawn_blocking(move || {
+                            let conn = state_clone.pool.get().map_err(|e| e.to_string())?;
+                            // Verify membership
+                            let is_mem = annex_channels::is_member(
+                                &conn, state_clone.server_id, &channel_id, &pseudonym_clone,
+                            ).map_err(|e| e.to_string())?;
+                            if !is_mem {
+                                return Ok::<Vec<annex_channels::Message>, String>(vec![]);
+                            }
+                            // Fetch messages created after the given message_id.
+                            // First resolve the message's created_at timestamp.
+                            let cursor: Option<(String, i64)> = conn
+                                .query_row(
+                                    "SELECT created_at, id FROM messages WHERE message_id = ?1",
+                                    [&last_message_id],
+                                    |row| Ok((row.get(0)?, row.get(1)?)),
+                                )
+                                .optional()
+                                .map_err(|e| e.to_string())?;
+                            let Some((ts, row_id)) = cursor else {
+                                return Ok(vec![]);
+                            };
+                            // Get messages after the cursor, up to 200
+                            let mut stmt = conn.prepare(
+                                "SELECT id, server_id, channel_id, message_id, sender_pseudonym, content,
+                                        reply_to_message_id, created_at, expires_at, edited_at, deleted_at
+                                 FROM messages
+                                 WHERE server_id = ?1 AND channel_id = ?2
+                                   AND (created_at > ?3 OR (created_at = ?3 AND id > ?4))
+                                 ORDER BY created_at ASC, id ASC
+                                 LIMIT 200"
+                            ).map_err(|e| e.to_string())?;
+                            let rows = stmt.query_map(
+                                rusqlite::params![state_clone.server_id, channel_id, ts, row_id],
+                                |row| Ok(annex_channels::Message {
+                                    id: row.get(0)?,
+                                    server_id: row.get(1)?,
+                                    channel_id: row.get(2)?,
+                                    message_id: row.get(3)?,
+                                    sender_pseudonym: row.get(4)?,
+                                    content: row.get(5)?,
+                                    reply_to_message_id: row.get(6)?,
+                                    created_at: row.get(7)?,
+                                    expires_at: row.get(8)?,
+                                    edited_at: row.get(9)?,
+                                    deleted_at: row.get(10)?,
+                                }),
+                            ).map_err(|e| e.to_string())?;
+                            let mut messages = Vec::new();
+                            for row in rows {
+                                messages.push(row.map_err(|e| e.to_string())?);
+                            }
+                            Ok(messages)
+                        }).await;
+
+                        match res {
+                            Ok(Ok(messages)) => {
+                                let count = messages.len();
+                                // Send each missed message as a normal message frame
+                                for msg in messages {
+                                    let ws_payload: WsMessagePayload = msg.into();
+                                    let out = OutgoingMessage::Message(ws_payload);
+                                    if let Ok(json) = serde_json::to_string(&out) {
+                                        if tx_clone.try_send(json).is_err() {
+                                            break; // Client too slow, stop replaying
+                                        }
+                                    }
+                                }
+                                // Send resume acknowledgement
+                                let ack = OutgoingMessage::Resumed {
+                                    channel_id: channel_id_for_ack,
+                                    missed_count: count,
+                                };
+                                if let Ok(json) = serde_json::to_string(&ack) {
+                                    let _ = tx_clone.try_send(json);
+                                }
+                            }
+                            Ok(Err(e)) => {
+                                tracing::error!(pseudonym = %pseudonym, "resume failed: {}", e);
+                                send_ws_error(&tx, format!("Resume failed: {e}"));
+                            }
+                            Err(e) => {
+                                tracing::error!(pseudonym = %pseudonym, "resume task failed: {}", e);
+                                send_ws_error(&tx, "Resume failed: internal error".to_string());
                             }
                         }
                     }

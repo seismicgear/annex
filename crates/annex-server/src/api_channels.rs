@@ -3,8 +3,8 @@ use crate::middleware::{verify_zk_membership_header, IdentityContext};
 use crate::AppState;
 use annex_channels::{
     add_member, create_channel, delete_channel, get_channel, get_edit_history, is_member,
-    list_channels, list_messages, remove_member, Channel, CreateChannelParams, Message,
-    MessageEdit,
+    list_channels, list_messages, remove_member, search_messages, Channel, CreateChannelParams,
+    Message, MessageEdit,
 };
 use annex_graph::{create_edge, delete_edge};
 use annex_types::{AlignmentStatus, ChannelType, EdgeKind, FederationScope, RoleCode};
@@ -66,6 +66,13 @@ pub struct HistoryParams {
 }
 
 #[derive(Deserialize)]
+pub struct SearchParams {
+    pub q: String,
+    pub channel_id: Option<String>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Deserialize)]
 pub struct CreateChannelRequest {
     pub channel_id: String,
     pub name: String,
@@ -117,6 +124,10 @@ pub async fn create_channel_handler(
         }
     }
 
+    // Clone fields needed after the move into CreateChannelParams
+    let broadcast_name = payload.name.clone();
+    let broadcast_topic = payload.topic.clone();
+
     let params = CreateChannelParams {
         server_id: state.server_id,
         channel_id: payload.channel_id.clone(),
@@ -164,20 +175,59 @@ pub async fn create_channel_handler(
         }
     }
 
+    // Broadcast channel_created event to all connected users so their
+    // channel lists update in real-time without requiring a manual refresh.
+    let channel_json = json!({
+        "channel_id": payload.channel_id,
+        "name": broadcast_name,
+        "channel_type": format!("{:?}", payload.channel_type),
+        "topic": broadcast_topic,
+        "federation_scope": format!("{:?}", payload.federation_scope),
+    });
+    let out = crate::api_ws::OutgoingMessage::ChannelCreated {
+        channel: channel_json,
+    };
+    if let Ok(broadcast_json) = serde_json::to_string(&out) {
+        state.connection_manager.broadcast_all(broadcast_json).await;
+    }
+
     Ok(Json(json!({"status": "created"})))
+}
+
+/// Channel response with membership flag included.
+#[derive(Serialize)]
+pub struct ChannelWithMembership {
+    #[serde(flatten)]
+    channel: Channel,
+    is_member: bool,
 }
 
 /// GET /api/channels
 pub async fn list_channels_handler(
     Extension(state): Extension<Arc<AppState>>,
-    Extension(IdentityContext(_identity)): Extension<IdentityContext>,
-) -> Result<Json<Vec<Channel>>, StatusCode> {
+    Extension(IdentityContext(identity)): Extension<IdentityContext>,
+) -> Result<Json<Vec<ChannelWithMembership>>, StatusCode> {
+    let pseudonym_id = identity.pseudonym_id.clone();
     let channels = tokio::task::spawn_blocking(move || {
         let conn = state.pool.get().map_err(|e| {
             tracing::error!(error = %e, "failed to get db connection for list_channels");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
-        list_channels(&conn, state.server_id).map_err(channel_err_to_status)
+        let channels = list_channels(&conn, state.server_id).map_err(channel_err_to_status)?;
+
+        // Annotate each channel with the requester's membership status.
+        let result: Vec<ChannelWithMembership> = channels
+            .into_iter()
+            .map(|ch| {
+                let member = is_member(&conn, state.server_id, &ch.channel_id, &pseudonym_id)
+                    .unwrap_or(false);
+                ChannelWithMembership {
+                    channel: ch,
+                    is_member: member,
+                }
+            })
+            .collect();
+        Ok::<_, StatusCode>(result)
     })
     .await
     .map_err(|e| {
@@ -261,6 +311,14 @@ pub async fn delete_channel_handler(
         .connection_manager
         .unsubscribe_channel(&channel_id)
         .await;
+
+    // Broadcast channel_deleted event to all connected users
+    let out = crate::api_ws::OutgoingMessage::ChannelDeleted {
+        channel_id: channel_id.clone(),
+    };
+    if let Ok(broadcast_json) = serde_json::to_string(&out) {
+        state.connection_manager.broadcast_all(broadcast_json).await;
+    }
 
     Ok(Json(json!({"status": "deleted"})))
 }
@@ -903,4 +961,93 @@ pub async fn get_message_edits_handler(
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
 
     Ok(Json(edits))
+}
+
+/// GET /api/messages/search
+/// GET /api/messages/search
+///
+/// Searches messages by content. When `channel_id` is specified, enforces
+/// channel membership to prevent leaking private channel data. When omitted,
+/// searches only channels the user is a member of.
+pub async fn search_messages_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(IdentityContext(identity)): Extension<IdentityContext>,
+    Query(params): Query<SearchParams>,
+) -> Result<Json<Vec<Message>>, StatusCode> {
+    if params.q.trim().is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if params.q.len() > 200 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // If a specific channel is requested, verify membership
+    if let Some(ref cid) = params.channel_id {
+        let member = tokio::task::spawn_blocking({
+            let pool = state.pool.clone();
+            let server_id = state.server_id;
+            let cid = cid.clone();
+            let pid = identity.pseudonym_id.clone();
+            move || {
+                let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                is_member(&conn, server_id, &cid, &pid)
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+            }
+        })
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+
+        if !member {
+            return Err(StatusCode::FORBIDDEN);
+        }
+    }
+
+    let messages = tokio::task::spawn_blocking({
+        let pool = state.pool.clone();
+        let server_id = state.server_id;
+        let query = params.q.clone();
+        let channel_id = params.channel_id.clone();
+        let pseudonym_id = identity.pseudonym_id.clone();
+        let limit = params.limit.unwrap_or(20).min(50);
+        move || {
+            let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            // When no channel_id is specified, only search channels the user is a member of
+            if channel_id.is_none() {
+                // Get all channels the user is a member of
+                let mut stmt = conn.prepare(
+                    "SELECT channel_id FROM channel_members WHERE server_id = ?1 AND pseudonym_id = ?2"
+                ).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                let member_channels: Vec<String> = stmt.query_map(
+                    rusqlite::params![server_id, pseudonym_id],
+                    |row| row.get(0),
+                ).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+                .filter_map(|r| r.ok())
+                .collect();
+
+                if member_channels.is_empty() {
+                    return Ok(vec![]);
+                }
+
+                // Search across all member channels
+                let mut all_results = Vec::new();
+                for cid in &member_channels {
+                    let mut results = search_messages(&conn, server_id, Some(cid), &query, limit)
+                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                    all_results.append(&mut results);
+                }
+                // Sort by created_at descending and limit
+                all_results.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+                all_results.truncate(limit as usize);
+                Ok(all_results)
+            } else {
+                search_messages(&conn, server_id, channel_id.as_deref(), &query, limit)
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+            }
+        }
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+
+    Ok(Json(messages))
 }

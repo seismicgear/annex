@@ -136,14 +136,12 @@ async fn test_get_history_success() {
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].content, "Third");
 
-    // Test 3: Before (Paginating past the newest message)
-    let newest_ts = messages[0].created_at.clone();
-    // Simple encoding for space and colon, which are common in SQLite timestamps and invalid in URI path/query without encoding
-    let encoded_ts = newest_ts.replace(" ", "%20").replace(":", "%3A");
+    // Test 3: Before (Paginating past the newest message using message_id)
+    let newest_msg_id = &messages[0].message_id;
 
     let mut req3 = Request::builder()
         .uri(format!(
-            "/api/channels/chan-hist/messages?before={encoded_ts}"
+            "/api/channels/chan-hist/messages?before={newest_msg_id}"
         ))
         .method("GET")
         .header("X-Annex-Pseudonym", "user-1")

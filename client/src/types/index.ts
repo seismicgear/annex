@@ -93,6 +93,12 @@ export interface Message {
   created_at: string;
   edited_at?: string | null;
   deleted_at?: string | null;
+  /** Client-only: message is optimistically displayed but not yet confirmed by the server. */
+  pending?: boolean;
+  /** Client-only: server rejected this message (shown with retry affordance). */
+  failed?: boolean;
+  /** Client-only: the client request ID for correlating with server response. */
+  clientRequestId?: string;
 }
 
 /** A historical edit of a message. */
@@ -105,18 +111,21 @@ export interface MessageEdit {
 
 /** WebSocket frame for sending messages. */
 export interface WsSendFrame {
-  type: 'message' | 'edit_message' | 'delete_message';
+  type: 'message' | 'edit_message' | 'delete_message' | 'typing' | 'resume';
   channelId: string;
   content?: string;
   replyTo?: string | null;
   messageId?: string;
   /** Client-generated request ID for correlating server ack/error frames. */
   clientRequestId?: string;
+  /** Last received message ID for resume protocol. */
+  lastMessageId?: string;
 }
 
 /** WebSocket frame received from server. */
 export interface WsReceiveFrame {
-  type: 'message' | 'message_edited' | 'message_deleted' | 'rtx_bundle' | 'transcription' | 'error';
+  type: 'message' | 'message_edited' | 'message_deleted' | 'rtx_bundle' | 'transcription' | 'error'
+    | 'channel_created' | 'channel_updated' | 'channel_deleted' | 'typing' | 'resumed';
   // Message fields (camelCase from WsMessagePayload)
   channelId?: string;
   messageId?: string;
@@ -126,6 +135,12 @@ export interface WsReceiveFrame {
   createdAt?: string;
   editedAt?: string | null;
   deletedAt?: string | null;
+  // Channel event fields
+  channel?: Channel;
+  // Typing indicator fields
+  pseudonymId?: string;
+  // Resume fields
+  missedCount?: number;
   // Transcription fields
   speakerPseudonym?: string;
   text?: string;

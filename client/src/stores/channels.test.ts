@@ -143,12 +143,12 @@ describe('channels store', () => {
       wsConnected: true,
     });
 
-    useChannelsStore.getState().sendMessage('hello');
+    useChannelsStore.getState().sendMessage('hello', 'p1');
 
     expect(useChannelsStore.getState().composerError).toBe('send failed');
   });
 
-  it('sendMessage returns clientRequestId and tracks pending send', async () => {
+  it('sendMessage returns clientRequestId and adds optimistic message', async () => {
     const { useChannelsStore } = await import('./channels');
 
     const mockWs = {
@@ -167,10 +167,55 @@ describe('channels store', () => {
       wsConnected: true,
     });
 
-    const reqId = useChannelsStore.getState().sendMessage('hello');
+    const reqId = useChannelsStore.getState().sendMessage('hello', 'p1');
     expect(reqId).toBe('req-123');
     expect(useChannelsStore.getState().pendingSends.has('req-123')).toBe(true);
     expect(useChannelsStore.getState().pendingSends.get('req-123')?.content).toBe('hello');
+    // Optimistic message should be in the list
+    const msgs = useChannelsStore.getState().messages;
+    expect(msgs.length).toBe(1);
+    expect(msgs[0].content).toBe('hello');
+    expect(msgs[0].pending).toBe(true);
+    expect(msgs[0].clientRequestId).toBe('req-123');
+  });
+
+  it('markChannelRead resets unread count for the channel', async () => {
+    const { useChannelsStore } = await import('./channels');
+
+    useChannelsStore.setState({
+      unreadCounts: { 'ch1': 5, 'ch2': 3 },
+      messages: [{ message_id: 'msg1', channel_id: 'ch1', sender_pseudonym: 'p1', content: 'hi', reply_to_message_id: null, created_at: '' }],
+    });
+
+    useChannelsStore.getState().markChannelRead('ch1');
+
+    expect(useChannelsStore.getState().unreadCounts['ch1']).toBe(0);
+    expect(useChannelsStore.getState().unreadCounts['ch2']).toBe(3);
+  });
+
+  it('dismissFailedMessage removes a failed optimistic message', async () => {
+    const { useChannelsStore } = await import('./channels');
+
+    useChannelsStore.setState({
+      messages: [
+        { message_id: '', channel_id: 'ch1', sender_pseudonym: 'p1', content: 'oops', reply_to_message_id: null, created_at: '', pending: false, failed: true, clientRequestId: 'req-fail' },
+        { message_id: 'msg2', channel_id: 'ch1', sender_pseudonym: 'p2', content: 'ok', reply_to_message_id: null, created_at: '' },
+      ],
+    });
+
+    useChannelsStore.getState().dismissFailedMessage('req-fail');
+
+    const msgs = useChannelsStore.getState().messages;
+    expect(msgs.length).toBe(1);
+    expect(msgs[0].message_id).toBe('msg2');
+  });
+
+  it('sendTyping debounces and does not throw when no ws', async () => {
+    const { useChannelsStore } = await import('./channels');
+
+    // No WS connected — should not throw
+    useChannelsStore.setState({ ws: null, activeChannelId: 'ch1' });
+    expect(() => useChannelsStore.getState().sendTyping()).not.toThrow();
   });
 
   it('resolvePendingSend removes and returns the pending entry', async () => {

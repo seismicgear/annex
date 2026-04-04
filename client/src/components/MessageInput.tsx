@@ -49,39 +49,16 @@ export function MessageInput() {
   const [content, setContent] = useState('');
   const [uploading, setUploading] = useState(false);
   const [preview, setPreview] = useState<FilePreview | null>(null);
+  const [dragOver, setDragOver] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [sendFailure, setSendFailure] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const { activeChannelId, wsConnected, sendMessage, composerError, clearComposerError, pendingSends } = useChannelsStore();
+  const { activeChannelId, wsConnected, sendMessage, composerError, clearComposerError, sendTyping, replyToMessage, setReplyTo } = useChannelsStore();
   const identity = useIdentityStore((s) => s.identity);
+  const pseudonymId = identity?.pseudonymId ?? '';
 
   // Track the pending request ID so we know when the server acknowledges it.
   const pendingRequestIdRef = useRef<string | null>(null);
-  // Stash the draft content + preview so we can restore on failure.
-  const draftRef = useRef<{ content: string; preview: FilePreview | null } | null>(null);
-
-  // Watch for the pending send to resolve (either via echo or error).
-  // When it resolves successfully, clear the composer. On error, restore the draft.
-  useEffect(() => {
-    const reqId = pendingRequestIdRef.current;
-    if (!reqId) return;
-
-    // If the pending send has been removed from the map, the server responded.
-    if (!pendingSends.has(reqId)) {
-      const currentError = useChannelsStore.getState().composerError;
-      if (currentError) {
-        // Error — restore draft so the user can retry.
-        if (draftRef.current) {
-          setContent(draftRef.current.content);
-          setPreview(draftRef.current.preview);
-          setSendFailure(currentError);
-        }
-      }
-      // Success or error — either way we're done tracking this request.
-      pendingRequestIdRef.current = null;
-      draftRef.current = null;
-    }
-  }, [pendingSends]);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -103,10 +80,8 @@ export function MessageInput() {
         const msgContent = text
           ? `${text}\n${resp.url}`
           : resp.url;
-        const reqId = sendMessage(msgContent);
+        const reqId = sendMessage(msgContent, pseudonymId);
         if (reqId) {
-          // Stash the draft for potential restoration, then optimistically clear.
-          draftRef.current = { content, preview };
           pendingRequestIdRef.current = reqId;
           setContent('');
           setPreview(null);
@@ -124,10 +99,8 @@ export function MessageInput() {
     // Regular text message
     const trimmed = content.trim();
     if (!trimmed) return;
-    const reqId = sendMessage(trimmed);
+    const reqId = sendMessage(trimmed, pseudonymId);
     if (reqId) {
-      // Stash the draft for potential restoration, then optimistically clear.
-      draftRef.current = { content: trimmed, preview: null };
       pendingRequestIdRef.current = reqId;
       setContent('');
     }
@@ -140,14 +113,10 @@ export function MessageInput() {
     }
   };
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const processFile = (file: File) => {
     setUploadError(null);
-
     const category = fileCategoryLabel(file);
 
-    // Create preview for images; for videos/files just show metadata
     if (isPreviewableImage(file)) {
       const reader = new FileReader();
       reader.onload = () => {
@@ -155,12 +124,17 @@ export function MessageInput() {
       };
       reader.readAsDataURL(file);
     } else if (isVideo(file)) {
-      // Create video thumbnail via object URL
       const objectUrl = URL.createObjectURL(file);
       setPreview({ file, dataUrl: objectUrl, category });
     } else {
       setPreview({ file, dataUrl: null, category });
     }
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    processFile(file);
 
     // Reset input so the same file can be re-selected
     e.target.value = '';
@@ -189,10 +163,32 @@ export function MessageInput() {
     };
   }, []);
 
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    const file = e.dataTransfer.files[0];
+    if (file) processFile(file);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+  };
+
   if (!activeChannelId) return null;
 
   return (
-    <div className="message-input-wrapper">
+    <div
+      className={`message-input-wrapper ${dragOver ? 'drag-over' : ''}`}
+      onDrop={handleDrop}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+    >
       {(composerError || sendFailure) && (
         <div className="upload-error-bar composer-error" role="alert">
           <span>{sendFailure ?? composerError}</span>
@@ -203,6 +199,14 @@ export function MessageInput() {
           >
             &times;
           </button>
+        </div>
+      )}
+      {replyToMessage && (
+        <div className="reply-bar">
+          <span className="reply-bar-label">Replying to</span>
+          <span className="reply-bar-author">{replyToMessage.sender_pseudonym.slice(0, 12)}...</span>
+          <span className="reply-bar-text">{replyToMessage.content.slice(0, 80)}{replyToMessage.content.length > 80 ? '...' : ''}</span>
+          <button className="reply-bar-cancel" onClick={() => setReplyTo(null)} aria-label="Cancel reply">&times;</button>
         </div>
       )}
       {uploadError && (
@@ -263,7 +267,7 @@ export function MessageInput() {
         </button>
         <textarea
           value={content}
-          onChange={(e) => setContent(e.target.value)}
+          onChange={(e) => { setContent(e.target.value); sendTyping(); }}
           onKeyDown={handleKeyDown}
           placeholder={
             uploading

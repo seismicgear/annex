@@ -140,7 +140,9 @@ function MessageBubble({
   const getDisplayName = useUsernameStore((s) => s.getDisplayName);
   const editMessage = useChannelsStore((s) => s.editMessage);
   const deleteMessage = useChannelsStore((s) => s.deleteMessage);
+  const setReplyTo = useChannelsStore((s) => s.setReplyTo);
   const activeChannelId = useChannelsStore((s) => s.activeChannelId);
+  const allMessages = useChannelsStore((s) => s.messages);
 
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(message.content);
@@ -150,27 +152,34 @@ function MessageBubble({
   const [canModify, setCanModify] = useState(
     isSelf && !isDeleted && isWithinEditWindow(message.created_at),
   );
+  const [editSecondsLeft, setEditSecondsLeft] = useState<number | null>(null);
   const editInputRef = useRef<HTMLTextAreaElement>(null);
 
-  // Timer: update canModify when window expires
+  // Timer: update canModify when window expires, show countdown in last 30s
   useEffect(() => {
     if (!isSelf || isDeleted) {
       setCanModify(false);
+      setEditSecondsLeft(null);
       return;
     }
-    if (!isWithinEditWindow(message.created_at)) {
+    const created = parseMessageTimestamp(message.created_at);
+    if (isNaN(created) || !isWithinEditWindow(message.created_at)) {
       setCanModify(false);
+      setEditSecondsLeft(null);
       return;
     }
     setCanModify(true);
-    const created = parseMessageTimestamp(message.created_at);
-    if (isNaN(created)) {
-      setCanModify(false);
-      return;
-    }
-    const remaining = EDIT_WINDOW_MS - (Date.now() - created);
-    const timer = setTimeout(() => setCanModify(false), remaining);
-    return () => clearTimeout(timer);
+    const tick = () => {
+      const remaining = Math.max(0, Math.ceil((EDIT_WINDOW_MS - (Date.now() - created)) / 1000));
+      setEditSecondsLeft(remaining <= 30 ? remaining : null);
+      if (remaining <= 0) {
+        setCanModify(false);
+        setEditSecondsLeft(null);
+      }
+    };
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
   }, [isSelf, isDeleted, message.created_at]);
 
   // Focus edit input when editing starts and place cursor at end.
@@ -261,7 +270,7 @@ function MessageBubble({
   );
 
   return (
-    <div className={`message ${isSelf ? 'self' : ''} ${isDeleted ? 'deleted' : ''}`}>
+    <div className={`message ${isSelf ? 'self' : ''} ${isDeleted ? 'deleted' : ''} ${message.pending ? 'pending' : ''} ${message.failed ? 'failed' : ''}`}>
       <div className="message-header">
         {avatar ? (
           <img className="message-avatar" src={avatar} alt="" />
@@ -286,11 +295,14 @@ function MessageBubble({
         <span className="timestamp">{time}</span>
         {canModify && !editing && (
           <span className="message-actions">
-            <button className="msg-action-btn edit-btn" onClick={handleEdit} title="Edit message">
+            <button className="msg-action-btn edit-btn" onClick={handleEdit} title={editSecondsLeft !== null ? `Edit (${editSecondsLeft}s left)` : 'Edit message'}>
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
                 <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
               </svg>
+              {editSecondsLeft !== null && (
+                <span className="edit-countdown">{editSecondsLeft}s</span>
+              )}
             </button>
             <button
               className={`msg-action-btn delete-btn ${confirmingDelete ? 'confirming' : ''}`}
@@ -309,7 +321,50 @@ function MessageBubble({
             </button>
           </span>
         )}
+        {message.pending && (
+          <span className="message-status pending-status">sending...</span>
+        )}
+        {message.failed && (
+          <span className="message-status failed-status">
+            failed
+            <button className="msg-retry-btn" onClick={() => {
+              if (message.clientRequestId) {
+                useChannelsStore.getState().retryMessage(message.clientRequestId, pseudonymId);
+              }
+            }} title="Retry sending">retry</button>
+            <button className="msg-dismiss-btn" onClick={() => {
+              if (message.clientRequestId) {
+                useChannelsStore.getState().dismissFailedMessage(message.clientRequestId);
+              }
+            }} title="Dismiss">dismiss</button>
+          </span>
+        )}
+        {!isDeleted && !message.pending && !message.failed && (
+          <button
+            className="msg-action-btn reply-btn"
+            onClick={() => setReplyTo(message)}
+            title="Reply to this message"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <polyline points="9 14 4 9 9 4" />
+              <path d="M20 20v-7a4 4 0 0 0-4-4H4" />
+            </svg>
+          </button>
+        )}
       </div>
+
+      {/* Reply context: show the quoted parent message */}
+      {message.reply_to_message_id && !isDeleted && (() => {
+        const parent = allMessages.find((m) => m.message_id === message.reply_to_message_id);
+        if (!parent) return null;
+        const parentName = getDisplayName(parent.sender_pseudonym) ?? parent.sender_pseudonym.slice(0, 12) + '...';
+        return (
+          <div className="reply-context">
+            <span className="reply-context-author">{parentName}</span>
+            <span className="reply-context-text">{parent.content.slice(0, 100)}{parent.content.length > 100 ? '...' : ''}</span>
+          </div>
+        );
+      })()}
 
       {isDeleted ? (
         <div className="message-content message-deleted-text">This message was deleted</div>
@@ -423,7 +478,7 @@ function MessageBubble({
 
 export function MessageView() {
   const identity = useIdentityStore((s) => s.identity);
-  const { messages, activeChannelId, loadOlderMessages, loadingOlder, hasMoreMessages, historyLoading, historyError } = useChannelsStore();
+  const { messages, activeChannelId, loadOlderMessages, loadingOlder, hasMoreMessages, historyLoading, historyError, typingUsers } = useChannelsStore();
   const selectChannel = useChannelsStore((s) => s.selectChannel);
   const loadVisibleUsernames = useUsernameStore((s) => s.loadVisibleUsernames);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -529,10 +584,10 @@ export function MessageView() {
 
   return (
     <>
-      <div className="message-view" ref={containerRef} onScroll={handleScroll}>
+      <div className="message-view" ref={containerRef} onScroll={handleScroll} role="log" aria-label="Message history" aria-live="polite">
         {messages.map((msg: Message) => (
           <MessageBubble
-            key={msg.message_id}
+            key={msg.clientRequestId ?? msg.message_id}
             message={msg}
             isSelf={msg.sender_pseudonym === identity?.pseudonymId}
             pseudonymId={identity?.pseudonymId ?? ''}
@@ -540,6 +595,15 @@ export function MessageView() {
             onImageClick={setLightboxUrl}
           />
         ))}
+        {typingUsers.length > 0 && (
+          <div className="typing-indicator">
+            {typingUsers.length === 1
+              ? `${typingUsers[0].pseudonymId.slice(0, 12)}... is typing...`
+              : typingUsers.length <= 3
+                ? `${typingUsers.map((u) => u.pseudonymId.slice(0, 8) + '...').join(', ')} are typing...`
+                : 'Several people are typing...'}
+          </div>
+        )}
         <div ref={bottomRef} />
       </div>
 
