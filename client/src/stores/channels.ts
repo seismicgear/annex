@@ -72,6 +72,8 @@ interface ChannelsState {
   unreadCounts: Record<string, number>;
   /** Last read message ID per channel. */
   lastReadMessageIds: Record<string, string>;
+  /** Message being replied to (shown in composer). */
+  replyToMessage: Message | null;
 
   /** Load channel list from server. */
   loadChannels: (pseudonymId: string) => Promise<void>;
@@ -113,6 +115,8 @@ interface ChannelsState {
   retryMessage: (clientRequestId: string, pseudonymId: string) => void;
   /** Dismiss a failed optimistic message. */
   dismissFailedMessage: (clientRequestId: string) => void;
+  /** Set the message to reply to. */
+  setReplyTo: (message: Message | null) => void;
 }
 
 /** Timestamp of the last typing frame sent (module-level to survive store resets). */
@@ -139,6 +143,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
   typingUsers: [],
   unreadCounts: {},
   lastReadMessageIds: {},
+  replyToMessage: null,
 
   loadChannels: async (pseudonymId: string) => {
     set({ loading: true, error: null });
@@ -165,7 +170,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       ws.unsubscribe(prevChannelId);
     }
 
-    set({ activeChannelId: channelId, messages: [], loadingOlder: false, hasMoreMessages: true, historyLoading: true, historyError: null, composerError: null, typingUsers: [] });
+    set({ activeChannelId: channelId, messages: [], loadingOlder: false, hasMoreMessages: true, historyLoading: true, historyError: null, composerError: null, typingUsers: [], replyToMessage: null });
 
     // Mark the channel as read
     get().markChannelRead(channelId);
@@ -302,6 +307,14 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
               [frame.channelId!]: (state.unreadCounts[frame.channelId!] ?? 0) + 1,
             },
           }));
+          // Browser notification for background messages
+          if (document.hidden && 'Notification' in globalThis && Notification.permission === 'granted') {
+            const sender = frame.senderPseudonym?.slice(0, 12) ?? 'Someone';
+            const body = (frame.content ?? '').slice(0, 100);
+            try {
+              new Notification(`${sender}...`, { body, tag: `annex-${frame.channelId}` });
+            } catch { /* Notification API unavailable */ }
+          }
         }
         return;
       }
@@ -391,14 +404,16 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
   },
 
   sendMessage: (content: string, pseudonymId: string, replyTo: string | null = null): string | null => {
-    const { ws, activeChannelId } = get();
+    const { ws, activeChannelId, replyToMessage } = get();
     if (!ws || !activeChannelId) {
       set({ composerError: 'Cannot send — not connected to the server.' });
       return null;
     }
-    set({ composerError: null });
+    // Use the reply context if set and no explicit replyTo was passed
+    const effectiveReplyTo = replyTo ?? replyToMessage?.message_id ?? null;
+    set({ composerError: null, replyToMessage: null });
     try {
-      const clientRequestId = ws.send(activeChannelId, content, replyTo);
+      const clientRequestId = ws.send(activeChannelId, content, effectiveReplyTo);
       const pending: PendingSend = { clientRequestId, content, sentAt: Date.now() };
       // Add optimistic message to the list immediately
       const optimisticMsg: Message = {
@@ -406,7 +421,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
         channel_id: activeChannelId,
         sender_pseudonym: pseudonymId,
         content,
-        reply_to_message_id: replyTo ?? null,
+        reply_to_message_id: effectiveReplyTo,
         created_at: new Date().toISOString(),
         pending: true,
         clientRequestId,
@@ -614,5 +629,9 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     set((state) => ({
       messages: state.messages.filter((m) => m.clientRequestId !== clientRequestId),
     }));
+  },
+
+  setReplyTo: (message: Message | null) => {
+    set({ replyToMessage: message });
   },
 }));

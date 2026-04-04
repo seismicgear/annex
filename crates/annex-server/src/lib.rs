@@ -754,6 +754,10 @@ pub fn app(state: AppState) -> Router {
             post(api_channels::leave_channel_handler),
         )
         .route(
+            "/api/messages/search",
+            get(api_channels::search_messages_handler),
+        )
+        .route(
             "/api/channels/{channelId}/messages",
             get(api_channels::get_channel_history_handler),
         )

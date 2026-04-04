@@ -611,6 +611,60 @@ pub fn list_messages(
     }
 }
 
+/// Searches messages by content substring, scoped by server and optionally by channel.
+///
+/// Results are ordered by relevance (most recent first), capped at `limit`.
+pub fn search_messages(
+    conn: &Connection,
+    server_id: i64,
+    channel_id: Option<&str>,
+    query: &str,
+    limit: u32,
+) -> Result<Vec<Message>, ChannelError> {
+    let limit = limit.min(50);
+    let pattern = format!("%{query}%");
+
+    if let Some(cid) = channel_id {
+        let mut stmt = conn.prepare(
+            "SELECT id, server_id, channel_id, message_id, sender_pseudonym, content,
+                    reply_to_message_id, created_at, expires_at, edited_at, deleted_at
+             FROM messages
+             WHERE server_id = ?1 AND channel_id = ?2 AND content LIKE ?3
+               AND deleted_at IS NULL
+             ORDER BY created_at DESC
+             LIMIT ?4",
+        )?;
+        let rows = stmt.query_map(
+            params![server_id, cid, pattern, limit],
+            map_row_to_message,
+        )?;
+        let mut messages = Vec::new();
+        for row in rows {
+            messages.push(row?);
+        }
+        Ok(messages)
+    } else {
+        let mut stmt = conn.prepare(
+            "SELECT id, server_id, channel_id, message_id, sender_pseudonym, content,
+                    reply_to_message_id, created_at, expires_at, edited_at, deleted_at
+             FROM messages
+             WHERE server_id = ?1 AND content LIKE ?2
+               AND deleted_at IS NULL
+             ORDER BY created_at DESC
+             LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(
+            params![server_id, pattern, limit],
+            map_row_to_message,
+        )?;
+        let mut messages = Vec::new();
+        for row in rows {
+            messages.push(row?);
+        }
+        Ok(messages)
+    }
+}
+
 /// Maximum age (in seconds) for a message to be editable or deletable by its author.
 pub const EDIT_WINDOW_SECONDS: i64 = 60;
 

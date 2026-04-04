@@ -24,6 +24,7 @@ import { MemberList } from '@/components/MemberList';
 import { StatusBar } from '@/components/StatusBar';
 import { FederationPanel } from '@/components/FederationPanel';
 import { EventLog } from '@/components/EventLog';
+import { MessageSearch } from '@/components/MessageSearch';
 import { AdminPanel } from '@/components/AdminPanel';
 import { ServerHub } from '@/components/ServerHub';
 import { StartupModeSelector, type DegradedStartupInfo } from '@/components/StartupModeSelector';
@@ -54,6 +55,48 @@ const PROVING_STATUS_LABELS: Record<ProvingStatus, string> = {
   computing_witness: 'Computing witness...',
   generating_proof: 'Generating proof...',
 };
+
+/** Reconnection banner — shown when the WebSocket disconnects.
+ * Uses Zustand subscription to track connection state transitions
+ * without violating React strict-mode lint rules.
+ */
+function ReconnectionBanner() {
+  const wsConnected = useChannelsStore((s) => s.wsConnected);
+  const [banner, setBanner] = useState<'hidden' | 'disconnected' | 'reconnected'>('hidden');
+
+  // Subscribe to wsConnected changes at the store level to detect transitions
+  useEffect(() => {
+    let wasConnected = useChannelsStore.getState().wsConnected;
+    const unsub = useChannelsStore.subscribe((state) => {
+      const nowConnected = state.wsConnected;
+      if (!nowConnected && wasConnected) {
+        setBanner('disconnected');
+      } else if (nowConnected && !wasConnected) {
+        setBanner('reconnected');
+      }
+      wasConnected = nowConnected;
+    });
+    return unsub;
+  }, []);
+
+  // Auto-hide the "Reconnected" banner after 2 seconds
+  useEffect(() => {
+    if (banner === 'reconnected') {
+      const timer = setTimeout(() => setBanner('hidden'), 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [banner]);
+
+  if (banner === 'hidden') return null;
+
+  return (
+    <div className={`reconnection-banner ${banner}`} role="alert">
+      {wsConnected
+        ? 'Reconnected'
+        : 'Connection lost — reconnecting...'}
+    </div>
+  );
+}
 
 export default function App() {
   const {
@@ -427,6 +470,10 @@ export default function App() {
         }
 
         if (cancelled) return;
+        // Request notification permission for background message alerts
+        if ('Notification' in globalThis && Notification.permission === 'default') {
+          Notification.requestPermission().catch(() => {});
+        }
         const baseUrl = getApiBaseUrl();
         const sessionToken = getSessionToken();
         connectWs(identity.pseudonymId!, baseUrl || undefined, sessionToken);
@@ -793,6 +840,7 @@ export default function App() {
               <ChannelList />
             </aside>
             <main className="chat-area">
+              <MessageSearch />
               <MessageView />
               <MessageInput />
             </main>
@@ -915,6 +963,7 @@ export default function App() {
           <button onClick={() => setDegradedStartup(null)} className="dismiss-banner-btn" aria-label="Dismiss">&times;</button>
         </div>
       )}
+      <ReconnectionBanner />
       <div className="app-with-hub">
         {servers.length > 0 && <ServerHub />}
         <div className="app-main-content" key={activeServer?.id ?? 'default'}>

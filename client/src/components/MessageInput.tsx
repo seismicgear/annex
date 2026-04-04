@@ -49,10 +49,11 @@ export function MessageInput() {
   const [content, setContent] = useState('');
   const [uploading, setUploading] = useState(false);
   const [preview, setPreview] = useState<FilePreview | null>(null);
+  const [dragOver, setDragOver] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [sendFailure, setSendFailure] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const { activeChannelId, wsConnected, sendMessage, composerError, clearComposerError, sendTyping } = useChannelsStore();
+  const { activeChannelId, wsConnected, sendMessage, composerError, clearComposerError, sendTyping, replyToMessage, setReplyTo } = useChannelsStore();
   const identity = useIdentityStore((s) => s.identity);
   const pseudonymId = identity?.pseudonymId ?? '';
 
@@ -112,14 +113,10 @@ export function MessageInput() {
     }
   };
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const processFile = (file: File) => {
     setUploadError(null);
-
     const category = fileCategoryLabel(file);
 
-    // Create preview for images; for videos/files just show metadata
     if (isPreviewableImage(file)) {
       const reader = new FileReader();
       reader.onload = () => {
@@ -127,12 +124,17 @@ export function MessageInput() {
       };
       reader.readAsDataURL(file);
     } else if (isVideo(file)) {
-      // Create video thumbnail via object URL
       const objectUrl = URL.createObjectURL(file);
       setPreview({ file, dataUrl: objectUrl, category });
     } else {
       setPreview({ file, dataUrl: null, category });
     }
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    processFile(file);
 
     // Reset input so the same file can be re-selected
     e.target.value = '';
@@ -161,10 +163,32 @@ export function MessageInput() {
     };
   }, []);
 
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    const file = e.dataTransfer.files[0];
+    if (file) processFile(file);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+  };
+
   if (!activeChannelId) return null;
 
   return (
-    <div className="message-input-wrapper">
+    <div
+      className={`message-input-wrapper ${dragOver ? 'drag-over' : ''}`}
+      onDrop={handleDrop}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+    >
       {(composerError || sendFailure) && (
         <div className="upload-error-bar composer-error" role="alert">
           <span>{sendFailure ?? composerError}</span>
@@ -175,6 +199,14 @@ export function MessageInput() {
           >
             &times;
           </button>
+        </div>
+      )}
+      {replyToMessage && (
+        <div className="reply-bar">
+          <span className="reply-bar-label">Replying to</span>
+          <span className="reply-bar-author">{replyToMessage.sender_pseudonym.slice(0, 12)}...</span>
+          <span className="reply-bar-text">{replyToMessage.content.slice(0, 80)}{replyToMessage.content.length > 80 ? '...' : ''}</span>
+          <button className="reply-bar-cancel" onClick={() => setReplyTo(null)} aria-label="Cancel reply">&times;</button>
         </div>
       )}
       {uploadError && (

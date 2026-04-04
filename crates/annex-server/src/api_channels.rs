@@ -3,8 +3,8 @@ use crate::middleware::{verify_zk_membership_header, IdentityContext};
 use crate::AppState;
 use annex_channels::{
     add_member, create_channel, delete_channel, get_channel, get_edit_history, is_member,
-    list_channels, list_messages, remove_member, Channel, CreateChannelParams, Message,
-    MessageEdit,
+    list_channels, list_messages, remove_member, search_messages, Channel, CreateChannelParams,
+    Message, MessageEdit,
 };
 use annex_graph::{create_edge, delete_edge};
 use annex_types::{AlignmentStatus, ChannelType, EdgeKind, FederationScope, RoleCode};
@@ -62,6 +62,13 @@ fn channel_err_to_status(e: annex_channels::ChannelError) -> StatusCode {
 #[derive(Deserialize)]
 pub struct HistoryParams {
     pub before: Option<String>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Deserialize)]
+pub struct SearchParams {
+    pub q: String,
+    pub channel_id: Option<String>,
     pub limit: Option<u32>,
 }
 
@@ -952,4 +959,35 @@ pub async fn get_message_edits_handler(
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
 
     Ok(Json(edits))
+}
+
+/// GET /api/messages/search
+pub async fn search_messages_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(IdentityContext(_identity)): Extension<IdentityContext>,
+    Query(params): Query<SearchParams>,
+) -> Result<Json<Vec<Message>>, StatusCode> {
+    if params.q.trim().is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if params.q.len() > 200 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let messages = tokio::task::spawn_blocking({
+        let pool = state.pool.clone();
+        let server_id = state.server_id;
+        let query = params.q.clone();
+        let channel_id = params.channel_id.clone();
+        let limit = params.limit.unwrap_or(20).min(50);
+        move || {
+            let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            search_messages(&conn, server_id, channel_id.as_deref(), &query, limit)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+
+    Ok(Json(messages))
 }

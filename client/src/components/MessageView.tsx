@@ -140,7 +140,9 @@ function MessageBubble({
   const getDisplayName = useUsernameStore((s) => s.getDisplayName);
   const editMessage = useChannelsStore((s) => s.editMessage);
   const deleteMessage = useChannelsStore((s) => s.deleteMessage);
+  const setReplyTo = useChannelsStore((s) => s.setReplyTo);
   const activeChannelId = useChannelsStore((s) => s.activeChannelId);
+  const allMessages = useChannelsStore((s) => s.messages);
 
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(message.content);
@@ -337,7 +339,32 @@ function MessageBubble({
             }} title="Dismiss">dismiss</button>
           </span>
         )}
+        {!isDeleted && !message.pending && !message.failed && (
+          <button
+            className="msg-action-btn reply-btn"
+            onClick={() => setReplyTo(message)}
+            title="Reply to this message"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <polyline points="9 14 4 9 9 4" />
+              <path d="M20 20v-7a4 4 0 0 0-4-4H4" />
+            </svg>
+          </button>
+        )}
       </div>
+
+      {/* Reply context: show the quoted parent message */}
+      {message.reply_to_message_id && !isDeleted && (() => {
+        const parent = allMessages.find((m) => m.message_id === message.reply_to_message_id);
+        if (!parent) return null;
+        const parentName = getDisplayName(parent.sender_pseudonym) ?? parent.sender_pseudonym.slice(0, 12) + '...';
+        return (
+          <div className="reply-context">
+            <span className="reply-context-author">{parentName}</span>
+            <span className="reply-context-text">{parent.content.slice(0, 100)}{parent.content.length > 100 ? '...' : ''}</span>
+          </div>
+        );
+      })()}
 
       {isDeleted ? (
         <div className="message-content message-deleted-text">This message was deleted</div>
@@ -557,7 +584,7 @@ export function MessageView() {
 
   return (
     <>
-      <div className="message-view" ref={containerRef} onScroll={handleScroll}>
+      <div className="message-view" ref={containerRef} onScroll={handleScroll} role="log" aria-label="Message history" aria-live="polite">
         {messages.map((msg: Message) => (
           <MessageBubble
             key={msg.clientRequestId ?? msg.message_id}
