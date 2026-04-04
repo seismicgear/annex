@@ -51,17 +51,13 @@ async fn test_rate_limiter_concurrent_same_key() {
     // timing. We verify that *some* requests were denied (we sent 200 with limit 100).
     assert!(
         total_denied > 0,
-        "at least some requests should be denied (allowed={}, denied={})",
-        total_allowed,
-        total_denied
+        "at least some requests should be denied (allowed={total_allowed}, denied={total_denied})"
     );
     // And that the limiter allowed at most limit + 1 requests (accounting for
     // the current request being counted before the check).
     assert!(
         total_allowed <= limit + 1,
-        "should not allow significantly more than the limit (allowed={}, limit={})",
-        total_allowed,
-        limit
+        "should not allow significantly more than the limit (allowed={total_allowed}, limit={limit})"
     );
 }
 
@@ -149,9 +145,7 @@ async fn test_rate_limiter_pseudonym_key_concurrent() {
     let total_allowed = allowed.load(Ordering::Relaxed);
     assert!(
         total_allowed <= limit + 1,
-        "pseudonym rate limit should be enforced (allowed={}, limit={})",
-        total_allowed,
-        limit
+        "pseudonym rate limit should be enforced (allowed={total_allowed}, limit={limit})"
     );
 }
 

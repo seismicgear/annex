@@ -18,6 +18,11 @@ const PERSONA_STORE = 'personas';
 
 let dbPromise: Promise<IDBPDatabase> | null = null;
 
+/** Reset the cached DB connection handle (used after clearAllDatabases). */
+export function resetDbHandle(): void {
+  dbPromise = null;
+}
+
 function getDb(): Promise<IDBPDatabase> {
   if (!dbPromise) {
     dbPromise = openDB(DB_NAME, DB_VERSION, {

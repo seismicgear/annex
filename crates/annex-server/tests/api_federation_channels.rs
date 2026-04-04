@@ -132,7 +132,7 @@ async fn test_list_federated_channels() {
             .await
             .unwrap();
         let body_str = String::from_utf8_lossy(&body_bytes);
-        panic!("Request failed with status {}: {}", status, body_str);
+        panic!("Request failed with status {status}: {body_str}");
     }
 
     assert_eq!(response.status(), StatusCode::OK);
@@ -203,7 +203,7 @@ async fn test_join_federated_channel() {
         ).unwrap();
 
         // Generate signature (newline-delimited to match server)
-        let message = format!("{}\n{}", channel_id, pseudonym_id);
+        let message = format!("{channel_id}\n{pseudonym_id}");
 
         let signature = signing_key.sign(message.as_bytes());
         let signature_hex = hex::encode(signature.to_bytes());
@@ -216,7 +216,7 @@ async fn test_join_federated_channel() {
     };
 
     // Call POST /api/federation/channels/:id/join
-    let uri = format!("/api/federation/channels/{}/join", channel_id);
+    let uri = format!("/api/federation/channels/{channel_id}/join");
     let response = app
         .oneshot(
             Request::builder()
@@ -236,7 +236,7 @@ async fn test_join_federated_channel() {
             .await
             .unwrap();
         let body_str = String::from_utf8_lossy(&body_bytes);
-        panic!("Request failed with status {}: {}", status, body_str);
+        panic!("Request failed with status {status}: {body_str}");
     }
 
     assert_eq!(response.status(), StatusCode::OK);

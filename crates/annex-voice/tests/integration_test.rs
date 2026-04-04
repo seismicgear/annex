@@ -15,7 +15,7 @@ async fn test_generate_join_token() {
         .expect("Failed to generate token");
 
     assert!(!token.is_empty());
-    println!("Generated token: {}", token);
+    println!("Generated token: {token}");
 }
 
 #[tokio::test]
@@ -32,7 +32,7 @@ async fn test_create_room() {
             println!("Successfully created room: {}", room.name);
         }
         Err(e) => {
-            eprintln!("Failed to create room: {:?}", e);
+            eprintln!("Failed to create room: {e:?}");
 
             // Allow test to pass if server is unreachable, as we might not have the sidecar
             let err_str = e.to_string();
@@ -48,7 +48,7 @@ async fn test_create_room() {
             // Fail on other errors (e.g. auth error, bad request)
             // panic!("Room creation failed: {:?}", e);
             // For safety in this environment where I can't control network:
-            println!("Warning: LiveKit test failed with error: {:?}", e);
+            println!("Warning: LiveKit test failed with error: {e:?}");
         }
     }
 }

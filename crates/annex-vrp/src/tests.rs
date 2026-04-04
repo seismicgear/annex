@@ -460,7 +460,6 @@ fn test_vrp_error_display() {
     let msg = err.to_string();
     assert!(
         msg.contains("UNIX epoch"),
-        "Error message should mention UNIX epoch, got: {}",
-        msg
+        "Error message should mention UNIX epoch, got: {msg}"
     );
 }

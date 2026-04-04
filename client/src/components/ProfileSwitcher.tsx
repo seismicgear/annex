@@ -18,6 +18,9 @@ interface Props {
 
 export function ProfileSwitcher({ onClose }: Props) {
   const identity = useIdentityStore((s) => s.identity);
+  const activeServer = useServersStore((s) =>
+    s.servers.find((srv) => srv.id === s.activeServerId) ?? null,
+  );
 
   const [personaList, setPersonaList] = useState<Persona[]>([]);
   const [creating, setCreating] = useState(false);
@@ -140,15 +143,14 @@ export function ProfileSwitcher({ onClose }: Props) {
             </p>
           )}
           {personaList.map((p) => {
-            const server = useServersStore.getState().getActiveServer();
-            const isActive = server?.personaId === p.id;
+            const isActive = activeServer?.personaId === p.id;
             return (
             <div
               key={p.id}
               className={`persona-item ${isActive ? 'active' : ''}`}
               onClick={async () => {
-                if (server && !isActive) {
-                  await useServersStore.getState().setServerPersona(server.id, p.id, p.accentColor);
+                if (activeServer && !isActive) {
+                  await useServersStore.getState().setServerPersona(activeServer.id, p.id, p.accentColor);
                 }
               }}
               style={{ cursor: isActive ? 'default' : 'pointer' }}

@@ -96,17 +96,32 @@ export function exportIdentity(identity: StoredIdentity): string {
 
 /** Import an identity from a backup JSON string. */
 export async function importIdentity(json: string): Promise<StoredIdentity> {
-  const identity: StoredIdentity = JSON.parse(json);
+  const parsed: StoredIdentity = JSON.parse(json);
   // Valid key material requires sk and roleCode. commitmentHex is required
   // for registered identities, but locally recovered-but-unregistered
   // identities with valid key material (sk + commitmentHex + nodeId) are
   // also accepted even when pseudonymId is null.
-  if (!identity.sk || !identity.roleCode) {
+  if (!parsed.sk || !parsed.roleCode) {
     throw new Error('Invalid identity backup: missing required fields (sk, roleCode)');
   }
-  if (!identity.commitmentHex && !identity.nodeId) {
+  if (!parsed.commitmentHex && !parsed.nodeId) {
     throw new Error('Invalid identity backup: missing key material (commitmentHex or nodeId)');
   }
+  // Always generate a fresh ID to prevent a malicious backup from
+  // overwriting an existing identity via IndexedDB's put() upsert.
+  // Only preserve the cryptographic key material fields.
+  const identity: StoredIdentity = {
+    id: crypto.randomUUID(),
+    sk: parsed.sk,
+    roleCode: parsed.roleCode,
+    nodeId: parsed.nodeId,
+    commitmentHex: parsed.commitmentHex,
+    pseudonymId: parsed.pseudonymId ?? null,
+    sessionToken: null, // Never trust imported session tokens
+    serverSlug: parsed.serverSlug ?? '',
+    leafIndex: parsed.leafIndex ?? null,
+    createdAt: new Date().toISOString(),
+  };
   await saveIdentity(identity);
   return identity;
 }
@@ -120,8 +135,18 @@ export async function importIdentity(json: string): Promise<StoredIdentity> {
  */
 export async function clearAllDatabases(): Promise<void> {
   const DB_NAMES = ['annex-identity', 'annex-servers', 'annex-personas'];
-  // Close any open connection handles first.
+  // Close all cached connection handles so subsequent calls re-open fresh databases.
   dbPromise = null;
+  // Also reset handles in the servers and personas modules.
+  // Dynamic imports to avoid circular dependency at module level.
+  try {
+    const { resetDbHandle: resetServersDb } = await import('@/lib/servers');
+    resetServersDb();
+  } catch { /* module may not be loaded yet */ }
+  try {
+    const { resetDbHandle: resetPersonasDb } = await import('@/lib/personas');
+    resetPersonasDb();
+  } catch { /* module may not be loaded yet */ }
   for (const name of DB_NAMES) {
     try {
       await new Promise<void>((resolve, reject) => {

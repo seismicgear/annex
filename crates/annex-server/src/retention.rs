@@ -35,7 +35,7 @@ pub async fn start_retention_task(pool: DbPool, interval_seconds: u64) {
                 // this as a real failure rather than silently returning Ok(0).
                 rusqlite::Error::SqliteFailure(
                     rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
-                    Some(format!("pool connection error: {}", e)),
+                    Some(format!("pool connection error: {e}")),
                 )
             })?;
             let mut total: usize = 0;

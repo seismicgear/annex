@@ -22,10 +22,7 @@ fn perf_merkle_insert_and_proof_1000_leaves() {
     let insert_elapsed = insert_start.elapsed();
 
     let avg_insert_us = insert_elapsed.as_micros() as f64 / n as f64;
-    eprintln!(
-        "Merkle insert: {} leaves in {:?} (avg {:.1}us/insert)",
-        n, insert_elapsed, avg_insert_us
-    );
+    eprintln!("Merkle insert: {n} leaves in {insert_elapsed:?} (avg {avg_insert_us:.1}us/insert)");
 
     // Proof generation for the last leaf
     let proof_start = Instant::now();
@@ -41,16 +38,12 @@ fn perf_merkle_insert_and_proof_1000_leaves() {
 
     // Target: single insert + proof < 50ms
     let single_op_ms = (avg_insert_us / 1000.0) + proof_elapsed.as_secs_f64() * 1000.0;
-    eprintln!(
-        "Single insert + proof: {:.2}ms (target < 50ms)",
-        single_op_ms
-    );
+    eprintln!("Single insert + proof: {single_op_ms:.2}ms (target < 50ms)");
     // Relaxed threshold: 500ms to accommodate slow CI runners and debug builds.
     // Production target is < 50ms but that should be benchmarked separately.
     assert!(
         single_op_ms < 500.0,
-        "insert + proof should be under 500ms, got {:.2}ms",
-        single_op_ms
+        "insert + proof should be under 500ms, got {single_op_ms:.2}ms"
     );
 }
 
@@ -73,7 +66,7 @@ fn perf_merkle_root_computation() {
     let elapsed = start.elapsed();
 
     let avg_ns = elapsed.as_nanos() / 1000;
-    eprintln!("Root access: avg {}ns/call", avg_ns);
+    eprintln!("Root access: avg {avg_ns}ns/call");
 
     // Root should be essentially instant (cached or O(1))
     assert!(

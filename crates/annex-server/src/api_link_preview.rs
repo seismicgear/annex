@@ -170,7 +170,7 @@ fn parse_og_metadata(html: &str) -> PreviewResponse {
     // Helper: select content of <meta property="og:XXX"> or <meta name="og:XXX">
     let og = |prop: &str| -> Option<String> {
         // Try property attribute first (standard OG)
-        let sel_prop = Selector::parse(&format!(r#"meta[property="og:{}"]"#, prop)).ok()?;
+        let sel_prop = Selector::parse(&format!(r#"meta[property="og:{prop}"]"#)).ok()?;
         if let Some(el) = document.select(&sel_prop).next() {
             if let Some(content) = el.value().attr("content") {
                 let trimmed = content.trim();
@@ -181,7 +181,7 @@ fn parse_og_metadata(html: &str) -> PreviewResponse {
         }
 
         // Fallback: name attribute
-        let sel_name = Selector::parse(&format!(r#"meta[name="og:{}"]"#, prop)).ok()?;
+        let sel_name = Selector::parse(&format!(r#"meta[name="og:{prop}"]"#)).ok()?;
         if let Some(el) = document.select(&sel_name).next() {
             if let Some(content) = el.value().attr("content") {
                 let trimmed = content.trim();
@@ -267,7 +267,7 @@ const MAX_REDIRECT_HOPS: usize = 5;
 /// Resolve a hostname to a socket address and validate that ALL resolved IPs
 /// are public. Returns a validated address for DNS-pinned requests.
 async fn resolve_and_validate(host: &str, port: u16) -> Result<SocketAddr, ()> {
-    let lookup = format!("{}:{}", host, port);
+    let lookup = format!("{host}:{port}");
     let addrs: Vec<SocketAddr> = tokio::net::lookup_host(&lookup)
         .await
         .map_err(|e| {

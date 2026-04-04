@@ -24,7 +24,7 @@ pub async fn recalculate_agent_alignments(state: Arc<AppState>) -> Result<(), Ap
     // 2. Prepare Validation Context
     let local_root = ServerPolicyRoot::from_policy(&policy);
     let local_anchor = local_root.to_anchor_snapshot().map_err(|e| {
-        ApiError::InternalServerError(format!("failed to create anchor snapshot: {}", e))
+        ApiError::InternalServerError(format!("failed to create anchor snapshot: {e}"))
     })?;
 
     let mut offered_capabilities = Vec::new();
@@ -60,10 +60,10 @@ pub async fn recalculate_agent_alignments(state: Arc<AppState>) -> Result<(), Ap
         let mut conn = state_clone
             .pool
             .get()
-            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
 
         let tx = conn.transaction().map_err(|e| {
-            ApiError::InternalServerError(format!("failed to begin transaction: {}", e))
+            ApiError::InternalServerError(format!("failed to begin transaction: {e}"))
         })?;
 
         let (agents_to_update, agents_to_disconnect) = {
@@ -73,7 +73,7 @@ pub async fn recalculate_agent_alignments(state: Arc<AppState>) -> Result<(), Ap
                      FROM agent_registrations
                      WHERE active = 1 AND server_id = ?1"
                 )
-                .map_err(|e| ApiError::InternalServerError(format!("prepare failed: {}", e)))?;
+                .map_err(|e| ApiError::InternalServerError(format!("prepare failed: {e}")))?;
 
             let agent_iter = stmt
                 .query_map([state_clone.server_id], |row| {
@@ -85,14 +85,14 @@ pub async fn recalculate_agent_alignments(state: Arc<AppState>) -> Result<(), Ap
                         row.get::<_, Option<String>>(4)?,
                     ))
                 })
-                .map_err(|e| ApiError::InternalServerError(format!("query failed: {}", e)))?;
+                .map_err(|e| ApiError::InternalServerError(format!("query failed: {e}")))?;
 
             let mut updates = Vec::new();
             let mut disconnects = Vec::new();
 
             for agent in agent_iter {
                 let (pseudonym, old_alignment_str, old_scope_str, contract_json, anchor_json) =
-                    agent.map_err(|e| ApiError::InternalServerError(format!("row error: {}", e)))?;
+                    agent.map_err(|e| ApiError::InternalServerError(format!("row error: {e}")))?;
 
                 let anchor_json = match anchor_json {
                     Some(json) => json,
@@ -156,7 +156,7 @@ pub async fn recalculate_agent_alignments(state: Arc<AppState>) -> Result<(), Ap
                     state_clone.server_id,
                     pseudonym
                 ],
-            ).map_err(|e| ApiError::InternalServerError(format!("update failed: {}", e)))?;
+            ).map_err(|e| ApiError::InternalServerError(format!("update failed: {e}")))?;
 
             // Emit presence event (SSE)
              let _ = state_clone.presence_tx.send(PresenceEvent::NodeUpdated {
@@ -194,13 +194,13 @@ pub async fn recalculate_agent_alignments(state: Arc<AppState>) -> Result<(), Ap
         }
 
         tx.commit().map_err(|e| {
-            ApiError::InternalServerError(format!("failed to commit transaction: {}", e))
+            ApiError::InternalServerError(format!("failed to commit transaction: {e}"))
         })?;
 
         Ok(agents_to_disconnect)
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     // Disconnect users (must be done in async context)
     for pseudonym in agents_to_disconnect {
@@ -222,7 +222,7 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
     // 2. Prepare Validation Context
     let local_root = ServerPolicyRoot::from_policy(&policy);
     let local_anchor = local_root.to_anchor_snapshot().map_err(|e| {
-        ApiError::InternalServerError(format!("failed to create anchor snapshot: {}", e))
+        ApiError::InternalServerError(format!("failed to create anchor snapshot: {e}"))
     })?;
 
     let mut offered_capabilities = Vec::new();
@@ -258,10 +258,10 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
         let mut conn = state_clone
             .pool
             .get()
-            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
 
         let tx = conn.transaction().map_err(|e| {
-            ApiError::InternalServerError(format!("failed to begin transaction: {}", e))
+            ApiError::InternalServerError(format!("failed to begin transaction: {e}"))
         })?;
 
         let updates = {
@@ -270,12 +270,12 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
                     "SELECT fa.id, i.base_url, fa.alignment_status, fa.transfer_scope, fa.remote_handshake_json, fa.remote_instance_id
                      FROM federation_agreements fa
                      JOIN instances i ON fa.remote_instance_id = i.id
-                     WHERE fa.active = 1",
+                     WHERE fa.active = 1 AND fa.local_server_id = ?1",
                 )
-                .map_err(|e| ApiError::InternalServerError(format!("prepare failed: {}", e)))?;
+                .map_err(|e| ApiError::InternalServerError(format!("prepare failed: {e}")))?;
 
             let iter = stmt
-                .query_map([], |row| {
+                .query_map(rusqlite::params![state_clone.server_id], |row| {
                     Ok((
                         row.get::<_, i64>(0)?,
                         row.get::<_, String>(1)?,
@@ -285,13 +285,13 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
                         row.get::<_, i64>(5)?,
                     ))
                 })
-                .map_err(|e| ApiError::InternalServerError(format!("query failed: {}", e)))?;
+                .map_err(|e| ApiError::InternalServerError(format!("query failed: {e}")))?;
 
             let mut updates = Vec::new();
 
             for row in iter {
                 let (id, base_url, old_alignment_str, old_scope_str, handshake_json, remote_instance_id) =
-                    row.map_err(|e| ApiError::InternalServerError(format!("row error: {}", e)))?;
+                    row.map_err(|e| ApiError::InternalServerError(format!("row error: {e}")))?;
 
                 let handshake_json = match handshake_json {
                     Some(json) => json,
@@ -339,7 +339,7 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
 
             // Serialize updated report
             let report_json = serde_json::to_string(&report).map_err(|e| {
-                ApiError::InternalServerError(format!("failed to serialize report: {}", e))
+                ApiError::InternalServerError(format!("failed to serialize report: {e}"))
             })?;
 
             tx.execute(
@@ -358,7 +358,7 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
                     id
                 ],
             )
-            .map_err(|e| ApiError::InternalServerError(format!("update failed: {}", e)))?;
+            .map_err(|e| ApiError::InternalServerError(format!("update failed: {e}")))?;
 
             // Emit Event (SSE broadcast + persistent log)
             if report.alignment_status == VrpAlignmentStatus::Conflict {
@@ -420,13 +420,13 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
         }
 
         tx.commit().map_err(|e| {
-            ApiError::InternalServerError(format!("failed to commit transaction: {}", e))
+            ApiError::InternalServerError(format!("failed to commit transaction: {e}"))
         })?;
 
         Ok::<Vec<(String, i64)>, ApiError>(affected_peers)
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     // Initiate outbound re-handshakes to peers whose alignment changed
     if !affected_peers.is_empty() {
@@ -503,7 +503,7 @@ pub async fn notify_federation_peers_of_policy_change(
     };
 
     for (base_url, remote_instance_id) in peers {
-        let url = format!("{}/api/federation/handshake", base_url);
+        let url = format!("{base_url}/api/federation/handshake");
         let payload = serde_json::json!({
             "base_url": public_url,
             "anchor_snapshot": local_handshake.anchor_snapshot,

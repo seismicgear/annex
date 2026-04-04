@@ -143,8 +143,7 @@ async fn test_get_history_success() {
 
     let mut req3 = Request::builder()
         .uri(format!(
-            "/api/channels/chan-hist/messages?before={}",
-            encoded_ts
+            "/api/channels/chan-hist/messages?before={encoded_ts}"
         ))
         .method("GET")
         .header("X-Annex-Pseudonym", "user-1")

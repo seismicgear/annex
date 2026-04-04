@@ -68,7 +68,7 @@ async fn test_sse_presence_stream() {
     let app = app(state.clone());
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let server_url = format!("http://{}", addr);
+    let server_url = format!("http://{addr}");
 
     tokio::spawn(async move {
         axum::serve(
@@ -82,7 +82,7 @@ async fn test_sse_presence_stream() {
     // 4a. Verify unauthenticated access is rejected
     let client = reqwest::Client::new();
     let unauth_response = client
-        .get(format!("{}/events/presence", server_url))
+        .get(format!("{server_url}/events/presence"))
         .send()
         .await
         .expect("Failed to send unauthenticated request");
@@ -90,7 +90,7 @@ async fn test_sse_presence_stream() {
 
     // 4b. Connect to SSE Stream with auth
     let mut response = client
-        .get(format!("{}/events/presence", server_url))
+        .get(format!("{server_url}/events/presence"))
         .header("X-Annex-Pseudonym", test_pseudo)
         .send()
         .await

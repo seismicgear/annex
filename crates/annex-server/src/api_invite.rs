@@ -254,7 +254,7 @@ pub async fn create_invite_handler(
 
     tokio::task::spawn_blocking(move || {
         let conn = state_clone.pool.get().map_err(|e| {
-            ApiError::InternalServerError(format!("db connection failed: {}", e))
+            ApiError::InternalServerError(format!("db connection failed: {e}"))
         })?;
 
         conn.execute(
@@ -267,12 +267,12 @@ pub async fn create_invite_handler(
                 expires_at_clone,
             ],
         )
-        .map_err(|e| ApiError::InternalServerError(format!("failed to insert invite code: {}", e)))?;
+        .map_err(|e| ApiError::InternalServerError(format!("failed to insert invite code: {e}")))?;
 
         Ok::<(), ApiError>(())
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     // Build the shareable URL
     let public_url = state
@@ -291,9 +291,10 @@ pub async fn create_invite_handler(
     let (server_label, server_description) = {
         let state_clone = state.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = state_clone.pool.get().map_err(|e| {
-                ApiError::InternalServerError(format!("db connection failed: {}", e))
-            })?;
+            let conn = state_clone
+                .pool
+                .get()
+                .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
             let (label, description): (String, String) = conn
                 .query_row(
                     "SELECT label, description FROM servers WHERE id = ?1",
@@ -301,12 +302,12 @@ pub async fn create_invite_handler(
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .map_err(|e| {
-                    ApiError::InternalServerError(format!("failed to fetch server metadata: {}", e))
+                    ApiError::InternalServerError(format!("failed to fetch server metadata: {e}"))
                 })?;
             Ok::<(String, String), ApiError>((label, description))
         })
         .await
-        .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??
+        .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??
     };
 
     let desc = if server_description.is_empty() {
@@ -320,7 +321,7 @@ pub async fn create_invite_handler(
     let url = invite
         .to_invite_url_with_base(&invite_base_url)
         .map_err(|e| {
-            ApiError::InternalServerError(format!("failed to generate invite URL: {}", e))
+            ApiError::InternalServerError(format!("failed to generate invite URL: {e}"))
         })?;
 
     Ok(Json(CreateInviteResponse {
@@ -355,7 +356,7 @@ pub async fn list_invites_handler(
         let conn = state_clone
             .pool
             .get()
-            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
 
         // Fetch server label and description once
         let (server_label, server_description): (String, String) = conn
@@ -365,7 +366,7 @@ pub async fn list_invites_handler(
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .map_err(|e| {
-                ApiError::InternalServerError(format!("failed to fetch server metadata: {}", e))
+                ApiError::InternalServerError(format!("failed to fetch server metadata: {e}"))
             })?;
         let desc_for_payload: Option<&str> = if server_description.is_empty() {
             None
@@ -378,9 +379,7 @@ pub async fn list_invites_handler(
                 "SELECT code, created_by, max_uses, use_count, expires_at, created_at \
                  FROM invite_codes WHERE server_id = ?1 ORDER BY created_at DESC",
             )
-            .map_err(|e| {
-                ApiError::InternalServerError(format!("failed to prepare query: {}", e))
-            })?;
+            .map_err(|e| ApiError::InternalServerError(format!("failed to prepare query: {e}")))?;
 
         let rows = stmt
             .query_map([state_clone.server_id], |row| {
@@ -394,13 +393,13 @@ pub async fn list_invites_handler(
                 ))
             })
             .map_err(|e| {
-                ApiError::InternalServerError(format!("failed to query invite codes: {}", e))
+                ApiError::InternalServerError(format!("failed to query invite codes: {e}"))
             })?;
 
         let mut entries = Vec::new();
         for row in rows {
-            let (code, created_by, max_uses, use_count, expires_at, created_at) = row
-                .map_err(|e| ApiError::InternalServerError(format!("failed to read row: {}", e)))?;
+            let (code, created_by, max_uses, use_count, expires_at, created_at) =
+                row.map_err(|e| ApiError::InternalServerError(format!("failed to read row: {e}")))?;
 
             let url = if !public_url.is_empty() {
                 let invite =
@@ -426,7 +425,7 @@ pub async fn list_invites_handler(
         Ok::<Vec<InviteCodeEntry>, ApiError>(entries)
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     Ok(Json(entries))
 }
@@ -465,7 +464,7 @@ pub async fn redeem_invite_handler(
 
     let result = tokio::task::spawn_blocking(move || {
         let conn = state_clone.pool.get().map_err(|e| {
-            ApiError::InternalServerError(format!("db connection failed: {}", e))
+            ApiError::InternalServerError(format!("db connection failed: {e}"))
         })?;
 
         // Look up the invite code for this server
@@ -479,14 +478,20 @@ pub async fn redeem_invite_handler(
             rusqlite::Error::QueryReturnedNoRows => {
                 ApiError::BadRequest("Invalid or expired invite code".to_string())
             }
-            _ => ApiError::InternalServerError(format!("failed to query invite: {}", e)),
+            _ => ApiError::InternalServerError(format!("failed to query invite: {e}")),
         })?;
 
         // Check expiration
         if let Some(ref exp) = expires_at {
-            let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-            if *exp < now {
-                return Err(ApiError::BadRequest("Invalid or expired invite code".to_string()));
+            if let Ok(exp_dt) =
+                chrono::NaiveDateTime::parse_from_str(exp, "%Y-%m-%d %H:%M:%S")
+            {
+                let now = chrono::Utc::now().naive_utc();
+                if exp_dt < now {
+                    return Err(ApiError::BadRequest(
+                        "Invalid or expired invite code".to_string(),
+                    ));
+                }
             }
         }
 
@@ -497,12 +502,17 @@ pub async fn redeem_invite_handler(
             }
         }
 
-        // Increment use_count
-        conn.execute(
-            "UPDATE invite_codes SET use_count = use_count + 1 WHERE id = ?1",
+        // Atomically increment use_count. The WHERE clause re-checks
+        // max_uses to prevent TOCTOU races between concurrent requests.
+        let updated = conn.execute(
+            "UPDATE invite_codes SET use_count = use_count + 1 WHERE id = ?1 \
+             AND (max_uses IS NULL OR use_count < max_uses)",
             [invite_id],
         )
-        .map_err(|e| ApiError::InternalServerError(format!("failed to update invite: {}", e)))?;
+        .map_err(|e| ApiError::InternalServerError(format!("failed to update invite: {e}")))?;
+        if updated == 0 {
+            return Err(ApiError::BadRequest("Invalid or expired invite code".to_string()));
+        }
 
         // Fetch server slug and label
         let (slug, label): (String, String) = conn
@@ -512,7 +522,7 @@ pub async fn redeem_invite_handler(
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .map_err(|e| {
-                ApiError::InternalServerError(format!("failed to fetch server info: {}", e))
+                ApiError::InternalServerError(format!("failed to fetch server info: {e}"))
             })?;
 
         Ok(RedeemInviteResponse {
@@ -522,7 +532,7 @@ pub async fn redeem_invite_handler(
         })
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     Ok(Json(result))
 }
@@ -546,7 +556,7 @@ pub async fn delete_invite_handler(
         let conn = state_clone
             .pool
             .get()
-            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
 
         let deleted = conn
             .execute(
@@ -554,7 +564,7 @@ pub async fn delete_invite_handler(
                 rusqlite::params![state_clone.server_id, code],
             )
             .map_err(|e| {
-                ApiError::InternalServerError(format!("failed to delete invite code: {}", e))
+                ApiError::InternalServerError(format!("failed to delete invite code: {e}"))
             })?;
 
         if deleted == 0 {
@@ -564,7 +574,7 @@ pub async fn delete_invite_handler(
         Ok::<(), ApiError>(())
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }

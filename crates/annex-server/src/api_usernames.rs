@@ -118,10 +118,7 @@ fn validate_username(username: &str) -> Result<(), String> {
         return Err("username cannot be empty".to_string());
     }
     if trimmed.chars().count() > MAX_USERNAME_LEN {
-        return Err(format!(
-            "username too long (max {} chars)",
-            MAX_USERNAME_LEN
-        ));
+        return Err(format!("username too long (max {MAX_USERNAME_LEN} chars)"));
     }
     if trimmed.chars().any(|c| c.is_control()) {
         return Err("username cannot contain control characters".to_string());
@@ -176,7 +173,7 @@ pub async fn set_username_handler(
         let conn = state_clone
             .pool
             .get()
-            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
 
         conn.execute(
             "INSERT INTO user_profiles (server_id, pseudonym_id, encrypted_username, updated_at)
@@ -186,12 +183,12 @@ pub async fn set_username_handler(
                 updated_at = datetime('now')",
             rusqlite::params![server_id, pseudonym, encrypted],
         )
-        .map_err(|e| ApiError::InternalServerError(format!("failed to set username: {}", e)))?;
+        .map_err(|e| ApiError::InternalServerError(format!("failed to set username: {e}")))?;
 
         Ok::<(), ApiError>(())
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     tracing::info!(
         pseudonym = %identity.pseudonym_id,
@@ -216,24 +213,35 @@ pub async fn delete_username_handler(
         let conn = state_clone
             .pool
             .get()
-            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
 
-        conn.execute(
+        // Wrap in transaction so profile + grants are deleted atomically.
+        // Without this, a crash between the two deletes would leave
+        // orphaned grant rows in the database.
+        let tx = conn.unchecked_transaction().map_err(|e| {
+            ApiError::InternalServerError(format!("failed to begin transaction: {e}"))
+        })?;
+
+        tx.execute(
             "DELETE FROM user_profiles WHERE server_id = ?1 AND pseudonym_id = ?2",
             rusqlite::params![server_id, pseudonym],
         )
-        .map_err(|e| ApiError::InternalServerError(format!("failed to delete username: {}", e)))?;
+        .map_err(|e| ApiError::InternalServerError(format!("failed to delete username: {e}")))?;
 
-        conn.execute(
+        tx.execute(
             "DELETE FROM username_grants WHERE server_id = ?1 AND granter_pseudonym = ?2",
             rusqlite::params![server_id, pseudonym],
         )
-        .map_err(|e| ApiError::InternalServerError(format!("failed to delete grants: {}", e)))?;
+        .map_err(|e| ApiError::InternalServerError(format!("failed to delete grants: {e}")))?;
+
+        tx.commit().map_err(|e| {
+            ApiError::InternalServerError(format!("failed to commit transaction: {e}"))
+        })?;
 
         Ok::<(), ApiError>(())
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     Ok(AxumJson(serde_json::json!({ "status": "ok" })).into_response())
 }
@@ -267,7 +275,7 @@ pub async fn grant_username_handler(
         let conn = state_clone
             .pool
             .get()
-            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
 
         // Verify granter has a username set
         let has_username: bool = conn
@@ -276,7 +284,7 @@ pub async fn grant_username_handler(
                 rusqlite::params![server_id, granter],
                 |row| row.get(0),
             )
-            .map_err(|e| ApiError::InternalServerError(format!("db query failed: {}", e)))?;
+            .map_err(|e| ApiError::InternalServerError(format!("db query failed: {e}")))?;
 
         if !has_username {
             return Err(ApiError::BadRequest(
@@ -289,12 +297,12 @@ pub async fn grant_username_handler(
              VALUES (?1, ?2, ?3)",
             rusqlite::params![server_id, granter, grantee],
         )
-        .map_err(|e| ApiError::InternalServerError(format!("failed to create grant: {}", e)))?;
+        .map_err(|e| ApiError::InternalServerError(format!("failed to create grant: {e}")))?;
 
         Ok::<(), ApiError>(())
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     Ok(AxumJson(serde_json::json!({ "status": "ok" })).into_response())
 }
@@ -313,19 +321,19 @@ pub async fn revoke_grant_handler(
 
     tokio::task::spawn_blocking(move || {
         let conn = state_clone.pool.get().map_err(|e| {
-            ApiError::InternalServerError(format!("db connection failed: {}", e))
+            ApiError::InternalServerError(format!("db connection failed: {e}"))
         })?;
 
         conn.execute(
             "DELETE FROM username_grants WHERE server_id = ?1 AND granter_pseudonym = ?2 AND grantee_pseudonym = ?3",
             rusqlite::params![server_id, granter, grantee_pseudonym],
         )
-        .map_err(|e| ApiError::InternalServerError(format!("failed to revoke grant: {}", e)))?;
+        .map_err(|e| ApiError::InternalServerError(format!("failed to revoke grant: {e}")))?;
 
         Ok::<(), ApiError>(())
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     Ok(AxumJson(serde_json::json!({ "status": "ok" })).into_response())
 }
@@ -345,7 +353,7 @@ pub async fn list_grants_handler(
         let conn = state_clone
             .pool
             .get()
-            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
 
         let mut stmt = conn
             .prepare(
@@ -353,25 +361,25 @@ pub async fn list_grants_handler(
                  WHERE server_id = ?1 AND granter_pseudonym = ?2
                  ORDER BY created_at",
             )
-            .map_err(|e| ApiError::InternalServerError(format!("query prepare failed: {}", e)))?;
+            .map_err(|e| ApiError::InternalServerError(format!("query prepare failed: {e}")))?;
 
         let rows = stmt
             .query_map(rusqlite::params![server_id, granter], |row| {
                 row.get::<_, String>(0)
             })
-            .map_err(|e| ApiError::InternalServerError(format!("query failed: {}", e)))?;
+            .map_err(|e| ApiError::InternalServerError(format!("query failed: {e}")))?;
 
         let mut grantees = Vec::new();
         for row in rows {
             grantees.push(
-                row.map_err(|e| ApiError::InternalServerError(format!("row read failed: {}", e)))?,
+                row.map_err(|e| ApiError::InternalServerError(format!("row read failed: {e}")))?,
             );
         }
 
         Ok::<Vec<String>, ApiError>(grantees)
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     Ok(AxumJson(serde_json::json!({ "grantees": grantees })).into_response())
 }
@@ -403,7 +411,7 @@ pub async fn get_visible_usernames_handler(
 
     let usernames = tokio::task::spawn_blocking(move || {
         let conn = state_clone.pool.get().map_err(|e| {
-            ApiError::InternalServerError(format!("db connection failed: {}", e))
+            ApiError::InternalServerError(format!("db connection failed: {e}"))
         })?;
 
         let mut usernames = serde_json::Map::new();
@@ -430,17 +438,17 @@ pub async fn get_visible_usernames_handler(
                  JOIN user_profiles up ON up.server_id = ug.server_id AND up.pseudonym_id = ug.granter_pseudonym
                  WHERE ug.server_id = ?1 AND ug.grantee_pseudonym = ?2",
             )
-            .map_err(|e| ApiError::InternalServerError(format!("query prepare failed: {}", e)))?;
+            .map_err(|e| ApiError::InternalServerError(format!("query prepare failed: {e}")))?;
 
         let rows = stmt
             .query_map(rusqlite::params![server_id, grantee], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })
-            .map_err(|e| ApiError::InternalServerError(format!("query failed: {}", e)))?;
+            .map_err(|e| ApiError::InternalServerError(format!("query failed: {e}")))?;
 
         for row in rows {
             let (pseudonym_id, encrypted) =
-                row.map_err(|e| ApiError::InternalServerError(format!("row read failed: {}", e)))?;
+                row.map_err(|e| ApiError::InternalServerError(format!("row read failed: {e}")))?;
             if let Some(decrypted) = decrypt_username(&signing_key, &pseudonym_id, &encrypted) {
                 usernames.insert(pseudonym_id, serde_json::Value::String(decrypted));
             }
@@ -449,7 +457,7 @@ pub async fn get_visible_usernames_handler(
         Ok::<serde_json::Map<String, serde_json::Value>, ApiError>(usernames)
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     Ok(AxumJson(serde_json::json!({ "usernames": usernames })).into_response())
 }

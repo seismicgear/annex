@@ -114,7 +114,7 @@ async fn test_agent_join_creates_edge() {
     .unwrap();
 
     // 2. Prepare Request
-    let uri = format!("/api/channels/{}/join", channel_id);
+    let uri = format!("/api/channels/{channel_id}/join");
     let req = Request::builder()
         .uri(uri)
         .method("POST")
@@ -138,7 +138,7 @@ async fn test_agent_join_creates_edge() {
     assert_eq!(edge.kind, EdgeKind::AgentServing);
 
     // 5. Call Leave
-    let uri = format!("/api/channels/{}/leave", channel_id);
+    let uri = format!("/api/channels/{channel_id}/leave");
     let req = Request::builder()
         .uri(uri)
         .method("POST")

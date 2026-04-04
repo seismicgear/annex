@@ -20,7 +20,7 @@ use tower::ServiceExt;
 
 async fn setup_app() -> (axum::Router, annex_db::DbPool) {
     let db_id = uuid::Uuid::new_v4();
-    let db_path = format!("file:memdb{}?mode=memory&cache=shared", db_id);
+    let db_path = format!("file:memdb{db_id}?mode=memory&cache=shared");
     let pool = create_pool(&db_path, DbRuntimeSettings::default()).unwrap();
     {
         let conn = pool.get().unwrap();
@@ -245,7 +245,7 @@ async fn test_leave_channel() {
 async fn test_ws_subscription_enforcement() {
     // 1. Setup (full server spawn needed for WS)
     let db_id = uuid::Uuid::new_v4();
-    let db_path = format!("file:memdb{}?mode=memory&cache=shared", db_id);
+    let db_path = format!("file:memdb{db_id}?mode=memory&cache=shared");
     let pool = create_pool(&db_path, DbRuntimeSettings::default()).unwrap();
     {
         let conn = pool.get().unwrap();
@@ -320,7 +320,7 @@ async fn test_ws_subscription_enforcement() {
     });
 
     // 2. Connect
-    let ws_url = format!("ws://{}/ws?pseudonym=user-ws", addr);
+    let ws_url = format!("ws://{addr}/ws?pseudonym=user-ws");
     let (mut ws_stream, _) = connect_async(ws_url).await.expect("failed to connect");
 
     // 3. Try Subscribe (Not a member)
@@ -397,7 +397,7 @@ async fn test_ws_subscription_enforcement() {
 async fn test_ws_message_enforcement() {
     // 1. Setup
     let db_id = uuid::Uuid::new_v4();
-    let db_path = format!("file:memdb{}?mode=memory&cache=shared", db_id);
+    let db_path = format!("file:memdb{db_id}?mode=memory&cache=shared");
     let pool = create_pool(&db_path, DbRuntimeSettings::default()).unwrap();
     {
         let conn = pool.get().unwrap();
@@ -472,7 +472,7 @@ async fn test_ws_message_enforcement() {
     });
 
     // 2. Connect
-    let ws_url = format!("ws://{}/ws?pseudonym=user-bad", addr);
+    let ws_url = format!("ws://{addr}/ws?pseudonym=user-bad");
     let (mut ws_stream, _) = connect_async(ws_url).await.expect("failed to connect");
 
     // 3. Try Send Message (Not a member, and NOT subscribed)

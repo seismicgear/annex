@@ -108,11 +108,11 @@ pub async fn create_channel_handler(
     if payload.channel_id.len() > MAX_CHANNEL_ID_LEN || payload.channel_id.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
     }
-    if payload.name.len() > MAX_CHANNEL_NAME_LEN || payload.name.is_empty() {
+    if payload.name.len() > MAX_CHANNEL_NAME_LEN || payload.name.trim().is_empty() {
         return Err(StatusCode::BAD_REQUEST);
     }
     if let Some(ref t) = payload.topic {
-        if t.len() > MAX_TOPIC_LEN {
+        if t.len() > MAX_TOPIC_LEN || t.trim().is_empty() {
             return Err(StatusCode::BAD_REQUEST);
         }
     }
@@ -295,13 +295,13 @@ pub async fn get_channel_history_handler(
         return Err(StatusCode::FORBIDDEN);
     }
 
-    // 2. Fetch Messages (cap limit to 200 to prevent oversize responses)
+    // 2. Fetch Messages (cap limit to 100 to match the inner function's cap)
     let messages = tokio::task::spawn_blocking({
         let pool = state.pool.clone();
         let server_id = state.server_id;
         let cid = channel_id.clone();
         let before = params.before;
-        let limit = params.limit.map(|l| l.min(200));
+        let limit = params.limit.map(|l| l.min(100));
         move || {
             let conn = pool.get().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
             list_messages(&conn, server_id, &cid, before, limit)
@@ -396,7 +396,7 @@ pub async fn join_channel_handler(
 
         // Parse alignment status (handle both quoted JSON string and plain text)
         let status: AlignmentStatus = serde_json::from_str(&status_str)
-            .or_else(|_| serde_json::from_str(&format!("\"{}\"", status_str)))
+            .or_else(|_| serde_json::from_str(&format!("\"{status_str}\"")))
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
         // Rule: Conflict agents cannot join any channel
@@ -642,6 +642,24 @@ pub async fn join_voice_channel_handler(
     } else {
         state.voice_service.get_public_url().to_string()
     };
+
+    // Check policy voice_enabled flag
+    let policy_voice_enabled = state
+        .policy
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .voice_enabled;
+    if !policy_voice_enabled {
+        return Err((
+            StatusCode::FORBIDDEN,
+            serde_json::json!({
+                "error": "voice_disabled",
+                "message": "Voice is disabled by the server administrator.",
+                "setup_hint": "An admin can enable voice in Server Policy settings."
+            })
+            .to_string(),
+        ));
+    }
 
     if !state.voice_service.is_enabled() || livekit_url.is_empty() {
         return Err((

@@ -377,7 +377,7 @@ async fn test_governance_transfers_pagination() {
     for i in 0..5 {
         insert_transfer_log(
             &pool,
-            &format!("b-{}", i),
+            &format!("b-{i}"),
             "src",
             None,
             "FULL_KNOWLEDGE_BUNDLE",

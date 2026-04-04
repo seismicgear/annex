@@ -105,7 +105,7 @@ impl SemanticEmbedder for MockEmbedder {
         self.embeddings
             .get(text)
             .cloned()
-            .ok_or_else(|| format!("No embedding found for: {}", text))
+            .ok_or_else(|| format!("No embedding found for: {text}"))
     }
 }
 

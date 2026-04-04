@@ -88,7 +88,7 @@ export function EventLog() {
           return (
             <div key={evt.id} className="event-row">
               <span className="event-col-time">
-                {new Date(evt.occurred_at).toLocaleTimeString()}
+                {new Date(evt.occurred_at.endsWith('Z') ? evt.occurred_at : evt.occurred_at + 'Z').toLocaleTimeString()}
               </span>
               <span className={`event-col-domain domain-${evt.domain.toLowerCase()}`}>
                 {evt.domain}

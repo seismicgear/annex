@@ -72,7 +72,7 @@ async fn setup_test_server() -> (SocketAddr, annex_db::DbPool) {
     let vkey_path = "zk/keys/membership_vkey.json";
     let vkey = match std::fs::read_to_string(vkey_path) {
         Ok(s) => annex_identity::zk::parse_verification_key(&s).expect("failed to parse vkey"),
-        Err(_) => match std::fs::read_to_string(format!("../../{}", vkey_path)) {
+        Err(_) => match std::fs::read_to_string(format!("../../{vkey_path}")) {
             Ok(s) => annex_identity::zk::parse_verification_key(&s).expect("failed to parse vkey"),
             Err(_) => annex_identity::zk::generate_dummy_vkey(),
         },
@@ -128,7 +128,7 @@ async fn setup_test_server() -> (SocketAddr, annex_db::DbPool) {
 async fn test_ws_subscribe_non_member_returns_error() {
     let (addr, _pool) = setup_test_server().await;
 
-    let ws_url = format!("ws://{}/ws?pseudonym=user-1", addr);
+    let ws_url = format!("ws://{addr}/ws?pseudonym=user-1");
     let (mut ws_stream, _) = connect_async(ws_url).await.expect("failed to connect");
 
     // Attempt to subscribe to a channel we are NOT a member of
@@ -153,17 +153,15 @@ async fn test_ws_subscribe_non_member_returns_error() {
             serde_json::from_str(&text).expect("failed to parse response JSON");
         assert_eq!(
             parsed["type"], "error",
-            "expected error message, got: {}",
-            parsed
+            "expected error message, got: {parsed}"
         );
         let msg = parsed["message"].as_str().expect("missing message field");
         assert!(
             msg.contains("Not a member"),
-            "error message should indicate non-membership, got: {}",
-            msg
+            "error message should indicate non-membership, got: {msg}"
         );
     } else {
-        panic!("expected text message, got: {:?}", response);
+        panic!("expected text message, got: {response:?}");
     }
 }
 
@@ -173,7 +171,7 @@ async fn test_ws_subscribe_non_member_returns_error() {
 async fn test_ws_message_non_member_returns_error() {
     let (addr, _pool) = setup_test_server().await;
 
-    let ws_url = format!("ws://{}/ws?pseudonym=user-1", addr);
+    let ws_url = format!("ws://{addr}/ws?pseudonym=user-1");
     let (mut ws_stream, _) = connect_async(ws_url).await.expect("failed to connect");
 
     // Attempt to send a message to a channel we are NOT a member of
@@ -200,17 +198,15 @@ async fn test_ws_message_non_member_returns_error() {
             serde_json::from_str(&text).expect("failed to parse response JSON");
         assert_eq!(
             parsed["type"], "error",
-            "expected error message, got: {}",
-            parsed
+            "expected error message, got: {parsed}"
         );
         let msg = parsed["message"].as_str().expect("missing message field");
         assert!(
             msg.contains("Not a member"),
-            "error message should indicate non-membership, got: {}",
-            msg
+            "error message should indicate non-membership, got: {msg}"
         );
     } else {
-        panic!("expected text message, got: {:?}", response);
+        panic!("expected text message, got: {response:?}");
     }
 }
 
@@ -219,7 +215,7 @@ async fn test_ws_message_non_member_returns_error() {
 async fn test_ws_unauthenticated_user_rejected() {
     let (addr, _pool) = setup_test_server().await;
 
-    let ws_url = format!("ws://{}/ws?pseudonym=nonexistent", addr);
+    let ws_url = format!("ws://{addr}/ws?pseudonym=nonexistent");
     let result = connect_async(ws_url).await;
 
     // Should fail to upgrade (HTTP 401)
@@ -235,7 +231,7 @@ async fn test_ws_unauthenticated_user_rejected() {
 async fn test_ws_malformed_message_returns_error() {
     let (addr, _pool) = setup_test_server().await;
 
-    let ws_url = format!("ws://{}/ws?pseudonym=user-1", addr);
+    let ws_url = format!("ws://{addr}/ws?pseudonym=user-1");
     let (mut ws_stream, _) = connect_async(ws_url).await.expect("failed to connect");
 
     // Send invalid JSON
@@ -256,17 +252,15 @@ async fn test_ws_malformed_message_returns_error() {
             serde_json::from_str(&text).expect("failed to parse response JSON");
         assert_eq!(
             parsed["type"], "error",
-            "expected error message, got: {}",
-            parsed
+            "expected error message, got: {parsed}"
         );
         let msg = parsed["message"].as_str().expect("missing message field");
         assert!(
             msg.contains("invalid message format"),
-            "error message should indicate invalid format, got: {}",
-            msg
+            "error message should indicate invalid format, got: {msg}"
         );
     } else {
-        panic!("expected text message, got: {:?}", response);
+        panic!("expected text message, got: {response:?}");
     }
 }
 
@@ -276,7 +270,7 @@ async fn test_ws_malformed_message_returns_error() {
 async fn test_ws_unknown_message_type_returns_error() {
     let (addr, _pool) = setup_test_server().await;
 
-    let ws_url = format!("ws://{}/ws?pseudonym=user-1", addr);
+    let ws_url = format!("ws://{addr}/ws?pseudonym=user-1");
     let (mut ws_stream, _) = connect_async(ws_url).await.expect("failed to connect");
 
     // Send valid JSON with unknown type
@@ -298,16 +292,14 @@ async fn test_ws_unknown_message_type_returns_error() {
             serde_json::from_str(&text).expect("failed to parse response JSON");
         assert_eq!(
             parsed["type"], "error",
-            "expected error message for unknown type, got: {}",
-            parsed
+            "expected error message for unknown type, got: {parsed}"
         );
         let msg = parsed["message"].as_str().expect("missing message field");
         assert!(
             msg.contains("invalid message format"),
-            "error message should indicate invalid format, got: {}",
-            msg
+            "error message should indicate invalid format, got: {msg}"
         );
     } else {
-        panic!("expected text message, got: {:?}", response);
+        panic!("expected text message, got: {response:?}");
     }
 }

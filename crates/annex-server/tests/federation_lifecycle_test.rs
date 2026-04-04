@@ -116,14 +116,7 @@ fn build_signed_envelope(
     created_at: &str,
 ) -> FederatedMessageEnvelope {
     let signature_input = format!(
-        "{}\n{}\n{}\n{}\n{}\n{}\n{}",
-        message_id,
-        channel_id,
-        content,
-        sender_pseudonym,
-        originating_server,
-        attestation_ref,
-        created_at
+        "{message_id}\n{channel_id}\n{content}\n{sender_pseudonym}\n{originating_server}\n{attestation_ref}\n{created_at}"
     );
     let signature = signing_key.sign(signature_input.as_bytes());
 
@@ -191,7 +184,7 @@ async fn test_federation_full_lifecycle() {
 
     // Sign the handshake with the remote signing key
     let handshake_json = serde_json::to_string(&handshake).expect("failed to serialize handshake");
-    let signing_payload = format!("{}\n{}", remote_origin, handshake_json);
+    let signing_payload = format!("{remote_origin}\n{handshake_json}");
     let handshake_signature = remote_signing_key.sign(signing_payload.as_bytes());
     let handshake_signature_hex = hex::encode(handshake_signature.to_bytes());
 
@@ -307,7 +300,7 @@ async fn test_federation_full_lifecycle() {
     // =========================================================================
     // STEP 4: Cross-server message relay — Server A sends message to Server B
     // =========================================================================
-    let attestation_ref = format!("{}:{}", topic, commitment_hex);
+    let attestation_ref = format!("{topic}:{commitment_hex}");
 
     let envelope = build_signed_envelope(
         &remote_signing_key,
@@ -337,10 +330,7 @@ async fn test_federation_full_lifecycle() {
             .await
             .expect("failed to read body");
         let body_str = String::from_utf8_lossy(&body_bytes);
-        panic!(
-            "Federated message relay should succeed, got {}: {}",
-            status, body_str
-        );
+        panic!("Federated message relay should succeed, got {status}: {body_str}");
     }
 
     // Verify message persisted with LOCAL pseudonym (not the remote one)
@@ -445,8 +435,7 @@ async fn test_federation_full_lifecycle() {
     let body_str = String::from_utf8_lossy(&body_bytes);
     assert!(
         body_str.contains("No active federation agreement"),
-        "Rejection should mention missing active agreement, got: {}",
-        body_str
+        "Rejection should mention missing active agreement, got: {body_str}"
     );
 
     // Verify the rejected message was NOT persisted
@@ -472,7 +461,7 @@ async fn test_federation_full_lifecycle() {
     // After federation is severed, new remote users should not be able to
     // join federated channels.
     // =========================================================================
-    let join_message = format!("{}\nnew-remote-user", channel_id);
+    let join_message = format!("{channel_id}\nnew-remote-user");
     let join_signature = remote_signing_key.sign(join_message.as_bytes());
     let join_signature_hex = hex::encode(join_signature.to_bytes());
 
@@ -503,7 +492,7 @@ async fn test_federation_full_lifecycle() {
     });
 
     let request = Request::builder()
-        .uri(format!("/api/federation/channels/{}/join", channel_id))
+        .uri(format!("/api/federation/channels/{channel_id}/join"))
         .method("POST")
         .header("content-type", "application/json")
         .body(Body::from(join_payload.to_string()))

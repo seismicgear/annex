@@ -268,10 +268,11 @@ export async function register(
   roleCode: number,
   nodeId: number,
   inviteCode?: string,
+  serverPassword?: string,
 ): Promise<RegistrationResponse> {
   return request<RegistrationResponse>('/api/registry/register', {
     method: 'POST',
-    body: JSON.stringify({ commitmentHex, roleCode, nodeId, inviteCode }),
+    body: JSON.stringify({ commitmentHex, roleCode, nodeId, inviteCode, serverPassword }),
   });
 }
 

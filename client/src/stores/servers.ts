@@ -13,6 +13,8 @@ import * as api from '@/lib/api';
 import { useIdentityStore } from './identity';
 import { useChannelsStore } from './channels';
 import { useVoiceStore } from './voice';
+import { useUsernameStore } from './usernames';
+import { clearPreviewCache } from '@/lib/link-preview';
 
 interface ServersState {
   /** All saved server connections. */
@@ -109,6 +111,11 @@ export const useServersStore = create<ServersState>((set, get) => ({
     // never shows stale channels/messages from the previous server.
     const channelsStore = useChannelsStore.getState();
     channelsStore.resetServerState();
+
+    // Clear per-server caches so stale data from the previous server
+    // is never displayed under the new server's context.
+    useUsernameStore.getState().clear();
+    clearPreviewCache();
 
     // Immediate: update active server for instant UI transition.
     // Clear serverImageUrl so stale imagery from the previous server is never shown.
@@ -270,14 +277,14 @@ export const useServersStore = create<ServersState>((set, get) => ({
 
   setServerPersona: async (serverId: string, personaId: string | null, accentColor?: string) => {
     const { servers } = get();
-    const server = servers.find((s) => s.id === serverId);
-    if (!server) return;
-
-    server.personaId = personaId;
-    if (accentColor) server.accentColor = accentColor;
-    await serversDb.saveServer(server);
-
-    set({ servers: [...servers] });
+    const updatedServers = servers.map((s) =>
+      s.id === serverId
+        ? { ...s, personaId, ...(accentColor ? { accentColor } : {}) }
+        : s,
+    );
+    const updated = updatedServers.find((s) => s.id === serverId);
+    if (updated) await serversDb.saveServer(updated);
+    set({ servers: updatedServers });
   },
 
   getActiveServer: () => {

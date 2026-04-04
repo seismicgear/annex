@@ -95,7 +95,6 @@ fn test_restore_rejects_root_mismatch() {
     let err_str = err.to_string();
     assert!(
         err_str.contains("merkle root mismatch"),
-        "error should mention root mismatch, got: {}",
-        err_str
+        "error should mention root mismatch, got: {err_str}"
     );
 }

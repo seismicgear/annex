@@ -61,8 +61,7 @@ pub fn create_pool(db_path: &str, settings: DbRuntimeSettings) -> Result<DbPool,
                 return Err(rusqlite::Error::SqliteFailure(
                     rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
                     Some(format!(
-                        "failed to set WAL journal mode, got: {}",
-                        journal_mode
+                        "failed to set WAL journal mode, got: {journal_mode}"
                     )),
                 ));
             }

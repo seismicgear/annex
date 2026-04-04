@@ -129,18 +129,11 @@ async fn test_receive_federated_message() {
     let message_id = "msg-remote-123";
     let content = "Hello from federation!";
     let sender_pseudonym = "user-remote-pseudo";
-    let attestation_ref = format!("{}:{}", topic, commitment);
+    let attestation_ref = format!("{topic}:{commitment}");
     let created_at = "2023-01-01T00:00:00Z";
 
     let signature_input = format!(
-        "{}\n{}\n{}\n{}\n{}\n{}\n{}",
-        message_id,
-        channel_id,
-        content,
-        sender_pseudonym,
-        remote_origin,
-        attestation_ref,
-        created_at
+        "{message_id}\n{channel_id}\n{content}\n{sender_pseudonym}\n{remote_origin}\n{attestation_ref}\n{created_at}"
     );
     let signature = remote_signing_key.sign(signature_input.as_bytes());
     let signature_hex = hex::encode(signature.to_bytes());
@@ -179,7 +172,7 @@ async fn test_receive_federated_message() {
             .await
             .unwrap();
         let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
-        panic!("Request failed with {}: {}", status, body_str);
+        panic!("Request failed with {status}: {body_str}");
     }
 
     assert_eq!(response.status(), StatusCode::OK);

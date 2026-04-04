@@ -207,7 +207,7 @@ fn str_to_edge_kind(s: &str) -> Result<EdgeKind, GraphError> {
             rusqlite::Error::FromSqlConversionFailure(
                 0,
                 rusqlite::types::Type::Text,
-                format!("unknown edge kind: {}", other).into(),
+                format!("unknown edge kind: {other}").into(),
             ),
         )),
     }
@@ -224,7 +224,7 @@ fn str_to_node_type(s: &str) -> Result<NodeType, GraphError> {
             rusqlite::Error::FromSqlConversionFailure(
                 0,
                 rusqlite::types::Type::Text,
-                format!("unknown node type: {}", other).into(),
+                format!("unknown node type: {other}").into(),
             ),
         )),
     }
@@ -719,11 +719,11 @@ mod tests {
         // but we verify BFS terminates without unbounded growth.
         let chain_len = 100;
         for i in 0..=chain_len {
-            let name = format!("chain-{}", i);
+            let name = format!("chain-{i}");
             ensure_graph_node(&conn, server_id, &name, NodeType::Human, None).expect("node failed");
         }
         for i in 0..chain_len {
-            let from = format!("chain-{}", i);
+            let from = format!("chain-{i}");
             let to = format!("chain-{}", i + 1);
             create_edge(&conn, server_id, &from, &to, EdgeKind::Connected, 1.0)
                 .expect("edge failed");

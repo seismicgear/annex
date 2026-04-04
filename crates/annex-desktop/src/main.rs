@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::{Emitter, Listener, Manager};
+use tauri_plugin_deep_link::DeepLinkExt;
 
 /// Resolve the application data directory.
 ///
@@ -50,7 +51,7 @@ host = "127.0.0.1"
 port = 0
 
 [database]
-path = "{db_path}"
+path = "{db_path_safe}"
 busy_timeout_ms = 5000
 pool_max_size = 8
 
@@ -80,7 +81,6 @@ allowed_origins = ["tauri://localhost", "https://tauri.localhost", "http://tauri
 # username = "your-turn-username"
 # credential = "your-turn-credential"
 "#,
-            db_path = db_path_safe,
         );
         std::fs::write(&config_path, contents).map_err(|e| {
             format!(
@@ -864,12 +864,7 @@ async fn check_livekit_reachable(url: String) -> Result<serde_json::Value, Strin
 /// Uses a bind-and-drop approach: if we can bind to 127.0.0.1:port, the port
 /// is available. The socket is closed immediately so livekit-server can bind.
 fn find_available_port(start: u16, end: u16) -> Option<u16> {
-    for port in start..=end {
-        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
-            return Some(port);
-        }
-    }
-    None
+    (start..=end).find(|&port| std::net::TcpListener::bind(("127.0.0.1", port)).is_ok())
 }
 
 const LIVEKIT_VERSION: &str = "1.7.2";
@@ -1280,8 +1275,15 @@ fn setup_webview2_media_permissions(window: &tauri::WebviewWindow) {
             let handler = PermissionRequestedEventHandler::create(Box::new(
                 move |_sender, args| -> windows::core::Result<()> {
                     if let Some(args) = args {
-                        let kind = args.PermissionKind()?;
-                        let uri = args.Uri()?.to_string();
+                        let mut kind = COREWEBVIEW2_PERMISSION_KIND::default();
+                        args.PermissionKind(&mut kind)?;
+                        let mut uri = windows_core::PWSTR::null();
+                        args.Uri(&mut uri)?;
+                        let uri_str = if uri.is_null() {
+                            String::new()
+                        } else {
+                            uri.to_string().unwrap_or_default()
+                        };
 
                         // COREWEBVIEW2_PERMISSION_KIND values:
                         // Camera = 3, Microphone = 4, ClipboardRead = 6
@@ -1292,17 +1294,17 @@ fn setup_webview2_media_permissions(window: &tauri::WebviewWindow) {
                                 6 => "ClipboardRead",
                                 _ => "Unknown",
                             };
-                            tracing::info!(kind = kind_name, uri = %uri, "WebView2 permission allowed");
+                            tracing::info!(kind = kind_name, uri = %uri_str, "WebView2 permission allowed");
                             args.SetState(COREWEBVIEW2_PERMISSION_STATE_ALLOW)?;
                         } else {
-                            tracing::debug!(kind = kind.0, uri = %uri, "WebView2 permission left at default");
+                            tracing::debug!(kind = kind.0, uri = %uri_str, "WebView2 permission left at default");
                         }
                     }
                     Ok(())
                 },
             ));
 
-            let mut token = windows::Win32::System::WinRT::EventRegistrationToken::default();
+            let mut token: i64 = 0;
             match webview.add_PermissionRequested(&handler, &mut token) {
                 Ok(()) => {
                     tracing::info!("WebView2 PermissionRequested handler installed for Camera/Microphone/ClipboardRead");
@@ -1392,7 +1394,7 @@ fn set_dark_window_border(window: &tauri::WebviewWindow) {
 /// Tri-state media readiness: the runtime permission model on desktop webviews
 /// cannot always be verified from Rust, so we expose `unknown` instead of
 /// falsely claiming `true`.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 enum MediaReadiness {
     /// Permission verified or platform guarantees availability.
@@ -1821,14 +1823,14 @@ fn main() {
             //      URL(s) from tauri-plugin-deep-link and emit the same event.
             //   2. Runtime: the app is already open and receives a new deep link.
             //      The listener below handles that case.
-            let handle = app.handle().clone();
+            let _handle = app.handle().clone();
 
             // Cold start: buffer the invite in managed state so the frontend
             // can retrieve it via `get_pending_invite` once the React tree has
             // mounted. This replaces the old fire-and-forget `emit()` which
             // would be lost if the listener wasn't registered yet.
             if let Ok(Some(urls)) = app.deep_link().get_current() {
-                for raw_url in urls.iter().filter_map(|u| Some(u.as_str())) {
+                for raw_url in urls.iter().map(|u| u.as_str()) {
                     if let Some(invite) = parse_deep_link_invite(raw_url) {
                         tracing::info!(
                             server = %invite.server,

@@ -65,7 +65,7 @@ async fn test_rate_limiting_registration() {
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345);
 
     for i in 1..=4 {
-        let commitment = format!("{:064x}", i);
+        let commitment = format!("{i:064x}");
         let body_json = serde_json::json!({
             "commitmentHex": commitment,
             "roleCode": 1,
@@ -89,15 +89,13 @@ async fn test_rate_limiting_registration() {
             assert_eq!(
                 response.status(),
                 StatusCode::OK,
-                "Request {} should succeed",
-                i
+                "Request {i} should succeed"
             );
         } else {
             assert_eq!(
                 response.status(),
                 StatusCode::TOO_MANY_REQUESTS,
-                "Request {} should be rate limited",
-                i
+                "Request {i} should be rate limited"
             );
             let headers = response.headers();
             assert!(headers.contains_key("retry-after"));

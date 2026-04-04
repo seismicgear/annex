@@ -90,8 +90,7 @@ impl TtsService {
 
         if !model_path.exists() {
             return Err(VoiceError::Tts(format!(
-                "Model file not found: {:?}",
-                model_path
+                "Model file not found: {model_path:?}"
             )));
         }
 
@@ -130,7 +129,7 @@ impl TtsService {
 
         let mut child = command
             .spawn()
-            .map_err(|e| VoiceError::Tts(format!("Failed to spawn piper: {}", e)))?;
+            .map_err(|e| VoiceError::Tts(format!("Failed to spawn piper: {e}")))?;
 
         let mut stdin = child
             .stdin
@@ -149,23 +148,22 @@ impl TtsService {
                     TTS_TIMEOUT.as_secs()
                 ))
             })?
-            .map_err(|e| VoiceError::Tts(format!("Failed to wait for piper: {}", e)))?;
+            .map_err(|e| VoiceError::Tts(format!("Failed to wait for piper: {e}")))?;
 
         // Ensure writing finished successfully (or propagate error)
         match write_task.await {
             Ok(Ok(_)) => {}
             Ok(Err(e)) => {
                 return Err(VoiceError::Tts(format!(
-                    "Failed to write to piper stdin: {}",
-                    e
+                    "Failed to write to piper stdin: {e}"
                 )))
             }
-            Err(e) => return Err(VoiceError::Tts(format!("Stdin task failed: {}", e))),
+            Err(e) => return Err(VoiceError::Tts(format!("Stdin task failed: {e}"))),
         }
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(VoiceError::Tts(format!("Piper failed: {}", stderr)));
+            return Err(VoiceError::Tts(format!("Piper failed: {stderr}")));
         }
 
         Ok(output.stdout)
@@ -213,7 +211,7 @@ impl TtsService {
 
         let child = command
             .spawn()
-            .map_err(|e| VoiceError::Tts(format!("Failed to spawn bark: {}", e)))?;
+            .map_err(|e| VoiceError::Tts(format!("Failed to spawn bark: {e}")))?;
 
         let output = tokio::time::timeout(TTS_TIMEOUT, child.wait_with_output())
             .await
@@ -223,11 +221,11 @@ impl TtsService {
                     TTS_TIMEOUT.as_secs()
                 ))
             })?
-            .map_err(|e| VoiceError::Tts(format!("Failed to wait for bark: {}", e)))?;
+            .map_err(|e| VoiceError::Tts(format!("Failed to wait for bark: {e}")))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(VoiceError::Tts(format!("Bark failed: {}", stderr)));
+            return Err(VoiceError::Tts(format!("Bark failed: {stderr}")));
         }
 
         Ok(output.stdout)
@@ -262,7 +260,7 @@ impl TtsService {
 
         let child = command
             .spawn()
-            .map_err(|e| VoiceError::Tts(format!("Failed to spawn espeak-ng: {}", e)))?;
+            .map_err(|e| VoiceError::Tts(format!("Failed to spawn espeak-ng: {e}")))?;
 
         let output = tokio::time::timeout(TTS_TIMEOUT, child.wait_with_output())
             .await
@@ -272,11 +270,11 @@ impl TtsService {
                     TTS_TIMEOUT.as_secs()
                 ))
             })?
-            .map_err(|e| VoiceError::Tts(format!("Failed to wait for espeak-ng: {}", e)))?;
+            .map_err(|e| VoiceError::Tts(format!("Failed to wait for espeak-ng: {e}")))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(VoiceError::Tts(format!("espeak-ng failed: {}", stderr)));
+            return Err(VoiceError::Tts(format!("espeak-ng failed: {stderr}")));
         }
 
         // Strip the 44-byte WAV header to return raw PCM data.

@@ -27,6 +27,14 @@ export function UsernameSettings({ onClose }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
+  // Pre-populate the username field from the visible usernames cache
+  const currentUsername = useUsernameStore((s) => pseudonymId ? s.getDisplayName(pseudonymId) : null);
+  useEffect(() => {
+    if (currentUsername && !username) {
+      setUsername(currentUsername);
+    }
+  }, [currentUsername]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Grants state
   const [grantees, setGrantees] = useState<string[]>([]);
   const [members, setMembers] = useState<MemberInfo[]>([]);

@@ -93,7 +93,7 @@ async fn test_get_agent_profile() {
     .unwrap();
 
     // 4. Request Agent Profile
-    let uri = format!("/api/agents/{}", agent_pseudonym);
+    let uri = format!("/api/agents/{agent_pseudonym}");
     let req = Request::builder()
         .uri(uri)
         .method("GET")

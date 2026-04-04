@@ -103,8 +103,7 @@ pub fn register_identity(
         Err(rusqlite::Error::SqliteFailure(err, _)) => {
             if err.code == rusqlite::ErrorCode::ConstraintViolation {
                 return Err(IdentityError::DuplicateCommitment(format!(
-                    "commitment '{}' already registered",
-                    commitment_hex
+                    "commitment '{commitment_hex}' already registered"
                 )));
             }
             return Err(IdentityError::DatabaseError(
@@ -281,7 +280,7 @@ mod tests {
             IdentityError::DuplicateCommitment(msg) => {
                 assert!(msg.contains("already registered"));
             }
-            _ => panic!("expected DuplicateCommitment error, got {:?}", err),
+            _ => panic!("expected DuplicateCommitment error, got {err:?}"),
         }
     }
 
@@ -335,7 +334,7 @@ mod tests {
 
         match err {
             IdentityError::DuplicateCommitment(_) => {}
-            _ => panic!("expected DuplicateCommitment, got {:?}", err),
+            _ => panic!("expected DuplicateCommitment, got {err:?}"),
         }
     }
 }

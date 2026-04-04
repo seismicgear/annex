@@ -12,12 +12,12 @@ pub fn hash_inputs(inputs: &[Fr]) -> Result<Fr, IdentityError> {
     // light-poseidon supports specific input lengths.
     // For 2 inputs (Merkle) and 3 inputs (Commitment), it should work.
     let mut poseidon = Poseidon::<Fr>::new_circom(inputs.len()).map_err(|e| {
-        IdentityError::PoseidonError(format!("Failed to initialize Poseidon: {:?}", e))
+        IdentityError::PoseidonError(format!("Failed to initialize Poseidon: {e:?}"))
     })?;
 
     poseidon
         .hash(inputs)
-        .map_err(|e| IdentityError::PoseidonError(format!("Poseidon hash failed: {:?}", e)))
+        .map_err(|e| IdentityError::PoseidonError(format!("Poseidon hash failed: {e:?}")))
 }
 
 #[cfg(test)]
@@ -39,7 +39,7 @@ mod tests {
         let start = Instant::now();
         let _ = hash_inputs(&input).expect("hashing should succeed");
         let duration = start.elapsed();
-        println!("Poseidon hash time: {:?}", duration);
+        println!("Poseidon hash time: {duration:?}");
         // Ensure it is reasonably fast (not strictly <1ms in debug, but check it runs)
     }
 }

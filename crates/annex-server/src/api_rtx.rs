@@ -69,7 +69,7 @@ pub async fn publish_handler(
         let bundle = bundle.clone();
         move || -> Result<(usize, Vec<(String, String)>), ApiError> {
             let mut conn = state.pool.get().map_err(|e| {
-                ApiError::InternalServerError(format!("db connection failed: {}", e))
+                ApiError::InternalServerError(format!("db connection failed: {e}"))
             })?;
 
             // 4. Check sender has an active agent registration with sufficient transfer scope
@@ -86,7 +86,7 @@ pub async fn publish_handler(
                         "sender '{}' does not have an active agent registration",
                         bundle.source_pseudonym
                     )),
-                    _ => ApiError::InternalServerError(format!("db query failed: {}", e)),
+                    _ => ApiError::InternalServerError(format!("db query failed: {e}")),
                 })?;
 
             // 5. Parse and validate transfer scope
@@ -103,7 +103,8 @@ pub async fn publish_handler(
             }
 
             // 6. Extract redacted topics from capability contract and enforce
-            let redacted_topics = extract_redacted_topics(&capability_contract_json);
+            let redacted_topics = extract_redacted_topics(&capability_contract_json)
+                .map_err(ApiError::InternalServerError)?;
             check_redacted_topics(&bundle, &redacted_topics)
                 .map_err(|e| ApiError::Forbidden(e.to_string()))?;
 
@@ -115,10 +116,10 @@ pub async fn publish_handler(
             //      If either fails, neither is persisted.
             let domain_tags_json =
                 serde_json::to_string(&stored_bundle.domain_tags).map_err(|e| {
-                    ApiError::InternalServerError(format!("json serialization failed: {}", e))
+                    ApiError::InternalServerError(format!("json serialization failed: {e}"))
                 })?;
             let caveats_json = serde_json::to_string(&stored_bundle.caveats).map_err(|e| {
-                ApiError::InternalServerError(format!("json serialization failed: {}", e))
+                ApiError::InternalServerError(format!("json serialization failed: {e}"))
             })?;
 
             let redactions =
@@ -130,7 +131,7 @@ pub async fn publish_handler(
 
             {
                 let tx = conn.transaction().map_err(|e| {
-                    ApiError::InternalServerError(format!("failed to begin transaction: {}", e))
+                    ApiError::InternalServerError(format!("failed to begin transaction: {e}"))
                 })?;
 
                 tx.execute(
@@ -162,7 +163,7 @@ pub async fn publish_handler(
                             ));
                         }
                     }
-                    ApiError::InternalServerError(format!("failed to store bundle: {}", e))
+                    ApiError::InternalServerError(format!("failed to store bundle: {e}"))
                 })?;
 
                 tx.execute(
@@ -179,11 +180,11 @@ pub async fn publish_handler(
                     ],
                 )
                 .map_err(|e| {
-                    ApiError::InternalServerError(format!("failed to log transfer: {}", e))
+                    ApiError::InternalServerError(format!("failed to log transfer: {e}"))
                 })?;
 
                 tx.commit().map_err(|e| {
-                    ApiError::InternalServerError(format!("failed to commit transaction: {}", e))
+                    ApiError::InternalServerError(format!("failed to commit transaction: {e}"))
                 })?;
             }
 
@@ -199,7 +200,7 @@ pub async fn publish_handler(
                      WHERE s.server_id = ?1 AND a.active = 1
                        AND s.subscriber_pseudonym != ?2",
                 )
-                .map_err(|e| ApiError::InternalServerError(format!("db prepare failed: {}", e)))?;
+                .map_err(|e| ApiError::InternalServerError(format!("db prepare failed: {e}")))?;
 
             let rows = stmt
                 .query_map(
@@ -212,11 +213,11 @@ pub async fn publish_handler(
                         ))
                     },
                 )
-                .map_err(|e| ApiError::InternalServerError(format!("db query failed: {}", e)))?;
+                .map_err(|e| ApiError::InternalServerError(format!("db query failed: {e}")))?;
 
             for row in rows {
                 let (sub_pseudonym, domain_filters_json, scope_str) =
-                    row.map_err(|e| ApiError::InternalServerError(format!("db row error: {}", e)))?;
+                    row.map_err(|e| ApiError::InternalServerError(format!("db row error: {e}")))?;
 
                 // Parse domain filters. Corrupted JSON → skip this subscriber
                 // entirely (reject) rather than defaulting to accept-all, which
@@ -332,7 +333,7 @@ pub async fn publish_handler(
         }
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     // 11. Deliver via WebSocket (async, outside spawn_blocking)
     for (pseudonym, json) in &deliveries {
@@ -395,9 +396,10 @@ pub async fn subscribe_handler(
         let domain_filters = req.domain_filters.clone();
         let accept_federated = req.accept_federated;
         move || -> Result<SubscriptionInfo, ApiError> {
-            let conn = state.pool.get().map_err(|e| {
-                ApiError::InternalServerError(format!("db connection failed: {}", e))
-            })?;
+            let conn = state
+                .pool
+                .get()
+                .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
 
             // 1. Verify agent has active registration with sufficient scope
             let scope_str: String = conn
@@ -409,10 +411,9 @@ pub async fn subscribe_handler(
                 )
                 .map_err(|e| match e {
                     rusqlite::Error::QueryReturnedNoRows => ApiError::Forbidden(format!(
-                        "agent '{}' does not have an active registration",
-                        pseudonym
+                        "agent '{pseudonym}' does not have an active registration"
                     )),
-                    _ => ApiError::InternalServerError(format!("db query failed: {}", e)),
+                    _ => ApiError::InternalServerError(format!("db query failed: {e}")),
                 })?;
 
             let scope = parse_transfer_scope(&scope_str).ok_or_else(|| {
@@ -429,7 +430,7 @@ pub async fn subscribe_handler(
 
             // 2. UPSERT subscription
             let filters_json = serde_json::to_string(&domain_filters).map_err(|e| {
-                ApiError::InternalServerError(format!("json serialization failed: {}", e))
+                ApiError::InternalServerError(format!("json serialization failed: {e}"))
             })?;
             let accept_fed_int: i32 = if accept_federated { 1 } else { 0 };
 
@@ -443,7 +444,7 @@ pub async fn subscribe_handler(
                 rusqlite::params![state.server_id, pseudonym, filters_json, accept_fed_int],
             )
             .map_err(|e| {
-                ApiError::InternalServerError(format!("failed to create subscription: {}", e))
+                ApiError::InternalServerError(format!("failed to create subscription: {e}"))
             })?;
 
             // 3. Read back for response
@@ -456,7 +457,7 @@ pub async fn subscribe_handler(
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )
                 .map_err(|e| {
-                    ApiError::InternalServerError(format!("failed to read subscription: {}", e))
+                    ApiError::InternalServerError(format!("failed to read subscription: {e}"))
                 })?;
 
             let parsed_filters: Vec<String> = serde_json::from_str(&filters_back).map_err(|e| {
@@ -480,7 +481,7 @@ pub async fn subscribe_handler(
         }
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     Ok(Json(SubscribeResponse {
         ok: true,
@@ -500,9 +501,10 @@ pub async fn unsubscribe_handler(
     tokio::task::spawn_blocking({
         let state = state.clone();
         move || -> Result<(), ApiError> {
-            let conn = state.pool.get().map_err(|e| {
-                ApiError::InternalServerError(format!("db connection failed: {}", e))
-            })?;
+            let conn = state
+                .pool
+                .get()
+                .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
 
             let deleted = conn
                 .execute(
@@ -511,7 +513,7 @@ pub async fn unsubscribe_handler(
                     rusqlite::params![state.server_id, pseudonym],
                 )
                 .map_err(|e| {
-                    ApiError::InternalServerError(format!("failed to delete subscription: {}", e))
+                    ApiError::InternalServerError(format!("failed to delete subscription: {e}"))
                 })?;
 
             if deleted == 0 {
@@ -522,7 +524,7 @@ pub async fn unsubscribe_handler(
         }
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     Ok(Json(SubscribeResponse {
         ok: true,
@@ -542,9 +544,10 @@ pub async fn get_subscription_handler(
     let info = tokio::task::spawn_blocking({
         let state = state.clone();
         move || -> Result<Option<SubscriptionInfo>, ApiError> {
-            let conn = state.pool.get().map_err(|e| {
-                ApiError::InternalServerError(format!("db connection failed: {}", e))
-            })?;
+            let conn = state
+                .pool
+                .get()
+                .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
 
             let result = conn
                 .query_row(
@@ -561,7 +564,7 @@ pub async fn get_subscription_handler(
                     },
                 )
                 .optional()
-                .map_err(|e| ApiError::InternalServerError(format!("db query failed: {}", e)))?;
+                .map_err(|e| ApiError::InternalServerError(format!("db query failed: {e}")))?;
 
             match result {
                 Some((filters_json, accept_federated, created_at)) => {
@@ -589,7 +592,7 @@ pub async fn get_subscription_handler(
         }
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     Ok(Json(SubscribeResponse {
         ok: true,
@@ -601,19 +604,18 @@ pub async fn get_subscription_handler(
 ///
 /// The `redacted_topics` field may or may not be present in the stored JSON
 /// (backward compatibility with contracts created before this field existed).
-/// If the JSON is entirely unparseable (data corruption), logs a warning and
-/// returns an empty list. This is a fail-open decision: corrupted contracts
-/// lose their redaction restrictions. Operators should monitor for this warning
-/// and repair the underlying data.
-fn extract_redacted_topics(contract_json: &str) -> Vec<String> {
+/// If the JSON is entirely unparseable (data corruption), returns an error
+/// to fail closed — preventing unauthorized knowledge transfer through
+/// topics that should be redacted.
+fn extract_redacted_topics(contract_json: &str) -> Result<Vec<String>, String> {
     serde_json::from_str::<annex_vrp::VrpCapabilitySharingContract>(contract_json)
         .map(|c| c.redacted_topics)
-        .unwrap_or_else(|e| {
+        .map_err(|e| {
             tracing::warn!(
-                "corrupted capability contract JSON, redacted topics unavailable: {}",
+                "corrupted capability contract JSON, rejecting publish: {}",
                 e
             );
-            Vec::new()
+            format!("corrupted capability contract: {e}")
         })
 }
 
@@ -629,10 +631,7 @@ pub fn rtx_relay_signing_payload(
     relay_path: &[String],
 ) -> String {
     let relay_path_joined = relay_path.join("|");
-    format!(
-        "{}\n{}\n{}\n{}",
-        bundle_id, relaying_server, origin_server, relay_path_joined
-    )
+    format!("{bundle_id}\n{relaying_server}\n{origin_server}\n{relay_path_joined}")
 }
 
 /// Relays an RTX bundle to all active federation peers.
@@ -775,7 +774,7 @@ pub async fn relay_rtx_bundles(state: Arc<AppState>, bundle: ReflectionSummaryBu
             signature: signature_hex,
         };
 
-        let url = format!("{}/api/federation/rtx", base_url);
+        let url = format!("{base_url}/api/federation/rtx");
         let client_clone = client.clone();
 
         tokio::spawn(async move {
@@ -864,9 +863,10 @@ pub async fn governance_transfers_handler(
     let result = tokio::task::spawn_blocking({
         let state = state.clone();
         move || -> Result<TransferLogResponse, ApiError> {
-            let conn = state.pool.get().map_err(|e| {
-                ApiError::InternalServerError(format!("db connection failed: {}", e))
-            })?;
+            let conn = state
+                .pool
+                .get()
+                .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
 
             // Build dynamic WHERE clause
             let mut conditions = vec!["server_id = ?1".to_string()];
@@ -874,27 +874,27 @@ pub async fn governance_transfers_handler(
             let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(state.server_id)];
 
             if let Some(ref bid) = query.bundle_id {
-                conditions.push(format!("bundle_id = ?{}", param_idx));
+                conditions.push(format!("bundle_id = ?{param_idx}"));
                 params.push(Box::new(bid.clone()));
                 param_idx += 1;
             }
             if let Some(ref src) = query.source {
-                conditions.push(format!("source_pseudonym = ?{}", param_idx));
+                conditions.push(format!("source_pseudonym = ?{param_idx}"));
                 params.push(Box::new(src.clone()));
                 param_idx += 1;
             }
             if let Some(ref dst) = query.destination {
-                conditions.push(format!("destination_pseudonym = ?{}", param_idx));
+                conditions.push(format!("destination_pseudonym = ?{param_idx}"));
                 params.push(Box::new(dst.clone()));
                 param_idx += 1;
             }
             if let Some(ref since) = query.since {
-                conditions.push(format!("transferred_at >= ?{}", param_idx));
+                conditions.push(format!("transferred_at >= ?{param_idx}"));
                 params.push(Box::new(since.clone()));
                 param_idx += 1;
             }
             if let Some(ref until) = query.until {
-                conditions.push(format!("transferred_at <= ?{}", param_idx));
+                conditions.push(format!("transferred_at <= ?{param_idx}"));
                 params.push(Box::new(until.clone()));
                 param_idx += 1;
             }
@@ -902,17 +902,14 @@ pub async fn governance_transfers_handler(
             let where_clause = conditions.join(" AND ");
 
             // Count total matching entries
-            let count_sql = format!(
-                "SELECT COUNT(*) FROM rtx_transfer_log WHERE {}",
-                where_clause
-            );
+            let count_sql = format!("SELECT COUNT(*) FROM rtx_transfer_log WHERE {where_clause}");
             let total: i64 = conn
                 .query_row(
                     &count_sql,
                     rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
                     |row| row.get(0),
                 )
-                .map_err(|e| ApiError::InternalServerError(format!("count query failed: {}", e)))?;
+                .map_err(|e| ApiError::InternalServerError(format!("count query failed: {e}")))?;
 
             // Fetch paginated results
             let data_sql = format!(
@@ -930,9 +927,9 @@ pub async fn governance_transfers_handler(
             params.push(Box::new(limit));
             params.push(Box::new(offset));
 
-            let mut stmt = conn.prepare(&data_sql).map_err(|e| {
-                ApiError::InternalServerError(format!("prepare query failed: {}", e))
-            })?;
+            let mut stmt = conn
+                .prepare(&data_sql)
+                .map_err(|e| ApiError::InternalServerError(format!("prepare query failed: {e}")))?;
 
             let rows = stmt
                 .query_map(
@@ -950,14 +947,14 @@ pub async fn governance_transfers_handler(
                     },
                 )
                 .map_err(|e| {
-                    ApiError::InternalServerError(format!("transfer log query failed: {}", e))
+                    ApiError::InternalServerError(format!("transfer log query failed: {e}"))
                 })?;
 
             let mut transfers = Vec::new();
             for row in rows {
-                transfers.push(row.map_err(|e| {
-                    ApiError::InternalServerError(format!("row read error: {}", e))
-                })?);
+                transfers.push(
+                    row.map_err(|e| ApiError::InternalServerError(format!("row read error: {e}")))?,
+                );
             }
 
             Ok(TransferLogResponse {
@@ -969,7 +966,7 @@ pub async fn governance_transfers_handler(
         }
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     Ok(Json(result))
 }
@@ -1017,7 +1014,7 @@ pub async fn governance_summary_handler(
         let state = state.clone();
         move || -> Result<GovernanceSummaryResponse, ApiError> {
             let conn = state.pool.get().map_err(|e| {
-                ApiError::InternalServerError(format!("db connection failed: {}", e))
+                ApiError::InternalServerError(format!("db connection failed: {e}"))
             })?;
 
             let server_id = state.server_id;
@@ -1029,7 +1026,7 @@ pub async fn governance_summary_handler(
                     |row| row.get(0),
                 )
                 .map_err(|e| {
-                    ApiError::InternalServerError(format!("total count query failed: {}", e))
+                    ApiError::InternalServerError(format!("total count query failed: {e}"))
                 })?;
 
             let unique_bundles: i64 = conn
@@ -1039,7 +1036,7 @@ pub async fn governance_summary_handler(
                     |row| row.get(0),
                 )
                 .map_err(|e| {
-                    ApiError::InternalServerError(format!("unique bundles query failed: {}", e))
+                    ApiError::InternalServerError(format!("unique bundles query failed: {e}"))
                 })?;
 
             let unique_sources: i64 = conn
@@ -1049,7 +1046,7 @@ pub async fn governance_summary_handler(
                     |row| row.get(0),
                 )
                 .map_err(|e| {
-                    ApiError::InternalServerError(format!("unique sources query failed: {}", e))
+                    ApiError::InternalServerError(format!("unique sources query failed: {e}"))
                 })?;
 
             let unique_destinations: i64 = conn
@@ -1060,7 +1057,7 @@ pub async fn governance_summary_handler(
                     |row| row.get(0),
                 )
                 .map_err(|e| {
-                    ApiError::InternalServerError(format!("unique destinations query failed: {}", e))
+                    ApiError::InternalServerError(format!("unique destinations query failed: {e}"))
                 })?;
 
             let redacted_transfers: i64 = conn
@@ -1071,7 +1068,7 @@ pub async fn governance_summary_handler(
                     |row| row.get(0),
                 )
                 .map_err(|e| {
-                    ApiError::InternalServerError(format!("redacted count query failed: {}", e))
+                    ApiError::InternalServerError(format!("redacted count query failed: {e}"))
                 })?;
 
             // Breakdown by transfer scope
@@ -1084,7 +1081,7 @@ pub async fn governance_summary_handler(
                      ORDER BY cnt DESC",
                 )
                 .map_err(|e| {
-                    ApiError::InternalServerError(format!("scope breakdown query failed: {}", e))
+                    ApiError::InternalServerError(format!("scope breakdown query failed: {e}"))
                 })?;
 
             let scope_rows = stmt
@@ -1095,13 +1092,13 @@ pub async fn governance_summary_handler(
                     })
                 })
                 .map_err(|e| {
-                    ApiError::InternalServerError(format!("scope breakdown read failed: {}", e))
+                    ApiError::InternalServerError(format!("scope breakdown read failed: {e}"))
                 })?;
 
             let mut by_scope = Vec::new();
             for row in scope_rows {
                 by_scope.push(row.map_err(|e| {
-                    ApiError::InternalServerError(format!("scope row error: {}", e))
+                    ApiError::InternalServerError(format!("scope row error: {e}"))
                 })?);
             }
 
@@ -1116,7 +1113,7 @@ pub async fn governance_summary_handler(
         }
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     Ok(Json(result))
 }
@@ -1145,36 +1142,33 @@ mod tests {
     #[test]
     fn test_extract_redacted_topics_with_field() {
         let json = r#"{"required_capabilities":[],"offered_capabilities":[],"redacted_topics":["politics","finance"]}"#;
-        let topics = extract_redacted_topics(json);
+        let topics = extract_redacted_topics(json).unwrap();
         assert_eq!(topics, vec!["politics", "finance"]);
     }
 
     #[test]
     fn test_extract_redacted_topics_without_field() {
         let json = r#"{"required_capabilities":[],"offered_capabilities":[]}"#;
-        let topics = extract_redacted_topics(json);
+        let topics = extract_redacted_topics(json).unwrap();
         assert!(topics.is_empty());
     }
 
     #[test]
     fn test_extract_redacted_topics_invalid_json() {
-        // Corrupted JSON returns empty vec (fail-open) and logs a warning.
-        let topics = extract_redacted_topics("not json");
-        assert!(topics.is_empty());
+        // Corrupted JSON now fails closed (returns Err) to prevent bypass.
+        assert!(extract_redacted_topics("not json").is_err());
     }
 
     #[test]
     fn test_extract_redacted_topics_truncated_json() {
         // Simulates data corruption: truncated JSON string.
-        let topics = extract_redacted_topics(r#"{"required_capabilities":["#);
-        assert!(topics.is_empty());
+        assert!(extract_redacted_topics(r#"{"required_capabilities":["#).is_err());
     }
 
     #[test]
     fn test_extract_redacted_topics_wrong_type() {
         // JSON is valid but wrong shape — field is a string, not array.
-        let topics = extract_redacted_topics(r#"{"redacted_topics": "not_an_array"}"#);
-        assert!(topics.is_empty());
+        assert!(extract_redacted_topics(r#"{"redacted_topics": "not_an_array"}"#).is_err());
     }
 
     #[test]

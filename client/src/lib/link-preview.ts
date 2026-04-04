@@ -13,7 +13,7 @@
  */
 
 import type { LinkPreviewData } from '@/types';
-import { getApiBaseUrl } from '@/lib/api';
+import { getApiBaseUrl, getSessionToken } from '@/lib/api';
 
 // Match URLs in message text
 const URL_REGEX = /https?:\/\/[^\s<>'")\]]+/gi;
@@ -63,9 +63,11 @@ export async function fetchLinkPreview(
     // Use API base URL so link previews route to the active server
     const base = getApiBaseUrl();
     const endpoint = `${base}/api/link-preview?` + new URLSearchParams({ url });
-    const res = await fetch(endpoint, {
-      headers: { 'X-Annex-Pseudonym': pseudonymId },
-    });
+    const token = getSessionToken();
+    const headers: Record<string, string> = token
+      ? { 'Authorization': `Bearer ${token}` }
+      : { 'X-Annex-Pseudonym': pseudonymId };
+    const res = await fetch(endpoint, { headers });
 
     if (!res.ok) {
       // Server proxy not available — degrade gracefully

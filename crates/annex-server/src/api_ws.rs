@@ -65,7 +65,7 @@ pub fn generate_session_token(pseudonym: &str, secret: &[u8; 32], ttl_secs: u64)
         .as_secs()
         + ttl_secs;
 
-    let payload = format!("{}|{}", pseudonym, expires);
+    let payload = format!("{pseudonym}|{expires}");
 
     let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC key length is valid");
     mac.update(payload.as_bytes());
@@ -100,7 +100,7 @@ fn verify_ws_token(token: &str, secret: &[u8; 32]) -> Result<String, StatusCode>
     let sig_hex = parts[2];
 
     // Verify HMAC using constant-time comparison to prevent timing side-channels
-    let payload = format!("{}|{}", pseudonym, expires_str);
+    let payload = format!("{pseudonym}|{expires_str}");
     let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC key length is valid");
     mac.update(payload.as_bytes());
     let provided_sig = hex::decode(sig_hex).map_err(|_| StatusCode::UNAUTHORIZED)?;
@@ -127,9 +127,12 @@ pub fn verify_ws_token_for_auth(token: &str, secret: &[u8; 32]) -> Result<String
     verify_ws_token(token, secret)
 }
 
-/// Verify HMAC signature of a session token but allow expired tokens.
+/// Verify HMAC signature of a session token but allow recently-expired tokens.
 /// Used by the session refresh endpoint to re-issue tokens for returning users
 /// whose session expired while the app was closed.
+///
+/// Allows tokens expired up to 7 days ago. Tokens older than that are rejected
+/// to limit the replay window if a token is ever leaked.
 pub fn verify_token_allow_expired(token: &str, secret: &[u8; 32]) -> Result<String, StatusCode> {
     use base64::Engine;
     use hmac::{Hmac, Mac};
@@ -151,14 +154,25 @@ pub fn verify_token_allow_expired(token: &str, secret: &[u8; 32]) -> Result<Stri
     let sig_hex = parts[2];
 
     // Verify HMAC — proves the token was issued by this server
-    let payload = format!("{}|{}", pseudonym, expires_str);
+    let payload = format!("{pseudonym}|{expires_str}");
     let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC key length is valid");
     mac.update(payload.as_bytes());
     let provided_sig = hex::decode(sig_hex).map_err(|_| StatusCode::UNAUTHORIZED)?;
     mac.verify_slice(&provided_sig)
         .map_err(|_| StatusCode::UNAUTHORIZED)?;
 
-    // Intentionally skip expiry check — caller handles the security implications
+    // Allow recently-expired tokens (up to 7 days) for session refresh.
+    // This limits the replay window if a token is ever leaked while still
+    // accommodating users who haven't opened the app in a few days.
+    const MAX_EXPIRED_AGE_SECS: u64 = 7 * 24 * 60 * 60; // 7 days
+    let expires: u64 = expires_str.parse().map_err(|_| StatusCode::UNAUTHORIZED)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    if now > expires + MAX_EXPIRED_AGE_SECS {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
 
     Ok(pseudonym.to_string())
 }
@@ -195,6 +209,8 @@ pub enum IncomingMessage {
         content: String,
         #[serde(rename = "replyTo")]
         reply_to: Option<String>,
+        #[serde(rename = "clientRequestId")]
+        client_request_id: Option<String>,
     },
     #[serde(rename = "edit_message")]
     EditMessage {
@@ -236,6 +252,11 @@ pub struct WsMessagePayload {
     pub edited_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deleted_at: Option<String>,
+    /// Echoed client request ID for correlating the server response with the
+    /// original send. Only present on the direct reply to the sender, not on
+    /// broadcast copies to other subscribers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_request_id: Option<String>,
 }
 
 impl From<Message> for WsMessagePayload {
@@ -249,6 +270,7 @@ impl From<Message> for WsMessagePayload {
             created_at: m.created_at,
             edited_at: m.edited_at,
             deleted_at: m.deleted_at,
+            client_request_id: None,
         }
     }
 }
@@ -272,7 +294,11 @@ pub enum OutgoingMessage {
         text: String,
     },
     #[serde(rename = "error")]
-    Error { message: String },
+    Error {
+        message: String,
+        #[serde(rename = "clientRequestId", skip_serializing_if = "Option::is_none")]
+        client_request_id: Option<String>,
+    },
 }
 
 /// Type alias for session map to satisfy clippy complexity checks.
@@ -696,8 +722,8 @@ async fn check_ws_membership(
     let cid = channel_id.to_string();
     let pid = pseudonym.to_string();
     let result = tokio::task::spawn_blocking(move || {
-        let conn = pool.get().map_err(|e| format!("pool error: {}", e))?;
-        is_member(&conn, server_id, &cid, &pid).map_err(|e| format!("db error: {}", e))
+        let conn = pool.get().map_err(|e| format!("pool error: {e}"))?;
+        is_member(&conn, server_id, &cid, &pid).map_err(|e| format!("db error: {e}"))
     })
     .await;
 
@@ -705,13 +731,26 @@ async fn check_ws_membership(
         Ok(Ok(true)) => MembershipResult::Allowed,
         Ok(Ok(false)) => MembershipResult::Denied,
         Ok(Err(e)) => MembershipResult::Error(e),
-        Err(e) => MembershipResult::Error(format!("task join error: {}", e)),
+        Err(e) => MembershipResult::Error(format!("task join error: {e}")),
     }
 }
 
 /// Sends a JSON-serialized error message over the WebSocket sender channel.
 fn send_ws_error(tx: &mpsc::Sender<String>, message: String) {
-    match serde_json::to_string(&OutgoingMessage::Error { message }) {
+    send_ws_error_with_id(tx, message, None);
+}
+
+/// Sends a JSON-serialized error message with an optional client request ID
+/// so the frontend can correlate the error with the original send request.
+fn send_ws_error_with_id(
+    tx: &mpsc::Sender<String>,
+    message: String,
+    client_request_id: Option<String>,
+) {
+    match serde_json::to_string(&OutgoingMessage::Error {
+        message,
+        client_request_id,
+    }) {
         Ok(json) => {
             if let Err(e) = tx.try_send(json) {
                 tracing::warn!("failed to send WebSocket error to client: {}", e);
@@ -794,10 +833,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                     .await;
                             }
                             MembershipResult::Denied => {
-                                send_ws_error(
-                                    &tx,
-                                    format!("Not a member of channel {}", channel_id),
-                                );
+                                send_ws_error(&tx, format!("Not a member of channel {channel_id}"));
                             }
                             MembershipResult::Error(e) => {
                                 tracing::error!(
@@ -823,15 +859,24 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                         channel_id,
                         content,
                         reply_to,
+                        client_request_id,
                     } => {
                         // 0. Validate content length
+                        if content.trim().is_empty() {
+                            send_ws_error_with_id(
+                                &tx,
+                                "Message content must not be empty".to_string(),
+                                client_request_id,
+                            );
+                            continue;
+                        }
                         if content.len() > MAX_WS_MESSAGE_CONTENT_LEN {
-                            send_ws_error(
+                            send_ws_error_with_id(
                                 &tx,
                                 format!(
-                                    "Message content exceeds maximum length of {} bytes",
-                                    MAX_WS_MESSAGE_CONTENT_LEN
+                                    "Message content exceeds maximum length of {MAX_WS_MESSAGE_CONTENT_LEN} bytes"
                                 ),
+                                client_request_id,
                             );
                             continue;
                         }
@@ -847,9 +892,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                         {
                             MembershipResult::Allowed => {}
                             MembershipResult::Denied => {
-                                send_ws_error(
+                                send_ws_error_with_id(
                                     &tx,
-                                    format!("Not a member of channel {}", channel_id),
+                                    format!("Not a member of channel {channel_id}"),
+                                    client_request_id,
                                 );
                                 continue;
                             }
@@ -860,9 +906,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                     "message membership check failed: {}",
                                     e
                                 );
-                                send_ws_error(
+                                send_ws_error_with_id(
                                     &tx,
                                     "Internal error checking channel membership".to_string(),
+                                    client_request_id,
                                 );
                                 continue;
                             }
@@ -897,8 +944,12 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
 
                         match res {
                             Ok(Ok((message, is_federated))) => {
-                                // Broadcast via WebSocket (camelCase payload)
-                                let ws_payload: WsMessagePayload = message.clone().into();
+                                // Broadcast via WebSocket (camelCase payload).
+                                // clientRequestId is included in the broadcast for
+                                // the sender's pending-send correlation. Other clients
+                                // ignore unrecognized IDs (random UUIDs, no information leak).
+                                let mut ws_payload: WsMessagePayload = message.clone().into();
+                                ws_payload.client_request_id = client_request_id.clone();
                                 let broadcast_channel_id = message.channel_id.clone();
                                 let out = OutgoingMessage::Message(ws_payload);
                                 match serde_json::to_string(&out) {
@@ -932,9 +983,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                     "failed to persist message: {}",
                                     e
                                 );
-                                send_ws_error(
+                                send_ws_error_with_id(
                                     &tx,
                                     "Failed to send message: internal error".to_string(),
+                                    client_request_id,
                                 );
                             }
                             Err(e) => {
@@ -944,9 +996,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                     "message persist task failed: {}",
                                     e
                                 );
-                                send_ws_error(
+                                send_ws_error_with_id(
                                     &tx,
                                     "Failed to send message: internal error".to_string(),
+                                    client_request_id,
                                 );
                             }
                         }
@@ -956,12 +1009,15 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                         message_id,
                         content,
                     } => {
+                        if content.trim().is_empty() {
+                            send_ws_error(&tx, "Message content must not be empty".to_string());
+                            continue;
+                        }
                         if content.len() > MAX_WS_MESSAGE_CONTENT_LEN {
                             send_ws_error(
                                 &tx,
                                 format!(
-                                    "Message content exceeds maximum length of {} bytes",
-                                    MAX_WS_MESSAGE_CONTENT_LEN
+                                    "Message content exceeds maximum length of {MAX_WS_MESSAGE_CONTENT_LEN} bytes"
                                 ),
                             );
                             continue;
@@ -978,10 +1034,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                         {
                             MembershipResult::Allowed => {}
                             MembershipResult::Denied => {
-                                send_ws_error(
-                                    &tx,
-                                    format!("Not a member of channel {}", channel_id),
-                                );
+                                send_ws_error(&tx, format!("Not a member of channel {channel_id}"));
                                 continue;
                             }
                             MembershipResult::Error(e) => {
@@ -1033,7 +1086,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                 }
                             }
                             Ok(Err(e)) => {
-                                send_ws_error(&tx, format!("Edit failed: {}", e));
+                                send_ws_error(&tx, format!("Edit failed: {e}"));
                             }
                             Err(e) => {
                                 tracing::error!("edit message task failed: {}", e);
@@ -1056,10 +1109,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                         {
                             MembershipResult::Allowed => {}
                             MembershipResult::Denied => {
-                                send_ws_error(
-                                    &tx,
-                                    format!("Not a member of channel {}", channel_id),
-                                );
+                                send_ws_error(&tx, format!("Not a member of channel {channel_id}"));
                                 continue;
                             }
                             MembershipResult::Error(e) => {
@@ -1111,7 +1161,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                 }
                             }
                             Ok(Err(e)) => {
-                                send_ws_error(&tx, format!("Delete failed: {}", e));
+                                send_ws_error(&tx, format!("Delete failed: {e}"));
                             }
                             Err(e) => {
                                 tracing::error!("delete message task failed: {}", e);
@@ -1125,13 +1175,16 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                             continue;
                         }
 
-                        // Validate text length before expensive TTS synthesis
+                        // Validate text before expensive TTS synthesis
+                        if text.trim().is_empty() {
+                            send_ws_error(&tx, "VoiceIntent text must not be empty".to_string());
+                            continue;
+                        }
                         if text.len() > MAX_VOICE_INTENT_TEXT_LEN {
                             send_ws_error(
                                 &tx,
                                 format!(
-                                    "VoiceIntent text exceeds maximum length of {} bytes",
-                                    MAX_VOICE_INTENT_TEXT_LEN
+                                    "VoiceIntent text exceeds maximum length of {MAX_VOICE_INTENT_TEXT_LEN} bytes"
                                 ),
                             );
                             continue;
@@ -1148,10 +1201,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                         {
                             MembershipResult::Allowed => {}
                             MembershipResult::Denied => {
-                                send_ws_error(
-                                    &tx,
-                                    format!("Not a member of channel {}", channel_id),
-                                );
+                                send_ws_error(&tx, format!("Not a member of channel {channel_id}"));
                                 continue;
                             }
                             MembershipResult::Error(e) => {
@@ -1175,7 +1225,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                             let server_id = state.server_id;
                             let pid = pseudonym.clone();
                             let result = tokio::task::spawn_blocking(move || {
-                                let conn = pool.get().map_err(|e| format!("pool error: {}", e))?;
+                                let conn = pool.get().map_err(|e| format!("pool error: {e}"))?;
                                 let profile_id: Option<String> = conn
                                     .query_row(
                                         "SELECT vp.profile_id
@@ -1186,7 +1236,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                         |row| row.get(0),
                                     )
                                     .optional()
-                                    .map_err(|e| format!("db error: {}", e))?;
+                                    .map_err(|e| format!("db error: {e}"))?;
                                 Ok::<Option<String>, String>(profile_id)
                             })
                             .await;
@@ -1333,7 +1383,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                         Err(e) => {
                                             send_ws_error(
                                                 &tx,
-                                                format!("Failed to connect voice: {}", e),
+                                                format!("Failed to connect voice: {e}"),
                                             );
                                             continue;
                                         }
@@ -1341,11 +1391,11 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                 };
 
                                 if let Err(e) = client.publish_audio(&audio).await {
-                                    send_ws_error(&tx, format!("Failed to publish audio: {}", e));
+                                    send_ws_error(&tx, format!("Failed to publish audio: {e}"));
                                 }
                             }
                             Err(e) => {
-                                send_ws_error(&tx, format!("TTS failed: {}", e));
+                                send_ws_error(&tx, format!("TTS failed: {e}"));
                             }
                         }
                     }
@@ -1435,6 +1485,7 @@ mod tests {
             created_at: "2025-01-01T00:00:00Z".to_string(),
             edited_at: None,
             deleted_at: None,
+            client_request_id: None,
         };
 
         let json = serde_json::to_value(&payload).expect("serialization should not fail");
@@ -1467,6 +1518,25 @@ mod tests {
         assert!(
             json.get("message_id").is_none(),
             "snake_case message_id should not be present"
+        );
+
+        // Verify clientRequestId is omitted when None
+        assert!(
+            json.get("clientRequestId").is_none(),
+            "clientRequestId should be omitted when None"
+        );
+
+        // Verify clientRequestId is present when Some
+        let payload_with_id = WsMessagePayload {
+            client_request_id: Some("req-123".to_string()),
+            ..payload
+        };
+        let json_with_id =
+            serde_json::to_value(&payload_with_id).expect("serialization should not fail");
+        assert_eq!(
+            json_with_id.get("clientRequestId").and_then(|v| v.as_str()),
+            Some("req-123"),
+            "clientRequestId should be echoed when present"
         );
     }
 
@@ -1505,6 +1575,7 @@ mod tests {
             created_at: "2025-01-01T00:00:00Z".to_string(),
             edited_at: None,
             deleted_at: None,
+            client_request_id: None,
         };
 
         let out = OutgoingMessage::Message(payload);

@@ -87,7 +87,7 @@ async fn test_get_path_success() {
 
     // 3. Get Path
     let mut request_path = Request::builder()
-        .uri(format!("/api/registry/path/{}", commitment))
+        .uri(format!("/api/registry/path/{commitment}"))
         .method("GET")
         .body(Body::empty())
         .unwrap();
@@ -152,7 +152,7 @@ async fn test_get_path_not_found() {
     // 2. Get Path for non-existent commitment
     let commitment = "0000000000000000000000000000000000000000000000000000000000000099";
     let mut request_path = Request::builder()
-        .uri(format!("/api/registry/path/{}", commitment))
+        .uri(format!("/api/registry/path/{commitment}"))
         .method("GET")
         .body(Body::empty())
         .unwrap();

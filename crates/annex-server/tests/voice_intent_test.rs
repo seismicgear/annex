@@ -145,7 +145,7 @@ async fn connect_ws(
     addr: SocketAddr,
     pseudonym: &str,
 ) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>> {
-    let url = format!("ws://{}/ws?pseudonym={}", addr, pseudonym);
+    let url = format!("ws://{addr}/ws?pseudonym={pseudonym}");
     let (socket, _) = connect_async(url).await.expect("WS connect failed");
     socket
 }
@@ -178,7 +178,7 @@ async fn send_voice_intent_and_read(
         WsMessage::Text(text) => {
             serde_json::from_str(text.as_str()).expect("invalid JSON response")
         }
-        other => panic!("expected Text message, got {:?}", other),
+        other => panic!("expected Text message, got {other:?}"),
     }
 }
 
@@ -232,8 +232,7 @@ async fn test_voice_intent_non_agent_rejected() {
         .expect("missing error message");
     assert!(
         message.contains("Only AI agents"),
-        "Error should mention agent requirement, got: {}",
-        message
+        "Error should mention agent requirement, got: {message}"
     );
 }
 
@@ -286,8 +285,7 @@ async fn test_voice_intent_non_member_rejected() {
         .expect("missing error message");
     assert!(
         message.contains("Not a member"),
-        "Error should mention membership, got: {}",
-        message
+        "Error should mention membership, got: {message}"
     );
 }
 
@@ -364,7 +362,7 @@ async fn test_voice_intent_tts_success_full_pipeline() {
             panic!("Socket closed unexpectedly after VoiceIntent");
         }
         Ok(Some(Err(e))) => {
-            panic!("Socket error: {}", e);
+            panic!("Socket error: {e}");
         }
         Ok(None) => {
             panic!("Stream ended unexpectedly");
@@ -484,8 +482,7 @@ async fn test_voice_intent_tts_profile_not_found() {
         .expect("missing error message");
     assert!(
         message.contains("TTS failed"),
-        "Error should mention TTS failure, got: {}",
-        message
+        "Error should mention TTS failure, got: {message}"
     );
 }
 

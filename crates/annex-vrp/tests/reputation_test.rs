@@ -147,8 +147,7 @@ fn test_reputation_adversarial_oscillation() {
     // Net effect is negative per cycle — adversarial oscillation degrades reputation.
     assert!(
         score < 0.5,
-        "adversarial oscillation should degrade reputation below neutral, got {}",
-        score
+        "adversarial oscillation should degrade reputation below neutral, got {score}"
     );
 }
 
@@ -175,8 +174,7 @@ fn test_reputation_sustained_conflict_floors() {
     // After 50 CONFLICT events: 0.5 * (0.8^50) ≈ 0.0000072
     assert!(
         score < 0.001,
-        "sustained conflict should drive score near zero, got {}",
-        score
+        "sustained conflict should drive score near zero, got {score}"
     );
     assert!(score >= 0.0, "score should never go below zero");
 }

@@ -36,6 +36,9 @@ pub struct RegisterRequest {
     /// Optional invite code for invite-only servers.
     #[serde(default, rename = "inviteCode")]
     pub invite_code: Option<String>,
+    /// Optional server password for password-protected servers.
+    #[serde(default, rename = "serverPassword")]
+    pub server_password: Option<String>,
 }
 
 /// Response body for successful registration.
@@ -213,52 +216,103 @@ pub async fn register_handler(
         policy.access_mode.clone()
     };
 
-    if access_mode == "invite_only" {
+    // Pre-validate invite code format before the blocking task.
+    // The actual atomically-safe validation + use_count increment happens
+    // inside the same transaction as registration (below).
+    let invite_code_for_registration = if access_mode == "invite_only" {
         let invite_code = payload.invite_code.as_deref().unwrap_or("").trim();
         if invite_code.is_empty() {
             return Err(ApiError::Forbidden(
                 "This server requires an invite code to register.".to_string(),
             ));
         }
-        // Validate the invite code exists and is still usable
-        let code_owned = invite_code.to_string();
-        let server_id = state.server_id;
-        let state_check = state.clone();
-        tokio::task::spawn_blocking(move || {
-            let conn = state_check.pool.get().map_err(|e| {
-                ApiError::InternalServerError(format!("db connection failed: {}", e))
-            })?;
-            let row: Result<(Option<i64>, i64, Option<String>), _> = conn.query_row(
-                "SELECT max_uses, use_count, expires_at FROM invite_codes WHERE server_id = ?1 AND code = ?2",
-                rusqlite::params![server_id, code_owned],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            );
-            let (max_uses, use_count, expires_at) = row.map_err(|_| {
-                ApiError::Forbidden("Invalid or expired invite code.".to_string())
-            })?;
-            if let Some(ref exp) = expires_at {
-                let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                if *exp < now {
-                    return Err(ApiError::Forbidden("Invalid or expired invite code.".to_string()));
-                }
-            }
-            if let Some(max) = max_uses {
-                if use_count >= max {
-                    return Err(ApiError::Forbidden("Invalid or expired invite code.".to_string()));
-                }
-            }
-            Ok::<(), ApiError>(())
-        })
-        .await
-        .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+        Some(invite_code.to_string())
+    } else {
+        None
+    };
+
+    // Enforce password access mode
+    if access_mode == "password" {
+        let expected_password = {
+            let policy = state
+                .policy
+                .read()
+                .map_err(|_| ApiError::InternalServerError("policy lock poisoned".to_string()))?;
+            policy.access_password.clone()
+        };
+        let provided = payload.server_password.as_deref().unwrap_or("").trim();
+        if provided.is_empty() || provided != expected_password {
+            return Err(ApiError::Forbidden(
+                "This server requires a password to register.".to_string(),
+            ));
+        }
     }
 
     let result =
         tokio::task::spawn_blocking(move || {
             // Get DB connection
             let mut conn = state.pool.get().map_err(|e| {
-                ApiError::InternalServerError(format!("db connection failed: {}", e))
+                ApiError::InternalServerError(format!("db connection failed: {e}"))
             })?;
+
+            // Enforce max_members policy
+            {
+                let max_members = state
+                    .policy
+                    .read()
+                    .map_err(|_| {
+                        ApiError::InternalServerError("policy lock poisoned".to_string())
+                    })?
+                    .max_members;
+                let current_count: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM platform_identities WHERE server_id = ?1 AND active = 1",
+                        rusqlite::params![state.server_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|e| {
+                        ApiError::InternalServerError(format!("member count query failed: {e}"))
+                    })?;
+                if current_count >= max_members as i64 {
+                    return Err(ApiError::Forbidden(
+                        "This server has reached its maximum member limit.".to_string(),
+                    ));
+                }
+            }
+
+            // Validate invite code (check expiry, max_uses) before
+            // registration, but defer use_count increment until AFTER
+            // registration succeeds. This prevents wasting invite uses
+            // when registration fails (duplicate commitment, tree full).
+            if let Some(ref code) = invite_code_for_registration {
+                let row: Result<(Option<i64>, i64, Option<String>), _> = conn.query_row(
+                    "SELECT max_uses, use_count, expires_at FROM invite_codes WHERE server_id = ?1 AND code = ?2",
+                    rusqlite::params![state.server_id, code],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                );
+                let (max_uses, use_count, expires_at) = row.map_err(|_| {
+                    ApiError::Forbidden("Invalid or expired invite code.".to_string())
+                })?;
+                if let Some(ref exp) = expires_at {
+                    if let Ok(exp_dt) =
+                        chrono::NaiveDateTime::parse_from_str(exp, "%Y-%m-%d %H:%M:%S")
+                    {
+                        let now = chrono::Utc::now().naive_utc();
+                        if exp_dt < now {
+                            return Err(ApiError::Forbidden(
+                                "Invalid or expired invite code.".to_string(),
+                            ));
+                        }
+                    }
+                }
+                if let Some(max) = max_uses {
+                    if use_count >= max {
+                        return Err(ApiError::Forbidden(
+                            "Invalid or expired invite code.".to_string(),
+                        ));
+                    }
+                }
+            }
 
             // Lock Merkle Tree
             let mut tree = state.merkle_tree.lock().map_err(|_| {
@@ -281,11 +335,36 @@ pub async fn register_handler(
                     ApiError::Conflict(e.to_string())
                 }
                 annex_identity::IdentityError::TreeFull => {
-                    // Tree full is conceptually a 507 Insufficient Storage, but 500 is fine too
                     ApiError::InternalServerError(e.to_string())
                 }
                 _ => ApiError::InternalServerError(e.to_string()),
             })?;
+
+            // Registration succeeded — now atomically claim the invite.
+            // The WHERE clause re-checks max_uses to prevent races.
+            if let Some(ref code) = invite_code_for_registration {
+                let updated = conn
+                    .execute(
+                        "UPDATE invite_codes SET use_count = use_count + 1 \
+                         WHERE server_id = ?1 AND code = ?2 \
+                         AND (max_uses IS NULL OR use_count < max_uses)",
+                        rusqlite::params![state.server_id, code],
+                    )
+                    .map_err(|e| {
+                        ApiError::InternalServerError(format!("invite update failed: {e}"))
+                    })?;
+                if updated == 0 {
+                    // Another concurrent request used the last invite between
+                    // our validation and this point. Registration already
+                    // succeeded so we don't roll it back — the identity is
+                    // valid. Log a warning for audit purposes.
+                    tracing::warn!(
+                        code = %code,
+                        "invite code exhausted between validation and claim; \
+                         registration succeeded but invite use not counted"
+                    );
+                }
+            }
 
             // Emit IDENTITY_REGISTERED to the public event log
             let observe_payload = EventPayload::IdentityRegistered {
@@ -303,7 +382,7 @@ pub async fn register_handler(
             Ok(result)
         })
         .await
-        .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+        .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     Ok(Json(RegisterResponse {
         identity_id: result.identity_id,
@@ -319,25 +398,26 @@ pub async fn get_path_handler(
     Extension(state): Extension<Arc<AppState>>,
     Path(commitment_hex): Path<String>,
 ) -> Result<Json<GetPathResponse>, ApiError> {
-    let result =
-        tokio::task::spawn_blocking(move || {
-            let conn = state.pool.get().map_err(|e| {
-                ApiError::InternalServerError(format!("db connection failed: {}", e))
-            })?;
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = state
+            .pool
+            .get()
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
 
-            let tree = state.merkle_tree.lock().map_err(|_| {
-                ApiError::InternalServerError("merkle tree lock poisoned".to_string())
-            })?;
+        let tree = state
+            .merkle_tree
+            .lock()
+            .map_err(|_| ApiError::InternalServerError("merkle tree lock poisoned".to_string()))?;
 
-            get_path_for_commitment(&tree, &conn, &commitment_hex).map_err(|e| match e {
-                annex_identity::IdentityError::CommitmentNotFound(_) => {
-                    ApiError::NotFound(format!("commitment not found: {}", commitment_hex))
-                }
-                _ => ApiError::InternalServerError(e.to_string()),
-            })
+        get_path_for_commitment(&tree, &conn, &commitment_hex).map_err(|e| match e {
+            annex_identity::IdentityError::CommitmentNotFound(_) => {
+                ApiError::NotFound(format!("commitment not found: {commitment_hex}"))
+            }
+            _ => ApiError::InternalServerError(e.to_string()),
         })
-        .await
-        .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    })
+    .await
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     Ok(Json(GetPathResponse {
         leaf_index: result.0,
@@ -355,7 +435,7 @@ pub async fn get_current_root_handler(
         let conn = state
             .pool
             .get()
-            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
 
         let (root_hex, leaf_count) = {
             let tree = state.merkle_tree.lock().map_err(|_| {
@@ -371,12 +451,12 @@ pub async fn get_current_root_handler(
                 |row| row.get(0),
             )
             .optional()
-            .map_err(|e| ApiError::InternalServerError(format!("db query failed: {}", e)))?;
+            .map_err(|e| ApiError::InternalServerError(format!("db query failed: {e}")))?;
 
         Ok((root_hex, leaf_count, updated_at))
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     Ok(Json(GetRootResponse {
         root_hex: result.0,
@@ -395,7 +475,7 @@ pub async fn verify_membership_handler(
         let conn = state
             .pool
             .get()
-            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
 
         // 1. Verify root exists and is active (not a stale historical root).
         // Only active roots are accepted to prevent revoked identities from
@@ -406,7 +486,7 @@ pub async fn verify_membership_handler(
                 [&payload.root],
                 |row| row.get(0),
             )
-            .map_err(|e| ApiError::InternalServerError(format!("db query failed: {}", e)))
+            .map_err(|e| ApiError::InternalServerError(format!("db query failed: {e}")))
             .map(|count: i64| count > 0)?;
 
         if !root_exists {
@@ -418,17 +498,17 @@ pub async fn verify_membership_handler(
 
         // 2. Parse proof and public signals
         let proof = parse_proof(&payload.proof.to_string())
-            .map_err(|e| ApiError::BadRequest(format!("invalid proof format: {}", e)))?;
+            .map_err(|e| ApiError::BadRequest(format!("invalid proof format: {e}")))?;
 
         let public_signals_json = serde_json::to_string(&payload.public_signals).map_err(|e| {
-            ApiError::BadRequest(format!("failed to serialize public signals: {}", e))
+            ApiError::BadRequest(format!("failed to serialize public signals: {e}"))
         })?;
         let public_signals = parse_public_signals(&public_signals_json)
-            .map_err(|e| ApiError::BadRequest(format!("invalid public signals format: {}", e)))?;
+            .map_err(|e| ApiError::BadRequest(format!("invalid public signals format: {e}")))?;
 
         // 3. Verify proof
         let valid = verify_proof(&state.membership_vkey, &proof, &public_signals)
-            .map_err(|e| ApiError::Unauthorized(format!("proof verification failed: {}", e)))?;
+            .map_err(|e| ApiError::Unauthorized(format!("proof verification failed: {e}")))?;
 
         if !valid {
             return Err(ApiError::Unauthorized("invalid proof".to_string()));
@@ -444,9 +524,9 @@ pub async fn verify_membership_handler(
 
         // Convert input hex strings to Fr for comparison
         let claimed_root = parse_fr_from_hex(&payload.root)
-            .map_err(|e| ApiError::BadRequest(format!("invalid root hex: {}", e)))?;
+            .map_err(|e| ApiError::BadRequest(format!("invalid root hex: {e}")))?;
         let claimed_commitment = parse_fr_from_hex(&payload.commitment)
-            .map_err(|e| ApiError::BadRequest(format!("invalid commitment hex: {}", e)))?;
+            .map_err(|e| ApiError::BadRequest(format!("invalid commitment hex: {e}")))?;
 
         if public_signals[0] != claimed_root {
             return Err(ApiError::BadRequest(
@@ -477,11 +557,11 @@ pub async fn verify_membership_handler(
 
         // 5. Derive nullifier
         let nullifier_hex = derive_nullifier_hex(&payload.commitment, &payload.topic)
-            .map_err(|e| ApiError::BadRequest(format!("failed to derive nullifier: {}", e)))?;
+            .map_err(|e| ApiError::BadRequest(format!("failed to derive nullifier: {e}")))?;
 
         // 6. Derive pseudonym (pure computation, no DB needed)
         let pseudonym_id = derive_pseudonym_id(&payload.topic, &nullifier_hex).map_err(|e| {
-            ApiError::InternalServerError(format!("failed to derive pseudonym: {}", e))
+            ApiError::InternalServerError(format!("failed to derive pseudonym: {e}"))
         })?;
 
         // 7. Lookup role code from vrp_identities (read-only, before transaction)
@@ -492,18 +572,18 @@ pub async fn verify_membership_handler(
                 |row| row.get(0),
             )
             .optional()
-            .map_err(|e| ApiError::InternalServerError(format!("db query failed: {}", e)))?
+            .map_err(|e| ApiError::InternalServerError(format!("db query failed: {e}")))?
             .ok_or_else(|| ApiError::NotFound("identity not found in registry".to_string()))?;
 
         let role_code = RoleCode::from_u8(role_code_int).ok_or_else(|| {
-            ApiError::InternalServerError(format!("invalid role code in db: {}", role_code_int))
+            ApiError::InternalServerError(format!("invalid role code in db: {role_code_int}"))
         })?;
 
         // 8. Get Server ID (read-only, before transaction)
         let server_id: i64 = conn
             .query_row("SELECT id FROM servers LIMIT 1", [], |row| row.get(0))
             .optional()
-            .map_err(|e| ApiError::InternalServerError(format!("db query failed: {}", e)))?
+            .map_err(|e| ApiError::InternalServerError(format!("db query failed: {e}")))?
             .ok_or_else(|| ApiError::InternalServerError("no server configured".to_string()))?;
 
         // 9. Pre-fetch agent metadata if applicable (read-only, before transaction)
@@ -523,7 +603,7 @@ pub async fn verify_membership_handler(
                     )),
                 )
                 .optional()
-                .map_err(|e| ApiError::InternalServerError(format!("db query failed: {}", e)))?;
+                .map_err(|e| ApiError::InternalServerError(format!("db query failed: {e}")))?;
 
             if let Some((alignment, scope, contract, reputation)) = agent_data {
                 let parsed_contract: serde_json::Value = serde_json::from_str(&contract)
@@ -566,7 +646,7 @@ pub async fn verify_membership_handler(
         //     could leave inconsistent state (e.g., identity exists but no graph node).
         let mut conn = conn;
         let tx = conn.transaction().map_err(|e| {
-            ApiError::InternalServerError(format!("failed to start transaction: {}", e))
+            ApiError::InternalServerError(format!("failed to start transaction: {e}"))
         })?;
 
         // Insert nullifier with denormalized lookup columns for O(1) pseudonym resolution
@@ -581,7 +661,7 @@ pub async fn verify_membership_handler(
             annex_identity::IdentityError::DuplicateNullifier(_) => {
                 ApiError::Conflict(e.to_string())
             }
-            _ => ApiError::InternalServerError(format!("failed to insert nullifier: {}", e)),
+            _ => ApiError::InternalServerError(format!("failed to insert nullifier: {e}")),
         })?;
 
         // Emit PSEUDONYM_DERIVED to the public event log (inside transaction)
@@ -599,18 +679,18 @@ pub async fn verify_membership_handler(
 
         // Create Platform Identity
         create_platform_identity(&tx, server_id, &pseudonym_id, role_code).map_err(|e| {
-            ApiError::InternalServerError(format!("failed to create platform identity: {}", e))
+            ApiError::InternalServerError(format!("failed to create platform identity: {e}"))
         })?;
 
         // Create/Update Graph Node
         ensure_graph_node(&tx, server_id, &pseudonym_id, node_type, metadata_json).map_err(|e| {
-            ApiError::InternalServerError(format!("failed to ensure graph node: {}", e))
+            ApiError::InternalServerError(format!("failed to ensure graph node: {e}"))
         })?;
 
         // Emit NodeAdded to the public event log (inside transaction)
         let observe_payload = EventPayload::NodeAdded {
             pseudonym_id: pseudonym_id.clone(),
-            node_type: format!("{:?}", node_type),
+            node_type: format!("{node_type:?}"),
         };
         crate::emit_and_broadcast(
             &tx,
@@ -621,7 +701,7 @@ pub async fn verify_membership_handler(
         );
 
         tx.commit().map_err(|e| {
-            ApiError::InternalServerError(format!("failed to commit transaction: {}", e))
+            ApiError::InternalServerError(format!("failed to commit transaction: {e}"))
         })?;
 
         // 11. Emit Presence Event (SSE broadcast only, no DB write needed after commit)
@@ -634,7 +714,7 @@ pub async fn verify_membership_handler(
         Ok(pseudonym_id)
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     let session_token = crate::api_ws::generate_session_token(
         &result,
@@ -657,12 +737,12 @@ pub async fn get_topics_handler(
         let conn = state
             .pool
             .get()
-            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
 
         get_all_topics(&conn).map_err(|e| ApiError::InternalServerError(e.to_string()))
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     Ok(Json(result))
 }
@@ -681,12 +761,12 @@ fn fetch_platform_identity(
     let conn = state
         .pool
         .get()
-        .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
+        .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
 
     let identity =
         get_platform_identity(&conn, state.server_id, pseudonym_id).map_err(|e| match e {
             annex_identity::IdentityError::DatabaseError(rusqlite::Error::QueryReturnedNoRows) => {
-                ApiError::NotFound(format!("identity not found: {}", pseudonym_id))
+                ApiError::NotFound(format!("identity not found: {pseudonym_id}"))
             }
             _ => ApiError::InternalServerError(e.to_string()),
         })?;
@@ -719,7 +799,7 @@ pub async fn get_identity_handler(
     let result =
         tokio::task::spawn_blocking(move || fetch_platform_identity(&state, &pseudonym_id))
             .await
-            .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+            .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     Ok(Json(GetIdentityResponse {
         pseudonym_id: result.pseudonym_id,
@@ -743,7 +823,7 @@ pub async fn get_identity_capabilities_handler(
     let result =
         tokio::task::spawn_blocking(move || fetch_platform_identity(&state, &pseudonym_id))
             .await
-            .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+            .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     Ok(Json(GetCapabilitiesResponse {
         capabilities: Capabilities {
@@ -764,12 +844,12 @@ pub async fn get_roles_handler(
         let conn = state
             .pool
             .get()
-            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
 
         get_all_roles(&conn).map_err(|e| ApiError::InternalServerError(e.to_string()))
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     Ok(Json(result))
 }

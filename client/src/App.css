@@ -199,6 +199,28 @@
   font-size: 0.9rem;
 }
 
+.password-prompt {
+  margin: 1rem 0;
+  text-align: center;
+}
+
+.password-prompt p {
+  margin-bottom: 0.75rem;
+  color: #ccc;
+}
+
+.password-prompt form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: 280px;
+  margin: 0 auto;
+}
+
+.password-prompt input[type="password"] {
+  text-align: center;
+}
+
 .phase-generating,
 .phase-registering,
 .phase-proving,
@@ -3283,6 +3305,17 @@
   color: #f87171;
   border-color: #f87171;
   background: rgba(248, 113, 113, 0.1);
+}
+
+.msg-action-btn.delete-btn.confirming {
+  color: #f87171;
+  border-color: #f87171;
+  background: rgba(248, 113, 113, 0.15);
+}
+
+.delete-confirm-text {
+  font-size: 0.65rem;
+  font-weight: 600;
 }
 
 .edited-badge {

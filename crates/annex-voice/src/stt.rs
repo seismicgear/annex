@@ -52,7 +52,7 @@ impl SttService {
 
         let mut child = command
             .spawn()
-            .map_err(|e| VoiceError::Stt(format!("Failed to spawn STT binary: {}", e)))?;
+            .map_err(|e| VoiceError::Stt(format!("Failed to spawn STT binary: {e}")))?;
 
         let mut stdin = child
             .stdin
@@ -63,7 +63,7 @@ impl SttService {
         stdin
             .write_all(audio_data)
             .await
-            .map_err(|e| VoiceError::Stt(format!("Failed to write to stdin: {}", e)))?;
+            .map_err(|e| VoiceError::Stt(format!("Failed to write to stdin: {e}")))?;
         drop(stdin); // Close stdin to signal EOF
 
         let output = tokio::time::timeout(STT_TIMEOUT, child.wait_with_output())
@@ -74,11 +74,11 @@ impl SttService {
                     STT_TIMEOUT.as_secs()
                 ))
             })?
-            .map_err(|e| VoiceError::Stt(format!("Failed to read stdout: {}", e)))?;
+            .map_err(|e| VoiceError::Stt(format!("Failed to read stdout: {e}")))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(VoiceError::Stt(format!("STT binary failed: {}", stderr)));
+            return Err(VoiceError::Stt(format!("STT binary failed: {stderr}")));
         }
 
         let text = String::from_utf8_lossy(&output.stdout).trim().to_string();

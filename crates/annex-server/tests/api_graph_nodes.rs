@@ -96,7 +96,7 @@ async fn test_graph_node_creation_on_verification() {
 
     // Get Path
     let req = Request::builder()
-        .uri(format!("/api/registry/path/{}", commitment_hex))
+        .uri(format!("/api/registry/path/{commitment_hex}"))
         .method("GET")
         .body(Body::empty())
         .unwrap();
@@ -126,15 +126,15 @@ async fn test_graph_node_creation_on_verification() {
         "roleCode": role_code as u8,
         "nodeId": node_id,
         "leafIndex": path_data.leaf_index,
-        "pathElements": path_data.path_elements.iter().map(|s| format!("0x{}", s)).collect::<Vec<_>>(),
+        "pathElements": path_data.path_elements.iter().map(|s| format!("0x{s}")).collect::<Vec<_>>(),
         "pathIndexBits": path_data.path_indices
     });
 
     let temp_dir = std::env::temp_dir();
     let unique_id = uuid::Uuid::new_v4();
-    let input_path = temp_dir.join(format!("input-{}.json", unique_id));
-    let proof_path = temp_dir.join(format!("proof-{}.json", unique_id));
-    let public_path = temp_dir.join(format!("public-{}.json", unique_id));
+    let input_path = temp_dir.join(format!("input-{unique_id}.json"));
+    let proof_path = temp_dir.join(format!("proof-{unique_id}.json"));
+    let public_path = temp_dir.join(format!("public-{unique_id}.json"));
 
     fs::write(&input_path, input_json.to_string()).expect("failed to write input.json");
     let wasm_path = build_dir.join("membership_js/membership.wasm");

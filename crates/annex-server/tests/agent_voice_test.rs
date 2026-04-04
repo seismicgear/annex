@@ -114,7 +114,7 @@ async fn test_agent_voice_intent_pipeline() {
     });
 
     // Connect WS
-    let ws_url = format!("ws://{}/ws?pseudonym=agent-1", addr);
+    let ws_url = format!("ws://{addr}/ws?pseudonym=agent-1");
     let (mut socket, _) = connect_async(ws_url).await.expect("Failed to connect");
 
     // Send VoiceIntent
@@ -133,7 +133,7 @@ async fn test_agent_voice_intent_pipeline() {
 
     match msg {
         Ok(Some(Ok(WsMessage::Text(text)))) => {
-            println!("Received: {}", text);
+            println!("Received: {text}");
             let v: Value = serde_json::from_str(text.as_str()).unwrap();
 
             // Should be an error message because TTS failed
@@ -147,7 +147,7 @@ async fn test_agent_voice_intent_pipeline() {
             panic!("Socket closed unexpectedly");
         }
         Ok(Some(Err(e))) => {
-            panic!("Socket error: {}", e);
+            panic!("Socket error: {e}");
         }
         Ok(None) => {
             panic!("Stream ended unexpectedly");
