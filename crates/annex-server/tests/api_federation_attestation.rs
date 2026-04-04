@@ -279,7 +279,7 @@ async fn test_attest_membership_valid_signature_fails_network() {
     let topic = "annex:server:v1".to_string();
     let commitment = "0000000000000000000000000000000000000000000000000000000000000001".to_string();
     let participant_type = "AI_AGENT".to_string();
-    let message = format!("{}\n{}\n{}", topic, commitment, participant_type);
+    let message = format!("{topic}\n{commitment}\n{participant_type}");
     let signature = signing_key.sign(message.as_bytes());
     let signature_hex = hex::encode(signature.to_bytes());
 
@@ -344,7 +344,6 @@ async fn test_attest_membership_rejects_human_participant_type() {
     let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
     assert!(
         body_str.contains("HUMAN participant_type is not permitted"),
-        "Expected HUMAN rejection error, got: {}",
-        body_str
+        "Expected HUMAN rejection error, got: {body_str}"
     );
 }

@@ -97,8 +97,7 @@ mod tests {
         let err = generate_commitment("invalid-hex", role, node_id);
         assert!(
             matches!(err, Err(IdentityError::InvalidHex)),
-            "Expected InvalidHex error, got {:?}",
-            err
+            "Expected InvalidHex error, got {err:?}"
         );
     }
 
@@ -109,8 +108,7 @@ mod tests {
         let err = generate_commitment(sk, RoleCode::Human, 42);
         assert!(
             matches!(err, Err(IdentityError::InvalidHex)),
-            "Expected InvalidHex for too-short key, got {:?}",
-            err
+            "Expected InvalidHex for too-short key, got {err:?}"
         );
     }
 
@@ -121,8 +119,7 @@ mod tests {
         let err = generate_commitment(sk, RoleCode::Human, 42);
         assert!(
             matches!(err, Err(IdentityError::InvalidHex)),
-            "Expected InvalidHex for too-long key, got {:?}",
-            err
+            "Expected InvalidHex for too-long key, got {err:?}"
         );
     }
 
@@ -133,8 +130,7 @@ mod tests {
         let err = generate_commitment(sk, RoleCode::Human, 42);
         assert!(
             matches!(err, Err(IdentityError::InvalidHex)),
-            "Expected InvalidHex for sk >= field modulus, got {:?}",
-            err
+            "Expected InvalidHex for sk >= field modulus, got {err:?}"
         );
     }
 

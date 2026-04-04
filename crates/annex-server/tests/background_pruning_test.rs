@@ -146,7 +146,7 @@ async fn test_pruning_task_prunes_inactive_nodes_and_emits_events() {
         Ok(Ok(PresenceEvent::NodePruned { pseudonym_id })) => {
             assert_eq!(pseudonym_id, "old_user");
         }
-        other => panic!("expected NodePruned presence event, got: {:?}", other),
+        other => panic!("expected NodePruned presence event, got: {other:?}"),
     }
 
     // Verify an observe event was emitted (NodePruned to audit log)
@@ -156,7 +156,7 @@ async fn test_pruning_task_prunes_inactive_nodes_and_emits_events() {
             assert_eq!(event.event_type, "NODE_PRUNED");
             assert_eq!(event.entity_id, "old_user");
         }
-        other => panic!("expected NODE_PRUNED observe event, got: {:?}", other),
+        other => panic!("expected NODE_PRUNED observe event, got: {other:?}"),
     }
 
     // Cancel the infinite loop
@@ -212,14 +212,8 @@ async fn test_pruning_task_multiple_nodes_pruned() {
     {
         let conn = pool.get().expect("connection");
         for i in 0..5 {
-            ensure_graph_node(
-                &conn,
-                1,
-                &format!("stale_user_{}", i),
-                NodeType::Human,
-                None,
-            )
-            .expect("ensure node");
+            ensure_graph_node(&conn, 1, &format!("stale_user_{i}"), NodeType::Human, None)
+                .expect("ensure node");
         }
     }
 
@@ -255,11 +249,11 @@ async fn test_pruning_task_multiple_nodes_pruned() {
             Ok(Ok(PresenceEvent::NodePruned { pseudonym_id })) => {
                 pruned_ids.push(pseudonym_id);
             }
-            other => panic!("expected NodePruned event, got: {:?}", other),
+            other => panic!("expected NodePruned event, got: {other:?}"),
         }
     }
     pruned_ids.sort();
-    let mut expected: Vec<String> = (0..5).map(|i| format!("stale_user_{}", i)).collect();
+    let mut expected: Vec<String> = (0..5).map(|i| format!("stale_user_{i}")).collect();
     expected.sort();
     assert_eq!(pruned_ids, expected);
 

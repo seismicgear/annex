@@ -396,7 +396,7 @@ pub async fn join_channel_handler(
 
         // Parse alignment status (handle both quoted JSON string and plain text)
         let status: AlignmentStatus = serde_json::from_str(&status_str)
-            .or_else(|_| serde_json::from_str(&format!("\"{}\"", status_str)))
+            .or_else(|_| serde_json::from_str(&format!("\"{status_str}\"")))
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
         // Rule: Conflict agents cannot join any channel

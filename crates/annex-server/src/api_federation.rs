@@ -182,7 +182,7 @@ pub async fn relay_message(
 
             match find_commitment_for_pseudonym(&conn, &sender) {
                 Ok(Some((commitment, topic))) => {
-                    attestation_ref = format!("{}:{}", topic, commitment);
+                    attestation_ref = format!("{topic}:{commitment}");
                 }
                 Ok(None) => {
                     tracing::debug!(sender = %sender, "no commitment found for pseudonym, using unknown attestation ref");
@@ -257,7 +257,7 @@ pub async fn relay_message(
             continue;
         }
 
-        let url = format!("{}/api/federation/messages", base_url);
+        let url = format!("{base_url}/api/federation/messages");
         let envelope_clone = FederatedMessageEnvelope {
             message_id: envelope.message_id.clone(),
             channel_id: envelope.channel_id.clone(),
@@ -436,10 +436,10 @@ pub async fn receive_federated_message_handler(
         );
 
         let public_key_bytes = hex::decode(&public_key_hex).map_err(|e| {
-            FederationError::InvalidSignature(format!("Invalid public key hex: {}", e))
+            FederationError::InvalidSignature(format!("Invalid public key hex: {e}"))
         })?;
         let signature_bytes = hex::decode(&envelope.signature).map_err(|e| {
-            FederationError::InvalidSignature(format!("Invalid signature hex: {}", e))
+            FederationError::InvalidSignature(format!("Invalid signature hex: {e}"))
         })?;
 
         let public_key =
@@ -470,8 +470,7 @@ pub async fn receive_federated_message_handler(
             .map_err(|e| {
                 if e == rusqlite::Error::QueryReturnedNoRows {
                     FederationError::Forbidden(format!(
-                        "Identity with commitment {} not attested",
-                        commitment_hex
+                        "Identity with commitment {commitment_hex} not attested"
                     ))
                 } else {
                     FederationError::DbError(e)
@@ -641,10 +640,10 @@ pub async fn federation_handshake_handler(
         let signing_payload = format!("{}\n{}", payload.base_url, handshake_json);
 
         let public_key_bytes = hex::decode(&public_key_hex).map_err(|e| {
-            FederationError::InvalidSignature(format!("Invalid public key hex: {}", e))
+            FederationError::InvalidSignature(format!("Invalid public key hex: {e}"))
         })?;
         let signature_bytes = hex::decode(&payload.signature).map_err(|e| {
-            FederationError::InvalidSignature(format!("Invalid signature hex: {}", e))
+            FederationError::InvalidSignature(format!("Invalid signature hex: {e}"))
         })?;
 
         let public_key =
@@ -795,9 +794,9 @@ pub async fn attest_membership_handler(
         payload.topic, payload.commitment, payload.participant_type
     );
     let public_key_bytes = hex::decode(&public_key_hex)
-        .map_err(|e| FederationError::InvalidSignature(format!("Invalid public key hex: {}", e)))?;
+        .map_err(|e| FederationError::InvalidSignature(format!("Invalid public key hex: {e}")))?;
     let signature_bytes = hex::decode(&payload.signature)
-        .map_err(|e| FederationError::InvalidSignature(format!("Invalid signature hex: {}", e)))?;
+        .map_err(|e| FederationError::InvalidSignature(format!("Invalid signature hex: {e}")))?;
 
     let public_key =
         EdVerifyingKey::from_bytes(&public_key_bytes.try_into().map_err(|_| {
@@ -831,21 +830,21 @@ pub async fn attest_membership_handler(
 
     // 3. Verify ZK Proof
     let proof = parse_proof(&payload.proof.to_string())
-        .map_err(|e| FederationError::ZkVerification(format!("Invalid proof format: {}", e)))?;
+        .map_err(|e| FederationError::ZkVerification(format!("Invalid proof format: {e}")))?;
 
     // Construct public inputs: [root, commitment]
     // Note: Verify input order in membership.circom.
     // In api.rs, it checks: public_signals[0] == root, public_signals[1] == commitment.
     // So we assume the circuit public outputs are [root, commitment].
     let remote_root_fr = parse_fr_from_hex(&remote_root_hex)
-        .map_err(|e| FederationError::ZkVerification(format!("Invalid root hex: {}", e)))?;
+        .map_err(|e| FederationError::ZkVerification(format!("Invalid root hex: {e}")))?;
     let commitment_fr = parse_fr_from_hex(&payload.commitment)
-        .map_err(|e| FederationError::ZkVerification(format!("Invalid commitment hex: {}", e)))?;
+        .map_err(|e| FederationError::ZkVerification(format!("Invalid commitment hex: {e}")))?;
 
     let public_inputs = vec![remote_root_fr, commitment_fr];
 
     let valid = verify_proof(&state_clone.membership_vkey, &proof, &public_inputs)
-        .map_err(|e| FederationError::ZkVerification(format!("Proof verification error: {}", e)))?;
+        .map_err(|e| FederationError::ZkVerification(format!("Proof verification error: {e}")))?;
 
     if !valid {
         return Err(FederationError::ZkVerification("Invalid proof".to_string()));
@@ -861,10 +860,10 @@ pub async fn attest_membership_handler(
         // Derive local identifiers
         let nullifier_hex =
             derive_nullifier_hex(&payload.commitment, &payload.topic).map_err(|e| {
-                FederationError::IdentityDerivation(format!("Failed to derive nullifier: {}", e))
+                FederationError::IdentityDerivation(format!("Failed to derive nullifier: {e}"))
             })?;
         let pseudonym_id = derive_pseudonym_id(&payload.topic, &nullifier_hex).map_err(|e| {
-            FederationError::IdentityDerivation(format!("Failed to derive pseudonym: {}", e))
+            FederationError::IdentityDerivation(format!("Failed to derive pseudonym: {e}"))
         })?;
 
         let node_type = match payload.participant_type.as_str() {
@@ -1032,10 +1031,10 @@ pub async fn join_federated_channel_handler(
         // 2. Verify Signature (newline-delimited to prevent field-boundary ambiguity)
         let message = format!("{}\n{}", channel_id_clone, payload.pseudonym_id);
         let public_key_bytes = hex::decode(&public_key_hex).map_err(|e| {
-            FederationError::InvalidSignature(format!("Invalid public key hex: {}", e))
+            FederationError::InvalidSignature(format!("Invalid public key hex: {e}"))
         })?;
         let signature_bytes = hex::decode(&payload.signature).map_err(|e| {
-            FederationError::InvalidSignature(format!("Invalid signature hex: {}", e))
+            FederationError::InvalidSignature(format!("Invalid signature hex: {e}"))
         })?;
 
         let public_key = EdVerifyingKey::from_bytes(&public_key_bytes.try_into().map_err(|_| {
@@ -1205,10 +1204,10 @@ pub async fn receive_federated_rtx_handler(
         );
 
         let public_key_bytes = hex::decode(&public_key_hex).map_err(|e| {
-            FederationError::InvalidSignature(format!("Invalid public key hex: {}", e))
+            FederationError::InvalidSignature(format!("Invalid public key hex: {e}"))
         })?;
         let signature_bytes = hex::decode(&envelope.signature).map_err(|e| {
-            FederationError::InvalidSignature(format!("Invalid signature hex: {}", e))
+            FederationError::InvalidSignature(format!("Invalid signature hex: {e}"))
         })?;
 
         let public_key =
@@ -1227,7 +1226,7 @@ pub async fn receive_federated_rtx_handler(
 
         // 4. Validate bundle structure
         validate_bundle_structure(&envelope.bundle)
-            .map_err(|e| FederationError::Forbidden(format!("Invalid bundle structure: {}", e)))?;
+            .map_err(|e| FederationError::Forbidden(format!("Invalid bundle structure: {e}")))?;
 
         // 4b. Enforce redacted topics from the federation agreement.
         //     The remote peer's capability contract declares which topics they
@@ -1251,7 +1250,7 @@ pub async fn receive_federated_rtx_handler(
 
         if !redacted_topics.is_empty() {
             check_redacted_topics(&envelope.bundle, &redacted_topics)
-                .map_err(|e| FederationError::Forbidden(format!("redacted topic violation: {}", e)))?;
+                .map_err(|e| FederationError::Forbidden(format!("redacted topic violation: {e}")))?;
         }
 
         // 5. Enforce the local federation agreement's transfer scope on the bundle

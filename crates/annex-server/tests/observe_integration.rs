@@ -145,7 +145,7 @@ async fn register_handler_assigns_sequential_seq_numbers() {
 
     // Register two identities
     for i in 1..=2u64 {
-        let commitment = format!("{:064x}", i);
+        let commitment = format!("{i:064x}");
         let body_json = serde_json::json!({
             "commitmentHex": commitment,
             "roleCode": 1,
@@ -466,8 +466,7 @@ async fn event_stream_returns_sse_content_type() {
         .unwrap();
     assert!(
         content_type.contains("text/event-stream"),
-        "expected text/event-stream, got: {}",
-        content_type
+        "expected text/event-stream, got: {content_type}"
     );
 }
 

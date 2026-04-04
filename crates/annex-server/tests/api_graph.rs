@@ -180,7 +180,7 @@ async fn test_get_profile_visibility() {
         let viewer = viewer.to_string();
         let app = app.clone();
         async move {
-            let uri = format!("/api/graph/profile/{}", target);
+            let uri = format!("/api/graph/profile/{target}");
             let req = Request::builder()
                 .uri(uri)
                 .header("X-Annex-Pseudonym", viewer)

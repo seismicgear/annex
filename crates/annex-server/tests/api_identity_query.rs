@@ -86,7 +86,7 @@ async fn test_get_identity_endpoints() {
 
     // 3. Test GET /api/identity/:pseudonymId
     let mut req = Request::builder()
-        .uri(format!("/api/identity/{}", pseudonym_id))
+        .uri(format!("/api/identity/{pseudonym_id}"))
         .body(Body::empty())
         .unwrap();
     req.extensions_mut().insert(ConnectInfo(addr));
@@ -108,7 +108,7 @@ async fn test_get_identity_endpoints() {
 
     // 4. Test GET /api/identity/:pseudonymId/capabilities
     let mut req_caps = Request::builder()
-        .uri(format!("/api/identity/{}/capabilities", pseudonym_id))
+        .uri(format!("/api/identity/{pseudonym_id}/capabilities"))
         .body(Body::empty())
         .unwrap();
     req_caps.extensions_mut().insert(ConnectInfo(addr));

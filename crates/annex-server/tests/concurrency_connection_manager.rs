@@ -19,7 +19,7 @@ async fn test_concurrent_subscribe_unsubscribe_no_deadlock() {
 
     // Register 10 users
     for i in 0..10 {
-        cm.add_session(format!("user_{}", i), dummy_sender()).await;
+        cm.add_session(format!("user_{i}"), dummy_sender()).await;
     }
 
     // Spawn 100 concurrent subscribe + unsubscribe tasks across 5 channels
@@ -121,8 +121,8 @@ async fn test_concurrent_broadcast_with_subscribe_unsubscribe() {
     // Set up 20 users, each subscribed to "live_channel"
     for i in 0..20 {
         let (tx, mut rx) = mpsc::channel::<String>(256);
-        cm.add_session(format!("user_{}", i), tx).await;
-        cm.subscribe("live_channel".to_string(), format!("user_{}", i))
+        cm.add_session(format!("user_{i}"), tx).await;
+        cm.subscribe("live_channel".to_string(), format!("user_{i}"))
             .await;
         // Spawn a drain task so the channel doesn't fill up
         tokio::spawn(async move { while let Some(_msg) = rx.recv().await {} });
@@ -134,7 +134,7 @@ async fn test_concurrent_broadcast_with_subscribe_unsubscribe() {
     for i in 0..50 {
         let cm = cm.clone();
         handles.push(tokio::spawn(async move {
-            cm.broadcast("live_channel", format!(r#"{{"seq":{}}}"#, i))
+            cm.broadcast("live_channel", format!(r#"{{"seq":{i}}}"#))
                 .await;
         }));
     }
@@ -143,7 +143,7 @@ async fn test_concurrent_broadcast_with_subscribe_unsubscribe() {
     for i in 0..20 {
         let cm = cm.clone();
         handles.push(tokio::spawn(async move {
-            let user = format!("user_{}", i);
+            let user = format!("user_{i}");
             cm.unsubscribe("live_channel", &user).await;
             cm.subscribe("live_channel".to_string(), user).await;
         }));

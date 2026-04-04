@@ -27,6 +27,7 @@ keyring = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+annex-voice = { path = "../annex-voice" }
 
 [target.'cfg(windows)'.dependencies]
 raw-window-handle = "0.6"

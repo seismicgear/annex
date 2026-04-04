@@ -68,7 +68,7 @@ pub async fn update_policy_handler(
 
     let version_id = Uuid::new_v4().to_string();
     let policy_json = serde_json::to_string(&new_policy)
-        .map_err(|e| ApiError::BadRequest(format!("failed to serialize policy: {}", e)))?;
+        .map_err(|e| ApiError::BadRequest(format!("failed to serialize policy: {e}")))?;
 
     let state_clone = state.clone();
     let policy_clone = new_policy.clone();
@@ -78,30 +78,30 @@ pub async fn update_policy_handler(
 
     tokio::task::spawn_blocking(move || {
         let mut conn = state_clone.pool.get().map_err(|e| {
-            ApiError::InternalServerError(format!("db connection failed: {}", e))
+            ApiError::InternalServerError(format!("db connection failed: {e}"))
         })?;
 
         let tx = conn.transaction().map_err(|e| {
-            ApiError::InternalServerError(format!("failed to start transaction: {}", e))
+            ApiError::InternalServerError(format!("failed to start transaction: {e}"))
         })?;
 
         tx.execute(
             "UPDATE servers SET policy_json = ?1 WHERE id = ?2",
             rusqlite::params![policy_json_clone, state_clone.server_id],
         )
-        .map_err(|e| ApiError::InternalServerError(format!("failed to update servers table: {}", e)))?;
+        .map_err(|e| ApiError::InternalServerError(format!("failed to update servers table: {e}")))?;
 
         tx.execute(
             "INSERT INTO server_policy_versions (server_id, version_id, policy_json) VALUES (?1, ?2, ?3)",
             rusqlite::params![state_clone.server_id, version_id_clone, policy_json_clone],
         )
-        .map_err(|e| ApiError::InternalServerError(format!("failed to insert policy version: {}", e)))?;
+        .map_err(|e| ApiError::InternalServerError(format!("failed to insert policy version: {e}")))?;
 
         let observe_payload = EventPayload::ModerationAction {
             moderator_pseudonym: moderator_pseudonym.clone(),
             action_type: "policy_update".to_string(),
             target_pseudonym: None,
-            description: format!("Server policy updated to version {}", version_id_clone),
+            description: format!("Server policy updated to version {version_id_clone}"),
         };
         crate::emit_and_broadcast(
             &tx,
@@ -112,13 +112,13 @@ pub async fn update_policy_handler(
         );
 
         tx.commit().map_err(|e| {
-            ApiError::InternalServerError(format!("failed to commit transaction: {}", e))
+            ApiError::InternalServerError(format!("failed to commit transaction: {e}"))
         })?;
 
         Ok::<(), ApiError>(())
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     {
         let mut policy_lock = state
@@ -166,7 +166,7 @@ pub async fn revoke_federation_handler(
         let conn = state_clone
             .pool
             .get()
-            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
 
         // Look up the remote instance base_url before revoking so we can emit the event.
         let remote_url: Option<String> = conn
@@ -182,7 +182,7 @@ pub async fn revoke_federation_handler(
         let revoked =
             annex_federation::revoke_agreement(&conn, agreement_id, state_clone.server_id)
                 .map_err(|e| {
-                    ApiError::InternalServerError(format!("failed to revoke agreement: {}", e))
+                    ApiError::InternalServerError(format!("failed to revoke agreement: {e}"))
                 })?;
 
         if !revoked {
@@ -195,7 +195,7 @@ pub async fn revoke_federation_handler(
         if let Some(ref url) = remote_url {
             let observe_payload = annex_observe::EventPayload::FederationSevered {
                 remote_url: url.clone(),
-                reason: format!("revoked by moderator {}", moderator),
+                reason: format!("revoked by moderator {moderator}"),
             };
             crate::emit_and_broadcast(
                 &conn,
@@ -209,7 +209,7 @@ pub async fn revoke_federation_handler(
         Ok::<Option<String>, ApiError>(remote_url)
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     Ok(AxumJson(serde_json::json!({
         "status": "ok",
@@ -278,14 +278,14 @@ pub async fn rename_server_handler(
         let conn = state_clone
             .pool
             .get()
-            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
 
         if let Some(ref l) = label_clone {
             conn.execute(
                 "UPDATE servers SET label = ?1 WHERE id = ?2",
                 rusqlite::params![l, state_clone.server_id],
             )
-            .map_err(|e| ApiError::InternalServerError(format!("failed to update label: {}", e)))?;
+            .map_err(|e| ApiError::InternalServerError(format!("failed to update label: {e}")))?;
         }
 
         if let Some(ref d) = description_clone {
@@ -294,13 +294,13 @@ pub async fn rename_server_handler(
                 rusqlite::params![d, state_clone.server_id],
             )
             .map_err(|e| {
-                ApiError::InternalServerError(format!("failed to update description: {}", e))
+                ApiError::InternalServerError(format!("failed to update description: {e}"))
             })?;
         }
 
         let event_desc = match (&label_clone, &description_clone) {
-            (Some(l), Some(_)) => format!("Server renamed to \"{}\" and description updated", l),
-            (Some(l), None) => format!("Server renamed to \"{}\"", l),
+            (Some(l), Some(_)) => format!("Server renamed to \"{l}\" and description updated"),
+            (Some(l), None) => format!("Server renamed to \"{l}\""),
             (None, Some(_)) => "Server description updated".to_string(),
             (None, None) => unreachable!(),
         };
@@ -322,7 +322,7 @@ pub async fn rename_server_handler(
         Ok::<(), ApiError>(())
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     let mut resp = serde_json::json!({ "status": "ok" });
     if let Some(l) = label {
@@ -348,7 +348,7 @@ pub async fn get_server_handler(
         let conn = state_clone
             .pool
             .get()
-            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
         conn.query_row(
             "SELECT slug, label, description FROM servers WHERE id = ?1",
             rusqlite::params![state_clone.server_id],
@@ -360,10 +360,10 @@ pub async fn get_server_handler(
                 ))
             },
         )
-        .map_err(|e| ApiError::InternalServerError(format!("failed to read server: {}", e)))
+        .map_err(|e| ApiError::InternalServerError(format!("failed to read server: {e}")))
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     Ok(AxumJson(serde_json::json!({
         "slug": slug,
@@ -409,18 +409,16 @@ pub async fn set_public_url_handler(
         let conn = state_clone
             .pool
             .get()
-            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
         conn.execute(
             "UPDATE servers SET public_url = ?1 WHERE id = ?2",
             rusqlite::params![url_clone, state_clone.server_id],
         )
-        .map_err(|e| {
-            ApiError::InternalServerError(format!("failed to persist public_url: {}", e))
-        })?;
+        .map_err(|e| ApiError::InternalServerError(format!("failed to persist public_url: {e}")))?;
         Ok::<(), ApiError>(())
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     // Update in-memory state
     {
@@ -504,7 +502,7 @@ pub async fn list_members_handler(
         let conn = state_clone
             .pool
             .get()
-            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
 
         let mut stmt = conn
             .prepare(
@@ -513,7 +511,7 @@ pub async fn list_members_handler(
                  FROM platform_identities WHERE server_id = ?1
                  ORDER BY created_at ASC",
             )
-            .map_err(|e| ApiError::InternalServerError(format!("query failed: {}", e)))?;
+            .map_err(|e| ApiError::InternalServerError(format!("query failed: {e}")))?;
 
         let rows = stmt
             .query_map(rusqlite::params![state_clone.server_id], |row| {
@@ -529,17 +527,17 @@ pub async fn list_members_handler(
                     created_at: row.get(8)?,
                 })
             })
-            .map_err(|e| ApiError::InternalServerError(format!("query failed: {}", e)))?;
+            .map_err(|e| ApiError::InternalServerError(format!("query failed: {e}")))?;
 
         let mut members = Vec::new();
         for row in rows {
             members
-                .push(row.map_err(|e| ApiError::InternalServerError(format!("row error: {}", e)))?);
+                .push(row.map_err(|e| ApiError::InternalServerError(format!("row error: {e}")))?);
         }
         Ok::<_, ApiError>(members)
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     Ok(AxumJson(serde_json::json!({ "members": members })).into_response())
 }
@@ -580,11 +578,11 @@ pub async fn update_member_capabilities_handler(
 
     tokio::task::spawn_blocking(move || {
         let conn = state_clone.pool.get().map_err(|e| {
-            ApiError::InternalServerError(format!("db connection failed: {}", e))
+            ApiError::InternalServerError(format!("db connection failed: {e}"))
         })?;
 
         update_capabilities(&conn, state_clone.server_id, &target, caps).map_err(|e| {
-            ApiError::InternalServerError(format!("failed to update capabilities: {}", e))
+            ApiError::InternalServerError(format!("failed to update capabilities: {e}"))
         })?;
 
         let observe_payload = EventPayload::ModerationAction {
@@ -607,7 +605,7 @@ pub async fn update_member_capabilities_handler(
         Ok::<(), ApiError>(())
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     Ok(AxumJson(serde_json::json!({ "status": "ok" })).into_response())
 }

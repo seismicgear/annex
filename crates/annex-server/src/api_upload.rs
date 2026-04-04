@@ -300,12 +300,11 @@ async fn read_field_capped(
     while let Some(chunk) = field
         .chunk()
         .await
-        .map_err(|e| ApiError::BadRequest(format!("failed to read upload chunk: {}", e)))?
+        .map_err(|e| ApiError::BadRequest(format!("failed to read upload chunk: {e}")))?
     {
         if buf.len() + chunk.len() > max_bytes {
             return Err(ApiError::BadRequest(format!(
-                "upload exceeds maximum size of {} bytes",
-                max_bytes,
+                "upload exceeds maximum size of {max_bytes} bytes",
             )));
         }
         buf.extend_from_slice(&chunk);
@@ -333,7 +332,7 @@ pub async fn upload_server_image_handler(
     let mut field = multipart
         .next_field()
         .await
-        .map_err(|e| ApiError::BadRequest(format!("multipart error: {}", e)))?
+        .map_err(|e| ApiError::BadRequest(format!("multipart error: {e}")))?
         .ok_or_else(|| ApiError::BadRequest("no file provided".to_string()))?;
 
     // Client-declared content type is intentionally ignored in favour of
@@ -365,20 +364,20 @@ pub async fn upload_server_image_handler(
     // Save to disk
     let ext = ext_from_content_type(detected_ct);
     let upload_id = Uuid::new_v4().to_string();
-    let filename = format!("server_{}.{}", upload_id, ext);
+    let filename = format!("server_{upload_id}.{ext}");
     let upload_dir = state.upload_dir.clone();
-    let server_dir = format!("{}/server", upload_dir);
+    let server_dir = format!("{upload_dir}/server");
 
-    tokio::fs::create_dir_all(&server_dir).await.map_err(|e| {
-        ApiError::InternalServerError(format!("failed to create upload dir: {}", e))
-    })?;
+    tokio::fs::create_dir_all(&server_dir)
+        .await
+        .map_err(|e| ApiError::InternalServerError(format!("failed to create upload dir: {e}")))?;
 
-    let file_path = format!("{}/{}", server_dir, filename);
+    let file_path = format!("{server_dir}/{filename}");
     tokio::fs::write(&file_path, &cleaned)
         .await
-        .map_err(|e| ApiError::InternalServerError(format!("failed to write file: {}", e)))?;
+        .map_err(|e| ApiError::InternalServerError(format!("failed to write file: {e}")))?;
 
-    let image_url = format!("/uploads/server/{}", filename);
+    let image_url = format!("/uploads/server/{filename}");
 
     // Update database
     let state_clone = state.clone();
@@ -393,7 +392,7 @@ pub async fn upload_server_image_handler(
 
     tokio::task::spawn_blocking(move || {
         let conn = state_clone.pool.get().map_err(|e| {
-            ApiError::InternalServerError(format!("db connection failed: {}", e))
+            ApiError::InternalServerError(format!("db connection failed: {e}"))
         })?;
 
         // Update server image URL
@@ -401,7 +400,7 @@ pub async fn upload_server_image_handler(
             "UPDATE servers SET image_url = ?1 WHERE id = ?2",
             rusqlite::params![image_url_clone, state_clone.server_id],
         )
-        .map_err(|e| ApiError::InternalServerError(format!("failed to update server: {}", e)))?;
+        .map_err(|e| ApiError::InternalServerError(format!("failed to update server: {e}")))?;
 
         // Record upload
         conn.execute(
@@ -416,7 +415,7 @@ pub async fn upload_server_image_handler(
                 size,
             ],
         )
-        .map_err(|e| ApiError::InternalServerError(format!("failed to record upload: {}", e)))?;
+        .map_err(|e| ApiError::InternalServerError(format!("failed to record upload: {e}")))?;
 
         let observe_payload = EventPayload::ModerationAction {
             moderator_pseudonym: moderator.clone(),
@@ -435,7 +434,7 @@ pub async fn upload_server_image_handler(
         Ok::<(), ApiError>(())
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     Ok(AxumJson(serde_json::json!({
         "status": "ok",
@@ -465,12 +464,12 @@ pub async fn upload_chat_handler(
         let conn = state_clone
             .pool
             .get()
-            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
         is_member(&conn, state_clone.server_id, &channel_id_clone, &pseudonym)
-            .map_err(|e| ApiError::InternalServerError(format!("membership check failed: {}", e)))
+            .map_err(|e| ApiError::InternalServerError(format!("membership check failed: {e}")))
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     if !is_member_result {
         return Err(ApiError::Forbidden(
@@ -489,7 +488,7 @@ pub async fn upload_chat_handler(
     let mut field = multipart
         .next_field()
         .await
-        .map_err(|e| ApiError::BadRequest(format!("multipart error: {}", e)))?
+        .map_err(|e| ApiError::BadRequest(format!("multipart error: {e}")))?
         .ok_or_else(|| ApiError::BadRequest("no file provided".to_string()))?;
 
     let _declared_ct = field
@@ -515,8 +514,7 @@ pub async fn upload_chat_handler(
     // Check for blocked types
     if BLOCKED_TYPES.contains(&detected_ct) {
         return Err(ApiError::BadRequest(format!(
-            "file type not allowed: {}",
-            detected_ct
+            "file type not allowed: {detected_ct}"
         )));
     }
 
@@ -542,14 +540,12 @@ pub async fn upload_chat_handler(
     // Validate specific types within categories
     if category == UploadCategory::Image && !ALLOWED_IMAGE_TYPES.contains(&detected_ct) {
         return Err(ApiError::BadRequest(format!(
-            "unsupported image type: {}",
-            detected_ct
+            "unsupported image type: {detected_ct}"
         )));
     }
     if category == UploadCategory::Video && !ALLOWED_VIDEO_TYPES.contains(&detected_ct) {
         return Err(ApiError::BadRequest(format!(
-            "unsupported video type: {}",
-            detected_ct
+            "unsupported video type: {detected_ct}"
         )));
     }
 
@@ -560,18 +556,18 @@ pub async fn upload_chat_handler(
     // Save to disk (category-specific subdirectory)
     let ext = ext_from_content_type(detected_ct);
     let upload_id = Uuid::new_v4().to_string();
-    let safe_filename = format!("{}.{}", upload_id, ext);
+    let safe_filename = format!("{upload_id}.{ext}");
     let upload_dir = state.upload_dir.clone();
     let chat_dir = format!("{}/chat/{}", upload_dir, category.subdir());
 
-    tokio::fs::create_dir_all(&chat_dir).await.map_err(|e| {
-        ApiError::InternalServerError(format!("failed to create upload dir: {}", e))
-    })?;
+    tokio::fs::create_dir_all(&chat_dir)
+        .await
+        .map_err(|e| ApiError::InternalServerError(format!("failed to create upload dir: {e}")))?;
 
-    let file_path = format!("{}/{}", chat_dir, safe_filename);
+    let file_path = format!("{chat_dir}/{safe_filename}");
     tokio::fs::write(&file_path, &cleaned)
         .await
-        .map_err(|e| ApiError::InternalServerError(format!("failed to write file: {}", e)))?;
+        .map_err(|e| ApiError::InternalServerError(format!("failed to write file: {e}")))?;
 
     let upload_url = format!("/uploads/chat/{}/{}", category.subdir(), safe_filename);
 
@@ -587,7 +583,7 @@ pub async fn upload_chat_handler(
 
     tokio::task::spawn_blocking(move || {
         let conn = state_clone.pool.get().map_err(|e| {
-            ApiError::InternalServerError(format!("db connection failed: {}", e))
+            ApiError::InternalServerError(format!("db connection failed: {e}"))
         })?;
 
         conn.execute(
@@ -604,12 +600,12 @@ pub async fn upload_chat_handler(
                 category_str,
             ],
         )
-        .map_err(|e| ApiError::InternalServerError(format!("failed to record upload: {}", e)))?;
+        .map_err(|e| ApiError::InternalServerError(format!("failed to record upload: {e}")))?;
 
         Ok::<(), ApiError>(())
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     tracing::info!(
         upload_id = %upload_id,
@@ -648,7 +644,7 @@ pub async fn get_server_image_handler(
         let conn = state_clone
             .pool
             .get()
-            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
 
         let url: Option<String> = conn
             .query_row(
@@ -656,12 +652,12 @@ pub async fn get_server_image_handler(
                 rusqlite::params![state_clone.server_id],
                 |row| row.get(0),
             )
-            .map_err(|e| ApiError::InternalServerError(format!("failed to query server: {}", e)))?;
+            .map_err(|e| ApiError::InternalServerError(format!("failed to query server: {e}")))?;
 
         Ok::<_, ApiError>(url)
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     Ok(AxumJson(serde_json::json!({
         "image_url": image_url,

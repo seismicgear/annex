@@ -138,7 +138,7 @@ async fn test_agent_stt_pipeline() {
     });
 
     // 1. Agent Connects via WebSocket
-    let ws_url = format!("ws://{}/ws?pseudonym=agent-stt", addr);
+    let ws_url = format!("ws://{addr}/ws?pseudonym=agent-stt");
     let (mut socket, _) = connect_async(ws_url).await.expect("Failed to connect WS");
 
     // 2. Agent Joins Voice Channel via API
@@ -150,7 +150,7 @@ async fn test_agent_stt_pipeline() {
     // We need to send the request with the header.
 
     let client = reqwest::Client::new();
-    let join_url = format!("http://{}/api/channels/voice-stt/join", addr);
+    let join_url = format!("http://{addr}/api/channels/voice-stt/join");
     let res = client
         .post(&join_url)
         .header("X-Annex-Pseudonym", "agent-stt")
@@ -185,7 +185,7 @@ async fn test_agent_stt_pipeline() {
 
     match msg {
         Ok(Some(Ok(WsMessage::Text(text)))) => {
-            println!("Received: {}", text);
+            println!("Received: {text}");
             let v: Value = serde_json::from_str(text.as_str()).unwrap();
 
             assert_eq!(v.get("type").unwrap().as_str().unwrap(), "transcription");
@@ -196,6 +196,6 @@ async fn test_agent_stt_pipeline() {
             );
             assert_eq!(v.get("text").unwrap().as_str().unwrap(), "Transcribed text");
         }
-        _ => panic!("Expected transcription message, got {:?}", msg),
+        _ => panic!("Expected transcription message, got {msg:?}"),
     }
 }

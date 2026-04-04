@@ -39,7 +39,7 @@ async fn start_server() -> String {
 #[tokio::test]
 async fn smoke_health_endpoint() {
     let base = start_server().await;
-    let resp = reqwest::get(format!("{}/health", base)).await.unwrap();
+    let resp = reqwest::get(format!("{base}/health")).await.unwrap();
     assert_eq!(resp.status(), 200);
 
     let body: serde_json::Value = resp.json().await.unwrap();
@@ -49,7 +49,7 @@ async fn smoke_health_endpoint() {
 #[tokio::test]
 async fn smoke_registry_current_root() {
     let base = start_server().await;
-    let resp = reqwest::get(format!("{}/api/registry/current-root", base))
+    let resp = reqwest::get(format!("{base}/api/registry/current-root"))
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
@@ -67,7 +67,7 @@ async fn smoke_register_identity() {
     // Register a new identity with a small valid commitment (API uses camelCase)
     let commitment = "0000000000000000000000000000000000000000000000000000000000000042";
     let resp = client
-        .post(format!("{}/api/registry/register", base))
+        .post(format!("{base}/api/registry/register"))
         .json(&serde_json::json!({
             "commitmentHex": commitment,
             "roleCode": 1,
@@ -91,7 +91,7 @@ async fn smoke_protected_endpoint_requires_auth() {
 
     // Attempting to create a channel without a valid pseudonym should fail
     let resp = client
-        .post(format!("{}/api/channels", base))
+        .post(format!("{base}/api/channels"))
         .json(&serde_json::json!({
             "name": "test-channel",
             "channel_type": "Text"
@@ -111,14 +111,13 @@ async fn smoke_protected_endpoint_requires_auth() {
 #[tokio::test]
 async fn smoke_unknown_route_returns_401_or_404() {
     let base = start_server().await;
-    let resp = reqwest::get(format!("{}/api/does-not-exist", base))
+    let resp = reqwest::get(format!("{base}/api/does-not-exist"))
         .await
         .unwrap();
     // The server may return 401 (auth middleware) or 404 depending on route matching
     let status = resp.status().as_u16();
     assert!(
         status == 401 || status == 404,
-        "expected 401 or 404, got {}",
-        status
+        "expected 401 or 404, got {status}"
     );
 }

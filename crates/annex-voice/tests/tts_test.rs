@@ -34,7 +34,7 @@ async fn test_tts_missing_profile() {
     let result = service.synthesize("Hello", "non-existent").await;
     match result {
         Err(VoiceError::ProfileNotFound(id)) => assert_eq!(id, "non-existent"),
-        _ => panic!("Expected ProfileNotFound error, got {:?}", result),
+        _ => panic!("Expected ProfileNotFound error, got {result:?}"),
     }
 }
 
@@ -62,7 +62,7 @@ async fn test_tts_missing_model_file() {
     let result = service.synthesize("Hello", "missing-model").await;
     match result {
         Err(VoiceError::Tts(msg)) => assert!(msg.contains("Model file not found")),
-        _ => panic!("Expected Tts error about missing model, got {:?}", result),
+        _ => panic!("Expected Tts error about missing model, got {result:?}"),
     }
 }
 
@@ -93,9 +93,9 @@ async fn test_tts_invalid_speed() {
     let result = service.synthesize("Hello", "zero-speed").await;
     match result {
         Err(VoiceError::Config(msg)) => {
-            assert!(msg.contains("between 0.1 and 10.0"), "got: {}", msg)
+            assert!(msg.contains("between 0.1 and 10.0"), "got: {msg}")
         }
-        _ => panic!("Expected Config error about speed, got {:?}", result),
+        _ => panic!("Expected Config error about speed, got {result:?}"),
     }
 
     // Near-zero speed (e.g., 0.001) would produce extreme length_scale

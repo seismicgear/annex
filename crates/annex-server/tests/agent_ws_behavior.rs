@@ -73,7 +73,7 @@ async fn test_agent_websocket_behavior() {
     let vkey_path = "zk/keys/membership_vkey.json";
     let vkey = match std::fs::read_to_string(vkey_path) {
         Ok(s) => annex_identity::zk::parse_verification_key(&s).expect("failed to parse vkey"),
-        Err(_) => match std::fs::read_to_string(format!("../../{}", vkey_path)) {
+        Err(_) => match std::fs::read_to_string(format!("../../{vkey_path}")) {
             Ok(s) => annex_identity::zk::parse_verification_key(&s).expect("failed to parse vkey"),
             // Fallback to generated dummy key if file not found (e.g. in CI)
             Err(_) => annex_identity::zk::generate_dummy_vkey(),
@@ -125,7 +125,7 @@ async fn test_agent_websocket_behavior() {
     });
 
     // 4. Connect WS as Agent
-    let ws_url = format!("ws://{}/ws?pseudonym=agent-007", addr);
+    let ws_url = format!("ws://{addr}/ws?pseudonym=agent-007");
     let (mut ws_stream, _) = connect_async(ws_url).await.expect("failed to connect");
 
     // 5. Subscribe
@@ -163,7 +163,7 @@ async fn test_agent_websocket_behavior() {
 
             // Check type and flattened fields
             if received["type"] == "error" {
-                panic!("Received error from server: {:?}", received);
+                panic!("Received error from server: {received:?}");
             }
             assert_eq!(received["type"], "message");
             assert_eq!(received["content"], content);

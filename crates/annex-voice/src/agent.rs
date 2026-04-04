@@ -70,7 +70,7 @@ impl AgentVoiceClient {
             .connect_timeout(CONNECT_VALIDATION_TIMEOUT)
             .timeout(CONNECT_VALIDATION_TIMEOUT)
             .build()
-            .map_err(|e| VoiceError::RoomService(format!("failed to build HTTP client: {}", e)))?;
+            .map_err(|e| VoiceError::RoomService(format!("failed to build HTTP client: {e}")))?;
 
         match health_client.get(&http_url).send().await {
             Ok(resp) => {
@@ -142,15 +142,13 @@ impl AgentVoiceClient {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .map_err(|e| VoiceError::RoomService(format!("runtime build failed: {}", e)))?;
+                .map_err(|e| VoiceError::RoomService(format!("runtime build failed: {e}")))?;
 
             rt.block_on(room_client.send_data(&room_name, data, send_opts))
-                .map_err(|e| {
-                    VoiceError::RoomService(format!("failed to publish audio data: {}", e))
-                })
+                .map_err(|e| VoiceError::RoomService(format!("failed to publish audio data: {e}")))
         })
         .await
-        .map_err(|e| VoiceError::RoomService(format!("publish task failed: {}", e)))??;
+        .map_err(|e| VoiceError::RoomService(format!("publish task failed: {e}")))??;
 
         Ok(())
     }

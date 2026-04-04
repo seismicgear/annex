@@ -93,9 +93,9 @@ pub fn get_zk_paths(circuit_name: &str) -> ZkPaths {
     let zk_keys = root.join("zk/keys");
 
     ZkPaths {
-        wasm: zk_build.join(format!("{}_js/{}.wasm", circuit_name, circuit_name)),
-        witness_gen: zk_build.join(format!("{}_js/generate_witness.js", circuit_name)),
-        zkey: zk_keys.join(format!("{}_final.zkey", circuit_name)),
+        wasm: zk_build.join(format!("{circuit_name}_js/{circuit_name}.wasm")),
+        witness_gen: zk_build.join(format!("{circuit_name}_js/generate_witness.js")),
+        zkey: zk_keys.join(format!("{circuit_name}_final.zkey")),
     }
 }
 
@@ -156,6 +156,6 @@ pub fn get_verification_key(circuit_name: &str) -> String {
     let root = get_project_root();
     ensure_zk_artifacts(&root);
 
-    let key_path = root.join(format!("zk/keys/{}_vkey.json", circuit_name));
+    let key_path = root.join(format!("zk/keys/{circuit_name}_vkey.json"));
     fs::read_to_string(key_path).expect("failed to read verification key")
 }

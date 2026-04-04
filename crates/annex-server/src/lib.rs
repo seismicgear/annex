@@ -367,7 +367,7 @@ fn resolve_signing_key(db_path: &str) -> Result<SigningKey, StartupError> {
     // 1. Check environment variable
     if let Ok(hex_key) = std::env::var("ANNEX_SIGNING_KEY") {
         let bytes = hex::decode(&hex_key)
-            .map_err(|e| StartupError::InvalidSigningKey(format!("not valid hex: {}", e)))?;
+            .map_err(|e| StartupError::InvalidSigningKey(format!("not valid hex: {e}")))?;
         let byte_array: [u8; 32] = bytes.try_into().map_err(|v: Vec<u8>| {
             StartupError::InvalidSigningKey(format!("expected 32 bytes, got {}", v.len()))
         })?;
@@ -997,7 +997,7 @@ pub fn app(state: AppState) -> Router {
         .exists()
     {
         tracing::info!(path = %client_dir, "serving client static files");
-        let index = format!("{}/index.html", client_dir);
+        let index = format!("{client_dir}/index.html");
         router.fallback_service(ServeDir::new(&client_dir).fallback(ServeFile::new(index)))
     } else {
         tracing::info!(path = %client_dir, "client directory not found, skipping static file serving");

@@ -31,7 +31,7 @@ impl FromStr for VrpAlignmentStatus {
             "ALIGNED" => Ok(VrpAlignmentStatus::Aligned),
             "PARTIAL" => Ok(VrpAlignmentStatus::Partial),
             "CONFLICT" => Ok(VrpAlignmentStatus::Conflict),
-            _ => Err(format!("unknown alignment status: {}", s)),
+            _ => Err(format!("unknown alignment status: {s}")),
         }
     }
 }
@@ -65,7 +65,7 @@ impl FromStr for VrpTransferScope {
             "NO_TRANSFER" => Ok(VrpTransferScope::NoTransfer),
             "REFLECTION_SUMMARIES_ONLY" => Ok(VrpTransferScope::ReflectionSummariesOnly),
             "FULL_KNOWLEDGE_BUNDLE" => Ok(VrpTransferScope::FullKnowledgeBundle),
-            _ => Err(format!("unknown transfer scope: {}", s)),
+            _ => Err(format!("unknown transfer scope: {s}")),
         }
     }
 }

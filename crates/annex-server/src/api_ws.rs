@@ -65,7 +65,7 @@ pub fn generate_session_token(pseudonym: &str, secret: &[u8; 32], ttl_secs: u64)
         .as_secs()
         + ttl_secs;
 
-    let payload = format!("{}|{}", pseudonym, expires);
+    let payload = format!("{pseudonym}|{expires}");
 
     let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC key length is valid");
     mac.update(payload.as_bytes());
@@ -100,7 +100,7 @@ fn verify_ws_token(token: &str, secret: &[u8; 32]) -> Result<String, StatusCode>
     let sig_hex = parts[2];
 
     // Verify HMAC using constant-time comparison to prevent timing side-channels
-    let payload = format!("{}|{}", pseudonym, expires_str);
+    let payload = format!("{pseudonym}|{expires_str}");
     let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC key length is valid");
     mac.update(payload.as_bytes());
     let provided_sig = hex::decode(sig_hex).map_err(|_| StatusCode::UNAUTHORIZED)?;
@@ -154,7 +154,7 @@ pub fn verify_token_allow_expired(token: &str, secret: &[u8; 32]) -> Result<Stri
     let sig_hex = parts[2];
 
     // Verify HMAC — proves the token was issued by this server
-    let payload = format!("{}|{}", pseudonym, expires_str);
+    let payload = format!("{pseudonym}|{expires_str}");
     let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC key length is valid");
     mac.update(payload.as_bytes());
     let provided_sig = hex::decode(sig_hex).map_err(|_| StatusCode::UNAUTHORIZED)?;
@@ -722,8 +722,8 @@ async fn check_ws_membership(
     let cid = channel_id.to_string();
     let pid = pseudonym.to_string();
     let result = tokio::task::spawn_blocking(move || {
-        let conn = pool.get().map_err(|e| format!("pool error: {}", e))?;
-        is_member(&conn, server_id, &cid, &pid).map_err(|e| format!("db error: {}", e))
+        let conn = pool.get().map_err(|e| format!("pool error: {e}"))?;
+        is_member(&conn, server_id, &cid, &pid).map_err(|e| format!("db error: {e}"))
     })
     .await;
 
@@ -731,7 +731,7 @@ async fn check_ws_membership(
         Ok(Ok(true)) => MembershipResult::Allowed,
         Ok(Ok(false)) => MembershipResult::Denied,
         Ok(Err(e)) => MembershipResult::Error(e),
-        Err(e) => MembershipResult::Error(format!("task join error: {}", e)),
+        Err(e) => MembershipResult::Error(format!("task join error: {e}")),
     }
 }
 
@@ -833,10 +833,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                     .await;
                             }
                             MembershipResult::Denied => {
-                                send_ws_error(
-                                    &tx,
-                                    format!("Not a member of channel {}", channel_id),
-                                );
+                                send_ws_error(&tx, format!("Not a member of channel {channel_id}"));
                             }
                             MembershipResult::Error(e) => {
                                 tracing::error!(
@@ -877,8 +874,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                             send_ws_error_with_id(
                                 &tx,
                                 format!(
-                                    "Message content exceeds maximum length of {} bytes",
-                                    MAX_WS_MESSAGE_CONTENT_LEN
+                                    "Message content exceeds maximum length of {MAX_WS_MESSAGE_CONTENT_LEN} bytes"
                                 ),
                                 client_request_id,
                             );
@@ -898,7 +894,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                             MembershipResult::Denied => {
                                 send_ws_error_with_id(
                                     &tx,
-                                    format!("Not a member of channel {}", channel_id),
+                                    format!("Not a member of channel {channel_id}"),
                                     client_request_id,
                                 );
                                 continue;
@@ -1021,8 +1017,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                             send_ws_error(
                                 &tx,
                                 format!(
-                                    "Message content exceeds maximum length of {} bytes",
-                                    MAX_WS_MESSAGE_CONTENT_LEN
+                                    "Message content exceeds maximum length of {MAX_WS_MESSAGE_CONTENT_LEN} bytes"
                                 ),
                             );
                             continue;
@@ -1039,10 +1034,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                         {
                             MembershipResult::Allowed => {}
                             MembershipResult::Denied => {
-                                send_ws_error(
-                                    &tx,
-                                    format!("Not a member of channel {}", channel_id),
-                                );
+                                send_ws_error(&tx, format!("Not a member of channel {channel_id}"));
                                 continue;
                             }
                             MembershipResult::Error(e) => {
@@ -1094,7 +1086,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                 }
                             }
                             Ok(Err(e)) => {
-                                send_ws_error(&tx, format!("Edit failed: {}", e));
+                                send_ws_error(&tx, format!("Edit failed: {e}"));
                             }
                             Err(e) => {
                                 tracing::error!("edit message task failed: {}", e);
@@ -1117,10 +1109,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                         {
                             MembershipResult::Allowed => {}
                             MembershipResult::Denied => {
-                                send_ws_error(
-                                    &tx,
-                                    format!("Not a member of channel {}", channel_id),
-                                );
+                                send_ws_error(&tx, format!("Not a member of channel {channel_id}"));
                                 continue;
                             }
                             MembershipResult::Error(e) => {
@@ -1172,7 +1161,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                 }
                             }
                             Ok(Err(e)) => {
-                                send_ws_error(&tx, format!("Delete failed: {}", e));
+                                send_ws_error(&tx, format!("Delete failed: {e}"));
                             }
                             Err(e) => {
                                 tracing::error!("delete message task failed: {}", e);
@@ -1195,8 +1184,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                             send_ws_error(
                                 &tx,
                                 format!(
-                                    "VoiceIntent text exceeds maximum length of {} bytes",
-                                    MAX_VOICE_INTENT_TEXT_LEN
+                                    "VoiceIntent text exceeds maximum length of {MAX_VOICE_INTENT_TEXT_LEN} bytes"
                                 ),
                             );
                             continue;
@@ -1213,10 +1201,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                         {
                             MembershipResult::Allowed => {}
                             MembershipResult::Denied => {
-                                send_ws_error(
-                                    &tx,
-                                    format!("Not a member of channel {}", channel_id),
-                                );
+                                send_ws_error(&tx, format!("Not a member of channel {channel_id}"));
                                 continue;
                             }
                             MembershipResult::Error(e) => {
@@ -1240,7 +1225,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                             let server_id = state.server_id;
                             let pid = pseudonym.clone();
                             let result = tokio::task::spawn_blocking(move || {
-                                let conn = pool.get().map_err(|e| format!("pool error: {}", e))?;
+                                let conn = pool.get().map_err(|e| format!("pool error: {e}"))?;
                                 let profile_id: Option<String> = conn
                                     .query_row(
                                         "SELECT vp.profile_id
@@ -1251,7 +1236,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                         |row| row.get(0),
                                     )
                                     .optional()
-                                    .map_err(|e| format!("db error: {}", e))?;
+                                    .map_err(|e| format!("db error: {e}"))?;
                                 Ok::<Option<String>, String>(profile_id)
                             })
                             .await;
@@ -1398,7 +1383,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                         Err(e) => {
                                             send_ws_error(
                                                 &tx,
-                                                format!("Failed to connect voice: {}", e),
+                                                format!("Failed to connect voice: {e}"),
                                             );
                                             continue;
                                         }
@@ -1406,11 +1391,11 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                 };
 
                                 if let Err(e) = client.publish_audio(&audio).await {
-                                    send_ws_error(&tx, format!("Failed to publish audio: {}", e));
+                                    send_ws_error(&tx, format!("Failed to publish audio: {e}"));
                                 }
                             }
                             Err(e) => {
-                                send_ws_error(&tx, format!("TTS failed: {}", e));
+                                send_ws_error(&tx, format!("TTS failed: {e}"));
                             }
                         }
                     }

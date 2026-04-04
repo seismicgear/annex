@@ -28,7 +28,7 @@ fn generate_remote_key() -> (SigningKey, String) {
 /// Signs a federation handshake payload with the given key.
 fn sign_handshake(key: &SigningKey, base_url: &str, handshake: &VrpFederationHandshake) -> String {
     let handshake_json = serde_json::to_string(handshake).unwrap();
-    let signing_payload = format!("{}\n{}", base_url, handshake_json);
+    let signing_payload = format!("{base_url}\n{handshake_json}");
     let signature = key.sign(signing_payload.as_bytes());
     hex::encode(signature.to_bytes())
 }

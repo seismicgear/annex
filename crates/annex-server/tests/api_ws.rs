@@ -61,7 +61,7 @@ async fn test_ws_lifecycle() {
     let vkey_json = match std::fs::read_to_string(vkey_path) {
         Ok(s) => s,
         Err(_) => {
-            std::fs::read_to_string(format!("../../{}", vkey_path)).expect("failed to read vkey")
+            std::fs::read_to_string(format!("../../{vkey_path}")).expect("failed to read vkey")
         }
     };
 
@@ -113,7 +113,7 @@ async fn test_ws_lifecycle() {
     });
 
     // 4. Connect WS
-    let ws_url = format!("ws://{}/ws?pseudonym=user-1", addr);
+    let ws_url = format!("ws://{addr}/ws?pseudonym=user-1");
     let (mut ws_stream, _) = connect_async(ws_url).await.expect("failed to connect");
 
     // 5. Subscribe
@@ -164,7 +164,7 @@ async fn test_ws_lifecycle() {
                         assert_eq!(received["message"]["senderPseudonym"], "user-1");
                     } else {
                         // Fallback to error
-                        panic!("Missing content or message field in: {}", received);
+                        panic!("Missing content or message field in: {received}");
                     }
                 }
             } else {

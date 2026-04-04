@@ -70,7 +70,7 @@ pub async fn get_degrees_handler(
 
     let result = tokio::task::spawn_blocking(move || {
         let conn = state.pool.get().map_err(|e| {
-            GraphApiError::InternalServerError(format!("db connection failed: {}", e))
+            GraphApiError::InternalServerError(format!("db connection failed: {e}"))
         })?;
 
         find_path_bfs(
@@ -83,7 +83,7 @@ pub async fn get_degrees_handler(
         .map_err(|e| GraphApiError::InternalServerError(e.to_string()))
     })
     .await
-    .map_err(|e| GraphApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| GraphApiError::InternalServerError(format!("task join error: {e}")))??;
 
     Ok(Json(result))
 }
@@ -104,7 +104,7 @@ pub async fn get_profile_handler(
 
     let result = tokio::task::spawn_blocking(move || {
         let conn = state.pool.get().map_err(|e| {
-            GraphApiError::InternalServerError(format!("db connection failed: {}", e))
+            GraphApiError::InternalServerError(format!("db connection failed: {e}"))
         })?;
 
         get_visible_profile(&conn, state.server_id, &viewer_pseudonym, &target_pseudonym).map_err(
@@ -115,7 +115,7 @@ pub async fn get_profile_handler(
         )
     })
     .await
-    .map_err(|e| GraphApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| GraphApiError::InternalServerError(format!("task join error: {e}")))??;
 
     Ok(Json(result))
 }

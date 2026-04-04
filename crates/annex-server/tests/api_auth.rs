@@ -111,10 +111,10 @@ async fn test_auth_middleware_flow() {
     let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
-    assert_eq!(body_bytes, format!("Hello {}", valid_pseudo).as_bytes());
+    assert_eq!(body_bytes, format!("Hello {valid_pseudo}").as_bytes());
 
     // Test 4: Valid header (Authorization Bearer)
-    let bearer_val = format!("Bearer {}", valid_pseudo);
+    let bearer_val = format!("Bearer {valid_pseudo}");
     let req = Request::builder()
         .uri("/protected")
         .header("Authorization", &bearer_val)
@@ -126,5 +126,5 @@ async fn test_auth_middleware_flow() {
     let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
-    assert_eq!(body_bytes, format!("Hello {}", valid_pseudo).as_bytes());
+    assert_eq!(body_bytes, format!("Hello {valid_pseudo}").as_bytes());
 }

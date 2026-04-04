@@ -36,7 +36,7 @@ pub async fn agent_handshake_handler(
         let mut conn = state
             .pool
             .get()
-            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {}", e)))?;
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
 
         // 1b. Validate that the pseudonym belongs to an AI agent identity.
         // Without this check, human identities could register as agents and
@@ -50,7 +50,7 @@ pub async fn agent_handshake_handler(
                     |row| row.get(0),
                 )
                 .optional()
-                .map_err(|e| ApiError::InternalServerError(format!("db query failed: {}", e)))?;
+                .map_err(|e| ApiError::InternalServerError(format!("db query failed: {e}")))?;
 
             match role_code {
                 Some(code) if code == annex_types::RoleCode::AiAgent.as_u8() => { /* OK */ }
@@ -78,7 +78,7 @@ pub async fn agent_handshake_handler(
         // 3. Construct Local Anchor from Policy
         let local_root = ServerPolicyRoot::from_policy(&policy);
         let local_anchor = local_root.to_anchor_snapshot().map_err(|e| {
-            ApiError::InternalServerError(format!("failed to create anchor snapshot: {}", e))
+            ApiError::InternalServerError(format!("failed to create anchor snapshot: {e}"))
         })?;
 
         // 4. Construct Local Capability Contract from Policy
@@ -121,7 +121,7 @@ pub async fn agent_handshake_handler(
 
         // 8-10. Record outcome, check reputation, and upsert registration atomically.
         let tx = conn.transaction().map_err(|e| {
-            ApiError::InternalServerError(format!("failed to begin transaction: {}", e))
+            ApiError::InternalServerError(format!("failed to begin transaction: {e}"))
         })?;
 
         // 8. Record Outcome
@@ -132,12 +132,12 @@ pub async fn agent_handshake_handler(
             "AI_AGENT",
             &report,
         )
-        .map_err(|e| ApiError::InternalServerError(format!("failed to log vrp outcome: {}", e)))?;
+        .map_err(|e| ApiError::InternalServerError(format!("failed to log vrp outcome: {e}")))?;
 
         // 9. Check Longitudinal Reputation
         let reputation_score =
             check_reputation_score(&tx, state.server_id, &payload.pseudonym_id).map_err(
-                |e| ApiError::InternalServerError(format!("failed to check reputation: {}", e)),
+                |e| ApiError::InternalServerError(format!("failed to check reputation: {e}")),
             )?;
 
         // 10. Upsert Agent Registration
@@ -176,12 +176,12 @@ pub async fn agent_handshake_handler(
 
             let contract_json = serde_json::to_string(&payload.handshake.capability_contract)
                 .map_err(|e| {
-                    ApiError::InternalServerError(format!("failed to serialize contract: {}", e))
+                    ApiError::InternalServerError(format!("failed to serialize contract: {e}"))
                 })?;
 
             let anchor_json = serde_json::to_string(&payload.handshake.anchor_snapshot)
                 .map_err(|e| {
-                    ApiError::InternalServerError(format!("failed to serialize anchor: {}", e))
+                    ApiError::InternalServerError(format!("failed to serialize anchor: {e}"))
                 })?;
 
             let now = chrono::Utc::now().to_rfc3339();
@@ -213,11 +213,11 @@ pub async fn agent_handshake_handler(
                 ],
             )
             .map_err(|e| {
-                ApiError::InternalServerError(format!("failed to upsert registration: {}", e))
+                ApiError::InternalServerError(format!("failed to upsert registration: {e}"))
             })?;
 
             tx.commit().map_err(|e| {
-                ApiError::InternalServerError(format!("failed to commit transaction: {}", e))
+                ApiError::InternalServerError(format!("failed to commit transaction: {e}"))
             })?;
 
             // Emit AGENT_CONNECTED to persistent log (after commit)
@@ -248,13 +248,12 @@ pub async fn agent_handshake_handler(
                 )
                 .map_err(|e| {
                     ApiError::InternalServerError(format!(
-                        "failed to deactivate conflict agent: {}",
-                        e
+                        "failed to deactivate conflict agent: {e}"
                     ))
                 })?;
 
             tx.commit().map_err(|e| {
-                ApiError::InternalServerError(format!("failed to commit transaction: {}", e))
+                ApiError::InternalServerError(format!("failed to commit transaction: {e}"))
             })?;
 
             if updated > 0 {
@@ -272,14 +271,14 @@ pub async fn agent_handshake_handler(
             }
         } else {
             tx.commit().map_err(|e| {
-                ApiError::InternalServerError(format!("failed to commit transaction: {}", e))
+                ApiError::InternalServerError(format!("failed to commit transaction: {e}"))
             })?;
         }
 
         Ok(report)
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {}", e)))??;
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     // If the agent was deactivated due to Conflict alignment, disconnect their
     // WebSocket session so they cannot continue sending/receiving messages.

@@ -88,7 +88,7 @@ async fn test_retention_task_deletes_expired_messages() {
             panic!("message should have been deleted");
         }
         Err(e) => {
-            panic!("unexpected error: {}", e);
+            panic!("unexpected error: {e}");
         }
     }
 }

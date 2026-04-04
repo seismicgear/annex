@@ -186,39 +186,39 @@ pub fn update_channel(
     let mut idx = 1usize;
 
     if let Some(name) = &updates.name {
-        set_parts.push(format!("name = ?{}", idx));
+        set_parts.push(format!("name = ?{idx}"));
         values.push(Box::new(name.clone()));
         idx += 1;
     }
     if let Some(topic) = &updates.topic {
-        set_parts.push(format!("topic = ?{}", idx));
+        set_parts.push(format!("topic = ?{idx}"));
         values.push(Box::new(topic.clone()));
         idx += 1;
     }
     if let Some(binding) = &updates.vrp_topic_binding {
-        set_parts.push(format!("vrp_topic_binding = ?{}", idx));
+        set_parts.push(format!("vrp_topic_binding = ?{idx}"));
         values.push(Box::new(binding.clone()));
         idx += 1;
     }
     if let Some(caps) = &updates.required_capabilities_json {
-        set_parts.push(format!("required_capabilities_json = ?{}", idx));
+        set_parts.push(format!("required_capabilities_json = ?{idx}"));
         values.push(Box::new(caps.clone()));
         idx += 1;
     }
     if let Some(align) = &updates.agent_min_alignment {
         let json = serde_json::to_string(align)?;
-        set_parts.push(format!("agent_min_alignment = ?{}", idx));
+        set_parts.push(format!("agent_min_alignment = ?{idx}"));
         values.push(Box::new(json));
         idx += 1;
     }
     if let Some(days) = &updates.retention_days {
-        set_parts.push(format!("retention_days = ?{}", idx));
+        set_parts.push(format!("retention_days = ?{idx}"));
         values.push(Box::new(*days));
         idx += 1;
     }
     if let Some(scope) = &updates.federation_scope {
         let json = serde_json::to_string(scope)?;
-        set_parts.push(format!("federation_scope = ?{}", idx));
+        set_parts.push(format!("federation_scope = ?{idx}"));
         values.push(Box::new(json));
         idx += 1;
     }
@@ -494,7 +494,7 @@ pub fn create_message(
     // 2. Insert message with computed expiration
     // We use datetime('now', '+N days') if retention_days is set.
     let expires_expr = if let Some(days) = retention_days {
-        format!("datetime('now', '+{} days')", days)
+        format!("datetime('now', '+{days} days')")
     } else {
         "NULL".to_string()
     };
@@ -506,9 +506,8 @@ pub fn create_message(
         "INSERT INTO messages (
             server_id, channel_id, message_id, sender_pseudonym, content,
             reply_to_message_id, expires_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, {})
-        RETURNING id, server_id, channel_id, message_id, sender_pseudonym, content, reply_to_message_id, created_at, expires_at, edited_at, deleted_at",
-        expires_expr
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, {expires_expr})
+        RETURNING id, server_id, channel_id, message_id, sender_pseudonym, content, reply_to_message_id, created_at, expires_at, edited_at, deleted_at"
     );
 
     let message = conn.query_row(
@@ -563,8 +562,7 @@ pub fn list_messages(
             FROM messages
             WHERE server_id = ?1 AND channel_id = ?2 AND created_at < ?3
             ORDER BY created_at DESC
-            LIMIT {}",
-            limit
+            LIMIT {limit}"
         )
     } else {
         format!(
@@ -574,8 +572,7 @@ pub fn list_messages(
             FROM messages
             WHERE server_id = ?1 AND channel_id = ?2
             ORDER BY created_at DESC
-            LIMIT {}",
-            limit
+            LIMIT {limit}"
         )
     };
 
@@ -620,16 +617,14 @@ pub fn edit_message(
     // Ownership check
     if msg.sender_pseudonym != sender_pseudonym {
         return Err(ChannelError::NotFound(format!(
-            "message {} not owned by {}",
-            message_id, sender_pseudonym
+            "message {message_id} not owned by {sender_pseudonym}"
         )));
     }
 
     // Already deleted
     if msg.deleted_at.is_some() {
         return Err(ChannelError::NotFound(format!(
-            "message {} has been deleted",
-            message_id
+            "message {message_id} has been deleted"
         )));
     }
 
@@ -676,16 +671,14 @@ pub fn delete_message(
     // Ownership check
     if msg.sender_pseudonym != sender_pseudonym {
         return Err(ChannelError::NotFound(format!(
-            "message {} not owned by {}",
-            message_id, sender_pseudonym
+            "message {message_id} not owned by {sender_pseudonym}"
         )));
     }
 
     // Already deleted
     if msg.deleted_at.is_some() {
         return Err(ChannelError::NotFound(format!(
-            "message {} already deleted",
-            message_id
+            "message {message_id} already deleted"
         )));
     }
 
@@ -1039,7 +1032,7 @@ mod tests {
         let err = update_channel(&conn, "does-not-exist", &updates).unwrap_err();
         match err {
             ChannelError::NotFound(id) => assert_eq!(id, "does-not-exist"),
-            _ => panic!("expected NotFound, got {:?}", err),
+            _ => panic!("expected NotFound, got {err:?}"),
         }
     }
 
@@ -1079,7 +1072,7 @@ mod tests {
         let err = update_channel(&conn, "ghost", &updates).unwrap_err();
         match err {
             ChannelError::NotFound(_) => {}
-            _ => panic!("expected NotFound, got {:?}", err),
+            _ => panic!("expected NotFound, got {err:?}"),
         }
     }
 
@@ -1245,7 +1238,7 @@ mod tests {
         let err = add_member(&conn, server_id, "nonexistent-channel", "user-1").unwrap_err();
         match err {
             ChannelError::NotFound(_) => {}
-            _ => panic!("expected NotFound, got {:?}", err),
+            _ => panic!("expected NotFound, got {err:?}"),
         }
     }
 
@@ -1273,7 +1266,7 @@ mod tests {
             conn.execute(
                 "INSERT INTO messages (server_id, channel_id, message_id, sender_pseudonym, content, expires_at)
                  VALUES (1, 'chan-expire', ?1, 'user-1', 'expired', datetime('now', '-1 day'))",
-                [format!("expired-{}", i)],
+                [format!("expired-{i}")],
             )
             .expect("insert expired msg failed");
         }
@@ -1352,7 +1345,7 @@ mod tests {
             .expect_err("edit by wrong sender should fail");
         match err {
             ChannelError::NotFound(_) => (),
-            _ => panic!("expected NotFound, got {:?}", err),
+            _ => panic!("expected NotFound, got {err:?}"),
         }
     }
 
@@ -1372,9 +1365,9 @@ mod tests {
             .expect_err("edit after window should fail");
         match err {
             ChannelError::NotFound(s) => {
-                assert!(s.contains("expired"), "expected 'expired' in: {}", s)
+                assert!(s.contains("expired"), "expected 'expired' in: {s}")
             }
-            _ => panic!("expected NotFound, got {:?}", err),
+            _ => panic!("expected NotFound, got {err:?}"),
         }
     }
 
@@ -1398,7 +1391,7 @@ mod tests {
             .expect_err("delete by wrong sender should fail");
         match err {
             ChannelError::NotFound(_) => (),
-            _ => panic!("expected NotFound, got {:?}", err),
+            _ => panic!("expected NotFound, got {err:?}"),
         }
     }
 
@@ -1418,9 +1411,9 @@ mod tests {
             .expect_err("delete after window should fail");
         match err {
             ChannelError::NotFound(s) => {
-                assert!(s.contains("expired"), "expected 'expired' in: {}", s)
+                assert!(s.contains("expired"), "expected 'expired' in: {s}")
             }
-            _ => panic!("expected NotFound, got {:?}", err),
+            _ => panic!("expected NotFound, got {err:?}"),
         }
     }
 
@@ -1435,7 +1428,7 @@ mod tests {
             .expect_err("editing deleted message should fail");
         match err {
             ChannelError::NotFound(_) => (),
-            _ => panic!("expected NotFound, got {:?}", err),
+            _ => panic!("expected NotFound, got {err:?}"),
         }
     }
 

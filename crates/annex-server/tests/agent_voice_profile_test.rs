@@ -106,7 +106,7 @@ async fn test_update_agent_voice_profile() {
     let voice_profile_db_id: i64 = conn.last_insert_rowid();
 
     // 3. Test: Moderator assigns voice profile
-    let uri = format!("/api/agents/{}/voice-profile", agent_pseudonym);
+    let uri = format!("/api/agents/{agent_pseudonym}/voice-profile");
     let payload = json!({ "voice_profile_id": voice_profile_id_str });
 
     let req = Request::builder()

@@ -234,7 +234,7 @@ pub async fn get_server_summary_handler(
                 params![server_id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
-            .map_err(|e| format!("failed to query server: {}", e))?;
+            .map_err(|e| format!("failed to query server: {e}"))?;
 
         // Member counts by node type
         let mut members_map = serde_json::Map::new();
@@ -246,14 +246,14 @@ pub async fn get_server_summary_handler(
                      WHERE server_id = ?1 AND active = 1
                      GROUP BY node_type",
                 )
-                .map_err(|e| format!("failed to prepare node query: {}", e))?;
+                .map_err(|e| format!("failed to prepare node query: {e}"))?;
             let rows = stmt
                 .query_map(params![server_id], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
                 })
-                .map_err(|e| format!("failed to query nodes: {}", e))?;
+                .map_err(|e| format!("failed to query nodes: {e}"))?;
             for row in rows {
-                let (node_type, count) = row.map_err(|e| format!("row error: {}", e))?;
+                let (node_type, count) = row.map_err(|e| format!("row error: {e}"))?;
                 total_active += count;
                 members_map.insert(node_type, serde_json::Value::Number(count.into()));
             }
@@ -266,7 +266,7 @@ pub async fn get_server_summary_handler(
                 params![server_id],
                 |row| row.get(0),
             )
-            .map_err(|e| format!("failed to count channels: {}", e))?;
+            .map_err(|e| format!("failed to count channels: {e}"))?;
 
         // Federation peer count
         let federation_peer_count: i64 = conn
@@ -276,7 +276,7 @@ pub async fn get_server_summary_handler(
                 params![server_id],
                 |row| row.get(0),
             )
-            .map_err(|e| format!("failed to count federation peers: {}", e))?;
+            .map_err(|e| format!("failed to count federation peers: {e}"))?;
 
         // Active agent count
         let active_agent_count: i64 = conn
@@ -286,7 +286,7 @@ pub async fn get_server_summary_handler(
                 params![server_id],
                 |row| row.get(0),
             )
-            .map_err(|e| format!("failed to count agents: {}", e))?;
+            .map_err(|e| format!("failed to count agents: {e}"))?;
 
         Ok::<_, String>((
             slug,
@@ -396,7 +396,7 @@ pub async fn get_federation_peers_handler(
                  WHERE fa.local_server_id = ?1 AND fa.active = 1
                  ORDER BY i.label ASC",
             )
-            .map_err(|e| format!("failed to prepare federation query: {}", e))?;
+            .map_err(|e| format!("failed to prepare federation query: {e}"))?;
 
         let rows = stmt
             .query_map(params![server_id], |row| {
@@ -408,11 +408,11 @@ pub async fn get_federation_peers_handler(
                     active: row.get::<_, i64>(4)? == 1,
                 })
             })
-            .map_err(|e| format!("failed to query federation peers: {}", e))?;
+            .map_err(|e| format!("failed to query federation peers: {e}"))?;
 
         let mut peers = Vec::new();
         for row in rows {
-            peers.push(row.map_err(|e| format!("row error: {}", e))?);
+            peers.push(row.map_err(|e| format!("row error: {e}"))?);
         }
 
         Ok::<_, String>(peers)
@@ -487,7 +487,7 @@ pub async fn get_agents_handler(
                  ORDER BY reputation_score DESC
                  LIMIT 1000",
             )
-            .map_err(|e| format!("failed to prepare agents query: {}", e))?;
+            .map_err(|e| format!("failed to prepare agents query: {e}"))?;
 
         let rows = stmt
             .query_map(params![server_id], |row| {
@@ -508,11 +508,11 @@ pub async fn get_agents_handler(
                     reputation_score: row.get(4)?,
                 })
             })
-            .map_err(|e| format!("failed to query agents: {}", e))?;
+            .map_err(|e| format!("failed to query agents: {e}"))?;
 
         let mut agents = Vec::new();
         for row in rows {
-            agents.push(row.map_err(|e| format!("row error: {}", e))?);
+            agents.push(row.map_err(|e| format!("row error: {e}"))?);
         }
 
         Ok::<_, String>(agents)

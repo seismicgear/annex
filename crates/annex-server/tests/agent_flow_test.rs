@@ -100,9 +100,9 @@ async fn test_agent_connection_flow_end_to_end() {
         .expect("failed to derive pseudonym");
 
     println!("Generated Identity:");
-    println!("Commitment: {}", commitment_hex);
-    println!("Nullifier:  {}", nullifier_hex);
-    println!("Pseudonym:  {}", expected_pseudonym_id);
+    println!("Commitment: {commitment_hex}");
+    println!("Nullifier:  {nullifier_hex}");
+    println!("Pseudonym:  {expected_pseudonym_id}");
 
     // 3. Step 1: VRP Handshake
     println!("--- Step 1: VRP Handshake ---");
@@ -182,7 +182,7 @@ async fn test_agent_connection_flow_end_to_end() {
     println!("--- Step 3: Proof Generation ---");
     // Get path first
     let mut req = Request::builder()
-        .uri(format!("/api/registry/path/{}", commitment_hex))
+        .uri(format!("/api/registry/path/{commitment_hex}"))
         .method("GET")
         .body(Body::empty())
         .unwrap();
@@ -203,15 +203,15 @@ async fn test_agent_connection_flow_end_to_end() {
         "roleCode": role_code as u8,
         "nodeId": node_id,
         "leafIndex": path_data.leaf_index,
-        "pathElements": path_data.path_elements.iter().map(|s| format!("0x{}", s)).collect::<Vec<_>>(),
+        "pathElements": path_data.path_elements.iter().map(|s| format!("0x{s}")).collect::<Vec<_>>(),
         "pathIndexBits": path_data.path_indices
     });
 
     let temp_dir = std::env::temp_dir();
     let unique_id = uuid::Uuid::new_v4();
-    let input_path = temp_dir.join(format!("input-{}.json", unique_id));
-    let proof_path = temp_dir.join(format!("proof-{}.json", unique_id));
-    let public_path = temp_dir.join(format!("public-{}.json", unique_id));
+    let input_path = temp_dir.join(format!("input-{unique_id}.json"));
+    let proof_path = temp_dir.join(format!("proof-{unique_id}.json"));
+    let public_path = temp_dir.join(format!("public-{unique_id}.json"));
 
     fs::write(&input_path, input_json.to_string()).expect("failed to write input.json");
 
