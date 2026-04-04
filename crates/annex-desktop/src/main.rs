@@ -1304,7 +1304,7 @@ fn setup_webview2_media_permissions(window: &tauri::WebviewWindow) {
                 },
             ));
 
-            let mut token = windows_core::EventRegistrationToken::default();
+            let mut token: i64 = 0;
             match webview.add_PermissionRequested(&handler, &mut token) {
                 Ok(()) => {
                     tracing::info!("WebView2 PermissionRequested handler installed for Camera/Microphone/ClipboardRead");
