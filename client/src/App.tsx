@@ -84,6 +84,8 @@ export default function App() {
   const [adminMenuOpen, setAdminMenuOpen] = useState(false);
   const [startupErrorDetails, setStartupErrorDetails] = useState<string | null>(null);
   const [provingFailures, setProvingFailures] = useState(0);
+  const [passwordRequired, setPasswordRequired] = useState(false);
+  const [serverPassword, setServerPassword] = useState('');
   const adminMenuRef = useRef<HTMLDivElement>(null);
   const [pendingInvite, setPendingInvite] = useState<LegacyInvitePayload | null>(
     () => parseLegacyInviteFromUrl(),
@@ -112,6 +114,8 @@ export default function App() {
     useIdentityStore.setState({ phase: 'keys_ready', proofInFlight: false, provingStatus: 'idle', error: null, errorDetails: null });
     setStartupErrorDetails(null);
     setProvingFailures(0);
+    setPasswordRequired(false);
+    setServerPassword('');
     setServerReady(false);
   };
 
@@ -310,11 +314,22 @@ export default function App() {
       for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         if (cancelled) return;
         try {
-          const slug = pendingServerSlug ?? (await getServerSummary()).slug;
+          const summary = await getServerSummary();
+          const slug = pendingServerSlug ?? summary.slug;
+
+          // If the server requires a password and we don't have one yet,
+          // show a password prompt and wait for the user to provide it.
+          if (summary.access_mode === 'password' && !serverPassword) {
+            setPasswordRequired(true);
+            return; // Effect will re-run when serverPassword changes
+          }
+
           if (!cancelled) {
-            await registerWithServer(slug, pendingInviteCode ?? undefined);
+            await registerWithServer(slug, pendingInviteCode ?? undefined, serverPassword || undefined);
             setPendingInviteCode(null);
             setPendingServerSlug(null);
+            setPasswordRequired(false);
+            setServerPassword('');
           }
           return;
         } catch (err) {
@@ -359,7 +374,7 @@ export default function App() {
       }
     })();
     return () => { cancelled = true; };
-  }, [serverReady, phase, identity?.sk, registerWithServer, inTauri, pendingInviteCode, pendingServerSlug]);
+  }, [serverReady, phase, identity?.sk, registerWithServer, inTauri, pendingInviteCode, pendingServerSlug, serverPassword]);
 
   // When the user logs out, return to the mode selector.
   // We track the previous phase so we only reset when phase *transitions*
@@ -659,11 +674,42 @@ export default function App() {
         <main className="app-main setup">
           <div className="identity-setup">
             <h2>Annex</h2>
-            <div className={`phase-status phase-${phase}`}>
-              {phase === 'proving'
-                ? PROVING_STATUS_LABELS[provingStatus]
-                : (REGISTRATION_LABELS[phase] ?? 'Preparing...')}
-            </div>
+            {passwordRequired && phase === 'keys_ready' ? (
+              <div className="password-prompt">
+                <p>This server requires a password to join.</p>
+                <form onSubmit={(e) => { e.preventDefault(); }}>
+                  <input
+                    type="password"
+                    value={serverPassword}
+                    onChange={(e) => setServerPassword(e.target.value)}
+                    placeholder="Enter server password"
+                    autoFocus
+                  />
+                  <button
+                    className="primary-btn"
+                    disabled={!serverPassword.trim()}
+                    onClick={() => {
+                      // Trigger re-run of the auto-register effect
+                      // by updating serverPassword (already in deps)
+                    }}
+                  >
+                    Join Server
+                  </button>
+                  <button
+                    className="secondary-btn"
+                    onClick={() => { setPasswordRequired(false); void resetToServerSelection(); }}
+                  >
+                    Back
+                  </button>
+                </form>
+              </div>
+            ) : (
+              <div className={`phase-status phase-${phase}`}>
+                {phase === 'proving'
+                  ? PROVING_STATUS_LABELS[provingStatus]
+                  : (REGISTRATION_LABELS[phase] ?? 'Preparing...')}
+              </div>
+            )}
             {phase === 'error' && error && (
               <>
                 <div className="error-message">{error}</div>
