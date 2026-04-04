@@ -1275,8 +1275,15 @@ fn setup_webview2_media_permissions(window: &tauri::WebviewWindow) {
             let handler = PermissionRequestedEventHandler::create(Box::new(
                 move |_sender, args| -> windows::core::Result<()> {
                     if let Some(args) = args {
-                        let kind = args.PermissionKind()?;
-                        let uri = args.Uri()?.to_string();
+                        let mut kind = COREWEBVIEW2_PERMISSION_KIND::default();
+                        args.PermissionKind(&mut kind)?;
+                        let mut uri = windows_core::PWSTR::null();
+                        args.Uri(&mut uri)?;
+                        let uri_str = if uri.is_null() {
+                            String::new()
+                        } else {
+                            uri.to_string().unwrap_or_default()
+                        };
 
                         // COREWEBVIEW2_PERMISSION_KIND values:
                         // Camera = 3, Microphone = 4, ClipboardRead = 6
@@ -1287,17 +1294,17 @@ fn setup_webview2_media_permissions(window: &tauri::WebviewWindow) {
                                 6 => "ClipboardRead",
                                 _ => "Unknown",
                             };
-                            tracing::info!(kind = kind_name, uri = %uri, "WebView2 permission allowed");
+                            tracing::info!(kind = kind_name, uri = %uri_str, "WebView2 permission allowed");
                             args.SetState(COREWEBVIEW2_PERMISSION_STATE_ALLOW)?;
                         } else {
-                            tracing::debug!(kind = kind.0, uri = %uri, "WebView2 permission left at default");
+                            tracing::debug!(kind = kind.0, uri = %uri_str, "WebView2 permission left at default");
                         }
                     }
                     Ok(())
                 },
             ));
 
-            let mut token = windows::Win32::System::WinRT::EventRegistrationToken::default();
+            let mut token = windows_core::EventRegistrationToken::default();
             match webview.add_PermissionRequested(&handler, &mut token) {
                 Ok(()) => {
                     tracing::info!("WebView2 PermissionRequested handler installed for Camera/Microphone/ClipboardRead");
