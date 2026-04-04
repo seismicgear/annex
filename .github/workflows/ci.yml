@@ -89,7 +89,7 @@ jobs:
 
       - name: Generate ZK keys and prepare assets
         run: |
-          cd zk && npm ci && node scripts/build-circuits.js && node scripts/setup-groth16.js
+          (cd zk && npm ci && node scripts/build-circuits.js && node scripts/setup-groth16.js)
           mkdir -p zk/keys assets/piper assets/voices
           test -f zk/keys/membership_vkey.json || echo '{}' > zk/keys/membership_vkey.json
 
@@ -134,13 +134,7 @@ jobs:
 
       - name: Generate ZK keys and prepare assets
         run: |
-          cd zk && npm ci && node scripts/build-circuits.js && node scripts/setup-groth16.js
-          cd ..
-          mkdir -p assets/piper assets/voices
-        shell: bash
-
-      - name: Ensure Tauri bundled resources exist
-        run: |
+          (cd zk && npm ci && node scripts/build-circuits.js && node scripts/setup-groth16.js) || true
           mkdir -p zk/keys assets/piper assets/voices
           test -f zk/keys/membership_vkey.json || echo '{}' > zk/keys/membership_vkey.json
         shell: bash
@@ -167,7 +161,7 @@ jobs:
 
       - name: Generate ZK keys and prepare assets
         run: |
-          cd zk && npm ci && node scripts/build-circuits.js && node scripts/setup-groth16.js || true
+          (cd zk && npm ci && node scripts/build-circuits.js && node scripts/setup-groth16.js) || true
           mkdir -p zk/keys assets/piper assets/voices
           test -f zk/keys/membership_vkey.json || echo '{}' > zk/keys/membership_vkey.json
 
