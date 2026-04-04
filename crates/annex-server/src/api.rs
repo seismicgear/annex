@@ -280,10 +280,10 @@ pub async fn register_handler(
                 }
             }
 
-            // Validate and atomically claim the invite code inside the same
-            // connection as registration. This prevents TOCTOU races where
-            // two concurrent requests both pass validation before either
-            // increments use_count.
+            // Validate invite code (check expiry, max_uses) before
+            // registration, but defer use_count increment until AFTER
+            // registration succeeds. This prevents wasting invite uses
+            // when registration fails (duplicate commitment, tree full).
             if let Some(ref code) = invite_code_for_registration {
                 let row: Result<(Option<i64>, i64, Option<String>), _> = conn.query_row(
                     "SELECT max_uses, use_count, expires_at FROM invite_codes WHERE server_id = ?1 AND code = ?2",
@@ -312,26 +312,6 @@ pub async fn register_handler(
                         ));
                     }
                 }
-
-                // Atomically increment use_count. The WHERE clause re-checks
-                // max_uses to prevent races: if another request incremented
-                // use_count between our SELECT and this UPDATE, the condition
-                // `use_count < max_uses` will fail and 0 rows will be updated.
-                let updated = conn
-                    .execute(
-                        "UPDATE invite_codes SET use_count = use_count + 1 \
-                         WHERE server_id = ?1 AND code = ?2 \
-                         AND (max_uses IS NULL OR use_count < max_uses)",
-                        rusqlite::params![state.server_id, code],
-                    )
-                    .map_err(|e| {
-                        ApiError::InternalServerError(format!("invite update failed: {}", e))
-                    })?;
-                if updated == 0 {
-                    return Err(ApiError::Forbidden(
-                        "Invalid or expired invite code.".to_string(),
-                    ));
-                }
             }
 
             // Lock Merkle Tree
@@ -359,6 +339,32 @@ pub async fn register_handler(
                 }
                 _ => ApiError::InternalServerError(e.to_string()),
             })?;
+
+            // Registration succeeded — now atomically claim the invite.
+            // The WHERE clause re-checks max_uses to prevent races.
+            if let Some(ref code) = invite_code_for_registration {
+                let updated = conn
+                    .execute(
+                        "UPDATE invite_codes SET use_count = use_count + 1 \
+                         WHERE server_id = ?1 AND code = ?2 \
+                         AND (max_uses IS NULL OR use_count < max_uses)",
+                        rusqlite::params![state.server_id, code],
+                    )
+                    .map_err(|e| {
+                        ApiError::InternalServerError(format!("invite update failed: {}", e))
+                    })?;
+                if updated == 0 {
+                    // Another concurrent request used the last invite between
+                    // our validation and this point. Registration already
+                    // succeeded so we don't roll it back — the identity is
+                    // valid. Log a warning for audit purposes.
+                    tracing::warn!(
+                        code = %code,
+                        "invite code exhausted between validation and claim; \
+                         registration succeeded but invite use not counted"
+                    );
+                }
+            }
 
             // Emit IDENTITY_REGISTERED to the public event log
             let observe_payload = EventPayload::IdentityRegistered {
