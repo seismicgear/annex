@@ -9,13 +9,14 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-D warnings"
 
 jobs:
   # Fast server checks — no WebKitGTK needed, matches what Claude Code runs locally
   check-server:
     name: Check (Server)
     runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: "-D warnings"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.88
