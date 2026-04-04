@@ -324,9 +324,7 @@ pub enum OutgoingMessage {
     },
     /// Channel lifecycle events — broadcast to all connected users.
     #[serde(rename = "channel_created")]
-    ChannelCreated {
-        channel: serde_json::Value,
-    },
+    ChannelCreated { channel: serde_json::Value },
     #[serde(rename = "channel_deleted")]
     ChannelDeleted {
         #[serde(rename = "channelId")]
@@ -1474,7 +1472,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                             }
                         }
                     }
-                    IncomingMessage::Resume { channel_id, last_message_id } => {
+                    IncomingMessage::Resume {
+                        channel_id,
+                        last_message_id,
+                    } => {
                         // Replay missed messages since the given message_id.
                         let state_clone = state.clone();
                         let pseudonym_clone = pseudonym.clone();

@@ -184,7 +184,9 @@ pub async fn create_channel_handler(
         "topic": broadcast_topic,
         "federation_scope": format!("{:?}", payload.federation_scope),
     });
-    let out = crate::api_ws::OutgoingMessage::ChannelCreated { channel: channel_json };
+    let out = crate::api_ws::OutgoingMessage::ChannelCreated {
+        channel: channel_json,
+    };
     if let Ok(broadcast_json) = serde_json::to_string(&out) {
         state.connection_manager.broadcast_all(broadcast_json).await;
     }

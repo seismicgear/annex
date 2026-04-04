@@ -634,10 +634,7 @@ pub fn search_messages(
              ORDER BY created_at DESC
              LIMIT ?4",
         )?;
-        let rows = stmt.query_map(
-            params![server_id, cid, pattern, limit],
-            map_row_to_message,
-        )?;
+        let rows = stmt.query_map(params![server_id, cid, pattern, limit], map_row_to_message)?;
         let mut messages = Vec::new();
         for row in rows {
             messages.push(row?);
@@ -653,10 +650,7 @@ pub fn search_messages(
              ORDER BY created_at DESC
              LIMIT ?3",
         )?;
-        let rows = stmt.query_map(
-            params![server_id, pattern, limit],
-            map_row_to_message,
-        )?;
+        let rows = stmt.query_map(params![server_id, pattern, limit], map_row_to_message)?;
         let mut messages = Vec::new();
         for row in rows {
             messages.push(row?);
