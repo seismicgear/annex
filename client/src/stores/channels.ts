@@ -142,11 +142,9 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       // in case the user is already a member from a previous session.
     }
 
-    // Subscribe to real-time updates for this channel via WebSocket.
-    if (ws) {
-      ws.subscribe(channelId);
-    }
-
+    // Fetch history BEFORE subscribing to WS to avoid a race where
+    // messages arriving between subscribe() and getMessages() completion
+    // are silently dropped when the history response replaces the array.
     try {
       const messages = await api.getMessages(pseudonymId, channelId, undefined, PAGE_SIZE);
       set({ messages: messages.reverse(), hasMoreMessages: messages.length >= PAGE_SIZE, historyLoading: false, historyError: null });
@@ -157,6 +155,12 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
         historyLoading: false,
         historyError: err instanceof Error ? err.message : 'Failed to load channel history',
       });
+    }
+
+    // Subscribe to real-time updates AFTER history is loaded so no
+    // messages are lost in the gap.
+    if (ws) {
+      ws.subscribe(channelId);
     }
   },
 
@@ -198,7 +202,14 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
           edited_at: frame.editedAt ?? null,
           deleted_at: frame.deletedAt ?? null,
         };
-        set((state) => ({ messages: [...state.messages, msg] }));
+        // Deduplicate: skip if a message with the same ID already exists
+        // (can happen on WS reconnection or race with history load).
+        set((state) => {
+          if (msg.message_id && state.messages.some((m) => m.message_id === msg.message_id)) {
+            return state;
+          }
+          return { messages: [...state.messages, msg] };
+        });
       } else if (frame.type === 'message_edited') {
         set((state) => ({
           messages: state.messages.map((m) =>
