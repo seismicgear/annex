@@ -167,17 +167,40 @@ pub async fn create_channel_handler(
     Ok(Json(json!({"status": "created"})))
 }
 
+/// Channel response with membership flag included.
+#[derive(Serialize)]
+pub struct ChannelWithMembership {
+    #[serde(flatten)]
+    channel: Channel,
+    is_member: bool,
+}
+
 /// GET /api/channels
 pub async fn list_channels_handler(
     Extension(state): Extension<Arc<AppState>>,
-    Extension(IdentityContext(_identity)): Extension<IdentityContext>,
-) -> Result<Json<Vec<Channel>>, StatusCode> {
+    Extension(IdentityContext(identity)): Extension<IdentityContext>,
+) -> Result<Json<Vec<ChannelWithMembership>>, StatusCode> {
+    let pseudonym_id = identity.pseudonym_id.clone();
     let channels = tokio::task::spawn_blocking(move || {
         let conn = state.pool.get().map_err(|e| {
             tracing::error!(error = %e, "failed to get db connection for list_channels");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
-        list_channels(&conn, state.server_id).map_err(channel_err_to_status)
+        let channels = list_channels(&conn, state.server_id).map_err(channel_err_to_status)?;
+
+        // Annotate each channel with the requester's membership status.
+        let result: Vec<ChannelWithMembership> = channels
+            .into_iter()
+            .map(|ch| {
+                let member = is_member(&conn, state.server_id, &ch.channel_id, &pseudonym_id)
+                    .unwrap_or(false);
+                ChannelWithMembership {
+                    channel: ch,
+                    is_member: member,
+                }
+            })
+            .collect();
+        Ok::<_, StatusCode>(result)
     })
     .await
     .map_err(|e| {

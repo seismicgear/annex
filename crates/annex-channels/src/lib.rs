@@ -542,8 +542,10 @@ pub fn get_message(conn: &Connection, message_id: &str) -> Result<Message, Chann
 
 /// Lists messages in a channel, with pagination, scoped by server.
 ///
-/// If `before` is provided, returns messages created before that timestamp/message_id.
-/// For simplicity, we filter by created_at.
+/// If `before` is provided (as a `message_id`), returns messages created
+/// before that message. The function resolves the `message_id` to its
+/// `created_at` timestamp and uses a tiebreaker on `id` to handle
+/// messages with identical timestamps correctly.
 /// `limit` defaults to 50 if not specified.
 pub fn list_messages(
     conn: &Connection,
@@ -554,44 +556,59 @@ pub fn list_messages(
 ) -> Result<Vec<Message>, ChannelError> {
     let limit = limit.unwrap_or(50).min(100);
 
-    let sql = if before.is_some() {
-        format!(
-            "SELECT
-                id, server_id, channel_id, message_id, sender_pseudonym, content,
-                reply_to_message_id, created_at, expires_at, edited_at, deleted_at
-            FROM messages
-            WHERE server_id = ?1 AND channel_id = ?2 AND created_at < ?3
-            ORDER BY created_at DESC
-            LIMIT {limit}"
-        )
+    // If `before` is a message_id, resolve it to (created_at, id) for cursor pagination.
+    let cursor = if let Some(ref before_id) = before {
+        let row: Option<(String, i64)> = conn
+            .query_row(
+                "SELECT created_at, id FROM messages WHERE message_id = ?1",
+                [before_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        row
     } else {
-        format!(
+        None
+    };
+
+    if let (Some(_), Some((before_ts, before_row_id))) = (&before, cursor) {
+        let sql = format!(
             "SELECT
                 id, server_id, channel_id, message_id, sender_pseudonym, content,
                 reply_to_message_id, created_at, expires_at, edited_at, deleted_at
             FROM messages
             WHERE server_id = ?1 AND channel_id = ?2
-            ORDER BY created_at DESC
+              AND (created_at < ?3 OR (created_at = ?3 AND id < ?4))
+            ORDER BY created_at DESC, id DESC
             LIMIT {limit}"
-        )
-    };
-
-    let mut stmt = conn.prepare(&sql)?;
-
-    let rows = if let Some(before_ts) = before {
-        stmt.query_map(
-            params![server_id, channel_id, before_ts],
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(
+            params![server_id, channel_id, before_ts, before_row_id],
             map_row_to_message,
-        )?
+        )?;
+        let mut messages = Vec::new();
+        for row in rows {
+            messages.push(row?);
+        }
+        Ok(messages)
     } else {
-        stmt.query_map(params![server_id, channel_id], map_row_to_message)?
-    };
-
-    let mut messages = Vec::new();
-    for row in rows {
-        messages.push(row?);
+        let sql = format!(
+            "SELECT
+                id, server_id, channel_id, message_id, sender_pseudonym, content,
+                reply_to_message_id, created_at, expires_at, edited_at, deleted_at
+            FROM messages
+            WHERE server_id = ?1 AND channel_id = ?2
+            ORDER BY created_at DESC, id DESC
+            LIMIT {limit}"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![server_id, channel_id], map_row_to_message)?;
+        let mut messages = Vec::new();
+        for row in rows {
+            messages.push(row?);
+        }
+        Ok(messages)
     }
-    Ok(messages)
 }
 
 /// Maximum age (in seconds) for a message to be editable or deletable by its author.
