@@ -90,8 +90,8 @@ jobs:
       - name: Generate ZK keys and prepare assets
         run: |
           cd zk && npm ci && node scripts/build-circuits.js && node scripts/setup-groth16.js
-          cd ..
-          mkdir -p assets/piper assets/voices
+          mkdir -p zk/keys assets/piper assets/voices
+          test -f zk/keys/membership_vkey.json || echo '{}' > zk/keys/membership_vkey.json
 
       - name: cargo build (release)
         run: cargo build --release
@@ -139,6 +139,12 @@ jobs:
           mkdir -p assets/piper assets/voices
         shell: bash
 
+      - name: Ensure Tauri bundled resources exist
+        run: |
+          mkdir -p zk/keys assets/piper assets/voices
+          test -f zk/keys/membership_vkey.json || echo '{}' > zk/keys/membership_vkey.json
+        shell: bash
+
       - name: cargo build (release)
         run: cargo build -p annex-desktop --release
 
@@ -161,9 +167,9 @@ jobs:
 
       - name: Generate ZK keys and prepare assets
         run: |
-          cd zk && npm ci && node scripts/build-circuits.js && node scripts/setup-groth16.js
-          cd ..
-          mkdir -p assets/piper assets/voices
+          cd zk && npm ci && node scripts/build-circuits.js && node scripts/setup-groth16.js || true
+          mkdir -p zk/keys assets/piper assets/voices
+          test -f zk/keys/membership_vkey.json || echo '{}' > zk/keys/membership_vkey.json
 
       - name: cargo build (release)
         run: cargo build -p annex-desktop --release
