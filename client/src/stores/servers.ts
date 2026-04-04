@@ -277,14 +277,14 @@ export const useServersStore = create<ServersState>((set, get) => ({
 
   setServerPersona: async (serverId: string, personaId: string | null, accentColor?: string) => {
     const { servers } = get();
-    const server = servers.find((s) => s.id === serverId);
-    if (!server) return;
-
-    server.personaId = personaId;
-    if (accentColor) server.accentColor = accentColor;
-    await serversDb.saveServer(server);
-
-    set({ servers: [...servers] });
+    const updatedServers = servers.map((s) =>
+      s.id === serverId
+        ? { ...s, personaId, ...(accentColor ? { accentColor } : {}) }
+        : s,
+    );
+    const updated = updatedServers.find((s) => s.id === serverId);
+    if (updated) await serversDb.saveServer(updated);
+    set({ servers: updatedServers });
   },
 
   getActiveServer: () => {
