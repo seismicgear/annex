@@ -255,6 +255,31 @@ pub async fn register_handler(
                 ApiError::InternalServerError(format!("db connection failed: {}", e))
             })?;
 
+            // Enforce max_members policy
+            {
+                let max_members = state
+                    .policy
+                    .read()
+                    .map_err(|_| {
+                        ApiError::InternalServerError("policy lock poisoned".to_string())
+                    })?
+                    .max_members;
+                let current_count: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM platform_identities WHERE server_id = ?1 AND active = 1",
+                        rusqlite::params![state.server_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|e| {
+                        ApiError::InternalServerError(format!("member count query failed: {}", e))
+                    })?;
+                if current_count >= max_members as i64 {
+                    return Err(ApiError::Forbidden(
+                        "This server has reached its maximum member limit.".to_string(),
+                    ));
+                }
+            }
+
             // Validate and atomically claim the invite code inside the same
             // connection as registration. This prevents TOCTOU races where
             // two concurrent requests both pass validation before either

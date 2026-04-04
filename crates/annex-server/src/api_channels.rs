@@ -643,6 +643,24 @@ pub async fn join_voice_channel_handler(
         state.voice_service.get_public_url().to_string()
     };
 
+    // Check policy voice_enabled flag
+    let policy_voice_enabled = state
+        .policy
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .voice_enabled;
+    if !policy_voice_enabled {
+        return Err((
+            StatusCode::FORBIDDEN,
+            serde_json::json!({
+                "error": "voice_disabled",
+                "message": "Voice is disabled by the server administrator.",
+                "setup_hint": "An admin can enable voice in Server Policy settings."
+            })
+            .to_string(),
+        ));
+    }
+
     if !state.voice_service.is_enabled() || livekit_url.is_empty() {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
