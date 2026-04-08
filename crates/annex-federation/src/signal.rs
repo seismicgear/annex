@@ -9,6 +9,8 @@ const DEFAULT_SIGNAL_BASE_URL: &str = "https://router.monolithannex.com";
 pub struct SignalingPayload {
     pub from_server_slug: String,
     pub to_server_slug: String,
+    /// Correlation id for one offer/answer exchange.
+    pub session_id: String,
     /// SDP type: "offer" | "answer"
     pub sdp_type: String,
     pub sdp: String,

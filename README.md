@@ -115,7 +115,7 @@ Run behind a TLS reverse proxy (nginx, Caddy, etc.). The server itself binds HTT
 - [ ] Run behind TLS reverse proxy
 - [ ] Mount persistent volume for `--data-dir`
 - [ ] Back up the SQLite database regularly
-- [ ] Set `ANNEX_ENFORCE_ZK_PROOFS=true` for cryptographic channel access control (optional, default off)
+- [ ] Confirm `ANNEX_ENFORCE_ZK_PROOFS` policy (default is `true`; set explicitly if needed)
 - [ ] Set `ANNEX_CORS_ORIGINS` if serving the web client from a different origin
 
 ### Configuration
@@ -144,13 +144,14 @@ The deploy scripts generate a `config.toml` in your data directory. You can also
 | `ANNEX_ZK_KEY_PATH` | `zk/keys/membership_vkey.json` | Groth16 verification key |
 | `ANNEX_CONFIG_PATH` | `config.toml` | Config file path |
 | `ANNEX_MERKLE_TREE_DEPTH` | `20` | Merkle tree depth (1-30) |
+| `ANNEX_INVITE_BASE_URL` | `https://monolithannex.com/invite` | Base URL for generated invite links |
 | `ANNEX_TTS_VOICES_DIR` | `assets/voices` | Piper voice model directory |
 | `ANNEX_TTS_BINARY_PATH` | `assets/piper/piper` | Piper binary path |
 | `ANNEX_BARK_BINARY_PATH` | `assets/bark/bark_tts.py` | Bark TTS Python wrapper path |
 | `ANNEX_STT_MODEL_PATH` | `assets/models/ggml-base.en.bin` | Whisper model path |
 | `ANNEX_STT_BINARY_PATH` | `assets/whisper/whisper` | Whisper binary path |
 | `ANNEX_CORS_ORIGINS` | *(empty)* | Comma-separated allowed CORS origins |
-| `ANNEX_ENFORCE_ZK_PROOFS` | `false` | Require ZK membership proof for channel access |
+| `ANNEX_ENFORCE_ZK_PROOFS` | `true` | Require ZK membership proof for channel access |
 | `ANNEX_RETENTION_CHECK_INTERVAL_SECONDS` | `3600` | Message retention sweep interval |
 | `ANNEX_INACTIVITY_THRESHOLD_SECONDS` | `300` | Presence pruning threshold |
 | `ANNEX_PRESENCE_BROADCAST_CAPACITY` | `256` | Broadcast channel buffer (16-10000) |

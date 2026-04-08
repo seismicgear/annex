@@ -5,6 +5,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::{Mutex, RwLock};
+use tokio::time::{timeout, Duration};
 use webrtc::api::APIBuilder;
 use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
 use webrtc::data_channel::RTCDataChannel;
@@ -99,23 +100,35 @@ impl FederationTransport {
             .map_err(|e| TransportError::WebRtc(e.to_string()))?;
 
         let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+        let session_id = uuid::Uuid::new_v4().to_string();
         self.pending_answers
             .lock()
             .await
-            .insert(remote_server_slug.to_string(), tx);
+            .insert(session_id.clone(), tx);
 
         self.signal
             .post_signal(&SignalingPayload {
                 from_server_slug: self.local_server_slug.clone(),
                 to_server_slug: remote_server_slug.to_string(),
+                session_id: session_id.clone(),
                 sdp_type: "offer".to_string(),
                 sdp: offer.sdp,
             })
             .await?;
 
-        let answer_sdp = rx
-            .await
-            .map_err(|_| TransportError::WebRtc("answer channel closed".to_string()))?;
+        let answer_sdp = match timeout(Duration::from_secs(65), rx).await {
+            Ok(Ok(answer)) => answer,
+            Ok(Err(_)) => {
+                self.pending_answers.lock().await.remove(&session_id);
+                return Err(TransportError::WebRtc("answer channel closed".to_string()));
+            }
+            Err(_) => {
+                self.pending_answers.lock().await.remove(&session_id);
+                return Err(TransportError::WebRtc(
+                    "timed out waiting for federation answer".to_string(),
+                ));
+            }
+        };
         let answer = RTCSessionDescription::answer(answer_sdp)
             .map_err(|e| TransportError::WebRtc(e.to_string()))?;
         pc.set_remote_description(answer)
@@ -146,6 +159,11 @@ impl FederationTransport {
     }
 
     async fn handle_signal_payload(&self, payload: SignalingPayload) -> Result<(), TransportError> {
+        if payload.to_server_slug != self.local_server_slug {
+            return Err(TransportError::WebRtc(
+                "signaling payload addressed to a different server".to_string(),
+            ));
+        }
         match payload.sdp_type.as_str() {
             "offer" => self.handle_offer(payload).await,
             "answer" => {
@@ -153,9 +171,15 @@ impl FederationTransport {
                     .pending_answers
                     .lock()
                     .await
-                    .remove(&payload.from_server_slug)
+                    .remove(&payload.session_id)
                 {
                     let _ = tx.send(payload.sdp);
+                } else {
+                    tracing::debug!(
+                        from = %payload.from_server_slug,
+                        session_id = %payload.session_id,
+                        "dropping unmatched federation answer"
+                    );
                 }
                 Ok(())
             }
@@ -188,6 +212,7 @@ impl FederationTransport {
             .post_signal(&SignalingPayload {
                 from_server_slug: self.local_server_slug.clone(),
                 to_server_slug: payload.from_server_slug.clone(),
+                session_id: payload.session_id,
                 sdp_type: "answer".to_string(),
                 sdp: answer.sdp,
             })

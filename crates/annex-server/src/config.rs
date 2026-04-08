@@ -4,6 +4,7 @@ use annex_voice::LiveKitConfig;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr};
+use std::path::Path;
 use std::str::FromStr;
 use thiserror::Error;
 
@@ -443,7 +444,7 @@ pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
                     let fixed = contents.replace('\\', "/");
                     // Best-effort: persist the fix so the on-disk file is
                     // also valid for manual inspection and future reads.
-                    if let Err(e) = std::fs::write(p, &fixed) {
+                    if let Err(e) = atomic_write_file(p, &fixed) {
                         tracing::warn!(
                             path = p,
                             error = %e,
@@ -640,7 +641,33 @@ fn sync_config_defaults_to_disk(
 
     let rendered = toml::to_string_pretty(&root)
         .map_err(|e| std::io::Error::other(format!("failed to render TOML: {e}")))?;
-    std::fs::write(path, rendered)
+    atomic_write_file(path, &rendered)
+}
+
+fn atomic_write_file(path: &str, contents: &str) -> Result<(), std::io::Error> {
+    let target = Path::new(path);
+    if let Some(parent) = target.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+
+    let file_name = target
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("config.toml");
+    let tmp_name = format!(".{file_name}.tmp-{}", std::process::id());
+    let tmp_path = target.with_file_name(tmp_name);
+
+    {
+        let mut tmp = std::fs::File::create(&tmp_path)?;
+        use std::io::Write;
+        tmp.write_all(contents.as_bytes())?;
+        tmp.sync_all()?;
+    }
+
+    std::fs::rename(&tmp_path, target)?;
+    Ok(())
 }
 
 #[cfg(test)]

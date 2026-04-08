@@ -231,7 +231,7 @@ impl VoiceService {
             RTCRtpCodecCapability {
                 mime_type: "audio/opus".to_string(),
                 clock_rate: 48_000,
-                channels: 2,
+                channels: 1,
                 sdp_fmtp_line: "minptime=10;useinbandfec=1".to_string(),
                 rtcp_feedback: vec![],
             },
@@ -385,7 +385,7 @@ impl VoiceService {
                 RTCRtpCodecCapability {
                     mime_type: "audio/opus".to_string(),
                     clock_rate: 48_000,
-                    channels: 2,
+                    channels: 1,
                     sdp_fmtp_line: "minptime=10;useinbandfec=1".to_string(),
                     rtcp_feedback: vec![],
                 },
@@ -486,12 +486,15 @@ impl VoiceService {
 
     async fn fan_out_rtp(&self, channel_id: &str, publisher_id: &str, rtp: &RtpPacket) {
         if let Some(room) = self.rooms.get(channel_id) {
-            for peer in room.peers.iter() {
-                if peer.key() == publisher_id {
-                    continue;
-                }
-                let peer_id = peer.key().clone();
-                if let Err(e) = peer.value().outbound_track.write_rtp(rtp).await {
+            let outbound: Vec<(String, Arc<TrackLocalStaticRTP>)> = room
+                .peers
+                .iter()
+                .filter(|peer| peer.key().as_str() != publisher_id)
+                .map(|peer| (peer.key().clone(), peer.value().outbound_track.clone()))
+                .collect();
+
+            for (peer_id, track) in outbound {
+                if let Err(e) = track.write_rtp(rtp).await {
                     debug!(peer = %peer_id, error = %e, "rtp fanout write failed");
                 }
             }
