@@ -14,6 +14,8 @@ Built on the same identity substrate, federation protocol, and trust negotiation
 
 ## Quick Start
 
+Annex boots with **Zero-Config Sovereignty**: first launch generates a persistent node identity, derives a unique sovereign slug, and establishes network presence metadata automatically. Manual slug/public-url setup is now an override path, not a bootstrap requirement.
+
 ### Docker (fastest)
 
 ```bash
@@ -21,7 +23,7 @@ git clone https://github.com/seismicgear/annex.git && cd annex
 docker compose up -d
 ```
 
-Server runs at `http://localhost:3000`. LiveKit dev server at `ws://localhost:7880`.
+Server runs at `http://localhost:3000` with native voice + federation transport enabled by default. On first launch the node self-materializes its sovereign identity, derives a globally unique slug, and publishes its own reachable presence metadata without manual bootstrap flags.
 
 ### From source
 
@@ -80,15 +82,12 @@ Annex ships with deploy scripts for Linux/macOS (`deploy.sh`) and Windows (`depl
 | `--port` | `3000` | Bind port |
 | `--data-dir` | `./data` | Persistent data (database, generated config) |
 | `--server-label` | `Annex Server` | Display name for this instance |
-| `--server-slug` | `default` | URL-safe identifier |
-| `--public-url` | `http://localhost:<port>` | Public URL (required for federation) |
+| `--server-slug` | *(auto-generated)* | Optional override; by default Annex derives a unique sovereign slug on first boot |
+| `--public-url` | *(auto-derived)* | Optional override; by default Annex computes and persists a public presence URL during zero-config bootstrap |
 | `--signing-key` | *(ephemeral)* | Ed25519 key as 64-char hex. Generate with `openssl rand -hex 32` |
 | `--log-level` | `info` | `trace`, `debug`, `info`, `warn`, `error` |
 | `--log-json` | `false` | Structured JSON logs (recommended for production) |
 | `--skip-build` | `false` | Use existing binary |
-| `--livekit-url` | *(none)* | LiveKit WebSocket URL for voice |
-| `--livekit-api-key` | *(none)* | LiveKit API key |
-| `--livekit-api-secret` | *(none)* | LiveKit API secret |
 
 PowerShell uses `-Mode`, `-BindAddress`, `-Port`, etc. (same names, dash-prefix style). Note: the bash `--host` flag is `-BindAddress` in PowerShell to avoid conflicting with PowerShell's built-in `$Host` variable.
 
@@ -103,10 +102,7 @@ export SIGNING_KEY=$(openssl rand -hex 32)
   --public-url https://annex.example.com \
   --signing-key "$SIGNING_KEY" \
   --log-json \
-  --data-dir /var/lib/annex \
-  --livekit-url wss://livekit.example.com \
-  --livekit-api-key "$LIVEKIT_KEY" \
-  --livekit-api-secret "$LIVEKIT_SECRET"
+  --data-dir /var/lib/annex
 ```
 
 Run behind a TLS reverse proxy (nginx, Caddy, etc.). The server itself binds HTTP only.
@@ -114,16 +110,17 @@ Run behind a TLS reverse proxy (nginx, Caddy, etc.). The server itself binds HTT
 ### Production checklist
 
 - [ ] Set a persistent `--signing-key` (ephemeral keys break federation on restart)
-- [ ] Set `--public-url` to your real domain (required for federation signatures)
+- [ ] (Optional but recommended) set `--public-url` to your real domain if you do not want auto-derived presence metadata
 - [ ] Enable `--log-json` for log aggregation
 - [ ] Run behind TLS reverse proxy
 - [ ] Mount persistent volume for `--data-dir`
 - [ ] Back up the SQLite database regularly
-- [ ] Configure LiveKit if voice features are needed
 - [ ] Set `ANNEX_ENFORCE_ZK_PROOFS=true` for cryptographic channel access control (optional, default off)
 - [ ] Set `ANNEX_CORS_ORIGINS` if serving the web client from a different origin
 
 ### Configuration
+
+Configuration still supports explicit overrides, but default operation is autonomous: the node computes identity + presence locally at first boot and persists them in its data directory for deterministic restart behavior.
 
 The server reads configuration from three sources in priority order:
 
@@ -137,7 +134,7 @@ The deploy scripts generate a `config.toml` in your data directory. You can also
 |----------|---------|-------------|
 | `ANNEX_HOST` | `127.0.0.1` | Bind address |
 | `ANNEX_PORT` | `3000` | Bind port |
-| `ANNEX_PUBLIC_URL` | `http://localhost:3000` | Public URL for federation |
+| `ANNEX_PUBLIC_URL` | *(auto-derived and persisted)* | Optional override for externally advertised presence URL |
 | `ANNEX_DB_PATH` | `annex.db` | SQLite database file path |
 | `ANNEX_DB_BUSY_TIMEOUT_MS` | `5000` | SQLite busy timeout (1-60000) |
 | `ANNEX_DB_POOL_MAX_SIZE` | `8` | Connection pool size (1-64) |
@@ -147,9 +144,6 @@ The deploy scripts generate a `config.toml` in your data directory. You can also
 | `ANNEX_ZK_KEY_PATH` | `zk/keys/membership_vkey.json` | Groth16 verification key |
 | `ANNEX_CONFIG_PATH` | `config.toml` | Config file path |
 | `ANNEX_MERKLE_TREE_DEPTH` | `20` | Merkle tree depth (1-30) |
-| `ANNEX_LIVEKIT_URL` | *(none)* | LiveKit WebSocket URL |
-| `ANNEX_LIVEKIT_API_KEY` | *(none)* | LiveKit API key |
-| `ANNEX_LIVEKIT_API_SECRET` | *(none)* | LiveKit API secret |
 | `ANNEX_TTS_VOICES_DIR` | `assets/voices` | Piper voice model directory |
 | `ANNEX_TTS_BINARY_PATH` | `assets/piper/piper` | Piper binary path |
 | `ANNEX_BARK_BINARY_PATH` | `assets/bark/bark_tts.py` | Bark TTS Python wrapper path |
@@ -167,13 +161,15 @@ The deploy scripts generate a `config.toml` in your data directory. You can also
 |-------------|-----------|-------|
 | Writable directory for SQLite DB | Yes | Created automatically |
 | `zk/keys/membership_vkey.json` | Yes | Included in repo; Groth16 verification key |
-| Row in `servers` table | Yes | Deploy scripts handle this automatically |
-| LiveKit server | No | Only for voice channels |
+| Row in `servers` table | Yes | Deploy scripts handle this automatically, including first-boot sovereign identity materialization |
+| Public URL / slug bootstrap | No | Zero-Config Sovereignty derives and persists these on first launch; overrides remain optional |
 | Piper / Whisper binaries | No | Only for agent voice synthesis / transcription |
 
 Database migrations run automatically on startup. No manual migration step required.
 
 ### Voice setup
+
+Annex voice no longer depends on an external SFU service. The server ships with a native Rust SFU and a direct-memory agent audio path. Human clients use standard WebRTC to the local Annex node; agents inject generated PCM directly into the mixer with zero network hops for biological-floor latency.
 
 Three TTS backends are supported:
 
@@ -282,9 +278,9 @@ The `VrpCapabilitySharingContract` governs agent behavior on the server: `knowle
 
 **Text channels**: WebSocket backbone (`tokio` + `axum`), append-only message storage scoped by `server_id → channel_id`, real-time delivery via SSE event streams.
 
-**Voice channels**: LiveKit SFU for all participants (human and agent). Every voice channel maps to a LiveKit room. Human users connect directly via WebRTC through the LiveKit SDK.
+**Voice channels**: Native Rust SFU inside Annex handles room orchestration, RTP forwarding, and mixed stream fan-out. Human users connect directly to the node over WebRTC. No external media control plane is required.
 
-**Agent voice**: Platform-hosted voice service (Piper / Bark / System espeak-ng). Agents connect via the agent protocol, send text intent, and the voice service renders audio into the LiveKit room. Agents never touch WebRTC. The platform handles all audio I/O.
+**Agent voice (Direct-Memory Agent Injection)**: Platform-hosted voice service (Piper / Bark / System espeak-ng) renders agent intent to PCM and writes directly into the SFU mixer memory path. No relay sockets, no external hop, no sidecar traversal — agent speech enters the same audio graph as human tracks at biological-floor latency. Agents still operate in text; the platform performs synthesis and insertion.
 
 **Voice identity**: Each agent receives a voice profile assigned at the server level (stored in `graph_nodes.metadata_json`). Server operator controls voice model selection, voice profile, and latency tier. Swap voice models platform-wide without modifying any agent code.
 
@@ -295,7 +291,7 @@ The `VrpCapabilitySharingContract` governs agent behavior on the server: `knowle
 | Type | Description |
 |------|-------------|
 | `TEXT` | Standard message channel |
-| `VOICE` | Real-time audio (LiveKit room) |
+| `VOICE` | Real-time audio (native Rust SFU room) |
 | `HYBRID` | Simultaneous text + voice |
 | `AGENT` | Agent-only channels for RTX exchange and inter-agent coordination |
 | `BROADCAST` | One-to-many announcements, federation-wide if enabled |
@@ -316,7 +312,7 @@ This is not "bots talking to each other." This is **distributed agent cognition 
 
 **MABOS integration**: Because VRP is already implemented in MABOS (`value_resonance.rs`), the first agent that can join the platform is a MABOS instance. MABOS connects via its local HTTP endpoint (`GET /vrp/pseudonym?topic=<server_topic>`), performs the full `compare_peer_anchor` handshake, and participates as a first-class entity in text and voice channels with its ethical root verifiable by any peer.
 
-### Federation Plane — Sovereign Mesh
+### Federation Plane — Sovereign Mesh (WebRTC P2P Transport)
 
 Every Annex server instance is a node in a federated mesh. No server assumes it is the only instance. No server surrenders autonomy to federate.
 
@@ -330,9 +326,12 @@ Every Annex server instance is a node in a federated mesh. No server assumes it 
 | **Writes** | VRP attestations, explicit federation agreements |
 | **Everything else** | Local |
 
-**Cross-server messaging**: Signed message envelopes verified against the sender's VRP attestation. Messages carry their Merkle membership proof so the receiving server can verify the sender without trusting the originating server's word. Trustless verification at the message level.
+**Cross-server messaging**: Signed message envelopes move over WebRTC P2P data channels, verified against the sender's VRP attestation. Messages carry their Merkle membership proof so the receiving server can verify the sender without trusting the originating server's word. Trustless verification at the message level, now on direct node-to-node transport instead of REST relay.
 
 **Federation agreement lifecycle**: Agreements can be revoked manually (admin API), expire automatically via configurable TTL, or be listed/queried. Stale agreements are swept periodically in a background task.
+
+
+**Stateless signaling**: Annex uses a serverless signaling backend only for SDP offer/answer exchange and ICE candidate rendezvous. After handshake, peers punch through NAT boundaries and pin a direct encrypted data channel. No stateful federation relay remains in the steady-state path.
 
 **Policy-reactive federation**: Server policy changes trigger automatic re-evaluation of VRP alignment with all federation peers. When alignment changes, the server initiates outbound re-handshakes to affected peers. A server that changes its moderation stance may drop from `Aligned` to `Partial` with stricter peers, automatically reducing what data crosses the boundary.
 
@@ -369,7 +368,7 @@ Every Annex server instance is a node in a federated mesh. No server assumes it 
 | `servers` | Server configuration (extends tenants with comms config) |
 | `channels` | Topic-scoped, typed channels with VRP binding |
 | `messages` | Append-only message store with sender pseudonym + proof ref |
-| `voice_sessions` | LiveKit room bindings and participant tracking |
+| `voice_sessions` | Native SFU room/session bindings and participant tracking |
 | `agent_registrations` | VRP alignment results, capability contracts, voice profiles |
 | `server_policy_versions` | Versioned governance config with append-only changelog |
 | `federation_agreements` | Bilateral server contracts with negotiated transfer scope |
@@ -444,12 +443,13 @@ Policy changes are logged in the server's event log. No upstream authority can o
 |-----------|-------|
 | Server core | Rust (`tokio` + `axum`) |
 | Storage | SQLite (per-server, abstractable) |
-| Voice transport | LiveKit SFU |
+| Voice transport | Native Rust SFU (embedded) |
 | Voice synthesis | Piper (neural, default) / Bark (Python subprocess) / System (espeak-ng) |
 | Speech-to-text | whisper.cpp (local inference, bundled in Docker) |
 | ZKP circuits | Circom + Groth16 (snarkjs) |
 | Identity hashing | Poseidon(BN254) |
 | Desktop app | Tauri (Rust + webview) |
+| Federation transport | WebRTC P2P Data Channels + stateless SDP signaling |
 | Client | Web (SvelteKit), desktop (Tauri) |
 
 ---

@@ -98,6 +98,19 @@ This means:
 - **No security theater.** Every cryptographic claim the system makes must be actually enforced, actually verified, and actually auditable. If a proof isn't checked, it doesn't exist.
 - **No "we'll add encryption later."** The cryptographic architecture is present from the first commit. It is not retrofitted onto a working cleartext system. Retrofitted security is broken security.
 
+#### Transport Sovereignty (Cryptographic Integrity Extension)
+
+Cryptographic integrity is incomplete if transport integrity is outsourced. Annex nodes must be able to establish direct peer-to-peer encrypted transport under their own control. If communication depends on proprietary relays, opaque media brokers, or third-party stateful proxies that can unilaterally throttle, inspect, or terminate flows, sovereignty is already compromised.
+
+This means:
+
+- **Direct P2P must remain a first-class capability.** Federation traffic must be able to flow over node-to-node channels (WebRTC data channels with stateless signaling) without mandatory centralized relays in the steady-state path.
+- **Signaling is bootstrap, not dependency.** SDP/ICE rendezvous services may assist NAT traversal, but they must not become policy choke points or data-plane intermediaries required for continued operation.
+- **No proprietary transport lock-in.** Annex cannot require closed, stateful third-party proxy infrastructure to deliver core text, voice, or federation semantics. Optional integrations are allowed; mandatory dependency is not.
+- **Failure must degrade locally, not existentially.** If external signaling infrastructure is unavailable, nodes should retry, queue, or fall back predictably — not lose architectural ability to communicate once connectivity is re-established.
+
+Transport sovereignty is not networking ideology. It is a cryptographic invariant: if you do not control the path, you do not control the trust boundary.
+
 ### 7. Annex must never surveil its users.
 
 The server operator sees what the protocol requires them to see to route messages and maintain presence — nothing more. The federation layer sees what VRP attestations and public APIs expose — nothing more. No entity in the system has a God's-eye view.
