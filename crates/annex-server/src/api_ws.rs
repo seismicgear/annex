@@ -365,6 +365,18 @@ pub enum OutgoingMessage {
         #[serde(rename = "sdp")]
         sdp: String,
     },
+    #[serde(rename = "webrtc_ice_candidate")]
+    WebRtcIceCandidate {
+        #[serde(rename = "channelId")]
+        channel_id: String,
+        candidate: String,
+        #[serde(rename = "sdpMid", skip_serializing_if = "Option::is_none")]
+        sdp_mid: Option<String>,
+        #[serde(rename = "sdpMLineIndex", skip_serializing_if = "Option::is_none")]
+        sdp_m_line_index: Option<u16>,
+        #[serde(rename = "usernameFragment", skip_serializing_if = "Option::is_none")]
+        username_fragment: Option<String>,
+    },
 }
 
 /// Type alias for session map to satisfy clippy complexity checks.
@@ -875,6 +887,31 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
         while let Some(msg) = rx.recv().await {
             if sender.send(AxumMessage::Text(msg.into())).await.is_err() {
                 break;
+            }
+        }
+    });
+    let mut ice_rx = state.voice_service.subscribe_ice_candidates();
+    let tx_for_ice = tx.clone();
+    let pseudonym_for_ice = pseudonym.clone();
+    let ice_task = tokio::spawn(async move {
+        while let Ok(event) = ice_rx.recv().await {
+            if event.peer_id != pseudonym_for_ice {
+                continue;
+            }
+            let outbound = OutgoingMessage::WebRtcIceCandidate {
+                channel_id: event.channel_id,
+                candidate: event.candidate.candidate,
+                sdp_mid: event.candidate.sdp_mid,
+                sdp_m_line_index: event.candidate.sdp_mline_index,
+                username_fragment: event.candidate.username_fragment,
+            };
+            match serde_json::to_string(&outbound) {
+                Ok(json) => {
+                    if tx_for_ice.send(json).await.is_err() {
+                        break;
+                    }
+                }
+                Err(e) => tracing::error!("failed to serialize webrtc ice candidate: {}", e),
             }
         }
     });
@@ -1691,6 +1728,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
         .remove_session(&pseudonym, session_id)
         .await;
     send_task.abort();
+    ice_task.abort();
 
     // Clean up voice session for this pseudonym. Dropping the Arc will
     // decrement the reference count; when it reaches zero the

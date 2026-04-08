@@ -4,10 +4,8 @@ use audiopus::coder::Decoder as OpusDecoder;
 use audiopus::{Channels, SampleRate};
 use bytes::Bytes;
 use dashmap::DashMap;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
-use tokio::task::JoinHandle;
 use tracing::{debug, error, warn};
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
@@ -22,7 +20,7 @@ use webrtc::rtcp::packet::Packet;
 use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
 use webrtc::rtcp::transport_feedbacks::transport_layer_nack::{NackPair, TransportLayerNack};
 use webrtc::rtp::packet::Packet as RtpPacket;
-use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecType};
+use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 use webrtc::track::track_local::TrackLocal;
@@ -39,11 +37,16 @@ pub struct SttTapFrame {
     pub pcm_s16le: Vec<u8>,
 }
 
+#[derive(Debug, Clone)]
+pub struct IceCandidateEvent {
+    pub channel_id: String,
+    pub peer_id: String,
+    pub candidate: RTCIceCandidateInit,
+}
+
 struct PeerSession {
-    peer_id: String,
     pc: Arc<RTCPeerConnection>,
     outbound_track: Arc<TrackLocalStaticRTP>,
-    _tasks: Vec<JoinHandle<()>>,
 }
 
 struct Room {
@@ -59,6 +62,7 @@ pub struct VoiceService {
     runtime_public_url: RwLock<String>,
     runtime_disabled: RwLock<bool>,
     stt_tap_tx: broadcast::Sender<SttTapFrame>,
+    ice_candidate_tx: broadcast::Sender<IceCandidateEvent>,
 }
 
 impl VoiceService {
@@ -79,6 +83,7 @@ impl VoiceService {
             .build();
 
         let (stt_tap_tx, _) = broadcast::channel(1024);
+        let (ice_candidate_tx, _) = broadcast::channel(1024);
 
         Self {
             config,
@@ -87,6 +92,7 @@ impl VoiceService {
             runtime_public_url: RwLock::new(String::new()),
             runtime_disabled: RwLock::new(false),
             stt_tap_tx,
+            ice_candidate_tx,
         }
     }
 
@@ -169,7 +175,6 @@ impl VoiceService {
         participant_identity: &str,
         participant_name: &str,
     ) -> Result<String, VoiceError> {
-        // Lightweight stateless token for backwards compatibility.
         let payload = serde_json::json!({
             "room": room_name,
             "sub": participant_identity,
@@ -191,13 +196,21 @@ impl VoiceService {
 
     pub async fn remove_participant(&self, room: &str, identity: &str) -> Result<(), VoiceError> {
         if let Some(room_entry) = self.rooms.get(room) {
-            room_entry.peers.remove(identity);
+            if let Some((_, peer)) = room_entry.peers.remove(identity) {
+                if let Err(e) = peer.pc.close().await {
+                    debug!(error = %e, "failed to close peer connection");
+                }
+            }
         }
         Ok(())
     }
 
     pub fn subscribe_stt_taps(&self) -> broadcast::Receiver<SttTapFrame> {
         self.stt_tap_tx.subscribe()
+    }
+
+    pub fn subscribe_ice_candidates(&self) -> broadcast::Receiver<IceCandidateEvent> {
+        self.ice_candidate_tx.subscribe()
     }
 
     pub async fn handle_sdp_offer(
@@ -207,11 +220,12 @@ impl VoiceService {
         offer_sdp: &str,
     ) -> Result<RTCSessionDescription, VoiceError> {
         let room = self.get_or_create_room(channel_id).await?;
-        let pc = self
-            .api
-            .new_peer_connection(self.rtc_config())
-            .await
-            .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
+        let pc = Arc::new(
+            self.api
+                .new_peer_connection(self.rtc_config())
+                .await
+                .map_err(|e| VoiceError::WebRtc(e.to_string()))?,
+        );
 
         let outbound_track = Arc::new(TrackLocalStaticRTP::new(
             RTCRtpCodecCapability {
@@ -221,13 +235,39 @@ impl VoiceService {
                 sdp_fmtp_line: "minptime=10;useinbandfec=1".to_string(),
                 rtcp_feedback: vec![],
             },
-            format!("audio-{}", peer_id),
+            format!("audio-{peer_id}"),
             channel_id.to_string(),
         ));
 
         pc.add_track(outbound_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
             .await
             .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
+        pc.add_track(room.agent_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
+            .await
+            .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
+
+        let candidate_tx = self.ice_candidate_tx.clone();
+        let candidate_channel = channel_id.to_string();
+        let candidate_peer = peer_id.to_string();
+        pc.on_ice_candidate(Box::new(move |candidate| {
+            let candidate_tx = candidate_tx.clone();
+            let candidate_channel = candidate_channel.clone();
+            let candidate_peer = candidate_peer.clone();
+            Box::pin(async move {
+                if let Some(candidate) = candidate {
+                    match candidate.to_json() {
+                        Ok(init) => {
+                            let _ = candidate_tx.send(IceCandidateEvent {
+                                channel_id: candidate_channel,
+                                peer_id: candidate_peer,
+                                candidate: init,
+                            });
+                        }
+                        Err(e) => debug!(error = %e, "failed to serialize local ICE candidate"),
+                    }
+                }
+            })
+        }));
 
         let service = Arc::clone(self);
         let channel = channel_id.to_string();
@@ -251,6 +291,28 @@ impl VoiceService {
             })
         }));
 
+        let service = Arc::clone(self);
+        let cleanup_channel = channel_id.to_string();
+        let cleanup_peer = peer_id.to_string();
+        pc.on_peer_connection_state_change(Box::new(move |state| {
+            let service = Arc::clone(&service);
+            let cleanup_channel = cleanup_channel.clone();
+            let cleanup_peer = cleanup_peer.clone();
+            Box::pin(async move {
+                use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
+                if matches!(
+                    state,
+                    RTCPeerConnectionState::Failed
+                        | RTCPeerConnectionState::Closed
+                        | RTCPeerConnectionState::Disconnected
+                ) {
+                    if let Some(room) = service.rooms.get(&cleanup_channel) {
+                        room.peers.remove(&cleanup_peer);
+                    }
+                }
+            })
+        }));
+
         let offer = RTCSessionDescription::offer(offer_sdp.to_string())
             .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
         pc.set_remote_description(offer)
@@ -265,13 +327,10 @@ impl VoiceService {
             .await
             .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
 
-        let session = Arc::new(PeerSession {
-            peer_id: peer_id.to_string(),
-            pc,
-            outbound_track,
-            _tasks: vec![],
-        });
-        room.peers.insert(peer_id.to_string(), session);
+        room.peers.insert(
+            peer_id.to_string(),
+            Arc::new(PeerSession { pc, outbound_track }),
+        );
 
         Ok(answer)
     }
@@ -330,7 +389,7 @@ impl VoiceService {
                     sdp_fmtp_line: "minptime=10;useinbandfec=1".to_string(),
                     rtcp_feedback: vec![],
                 },
-                format!("agent-mix-{}", channel_id),
+                format!("agent-mix-{channel_id}"),
                 channel_id.to_string(),
             )),
         });
@@ -374,6 +433,7 @@ impl VoiceService {
         track: Arc<webrtc::track::track_remote::TrackRemote>,
     ) -> Result<(), VoiceError> {
         let mut last_seq: Option<u16> = None;
+        let mut last_pli = std::time::Instant::now();
         let mut decoder = OpusDecoder::new(SampleRate::Hz48000, Channels::Mono)
             .map_err(|e| VoiceError::Codec(e.to_string()))?;
 
@@ -386,12 +446,11 @@ impl VoiceService {
             if let Some(previous) = last_seq {
                 let expected = previous.wrapping_add(1);
                 if rtp.header.sequence_number != expected {
-                    let lost = expected;
                     let nack = TransportLayerNack {
                         sender_ssrc: 0,
                         media_ssrc,
                         nacks: vec![NackPair {
-                            packet_id: lost,
+                            packet_id: expected,
                             lost_packets: 0,
                         }],
                     };
@@ -405,15 +464,18 @@ impl VoiceService {
             }
             last_seq = Some(rtp.header.sequence_number);
 
-            let pli = PictureLossIndication {
-                sender_ssrc: 0,
-                media_ssrc,
-            };
-            if let Err(e) = pc
-                .write_rtcp(&[Box::new(pli) as Box<dyn Packet + Send + Sync>])
-                .await
-            {
-                debug!(error = %e, "failed to send PLI");
+            if last_pli.elapsed() >= std::time::Duration::from_secs(2) {
+                let pli = PictureLossIndication {
+                    sender_ssrc: 0,
+                    media_ssrc,
+                };
+                if let Err(e) = pc
+                    .write_rtcp(&[Box::new(pli) as Box<dyn Packet + Send + Sync>])
+                    .await
+                {
+                    debug!(error = %e, "failed to send PLI");
+                }
+                last_pli = std::time::Instant::now();
             }
 
             self.fan_out_rtp(&channel_id, &publisher_id, &rtp).await;
@@ -428,8 +490,9 @@ impl VoiceService {
                 if peer.key() == publisher_id {
                     continue;
                 }
-                if let Err(e) = peer.outbound_track.write_rtp(rtp).await {
-                    debug!(peer = %peer.peer_id, error = %e, "rtp fanout write failed");
+                let peer_id = peer.key().clone();
+                if let Err(e) = peer.value().outbound_track.write_rtp(rtp).await {
+                    debug!(peer = %peer_id, error = %e, "rtp fanout write failed");
                 }
             }
         }
