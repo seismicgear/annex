@@ -34,7 +34,7 @@ interface DeviceResult {
 /** Check whether setSinkId is supported in this browser/webview. */
 function isSinkIdSupported(): boolean {
   return typeof HTMLMediaElement !== 'undefined' &&
-    typeof (HTMLMediaElement.prototype as Record<string, unknown>).setSinkId === 'function';
+    typeof ((HTMLMediaElement.prototype as unknown as Record<string, unknown>).setSinkId) === 'function';
 }
 
 /** Query the Permissions API for a specific device kind, if supported. */
