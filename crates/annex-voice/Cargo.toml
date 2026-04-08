@@ -6,17 +6,20 @@ edition.workspace = true
 [dependencies]
 annex-types = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-
-livekit-api = "0.4"
-livekit-protocol = "0.7"
 reqwest = { workspace = true, features = ["json"] }
-tokio = { workspace = true, features = ["process", "io-util", "sync"] }
+tokio = { workspace = true, features = ["process", "io-util", "sync", "rt-multi-thread"] }
+webrtc = "0.11"
+dashmap = "6"
+bytes = "1"
+base64 = "0.22"
+audiopus = "0.3"
 
 [dev-dependencies]
+jsonwebtoken = "9.3"
 tokio = { workspace = true, features = ["full"] }
 tempfile = { workspace = true }
-jsonwebtoken = "9.3"
 serde_json = { workspace = true }
 toml = { workspace = true }

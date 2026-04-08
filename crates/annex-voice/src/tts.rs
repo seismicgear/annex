@@ -286,3 +286,90 @@ impl TtsService {
         }
     }
 }
+
+/// Encodes little-endian signed PCM into Opus frames (20ms packets).
+pub fn encode_pcm_to_opus_frames(
+    pcm_s16le: &[u8],
+    input_sample_rate: usize,
+    input_channels: usize,
+) -> Result<Vec<Vec<u8>>, VoiceError> {
+    use audiopus::coder::Encoder as OpusEncoder;
+    use audiopus::{Application, Channels, SampleRate};
+
+    if input_channels == 0 {
+        return Err(VoiceError::Codec(
+            "input channels cannot be zero".to_string(),
+        ));
+    }
+
+    if pcm_s16le.len() % 2 != 0 {
+        return Err(VoiceError::Codec(
+            "PCM payload must be 16-bit aligned".to_string(),
+        ));
+    }
+
+    let source_samples: Vec<i16> = pcm_s16le
+        .chunks_exact(2)
+        .map(|b| i16::from_le_bytes([b[0], b[1]]))
+        .collect();
+
+    let mono_48k = if input_sample_rate == 48_000 && input_channels == 1 {
+        source_samples
+    } else {
+        // Lightweight linear resampler + downmix to mono for server-side agent synthesis.
+        let frames = source_samples.len() / input_channels;
+        if frames == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut mono: Vec<f32> = Vec::with_capacity(frames);
+        for frame_idx in 0..frames {
+            let mut sum = 0f32;
+            for ch in 0..input_channels {
+                let idx = frame_idx * input_channels + ch;
+                sum += source_samples[idx] as f32;
+            }
+            mono.push(sum / input_channels as f32);
+        }
+
+        if input_sample_rate == 48_000 {
+            mono.into_iter().map(|s| s as i16).collect()
+        } else {
+            let ratio = input_sample_rate as f32 / 48_000f32;
+            let out_len = ((mono.len() as f32) / ratio).max(1.0) as usize;
+            let mut out = Vec::with_capacity(out_len);
+            for i in 0..out_len {
+                let src_pos = i as f32 * ratio;
+                let lo = src_pos.floor() as usize;
+                let hi = (lo + 1).min(mono.len() - 1);
+                let frac = src_pos - lo as f32;
+                let sample = mono[lo] * (1.0 - frac) + mono[hi] * frac;
+                out.push(sample.clamp(i16::MIN as f32, i16::MAX as f32) as i16);
+            }
+            out
+        }
+    };
+
+    let mut encoder = OpusEncoder::new(SampleRate::Hz48000, Channels::Mono, Application::Audio)
+        .map_err(|e| VoiceError::Codec(format!("failed to create opus encoder: {e}")))?;
+
+    let frame_size = 960; // 20ms @ 48kHz
+    let mut packets = Vec::new();
+    let mut cursor = 0;
+    while cursor < mono_48k.len() {
+        let remaining = mono_48k.len() - cursor;
+        let take = remaining.min(frame_size);
+        let mut frame = vec![0i16; frame_size];
+        frame[..take].copy_from_slice(&mono_48k[cursor..cursor + take]);
+
+        let mut encoded = vec![0u8; 4000];
+        let written = encoder
+            .encode(&frame, &mut encoded)
+            .map_err(|e| VoiceError::Codec(format!("opus encode failed: {e}")))?;
+        encoded.truncate(written);
+        packets.push(encoded);
+        cursor += take;
+    }
+
+    Ok(packets)
+}

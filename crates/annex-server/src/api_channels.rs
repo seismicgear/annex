@@ -535,6 +535,7 @@ pub async fn join_channel_handler(
                 state.stt_service.clone(),
                 state.voice_service.api_key(),
                 state.voice_service.api_secret(),
+                state.voice_service.clone(),
             )
             .await
             .map_err(|e| {

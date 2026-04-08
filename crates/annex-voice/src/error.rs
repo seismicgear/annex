@@ -2,8 +2,8 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum VoiceError {
-    #[error("LiveKit API error: {0}")]
-    LiveKit(#[from] livekit_api::access_token::AccessTokenError),
+    #[error("WebRTC error: {0}")]
+    WebRtc(String),
 
     #[error("Room service error: {0}")]
     RoomService(String),
@@ -19,4 +19,7 @@ pub enum VoiceError {
 
     #[error("Voice profile not found: {0}")]
     ProfileNotFound(String),
+
+    #[error("Codec error: {0}")]
+    Codec(String),
 }

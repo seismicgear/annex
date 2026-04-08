@@ -248,6 +248,26 @@ pub enum IncomingMessage {
         #[serde(rename = "lastMessageId")]
         last_message_id: String,
     },
+    #[serde(rename = "webrtc_offer")]
+    WebRtcOffer {
+        #[serde(rename = "channelId")]
+        channel_id: String,
+        #[serde(rename = "sdp")]
+        sdp: String,
+    },
+    #[serde(rename = "webrtc_ice_candidate")]
+    WebRtcIceCandidate {
+        #[serde(rename = "channelId")]
+        channel_id: String,
+        #[serde(rename = "candidate")]
+        candidate: String,
+        #[serde(rename = "sdpMid")]
+        sdp_mid: Option<String>,
+        #[serde(rename = "sdpMLineIndex")]
+        sdp_m_line_index: Option<u16>,
+        #[serde(rename = "usernameFragment")]
+        username_fragment: Option<String>,
+    },
 }
 
 /// Outgoing WebSocket message payload with camelCase field names.
@@ -337,6 +357,13 @@ pub enum OutgoingMessage {
         channel_id: String,
         #[serde(rename = "missedCount")]
         missed_count: usize,
+    },
+    #[serde(rename = "webrtc_answer")]
+    WebRtcAnswer {
+        #[serde(rename = "channelId")]
+        channel_id: String,
+        #[serde(rename = "sdp")]
+        sdp: String,
     },
 }
 
@@ -1358,6 +1385,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                         state.stt_service.clone(),
                                         state.voice_service.api_key(),
                                         state.voice_service.api_secret(),
+                                        state.voice_service.clone(),
                                     )
                                     .await
                                     {
@@ -1446,6 +1474,84 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                             Err(e) => {
                                 send_ws_error(&tx, format!("TTS failed: {e}"));
                             }
+                        }
+                    }
+                    IncomingMessage::WebRtcOffer { channel_id, sdp } => {
+                        match check_ws_membership(
+                            state.pool.clone(),
+                            state.server_id,
+                            &channel_id,
+                            &pseudonym,
+                        )
+                        .await
+                        {
+                            MembershipResult::Allowed => {
+                                match state
+                                    .voice_service
+                                    .clone()
+                                    .handle_sdp_offer(&channel_id, &pseudonym, &sdp)
+                                    .await
+                                {
+                                    Ok(answer) => {
+                                        let out = OutgoingMessage::WebRtcAnswer {
+                                            channel_id,
+                                            sdp: answer.sdp,
+                                        };
+                                        match serde_json::to_string(&out) {
+                                            Ok(json) => {
+                                                let _ = tx.send(json).await;
+                                            }
+                                            Err(e) => {
+                                                tracing::error!(
+                                                    "failed to serialize webrtc answer: {}",
+                                                    e
+                                                );
+                                            }
+                                        }
+                                    }
+                                    Err(e) => send_ws_error(
+                                        &tx,
+                                        format!("WebRTC offer handling failed: {e}"),
+                                    ),
+                                }
+                            }
+                            MembershipResult::Denied => {
+                                send_ws_error(&tx, format!("Not a member of channel {channel_id}"));
+                            }
+                            MembershipResult::Error(e) => {
+                                tracing::error!(
+                                    pseudonym = %pseudonym,
+                                    channel_id = %channel_id,
+                                    "webrtc offer membership check failed: {}",
+                                    e
+                                );
+                                send_ws_error(
+                                    &tx,
+                                    "Internal error checking channel membership".to_string(),
+                                );
+                            }
+                        }
+                    }
+                    IncomingMessage::WebRtcIceCandidate {
+                        channel_id,
+                        candidate,
+                        sdp_mid,
+                        sdp_m_line_index,
+                        username_fragment,
+                    } => {
+                        let candidate = webrtc::ice_transport::ice_candidate::RTCIceCandidateInit {
+                            candidate,
+                            sdp_mid,
+                            sdp_mline_index: sdp_m_line_index,
+                            username_fragment,
+                        };
+
+                        if let Err(e) = state
+                            .voice_service
+                            .add_ice_candidate(&channel_id, &pseudonym, candidate)
+                            .await
+                        {
+                            send_ws_error(&tx, format!("Failed to add ICE candidate: {e}"));
                         }
                     }
                     IncomingMessage::Typing { channel_id } => {
