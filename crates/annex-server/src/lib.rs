@@ -508,8 +508,11 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
             Some(row) => row,
             None => {
                 tracing::info!("no server configured — seeding default server record");
-                let slug =
-                    std::env::var("ANNEX_SERVER_SLUG").unwrap_or_else(|_| "default".to_string());
+                let slug = if config.server.server_slug.is_empty() {
+                    std::env::var("ANNEX_SERVER_SLUG").unwrap_or_else(|_| "default".to_string())
+                } else {
+                    config.server.server_slug.clone()
+                };
                 let label = std::env::var("ANNEX_SERVER_LABEL")
                     .unwrap_or_else(|_| "Annex Server".to_string());
                 let default_policy = ServerPolicy::default();

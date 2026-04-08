@@ -15,6 +15,8 @@
 
 pub mod db;
 pub mod handshake;
+pub mod signal;
+pub mod transport;
 pub mod types;
 
 pub use db::{
