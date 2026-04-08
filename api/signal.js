@@ -1,4 +1,4 @@
-const SIGNAL_TTL_MS = 55_000;
+const SIGNAL_TTL_MS = 120_000;
 const MAX_QUEUE_LENGTH = 128;
 
 /** @type {Map<string, Array<{payload: any, expiresAt: number}>>} */
@@ -45,9 +45,9 @@ function dequeueSignal(slug) {
 
 export default async function handler(req, res) {
   if (req.method === 'POST') {
-    const { from_server_slug, to_server_slug, sdp_type, sdp } = req.body || {};
+    const { from_server_slug, to_server_slug, session_id, sdp_type, sdp } = req.body || {};
 
-    if (!from_server_slug || !to_server_slug || !sdp_type || !sdp) {
+    if (!from_server_slug || !to_server_slug || !session_id || !sdp_type || !sdp) {
       res.status(400).json({ error: 'missing required signaling fields' });
       return;
     }
@@ -59,6 +59,7 @@ export default async function handler(req, res) {
     enqueueSignal(to_server_slug, {
       from_server_slug,
       to_server_slug,
+      session_id,
       sdp_type,
       sdp,
       created_at: new Date().toISOString(),
@@ -72,7 +73,7 @@ export default async function handler(req, res) {
     const slug = String(req.query.slug || '').trim();
     const waitSecondsRaw = Number(req.query.wait ?? 25);
     const waitSeconds = Number.isFinite(waitSecondsRaw)
-      ? Math.min(Math.max(waitSecondsRaw, 1), 55)
+      ? Math.min(Math.max(waitSecondsRaw, 1), 90)
       : 25;
 
     if (!slug) {
