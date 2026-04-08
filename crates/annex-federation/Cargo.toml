@@ -13,3 +13,7 @@ tracing = { workspace = true }
 annex-vrp = { workspace = true }
 rusqlite = { workspace = true }
 serde_json = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
+tokio = { workspace = true }
+webrtc = "0.11"
+futures-util = "0.3"
