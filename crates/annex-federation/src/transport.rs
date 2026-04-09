@@ -171,6 +171,7 @@ impl FederationTransport {
 
         dc.send_text(envelope_json)
             .await
+            .map(|_| ())
             .map_err(|e| TransportError::WebRtc(e.to_string()))
     }
 
@@ -259,7 +260,7 @@ impl FederationTransport {
     ) -> Result<Arc<RTCPeerConnection>, TransportError> {
         let api = APIBuilder::new().build();
         let pc = Arc::new(
-            api.create_peer_connection(RTCConfiguration {
+            api.new_peer_connection(RTCConfiguration {
                 ice_servers: vec![RTCIceServer {
                     urls: vec!["stun:stun.l.google.com:19302".to_string()],
                     ..Default::default()
