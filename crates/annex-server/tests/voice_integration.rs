@@ -34,9 +34,9 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool) {
     // Configure VoiceService with dummy credentials
     // This allows token generation to succeed (local operation)
     // create_room will fail (network error) but is swallowed by handler
-    let livekit_config =
-        annex_voice::LiveKitConfig::new("http://localhost:7880", "devkey", "devsecret");
-    let voice_service = annex_voice::VoiceService::new(livekit_config);
+    let webrtc_config =
+        annex_voice::WebRtcConfig::new("http://localhost:7880", "devkey", "devsecret");
+    let voice_service = annex_voice::VoiceService::new(webrtc_config);
 
     let state = AppState {
         pool: pool.clone(),
@@ -320,7 +320,7 @@ async fn test_leave_voice_channel_success() {
     assert_eq!(body.get("status").unwrap().as_str().unwrap(), "left");
 }
 
-/// Setup an app with voice DISABLED (empty LiveKit config).
+/// Setup an app with voice DISABLED (empty WebRTC config).
 async fn setup_app_voice_disabled() -> axum::Router {
     let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
     {
@@ -337,9 +337,9 @@ async fn setup_app_voice_disabled() -> axum::Router {
 
     let tree = MerkleTree::new(20).unwrap();
 
-    // LiveKit config with empty URL — voice is disabled
-    let livekit_config = annex_voice::LiveKitConfig::new("", "", "");
-    let voice_service = annex_voice::VoiceService::new(livekit_config);
+    // WebRTC config with empty URL — voice is disabled
+    let webrtc_config = annex_voice::WebRtcConfig::new("", "", "");
+    let voice_service = annex_voice::VoiceService::new(webrtc_config);
 
     let state = AppState {
         pool,
@@ -447,13 +447,13 @@ async fn test_voice_config_status_disabled() {
             .as_str()
             .unwrap()
             .contains("not configured"),
-        "setup_hint should mention LiveKit is not configured"
+        "setup_hint should mention WebRTC is not configured"
     );
 }
 
 #[tokio::test]
 async fn test_voice_config_status_enabled() {
-    // Build an app whose LiveKit config has a non-loopback public URL so the
+    // Build an app whose WebRTC config has a non-loopback public URL so the
     // endpoint reports "ready" instead of the loopback-only warning.
     let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
     {
@@ -469,10 +469,10 @@ async fn test_voice_config_status_enabled() {
     }
 
     let tree = MerkleTree::new(20).unwrap();
-    let mut livekit_config =
-        annex_voice::LiveKitConfig::new("http://localhost:7880", "devkey", "devsecret");
-    livekit_config.public_url = "wss://livekit.example.com".to_string();
-    let voice_service = annex_voice::VoiceService::new(livekit_config);
+    let mut webrtc_config =
+        annex_voice::WebRtcConfig::new("http://localhost:7880", "devkey", "devsecret");
+    webrtc_config.public_url = "wss://webrtc.example.com".to_string();
+    let voice_service = annex_voice::VoiceService::new(webrtc_config);
 
     let state = AppState {
         pool: pool.clone(),
@@ -565,8 +565,8 @@ async fn test_voice_join_not_configured_returns_structured_error() {
 
     let tree = MerkleTree::new(20).unwrap();
     // Voice disabled: empty URL prevents voice join.
-    let livekit_config = annex_voice::LiveKitConfig::new("", "", "");
-    let voice_service = annex_voice::VoiceService::new(livekit_config);
+    let webrtc_config = annex_voice::WebRtcConfig::new("", "", "");
+    let voice_service = annex_voice::VoiceService::new(webrtc_config);
 
     let state = AppState {
         pool,

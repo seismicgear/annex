@@ -72,9 +72,9 @@ async fn setup_app_with_mock_tts(
         .await
         .expect("failed to write dummy model file");
 
-    let livekit_config =
-        annex_voice::LiveKitConfig::new("http://localhost:7880", "devkey", "devsecret");
-    let voice_service = annex_voice::VoiceService::new(livekit_config);
+    let webrtc_config =
+        annex_voice::WebRtcConfig::new("http://localhost:7880", "devkey", "devsecret");
+    let voice_service = annex_voice::VoiceService::new(webrtc_config);
 
     let tts_service = annex_voice::TtsService::new(temp_dir.path(), &mock_piper, "bark");
 
@@ -293,7 +293,7 @@ async fn test_voice_intent_non_member_rejected() {
 // Test: Full happy path - TTS succeeds, voice client created, audio published
 // ---------------------------------------------------------------------------
 #[tokio::test]
-#[ignore = "requires LiveKit server running on localhost:7880"]
+#[ignore = "requires WebRTC server running on localhost:7880"]
 async fn test_voice_intent_tts_success_full_pipeline() {
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
     let (app, pool, state) = setup_app_with_mock_tts(&temp_dir).await;
@@ -407,8 +407,8 @@ async fn test_voice_intent_tts_profile_not_found() {
     }
 
     let tree = MerkleTree::new(20).expect("failed to create merkle tree");
-    let livekit_config =
-        annex_voice::LiveKitConfig::new("http://localhost:7880", "devkey", "devsecret");
+    let webrtc_config =
+        annex_voice::WebRtcConfig::new("http://localhost:7880", "devkey", "devsecret");
 
     // TTS service with no profiles registered → will fail with ProfileNotFound
     let tts_service = annex_voice::TtsService::new(temp_dir.path(), "nonexistent_piper", "bark");
@@ -426,7 +426,7 @@ async fn test_voice_intent_tts_profile_not_found() {
         rate_limiter: RateLimiter::new(),
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
         presence_tx: tokio::sync::broadcast::channel(100).0,
-        voice_service: Arc::new(annex_voice::VoiceService::new(livekit_config)),
+        voice_service: Arc::new(annex_voice::VoiceService::new(webrtc_config)),
         tts_service: Arc::new(tts_service),
         stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),
         voice_sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
@@ -490,7 +490,7 @@ async fn test_voice_intent_tts_profile_not_found() {
 // Test: Voice profile default fallback when agent has no voice_profile_id
 // ---------------------------------------------------------------------------
 #[tokio::test]
-#[ignore = "requires LiveKit server running on localhost:7880"]
+#[ignore = "requires WebRTC server running on localhost:7880"]
 async fn test_voice_intent_default_profile_fallback() {
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
     let (app, pool, state) = setup_app_with_mock_tts(&temp_dir).await;

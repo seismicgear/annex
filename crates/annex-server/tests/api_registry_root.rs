@@ -37,7 +37,7 @@ async fn test_get_current_root_empty_tree() {
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
         presence_tx: tokio::sync::broadcast::channel(100).0,
         voice_service: Arc::new(annex_voice::VoiceService::new(
-            annex_voice::LiveKitConfig::default(),
+            annex_voice::WebRtcConfig::default(),
         )),
         tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper", "bark")),
         stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),
@@ -101,7 +101,7 @@ async fn test_get_current_root_after_registration() {
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
         presence_tx: tokio::sync::broadcast::channel(100).0,
         voice_service: Arc::new(annex_voice::VoiceService::new(
-            annex_voice::LiveKitConfig::default(),
+            annex_voice::WebRtcConfig::default(),
         )),
         tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper", "bark")),
         stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),

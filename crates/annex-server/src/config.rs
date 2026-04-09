@@ -1,8 +1,9 @@
 //! Server configuration loading from file and environment variables.
 
-use annex_voice::LiveKitConfig;
+use annex_voice::WebRtcConfig;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::Path;
 use std::str::FromStr;
@@ -23,9 +24,9 @@ pub struct Config {
     #[serde(default)]
     pub logging: LoggingConfig,
 
-    /// LiveKit configuration.
+    /// Native WebRTC configuration (signaling/STUN/TURN).
     #[serde(default)]
-    pub livekit: LiveKitConfig,
+    pub webrtc: WebRtcConfig,
 
     /// Voice pipeline paths (TTS binary, STT model, etc.).
     #[serde(default)]
@@ -459,7 +460,8 @@ pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
                 let mut wrote_defaults = false;
 
                 if config.server.server_slug.is_empty() {
-                    config.server.server_slug = generate_server_slug();
+                    config.server.server_slug =
+                        derive_server_slug_from_public_url(&config.server.public_url);
                     wrote_defaults = true;
                 }
 
@@ -478,7 +480,8 @@ pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 tracing::info!(path = p, "config file not found, using defaults");
                 let mut config = Config::default();
-                config.server.server_slug = generate_server_slug();
+                config.server.server_slug =
+                    derive_server_slug_from_public_url(&config.server.public_url);
                 if let Err(e) = sync_config_defaults_to_disk(p, "", &config) {
                     tracing::warn!(
                         path = p,
@@ -492,7 +495,8 @@ pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
         },
         None => {
             let mut config = Config::default();
-            config.server.server_slug = generate_server_slug();
+            config.server.server_slug =
+                derive_server_slug_from_public_url(&config.server.public_url);
             config
         }
     };
@@ -537,17 +541,17 @@ pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
     if let Some(json) = parse_env_bool("ANNEX_LOG_JSON")? {
         config.logging.json = json;
     }
-    if let Some(url) = parse_env_var("ANNEX_LIVEKIT_URL")? {
-        config.livekit.url = url;
+    if let Some(url) = parse_env_var("ANNEX_WEBRTC_URL")? {
+        config.webrtc.url = url;
     }
-    if let Some(public_url) = parse_env_var::<String>("ANNEX_LIVEKIT_PUBLIC_URL")? {
-        config.livekit.public_url = public_url;
+    if let Some(public_url) = parse_env_var::<String>("ANNEX_WEBRTC_PUBLIC_URL")? {
+        config.webrtc.public_url = public_url;
     }
-    if let Some(api_key) = parse_env_var("ANNEX_LIVEKIT_API_KEY")? {
-        config.livekit.api_key = api_key;
+    if let Some(api_key) = parse_env_var("ANNEX_WEBRTC_API_KEY")? {
+        config.webrtc.api_key = api_key;
     }
-    if let Some(api_secret) = parse_env_var("ANNEX_LIVEKIT_API_SECRET")? {
-        config.livekit.api_secret = api_secret;
+    if let Some(api_secret) = parse_env_var("ANNEX_WEBRTC_API_SECRET")? {
+        config.webrtc.api_secret = api_secret;
     }
     if let Some(val) = parse_env_var::<String>("ANNEX_TTS_VOICES_DIR")? {
         config.voice.tts_voices_dir = val;
@@ -584,6 +588,15 @@ fn generate_server_slug() -> String {
     let mut bytes = [0_u8; 6];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
     hex::encode(bytes)
+}
+
+pub fn derive_server_slug_from_public_url(public_url: &str) -> String {
+    let normalized = public_url.trim().trim_end_matches('/');
+    if normalized.is_empty() {
+        return generate_server_slug();
+    }
+    let digest = Sha256::digest(normalized.as_bytes());
+    hex::encode(&digest[..6])
 }
 
 fn sync_config_defaults_to_disk(

@@ -30,9 +30,9 @@ async fn setup_app_with_mock_stt(
 
     let tree = MerkleTree::new(20).unwrap();
 
-    let livekit_config =
-        annex_voice::LiveKitConfig::new("http://localhost:7880", "devkey", "devsecret");
-    let voice_service = annex_voice::VoiceService::new(livekit_config);
+    let webrtc_config =
+        annex_voice::WebRtcConfig::new("http://localhost:7880", "devkey", "devsecret");
+    let voice_service = annex_voice::VoiceService::new(webrtc_config);
     let tts_service = annex_voice::TtsService::new(
         "assets/voices",
         "assets/piper/piper",

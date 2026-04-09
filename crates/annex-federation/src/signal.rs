@@ -14,6 +14,10 @@ pub struct SignalingPayload {
     /// SDP type: "offer" | "answer"
     pub sdp_type: String,
     pub sdp: String,
+    /// Unix timestamp in milliseconds when this signal was created.
+    pub sent_at_ms: i64,
+    /// Ed25519 signature over the canonical signaling payload.
+    pub vrp_signature: String,
 }
 
 #[derive(Debug, Error)]

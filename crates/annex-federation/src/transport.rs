@@ -17,6 +17,9 @@ use webrtc::peer_connection::RTCPeerConnection;
 pub type InboundHandler = Arc<
     dyn Fn(String) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> + Send + Sync + 'static,
 >;
+pub type SignalSigner = Arc<dyn Fn(&SignalingPayload) -> Option<String> + Send + Sync + 'static>;
+pub type SignalVerifier =
+    Arc<dyn Fn(&SignalingPayload) -> Result<(), String> + Send + Sync + 'static>;
 
 #[derive(Debug, Error)]
 pub enum TransportError {
@@ -26,6 +29,10 @@ pub enum TransportError {
     WebRtc(String),
     #[error("transport not connected for remote slug: {0}")]
     NotConnected(String),
+    #[error("peer did not answer in time; entering wait-for-peer state for: {0}")]
+    WaitForPeer(String),
+    #[error("signaling payload rejected: {0}")]
+    SignalingRejected(String),
 }
 
 #[derive(Clone)]
@@ -36,6 +43,8 @@ pub struct FederationTransport {
     channels: Arc<RwLock<HashMap<String, Arc<RTCDataChannel>>>>,
     pending_answers: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<String>>>>,
     inbound_handler: InboundHandler,
+    signal_signer: SignalSigner,
+    signal_verifier: SignalVerifier,
 }
 
 impl FederationTransport {
@@ -43,6 +52,8 @@ impl FederationTransport {
         local_server_slug: impl Into<String>,
         signal: SignalClient,
         inbound_handler: InboundHandler,
+        signal_signer: SignalSigner,
+        signal_verifier: SignalVerifier,
     ) -> Self {
         Self {
             local_server_slug: local_server_slug.into(),
@@ -51,6 +62,8 @@ impl FederationTransport {
             channels: Arc::new(RwLock::new(HashMap::new())),
             pending_answers: Arc::new(Mutex::new(HashMap::new())),
             inbound_handler,
+            signal_signer,
+            signal_verifier,
         }
     }
 
@@ -106,17 +119,22 @@ impl FederationTransport {
             .await
             .insert(session_id.clone(), tx);
 
-        self.signal
-            .post_signal(&SignalingPayload {
-                from_server_slug: self.local_server_slug.clone(),
-                to_server_slug: remote_server_slug.to_string(),
-                session_id: session_id.clone(),
-                sdp_type: "offer".to_string(),
-                sdp: offer.sdp,
-            })
-            .await?;
+        let mut offer_payload = SignalingPayload {
+            from_server_slug: self.local_server_slug.clone(),
+            to_server_slug: remote_server_slug.to_string(),
+            session_id: session_id.clone(),
+            sdp_type: "offer".to_string(),
+            sdp: offer.sdp,
+            sent_at_ms: chrono::Utc::now().timestamp_millis(),
+            vrp_signature: String::new(),
+        };
+        offer_payload.vrp_signature =
+            self.signal_signer.as_ref()(&offer_payload).ok_or_else(|| {
+                TransportError::SignalingRejected("missing signaling signature".to_string())
+            })?;
+        self.signal.post_signal(&offer_payload).await?;
 
-        let answer_sdp = match timeout(Duration::from_secs(65), rx).await {
+        let answer_sdp = match timeout(Duration::from_secs(30), rx).await {
             Ok(Ok(answer)) => answer,
             Ok(Err(_)) => {
                 self.pending_answers.lock().await.remove(&session_id);
@@ -124,9 +142,7 @@ impl FederationTransport {
             }
             Err(_) => {
                 self.pending_answers.lock().await.remove(&session_id);
-                return Err(TransportError::WebRtc(
-                    "timed out waiting for federation answer".to_string(),
-                ));
+                return Err(TransportError::WaitForPeer(remote_server_slug.to_string()));
             }
         };
         let answer = RTCSessionDescription::answer(answer_sdp)
@@ -164,6 +180,13 @@ impl FederationTransport {
                 "signaling payload addressed to a different server".to_string(),
             ));
         }
+        let age_ms = chrono::Utc::now().timestamp_millis() - payload.sent_at_ms;
+        if age_ms.abs() > 60_000 {
+            return Err(TransportError::SignalingRejected(
+                "expired or clock-skewed signaling payload".to_string(),
+            ));
+        }
+        self.signal_verifier.as_ref()(&payload).map_err(TransportError::SignalingRejected)?;
         match payload.sdp_type.as_str() {
             "offer" => self.handle_offer(payload).await,
             "answer" => {
@@ -208,15 +231,20 @@ impl FederationTransport {
             .await
             .map_err(|e| TransportError::WebRtc(e.to_string()))?;
 
-        self.signal
-            .post_signal(&SignalingPayload {
-                from_server_slug: self.local_server_slug.clone(),
-                to_server_slug: payload.from_server_slug.clone(),
-                session_id: payload.session_id,
-                sdp_type: "answer".to_string(),
-                sdp: answer.sdp,
-            })
-            .await?;
+        let mut answer_payload = SignalingPayload {
+            from_server_slug: self.local_server_slug.clone(),
+            to_server_slug: payload.from_server_slug.clone(),
+            session_id: payload.session_id,
+            sdp_type: "answer".to_string(),
+            sdp: answer.sdp,
+            sent_at_ms: chrono::Utc::now().timestamp_millis(),
+            vrp_signature: String::new(),
+        };
+        answer_payload.vrp_signature =
+            self.signal_signer.as_ref()(&answer_payload).ok_or_else(|| {
+                TransportError::SignalingRejected("missing signaling signature".to_string())
+            })?;
+        self.signal.post_signal(&answer_payload).await?;
 
         self.peers
             .write()

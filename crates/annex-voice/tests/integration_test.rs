@@ -1,4 +1,4 @@
-use annex_voice::{IceServer, LiveKitConfig, VoiceService};
+use annex_voice::{IceServer, VoiceService, WebRtcConfig};
 use std::env;
 
 const DEFAULT_URL: &str = "http://localhost:7880";
@@ -7,7 +7,7 @@ const DEFAULT_SECRET: &str = "secret";
 
 #[tokio::test]
 async fn test_generate_join_token() {
-    let config = LiveKitConfig::new(DEFAULT_URL, DEFAULT_KEY, DEFAULT_SECRET);
+    let config = WebRtcConfig::new(DEFAULT_URL, DEFAULT_KEY, DEFAULT_SECRET);
     let service = VoiceService::new(config);
 
     let token = service
@@ -20,10 +20,10 @@ async fn test_generate_join_token() {
 
 #[tokio::test]
 async fn test_create_room() {
-    // Only run if LIVEKIT_URL is set or if we are explicitly asking for integration tests
-    let url = env::var("LIVEKIT_URL").unwrap_or_else(|_| DEFAULT_URL.to_string());
+    // Only run if WEBRTC_URL is set or if we are explicitly asking for integration tests
+    let url = env::var("WEBRTC_URL").unwrap_or_else(|_| DEFAULT_URL.to_string());
 
-    let config = LiveKitConfig::new(&url, DEFAULT_KEY, DEFAULT_SECRET);
+    let config = WebRtcConfig::new(&url, DEFAULT_KEY, DEFAULT_SECRET);
     let service = VoiceService::new(config);
 
     match service.create_room("test-integration-room").await {
@@ -41,14 +41,14 @@ async fn test_create_room() {
                 || err_str.contains("dns error")
                 || err_str.contains("failed to lookup address")
             {
-                println!("Skipping room creation test: LiveKit server not reachable.");
+                println!("Skipping room creation test: WebRTC server not reachable.");
                 return;
             }
 
             // Fail on other errors (e.g. auth error, bad request)
             // panic!("Room creation failed: {:?}", e);
             // For safety in this environment where I can't control network:
-            println!("Warning: LiveKit test failed with error: {e:?}");
+            println!("Warning: WebRTC test failed with error: {e:?}");
         }
     }
 }
@@ -57,7 +57,7 @@ async fn test_create_room() {
 async fn test_token_permissions() {
     use base64::Engine;
 
-    let config = LiveKitConfig::new(DEFAULT_URL, DEFAULT_KEY, DEFAULT_SECRET);
+    let config = WebRtcConfig::new(DEFAULT_URL, DEFAULT_KEY, DEFAULT_SECRET);
     let service = VoiceService::new(config);
 
     let token = service
@@ -76,7 +76,7 @@ async fn test_token_permissions() {
 
 #[test]
 fn test_default_ice_servers() {
-    let config = LiveKitConfig::default();
+    let config = WebRtcConfig::default();
     assert!(
         !config.ice_servers.is_empty(),
         "default should include STUN servers"
@@ -99,7 +99,7 @@ fn test_default_ice_servers() {
 
 #[test]
 fn test_ice_servers_from_new() {
-    let config = LiveKitConfig::new(DEFAULT_URL, DEFAULT_KEY, DEFAULT_SECRET);
+    let config = WebRtcConfig::new(DEFAULT_URL, DEFAULT_KEY, DEFAULT_SECRET);
     assert!(
         !config.ice_servers.is_empty(),
         "new() should include default STUN servers"
@@ -108,7 +108,7 @@ fn test_ice_servers_from_new() {
 
 #[tokio::test]
 async fn test_voice_service_ice_servers() {
-    let mut config = LiveKitConfig::new(DEFAULT_URL, DEFAULT_KEY, DEFAULT_SECRET);
+    let mut config = WebRtcConfig::new(DEFAULT_URL, DEFAULT_KEY, DEFAULT_SECRET);
     config.ice_servers = vec![
         IceServer {
             urls: vec!["stun:stun.example.com:3478".into()],
@@ -156,7 +156,7 @@ fn test_ice_server_deserialization() {
 }
 
 #[test]
-fn test_livekit_config_with_ice_servers_toml() {
+fn test_webrtc_config_with_ice_servers_toml() {
     let toml_str = r#"
         url = "ws://localhost:7880"
         api_key = "key"
@@ -171,7 +171,7 @@ fn test_livekit_config_with_ice_servers_toml() {
         credential = "pass"
     "#;
 
-    let config: LiveKitConfig = toml::from_str(toml_str).expect("parse TOML");
+    let config: WebRtcConfig = toml::from_str(toml_str).expect("parse TOML");
     assert_eq!(config.ice_servers.len(), 2);
     assert_eq!(
         config.ice_servers[0].urls[0],
@@ -181,14 +181,14 @@ fn test_livekit_config_with_ice_servers_toml() {
 }
 
 #[test]
-fn test_livekit_config_without_ice_servers_uses_defaults() {
+fn test_webrtc_config_without_ice_servers_uses_defaults() {
     let toml_str = r#"
         url = "ws://localhost:7880"
         api_key = "key"
         api_secret = "secret"
     "#;
 
-    let config: LiveKitConfig = toml::from_str(toml_str).expect("parse TOML");
+    let config: WebRtcConfig = toml::from_str(toml_str).expect("parse TOML");
     assert!(
         !config.ice_servers.is_empty(),
         "missing ice_servers should use defaults"

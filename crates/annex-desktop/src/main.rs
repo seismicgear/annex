@@ -64,8 +64,8 @@ json = false
 # Override with ANNEX_CORS_ORIGINS env var if needed.
 allowed_origins = ["tauri://localhost", "https://tauri.localhost", "http://tauri.localhost"]
 
-# [livekit]
-# Uncomment and configure to enable voice channels (LiveKit WebRTC).
+# [webrtc]
+# Uncomment and configure to enable voice channels (WebRTC).
 # url = "ws://localhost:7880"
 # api_key = ""
 # api_secret = ""
@@ -73,10 +73,10 @@ allowed_origins = ["tauri://localhost", "https://tauri.localhost", "http://tauri
 #
 # STUN/TURN servers for WebRTC NAT traversal. Defaults to Google STUN.
 # Add TURN servers for restrictive corporate networks that block UDP.
-# [[livekit.ice_servers]]
+# [[webrtc.ice_servers]]
 # urls = ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]
 #
-# [[livekit.ice_servers]]
+# [[webrtc.ice_servers]]
 # urls = ["turn:turn.example.com:3478?transport=udp", "turns:turn.example.com:5349?transport=tcp"]
 # username = "your-turn-username"
 # credential = "your-turn-credential"
@@ -162,14 +162,14 @@ struct ServerState {
 struct RouterSessionState {
     /// The publicly-reachable HTTPS base URL returned by the router.
     public_url: String,
-    /// Optional public LiveKit WebSocket URL if the router supports proxying LiveKit.
-    public_livekit_url: Option<String>,
+    /// Optional public WebRTC WebSocket URL if the router supports proxying WebRTC.
+    public_webrtc_url: Option<String>,
     /// Session identifier used to release the endpoint on shutdown.
     session_id: String,
 }
 
-/// Tracks a locally-managed LiveKit server process.
-struct LiveKitProcessState {
+/// Tracks a locally-managed WebRTC server process.
+struct WebRTCProcessState {
     url: String,
     child: std::process::Child,
 }
@@ -180,7 +180,7 @@ struct AppManagedState {
     config_path: PathBuf,
     server: Mutex<Option<ServerState>>,
     router_session: Mutex<Option<RouterSessionState>>,
-    livekit: Mutex<Option<LiveKitProcessState>>,
+    webrtc: Mutex<Option<WebRTCProcessState>>,
     /// Buffered cold-start invite parsed before the React listener mounts.
     /// Consumed exactly once via the `get_pending_invite` command.
     pending_invite: Mutex<Option<DeepLinkInvite>>,
@@ -444,9 +444,9 @@ fn router_base_url() -> String {
 struct RouterRegistrationResponse {
     /// Publicly-reachable HTTPS base URL for the Annex server.
     public_url: String,
-    /// Optional publicly-reachable WebSocket URL for LiveKit.
-    /// `None` if the router does not proxy LiveKit traffic.
-    public_livekit_url: Option<String>,
+    /// Optional publicly-reachable WebSocket URL for WebRTC.
+    /// `None` if the router does not proxy WebRTC traffic.
+    public_webrtc_url: Option<String>,
     /// Session identifier used for heartbeats and release.
     session_id: String,
 }
@@ -514,22 +514,22 @@ async fn acquire_public_endpoint(
 
     tracing::info!(
         public_url = %registration.public_url,
-        public_livekit_url = ?registration.public_livekit_url,
+        public_webrtc_url = ?registration.public_webrtc_url,
         session_id = %registration.session_id,
         "public endpoint acquired from Annex router"
     );
 
-    // If the router returned a public LiveKit URL and LiveKit is running
+    // If the router returned a public WebRTC URL and WebRTC is running
     // locally, log the availability. The frontend will use this via
     // get_public_endpoint to inform the server.
     {
-        let lk_guard = state.livekit.lock().map_err(|e| e.to_string())?;
+        let lk_guard = state.webrtc.lock().map_err(|e| e.to_string())?;
         if lk_guard.is_some() {
-            if registration.public_livekit_url.is_some() {
-                tracing::info!("Annex router is proxying LiveKit — remote voice will be available");
+            if registration.public_webrtc_url.is_some() {
+                tracing::info!("Annex router is proxying WebRTC — remote voice will be available");
             } else {
                 tracing::info!(
-                    "LiveKit is running locally but the Annex router does not proxy LiveKit. \
+                    "WebRTC is running locally but the Annex router does not proxy WebRTC. \
                      Remote voice/video will be unavailable; text and invites will work."
                 );
             }
@@ -543,7 +543,7 @@ async fn acquire_public_endpoint(
         let mut guard = state.router_session.lock().map_err(|e| e.to_string())?;
         *guard = Some(RouterSessionState {
             public_url: registration.public_url,
-            public_livekit_url: registration.public_livekit_url,
+            public_webrtc_url: registration.public_webrtc_url,
             session_id: registration.session_id,
         });
     }
@@ -583,7 +583,7 @@ fn release_public_endpoint(state: tauri::State<'_, AppManagedState>) -> Result<(
 #[derive(Debug, Clone, Serialize)]
 struct PublicEndpointInfo {
     public_url: String,
-    public_livekit_url: Option<String>,
+    public_webrtc_url: Option<String>,
 }
 
 /// Get the current public endpoint info, if a router session is active.
@@ -592,7 +592,7 @@ fn get_public_endpoint(state: tauri::State<'_, AppManagedState>) -> Option<Publi
     state.router_session.lock().ok().and_then(|guard| {
         guard.as_ref().map(|s| PublicEndpointInfo {
             public_url: s.public_url.clone(),
-            public_livekit_url: s.public_livekit_url.clone(),
+            public_webrtc_url: s.public_webrtc_url.clone(),
         })
     })
 }
@@ -621,11 +621,11 @@ fn export_identity_json(json: String) -> Result<Option<String>, String> {
 // ── OS credential storage (keyring) ──
 
 const KEYRING_SERVICE: &str = "com.annex.desktop";
-const KEYRING_LIVEKIT_SECRET: &str = "livekit-api-secret";
+const KEYRING_WEBRTC_SECRET: &str = "webrtc-api-secret";
 
-/// Store the LiveKit API secret in the OS keyring.
+/// Store the WebRTC API secret in the OS keyring.
 fn store_api_secret_in_keyring(secret: &str) -> Result<(), String> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_LIVEKIT_SECRET)
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_WEBRTC_SECRET)
         .map_err(|e| format!("keyring entry creation failed: {e}"))?;
     entry
         .set_password(secret)
@@ -633,11 +633,11 @@ fn store_api_secret_in_keyring(secret: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Retrieve the LiveKit API secret from the OS keyring.
+/// Retrieve the WebRTC API secret from the OS keyring.
 ///
 /// Returns `Ok(None)` if no secret is stored or the keyring is unavailable.
 fn load_api_secret_from_keyring() -> Result<Option<String>, String> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_LIVEKIT_SECRET)
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_WEBRTC_SECRET)
         .map_err(|e| format!("keyring entry creation failed: {e}"))?;
     match entry.get_password() {
         Ok(secret) => Ok(Some(secret)),
@@ -654,9 +654,9 @@ fn load_api_secret_from_keyring() -> Result<Option<String>, String> {
     }
 }
 
-/// Delete the LiveKit API secret from the OS keyring.
+/// Delete the WebRTC API secret from the OS keyring.
 fn delete_api_secret_from_keyring() -> Result<(), String> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_LIVEKIT_SECRET)
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_WEBRTC_SECRET)
         .map_err(|e| format!("keyring entry creation failed: {e}"))?;
     match entry.delete_credential() {
         Ok(()) => Ok(()),
@@ -665,13 +665,13 @@ fn delete_api_secret_from_keyring() -> Result<(), String> {
     }
 }
 
-// ── LiveKit configuration commands ──
+// ── WebRTC configuration commands ──
 
-/// LiveKit configuration status returned to the frontend.
+/// WebRTC configuration status returned to the frontend.
 ///
 /// The `api_secret` is never exposed — only a boolean `has_api_secret`.
 #[derive(Debug, Clone, Serialize)]
-struct LiveKitSettingsResponse {
+struct WebRTCSettingsResponse {
     configured: bool,
     url: String,
     api_key: String,
@@ -679,44 +679,44 @@ struct LiveKitSettingsResponse {
     token_ttl_seconds: u64,
 }
 
-/// Read the current LiveKit configuration from config.toml + keyring.
+/// Read the current WebRTC configuration from config.toml + keyring.
 #[tauri::command]
-fn get_livekit_config(
+fn get_webrtc_config(
     state: tauri::State<'_, AppManagedState>,
-) -> Result<LiveKitSettingsResponse, String> {
+) -> Result<WebRTCSettingsResponse, String> {
     let config_path_str = state.config_path.to_string_lossy().to_string();
     let cfg =
         config::load_config(Some(&config_path_str)).map_err(|e| format!("config error: {e}"))?;
 
-    let has_secret_in_config = !cfg.livekit.api_secret.is_empty();
+    let has_secret_in_config = !cfg.webrtc.api_secret.is_empty();
     let has_secret_in_keyring = load_api_secret_from_keyring()
         .unwrap_or(None)
         .map(|s| !s.is_empty())
         .unwrap_or(false);
 
-    // Check whether the user has explicitly configured LiveKit by looking for
-    // a [livekit] section in the config file. When the section is absent (or
-    // commented out), LiveKitConfig::default() provides dev values — but we
+    // Check whether the user has explicitly configured WebRTC by looking for
+    // a [webrtc] section in the config file. When the section is absent (or
+    // commented out), WebRtcConfig::default() provides dev values — but we
     // should NOT consider that "configured" because the user never set it up.
     let explicitly_configured = std::fs::read_to_string(&state.config_path)
         .ok()
         .and_then(|contents| contents.parse::<toml::Value>().ok())
-        .map(|doc| doc.get("livekit").is_some())
+        .map(|doc| doc.get("webrtc").is_some())
         .unwrap_or(false);
 
-    Ok(LiveKitSettingsResponse {
+    Ok(WebRTCSettingsResponse {
         configured: explicitly_configured,
-        url: cfg.livekit.url,
-        api_key: cfg.livekit.api_key,
+        url: cfg.webrtc.url,
+        api_key: cfg.webrtc.api_key,
         has_api_secret: has_secret_in_config || has_secret_in_keyring,
-        token_ttl_seconds: cfg.livekit.token_ttl_seconds,
+        token_ttl_seconds: cfg.webrtc.token_ttl_seconds,
     })
 }
 
-/// Input from the frontend for saving LiveKit settings.
+/// Input from the frontend for saving WebRTC settings.
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
-struct SaveLiveKitInput {
+struct SaveWebRTCInput {
     url: String,
     api_key: String,
     api_secret: String,
@@ -729,7 +729,7 @@ fn default_token_ttl() -> u64 {
     3600
 }
 
-/// Save LiveKit configuration to config.toml and the API secret to OS keyring.
+/// Save WebRTC configuration to config.toml and the API secret to OS keyring.
 ///
 /// If the keyring is unavailable, the secret falls back to config.toml storage
 /// with a warning log.
@@ -738,14 +738,14 @@ fn default_token_ttl() -> u64 {
 /// removed). Retained for potential future admin CLI or plugin use.
 #[tauri::command]
 #[allow(dead_code)]
-fn save_livekit_config(
+fn save_webrtc_config(
     state: tauri::State<'_, AppManagedState>,
-    input: SaveLiveKitInput,
+    input: SaveWebRTCInput,
 ) -> Result<(), String> {
     // Try to store secret in keyring first
     let secret_in_keyring = match store_api_secret_in_keyring(&input.api_secret) {
         Ok(()) => {
-            tracing::info!("LiveKit API secret stored in OS keyring");
+            tracing::info!("WebRTC API secret stored in OS keyring");
             true
         }
         Err(e) => {
@@ -766,9 +766,9 @@ fn save_livekit_config(
         .ok_or("config root is not a TOML table")?;
 
     let lk = table
-        .entry("livekit")
+        .entry("webrtc")
         .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
-    let lk_table = lk.as_table_mut().ok_or("[livekit] is not a TOML table")?;
+    let lk_table = lk.as_table_mut().ok_or("[webrtc] is not a TOML table")?;
 
     lk_table.insert("url".into(), toml::Value::String(input.url));
     lk_table.insert("api_key".into(), toml::Value::String(input.api_key));
@@ -790,16 +790,16 @@ fn save_livekit_config(
 
     std::fs::write(config_path, serialized).map_err(|e| format!("failed to write config: {e}"))?;
 
-    tracing::info!("LiveKit configuration saved");
+    tracing::info!("WebRTC configuration saved");
     Ok(())
 }
 
-/// Clear LiveKit configuration from both config.toml and the OS keyring.
+/// Clear WebRTC configuration from both config.toml and the OS keyring.
 ///
 /// Not currently registered in the invoke handler. Retained for future use.
 #[tauri::command]
 #[allow(dead_code)]
-fn clear_livekit_config(state: tauri::State<'_, AppManagedState>) -> Result<(), String> {
+fn clear_webrtc_config(state: tauri::State<'_, AppManagedState>) -> Result<(), String> {
     // Remove from keyring
     if let Err(e) = delete_api_secret_from_keyring() {
         tracing::warn!("failed to remove secret from keyring: {e}");
@@ -814,7 +814,7 @@ fn clear_livekit_config(state: tauri::State<'_, AppManagedState>) -> Result<(), 
         toml::from_str(&contents).map_err(|e| format!("failed to parse config: {e}"))?;
 
     if let Some(table) = doc.as_table_mut() {
-        table.remove("livekit");
+        table.remove("webrtc");
     }
 
     let serialized =
@@ -822,17 +822,17 @@ fn clear_livekit_config(state: tauri::State<'_, AppManagedState>) -> Result<(), 
 
     std::fs::write(config_path, serialized).map_err(|e| format!("failed to write config: {e}"))?;
 
-    tracing::info!("LiveKit configuration cleared");
+    tracing::info!("WebRTC configuration cleared");
     Ok(())
 }
 
-/// Check if a LiveKit server is reachable at the given URL.
+/// Check if a WebRTC server is reachable at the given URL.
 ///
 /// Used by the frontend during host startup to verify that a "configured"
-/// LiveKit endpoint is actually reachable before advertising voice capability.
+/// WebRTC endpoint is actually reachable before advertising voice capability.
 #[tauri::command]
-async fn check_livekit_reachable(url: String) -> Result<serde_json::Value, String> {
-    // LiveKit serves HTTP on the same port as WebSocket.
+async fn check_webrtc_reachable(url: String) -> Result<serde_json::Value, String> {
+    // WebRTC serves HTTP on the same port as WebSocket.
     // Replace ws:// with http:// for the health check.
     let http_url = url
         .replace("ws://", "http://")
@@ -858,57 +858,51 @@ async fn check_livekit_reachable(url: String) -> Result<serde_json::Value, Strin
     }
 }
 
-// ── Local LiveKit server management ──
+// ── Local WebRTC server management ──
 
 /// Probe a range of ports and return the first one that is not already in use.
 /// Uses a bind-and-drop approach: if we can bind to 127.0.0.1:port, the port
-/// is available. The socket is closed immediately so livekit-server can bind.
+/// is available. The socket is closed immediately so webrtc-server can bind.
 fn find_available_port(start: u16, end: u16) -> Option<u16> {
     (start..=end).find(|&port| std::net::TcpListener::bind(("127.0.0.1", port)).is_ok())
 }
 
-const LIVEKIT_VERSION: &str = "1.7.2";
+const WEBRTC_VERSION: &str = "1.7.2";
 
-/// Returns the platform-specific LiveKit server binary name.
-fn livekit_binary_name() -> &'static str {
+/// Returns the platform-specific WebRTC server binary name.
+fn webrtc_binary_name() -> &'static str {
     if cfg!(target_os = "windows") {
-        "livekit-server.exe"
+        "webrtc-server.exe"
     } else {
-        "livekit-server"
+        "webrtc-server"
     }
 }
 
-/// Returns the download URL for livekit-server on this platform, if supported.
-fn livekit_download_url() -> Option<String> {
-    let base = format!("https://github.com/livekit/livekit/releases/download/v{LIVEKIT_VERSION}");
+/// Returns the download URL for webrtc-server on this platform, if supported.
+fn webrtc_download_url() -> Option<String> {
+    let base = format!("https://github.com/webrtc/webrtc/releases/download/v{WEBRTC_VERSION}");
     if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        Some(format!(
-            "{base}/livekit_{LIVEKIT_VERSION}_linux_amd64.tar.gz"
-        ))
+        Some(format!("{base}/webrtc_{WEBRTC_VERSION}_linux_amd64.tar.gz"))
     } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
-        Some(format!(
-            "{base}/livekit_{LIVEKIT_VERSION}_linux_arm64.tar.gz"
-        ))
+        Some(format!("{base}/webrtc_{WEBRTC_VERSION}_linux_arm64.tar.gz"))
     } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
         Some(format!(
-            "{base}/livekit_{LIVEKIT_VERSION}_darwin_amd64.tar.gz"
+            "{base}/webrtc_{WEBRTC_VERSION}_darwin_amd64.tar.gz"
         ))
     } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         Some(format!(
-            "{base}/livekit_{LIVEKIT_VERSION}_darwin_arm64.tar.gz"
+            "{base}/webrtc_{WEBRTC_VERSION}_darwin_arm64.tar.gz"
         ))
     } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        Some(format!(
-            "{base}/livekit_{LIVEKIT_VERSION}_windows_amd64.zip"
-        ))
+        Some(format!("{base}/webrtc_{WEBRTC_VERSION}_windows_amd64.zip"))
     } else {
         None
     }
 }
 
-/// Searches PATH for the livekit-server binary.
-fn find_livekit_in_path() -> Option<PathBuf> {
-    let name = livekit_binary_name();
+/// Searches PATH for the webrtc-server binary.
+fn find_webrtc_in_path() -> Option<PathBuf> {
+    let name = webrtc_binary_name();
     std::env::var_os("PATH").and_then(|paths| {
         std::env::split_paths(&paths).find_map(|dir| {
             let full = dir.join(name);
@@ -921,39 +915,39 @@ fn find_livekit_in_path() -> Option<PathBuf> {
     })
 }
 
-/// Ensures livekit-server is available: checks PATH, then the local bin cache,
+/// Ensures webrtc-server is available: checks PATH, then the local bin cache,
 /// and downloads it if necessary. Returns the path to the binary.
-async fn ensure_livekit(data_dir: &Path) -> Result<PathBuf, String> {
+async fn ensure_webrtc(data_dir: &Path) -> Result<PathBuf, String> {
     // 1. Check PATH
-    if let Some(path) = find_livekit_in_path() {
-        tracing::info!(path = %path.display(), "found livekit-server in PATH");
+    if let Some(path) = find_webrtc_in_path() {
+        tracing::info!(path = %path.display(), "found webrtc-server in PATH");
         return Ok(path);
     }
 
     // 2. Check local bin cache
     let bin_dir = data_dir.join("bin");
-    let lk_path = bin_dir.join(livekit_binary_name());
+    let lk_path = bin_dir.join(webrtc_binary_name());
     if lk_path.exists() {
-        tracing::info!(path = %lk_path.display(), "using cached livekit-server");
+        tracing::info!(path = %lk_path.display(), "using cached webrtc-server");
         return Ok(lk_path);
     }
 
     // 3. Download
-    let url = livekit_download_url()
-        .ok_or_else(|| "livekit-server download not supported on this platform".to_string())?;
+    let url = webrtc_download_url()
+        .ok_or_else(|| "webrtc-server download not supported on this platform".to_string())?;
 
-    tracing::info!(%url, "downloading livekit-server");
+    tracing::info!(%url, "downloading webrtc-server");
 
     std::fs::create_dir_all(&bin_dir)
         .map_err(|e| format!("failed to create bin directory: {e}"))?;
 
     let resp = reqwest::get(&url)
         .await
-        .map_err(|e| format!("livekit-server download failed: {e}"))?;
+        .map_err(|e| format!("webrtc-server download failed: {e}"))?;
 
     if !resp.status().is_success() {
         return Err(format!(
-            "livekit-server download failed: HTTP {}",
+            "webrtc-server download failed: HTTP {}",
             resp.status()
         ));
     }
@@ -961,12 +955,12 @@ async fn ensure_livekit(data_dir: &Path) -> Result<PathBuf, String> {
     let bytes = resp
         .bytes()
         .await
-        .map_err(|e| format!("livekit-server download read failed: {e}"))?;
+        .map_err(|e| format!("webrtc-server download read failed: {e}"))?;
 
     if url.ends_with(".tar.gz") {
-        let tgz_path = bin_dir.join("livekit.tar.gz");
+        let tgz_path = bin_dir.join("webrtc.tar.gz");
         std::fs::write(&tgz_path, &bytes)
-            .map_err(|e| format!("failed to write livekit archive: {e}"))?;
+            .map_err(|e| format!("failed to write webrtc archive: {e}"))?;
         let output = std::process::Command::new("tar")
             .args([
                 "xzf",
@@ -984,9 +978,9 @@ async fn ensure_livekit(data_dir: &Path) -> Result<PathBuf, String> {
         }
         let _ = std::fs::remove_file(&tgz_path);
     } else if url.ends_with(".zip") {
-        let zip_path = bin_dir.join("livekit.zip");
+        let zip_path = bin_dir.join("webrtc.zip");
         std::fs::write(&zip_path, &bytes)
-            .map_err(|e| format!("failed to write livekit archive: {e}"))?;
+            .map_err(|e| format!("failed to write webrtc archive: {e}"))?;
 
         #[cfg(target_os = "windows")]
         {
@@ -1031,7 +1025,7 @@ async fn ensure_livekit(data_dir: &Path) -> Result<PathBuf, String> {
         let _ = std::fs::remove_file(&zip_path);
     } else {
         std::fs::write(&lk_path, &bytes)
-            .map_err(|e| format!("failed to write livekit-server binary: {e}"))?;
+            .map_err(|e| format!("failed to write webrtc-server binary: {e}"))?;
     }
 
     // Make executable on Unix
@@ -1039,26 +1033,26 @@ async fn ensure_livekit(data_dir: &Path) -> Result<PathBuf, String> {
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&lk_path, std::fs::Permissions::from_mode(0o755))
-            .map_err(|e| format!("failed to set livekit-server permissions: {e}"))?;
+            .map_err(|e| format!("failed to set webrtc-server permissions: {e}"))?;
     }
 
-    tracing::info!(path = %lk_path.display(), "livekit-server downloaded successfully");
+    tracing::info!(path = %lk_path.display(), "webrtc-server downloaded successfully");
     Ok(lk_path)
 }
 
-/// Start a local LiveKit server instance for desktop host mode.
+/// Start a local WebRTC server instance for desktop host mode.
 ///
 /// Generates random API key/secret, spawns the process, and sets environment
-/// variables so the embedded Annex server picks up the LiveKit config.
+/// variables so the embedded Annex server picks up the WebRTC config.
 ///
 /// Must be called BEFORE `start_embedded_server` for the env vars to take effect.
 #[tauri::command]
-async fn start_local_livekit(
+async fn start_local_webrtc(
     state: tauri::State<'_, AppManagedState>,
 ) -> Result<serde_json::Value, String> {
     // Check if already running
     {
-        let guard = state.livekit.lock().map_err(|e| e.to_string())?;
+        let guard = state.webrtc.lock().map_err(|e| e.to_string())?;
         if let Some(ref lk) = *guard {
             return Ok(serde_json::json!({ "url": lk.url }));
         }
@@ -1069,32 +1063,32 @@ async fn start_local_livekit(
         let guard = state.server.lock().map_err(|e| e.to_string())?;
         if guard.is_some() {
             return Err(
-                "embedded server is already running — start local LiveKit before the server, or restart the application".to_string()
+                "embedded server is already running — start local WebRTC before the server, or restart the application".to_string()
             );
         }
     }
 
-    let lk_path = ensure_livekit(&state.data_dir).await?;
+    let lk_path = ensure_webrtc(&state.data_dir).await?;
 
     // Generate random API key + secret
     let api_key = format!("annex_{}", uuid::Uuid::new_v4().simple());
     let api_secret = format!("secret_{}", uuid::Uuid::new_v4().simple());
 
-    // Probe for a free port starting from 7880. livekit-server's --port flag
+    // Probe for a free port starting from 7880. webrtc-server's --port flag
     // doesn't support auto-select (port 0), so we try ports 7880..7899 and pick
     // the first one that is not already in use.
     let port = find_available_port(7880, 7899)
-        .ok_or("no available port in range 7880–7899 for livekit-server")?;
+        .ok_or("no available port in range 7880–7899 for webrtc-server")?;
     if port != 7880 {
         tracing::warn!(
             default_port = 7880,
             actual_port = port,
-            "default LiveKit port 7880 was occupied — fell back to port {port}"
+            "default WebRTC port 7880 was occupied — fell back to port {port}"
         );
     }
     let lk_url = format!("ws://127.0.0.1:{port}");
 
-    tracing::info!(path = %lk_path.display(), %port, "starting local livekit-server");
+    tracing::info!(path = %lk_path.display(), %port, "starting local webrtc-server");
 
     let mut child = std::process::Command::new(&lk_path)
         .args([
@@ -1109,13 +1103,13 @@ async fn start_local_livekit(
         .stderr(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .spawn()
-        .map_err(|e| format!("failed to start livekit-server: {e}"))?;
+        .map_err(|e| format!("failed to start webrtc-server: {e}"))?;
 
     // Read stderr in a background thread to detect readiness and keep pipe open.
     let stderr = child
         .stderr
         .take()
-        .ok_or("failed to capture livekit-server stderr")?;
+        .ok_or("failed to capture webrtc-server stderr")?;
     let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
     std::thread::spawn(move || {
         use std::io::{BufRead, BufReader};
@@ -1124,9 +1118,9 @@ async fn start_local_livekit(
         for line in reader.lines() {
             match line {
                 Ok(line) => {
-                    tracing::debug!(line = %line, "livekit-server");
+                    tracing::debug!(line = %line, "webrtc-server");
                     if let Some(sender) = tx.take() {
-                        // LiveKit logs readiness messages containing "started" or "ready"
+                        // WebRTC logs readiness messages containing "started" or "ready"
                         if line.contains("started")
                             || line.contains("ready")
                             || line.contains("listening")
@@ -1140,53 +1134,51 @@ async fn start_local_livekit(
                 }
                 Err(e) => {
                     if let Some(sender) = tx.take() {
-                        let _ = sender.send(Err(format!("livekit-server stderr error: {e}")));
+                        let _ = sender.send(Err(format!("webrtc-server stderr error: {e}")));
                     }
                     return;
                 }
             }
         }
         if let Some(sender) = tx.take() {
-            let _ = sender.send(Err(
-                "livekit-server exited before becoming ready".to_string()
-            ));
+            let _ = sender.send(Err("webrtc-server exited before becoming ready".to_string()));
         }
     });
 
     // Wait for readiness with timeout
     tokio::time::timeout(std::time::Duration::from_secs(15), rx)
         .await
-        .map_err(|_| "livekit-server startup timed out after 15 seconds".to_string())?
-        .map_err(|_| "livekit readiness channel dropped".to_string())??;
+        .map_err(|_| "webrtc-server startup timed out after 15 seconds".to_string())?
+        .map_err(|_| "webrtc readiness channel dropped".to_string())??;
 
-    // Set env vars so the embedded server picks up LiveKit config.
+    // Set env vars so the embedded server picks up WebRTC config.
     // SAFETY: Called before `start_embedded_server` spawns any server threads.
     //
-    // ANNEX_LIVEKIT_URL is the internal bind address used for server-side API
-    // calls (token generation, room management). ANNEX_LIVEKIT_PUBLIC_URL is
+    // ANNEX_WEBRTC_URL is the internal bind address used for server-side API
+    // calls (token generation, room management). ANNEX_WEBRTC_PUBLIC_URL is
     // the browser-facing WebSocket URL sent to clients in join responses.
     //
     // For local-only use, both point at loopback. When a public endpoint
     // is later acquired (acquire_public_endpoint), the router may return a
-    // public LiveKit URL. If it does, the frontend should set
-    // ANNEX_LIVEKIT_PUBLIC_URL via the server API. Local clients connecting
+    // public WebRTC URL. If it does, the frontend should set
+    // ANNEX_WEBRTC_PUBLIC_URL via the server API. Local clients connecting
     // to http://127.0.0.1 will still get the loopback URL, which works for
     // same-machine access.
     unsafe {
-        std::env::set_var("ANNEX_LIVEKIT_URL", &lk_url);
+        std::env::set_var("ANNEX_WEBRTC_URL", &lk_url);
         // Public URL defaults to the loopback URL — sufficient for local
         // hosting. When a public endpoint is acquired via the Annex router,
         // the frontend sets a proper public URL via the server API.
-        std::env::set_var("ANNEX_LIVEKIT_PUBLIC_URL", &lk_url);
-        std::env::set_var("ANNEX_LIVEKIT_API_KEY", &api_key);
-        std::env::set_var("ANNEX_LIVEKIT_API_SECRET", &api_secret);
+        std::env::set_var("ANNEX_WEBRTC_PUBLIC_URL", &lk_url);
+        std::env::set_var("ANNEX_WEBRTC_API_KEY", &api_key);
+        std::env::set_var("ANNEX_WEBRTC_API_SECRET", &api_secret);
     }
 
-    tracing::info!(%lk_url, "local livekit-server ready");
+    tracing::info!(%lk_url, "local webrtc-server ready");
 
     {
-        let mut guard = state.livekit.lock().map_err(|e| e.to_string())?;
-        *guard = Some(LiveKitProcessState {
+        let mut guard = state.webrtc.lock().map_err(|e| e.to_string())?;
+        *guard = Some(WebRTCProcessState {
             url: lk_url.clone(),
             child,
         });
@@ -1195,45 +1187,45 @@ async fn start_local_livekit(
     Ok(serde_json::json!({ "url": lk_url, "port": port }))
 }
 
-/// Clear LiveKit env vars so the embedded server does not pick up the dev
-/// fallback URL when LiveKit actually failed to start. Must be called BEFORE
+/// Clear WebRTC env vars so the embedded server does not pick up the dev
+/// fallback URL when WebRTC actually failed to start. Must be called BEFORE
 /// `start_embedded_server`.
 #[tauri::command]
-fn clear_livekit_env() {
+fn clear_webrtc_env() {
     // SAFETY: Called before the embedded server is started, so no concurrent
     // reads of these env vars are happening.
     unsafe {
-        std::env::set_var("ANNEX_LIVEKIT_URL", "");
-        std::env::set_var("ANNEX_LIVEKIT_PUBLIC_URL", "");
-        std::env::set_var("ANNEX_LIVEKIT_API_KEY", "");
-        std::env::set_var("ANNEX_LIVEKIT_API_SECRET", "");
+        std::env::set_var("ANNEX_WEBRTC_URL", "");
+        std::env::set_var("ANNEX_WEBRTC_PUBLIC_URL", "");
+        std::env::set_var("ANNEX_WEBRTC_API_KEY", "");
+        std::env::set_var("ANNEX_WEBRTC_API_SECRET", "");
     }
-    tracing::info!("cleared livekit env vars (voice startup failed)");
+    tracing::info!("cleared webrtc env vars (voice startup failed)");
 }
 
-/// Stop the local LiveKit server if running.
+/// Stop the local WebRTC server if running.
 ///
 /// Not currently registered in the invoke handler. Retained for future use.
 #[tauri::command]
 #[allow(dead_code)]
-fn stop_local_livekit(state: tauri::State<'_, AppManagedState>) -> Result<(), String> {
-    let mut guard = state.livekit.lock().map_err(|e| e.to_string())?;
+fn stop_local_webrtc(state: tauri::State<'_, AppManagedState>) -> Result<(), String> {
+    let mut guard = state.webrtc.lock().map_err(|e| e.to_string())?;
     if let Some(mut lk) = guard.take() {
-        tracing::info!(url = %lk.url, "stopping local livekit-server");
+        tracing::info!(url = %lk.url, "stopping local webrtc-server");
         let _ = lk.child.kill();
         let _ = lk.child.wait();
     }
     Ok(())
 }
 
-/// Get the local LiveKit server URL, if a local instance is running.
+/// Get the local WebRTC server URL, if a local instance is running.
 ///
 /// Not currently registered in the invoke handler. Retained for future use.
 #[tauri::command]
 #[allow(dead_code)]
-fn get_local_livekit_url(state: tauri::State<'_, AppManagedState>) -> Option<String> {
+fn get_local_webrtc_url(state: tauri::State<'_, AppManagedState>) -> Option<String> {
     state
-        .livekit
+        .webrtc
         .lock()
         .ok()
         .and_then(|guard| guard.as_ref().map(|lk| lk.url.clone()))
@@ -1776,17 +1768,17 @@ fn main() {
             );
         }
 
-        // Load LiveKit API secret from OS keychain if not already in env.
+        // Load WebRTC API secret from OS keychain if not already in env.
         // This injects the secret before any server thread reads the config.
-        if std::env::var("ANNEX_LIVEKIT_API_SECRET").is_err() {
+        if std::env::var("ANNEX_WEBRTC_API_SECRET").is_err() {
             match load_api_secret_from_keyring() {
                 Ok(Some(secret)) => {
-                    std::env::set_var("ANNEX_LIVEKIT_API_SECRET", &secret);
-                    tracing::info!("loaded LiveKit API secret from OS keychain");
+                    std::env::set_var("ANNEX_WEBRTC_API_SECRET", &secret);
+                    tracing::info!("loaded WebRTC API secret from OS keychain");
                 }
                 Ok(None) => {} // No secret stored — voice may be disabled
                 Err(e) => {
-                    tracing::warn!("failed to load LiveKit secret from keychain: {e}");
+                    tracing::warn!("failed to load WebRTC secret from keychain: {e}");
                 }
             }
         }
@@ -1799,7 +1791,7 @@ fn main() {
             config_path,
             server: Mutex::new(None),
             router_session: Mutex::new(None),
-            livekit: Mutex::new(None),
+            webrtc: Mutex::new(None),
             pending_invite: Mutex::new(None),
         })
         .setup(|app| {
@@ -1883,10 +1875,10 @@ fn main() {
             release_public_endpoint,
             get_public_endpoint,
             export_identity_json,
-            get_livekit_config,
-            start_local_livekit,
-            clear_livekit_env,
-            check_livekit_reachable,
+            get_webrtc_config,
+            start_local_webrtc,
+            clear_webrtc_env,
+            check_webrtc_reachable,
             get_platform_media_status,
             set_media_keepalive,
         ])
@@ -1915,26 +1907,26 @@ mod tests {
         assert!(contents.contains("[logging]"), "missing [logging] section");
         assert!(contents.contains("[cors]"), "missing [cors] section");
 
-        // Verify the livekit comment block is present
+        // Verify the webrtc comment block is present
         assert!(
-            contents.contains("# [livekit]"),
-            "missing commented [livekit] section"
+            contents.contains("# [webrtc]"),
+            "missing commented [webrtc] section"
         );
         assert!(
             contents.contains("# url = \"ws://localhost:7880\""),
-            "missing commented livekit url"
+            "missing commented webrtc url"
         );
         assert!(
             contents.contains("# api_key = \"\""),
-            "missing commented livekit api_key"
+            "missing commented webrtc api_key"
         );
         assert!(
             contents.contains("# api_secret = \"\""),
-            "missing commented livekit api_secret"
+            "missing commented webrtc api_secret"
         );
         assert!(
             contents.contains("# token_ttl_seconds = 3600"),
-            "missing commented livekit token_ttl_seconds"
+            "missing commented webrtc token_ttl_seconds"
         );
     }
 
@@ -1945,31 +1937,31 @@ mod tests {
         let config_path_str = config_path.to_string_lossy();
 
         // The file should parse cleanly via the server config loader.
-        // Since the [livekit] section is fully commented out, the TOML parser
-        // should see no livekit fields and use LiveKitConfig::default(),
+        // Since the [webrtc] section is fully commented out, the TOML parser
+        // should see no webrtc fields and use WebRtcConfig::default(),
         // which now contains dev server values so voice works out of the box.
         let cfg =
             annex_server::config::load_config(Some(&config_path_str)).expect("config should parse");
 
-        // Voice defaults to dev configuration (auto-start LiveKit)
+        // Voice defaults to dev configuration (auto-start WebRTC)
         assert_eq!(
-            cfg.livekit.url,
-            annex_voice::DEV_LIVEKIT_URL,
-            "livekit.url should default to dev URL"
+            cfg.webrtc.url,
+            annex_voice::DEV_WEBRTC_URL,
+            "webrtc.url should default to dev URL"
         );
         assert_eq!(
-            cfg.livekit.api_key,
-            annex_voice::DEV_LIVEKIT_API_KEY,
-            "livekit.api_key should default to dev key"
+            cfg.webrtc.api_key,
+            annex_voice::DEV_WEBRTC_API_KEY,
+            "webrtc.api_key should default to dev key"
         );
         assert_eq!(
-            cfg.livekit.api_secret,
-            annex_voice::DEV_LIVEKIT_API_SECRET,
-            "livekit.api_secret should default to dev secret"
+            cfg.webrtc.api_secret,
+            annex_voice::DEV_WEBRTC_API_SECRET,
+            "webrtc.api_secret should default to dev secret"
         );
         assert_eq!(
-            cfg.livekit.token_ttl_seconds, 3600,
-            "livekit.token_ttl_seconds should default to 3600"
+            cfg.webrtc.token_ttl_seconds, 3600,
+            "webrtc.token_ttl_seconds should default to 3600"
         );
     }
 
@@ -2076,7 +2068,7 @@ mod tests {
         let contents = std::fs::read_to_string(&config_path).expect("should read config");
 
         assert!(
-            contents.contains("[[livekit.ice_servers]]"),
+            contents.contains("[[webrtc.ice_servers]]"),
             "config template should document ICE server configuration"
         );
         assert!(

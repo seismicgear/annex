@@ -52,7 +52,7 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool) {
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
         presence_tx: tokio::sync::broadcast::channel(100).0,
         voice_service: Arc::new(annex_voice::VoiceService::new(
-            annex_voice::LiveKitConfig::default(),
+            annex_voice::WebRtcConfig::default(),
         )),
         tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper", "bark")),
         stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),

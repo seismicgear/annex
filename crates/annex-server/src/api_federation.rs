@@ -376,6 +376,24 @@ pub async fn receive_federated_message_handler(
     Extension(state): Extension<Arc<AppState>>,
     Json(envelope): Json<FederatedMessageEnvelope>,
 ) -> Result<Json<serde_json::Value>, FederationError> {
+    process_federated_message_envelope(state, envelope).await
+}
+
+/// Parses a data-channel payload and routes it through the exact same
+/// cryptographic validation path used by `POST /api/federation/messages`.
+pub async fn receive_federated_message_from_data_channel(
+    state: Arc<AppState>,
+    envelope_json: &str,
+) -> Result<(), FederationError> {
+    let envelope: FederatedMessageEnvelope = serde_json::from_str(envelope_json)?;
+    process_federated_message_envelope(state, envelope).await?;
+    Ok(())
+}
+
+async fn process_federated_message_envelope(
+    state: Arc<AppState>,
+    envelope: FederatedMessageEnvelope,
+) -> Result<Json<serde_json::Value>, FederationError> {
     let state_clone = state.clone();
     let channel_id_clone = envelope.channel_id.clone();
 
