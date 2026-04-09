@@ -134,6 +134,13 @@ jobs:
           cache: 'npm'
           cache-dependency-path: zk/package-lock.json
 
+      - name: Verify Visual Studio C++ workload
+        run: |
+          "$env:ProgramFiles(x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * `
+            -requires Microsoft.VisualStudio.Workload.NativeDesktop `
+            -property installationPath
+        shell: pwsh
+
       - name: Generate ZK keys and prepare assets
         run: |
           (cd zk && npm ci && node scripts/build-circuits.js && node scripts/setup-groth16.js) || true
@@ -144,6 +151,8 @@ jobs:
 
       - name: cargo build (release)
         run: cargo build -p annex-desktop --release
+        env:
+          CMAKE_ARGS: -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 
   build-macos:
     name: Build (macOS)

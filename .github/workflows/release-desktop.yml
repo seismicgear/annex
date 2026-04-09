@@ -74,6 +74,14 @@ jobs:
             client/package-lock.json
             zk/package-lock.json
 
+      - name: Verify Visual Studio C++ workload
+        if: matrix.platform == 'windows-latest'
+        run: |
+          "$env:ProgramFiles(x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * `
+            -requires Microsoft.VisualStudio.Workload.NativeDesktop `
+            -property installationPath
+        shell: pwsh
+
       - name: Install Tauri CLI
         run: cargo install tauri-cli@2 --locked
 
@@ -85,6 +93,7 @@ jobs:
         working-directory: crates/annex-desktop
         run: cargo tauri build --target ${{ matrix.target }}
         env:
+          CMAKE_ARGS: -DCMAKE_POLICY_VERSION_MINIMUM=3.5
           TAURI_SIGNING_PRIVATE_KEY: ""
 
       # Upload platform-specific artifacts
