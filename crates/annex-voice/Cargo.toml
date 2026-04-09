@@ -15,7 +15,8 @@ webrtc = "0.11"
 dashmap = "6"
 bytes = "1"
 base64 = "0.22"
-audiopus = { version = "0.3.0-rc.0", features = ["static"] }
+audiopus = "0.3.0-rc.0"
+audiopus_sys = { version = "0.2.2", features = ["static"] }
 
 [dev-dependencies]
 jsonwebtoken = "9.3"
