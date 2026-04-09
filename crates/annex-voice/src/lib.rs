@@ -9,7 +9,7 @@ pub mod tts;
 
 pub use agent::{AgentVoiceClient, TranscriptionEvent};
 pub use config::{
-    IceServer, LiveKitConfig, DEV_LIVEKIT_API_KEY, DEV_LIVEKIT_API_SECRET, DEV_LIVEKIT_URL,
+    IceServer, WebRtcConfig, DEV_WEBRTC_API_KEY, DEV_WEBRTC_API_SECRET, DEV_WEBRTC_URL,
 };
 pub use error::VoiceError;
 pub use service::{IceCandidateEvent, RoomInfo, SttTapFrame, VoiceService};

@@ -2,7 +2,7 @@ use annex_db::run_migrations;
 use annex_identity::{zk, MerkleTree};
 use annex_server::{api_ws, app, AppState};
 use annex_types::ServerPolicy;
-use annex_voice::{LiveKitConfig, SttService, TtsService, VoiceService};
+use annex_voice::{SttService, TtsService, VoiceService, WebRtcConfig};
 use axum::{
     body::Body,
     extract::ConnectInfo,
@@ -52,7 +52,7 @@ async fn setup_app() -> (axum::Router, Arc<AppState>, TempDir) {
     let membership_vkey = zk::generate_dummy_vkey();
     let (presence_tx, _) = tokio::sync::broadcast::channel(100);
 
-    let voice_config = LiveKitConfig::new("http://localhost:7880", "devkey", "secret");
+    let voice_config = WebRtcConfig::new("http://localhost:7880", "devkey", "secret");
     let voice_service = VoiceService::new(voice_config);
     let tts_service = TtsService::new("dummy/voices", "dummy/piper", "dummy/bark");
     let stt_service = SttService::new("dummy/model.bin", "dummy/whisper");

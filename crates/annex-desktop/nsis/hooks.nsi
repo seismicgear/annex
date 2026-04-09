@@ -7,7 +7,7 @@
   ; Defaults to "No" on silent uninstall (/SD IDNO).
   MessageBox MB_YESNO "Remove all Annex data (database, config, uploads, cached data)?$\nThis cannot be undone." /SD IDNO IDNO SkipDataClean
 
-    ; Server data: database, config.toml, uploads, signing keys, LiveKit binaries
+    ; Server data: database, config.toml, uploads, signing keys, voice assets
     RMDir /r "$APPDATA\Annex"
 
     ; WebView2 user data: cache, cookies, IndexedDB, localStorage, service workers.

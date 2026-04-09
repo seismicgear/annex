@@ -18,13 +18,12 @@ fn default_stun_servers() -> Vec<IceServer> {
     }]
 }
 
-/// Default URL used when no LiveKit config is provided. Matches the
-/// `docker-compose.yml` and `--dev` mode defaults.
-pub const DEV_LIVEKIT_URL: &str = "ws://localhost:7880";
-/// Default API key used for LiveKit `--dev` mode.
-pub const DEV_LIVEKIT_API_KEY: &str = "devkey";
-/// Default API secret used for LiveKit `--dev` mode.
-pub const DEV_LIVEKIT_API_SECRET: &str = "secret";
+/// Default URL used when no WebRTC config is provided.
+pub const DEV_WEBRTC_URL: &str = "ws://localhost:7880";
+/// Default API key used for development signaling auth.
+pub const DEV_WEBRTC_API_KEY: &str = "devkey";
+/// Default API secret used for development signaling auth.
+pub const DEV_WEBRTC_API_SECRET: &str = "secret";
 
 /// ICE server configuration for WebRTC NAT traversal.
 ///
@@ -33,10 +32,10 @@ pub const DEV_LIVEKIT_API_SECRET: &str = "secret";
 ///
 /// In config.toml:
 /// ```toml
-/// [[livekit.ice_servers]]
+/// [[webrtc.ice_servers]]
 /// urls = ["stun:stun.l.google.com:19302"]
 ///
-/// [[livekit.ice_servers]]
+/// [[webrtc.ice_servers]]
 /// urls = ["turn:turn.example.com:3478"]
 /// username = "user"
 /// credential = "pass"
@@ -55,10 +54,10 @@ pub struct IceServer {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub struct LiveKitConfig {
+pub struct WebRtcConfig {
     pub url: String,
-    /// Browser-facing LiveKit URL. Falls back to `url` when empty.
-    /// In Docker, `url` points to the internal hostname (e.g. `ws://livekit:7880`)
+    /// Browser-facing WebRTC URL. Falls back to `url` when empty.
+    /// In Docker, `url` points to the internal hostname (e.g. `ws://webrtc:7880`)
     /// while `public_url` should point to the host-reachable address
     /// (e.g. `ws://localhost:7880`).
     #[serde(default)]
@@ -66,7 +65,7 @@ pub struct LiveKitConfig {
     pub api_key: String,
     #[serde(skip_serializing)]
     pub api_secret: String,
-    /// JWT token TTL in seconds for LiveKit join tokens. Default: 3600 (1 hour).
+    /// JWT token TTL in seconds for join tokens. Default: 3600 (1 hour).
     #[serde(default = "default_token_ttl_seconds")]
     pub token_ttl_seconds: u64,
     /// Custom ICE (STUN/TURN) servers for WebRTC NAT traversal.
@@ -76,22 +75,22 @@ pub struct LiveKitConfig {
     pub ice_servers: Vec<IceServer>,
 }
 
-impl Default for LiveKitConfig {
+impl Default for WebRtcConfig {
     fn default() -> Self {
         Self {
-            url: DEV_LIVEKIT_URL.to_string(),
+            url: DEV_WEBRTC_URL.to_string(),
             public_url: String::new(),
-            api_key: DEV_LIVEKIT_API_KEY.to_string(),
-            api_secret: DEV_LIVEKIT_API_SECRET.to_string(),
+            api_key: DEV_WEBRTC_API_KEY.to_string(),
+            api_secret: DEV_WEBRTC_API_SECRET.to_string(),
             token_ttl_seconds: default_token_ttl_seconds(),
             ice_servers: default_stun_servers(),
         }
     }
 }
 
-impl fmt::Debug for LiveKitConfig {
+impl fmt::Debug for WebRtcConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("LiveKitConfig")
+        f.debug_struct("WebRtcConfig")
             .field("url", &self.url)
             .field("public_url", &self.public_url)
             .field("api_key", &self.api_key)
@@ -102,7 +101,7 @@ impl fmt::Debug for LiveKitConfig {
     }
 }
 
-impl LiveKitConfig {
+impl WebRtcConfig {
     pub fn new(
         url: impl Into<String>,
         api_key: impl Into<String>,

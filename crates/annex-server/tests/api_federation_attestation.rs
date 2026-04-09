@@ -50,7 +50,7 @@ async fn setup_app() -> axum::Router {
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
         presence_tx: tokio::sync::broadcast::channel(100).0,
         voice_service: Arc::new(annex_voice::VoiceService::new(
-            annex_voice::LiveKitConfig::default(),
+            annex_voice::WebRtcConfig::default(),
         )),
         tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper", "bark")),
         stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),
@@ -165,7 +165,7 @@ async fn test_attest_membership_invalid_signature() {
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
         presence_tx: tokio::sync::broadcast::channel(100).0,
         voice_service: Arc::new(annex_voice::VoiceService::new(
-            annex_voice::LiveKitConfig::default(),
+            annex_voice::WebRtcConfig::default(),
         )),
         tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper", "bark")),
         stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),
@@ -259,7 +259,7 @@ async fn test_attest_membership_valid_signature_fails_network() {
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
         presence_tx: tokio::sync::broadcast::channel(100).0,
         voice_service: Arc::new(annex_voice::VoiceService::new(
-            annex_voice::LiveKitConfig::default(),
+            annex_voice::WebRtcConfig::default(),
         )),
         tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper", "bark")),
         stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),

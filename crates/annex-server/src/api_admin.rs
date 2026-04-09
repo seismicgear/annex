@@ -1,7 +1,8 @@
 //! Admin API handlers for the Annex server.
 
 use crate::{
-    api::ApiError, middleware::IdentityContext, policy::recalculate_all_alignments, AppState,
+    api::ApiError, config::derive_server_slug_from_public_url, middleware::IdentityContext,
+    policy::recalculate_all_alignments, AppState,
 };
 use annex_identity::update_capabilities;
 use annex_observe::EventPayload;
@@ -404,6 +405,8 @@ pub async fn set_public_url_handler(
 
     // Persist to database so the URL survives server restarts
     let url_clone = url.clone();
+    let next_slug = derive_server_slug_from_public_url(&url);
+    let next_slug_clone = next_slug.clone();
     let state_clone = state.clone();
     tokio::task::spawn_blocking(move || {
         let conn = state_clone
@@ -411,8 +414,8 @@ pub async fn set_public_url_handler(
             .get()
             .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
         conn.execute(
-            "UPDATE servers SET public_url = ?1 WHERE id = ?2",
-            rusqlite::params![url_clone, state_clone.server_id],
+            "UPDATE servers SET public_url = ?1, slug = ?2 WHERE id = ?3",
+            rusqlite::params![url_clone, next_slug_clone, state_clone.server_id],
         )
         .map_err(|e| ApiError::InternalServerError(format!("failed to persist public_url: {e}")))?;
         Ok::<(), ApiError>(())
@@ -426,33 +429,42 @@ pub async fn set_public_url_handler(
         *current = url.clone();
     }
 
-    tracing::info!(public_url = %url, "public URL updated via admin API (persisted)");
+    tracing::info!(
+        public_url = %url,
+        server_slug = %next_slug,
+        "public URL updated via admin API; server slug re-derived and persisted"
+    );
 
-    Ok(AxumJson(serde_json::json!({ "status": "ok", "public_url": url })).into_response())
+    Ok(AxumJson(serde_json::json!({
+        "status": "ok",
+        "public_url": url,
+        "server_slug": next_slug
+    }))
+    .into_response())
 }
 
-// ── LiveKit Public URL (runtime update for Tauri) ──
+// ── WebRTC Public URL (runtime update for Tauri) ──
 
 #[derive(Debug, Deserialize)]
-pub struct SetLivekitPublicUrlRequest {
-    pub public_livekit_url: String,
+pub struct SetWebrtcPublicUrlRequest {
+    pub public_webrtc_url: String,
 }
 
-/// Handler for `PUT /api/admin/livekit-public-url`.
+/// Handler for `PUT /api/admin/webrtc-public-url`.
 ///
-/// Allows the Tauri host to push the router-provided public LiveKit URL
+/// Allows the Tauri host to push the router-provided public WebRTC URL
 /// into the running server so remote voice join responses return a
 /// globally-reachable URL instead of a loopback address.
-pub async fn set_livekit_public_url_handler(
+pub async fn set_webrtc_public_url_handler(
     Extension(state): Extension<Arc<AppState>>,
     Extension(IdentityContext(identity)): Extension<IdentityContext>,
-    Json(body): Json<SetLivekitPublicUrlRequest>,
+    Json(body): Json<SetWebrtcPublicUrlRequest>,
 ) -> Result<Response, ApiError> {
     if !identity.can_moderate {
         return Err(ApiError::Forbidden("insufficient permissions".to_string()));
     }
 
-    let url = body.public_livekit_url.trim().to_string();
+    let url = body.public_webrtc_url.trim().to_string();
     if !url.is_empty()
         && !url.starts_with("ws://")
         && !url.starts_with("wss://")
@@ -460,15 +472,15 @@ pub async fn set_livekit_public_url_handler(
         && !url.starts_with("https://")
     {
         return Err(ApiError::BadRequest(
-            "public_livekit_url must start with ws://, wss://, http://, or https://".to_string(),
+            "public_webrtc_url must start with ws://, wss://, http://, or https://".to_string(),
         ));
     }
 
     state.voice_service.set_public_url(url.clone());
 
-    tracing::info!(public_livekit_url = %url, "LiveKit public URL updated via admin API");
+    tracing::info!(public_webrtc_url = %url, "WebRTC public URL updated via admin API");
 
-    Ok(AxumJson(serde_json::json!({ "status": "ok", "public_livekit_url": url })).into_response())
+    Ok(AxumJson(serde_json::json!({ "status": "ok", "public_webrtc_url": url })).into_response())
 }
 
 // ── Member Management ──

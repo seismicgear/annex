@@ -70,7 +70,7 @@ pub fn build_app_state(pool: DbPool, tree: MerkleTree, policy: ServerPolicy) -> 
         connection_manager: ConnectionManager::new(),
         presence_tx: tokio::sync::broadcast::channel(100).0,
         voice_service: Arc::new(annex_voice::VoiceService::new(
-            annex_voice::LiveKitConfig::default(),
+            annex_voice::WebRtcConfig::default(),
         )),
         tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper", "bark")),
         stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),

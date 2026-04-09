@@ -78,7 +78,7 @@ fn build_state(db_path: &str, initial_policy: ServerPolicy) -> (Arc<AppState>, a
         connection_manager: ConnectionManager::new(),
         presence_tx,
         voice_service: Arc::new(annex_voice::VoiceService::new(
-            annex_voice::LiveKitConfig::default(),
+            annex_voice::WebRtcConfig::default(),
         )),
         tts_service: Arc::new(annex_voice::TtsService::new("dummy", "dummy", "dummy")),
         stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),

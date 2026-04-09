@@ -50,7 +50,7 @@ async fn test_sse_presence_stream() {
         connection_manager: annex_server::api_ws::ConnectionManager::new(),
         presence_tx: presence_tx.clone(),
         voice_service: Arc::new(annex_voice::VoiceService::new(
-            annex_voice::LiveKitConfig::default(),
+            annex_voice::WebRtcConfig::default(),
         )),
         tts_service: Arc::new(annex_voice::TtsService::new("voices", "piper", "bark")),
         stt_service: Arc::new(annex_voice::SttService::new("dummy", "dummy")),

@@ -1,4 +1,4 @@
-use crate::config::{IceServer, LiveKitConfig};
+use crate::config::{IceServer, WebRtcConfig};
 use crate::error::VoiceError;
 use audiopus::coder::Decoder as OpusDecoder;
 use audiopus::{Channels, SampleRate};
@@ -56,7 +56,7 @@ struct Room {
 
 #[derive(Debug)]
 pub struct VoiceService {
-    config: LiveKitConfig,
+    config: WebRtcConfig,
     api: API,
     rooms: DashMap<String, Arc<Room>>,
     runtime_public_url: RwLock<String>,
@@ -66,7 +66,7 @@ pub struct VoiceService {
 }
 
 impl VoiceService {
-    pub fn new(config: LiveKitConfig) -> Self {
+    pub fn new(config: WebRtcConfig) -> Self {
         let mut media_engine = MediaEngine::default();
         if let Err(e) = media_engine.register_default_codecs() {
             warn!(error = %e, "failed to register default codecs");

@@ -161,13 +161,13 @@ pub async fn create_channel_handler(
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
 
-    // Create LiveKit room if needed and enabled
+    // Create WebRTC room if needed and enabled
     if (payload.channel_type == ChannelType::Voice || payload.channel_type == ChannelType::Hybrid)
         && state.voice_service.is_enabled()
     {
         if let Err(e) = state.voice_service.create_room(&payload.channel_id).await {
             tracing::error!(
-                "failed to create LiveKit room for channel {}: {}",
+                "failed to create WebRTC room for channel {}: {}",
                 payload.channel_id,
                 e
             );
@@ -695,7 +695,7 @@ pub async fn join_voice_channel_handler(
     // real client is remote even when connect_info shows loopback.
     let has_forwarded_for = headers.get("x-forwarded-for").is_some();
     let is_local_client = connect_info.0.ip().is_loopback() && !has_forwarded_for;
-    let livekit_url = if is_local_client {
+    let webrtc_url = if is_local_client {
         // Local clients (Tauri host mode) get the raw URL even if it's loopback
         state.voice_service.get_url_for_local_client().to_string()
     } else {
@@ -720,13 +720,13 @@ pub async fn join_voice_channel_handler(
         ));
     }
 
-    if !state.voice_service.is_enabled() || livekit_url.is_empty() {
+    if !state.voice_service.is_enabled() || webrtc_url.is_empty() {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             serde_json::json!({
                 "error": "voice_not_configured",
-                "message": "Voice is not configured. Set up LiveKit credentials in server settings to enable voice channels.",
-                "setup_hint": "Configure livekit.url, livekit.api_key, and livekit.api_secret in config.toml or use ANNEX_LIVEKIT_* environment variables."
+                "message": "Voice is not configured. Set up WebRTC credentials in server settings to enable voice channels.",
+                "setup_hint": "Configure webrtc.url, webrtc.api_key, and webrtc.api_secret in config.toml or use ANNEX_WEBRTC_* environment variables."
             })
             .to_string(),
         ));
@@ -803,7 +803,7 @@ pub async fn join_voice_channel_handler(
         .voice_service
         .generate_join_token(&channel_id, &identity.pseudonym_id, &identity.pseudonym_id)
         .map_err(|e| {
-            tracing::error!("failed to generate LiveKit token: {}", e);
+            tracing::error!("failed to generate WebRTC token: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to generate voice token".to_string(),
@@ -823,7 +823,7 @@ pub async fn join_voice_channel_handler(
 
     Ok(Json(JoinVoiceResponse {
         token,
-        url: livekit_url,
+        url: webrtc_url,
         ice_servers,
     }))
 }
