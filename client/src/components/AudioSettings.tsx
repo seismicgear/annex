@@ -3,13 +3,13 @@
  *
  * Lets users select input/output devices and adjust volume levels.
  * Settings are persisted to localStorage via the voice store and applied
- * to the active LiveKit room in real time.
+ * to the active WebRTC room in real time.
  *
  * Output device selection uses HTMLMediaElement.setSinkId() — a fallback
  * message is shown if the browser/webview does not support it.
  *
  * Input volume is labelled as OS-level only when we cannot apply gain
- * through the Web Audio API (which is the common case in LiveKit).
+ * through the Web Audio API (which is the common case in WebRTC).
  */
 
 import { useState, useEffect, useCallback } from 'react';

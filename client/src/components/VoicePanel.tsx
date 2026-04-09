@@ -1,5 +1,5 @@
 /**
- * Media panel — integrates LiveKit for voice, video, and screen sharing.
+ * Media panel — integrates WebRTC for voice, video, and screen sharing.
  *
  * Supports:
  * - Voice calls (microphone audio)
@@ -8,7 +8,7 @@
  * - Local self-view for camera, screen share, and mic status
  *
  * Uses @livekit/components-react for WebRTC transport.
- * LiveKit's can_publish grant covers all track sources (mic, camera, screen).
+ * WebRTC's can_publish grant covers all track sources (mic, camera, screen).
  * Video starts disabled; the user toggles camera/screen via control buttons.
  *
  * Call state lives in the voice store so the call persists across
@@ -17,12 +17,12 @@
  * The shared voice store is the single source of truth for:
  * - micMuted / deafened state (reflected by both StatusBar and in-call controls)
  * - input/output device IDs, volume levels
- * Device selection is applied to the LiveKit room when connected.
+ * Device selection is applied to the WebRTC room when connected.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  LiveKitRoom,
+  LiveKitRoom as WebRtcRoom,
   RoomAudioRenderer,
   useParticipants,
   useTracks,
@@ -31,7 +31,7 @@ import {
   useConnectionState,
 } from '@livekit/components-react';
 import '@livekit/components-styles';
-import { Track, ConnectionState as LKConnectionState, type LocalParticipant } from 'livekit-client';
+import { Track, ConnectionState as RoomConnectionState, type LocalParticipant } from 'livekit-client';
 import { useIdentityStore } from '@/stores/identity';
 import { useChannelsStore } from '@/stores/channels';
 import { useVoiceStore } from '@/stores/voice';
@@ -101,7 +101,7 @@ function LocalMediaStatus() {
   );
 }
 
-/** Controls bar rendered inside the LiveKit room context. */
+/** Controls bar rendered inside the WebRTC room context. */
 function MediaControls({
   onLeave,
   mediaStatus,
@@ -149,9 +149,9 @@ function MediaControls({
     };
   }, []);
 
-  // Sync voice store micMuted → LiveKit room state.
-  // When micMuted changes in the store (from StatusBar or here), apply to LiveKit.
-  // On failure, revert the store to match the real LiveKit participant state.
+  // Sync voice store micMuted → WebRTC room state.
+  // When micMuted changes in the store (from StatusBar or here), apply to WebRTC.
+  // On failure, revert the store to match the real WebRTC participant state.
   useEffect(() => {
     const lp = localParticipant as LocalParticipant;
     if (!lp) return;
@@ -160,14 +160,14 @@ function MediaControls({
       const priorEnabled = lp.isMicrophoneEnabled;
       lp.setMicrophoneEnabled(shouldBeEnabled).catch((err) => {
         console.warn('[VoicePanel] mic sync failed:', err);
-        // Revert store to match the real LiveKit microphone state
+        // Revert store to match the real WebRTC microphone state
         setMicMuted(!priorEnabled);
         setMediaError(mediaErrorMessage(err, 'Microphone toggle'));
       });
     }
   }, [micMuted, localParticipant, setMicMuted]);
 
-  // Sync LiveKit mic state → store when LiveKit state changes externally.
+  // Sync WebRTC mic state → store when WebRTC state changes externally.
   useEffect(() => {
     if (micMuted !== !micEnabled) {
       setMicMuted(!micEnabled);
@@ -493,7 +493,7 @@ function ParticipantGrid() {
   const participants = useParticipants();
   const camTracks = useTracks([Track.Source.Camera]);
 
-  // Use LiveKit's active-speaker data: participant.isSpeaking reflects
+  // Use WebRTC's active-speaker data: participant.isSpeaking reflects
   // audio-level analysis, not just unmuted status. This prevents marking
   // every unmuted participant as speaking.
   const speakingIds = new Set(
@@ -654,7 +654,7 @@ function useTauriMediaRestore(onScreenShareInterrupted?: () => void) {
 }
 
 /**
- * Apply voice store settings to the active LiveKit room:
+ * Apply voice store settings to the active WebRTC room:
  * - Input device selection via media constraints
  * - Output device via setSinkId on audio elements
  * - Output volume on audio elements
@@ -723,8 +723,8 @@ function useVoiceStoreSync() {
       applyAudioPrefs(el, deafened, outputVolume, outputDeviceId);
     });
 
-    // Also handle any audio elements inside livekit containers that may not have data-lk-source
-    const lkAudioElements = document.querySelectorAll<HTMLAudioElement>('[data-testid="livekit-room"] audio, .lk-room-container audio');
+    // Also handle any audio elements inside webrtc containers that may not have data-lk-source
+    const lkAudioElements = document.querySelectorAll<HTMLAudioElement>('[data-testid="webrtc-room"] audio, .lk-room-container audio');
     lkAudioElements.forEach((el) => {
       applyAudioPrefs(el, deafened, outputVolume, outputDeviceId);
     });
@@ -764,7 +764,7 @@ function useVoiceStoreSync() {
   }, []);
 }
 
-/** Room content rendered inside the LiveKitRoom context. */
+/** Room content rendered inside the WebRTC room context. */
 function RoomContent({
   onLeave,
   mediaStatus,
@@ -781,17 +781,17 @@ function RoomContent({
   // Track whether the user intentionally left (via the leave button).
   const intentionalLeaveRef = useRef(false);
 
-  // Sync LiveKit connection state to the voice store
+  // Sync WebRTC connection state to the voice store
   useEffect(() => {
     switch (lkConnectionState) {
-      case LKConnectionState.Connected:
+      case RoomConnectionState.Connected:
         setConnectionState('connected');
         break;
-      case LKConnectionState.Connecting:
-      case LKConnectionState.Reconnecting:
+      case RoomConnectionState.Connecting:
+      case RoomConnectionState.Reconnecting:
         setConnectionState('connecting');
         break;
-      case LKConnectionState.Disconnected:
+      case RoomConnectionState.Disconnected:
         // Distinguish intentional leave from unexpected disconnect.
         // If the user clicked "Leave", the store is already cleared by leaveCall().
         // Otherwise, this is an unexpected disconnect — clean up stale session state.
@@ -910,7 +910,7 @@ export function VoicePanel() {
 
   const {
     voiceToken,
-    livekitUrl,
+    webrtcUrl,
     iceServers,
     connectedChannelId,
     joinCall,
@@ -1083,7 +1083,7 @@ export function VoicePanel() {
     };
   }, [lastJoinError, lastJoinErrorDetails]);
 
-  // Prevent LiveKit from disconnecting when the Tauri webview fires page-leave events.
+  // Prevent WebRTC from disconnecting when the Tauri webview fires page-leave events.
   const roomOptions = useMemo(() => {
     if (!isTauri()) return undefined;
     return { disconnectOnPageLeave: false };
@@ -1106,10 +1106,10 @@ export function VoicePanel() {
   const connectionState = useVoiceStore((s) => s.connectionState);
   const connectionError = useVoiceStore((s) => s.connectionError);
 
-  // If connected to a call, always show the LiveKitRoom (even on non-voice channels).
+  // If connected to a call, always show the WebRTC room (even on non-voice channels).
   // But NOT if the token is stale from a server switch, and NOT if the
   // connection has failed (session state was already cleared by the store).
-  if (voiceToken && livekitUrl && connectedChannelId && !isTokenStale) {
+  if (voiceToken && webrtcUrl && connectedChannelId && !isTokenStale) {
     // Find the channel name for the connected call
     const connectedChannel = channels.find((c) => c.channel_id === connectedChannelId);
     const channelLabel = connectedChannel?.name ?? connectedChannelId.slice(0, 12);
@@ -1130,8 +1130,8 @@ export function VoicePanel() {
             <p>{connectionError}</p>
           </div>
         )}
-        <LiveKitRoom
-          serverUrl={livekitUrl}
+        <WebRtcRoom
+          serverUrl={webrtcUrl}
           token={voiceToken}
           connect={true}
           audio={true}
@@ -1144,7 +1144,7 @@ export function VoicePanel() {
             mediaStatus={mediaStatus}
             platformWarnings={platformWarnings}
           />
-        </LiveKitRoom>
+        </WebRtcRoom>
       </div>
     );
   }

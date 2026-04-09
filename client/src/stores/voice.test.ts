@@ -17,7 +17,7 @@ describe('voice store', () => {
     // Simulate a connected call
     useVoiceStore.setState({
       voiceToken: 'active-token',
-      livekitUrl: 'wss://livekit.example',
+      webrtcUrl: 'wss://webrtc.example',
       iceServers: [{ urls: ['stun:stun.l.google.com:19302'] }],
       connectedChannelId: 'chan-1',
       connectionState: 'connected',
@@ -29,7 +29,7 @@ describe('voice store', () => {
 
     const state = useVoiceStore.getState();
     expect(state.voiceToken).toBeNull();
-    expect(state.livekitUrl).toBeNull();
+    expect(state.webrtcUrl).toBeNull();
     expect(state.iceServers).toEqual([]);
     expect(state.connectedChannelId).toBeNull();
     expect(state.connectionState).toBe('failed');
@@ -41,7 +41,7 @@ describe('voice store', () => {
 
     useVoiceStore.setState({
       voiceToken: 'token',
-      livekitUrl: 'wss://lk',
+      webrtcUrl: 'wss://lk',
       connectedChannelId: 'chan-1',
       connectionState: 'connected',
     });
@@ -56,7 +56,7 @@ describe('voice store', () => {
 
     useVoiceStore.setState({
       voiceToken: 'token',
-      livekitUrl: 'wss://lk',
+      webrtcUrl: 'wss://lk',
       iceServers: [{ urls: ['turn:turn.example.com'] }],
       connectedChannelId: 'chan-1',
     });
@@ -65,7 +65,7 @@ describe('voice store', () => {
 
     const state = useVoiceStore.getState();
     expect(state.voiceToken).toBeNull();
-    expect(state.livekitUrl).toBeNull();
+    expect(state.webrtcUrl).toBeNull();
     expect(state.connectedChannelId).toBeNull();
     expect(state.connectionState).toBe('failed');
     expect(state.connectionError).toBe('room error');
@@ -76,7 +76,7 @@ describe('voice store', () => {
 
     useVoiceStore.setState({
       voiceToken: 'token',
-      livekitUrl: 'wss://lk',
+      webrtcUrl: 'wss://lk',
       connectedChannelId: 'chan-1',
       connectionState: 'failed',
       connectionError: 'some error',
@@ -98,7 +98,7 @@ describe('voice store', () => {
 
     useVoiceStore.setState({
       voiceToken: 'token',
-      livekitUrl: 'wss://lk',
+      webrtcUrl: 'wss://lk',
       connectedChannelId: 'chan-1',
       connectionState: 'connected',
     });
@@ -116,11 +116,11 @@ describe('voice store', () => {
 
     useVoiceStore.setState({
       voiceToken: 'token',
-      livekitUrl: 'wss://lk',
+      webrtcUrl: 'wss://lk',
       connectedChannelId: 'chan-2',
     });
 
-    useVoiceStore.getState().setConnectionState('failed', 'LiveKit error');
+    useVoiceStore.getState().setConnectionState('failed', 'WebRTC error');
 
     const state = useVoiceStore.getState();
     expect(state.lastFailedChannelId).toBe('chan-2');
@@ -201,7 +201,7 @@ describe('voice store', () => {
 
     await expect(useVoiceStore.getState().toggleMicAsync(fakeLp)).rejects.toThrow('device lost');
 
-    // micMuted should be restored to match the real LiveKit state (enabled → not muted)
+    // micMuted should be restored to match the real WebRTC state (enabled → not muted)
     expect(useVoiceStore.getState().micMuted).toBe(false);
     expect(useVoiceStore.getState().micToggleError).toBe('device lost');
   });

@@ -15,14 +15,14 @@ import {
   isTauri,
   startEmbeddedServer,
   saveStartupMode,
-  getLiveKitConfig,
-  startLocalLiveKit,
-  clearLiveKitEnv,
+  getWebRtcConfig,
+  startLocalWebRtc,
+  clearWebRtcEnv,
   getStartupMode,
   clearStartupMode,
   acquirePublicEndpoint,
   getPublicEndpoint,
-  checkLiveKitReachable,
+  checkWebRtcReachable,
   desktopCorsGuidance,
 } from '@/lib/tauri';
 import { setApiBaseUrl, fetchWithTimeout } from '@/lib/api';
@@ -43,8 +43,8 @@ interface WebPrefs {
 export interface DegradedStartupInfo {
   voiceFailed: boolean;
   publicEndpointFailed: boolean;
-  /** True when the router was reached but does not proxy LiveKit. */
-  livekitRouteUnavailable: boolean;
+  /** True when the router was reached but does not proxy WebRTC. */
+  webrtcRouteUnavailable: boolean;
   voiceError?: string;
   publicEndpointError?: string;
 }
@@ -92,35 +92,35 @@ export function StartupModeSelector({ onReady }: Props) {
     async (skipSave: boolean) => {
       if (!inTauri) return;
       setError('');
-      const degraded: DegradedStartupInfo = { voiceFailed: false, publicEndpointFailed: false, livekitRouteUnavailable: false };
+      const degraded: DegradedStartupInfo = { voiceFailed: false, publicEndpointFailed: false, webrtcRouteUnavailable: false };
       try {
         // Clear any stale voice-disabled state from a previous failed attempt
         // so a successful startup does not inherit old failure flags.
         useVoiceStore.getState().setVoiceSessionDisabled(false);
 
-        // Auto-configure voice: start a local LiveKit server if not already configured.
+        // Auto-configure voice: start a local WebRTC server if not already configured.
         // If configured but unreachable, fall back to starting a local instance.
         // Must happen BEFORE startEmbeddedServer so env vars are picked up.
         setPhase('starting_voice');
         try {
-          const lkConfig = await getLiveKitConfig();
+          const lkConfig = await getWebRtcConfig();
           if (!lkConfig.configured) {
-            await startLocalLiveKit();
+            await startLocalWebRtc();
           } else {
             // Verify the configured endpoint is actually reachable
-            const reachCheck = await checkLiveKitReachable(lkConfig.url);
+            const reachCheck = await checkWebRtcReachable(lkConfig.url);
             if (!reachCheck.reachable) {
-              console.warn('Configured LiveKit unreachable, starting local fallback:', reachCheck.error);
-              await startLocalLiveKit();
+              console.warn('Configured WebRTC unreachable, starting local fallback:', reachCheck.error);
+              await startLocalWebRtc();
             }
           }
         } catch (voiceErr) {
           degraded.voiceFailed = true;
           degraded.voiceError = voiceErr instanceof Error ? voiceErr.message : String(voiceErr);
           console.warn('Auto-configure voice failed (voice may be unavailable):', voiceErr);
-          // Clear LiveKit env vars so the embedded server does not pick up
-          // the dev fallback URL when LiveKit actually failed to start.
-          try { await clearLiveKitEnv(); } catch { /* best effort */ }
+          // Clear WebRTC env vars so the embedded server does not pick up
+          // the dev fallback URL when WebRTC actually failed to start.
+          try { await clearWebRtcEnv(); } catch { /* best effort */ }
           // Propagate disabled state to the voice store so VoicePanel knows
           // not to offer Join/Create Call with stale fallback config.
           useVoiceStore.getState().setVoiceSessionDisabled(
@@ -139,11 +139,11 @@ export function StartupModeSelector({ onReady }: Props) {
         setPhase('acquiring_endpoint');
         try {
           await acquirePublicEndpoint();
-          // Check whether the router proxies LiveKit traffic
+          // Check whether the router proxies WebRTC traffic
           try {
             const epInfo = await getPublicEndpoint();
-            if (epInfo && !epInfo.public_livekit_url) {
-              degraded.livekitRouteUnavailable = true;
+            if (epInfo && !epInfo.public_webrtc_url) {
+              degraded.webrtcRouteUnavailable = true;
             }
           } catch {
             // Non-fatal — the endpoint query may not be available yet
@@ -157,7 +157,7 @@ export function StartupModeSelector({ onReady }: Props) {
         if (!skipSave) {
           await saveStartupMode({ startup_mode: { mode: 'host' } });
         }
-        onReady(degraded.voiceFailed || degraded.publicEndpointFailed || degraded.livekitRouteUnavailable ? degraded : undefined);
+        onReady(degraded.voiceFailed || degraded.publicEndpointFailed || degraded.webrtcRouteUnavailable ? degraded : undefined);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
         setPhase('error');
@@ -400,8 +400,8 @@ export function StartupModeSelector({ onReady }: Props) {
               Run your own Annex server on this device. A public URL is
               automatically configured so others can connect to you.
               Voice/video calls work locally. Remote voice is available
-              only when the router also proxies LiveKit traffic or a
-              separate LiveKit deployment is configured.
+              only when the router also proxies WebRTC traffic or a
+              separate WebRTC deployment is configured.
             </p>
             <button className="primary-btn" onClick={() => applyHost(false)}>
               Start Hosting

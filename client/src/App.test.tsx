@@ -178,9 +178,9 @@ vi.mock('@/lib/tauri', () => ({
   acquirePublicEndpoint: vi.fn(async () => 'https://host-abc123.router.annex.net'),
   releasePublicEndpoint: vi.fn(async () => {}),
   getPublicEndpoint: vi.fn(async () => null),
-  getLiveKitConfig: vi.fn(async () => ({ configured: false, url: '', api_key: '', has_api_secret: false, token_ttl_seconds: 3600 })),
-  startLocalLiveKit: vi.fn(async () => ({ url: 'ws://127.0.0.1:7880' })),
-  checkLiveKitReachable: vi.fn(async () => ({ reachable: true })),
+  getWebRtcConfig: vi.fn(async () => ({ configured: false, url: '', api_key: '', has_api_secret: false, token_ttl_seconds: 3600 })),
+  startLocalWebRtc: vi.fn(async () => ({ url: 'ws://127.0.0.1:7880' })),
+  checkWebRtcReachable: vi.fn(async () => ({ reachable: true })),
   exportIdentityJson: vi.fn(async () => null),
   getPlatformMediaStatus: vi.fn(async () => ({ screen_share_available: true, camera_mic_available: true, warnings: [], display_server: 'test' })),
   listenForInvite: vi.fn(async () => () => {}),
@@ -188,7 +188,7 @@ vi.mock('@/lib/tauri', () => ({
   checkFirstRunCompleted: vi.fn(async () => false),
   markFirstRunCompleted: vi.fn(async () => {}),
   resetServerData: vi.fn(async () => {}),
-  clearLiveKitEnv: vi.fn(async () => {}),
+  clearWebRtcEnv: vi.fn(async () => {}),
 }));
 
 // ── Helpers ──
@@ -597,7 +597,7 @@ describe('App startup flow', () => {
       });
     });
 
-    it('renders degraded startup banner when livekitRouteUnavailable after host start', async () => {
+    it('renders degraded startup banner when webrtcRouteUnavailable after host start', async () => {
       tauriEnabled = true;
       const dbMock = await import('@/lib/db');
       vi.mocked(dbMock.listIdentities).mockResolvedValue([FAKE_IDENTITY]);
@@ -606,11 +606,11 @@ describe('App startup flow', () => {
         startup_mode: { mode: 'host' },
       });
       vi.mocked(tauri.checkFirstRunCompleted).mockResolvedValue(true);
-      // getPublicEndpoint returns public_url but no public_livekit_url
+      // getPublicEndpoint returns public_url but no public_webrtc_url
       vi.mocked(tauri.getPublicEndpoint).mockResolvedValue({
         public_url: 'https://host.router.annex.net',
-        public_livekit_url: null,
-      } as { public_url: string; public_livekit_url: string | null });
+        public_webrtc_url: null,
+      } as { public_url: string; public_webrtc_url: string | null });
 
       const App = (await import('./App')).default;
       render(<App />);

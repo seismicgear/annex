@@ -40,7 +40,7 @@ export function desktopCorsGuidance(): string {
 
 export interface PublicEndpointInfo {
   public_url: string;
-  public_livekit_url: string | null;
+  public_webrtc_url: string | null;
 }
 
 export interface StartupPrefsHost {
@@ -104,9 +104,9 @@ export async function exportIdentityJson(json: string): Promise<string | null> {
   return invoke<string | null>('export_identity_json', { json });
 }
 
-// ── LiveKit configuration ──
+// ── WebRTC configuration ──
 
-export interface LiveKitSettings {
+export interface WebRtcSettings {
   configured: boolean;
   url: string;
   api_key: string;
@@ -114,23 +114,23 @@ export interface LiveKitSettings {
   token_ttl_seconds: number;
 }
 
-/** Read the current LiveKit configuration status. */
-export async function getLiveKitConfig(): Promise<LiveKitSettings> {
-  return invoke<LiveKitSettings>('get_livekit_config');
+/** Read the current WebRTC configuration status. */
+export async function getWebRtcConfig(): Promise<WebRtcSettings> {
+  return invoke<WebRtcSettings>('get_webrtc_config');
 }
 
-/** Start a local LiveKit server. Returns the LiveKit WebSocket URL. */
-export async function startLocalLiveKit(): Promise<{ url: string }> {
-  return invoke<{ url: string }>('start_local_livekit');
+/** Start a local WebRTC server. Returns the WebRTC WebSocket URL. */
+export async function startLocalWebRtc(): Promise<{ url: string }> {
+  return invoke<{ url: string }>('start_local_webrtc');
 }
 
 /**
- * Clear LiveKit environment variables so the embedded server does not
- * pick up the dev fallback URL when LiveKit actually failed to start.
+ * Clear WebRTC environment variables so the embedded server does not
+ * pick up the dev fallback URL when WebRTC actually failed to start.
  * Must be called BEFORE startEmbeddedServer().
  */
-export async function clearLiveKitEnv(): Promise<void> {
-  return invoke<void>('clear_livekit_env');
+export async function clearWebRtcEnv(): Promise<void> {
+  return invoke<void>('clear_webrtc_env');
 }
 
 // ── Platform media status ──
@@ -188,11 +188,11 @@ export async function markFirstRunCompleted(): Promise<void> {
   await invoke('mark_first_run_completed');
 }
 
-// ── LiveKit reachability check ──
+// ── WebRTC reachability check ──
 
-/** Check if a LiveKit server is reachable at the given URL. */
-export async function checkLiveKitReachable(url: string): Promise<{ reachable: boolean; error?: string }> {
-  return invoke<{ reachable: boolean; error?: string }>('check_livekit_reachable', { url });
+/** Check if a WebRTC server is reachable at the given URL. */
+export async function checkWebRtcReachable(url: string): Promise<{ reachable: boolean; error?: string }> {
+  return invoke<{ reachable: boolean; error?: string }>('check_webrtc_reachable', { url });
 }
 
 // ── Deep-link invite listener ──

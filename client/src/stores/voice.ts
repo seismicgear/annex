@@ -43,21 +43,21 @@ function getJoinErrorMessage(error: unknown): JoinError {
   return { display: 'Failed to join voice', code: null, setupHint: null };
 }
 
-/** LiveKit room connection lifecycle state. */
+/** WebRTC room connection lifecycle state. */
 export type ConnectionState = 'idle' | 'connecting' | 'connected' | 'failed';
 
 export interface VoiceState {
-  /** LiveKit access token for the current session. */
+  /** WebRTC access token for the current session. */
   voiceToken: string | null;
-  /** LiveKit server URL. */
-  livekitUrl: string | null;
+  /** WebRTC server URL. */
+  webrtcUrl: string | null;
   /** ICE (STUN/TURN) servers for WebRTC NAT traversal. */
   iceServers: api.IceServerConfig[];
   /** Channel ID the call is connected to. */
   connectedChannelId: string | null;
   /** Per-channel join-in-progress status (keyed by channelId). */
   joiningByChannel: Record<string, boolean>;
-  /** LiveKit room connection state. */
+  /** WebRTC room connection state. */
   connectionState: ConnectionState;
   /** Error string from connection failure. */
   connectionError: string | null;
@@ -87,7 +87,7 @@ export interface VoiceState {
   /** Camera device ID (persisted). */
   cameraDeviceId: string | null;
 
-  /** True when voice was unavailable at startup (e.g. LiveKit failed to start). */
+  /** True when voice was unavailable at startup (e.g. WebRTC failed to start). */
   voiceSessionDisabled: boolean;
   /** Reason voice is disabled for this session. */
   voiceSessionDisabledReason: string | null;
@@ -110,9 +110,9 @@ export interface VoiceState {
   setInputVolume: (vol: number) => void;
   setOutputVolume: (vol: number) => void;
   setCameraDevice: (deviceId: string | null) => void;
-  /** Update the LiveKit room connection state. */
+  /** Update the WebRTC room connection state. */
   setConnectionState: (state: ConnectionState, error?: string | null) => void;
-  /** Shared async mic toggle — updates store only after LiveKit succeeds. */
+  /** Shared async mic toggle — updates store only after WebRTC succeeds. */
   toggleMicAsync: (localParticipant: unknown) => Promise<void>;
   /** Check if a call is active on a channel (for polling). */
   checkCallActive: (pseudonymId: string, channelId: string) => Promise<void>;
@@ -155,7 +155,7 @@ const saved = loadAudioSettings();
 
 export const useVoiceStore = create<VoiceState>((set, get) => ({
   voiceToken: null,
-  livekitUrl: null,
+  webrtcUrl: null,
   iceServers: [],
   connectedChannelId: null,
   joiningByChannel: {},
@@ -201,7 +201,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       if (get().activeJoinRequestId !== requestId) return;
       set((s) => ({
         voiceToken: token,
-        livekitUrl: url,
+        webrtcUrl: url,
         iceServers: ice_servers ?? [],
         connectedChannelId: channelId,
         joiningByChannel: { ...s.joiningByChannel, [channelId]: false },
@@ -232,7 +232,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     }
     set((s) => ({
       voiceToken: null,
-      livekitUrl: null,
+      webrtcUrl: null,
       iceServers: [],
       connectedChannelId: null,
       deafened: false,
@@ -278,7 +278,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       const { connectedChannelId } = get();
       set({
         voiceToken: null,
-        livekitUrl: null,
+        webrtcUrl: null,
         iceServers: [],
         connectedChannelId: null,
         lastFailedChannelId: connectedChannelId,
@@ -292,7 +292,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       await lp.setMicrophoneEnabled(shouldEnable);
       set({ micMuted: !shouldEnable, micToggleError: null });
     } catch (err) {
-      // Explicitly restore store to match real LiveKit state
+      // Explicitly restore store to match real WebRTC state
       set({ micMuted: !lp.isMicrophoneEnabled, micToggleError: err instanceof Error ? err.message : 'Microphone toggle failed' });
       console.warn('[voice] toggleMicAsync failed:', err);
       throw err;
@@ -338,7 +338,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     const { connectedChannelId } = get();
     set({
       voiceToken: null,
-      livekitUrl: null,
+      webrtcUrl: null,
       iceServers: [],
       connectedChannelId: null,
       lastFailedChannelId: connectedChannelId,
@@ -349,7 +349,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   forceReset: () => {
     set({
       voiceToken: null,
-      livekitUrl: null,
+      webrtcUrl: null,
       iceServers: [],
       connectedChannelId: null,
       joiningByChannel: {},

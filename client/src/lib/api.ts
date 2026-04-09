@@ -522,14 +522,14 @@ export async function setPublicUrl(
   });
 }
 
-export async function setLivekitPublicUrl(
+export async function setWebrtcPublicUrl(
   pseudonymId: string,
-  publicLivekitUrl: string,
-): Promise<{ status: string; public_livekit_url: string }> {
-  return request<{ status: string; public_livekit_url: string }>('/api/admin/livekit-public-url', {
+  publicWebrtcUrl: string,
+): Promise<{ status: string; public_webrtc_url: string }> {
+  return request<{ status: string; public_webrtc_url: string }>('/api/admin/webrtc-public-url', {
     method: 'PUT',
     headers: authHeaders(pseudonymId),
-    body: JSON.stringify({ public_livekit_url: publicLivekitUrl }),
+    body: JSON.stringify({ public_webrtc_url: publicWebrtcUrl }),
   });
 }
 
@@ -808,13 +808,13 @@ export interface VoiceConfigStatus {
   voice_enabled: boolean;
   /** Whether voice is enabled in the server policy (admin toggle). */
   policy_enabled: boolean;
-  /** Whether the LiveKit infrastructure is configured and reachable. */
+  /** Whether the WebRTC infrastructure is configured and reachable. */
   infrastructure_ready: boolean;
   has_public_url: boolean;
   setup_hint: string;
 }
 
-/** Get the server's voice (LiveKit) configuration status (public, no auth). */
+/** Get the server's voice (WebRTC) configuration status (public, no auth). */
 export async function getVoiceConfigStatus(): Promise<VoiceConfigStatus> {
   return request<VoiceConfigStatus>('/api/voice/config-status');
 }
