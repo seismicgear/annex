@@ -1,2 +1,4 @@
 [env]
-CMAKE_ARGS = "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
+# audiopus_sys v0.2.2's vendored Opus CMakeLists.txt uses an old
+# cmake_minimum_required() form that fails under CMake 4.x unless this is set.
+CMAKE_POLICY_VERSION_MINIMUM = "3.5"
