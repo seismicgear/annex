@@ -15,7 +15,7 @@ webrtc = "0.11"
 dashmap = "6"
 bytes = "1"
 base64 = "0.22"
-audiopus = "0.3"
+audiopus = "=0.3.0-rc.0"
 
 [dev-dependencies]
 jsonwebtoken = "9.3"
