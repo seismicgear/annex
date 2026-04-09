@@ -294,7 +294,6 @@ version = "0.0.1"
 dependencies = [
  "annex-types",
  "audiopus",
- "audiopus_sys",
  "base64 0.22.1",
  "bytes",
  "dashmap",
