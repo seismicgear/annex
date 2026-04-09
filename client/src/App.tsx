@@ -31,7 +31,7 @@ import { StartupModeSelector, type DegradedStartupInfo } from '@/components/Star
 import { clearWebStartupMode } from '@/lib/startup-prefs';
 import { parseLegacyInviteFromUrl, clearInviteFromUrl, createInviteLink } from '@/lib/invite';
 import { getPersonasForIdentity } from '@/lib/personas';
-import { getApiBaseUrl, getServerSummary, redeemInvite, setPublicUrl, setLivekitPublicUrl, getSessionToken, setSessionToken, isTokenExpired, refreshSessionToken, startTokenRefresh, stopTokenRefresh } from '@/lib/api';
+import { getApiBaseUrl, getServerSummary, redeemInvite, setPublicUrl, setWebrtcPublicUrl, getSessionToken, setSessionToken, isTokenExpired, refreshSessionToken, startTokenRefresh, stopTokenRefresh } from '@/lib/api';
 import { saveIdentity, clearAllDatabases } from '@/lib/db';
 import { cancelMembershipProofGeneration, isProofGenerationInFlight } from '@/lib/zk';
 import type { ProvingStatus } from '@/stores/identity';
@@ -519,18 +519,18 @@ export default function App() {
         if (cancelled || !endpointInfo) return;
         // Set the router-provided URL as the server's public URL
         await setPublicUrl(identity.pseudonymId!, endpointInfo.public_url);
-        // Push the LiveKit public URL into the running server so remote
+        // Push the WebRTC public URL into the running server so remote
         // voice join responses return a globally-reachable URL.
-        if (endpointInfo.public_livekit_url) {
-          await setLivekitPublicUrl(identity.pseudonymId!, endpointInfo.public_livekit_url).catch(() => {
+        if (endpointInfo.public_webrtc_url) {
+          await setWebrtcPublicUrl(identity.pseudonymId!, endpointInfo.public_webrtc_url).catch(() => {
             // Non-fatal: remote voice may use fallback URL
           });
         } else {
-          // No LiveKit URL from router — remote voice/video will not work.
+          // No WebRTC URL from router — remote voice/video will not work.
           setDegradedStartup((prev) => ({
             voiceFailed: prev?.voiceFailed ?? false,
             publicEndpointFailed: prev?.publicEndpointFailed ?? false,
-            livekitRouteUnavailable: true,
+            webrtcRouteUnavailable: true,
             voiceError: prev?.voiceError,
             publicEndpointError: prev?.publicEndpointError,
           }));
@@ -957,8 +957,8 @@ export default function App() {
           {degradedStartup.publicEndpointFailed && (
             <span>Server started, but public invites are unavailable{degradedStartup.publicEndpointError ? `: ${degradedStartup.publicEndpointError}` : ''}.</span>
           )}
-          {degradedStartup.livekitRouteUnavailable && (
-            <span>Public endpoint acquired, but remote voice/video is unavailable — the router does not proxy LiveKit traffic.</span>
+          {degradedStartup.webrtcRouteUnavailable && (
+            <span>Public endpoint acquired, but remote voice/video is unavailable — the router does not proxy WebRTC traffic.</span>
           )}
           <button onClick={() => setDegradedStartup(null)} className="dismiss-banner-btn" aria-label="Dismiss">&times;</button>
         </div>

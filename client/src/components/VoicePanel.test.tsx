@@ -5,7 +5,7 @@ import { VoicePanel } from './VoicePanel';
 
 type VoiceStoreSnapshot = {
   voiceToken: string | null;
-  livekitUrl: string | null;
+  webrtcUrl: string | null;
   iceServers: Array<{ urls: string[]; username?: string; credential?: string }>;
   connectedChannelId: string | null;
   joiningByChannel: Record<string, boolean>;
@@ -98,7 +98,7 @@ const mockSetMicrophoneEnabled = vi.fn(async () => {});
 const mockSetScreenShareEnabled = vi.fn(async () => {});
 
 vi.mock('@livekit/components-react', () => ({
-  LiveKitRoom: ({ children }: { children: ReactNode }) => <div data-testid="livekit-room">{children}</div>,
+  LiveKitRoom: ({ children }: { children: ReactNode }) => <div data-testid="webrtc-room">{children}</div>,
   RoomAudioRenderer: () => null,
   useParticipants: () => [],
   useTracks: () => [],
@@ -144,7 +144,7 @@ const mockUseConnectionState = vi.fn(() => mockLkConnectionState);
 function defaultVoiceState(): VoiceStoreSnapshot {
   return {
     voiceToken: null,
-    livekitUrl: null,
+    webrtcUrl: null,
     iceServers: [],
     connectedChannelId: null,
     joiningByChannel: {},
@@ -223,21 +223,21 @@ describe('VoicePanel', () => {
     voiceState = {
       ...voiceState,
       voiceToken: 'token-123',
-      livekitUrl: 'wss://livekit.example',
+      webrtcUrl: 'wss://webrtc.example',
       connectedChannelId: 'chan-1',
     };
 
     rerender(<VoicePanel />);
 
     expect(screen.getByText(/Voice Connected/)).toBeInTheDocument();
-    expect(screen.getByTestId('livekit-room')).toBeInTheDocument();
+    expect(screen.getByTestId('webrtc-room')).toBeInTheDocument();
   });
 
   it('renders connected state with ICE servers configured', () => {
     voiceState = {
       ...voiceState,
       voiceToken: 'token-ice',
-      livekitUrl: 'wss://livekit.example',
+      webrtcUrl: 'wss://webrtc.example',
       iceServers: [
         { urls: ['stun:stun.l.google.com:19302'] },
         { urls: ['turn:turn.example.com:3478'], username: 'user', credential: 'pass' },
@@ -248,14 +248,14 @@ describe('VoicePanel', () => {
     render(<VoicePanel />);
 
     expect(screen.getByText(/Voice Connected/)).toBeInTheDocument();
-    expect(screen.getByTestId('livekit-room')).toBeInTheDocument();
+    expect(screen.getByTestId('webrtc-room')).toBeInTheDocument();
   });
 
   it('renders connected state with empty ICE servers (defaults)', () => {
     voiceState = {
       ...voiceState,
       voiceToken: 'token-no-ice',
-      livekitUrl: 'wss://livekit.example',
+      webrtcUrl: 'wss://webrtc.example',
       iceServers: [],
       connectedChannelId: 'chan-1',
     };
@@ -263,7 +263,7 @@ describe('VoicePanel', () => {
     render(<VoicePanel />);
 
     expect(screen.getByText(/Voice Connected/)).toBeInTheDocument();
-    expect(screen.getByTestId('livekit-room')).toBeInTheDocument();
+    expect(screen.getByTestId('webrtc-room')).toBeInTheDocument();
   });
 
   it('shows platform media warnings when PipeWire is missing', async () => {
@@ -311,7 +311,7 @@ describe('VoicePanel', () => {
     voiceState = {
       ...voiceState,
       voiceToken: 'token-stale',
-      livekitUrl: 'wss://livekit.example',
+      webrtcUrl: 'wss://webrtc.example',
       connectedChannelId: 'chan-1',
     };
     // activeServerId differs from what was set when call was joined
@@ -328,7 +328,7 @@ describe('VoicePanel', () => {
     voiceState = {
       ...voiceState,
       voiceToken: 'token-cam',
-      livekitUrl: 'wss://livekit.example',
+      webrtcUrl: 'wss://webrtc.example',
       connectedChannelId: 'chan-1',
       cameraDeviceId: 'webcam-42',
     };
@@ -356,7 +356,7 @@ describe('VoicePanel', () => {
     voiceState = {
       ...voiceState,
       voiceToken: 'token-cam',
-      livekitUrl: 'wss://livekit.example',
+      webrtcUrl: 'wss://webrtc.example',
       connectedChannelId: 'chan-1',
       cameraDeviceId: 'stale-webcam',
     };
@@ -383,7 +383,7 @@ describe('VoicePanel', () => {
     voiceState = {
       ...voiceState,
       voiceToken: 'token-screen',
-      livekitUrl: 'wss://livekit.example',
+      webrtcUrl: 'wss://webrtc.example',
       connectedChannelId: 'chan-1',
     };
 
@@ -404,7 +404,7 @@ describe('VoicePanel', () => {
     voiceState = {
       ...voiceState,
       voiceToken: 'token-sync',
-      livekitUrl: 'wss://livekit.example',
+      webrtcUrl: 'wss://webrtc.example',
       connectedChannelId: 'chan-1',
       deafened: true,
       outputVolume: 50,
@@ -415,7 +415,7 @@ describe('VoicePanel', () => {
       render(<VoicePanel />);
     });
 
-    // Simulate LiveKit inserting a container with an <audio> child after mount
+    // Simulate WebRTC inserting a container with an <audio> child after mount
     const container = document.createElement('div');
     const audio = document.createElement('audio');
     container.appendChild(audio);
@@ -438,7 +438,7 @@ describe('VoicePanel', () => {
     voiceState = {
       ...voiceState,
       voiceToken: 'token-sink',
-      livekitUrl: 'wss://livekit.example',
+      webrtcUrl: 'wss://webrtc.example',
       connectedChannelId: 'chan-1',
       outputDeviceId: null,
     };
@@ -473,13 +473,13 @@ describe('VoicePanel', () => {
     expect(screen.getByRole('button', { name: 'Joining...' })).toBeDisabled();
   });
 
-  it('returns to join/create state after LiveKit disconnect with error shown', () => {
+  it('returns to join/create state after WebRTC disconnect with error shown', () => {
     // Start in connected state
     mockLkConnectionState = 'connected';
     voiceState = {
       ...voiceState,
       voiceToken: 'token-disc',
-      livekitUrl: 'wss://livekit.example',
+      webrtcUrl: 'wss://webrtc.example',
       connectedChannelId: 'chan-1',
       connectionState: 'connected',
     };
@@ -492,7 +492,7 @@ describe('VoicePanel', () => {
     voiceState = {
       ...voiceState,
       voiceToken: null,
-      livekitUrl: null,
+      webrtcUrl: null,
       connectedChannelId: null,
       connectionState: 'failed',
       connectionError: 'Voice disconnected — the connection was lost.',
@@ -513,7 +513,7 @@ describe('VoicePanel', () => {
     voiceState = {
       ...voiceState,
       voiceToken: 'token-resume',
-      livekitUrl: 'wss://livekit.example',
+      webrtcUrl: 'wss://webrtc.example',
       connectedChannelId: 'chan-1',
       connectionState: 'connected',
     };
@@ -527,7 +527,7 @@ describe('VoicePanel', () => {
     // that state externally in the mock, we verify the component renders
     // without errors and the mock is correctly wired.
     // The interrupted state is set via useTauriMediaRestore callback.
-    expect(screen.getByTestId('livekit-room')).toBeInTheDocument();
+    expect(screen.getByTestId('webrtc-room')).toBeInTheDocument();
   });
 
   it('disables mic/camera buttons when camera_mic_available is blocked', async () => {
@@ -541,7 +541,7 @@ describe('VoicePanel', () => {
     voiceState = {
       ...voiceState,
       voiceToken: 'token-blocked',
-      livekitUrl: 'wss://livekit.example',
+      webrtcUrl: 'wss://webrtc.example',
       connectedChannelId: 'chan-1',
       connectionState: 'connected',
     };
@@ -568,7 +568,7 @@ describe('VoicePanel', () => {
     voiceState = {
       ...voiceState,
       voiceToken: 'token-speak',
-      livekitUrl: 'wss://livekit.example',
+      webrtcUrl: 'wss://webrtc.example',
       connectedChannelId: 'chan-1',
       connectionState: 'connected',
     };
@@ -586,7 +586,7 @@ describe('VoicePanel', () => {
     voiceState = {
       ...voiceState,
       voiceToken: null,
-      livekitUrl: null,
+      webrtcUrl: null,
       connectedChannelId: null,
       connectionState: 'failed',
       connectionError: 'Voice disconnected — the connection was lost.',
@@ -670,7 +670,7 @@ describe('VoicePanel', () => {
     voiceState = {
       ...voiceState,
       voiceToken: 'token-mic',
-      livekitUrl: 'wss://livekit.example',
+      webrtcUrl: 'wss://webrtc.example',
       connectedChannelId: 'chan-1',
       inputDeviceId: 'mic-device-42',
     };
@@ -702,7 +702,7 @@ describe('VoicePanel', () => {
     voiceState = {
       ...voiceState,
       voiceToken: null,
-      livekitUrl: null,
+      webrtcUrl: null,
       connectedChannelId: null,
       connectionState: 'failed',
       connectionError: 'Voice disconnected — the connection was lost.',
@@ -721,7 +721,7 @@ describe('VoicePanel', () => {
     voiceState = {
       ...voiceState,
       voiceSessionDisabled: true,
-      voiceSessionDisabledReason: 'Voice unavailable: LiveKit failed to start',
+      voiceSessionDisabledReason: 'Voice unavailable: WebRTC failed to start',
     };
 
     render(<VoicePanel />);
@@ -729,7 +729,7 @@ describe('VoicePanel', () => {
     const joinBtn = screen.getByRole('button', { name: 'Create Call' });
     expect(joinBtn).toBeDisabled();
     // The reason text appears in both the status notice and the error area
-    const matches = screen.getAllByText(/Voice unavailable: LiveKit failed to start/);
+    const matches = screen.getAllByText(/Voice unavailable: WebRTC failed to start/);
     expect(matches.length).toBeGreaterThanOrEqual(1);
   });
 
@@ -738,7 +738,7 @@ describe('VoicePanel', () => {
     voiceState = {
       ...voiceState,
       voiceSessionDisabled: true,
-      voiceSessionDisabledReason: 'Voice unavailable: LiveKit failed to start',
+      voiceSessionDisabledReason: 'Voice unavailable: WebRTC failed to start',
     };
 
     const { rerender } = render(<VoicePanel />);

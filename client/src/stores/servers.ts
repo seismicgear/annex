@@ -95,7 +95,7 @@ export const useServersStore = create<ServersState>((set, get) => ({
     const prevIdentity = useIdentityStore.getState().identity;
 
     // Leave or forcibly clear any active voice session BEFORE changing
-    // activeServerId. This prevents the old LiveKitRoom from being rendered
+    // activeServerId. This prevents the old in-call room from being rendered
     // under the new server's state.
     const voiceStore = useVoiceStore.getState();
     if (voiceStore.connectedChannelId || voiceStore.voiceToken) {

@@ -17,11 +17,11 @@ vi.mock('@/lib/tauri', async () => {
     clearStartupMode: vi.fn(async () => {}),
     startEmbeddedServer: vi.fn(async () => 'http://127.0.0.1:9999'),
     acquirePublicEndpoint: vi.fn(async () => 'https://host-abc123.router.annex.net'),
-    getLiveKitConfig: vi.fn(async () => ({ configured: false, url: '', api_key: '', has_api_secret: false, token_ttl_seconds: 3600 })),
-    startLocalLiveKit: vi.fn(async () => ({ url: 'ws://127.0.0.1:7880' })),
+    getWebRtcConfig: vi.fn(async () => ({ configured: false, url: '', api_key: '', has_api_secret: false, token_ttl_seconds: 3600 })),
+    startLocalWebRtc: vi.fn(async () => ({ url: 'ws://127.0.0.1:7880' })),
     exportIdentityJson: vi.fn(async () => null),
     getPlatformMediaStatus: vi.fn(async () => ({ screen_share_available: true, camera_mic_available: true, warnings: [], display_server: 'test' })),
-    checkLiveKitReachable: vi.fn(async () => ({ reachable: true })),
+    checkWebRtcReachable: vi.fn(async () => ({ reachable: true })),
   };
 });
 
