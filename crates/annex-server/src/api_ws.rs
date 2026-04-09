@@ -1576,7 +1576,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                         sdp_m_line_index,
                         username_fragment,
                     } => {
-                        let candidate = webrtc::ice_transport::ice_candidate::RTCIceCandidateInit {
+                        let candidate = annex_voice::RTCIceCandidateInit {
                             candidate,
                             sdp_mid,
                             sdp_mline_index: sdp_m_line_index,

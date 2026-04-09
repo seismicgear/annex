@@ -612,7 +612,9 @@ fn sync_config_defaults_to_disk(
             .unwrap_or_else(|_| toml::Value::Table(toml::map::Map::new()))
     };
 
-    let Some(root_table) = root.as_table_mut() else {
+    let root_table = if let Some(root_table) = root.as_table_mut() {
+        root_table
+    } else {
         root = toml::Value::Table(toml::map::Map::new());
         root.as_table_mut()
             .expect("just assigned TOML table root value")

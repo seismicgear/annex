@@ -15,3 +15,4 @@ pub use error::VoiceError;
 pub use service::{IceCandidateEvent, RoomInfo, SttTapFrame, VoiceService};
 pub use stt::SttService;
 pub use tts::TtsService;
+pub use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
