@@ -1,9 +1,8 @@
 use crate::config::{IceServer, WebRtcConfig};
 use crate::error::VoiceError;
-use audiopus::coder::Decoder as OpusDecoder;
-use audiopus::{Channels, SampleRate};
 use bytes::Bytes;
 use dashmap::DashMap;
+use opus_rs::OpusDecoder;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
 use tracing::{debug, error, warn};
@@ -24,6 +23,7 @@ use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 use webrtc::track::track_local::TrackLocal;
+use webrtc::track::track_local::TrackLocalWriter;
 
 #[derive(Debug, Clone)]
 pub struct RoomInfo {
@@ -54,7 +54,6 @@ struct Room {
     agent_track: Arc<TrackLocalStaticSample>,
 }
 
-#[derive(Debug)]
 pub struct VoiceService {
     config: WebRtcConfig,
     api: API,
@@ -65,6 +64,15 @@ pub struct VoiceService {
     ice_candidate_tx: broadcast::Sender<IceCandidateEvent>,
 }
 
+impl std::fmt::Debug for VoiceService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VoiceService")
+            .field("config", &self.config)
+            .field("rooms_len", &self.rooms.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl VoiceService {
     pub fn new(config: WebRtcConfig) -> Self {
         let mut media_engine = MediaEngine::default();
@@ -72,10 +80,10 @@ impl VoiceService {
             warn!(error = %e, "failed to register default codecs");
         }
 
-        let mut registry = Registry::new();
-        if let Ok(registered) = register_default_interceptors(registry, &mut media_engine) {
-            registry = registered;
-        }
+        let registry = match register_default_interceptors(Registry::new(), &mut media_engine) {
+            Ok(registered) => registered,
+            Err(_) => Registry::new(),
+        };
 
         let api = APIBuilder::new()
             .with_media_engine(media_engine)
@@ -434,8 +442,8 @@ impl VoiceService {
     ) -> Result<(), VoiceError> {
         let mut last_seq: Option<u16> = None;
         let mut last_pli = std::time::Instant::now();
-        let mut decoder = OpusDecoder::new(SampleRate::Hz48000, Channels::Mono)
-            .map_err(|e| VoiceError::Codec(e.to_string()))?;
+        let mut decoder =
+            OpusDecoder::new(48_000, 1).map_err(|e| VoiceError::Codec(e.to_string()))?;
 
         loop {
             let (rtp, _) = track
@@ -508,11 +516,12 @@ impl VoiceService {
         rtp: &RtpPacket,
         decoder: &mut OpusDecoder,
     ) {
-        let mut pcm = vec![0i16; 1920];
-        if let Ok(samples) = decoder.decode(&rtp.payload, &mut pcm, false) {
+        let mut pcm = vec![0f32; 1920];
+        if let Ok(samples) = decoder.decode(&rtp.payload, 960, &mut pcm) {
             let mut raw = Vec::with_capacity(samples * 2);
             for s in pcm.into_iter().take(samples) {
-                raw.extend_from_slice(&s.to_le_bytes());
+                let sample = s.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                raw.extend_from_slice(&sample.to_le_bytes());
             }
             let _ = self.stt_tap_tx.send(SttTapFrame {
                 channel_id: channel_id.to_string(),

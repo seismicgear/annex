@@ -293,8 +293,7 @@ pub fn encode_pcm_to_opus_frames(
     input_sample_rate: usize,
     input_channels: usize,
 ) -> Result<Vec<Vec<u8>>, VoiceError> {
-    use audiopus::coder::Encoder as OpusEncoder;
-    use audiopus::{Application, Channels, SampleRate};
+    use opus_rs::{Application, OpusEncoder};
 
     if input_channels == 0 {
         return Err(VoiceError::Codec(
@@ -350,8 +349,9 @@ pub fn encode_pcm_to_opus_frames(
         }
     };
 
-    let mut encoder = OpusEncoder::new(SampleRate::Hz48000, Channels::Mono, Application::Audio)
+    let mut encoder = OpusEncoder::new(48_000, 1, Application::Audio)
         .map_err(|e| VoiceError::Codec(format!("failed to create opus encoder: {e}")))?;
+    encoder.use_cbr = false;
 
     let frame_size = 960; // 20ms @ 48kHz
     let mut packets = Vec::new();
@@ -362,9 +362,10 @@ pub fn encode_pcm_to_opus_frames(
         let mut frame = vec![0i16; frame_size];
         frame[..take].copy_from_slice(&mono_48k[cursor..cursor + take]);
 
+        let frame_f32: Vec<f32> = frame.into_iter().map(|s| s as f32).collect();
         let mut encoded = vec![0u8; 4000];
         let written = encoder
-            .encode(&frame, &mut encoded)
+            .encode(&frame_f32, frame_size, &mut encoded)
             .map_err(|e| VoiceError::Codec(format!("opus encode failed: {e}")))?;
         encoded.truncate(written);
         packets.push(encoded);
