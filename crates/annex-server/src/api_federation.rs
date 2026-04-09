@@ -376,7 +376,8 @@ pub async fn receive_federated_message_handler(
     Extension(state): Extension<Arc<AppState>>,
     Json(envelope): Json<FederatedMessageEnvelope>,
 ) -> Result<Json<serde_json::Value>, FederationError> {
-    process_federated_message_envelope(state, envelope).await
+    let response = process_federated_message_envelope(state, envelope).await?;
+    Ok(Json(response))
 }
 
 /// Parses a data-channel payload and routes it through the exact same
@@ -393,7 +394,7 @@ pub async fn receive_federated_message_from_data_channel(
 async fn process_federated_message_envelope(
     state: Arc<AppState>,
     envelope: FederatedMessageEnvelope,
-) -> Result<Json<serde_json::Value>, FederationError> {
+) -> Result<serde_json::Value, FederationError> {
     let state_clone = state.clone();
     let channel_id_clone = envelope.channel_id.clone();
 
@@ -617,7 +618,7 @@ async fn process_federated_message_envelope(
         }
     }
 
-    Ok(Json(serde_json::json!({ "status": "received" })))
+    Ok(serde_json::json!({ "status": "received" }))
 }
 
 pub async fn federation_handshake_handler(
