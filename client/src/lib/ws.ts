@@ -176,6 +176,31 @@ export class AnnexWebSocket {
     this.ws.send(JSON.stringify({ type: 'typing', channelId }));
   }
 
+  /** Send a WebRTC SDP offer for voice signaling. */
+  sendWebRtcOffer(channelId: string, sdp: string): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    const frame: WsSendFrame = { type: 'webrtc_offer', channelId, sdp };
+    this.ws.send(JSON.stringify(frame));
+  }
+
+  /** Send an ICE candidate for WebRTC NAT traversal. */
+  sendIceCandidate(
+    channelId: string,
+    candidate: string,
+    sdpMid: string | null = null,
+    sdpMLineIndex: number | null = null,
+  ): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    const frame: WsSendFrame = {
+      type: 'webrtc_ice_candidate',
+      channelId,
+      candidate,
+      sdpMid,
+      sdpMLineIndex,
+    };
+    this.ws.send(JSON.stringify(frame));
+  }
+
   /** Register a handler for incoming messages. */
   onMessage(handler: WsMessageHandler): () => void {
     this.messageHandlers.add(handler);
