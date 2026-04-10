@@ -5,7 +5,7 @@ use annex_graph::{ensure_graph_node, role_code_to_node_type};
 use annex_identity::{
     create_platform_identity, derive_nullifier_hex, derive_pseudonym_id, ensure_founder,
     get_all_roles, get_all_topics, get_path_for_commitment, get_platform_identity,
-    insert_nullifier, register_identity,
+    insert_nullifier, register_identity, RegistrationResult,
     zk::{parse_fr_from_hex, parse_proof, parse_public_signals, verify_proof},
     Capabilities, PlatformIdentity, RoleCode, VrpRoleEntry, VrpTopic,
 };
@@ -319,26 +319,65 @@ pub async fn register_handler(
                 ApiError::InternalServerError("merkle tree lock poisoned".to_string())
             })?;
 
-            // Perform registration
-            let result = register_identity(
+            // Perform registration. If the commitment already exists (client
+            // retry or app restart), treat it as idempotent: look up the
+            // existing leaf and return the current Merkle path so the client
+            // can proceed with proof generation.
+            let result = match register_identity(
                 &mut tree,
                 &mut conn,
                 &payload.commitment_hex,
                 role,
                 payload.node_id,
-            )
-            .map_err(|e| match e {
-                annex_identity::IdentityError::InvalidCommitmentFormat
-                | annex_identity::IdentityError::InvalidRoleCode(_)
-                | annex_identity::IdentityError::InvalidHex => ApiError::BadRequest(e.to_string()),
-                annex_identity::IdentityError::DuplicateCommitment(_) => {
-                    ApiError::Conflict(e.to_string())
+            ) {
+                Ok(result) => result,
+                Err(annex_identity::IdentityError::DuplicateCommitment(_)) => {
+                    let commitment = payload.commitment_hex.to_ascii_lowercase();
+                    let (leaf_index, root_hex, path_elements, path_indices) =
+                        get_path_for_commitment(&tree, &conn, &commitment).map_err(|e| {
+                            ApiError::InternalServerError(format!(
+                                "duplicate commitment lookup failed: {e}"
+                            ))
+                        })?;
+                    // Look up the identity_id from vrp_identities for the response.
+                    let identity_id: i64 = conn
+                        .query_row(
+                            "SELECT rowid FROM vrp_identities WHERE commitment_hex = ?1",
+                            rusqlite::params![commitment],
+                            |row| row.get(0),
+                        )
+                        .map_err(|e| {
+                            ApiError::InternalServerError(format!(
+                                "duplicate commitment id lookup failed: {e}"
+                            ))
+                        })?;
+                    tracing::info!(
+                        commitment = %commitment,
+                        leaf_index,
+                        "idempotent re-registration: commitment already exists, returning existing path"
+                    );
+                    RegistrationResult {
+                        identity_id,
+                        leaf_index,
+                        root_hex,
+                        path_elements,
+                        path_indices,
+                    }
                 }
-                annex_identity::IdentityError::TreeFull => {
-                    ApiError::InternalServerError(e.to_string())
+                Err(e) => {
+                    return Err(match e {
+                        annex_identity::IdentityError::InvalidCommitmentFormat
+                        | annex_identity::IdentityError::InvalidRoleCode(_)
+                        | annex_identity::IdentityError::InvalidHex => {
+                            ApiError::BadRequest(e.to_string())
+                        }
+                        annex_identity::IdentityError::TreeFull => {
+                            ApiError::InternalServerError(e.to_string())
+                        }
+                        _ => ApiError::InternalServerError(e.to_string()),
+                    });
                 }
-                _ => ApiError::InternalServerError(e.to_string()),
-            })?;
+            };
 
             // Registration succeeded — now atomically claim the invite.
             // The WHERE clause re-checks max_uses to prevent races.
