@@ -7,9 +7,9 @@
  * - Screen sharing / game sharing (prominent overlay)
  * - Local self-view for camera, screen share, and mic status
  *
- * Uses @livekit/components-react for WebRTC transport.
- * WebRTC's can_publish grant covers all track sources (mic, camera, screen).
- * Video starts disabled; the user toggles camera/screen via control buttons.
+ * Uses native RTCPeerConnection connecting to the Annex Rust SFU.
+ * WebRTC signaling (SDP offer/answer, ICE candidates) is multiplexed
+ * over the existing authenticated WebSocket at /ws.
  *
  * Call state lives in the voice store so the call persists across
  * tab and channel switches (like Discord).
@@ -20,24 +20,95 @@
  * Device selection is applied to the WebRTC room when connected.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  LiveKitRoom as WebRtcRoom,
-  RoomAudioRenderer,
-  useParticipants,
-  useTracks,
-  VideoTrack,
-  useLocalParticipant,
-  useConnectionState,
-} from '@livekit/components-react';
-import '@livekit/components-styles';
-import { Track, ConnectionState as RoomConnectionState, type LocalParticipant } from 'livekit-client';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { WebRtcSession, TrackSource, ConnectionState as RoomConnectionState } from '@/lib/webrtc';
+import type { NativeConnectionState } from '@/lib/webrtc';
+import type { WsReceiveFrame } from '@/types';
 import { useIdentityStore } from '@/stores/identity';
 import { useChannelsStore } from '@/stores/channels';
 import { useVoiceStore } from '@/stores/voice';
 import { useServersStore } from '@/stores/servers';
 import * as api from '@/lib/api';
 import { isTauri, getPlatformMediaStatus, setMediaKeepalive, type PlatformMediaStatus } from '@/lib/tauri';
+
+// ── WebRTC React Context ──
+
+interface WebRtcContextValue {
+  session: WebRtcSession;
+  connectionState: NativeConnectionState;
+  /** Incremented on every local/remote track change to trigger re-renders. */
+  trackVersion: number;
+}
+
+const WebRtcContext = createContext<WebRtcContextValue | null>(null);
+
+function useWebRtcContext(): WebRtcContextValue {
+  const ctx = useContext(WebRtcContext);
+  if (!ctx) throw new Error('useWebRtcContext must be used inside NativeWebRtcRoom');
+  return ctx;
+}
+
+// ── Custom hooks (matching the component API of the previous transport layer) ──
+
+function useLocalParticipant() {
+  const { session, trackVersion } = useWebRtcContext();
+  void trackVersion; // subscribe to track changes
+  return {
+    localParticipant: session,
+    isMicrophoneEnabled: session.isMicrophoneEnabled,
+    isCameraEnabled: session.isCameraEnabled,
+    isScreenShareEnabled: session.isScreenShareEnabled,
+  };
+}
+
+function useConnectionState(): NativeConnectionState {
+  const { connectionState } = useWebRtcContext();
+  return connectionState;
+}
+
+// ── Native video track renderer ──
+
+function NativeVideoTrack({ track, muted = true }: { track: MediaStreamTrack; muted?: boolean }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el) return;
+    el.srcObject = new MediaStream([track]);
+    return () => { el.srcObject = null; };
+  }, [track]);
+
+  return <video ref={videoRef} autoPlay playsInline muted={muted} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />;
+}
+
+// ── Remote audio renderer (replaces RoomAudioRenderer) ──
+
+function RemoteAudioRenderer() {
+  const { session, trackVersion } = useWebRtcContext();
+  void trackVersion;
+  const tracks = session.remoteAudioTracks;
+
+  return (
+    <>
+      {tracks.map((rt) => (
+        <RemoteAudioElement key={rt.id} stream={rt.stream} />
+      ))}
+    </>
+  );
+}
+
+function RemoteAudioElement({ stream }: { stream: MediaStream }) {
+  const ref = useRef<HTMLAudioElement>(null);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.srcObject = stream;
+    return () => { el.srcObject = null; };
+  }, [stream]);
+
+  return <audio ref={ref} autoPlay data-webrtc-remote="" />;
+}
 
 // ── Helpers ──
 
@@ -153,7 +224,7 @@ function MediaControls({
   // When micMuted changes in the store (from StatusBar or here), apply to WebRTC.
   // On failure, revert the store to match the real WebRTC participant state.
   useEffect(() => {
-    const lp = localParticipant as LocalParticipant;
+    const lp = localParticipant as WebRtcSession;
     if (!lp) return;
     const shouldBeEnabled = !micMuted;
     if (lp.isMicrophoneEnabled !== shouldBeEnabled) {
@@ -415,39 +486,28 @@ function MediaControls({
 
 /** Local self-view: shows your own camera and screen share. */
 function LocalSelfView() {
-  const camTracks = useTracks([Track.Source.Camera]);
-  const screenTracks = useTracks([Track.Source.ScreenShare]);
-  const { localParticipant } = useLocalParticipant();
+  const { session, trackVersion } = useWebRtcContext();
+  void trackVersion;
 
-  const localCam = camTracks.find(
-    (t) =>
-      t.participant.identity === localParticipant.identity &&
-      t.publication &&
-      !t.publication.isMuted &&
-      t.publication.track,
-  );
+  const camPub = session.trackPublications.get(TrackSource.Camera);
+  const screenPub = session.trackPublications.get(TrackSource.ScreenShare);
 
-  const localScreen = screenTracks.find(
-    (t) =>
-      t.participant.identity === localParticipant.identity &&
-      t.publication &&
-      !t.publication.isMuted &&
-      t.publication.track,
-  );
+  const localCamTrack = camPub && !camPub.isMuted && camPub.track ? camPub.track.mediaStreamTrack : null;
+  const localScreenTrack = screenPub && !screenPub.isMuted && screenPub.track ? screenPub.track.mediaStreamTrack : null;
 
-  if (!localCam && !localScreen) return null;
+  if (!localCamTrack && !localScreenTrack) return null;
 
   return (
     <div className="local-self-view">
-      {localCam && (
+      {localCamTrack && (
         <div className="self-view-tile">
-          <VideoTrack trackRef={localCam} />
+          <NativeVideoTrack track={localCamTrack} />
           <span className="self-view-label">You (camera)</span>
         </div>
       )}
-      {localScreen && (
+      {localScreenTrack && (
         <div className="self-view-tile screen">
-          <VideoTrack trackRef={localScreen} />
+          <NativeVideoTrack track={localScreenTrack} />
           <span className="self-view-label">You (screen)</span>
         </div>
       )}
@@ -455,97 +515,61 @@ function LocalSelfView() {
   );
 }
 
-/** Prominent screen share display when someone else is sharing. */
+/** Prominent screen share display when someone else is sharing.
+ *  The SFU is audio-first and does not forward video tracks yet,
+ *  so remote screen shares are not available. This component is
+ *  retained for forward compatibility when video forwarding is added.
+ */
 function ScreenShareView() {
-  const screenTracks = useTracks([Track.Source.ScreenShare]);
-  const { localParticipant } = useLocalParticipant();
-
-  // Show remote screen shares prominently; local is shown in LocalSelfView.
-  const remoteShares = screenTracks.filter(
-    (t) =>
-      t.participant.identity !== localParticipant.identity &&
-      t.publication &&
-      !t.publication.isMuted &&
-      t.publication.track,
-  );
-
-  if (remoteShares.length === 0) return null;
-
-  const activeShare = remoteShares[0];
-
-  return (
-    <div className="screen-share-view">
-      <div className="screen-share-header">
-        <span className="screen-share-badge">LIVE</span>
-        <span className="screen-share-label">
-          {activeShare.participant.identity.slice(0, 12)}... is sharing
-        </span>
-      </div>
-      <div className="screen-share-content">
-        <VideoTrack trackRef={activeShare} />
-      </div>
-    </div>
-  );
+  // No remote video tracks from the SFU currently — return null.
+  return null;
 }
 
-/** Participant grid with video tiles or audio-only avatars. */
+/** Participant grid — shows local user tile with camera/speaking state.
+ *  Remote participants are represented by their incoming audio tracks.
+ *  The SFU does not broadcast a participant roster, so remote entries
+ *  are derived from the number of remote audio tracks received.
+ */
 function ParticipantGrid() {
-  const participants = useParticipants();
-  const camTracks = useTracks([Track.Source.Camera]);
+  const { session, trackVersion } = useWebRtcContext();
+  void trackVersion;
 
-  // Use WebRTC's active-speaker data: participant.isSpeaking reflects
-  // audio-level analysis, not just unmuted status. This prevents marking
-  // every unmuted participant as speaking.
-  const speakingIds = new Set(
-    participants
-      .filter((p) => p.isSpeaking)
-      .map((p) => p.identity),
-  );
-
-  const cameraByIdentity = new Map(
-    camTracks
-      .filter((t) => t.publication && !t.publication.isMuted)
-      .map((t) => [t.participant.identity, t]),
-  );
-
-  const hasAnyVideo = cameraByIdentity.size > 0;
+  const identity = session.identity;
+  const isSpeaking = session.isSpeaking;
+  const camPub = session.trackPublications.get(TrackSource.Camera);
+  const localCamTrack = camPub && !camPub.isMuted && camPub.track ? camPub.track.mediaStreamTrack : null;
+  const hasAnyVideo = !!localCamTrack;
+  const remoteTrackCount = session.remoteAudioTracks.length;
 
   return (
     <div className={`participant-grid ${hasAnyVideo ? 'has-video' : 'audio-only'}`}>
-      {participants.map((p) => {
-        const camTrack = cameraByIdentity.get(p.identity);
-        const isSpeaking = speakingIds.has(p.identity);
-
-        if (camTrack?.publication?.track) {
-          return (
-            <div
-              key={p.identity}
-              className={`participant-tile video ${isSpeaking ? 'speaking' : ''}`}
-            >
-              <VideoTrack trackRef={camTrack} />
-              <span className="participant-label">
-                {p.identity.slice(0, 12)}...
-                {isSpeaking && <span className="speaking-indicator" />}
-              </span>
-            </div>
-          );
-        }
-
-        return (
-          <div
-            key={p.identity}
-            className={`participant-tile audio-tile ${isSpeaking ? 'speaking' : ''}`}
-          >
-            <div className="participant-avatar-circle">
-              {p.identity.charAt(0).toUpperCase()}
-            </div>
-            <span className="participant-label">
-              {p.identity.slice(0, 12)}...
-              {isSpeaking && <span className="speaking-indicator" />}
-            </span>
+      {/* Local participant */}
+      {localCamTrack ? (
+        <div className={`participant-tile video ${isSpeaking ? 'speaking' : ''}`}>
+          <NativeVideoTrack track={localCamTrack} />
+          <span className="participant-label">
+            {identity.slice(0, 12)}...
+            {isSpeaking && <span className="speaking-indicator" />}
+          </span>
+        </div>
+      ) : (
+        <div className={`participant-tile audio-tile ${isSpeaking ? 'speaking' : ''}`}>
+          <div className="participant-avatar-circle">
+            {identity.charAt(0).toUpperCase()}
           </div>
-        );
-      })}
+          <span className="participant-label">
+            {identity.slice(0, 12)}...
+            {isSpeaking && <span className="speaking-indicator" />}
+          </span>
+        </div>
+      )}
+      {/* Remote participants — one tile per incoming audio track */}
+      {Array.from({ length: remoteTrackCount }, (_, i) => (
+        <div key={`remote-${i}`} className="participant-tile audio-tile">
+          <div className="participant-avatar-circle">?</div>
+          <span className="participant-label">Participant</span>
+        </div>
+      ))}
     </div>
   );
 }
@@ -590,10 +614,10 @@ function useTauriMediaRestore(onScreenShareInterrupted?: () => void) {
         // Brief delay for the webview to fully resume
         await new Promise((r) => setTimeout(r, 200));
 
-        const lp = localParticipant as LocalParticipant;
+        const lp = localParticipant as WebRtcSession;
 
         // Helper: find a publication by source from the participant's track map.
-        const findPub = (source: Track.Source) => {
+        const findPub = (source: TrackSource) => {
           for (const pub of lp.trackPublications.values()) {
             if (pub.source === source) return pub;
           }
@@ -602,7 +626,7 @@ function useTauriMediaRestore(onScreenShareInterrupted?: () => void) {
 
         // Re-enable mic if it was on but the track ended
         if (lp.isMicrophoneEnabled) {
-          const pub = findPub(Track.Source.Microphone);
+          const pub = findPub(TrackSource.Microphone);
           if (pub?.track?.mediaStreamTrack?.readyState === 'ended') {
             try {
               await lp.setMicrophoneEnabled(false);
@@ -613,7 +637,7 @@ function useTauriMediaRestore(onScreenShareInterrupted?: () => void) {
 
         // Re-enable camera if it was on but the track ended
         if (lp.isCameraEnabled) {
-          const pub = findPub(Track.Source.Camera);
+          const pub = findPub(TrackSource.Camera);
           if (pub?.track?.mediaStreamTrack?.readyState === 'ended') {
             try {
               await lp.setCameraEnabled(false);
@@ -627,7 +651,7 @@ function useTauriMediaRestore(onScreenShareInterrupted?: () => void) {
         // allow getDisplayMedia() without a user gesture (unlike Chrome).
         // If that fails, clean up and notify the UI to show a resume banner.
         if (lp.isScreenShareEnabled) {
-          const pub = findPub(Track.Source.ScreenShare);
+          const pub = findPub(TrackSource.ScreenShare);
           if (pub?.track?.mediaStreamTrack?.readyState === 'ended') {
             try {
               await lp.setScreenShareEnabled(false);
@@ -671,7 +695,7 @@ function useVoiceStoreSync() {
     const prevDeviceId = prevInputDeviceRef.current;
     prevInputDeviceRef.current = inputDeviceId;
 
-    const lp = localParticipant as LocalParticipant;
+    const lp = localParticipant as WebRtcSession;
     if (!lp.isMicrophoneEnabled) return;
     // Re-publish microphone with the selected device, or default constraints
     const opts = inputDeviceId ? { deviceId: inputDeviceId } : undefined;
@@ -698,7 +722,7 @@ function useVoiceStoreSync() {
     const prevDeviceId = prevCameraDeviceRef.current;
     prevCameraDeviceRef.current = cameraDeviceId;
 
-    const lp = localParticipant as LocalParticipant;
+    const lp = localParticipant as WebRtcSession;
     if (!lp.isCameraEnabled) return;
     const opts = cameraDeviceId ? { deviceId: cameraDeviceId } : undefined;
     lp.setCameraEnabled(false)
@@ -714,18 +738,18 @@ function useVoiceStoreSync() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cameraDeviceId]);
 
-  // Apply output device and volume to all <audio> elements rendered by RoomAudioRenderer.
+  // Apply output device and volume to all <audio> elements rendered by RemoteAudioRenderer.
   // Also handles deafen by muting those elements.
   // When outputDeviceId is null/empty, reset to system default via setSinkId('').
   useEffect(() => {
-    const audioElements = document.querySelectorAll<HTMLAudioElement>('audio[data-lk-source]');
+    const audioElements = document.querySelectorAll<HTMLAudioElement>('audio[data-webrtc-remote]');
     audioElements.forEach((el) => {
       applyAudioPrefs(el, deafened, outputVolume, outputDeviceId);
     });
 
-    // Also handle any audio elements inside webrtc containers that may not have data-lk-source
-    const lkAudioElements = document.querySelectorAll<HTMLAudioElement>('[data-testid="webrtc-room"] audio, .lk-room-container audio');
-    lkAudioElements.forEach((el) => {
+    // Also handle any audio elements inside webrtc containers
+    const containerAudioElements = document.querySelectorAll<HTMLAudioElement>('[data-testid="webrtc-room"] audio');
+    containerAudioElements.forEach((el) => {
       applyAudioPrefs(el, deafened, outputVolume, outputDeviceId);
     });
   }, [deafened, outputVolume, outputDeviceId]);
@@ -775,7 +799,7 @@ function RoomContent({
   platformWarnings: string[];
 }) {
   const { localParticipant, isScreenShareEnabled } = useLocalParticipant();
-  const lkConnectionState = useConnectionState();
+  const nativeConnectionState = useConnectionState();
   const { setConnectionState, handleUnexpectedDisconnect, connectionState: storeConnectionState } = useVoiceStore();
   const [screenShareInterrupted, setScreenShareInterrupted] = useState(false);
   // Track whether the user intentionally left (via the leave button).
@@ -783,7 +807,7 @@ function RoomContent({
 
   // Sync WebRTC connection state to the voice store
   useEffect(() => {
-    switch (lkConnectionState) {
+    switch (nativeConnectionState) {
       case RoomConnectionState.Connected:
         setConnectionState('connected');
         break;
@@ -802,7 +826,7 @@ function RoomContent({
         }
         break;
     }
-  }, [lkConnectionState, setConnectionState, handleUnexpectedDisconnect, storeConnectionState]);
+  }, [nativeConnectionState, setConnectionState, handleUnexpectedDisconnect, storeConnectionState]);
 
   // Wrap onLeave so the disconnect handler knows this was intentional.
   const handleLeaveInternal = useCallback(() => {
@@ -841,7 +865,7 @@ function RoomContent({
   const resumeScreenShare = useCallback(async () => {
     setResumeError(null);
     try {
-      await (localParticipant as LocalParticipant).setScreenShareEnabled(true);
+      await (localParticipant as WebRtcSession).setScreenShareEnabled(true);
       // Only clear the interrupted banner after success
       setScreenShareInterrupted(false);
     } catch (err) {
@@ -860,7 +884,7 @@ function RoomContent({
 
   return (
     <>
-      <RoomAudioRenderer />
+      <RemoteAudioRenderer />
       {showScreenShareInterrupted && (
         <div className="screen-share-interrupted" role="alert">
           <span>{resumeError ?? 'Screen share was interrupted'}</span>
@@ -898,6 +922,84 @@ function PlatformMediaWarning({ mediaStatus }: { mediaStatus: PlatformMediaStatu
         <p key={i} className="voice-setup-hint">{w}</p>
       ))}
     </div>
+  );
+}
+
+/**
+ * Native WebRTC room provider — creates a WebRtcSession, wires signaling
+ * via the existing AnnexWebSocket, and exposes the session through React context.
+ */
+function NativeWebRtcRoom({
+  channelId,
+  iceServers,
+  identity,
+  children,
+}: {
+  channelId: string;
+  iceServers: RTCIceServer[];
+  identity: string;
+  children: React.ReactNode;
+}) {
+  const ws = useChannelsStore((s) => s.ws);
+  const [session, setSession] = useState<WebRtcSession | null>(null);
+  const [connectionState, setConnState] = useState<NativeConnectionState>(RoomConnectionState.Disconnected);
+  const [trackVersion, setTrackVersion] = useState(0);
+
+  useEffect(() => {
+    if (!ws) return;
+
+    const sess = new WebRtcSession(iceServers, channelId, identity, {
+      sendOffer: (ch, sdp) => ws.sendWebRtcOffer(ch, sdp),
+      sendIceCandidate: (ch, candidate, sdpMid, sdpMLineIndex) =>
+        ws.sendIceCandidate(ch, candidate, sdpMid, sdpMLineIndex),
+    });
+
+    sess.onConnectionStateChange = (state) => setConnState(state);
+    sess.onRemoteTracksChanged = () => setTrackVersion((v) => v + 1);
+    sess.onLocalTrackChanged = () => setTrackVersion((v) => v + 1);
+
+    // Listen for signaling messages from the server
+    const unsubscribe = ws.onMessage((frame: WsReceiveFrame) => {
+      if (frame.channelId !== channelId) return;
+
+      if (frame.type === 'webrtc_answer' && frame.sdp) {
+        sess.handleAnswer(frame.sdp).catch((err) =>
+          console.error('[webrtc] failed to handle answer:', err),
+        );
+      } else if (frame.type === 'webrtc_ice_candidate' && frame.candidate) {
+        sess.handleIceCandidate({
+          candidate: frame.candidate,
+          sdpMid: frame.sdpMid ?? undefined,
+          sdpMLineIndex: frame.sdpMLineIndex ?? undefined,
+        }).catch((err) =>
+          console.error('[webrtc] failed to add ICE candidate:', err),
+        );
+      }
+    });
+
+    // Initiate the connection
+    sess.connect().catch((err) =>
+      console.error('[webrtc] connection failed:', err),
+    );
+
+    setSession(sess);
+
+    return () => {
+      unsubscribe();
+      sess.disconnect();
+    };
+    // Deliberately omit iceServers/identity — session is created once per mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channelId, ws]);
+
+  if (!session) return null;
+
+  return (
+    <WebRtcContext.Provider value={{ session, connectionState, trackVersion }}>
+      <div data-testid="webrtc-room">
+        {children}
+      </div>
+    </WebRtcContext.Provider>
   );
 }
 
@@ -1083,24 +1185,13 @@ export function VoicePanel() {
     };
   }, [lastJoinError, lastJoinErrorDetails]);
 
-  // Prevent WebRTC from disconnecting when the Tauri webview fires page-leave events.
-  const roomOptions = useMemo(() => {
-    if (!isTauri()) return undefined;
-    return { disconnectOnPageLeave: false };
-  }, []);
-
-  // Build RTC configuration with server-provided ICE servers for NAT traversal.
-  const connectOptions = useMemo(() => {
-    if (!iceServers || iceServers.length === 0) return undefined;
-    return {
-      rtcConfig: {
-        iceServers: iceServers.map((s) => ({
-          urls: s.urls,
-          username: s.username || undefined,
-          credential: s.credential || undefined,
-        })),
-      },
-    };
+  // Build RTCIceServer array from the server-provided config.
+  const rtcIceServers = useMemo(() => {
+    return (iceServers ?? []).map((s) => ({
+      urls: s.urls,
+      username: s.username || undefined,
+      credential: s.credential || undefined,
+    }));
   }, [iceServers]);
 
   const connectionState = useVoiceStore((s) => s.connectionState);
@@ -1130,21 +1221,17 @@ export function VoicePanel() {
             <p>{connectionError}</p>
           </div>
         )}
-        <WebRtcRoom
-          serverUrl={webrtcUrl}
-          token={voiceToken}
-          connect={true}
-          audio={true}
-          video={false}
-          options={roomOptions}
-          connectOptions={connectOptions}
+        <NativeWebRtcRoom
+          channelId={connectedChannelId}
+          iceServers={rtcIceServers}
+          identity={pseudonymId ?? 'unknown'}
         >
           <RoomContent
             onLeave={handleLeave}
             mediaStatus={mediaStatus}
             platformWarnings={platformWarnings}
           />
-        </WebRtcRoom>
+        </NativeWebRtcRoom>
       </div>
     );
   }

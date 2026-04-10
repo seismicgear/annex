@@ -111,7 +111,8 @@ export interface MessageEdit {
 
 /** WebSocket frame for sending messages. */
 export interface WsSendFrame {
-  type: 'message' | 'edit_message' | 'delete_message' | 'typing' | 'resume';
+  type: 'message' | 'edit_message' | 'delete_message' | 'typing' | 'resume'
+    | 'webrtc_offer' | 'webrtc_ice_candidate';
   channelId: string;
   content?: string;
   replyTo?: string | null;
@@ -120,12 +121,19 @@ export interface WsSendFrame {
   clientRequestId?: string;
   /** Last received message ID for resume protocol. */
   lastMessageId?: string;
+  // WebRTC signaling fields
+  sdp?: string;
+  candidate?: string;
+  sdpMid?: string | null;
+  sdpMLineIndex?: number | null;
+  usernameFragment?: string | null;
 }
 
 /** WebSocket frame received from server. */
 export interface WsReceiveFrame {
   type: 'message' | 'message_edited' | 'message_deleted' | 'rtx_bundle' | 'transcription' | 'error'
-    | 'channel_created' | 'channel_updated' | 'channel_deleted' | 'typing' | 'resumed';
+    | 'channel_created' | 'channel_updated' | 'channel_deleted' | 'typing' | 'resumed'
+    | 'webrtc_answer' | 'webrtc_ice_candidate';
   // Message fields (camelCase from WsMessagePayload)
   channelId?: string;
   messageId?: string;
@@ -149,6 +157,12 @@ export interface WsReceiveFrame {
   message?: string;
   /** Echoed client request ID from the originating send frame. */
   clientRequestId?: string;
+  // WebRTC signaling fields
+  sdp?: string;
+  candidate?: string;
+  sdpMid?: string | null;
+  sdpMLineIndex?: number | null;
+  usernameFragment?: string | null;
 }
 
 /** Agent info from GET /api/public/agents or /api/agents/:id. */

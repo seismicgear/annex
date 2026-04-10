@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, act } from '@testing-library/react';
-import type { ReactNode } from 'react';
 import { VoicePanel } from './VoicePanel';
 
 type VoiceStoreSnapshot = {
@@ -50,7 +49,7 @@ type VoiceStoreSnapshot = {
 };
 
 let identityState: { identity: { pseudonymId: string } | null; permissions: { capabilities: { can_voice: boolean } } | null; permissionsStatus: string };
-let channelsState: { activeChannelId: string | null; channels: Array<{ channel_id: string; channel_type: string; name: string }> };
+let channelsState: { activeChannelId: string | null; channels: Array<{ channel_id: string; channel_type: string; name: string }>; ws: unknown };
 let voiceState: VoiceStoreSnapshot;
 let serversState: { activeServerId: string | null };
 
@@ -61,6 +60,13 @@ vi.mock('@/stores/identity', () => ({
 vi.mock('@/stores/channels', () => ({
   useChannelsStore: (selector: (state: typeof channelsState) => unknown) => selector(channelsState),
 }));
+
+// Mock WebSocket for WebRTC signaling
+const mockWs = {
+  sendWebRtcOffer: vi.fn(),
+  sendIceCandidate: vi.fn(),
+  onMessage: vi.fn(() => vi.fn()), // returns unsubscribe function
+};
 
 vi.mock('@/stores/voice', () => {
   const fn = (selector?: (state: typeof voiceState) => unknown) =>
@@ -97,49 +103,51 @@ const mockSetCameraEnabled = vi.fn(async () => {});
 const mockSetMicrophoneEnabled = vi.fn(async () => {});
 const mockSetScreenShareEnabled = vi.fn(async () => {});
 
-vi.mock('@livekit/components-react', () => ({
-  LiveKitRoom: ({ children }: { children: ReactNode }) => <div data-testid="webrtc-room">{children}</div>,
-  RoomAudioRenderer: () => null,
-  useParticipants: () => [],
-  useTracks: () => [],
-  VideoTrack: () => null,
-  useLocalParticipant: () => ({
-    localParticipant: {
-      identity: 'agent-1',
-      isMicrophoneEnabled: true,
-      isCameraEnabled: false,
-      isScreenShareEnabled: false,
-      setMicrophoneEnabled: mockSetMicrophoneEnabled,
-      setCameraEnabled: mockSetCameraEnabled,
-      setScreenShareEnabled: mockSetScreenShareEnabled,
-      trackPublications: new Map(),
-    },
-    isMicrophoneEnabled: true,
-    isCameraEnabled: false,
-    isScreenShareEnabled: false,
+// Shared mock session returned by every `new WebRtcSession(...)` call.
+// Properties are reset in beforeEach.
+const mockSessionBase = {
+  connectionState: 'connected' as string,
+  remoteAudioTracks: [] as unknown[],
+  isSpeaking: false,
+  isMicrophoneEnabled: true,
+  isCameraEnabled: false,
+  isScreenShareEnabled: false,
+  identity: 'agent-1',
+  trackPublications: new Map(),
+  setMicrophoneEnabled: mockSetMicrophoneEnabled,
+  setCameraEnabled: mockSetCameraEnabled,
+  setScreenShareEnabled: mockSetScreenShareEnabled,
+  connect: vi.fn(async function (this: typeof mockSessionBase) {
+    // Trigger the connection state callback so the context updates
+    if (this.onConnectionStateChange) {
+      this.onConnectionStateChange('connected');
+    }
   }),
-  useConnectionState: (...args: unknown[]) => mockUseConnectionState(...args),
-}));
+  disconnect: vi.fn(),
+  handleAnswer: vi.fn(async () => {}),
+  handleIceCandidate: vi.fn(async () => {}),
+  onConnectionStateChange: null as ((state: string) => void) | null,
+  onRemoteTracksChanged: null as (() => void) | null,
+  onLocalTrackChanged: null as (() => void) | null,
+};
 
-vi.mock('livekit-client', () => ({
-  Track: {
-    Source: {
-      Camera: 'camera',
-      ScreenShare: 'screen',
-      Microphone: 'mic',
-    },
-  },
-  ConnectionState: {
-    Connected: 'connected',
-    Connecting: 'connecting',
-    Reconnecting: 'reconnecting',
-    Disconnected: 'disconnected',
-  },
-}));
-
-// Track the mock connection state for useConnectionState
-let mockLkConnectionState = 'connected';
-const mockUseConnectionState = vi.fn(() => mockLkConnectionState);
+vi.mock('@/lib/webrtc', () => {
+  // Use a regular function (not arrow) so it works as a constructor with `new`.
+  const MockWebRtcSession = vi.fn(function (this: typeof mockSessionBase) {
+    Object.assign(this, mockSessionBase);
+    // Bind the connect mock so it can reference `this.onConnectionStateChange`
+    this.connect = vi.fn(async function (this: typeof mockSessionBase) {
+      if (this.onConnectionStateChange) {
+        this.onConnectionStateChange('connected');
+      }
+    }.bind(this));
+  });
+  return {
+    WebRtcSession: MockWebRtcSession,
+    TrackSource: { Microphone: 'microphone', Camera: 'camera', ScreenShare: 'screen_share' },
+    ConnectionState: { Connected: 'connected', Connecting: 'connecting', Reconnecting: 'reconnecting', Disconnected: 'disconnected' },
+  };
+});
 
 function defaultVoiceState(): VoiceStoreSnapshot {
   return {
@@ -194,8 +202,17 @@ describe('VoicePanel', () => {
     mockSetCameraEnabled.mockClear();
     mockSetMicrophoneEnabled.mockClear();
     mockSetScreenShareEnabled.mockClear();
-    mockLkConnectionState = 'connected';
-    mockUseConnectionState.mockClear();
+    mockSessionBase.connect.mockClear();
+    mockSessionBase.disconnect.mockClear();
+    mockSessionBase.isMicrophoneEnabled = true;
+    mockSessionBase.isCameraEnabled = false;
+    mockSessionBase.isScreenShareEnabled = false;
+    mockSessionBase.connectionState = 'connected';
+    mockSessionBase.onConnectionStateChange = null;
+    mockSessionBase.onRemoteTracksChanged = null;
+    mockSessionBase.onLocalTrackChanged = null;
+    mockSessionBase.trackPublications = new Map();
+    mockWs.onMessage.mockReturnValue(vi.fn()); // fresh unsubscribe
 
     identityState = {
       identity: { pseudonymId: 'p1' },
@@ -206,6 +223,7 @@ describe('VoicePanel', () => {
     channelsState = {
       activeChannelId: 'chan-1',
       channels: [{ channel_id: 'chan-1', channel_type: 'Voice', name: 'General' }],
+      ws: mockWs,
     };
 
     serversState = {
@@ -443,9 +461,9 @@ describe('VoicePanel', () => {
       outputDeviceId: null,
     };
 
-    // Add an audio element with data-lk-source for the sync effect to find
+    // Add an audio element with data-webrtc-remote for the sync effect to find
     const audio = document.createElement('audio');
-    audio.setAttribute('data-lk-source', 'microphone');
+    audio.setAttribute('data-webrtc-remote', '');
     // Mock setSinkId
     (audio as unknown as Record<string, unknown>).setSinkId = vi.fn(async () => {});
     document.body.appendChild(audio);
@@ -475,7 +493,7 @@ describe('VoicePanel', () => {
 
   it('returns to join/create state after WebRTC disconnect with error shown', () => {
     // Start in connected state
-    mockLkConnectionState = 'connected';
+    mockSessionBase.connectionState = 'connected';
     voiceState = {
       ...voiceState,
       voiceToken: 'token-disc',
@@ -488,7 +506,7 @@ describe('VoicePanel', () => {
     expect(screen.getByText(/Voice Connected/)).toBeInTheDocument();
 
     // Simulate unexpected disconnect: store clears session (as handleUnexpectedDisconnect would)
-    mockLkConnectionState = 'disconnected';
+    mockSessionBase.connectionState = 'disconnected';
     voiceState = {
       ...voiceState,
       voiceToken: null,
