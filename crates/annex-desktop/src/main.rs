@@ -406,10 +406,13 @@ async fn start_embedded_server(state: tauri::State<'_, AppManagedState>) -> Resu
     // Poll the health endpoint until the server is accepting connections.
     // Without this, the frontend can fire API requests before axum::serve()
     // has polled its first accept(), causing "Failed to fetch" on startup.
+    // Budget: 150 attempts × 100ms = 15 seconds — generous for first-run
+    // scenarios where database migrations and Merkle tree restoration can
+    // be slow on modest hardware or cold disk caches.
     let health_url = format!("{url}/health");
     let client = reqwest::Client::new();
     let mut ready = false;
-    for attempt in 0u32..50 {
+    for attempt in 0u32..150 {
         match client.get(&health_url).send().await {
             Ok(resp) if resp.status().is_success() => {
                 ready = true;
@@ -422,7 +425,7 @@ async fn start_embedded_server(state: tauri::State<'_, AppManagedState>) -> Resu
         }
     }
     if !ready {
-        return Err("embedded server failed to become ready within 5 seconds".to_string());
+        return Err("embedded server failed to become ready within 15 seconds".to_string());
     }
 
     Ok(url)
