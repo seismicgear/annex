@@ -3,8 +3,8 @@ use crate::error::VoiceError;
 use bytes::Bytes;
 use dashmap::DashMap;
 use opus_rs::OpusDecoder;
-use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock};
+use std::sync::{Arc, RwLock};
+use tokio::sync::broadcast;
 use tracing::{debug, error, warn};
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
@@ -105,11 +105,18 @@ impl VoiceService {
     }
 
     pub fn is_enabled(&self) -> bool {
-        !*self.runtime_disabled.blocking_read() && !self.config.url.is_empty()
+        !*self
+            .runtime_disabled
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            && !self.config.url.is_empty()
     }
 
     pub fn set_runtime_disabled(&self, disabled: bool) {
-        *self.runtime_disabled.blocking_write() = disabled;
+        *self
+            .runtime_disabled
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = disabled;
     }
 
     pub fn get_url(&self) -> &str {
@@ -125,7 +132,10 @@ impl VoiceService {
     }
 
     pub fn get_public_url(&self) -> String {
-        let runtime = self.runtime_public_url.blocking_read();
+        let runtime = self
+            .runtime_public_url
+            .read()
+            .unwrap_or_else(|p| p.into_inner());
         let url = if !runtime.is_empty() {
             runtime.clone()
         } else if !self.config.public_url.is_empty() {
@@ -142,7 +152,10 @@ impl VoiceService {
     }
 
     pub fn get_url_for_local_client(&self) -> String {
-        let runtime = self.runtime_public_url.blocking_read();
+        let runtime = self
+            .runtime_public_url
+            .read()
+            .unwrap_or_else(|p| p.into_inner());
         if !runtime.is_empty() {
             runtime.clone()
         } else if self.config.public_url.is_empty() {
@@ -153,7 +166,10 @@ impl VoiceService {
     }
 
     pub fn set_public_url(&self, url: String) {
-        *self.runtime_public_url.blocking_write() = url;
+        *self
+            .runtime_public_url
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = url;
     }
 
     fn is_loopback_url(url: &str) -> bool {
