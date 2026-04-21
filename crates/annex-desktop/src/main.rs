@@ -1764,6 +1764,14 @@ fn main() {
         //   Windows:     https://tauri.localhost
         //   Alternate:   http://tauri.localhost
         // Both are included so the desktop app works on all platforms.
+        //
+        // Under `cargo tauri dev`, the Vite dev server (default :5173) loads
+        // the UI from `http://localhost:5173` and that origin is NOT in this
+        // list. The server relaxes CORS for any `http(s)://localhost[:port]`,
+        // `http(s)://127.0.0.1[:port]`, and `http(s)://[::1][:port]` origin
+        // when built with `debug_assertions` — see
+        // `annex_server::is_dev_localhost_origin`. Release builds keep the
+        // strict allowlist.
         if std::env::var("ANNEX_CORS_ORIGINS").is_err() {
             std::env::set_var(
                 "ANNEX_CORS_ORIGINS",
