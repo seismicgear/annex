@@ -16,6 +16,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useIdentityStore } from '@/stores/identity';
+import { useServersStore } from '@/stores/servers';
 import type { StoredIdentity } from '@/types';
 
 // ── Mock IndexedDB-backed modules (jsdom has no IndexedDB) ──
@@ -148,6 +149,7 @@ vi.mock('@/lib/api', () => ({
     federation_peer_count: 0,
     active_agent_count: 0,
   })),
+  redeemInvite: vi.fn(async () => ({ serverSlug: 'invited-server' })),
   getMessages: vi.fn(async () => []),
   getChannels: vi.fn(async () => []),
   getServerImage: vi.fn(async () => null),
@@ -221,6 +223,13 @@ function resetStores() {
     error: null,
     storedIdentities: [],
     permissions: null,
+  });
+  useServersStore.setState({
+    servers: [],
+    activeServerId: null,
+    serverImageUrl: null,
+    pendingRegistrationServerId: null,
+    switchError: null,
   });
 }
 
@@ -664,6 +673,87 @@ describe('App startup flow', () => {
       await waitFor(() => {
         expect(dbMock.clearAllDatabases).toHaveBeenCalled();
       });
+    });
+  });
+
+  describe('Protocol invite confirmation gate', () => {
+    beforeEach(() => {
+      tauriEnabled = true;
+    });
+
+    it('invite received while active does not auto-switch server', async () => {
+      const dbMock = await import('@/lib/db');
+      vi.mocked(dbMock.listIdentities).mockResolvedValue([FAKE_IDENTITY]);
+      const tauri = await import('@/lib/tauri');
+      vi.mocked(tauri.checkFirstRunCompleted).mockResolvedValue(true);
+      vi.mocked(tauri.getStartupMode).mockResolvedValue({ startup_mode: { mode: 'host' } });
+      vi.mocked(tauri.getPendingInvite).mockResolvedValue(null);
+      vi.mocked(tauri.listenForInvite).mockImplementation(async (cb) => {
+        setTimeout(() => cb({ server: 'https://remote.annex.test', code: 'abc123' }), 0);
+        return () => {};
+      });
+      useServersStore.setState({
+        servers: [{ id: 's1', identityId: 'test-id-1', label: 'Local', baseUrl: 'http://127.0.0.1:9999', createdAt: '', updatedAt: '', accentColor: '#fff' }],
+        activeServerId: 's1',
+      } as never);
+      const api = await import('@/lib/api');
+      const App = (await import('./App')).default;
+      render(<App />);
+
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Join invite server' })).toBeInTheDocument());
+      expect(api.redeemInvite).not.toHaveBeenCalled();
+    });
+
+    it('accept path triggers registration flow', async () => {
+      const user = userEvent.setup();
+      const dbMock = await import('@/lib/db');
+      vi.mocked(dbMock.listIdentities).mockResolvedValue([FAKE_IDENTITY]);
+      const tauri = await import('@/lib/tauri');
+      vi.mocked(tauri.checkFirstRunCompleted).mockResolvedValue(true);
+      vi.mocked(tauri.getStartupMode).mockResolvedValue({ startup_mode: { mode: 'host' } });
+      vi.mocked(tauri.getPendingInvite).mockResolvedValue(null);
+      vi.mocked(tauri.listenForInvite).mockImplementation(async (cb) => {
+        setTimeout(() => cb({ server: 'https://remote.annex.test', code: 'abc123' }), 0);
+        return () => {};
+      });
+      const beginRemoteRegistration = vi.fn(async () => ({ id: 'remote' }));
+      useServersStore.setState({
+        servers: [{ id: 's1', identityId: 'test-id-1', label: 'Local', baseUrl: 'http://127.0.0.1:9999', createdAt: '', updatedAt: '', accentColor: '#fff' }],
+        activeServerId: 's1',
+        beginRemoteRegistration,
+      } as never);
+      const api = await import('@/lib/api');
+      const App = (await import('./App')).default;
+      render(<App />);
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Join invite server' })).toBeInTheDocument());
+      await user.click(screen.getByRole('button', { name: 'Join invite server' }));
+      await waitFor(() => expect(api.redeemInvite).toHaveBeenCalledWith('https://remote.annex.test', 'abc123'));
+      expect(beginRemoteRegistration).toHaveBeenCalledWith('https://remote.annex.test');
+    });
+
+    it('ignore path clears pending invite safely', async () => {
+      const user = userEvent.setup();
+      const dbMock = await import('@/lib/db');
+      vi.mocked(dbMock.listIdentities).mockResolvedValue([FAKE_IDENTITY]);
+      const tauri = await import('@/lib/tauri');
+      vi.mocked(tauri.checkFirstRunCompleted).mockResolvedValue(true);
+      vi.mocked(tauri.getStartupMode).mockResolvedValue({ startup_mode: { mode: 'host' } });
+      vi.mocked(tauri.getPendingInvite).mockResolvedValue(null);
+      vi.mocked(tauri.listenForInvite).mockImplementation(async (cb) => {
+        setTimeout(() => cb({ server: 'https://remote.annex.test', code: 'abc123' }), 0);
+        return () => {};
+      });
+      useServersStore.setState({
+        servers: [{ id: 's1', identityId: 'test-id-1', label: 'Local', baseUrl: 'http://127.0.0.1:9999', createdAt: '', updatedAt: '', accentColor: '#fff' }],
+        activeServerId: 's1',
+      } as never);
+      const api = await import('@/lib/api');
+      const App = (await import('./App')).default;
+      render(<App />);
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Ignore' })).toBeInTheDocument());
+      await user.click(screen.getByRole('button', { name: 'Ignore' }));
+      await waitFor(() => expect(screen.queryByRole('button', { name: 'Join invite server' })).not.toBeInTheDocument());
+      expect(api.redeemInvite).not.toHaveBeenCalled();
     });
   });
 });
