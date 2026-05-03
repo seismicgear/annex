@@ -17,6 +17,7 @@ import { render, screen, waitFor, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useIdentityStore } from '@/stores/identity';
 import { useServersStore } from '@/stores/servers';
+import { useChannelsStore } from '@/stores/channels';
 import type { StoredIdentity } from '@/types';
 
 // ── Mock IndexedDB-backed modules (jsdom has no IndexedDB) ──
@@ -102,7 +103,7 @@ vi.mock('@/components/AdminPanel', () => ({ AdminPanel: () => <div data-testid="
 vi.mock('@/components/ServerHub', () => ({ ServerHub: () => <div data-testid="server-hub" /> }));
 vi.mock('@/components/DeviceLinkDialog', () => ({ DeviceLinkDialog: () => null }));
 
-vi.mock('@/lib/startup-prefs', () => ({ clearWebStartupMode: vi.fn() }));
+vi.mock('@/lib/startup-prefs', () => ({ clearWebStartupMode: vi.fn(), saveWebStartupMode: vi.fn() }));
 vi.mock('@/lib/invite', () => ({
   parseLegacyInviteFromUrl: vi.fn(() => null),
   clearInviteFromUrl: vi.fn(),
@@ -231,6 +232,10 @@ function resetStores() {
     pendingRegistrationServerId: null,
     switchError: null,
   });
+  useChannelsStore.setState({
+    wsConnected: false,
+    ws: null,
+  });
 }
 
 beforeEach(async () => {
@@ -254,6 +259,37 @@ beforeEach(async () => {
 // ── Tests ──
 
 describe('App startup flow', () => {
+  describe('ReconnectionBanner', () => {
+    it('shows disconnected banner immediately when ws starts disconnected', async () => {
+      useChannelsStore.setState({ wsConnected: false });
+      const { ReconnectionBanner } = await import('./App');
+      render(<ReconnectionBanner />);
+
+      expect(screen.getByRole('alert')).toHaveTextContent('Connection lost — reconnecting...');
+    });
+
+    it('shows reconnected banner on reconnect and auto-hides after 2 seconds', async () => {
+      vi.useFakeTimers();
+      useChannelsStore.setState({ wsConnected: false });
+      const { ReconnectionBanner } = await import('./App');
+      render(<ReconnectionBanner />);
+      expect(screen.getByRole('alert')).toHaveTextContent('Connection lost — reconnecting...');
+
+      act(() => {
+        useChannelsStore.setState({ wsConnected: true });
+      });
+
+      expect(screen.getByRole('alert')).toHaveTextContent('Reconnected');
+
+      act(() => {
+        vi.advanceTimersByTime(2000);
+      });
+
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      vi.useRealTimers();
+    });
+  });
+
   describe('Web mode (not Tauri)', () => {
     it('shows IdentitySetup when no identity exists', async () => {
       const App = (await import('./App')).default;
