@@ -101,119 +101,59 @@ export class AnnexWebSocket {
         const frame: WsReceiveFrame = JSON.parse(event.data as string);
         this.messageHandlers.forEach((h) => h(frame));
       } catch {
-        // Malformed frame — drop silently. This can happen during protocol
-        // version mismatches or if the server sends a non-JSON control frame.
       }
     };
   }
 
-  /** Subscribe to real-time messages for a channel. */
+  /**
+   * Swap to a fresh auth token immediately by reconnecting the socket.
+   * Preserves tracked subscriptions and resume cursors.
+   */
+  reconnectForAuthRefresh(token: string | null): void {
+    this.sessionToken = token;
+    if (!this.ws || this.ws.readyState === WebSocket.CLOSED) return;
+    this.intentionalClose = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.ws.close(4001, 'auth_refresh');
+    this.ws = null;
+    this.connect();
+  }
+
   subscribe(channelId: string): void {
     this.subscribedChannels.add(channelId);
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     this.ws.send(JSON.stringify({ type: 'subscribe', channelId }));
   }
 
-  /** Unsubscribe from a channel's real-time messages. */
   unsubscribe(channelId: string): void {
     this.subscribedChannels.delete(channelId);
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     this.ws.send(JSON.stringify({ type: 'unsubscribe', channelId }));
   }
 
-  /** Send a message to a channel. Returns the client-generated request ID. */
   send(channelId: string, content: string, replyTo: string | null = null): string {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error('WebSocket is not connected');
     }
     const clientRequestId = crypto.randomUUID();
-    const frame: WsSendFrame = {
-      type: 'message',
-      channelId,
-      content,
-      replyTo,
-      clientRequestId,
-    };
+    const frame: WsSendFrame = { type: 'message', channelId, content, replyTo, clientRequestId };
     this.ws.send(JSON.stringify(frame));
     return clientRequestId;
   }
 
-  /** Edit a message in a channel. */
-  editMessage(channelId: string, messageId: string, content: string): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      throw new Error('WebSocket is not connected');
-    }
-    const frame: WsSendFrame = {
-      type: 'edit_message',
-      channelId,
-      messageId,
-      content,
-    };
-    this.ws.send(JSON.stringify(frame));
-  }
+  editMessage(channelId: string, messageId: string, content: string): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) throw new Error('WebSocket is not connected'); this.ws.send(JSON.stringify({ type: 'edit_message', channelId, messageId, content } as WsSendFrame)); }
+  deleteMessage(channelId: string, messageId: string): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) throw new Error('WebSocket is not connected'); this.ws.send(JSON.stringify({ type: 'delete_message', channelId, messageId } as WsSendFrame)); }
+  trackLastMessageId(channelId: string, messageId: string): void { this.lastMessageIds.set(channelId, messageId); }
+  sendTyping(channelId: string): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return; this.ws.send(JSON.stringify({ type: 'typing', channelId })); }
+  sendWebRtcOffer(channelId: string, sdp: string): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return; this.ws.send(JSON.stringify({ type: 'webrtc_offer', channelId, sdp } as WsSendFrame)); }
+  sendIceCandidate(channelId: string, candidate: string, sdpMid: string | null = null, sdpMLineIndex: number | null = null): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return; this.ws.send(JSON.stringify({ type: 'webrtc_ice_candidate', channelId, candidate, sdpMid, sdpMLineIndex } as WsSendFrame)); }
 
-  /** Delete a message in a channel. */
-  deleteMessage(channelId: string, messageId: string): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      throw new Error('WebSocket is not connected');
-    }
-    const frame: WsSendFrame = {
-      type: 'delete_message',
-      channelId,
-      messageId,
-    };
-    this.ws.send(JSON.stringify(frame));
-  }
+  onMessage(handler: WsMessageHandler): () => void { this.messageHandlers.add(handler); return () => this.messageHandlers.delete(handler); }
+  onStatus(handler: WsStatusHandler): () => void { this.statusHandlers.add(handler); return () => this.statusHandlers.delete(handler); }
 
-  /** Track the last received message ID for a channel (used for resume). */
-  trackLastMessageId(channelId: string, messageId: string): void {
-    this.lastMessageIds.set(channelId, messageId);
-  }
-
-  /** Send a typing indicator for a channel. */
-  sendTyping(channelId: string): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    this.ws.send(JSON.stringify({ type: 'typing', channelId }));
-  }
-
-  /** Send a WebRTC SDP offer for voice signaling. */
-  sendWebRtcOffer(channelId: string, sdp: string): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    const frame: WsSendFrame = { type: 'webrtc_offer', channelId, sdp };
-    this.ws.send(JSON.stringify(frame));
-  }
-
-  /** Send an ICE candidate for WebRTC NAT traversal. */
-  sendIceCandidate(
-    channelId: string,
-    candidate: string,
-    sdpMid: string | null = null,
-    sdpMLineIndex: number | null = null,
-  ): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    const frame: WsSendFrame = {
-      type: 'webrtc_ice_candidate',
-      channelId,
-      candidate,
-      sdpMid,
-      sdpMLineIndex,
-    };
-    this.ws.send(JSON.stringify(frame));
-  }
-
-  /** Register a handler for incoming messages. */
-  onMessage(handler: WsMessageHandler): () => void {
-    this.messageHandlers.add(handler);
-    return () => this.messageHandlers.delete(handler);
-  }
-
-  /** Register a handler for connection status changes. */
-  onStatus(handler: WsStatusHandler): () => void {
-    this.statusHandlers.add(handler);
-    return () => this.statusHandlers.delete(handler);
-  }
-
-  /** Close the connection intentionally. */
   disconnect(): void {
     this.intentionalClose = true;
     this.subscribedChannels.clear();
@@ -221,34 +161,12 @@ export class AnnexWebSocket {
     this.hasConnectedBefore = false;
     this.messageHandlers.clear();
     this.statusHandlers.clear();
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
-    }
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+    if (this.ws) { this.ws.close(); this.ws = null; }
   }
 
-  /** Update the session token so future reconnects use the fresh value. */
-  setSessionToken(token: string | null): void {
-    this.sessionToken = token;
-  }
-
-  /** Whether the socket is currently connected. */
-  get connected(): boolean {
-    return this.ws?.readyState === WebSocket.OPEN;
-  }
-
-  private notifyStatus(connected: boolean): void {
-    this.statusHandlers.forEach((h) => h(connected));
-  }
-
-  private scheduleReconnect(): void {
-    this.reconnectTimer = setTimeout(() => {
-      this.connect();
-    }, this.reconnectDelay);
-    this.reconnectDelay = Math.min(this.reconnectDelay * 2, MAX_RECONNECT_DELAY_MS);
-  }
+  setSessionToken(token: string | null): void { this.sessionToken = token; }
+  get connected(): boolean { return this.ws?.readyState === WebSocket.OPEN; }
+  private notifyStatus(connected: boolean): void { this.statusHandlers.forEach((h) => h(connected)); }
+  private scheduleReconnect(): void { this.reconnectTimer = setTimeout(() => { this.connect(); }, this.reconnectDelay); this.reconnectDelay = Math.min(this.reconnectDelay * 2, MAX_RECONNECT_DELAY_MS); }
 }
