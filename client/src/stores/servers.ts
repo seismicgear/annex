@@ -29,6 +29,8 @@ interface ServersState {
   pendingRegistrationServerId: string | null;
   /** Error from the last failed server switch, if any. */
   switchError: string | null;
+  /** Monotonic counter for switch attempts; used to ignore stale async writes. */
+  switchEpoch: number;
 
   /** Load saved servers from IndexedDB. */
   loadServers: () => Promise<void>;
@@ -47,7 +49,7 @@ interface ServersState {
   /** Set the active server's image URL (called after upload or fetch). */
   setServerImageUrl: (url: string | null) => void;
   /** Fetch and cache the active server's image URL. */
-  fetchServerImage: () => Promise<void>;
+  fetchServerImage: (guard?: { epoch: number; serverId: string }) => Promise<void>;
   /** Find a saved server by its base URL. */
   findServerByBaseUrl: (baseUrl: string) => SavedServer | undefined;
   /** Fulfill a placeholder entry with the real identityId and make it active. */
@@ -73,6 +75,7 @@ export const useServersStore = create<ServersState>((set, get) => ({
   serverImageUrl: null,
   pendingRegistrationServerId: null,
   switchError: null,
+  switchEpoch: 0,
 
   loadServers: async () => {
     const servers = await serversDb.listServers();
@@ -121,7 +124,9 @@ export const useServersStore = create<ServersState>((set, get) => ({
     // Clear serverImageUrl so stale imagery from the previous server is never shown.
     // Clear permissions immediately so the UI does not reuse stale capability flags.
     useIdentityStore.setState({ permissions: null, permissionsStatus: 'idle', permissionsPseudonymId: null });
-    set({ activeServerId: serverId, switching: true, serverImageUrl: null, switchError: null });
+    const epoch = get().switchEpoch + 1;
+    const targetServerId = serverId;
+    set({ activeServerId: serverId, switching: true, serverImageUrl: null, switchError: null, switchEpoch: epoch });
 
     try {
 
@@ -152,11 +157,17 @@ export const useServersStore = create<ServersState>((set, get) => ({
 
       // Refresh cached summary and server image in background
       api.getServerSummary()
-        .then((summary) => serversDb.updateCachedSummary(serverId, summary))
+        .then((summary) => {
+          const state = get();
+          if (state.switchEpoch !== epoch || state.activeServerId !== targetServerId) return;
+          return serversDb.updateCachedSummary(targetServerId, summary);
+        })
         .catch(() => { /* stale summary retained */ });
-      get().fetchServerImage();
+      await get().fetchServerImage({ epoch, serverId: targetServerId });
 
-      set({ switching: false });
+      if (get().switchEpoch === epoch && get().activeServerId === targetServerId) {
+        set({ switching: false });
+      }
     } catch (err) {
       // Rollback: restore previous server context
       api.setApiBaseUrl(prevApiBaseUrl);
@@ -172,7 +183,12 @@ export const useServersStore = create<ServersState>((set, get) => ({
       }
 
       const errorMessage = err instanceof Error ? err.message : 'Server switch failed';
-      set({ activeServerId: prevServerId, switching: false, switchError: errorMessage });
+      set((state) => ({
+        activeServerId: prevServerId,
+        switching: false,
+        switchError: errorMessage,
+        switchEpoch: state.switchEpoch + 1,
+      }));
       throw err;
     }
   },
@@ -296,12 +312,19 @@ export const useServersStore = create<ServersState>((set, get) => ({
     set({ serverImageUrl: url });
   },
 
-  fetchServerImage: async () => {
+  fetchServerImage: async (guard?: { epoch: number; serverId: string }) => {
+    const shouldApply = () => {
+      if (!guard) return true;
+      const state = get();
+      return state.switchEpoch === guard.epoch && state.activeServerId === guard.serverId;
+    };
     try {
       const resp = await api.getServerImage();
+      if (!shouldApply()) return;
       set({ serverImageUrl: resp.image_url ? api.resolveUrl(resp.image_url) : null });
     } catch {
       // Fetch failed — clear any stale image from the previous server
+      if (!shouldApply()) return;
       set({ serverImageUrl: null });
     }
   },
