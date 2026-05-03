@@ -10,6 +10,17 @@ import type { WsSendFrame, WsReceiveFrame } from '@/types';
 export type WsMessageHandler = (frame: WsReceiveFrame) => void;
 export type WsStatusHandler = (connected: boolean) => void;
 
+const FRAME_TYPES_REQUIRING_CHANNEL_ID = new Set<WsReceiveFrame['type']>([
+  'message',
+  'message_edited',
+  'message_deleted',
+  'typing',
+  'resumed',
+  'transcription',
+  'webrtc_answer',
+  'webrtc_ice_candidate',
+]);
+
 const MAX_RECONNECT_DELAY_MS = 30_000;
 const INITIAL_RECONNECT_DELAY_MS = 1_000;
 
@@ -97,11 +108,21 @@ export class AnnexWebSocket {
     };
 
     this.ws.onmessage = (event) => {
+      const rawPayload = String(event.data ?? '');
+      let frame: WsReceiveFrame;
       try {
-        const frame: WsReceiveFrame = JSON.parse(event.data as string);
-        this.messageHandlers.forEach((h) => h(frame));
+        frame = JSON.parse(rawPayload) as WsReceiveFrame;
       } catch {
+        this.emitInternalWarning('failed to parse websocket frame as JSON', rawPayload);
+        return;
       }
+
+      if (!this.isFrameDispatchable(frame)) {
+        this.emitInternalWarning('received malformed websocket frame shape', rawPayload);
+        return;
+      }
+
+      this.messageHandlers.forEach((h) => h(frame));
     };
   }
 
@@ -166,6 +187,27 @@ export class AnnexWebSocket {
   }
 
   setSessionToken(token: string | null): void { this.sessionToken = token; }
+
+  private emitInternalWarning(reason: string, rawPayload: unknown): void {
+    const raw = typeof rawPayload === 'string' ? rawPayload : JSON.stringify(rawPayload);
+    const preview = raw.length > 160 ? `${raw.slice(0, 160)}…` : raw;
+    console.warn(`[ws] ${reason}`, { payloadPreview: preview });
+    this.messageHandlers.forEach((handler) =>
+      handler({
+        type: 'internal_error',
+        error: reason,
+        message: `WebSocket warning: ${reason}`,
+        rawPayloadPreview: preview,
+      }),
+    );
+  }
+
+  private isFrameDispatchable(frame: WsReceiveFrame): boolean {
+    if (!frame || typeof frame !== 'object') return false;
+    if (!frame.type || typeof frame.type !== 'string') return false;
+    if (FRAME_TYPES_REQUIRING_CHANNEL_ID.has(frame.type) && !frame.channelId) return false;
+    return true;
+  }
   get connected(): boolean { return this.ws?.readyState === WebSocket.OPEN; }
   private notifyStatus(connected: boolean): void { this.statusHandlers.forEach((h) => h(connected)); }
   private scheduleReconnect(): void { this.reconnectTimer = setTimeout(() => { this.connect(); }, this.reconnectDelay); this.reconnectDelay = Math.min(this.reconnectDelay * 2, MAX_RECONNECT_DELAY_MS); }
