@@ -158,6 +158,10 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
         if (ch.is_member) joined.add(ch.channel_id);
       }
       set({ channels, joinedChannelIds: joined });
+      const { ws } = get();
+      if (ws?.connected) {
+        for (const channelId of joined) ws.subscribe(channelId);
+      }
     } catch (err) {
       set({ channels: [], error: err instanceof Error ? err.message : String(err) });
     } finally {
@@ -195,7 +199,16 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       const messages = await api.getMessages(pseudonymId, requestedChannelId, undefined, PAGE_SIZE);
       if (get().activeChannelId !== requestedChannelId) return;
       const reversed = messages.reverse();
-      set({ messages: reversed, hasMoreMessages: messages.length >= PAGE_SIZE, historyLoading: false, historyError: null });
+      set((state) => {
+        const historyById = new Set(reversed.map((m) => m.message_id).filter(Boolean));
+        const liveDuringHydration = state.messages.filter((m) => !m.pending && (!m.message_id || !historyById.has(m.message_id)));
+        return {
+          messages: [...reversed, ...liveDuringHydration],
+          hasMoreMessages: messages.length >= PAGE_SIZE,
+          historyLoading: false,
+          historyError: null,
+        };
+      });
       const newestMessageId = reversed[reversed.length - 1]?.message_id;
       get().markChannelRead(requestedChannelId, newestMessageId);
       // Track the newest message ID for resume
@@ -231,8 +244,15 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     }
 
     const ws = new AnnexWebSocket(pseudonymId, baseUrl, sessionToken ?? null);
+    const subscribeJoinedChannels = () => {
+      const { joinedChannelIds } = get();
+      for (const channelId of joinedChannelIds) ws.subscribe(channelId);
+    };
 
-    ws.onStatus((connected) => set({ wsConnected: connected, wsAuthRefreshing: connected ? false : get().wsAuthRefreshing }));
+    ws.onStatus((connected) => {
+      set({ wsConnected: connected, wsAuthRefreshing: connected ? false : get().wsAuthRefreshing });
+      if (connected) subscribeJoinedChannels();
+    });
 
     ws.onMessage((frame: WsReceiveFrame) => {
       // Handle error frames — route to composerError for chat-flow errors.
@@ -398,6 +418,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
 
     ws.connect();
     set({ ws });
+    if (ws.connected) subscribeJoinedChannels();
 
     // Start typing cleanup interval — remove stale typing indicators every second
     typingCleanupInterval = setInterval(() => {
@@ -521,6 +542,8 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       joined.add(channelId);
       return { joinedChannelIds: joined };
     });
+    const { ws } = get();
+    if (ws?.connected) ws.subscribe(channelId);
   },
 
   leaveChannel: async (pseudonymId, channelId) => {
@@ -544,7 +567,8 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     }
     voiceStore.clearChannelCallState(channelId);
 
-    const { activeChannelId } = get();
+    const { activeChannelId, ws } = get();
+    if (ws) ws.unsubscribe(channelId);
     if (activeChannelId === channelId) {
       set({ activeChannelId: null, messages: [], typingUsers: [] });
     }
