@@ -6,6 +6,9 @@ import { TAURI_DESKTOP_ORIGINS } from '@/lib/tauri';
 const getStartupModeMock = vi.fn();
 const setApiBaseUrlMock = vi.fn();
 const fetchWithTimeoutMock = vi.fn();
+const clearStartupModeMock = vi.fn(async () => {});
+const clearWebStartupModeMock = vi.fn();
+const startEmbeddedServerMock = vi.fn(async () => 'http://127.0.0.1:9999');
 
 vi.mock('@/lib/tauri', async () => {
   const actual = await vi.importActual<typeof import('@/lib/tauri')>('@/lib/tauri');
@@ -14,8 +17,8 @@ vi.mock('@/lib/tauri', async () => {
     isTauri: () => true,
     getStartupMode: () => getStartupModeMock(),
     saveStartupMode: vi.fn(async () => {}),
-    clearStartupMode: vi.fn(async () => {}),
-    startEmbeddedServer: vi.fn(async () => 'http://127.0.0.1:9999'),
+    clearStartupMode: (...args: unknown[]) => clearStartupModeMock(...args),
+    startEmbeddedServer: (...args: unknown[]) => startEmbeddedServerMock(...args),
     acquirePublicEndpoint: vi.fn(async () => 'https://host-abc123.router.annex.net'),
     getWebRtcConfig: vi.fn(async () => ({ configured: false, url: '', api_key: '', has_api_secret: false, token_ttl_seconds: 3600 })),
     startLocalWebRtc: vi.fn(async () => ({ url: 'ws://127.0.0.1:7880' })),
@@ -30,7 +33,7 @@ vi.mock('@/lib/api', () => ({
   fetchWithTimeout: (...args: unknown[]) => fetchWithTimeoutMock(...args),
 }));
 
-vi.mock('@/lib/startup-prefs', () => ({ clearWebStartupMode: vi.fn() }));
+vi.mock('@/lib/startup-prefs', () => ({ clearWebStartupMode: (...args: unknown[]) => clearWebStartupModeMock(...args) }));
 
 const mockBeginRemoteRegistration = vi.fn(async () => ({ id: 'srv-1', baseUrl: '', slug: 'test', label: 'Test' }));
 vi.mock('@/stores/servers', () => ({
@@ -177,5 +180,34 @@ describe('StartupModeSelector', () => {
       const falseCalls = calls.filter((c: unknown[]) => c[0] === false);
       expect(falseCalls.length).toBeGreaterThanOrEqual(1);
     });
+  });
+
+
+  it('clears persisted host startup mode after auto-host failure and does not auto-retry on next render', async () => {
+    getStartupModeMock
+      .mockResolvedValueOnce({ startup_mode: { mode: 'host' } })
+      .mockResolvedValue(null);
+    startEmbeddedServerMock.mockRejectedValueOnce(new Error('boot failed'));
+
+    const onReady = vi.fn();
+    const { unmount } = render(<StartupModeSelector onReady={onReady} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('boot failed')).toBeInTheDocument();
+    });
+
+    await waitFor(() => {
+      expect(clearStartupModeMock).toHaveBeenCalledTimes(1);
+    });
+    expect(clearWebStartupModeMock).not.toHaveBeenCalled();
+
+    unmount();
+    render(<StartupModeSelector onReady={onReady} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Choose how to use Annex. Remembered values are shown as suggestions.')).toBeInTheDocument();
+    });
+
+    expect(startEmbeddedServerMock).toHaveBeenCalledTimes(1);
   });
 });

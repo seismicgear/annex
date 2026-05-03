@@ -159,6 +159,11 @@ export function StartupModeSelector({ onReady }: Props) {
         }
         onReady(degraded.voiceFailed || degraded.publicEndpointFailed || degraded.webrtcRouteUnavailable ? degraded : undefined);
       } catch (e) {
+        if (inTauri) {
+          await clearStartupMode().catch(() => {});
+        } else {
+          clearWebStartupMode();
+        }
         setError(e instanceof Error ? e.message : String(e));
         setPhase('error');
       }
