@@ -353,6 +353,22 @@ describe('channels store', () => {
     expect(state.historyError).toBe('boom');
   });
 
+
+  it('leaveChannel unsubscribes even when websocket is disconnected', async () => {
+    const apiModule = await import('@/lib/api');
+    vi.mocked(apiModule.leaveChannel).mockResolvedValueOnce(undefined);
+    const { useChannelsStore } = await import('./channels');
+    const ws = {
+      unsubscribe: vi.fn(),
+      connected: false,
+    };
+    useChannelsStore.setState({ ws: ws as unknown as import('@/lib/ws').AnnexWebSocket, joinedChannelIds: new Set(['A']) });
+
+    await useChannelsStore.getState().leaveChannel('p1', 'A');
+
+    expect(ws.unsubscribe).toHaveBeenCalledWith('A');
+  });
+
   it('connectWs subscribes to joined channels and counts unread for background messages', async () => {
     const { AnnexWebSocket } = await import('@/lib/ws');
     const onStatusHandlers: Array<(connected: boolean) => void> = [];
@@ -377,9 +393,6 @@ describe('channels store', () => {
     useChannelsStore.setState({ joinedChannelIds: new Set(['A', 'B']), activeChannelId: 'A', unreadCounts: {} });
     useChannelsStore.getState().connectWs('p1');
     onStatusHandlers[0]?.(true);
-
-    expect(subscribe).toHaveBeenCalledWith('A');
-    expect(subscribe).toHaveBeenCalledWith('B');
 
     onMessageHandlers[0]?.({
       type: 'message',

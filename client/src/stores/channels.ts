@@ -199,7 +199,16 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       const messages = await api.getMessages(pseudonymId, requestedChannelId, undefined, PAGE_SIZE);
       if (get().activeChannelId !== requestedChannelId) return;
       const reversed = messages.reverse();
-      set({ messages: reversed, hasMoreMessages: messages.length >= PAGE_SIZE, historyLoading: false, historyError: null });
+      set((state) => {
+        const historyById = new Set(reversed.map((m) => m.message_id).filter(Boolean));
+        const liveDuringHydration = state.messages.filter((m) => !m.pending && (!m.message_id || !historyById.has(m.message_id)));
+        return {
+          messages: [...reversed, ...liveDuringHydration],
+          hasMoreMessages: messages.length >= PAGE_SIZE,
+          historyLoading: false,
+          historyError: null,
+        };
+      });
       const newestMessageId = reversed[reversed.length - 1]?.message_id;
       get().markChannelRead(requestedChannelId, newestMessageId);
       // Track the newest message ID for resume
@@ -559,7 +568,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     voiceStore.clearChannelCallState(channelId);
 
     const { activeChannelId, ws } = get();
-    if (ws?.connected) ws.unsubscribe(channelId);
+    if (ws) ws.unsubscribe(channelId);
     if (activeChannelId === channelId) {
       set({ activeChannelId: null, messages: [], typingUsers: [] });
     }
