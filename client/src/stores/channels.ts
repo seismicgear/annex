@@ -109,8 +109,8 @@ interface ChannelsState {
   resetServerState: () => void;
   /** Send a typing indicator for the active channel (debounced). */
   sendTyping: () => void;
-  /** Mark the active channel as read (updates lastReadMessageIds). */
-  markChannelRead: (channelId: string) => void;
+  /** Mark a channel as read (updates lastReadMessageIds). */
+  markChannelRead: (channelId: string, lastMessageId?: string) => void;
   /** Retry a failed optimistic message. */
   retryMessage: (clientRequestId: string, pseudonymId: string) => void;
   /** Dismiss a failed optimistic message. */
@@ -171,9 +171,6 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
 
     set({ activeChannelId: channelId, messages: [], loadingOlder: false, hasMoreMessages: true, historyLoading: true, historyError: null, composerError: null, typingUsers: [], replyToMessage: null });
 
-    // Mark the channel as read
-    get().markChannelRead(channelId);
-
     // Auto-join the channel (idempotent — no-op if already a member).
     // Must be a member before fetching messages or joining voice.
     try {
@@ -196,6 +193,8 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       if (get().activeChannelId !== requestedChannelId) return;
       const reversed = messages.reverse();
       set({ messages: reversed, hasMoreMessages: messages.length >= PAGE_SIZE, historyLoading: false, historyError: null });
+      const newestMessageId = reversed[reversed.length - 1]?.message_id;
+      get().markChannelRead(requestedChannelId, newestMessageId);
       // Track the newest message ID for resume
       if (reversed.length > 0 && ws) {
         ws.trackLastMessageId(requestedChannelId, reversed[reversed.length - 1].message_id);
@@ -603,13 +602,14 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     ws.sendTyping(activeChannelId);
   },
 
-  markChannelRead: (channelId: string) => {
+  markChannelRead: (channelId: string, lastMessageId?: string) => {
     const { messages } = get();
-    const lastMsg = messages[messages.length - 1];
+    const resolvedLastMessageId = lastMessageId
+      ?? [...messages].reverse().find((msg) => msg.channel_id === channelId)?.message_id;
     set((state) => ({
       unreadCounts: { ...state.unreadCounts, [channelId]: 0 },
-      lastReadMessageIds: lastMsg
-        ? { ...state.lastReadMessageIds, [channelId]: lastMsg.message_id }
+      lastReadMessageIds: resolvedLastMessageId
+        ? { ...state.lastReadMessageIds, [channelId]: resolvedLastMessageId }
         : state.lastReadMessageIds,
     }));
   },

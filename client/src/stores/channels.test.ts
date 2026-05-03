@@ -193,6 +193,27 @@ describe('channels store', () => {
     expect(useChannelsStore.getState().unreadCounts['ch2']).toBe(3);
   });
 
+  it('markChannelRead is channel-safe when messages include multiple channels', async () => {
+    const { useChannelsStore } = await import('./channels');
+
+    useChannelsStore.setState({
+      unreadCounts: { A: 2, B: 4 },
+      lastReadMessageIds: { B: 'b0' },
+      messages: [
+        { message_id: 'a1', channel_id: 'A', sender_pseudonym: 'p1', content: 'a', reply_to_message_id: null, created_at: '' },
+        { message_id: 'b1', channel_id: 'B', sender_pseudonym: 'p1', content: 'b', reply_to_message_id: null, created_at: '' },
+      ],
+    });
+
+    useChannelsStore.getState().markChannelRead('A');
+
+    const state = useChannelsStore.getState();
+    expect(state.unreadCounts.A).toBe(0);
+    expect(state.unreadCounts.B).toBe(4);
+    expect(state.lastReadMessageIds.A).toBe('a1');
+    expect(state.lastReadMessageIds.B).toBe('b0');
+  });
+
   it('dismissFailedMessage removes a failed optimistic message', async () => {
     const { useChannelsStore } = await import('./channels');
 
@@ -286,5 +307,43 @@ describe('channels store', () => {
     expect(ws.subscribe).toHaveBeenCalledWith('B');
     expect(ws.trackLastMessageId).toHaveBeenCalledTimes(1);
     expect(ws.trackLastMessageId).toHaveBeenCalledWith('B', 'b1');
+  });
+
+  it('selectChannel marks read after successful history load', async () => {
+    const apiModule = await import('@/lib/api');
+    vi.mocked(apiModule.getMessages).mockResolvedValueOnce([
+      { message_id: 'm3', channel_id: 'A', sender_pseudonym: 'p2', content: 'newest', created_at: '' },
+      { message_id: 'm2', channel_id: 'A', sender_pseudonym: 'p2', content: 'older', created_at: '' },
+    ] as Array<{ message_id: string; channel_id: string; sender_pseudonym: string; content: string; created_at: string }>);
+
+    const { useChannelsStore } = await import('./channels');
+    useChannelsStore.setState({
+      unreadCounts: { A: 7 },
+      lastReadMessageIds: { A: 'm1' },
+    });
+
+    await useChannelsStore.getState().selectChannel('p1', 'A');
+
+    const state = useChannelsStore.getState();
+    expect(state.unreadCounts.A).toBe(0);
+    expect(state.lastReadMessageIds.A).toBe('m3');
+  });
+
+  it('selectChannel does not write read marker when history fetch fails', async () => {
+    const apiModule = await import('@/lib/api');
+    vi.mocked(apiModule.getMessages).mockRejectedValueOnce(new Error('boom'));
+
+    const { useChannelsStore } = await import('./channels');
+    useChannelsStore.setState({
+      unreadCounts: { A: 5 },
+      lastReadMessageIds: { A: 'm1' },
+    });
+
+    await useChannelsStore.getState().selectChannel('p1', 'A');
+
+    const state = useChannelsStore.getState();
+    expect(state.unreadCounts.A).toBe(5);
+    expect(state.lastReadMessageIds.A).toBe('m1');
+    expect(state.historyError).toBe('boom');
   });
 });
