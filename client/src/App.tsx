@@ -126,6 +126,8 @@ export default function App() {
   const [activeView, setActiveView] = useState<AppView>('chat');
   const [adminMenuOpen, setAdminMenuOpen] = useState(false);
   const [startupErrorDetails, setStartupErrorDetails] = useState<string | null>(null);
+  const [startupInitError, setStartupInitError] = useState<string | null>(null);
+  const [bootstrapAttempt, setBootstrapAttempt] = useState(0);
   const [provingFailures, setProvingFailures] = useState(0);
   const [passwordRequired, setPasswordRequired] = useState(false);
   const [serverPassword, setServerPassword] = useState('');
@@ -198,9 +200,11 @@ export default function App() {
   // logout (which clears startup_prefs.json) would trigger destructive
   // cleanup on next launch.
   useEffect(() => {
-    loadIdentities()
-      .then(() => inTauri ? checkFirstRunCompleted().catch(() => true) : undefined)
-      .then(async (firstRunDone) => {
+    const bootstrap = async () => {
+      setStartupInitError(null);
+      try {
+        await loadIdentities();
+        const firstRunDone = inTauri ? await checkFirstRunCompleted().catch(() => true) : undefined;
         if (inTauri && firstRunDone === false) {
           // Fresh install detected (no first_run_completed marker). Clear
           // ALL stale data from a previous installation so the user starts
@@ -224,7 +228,13 @@ export default function App() {
             switchError: null,
           });
           // Re-load servers from the now-empty IndexedDB so the store is consistent.
-          await loadServers();
+          try {
+            await loadServers();
+          } catch (serverErr) {
+            const message = serverErr instanceof Error ? serverErr.message : 'Failed to load servers from local storage.';
+            setStartupInitError(`Startup completed with warnings: ${message}`);
+            setStartupErrorDetails((prev) => prev ?? `loadServers error: ${message}`);
+          }
           // Clear in-memory identity state regardless of phase — both
           // 'ready' (fully registered) and 'keys_ready' (local keys only)
           // need to be reset so the user starts with IdentitySetup.
@@ -243,11 +253,34 @@ export default function App() {
             });
             setSessionToken(null);
           }
+        } else {
+          try {
+            await loadServers();
+          } catch (serverErr) {
+            const message = serverErr instanceof Error ? serverErr.message : 'Failed to load servers from local storage.';
+            setStartupInitError(message);
+            setStartupErrorDetails((prev) => prev ?? `loadServers error: ${message}`);
+            useIdentityStore.setState({
+              phase: 'error',
+              error: 'Annex could not load your saved server list. You can retry startup or clear local state.',
+            });
+          }
         }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to initialize local identity state.';
+        setStartupInitError(message);
+        setStartupErrorDetails((prev) => prev ?? `startup bootstrap error: ${message}`);
+        useIdentityStore.setState({
+          phase: 'error',
+          error: 'Annex failed to start. Try retrying startup or clearing local state.',
+          errorDetails: message,
+        });
+      } finally {
         setIdentityChecked(true);
-      });
-    loadServers();
-  }, [loadIdentities, loadServers, inTauri]);
+      }
+    };
+    void bootstrap();
+  }, [loadIdentities, loadServers, inTauri, bootstrapAttempt]);
 
   // ── Listen for annex:// deep-link invite events (Tauri only) ──
   // Also fetch any buffered cold-start invite that arrived before this
@@ -707,6 +740,49 @@ export default function App() {
           <div className="startup-mode-selector">
             <h2>Annex</h2>
             <div className="startup-loading">Loading...</div>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  if (startupInitError && phase === 'error' && !identity?.sk) {
+    return (
+      <div className="app">
+        <main className="app-main setup">
+          <div className="startup-mode-selector">
+            <h2>Annex</h2>
+            <div className="error-message">Startup failed: {startupInitError}</div>
+            {(startupErrorDetails || errorDetails) && (
+              <details className="error-details">
+                <summary>Details</summary>
+                <pre>{startupErrorDetails ?? errorDetails}</pre>
+              </details>
+            )}
+            <button className="primary-btn" onClick={() => { setIdentityChecked(false); setBootstrapAttempt((v) => v + 1); }}>
+              Retry startup
+            </button>
+            <button
+              className="secondary-btn"
+              onClick={() => {
+                void (async () => {
+                  try {
+                    await clearAllDatabases();
+                    await resetServerData();
+                  } catch (e) {
+                    console.warn('clear local state failed:', e);
+                  } finally {
+                    useServersStore.setState({ servers: [], activeServerId: null, serverImageUrl: null, pendingRegistrationServerId: null, switchError: null });
+                    useIdentityStore.setState({ identity: null, phase: 'uninitialized', error: null, errorDetails: null });
+                    setSessionToken(null);
+                    setIdentityChecked(false);
+                    setBootstrapAttempt((v) => v + 1);
+                  }
+                })();
+              }}
+            >
+              Clear local state
+            </button>
           </div>
         </main>
       </div>
