@@ -134,6 +134,7 @@ export default function App() {
     () => parseLegacyInviteFromUrl(),
   );
   const [pendingProtocolInvite, setPendingProtocolInvite] = useState<InvitePayload | null>(null);
+  const [pendingProtocolInviteConfirmation, setPendingProtocolInviteConfirmation] = useState<InvitePayload | null>(null);
   const [pendingInviteCode, setPendingInviteCode] = useState<string | null>(null);
   const [pendingServerSlug, setPendingServerSlug] = useState<string | null>(null);
   const inviteProcessed = useRef(false);
@@ -275,6 +276,11 @@ export default function App() {
   useEffect(() => {
     if (!pendingProtocolInvite || !identity?.sk) return;
     if (phase !== 'keys_ready' && phase !== 'ready') return;
+    if (phase === 'ready') {
+      setPendingProtocolInviteConfirmation(pendingProtocolInvite);
+      setPendingProtocolInvite(null);
+      return;
+    }
     let cancelled = false;
 
     (async () => {
@@ -336,6 +342,44 @@ export default function App() {
 
     return () => { cancelled = true; };
   }, [pendingProtocolInvite, identity?.sk, phase, inTauri]);
+
+  const handleAcceptProtocolInvite = async () => {
+    if (!pendingProtocolInviteConfirmation) return;
+    const invite = pendingProtocolInviteConfirmation;
+    setPendingProtocolInviteConfirmation(null);
+    try {
+      const redeemResult = await redeemInvite(invite.server, invite.code);
+      const { beginRemoteRegistration } = useServersStore.getState();
+      const server = await beginRemoteRegistration(invite.server);
+      if (!server) {
+        useIdentityStore.setState({
+          phase: 'error',
+          error: `Failed to connect to server at ${invite.server}.`,
+        });
+        useServersStore.getState().cleanupFailedRegistration();
+        return;
+      }
+      if (inTauri) {
+        saveStartupMode({
+          startup_mode: { mode: 'client', server_url: invite.server },
+        }).catch(() => {});
+      }
+      setPendingInviteCode(invite.code);
+      setPendingServerSlug(redeemResult.serverSlug);
+      setServerReady(true);
+    } catch (err) {
+      const isNetworkError = err instanceof TypeError && /failed to fetch/i.test(err.message);
+      const message = isNetworkError
+        ? `Could not reach server at ${invite.server}. Check your connection and try again.`
+        : (err instanceof Error ? err.message : 'Invite validation failed');
+      useIdentityStore.setState({ phase: 'error', error: message });
+      useServersStore.getState().cleanupFailedRegistration();
+    }
+  };
+
+  const handleIgnoreProtocolInvite = () => {
+    setPendingProtocolInviteConfirmation(null);
+  };
 
   // ── Register identity with server after user selects a server ──
   // Only fires when phase is exactly 'keys_ready' (keys exist, not yet
@@ -687,6 +731,19 @@ export default function App() {
             </span>
           )}
         </header>
+        {pendingProtocolInviteConfirmation && (
+          <div className="invite-confirmation-banner" role="dialog" aria-label="Invite confirmation">
+            <span>
+              Invite received for {pendingProtocolInviteConfirmation.server}
+            </span>
+            <button className="primary-btn" onClick={handleAcceptProtocolInvite}>
+              Join invite server
+            </button>
+            <button className="secondary-btn" onClick={handleIgnoreProtocolInvite}>
+              Ignore
+            </button>
+          </div>
+        )}
         <main className="app-main setup">
           <IdentitySetup />
         </main>
@@ -948,6 +1005,20 @@ export default function App() {
           </div>
         )}
       </header>
+
+      {pendingProtocolInviteConfirmation && (
+        <div className="invite-confirmation-banner" role="dialog" aria-label="Invite confirmation">
+          <span>
+            Invite received for {pendingProtocolInviteConfirmation.server}
+          </span>
+          <button className="primary-btn" onClick={handleAcceptProtocolInvite}>
+            Join invite server
+          </button>
+          <button className="secondary-btn" onClick={handleIgnoreProtocolInvite}>
+            Ignore
+          </button>
+        </div>
+      )}
 
       {degradedStartup && (
         <div className="degraded-startup-banner" role="status">
