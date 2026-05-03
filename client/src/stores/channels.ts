@@ -76,6 +76,8 @@ interface ChannelsState {
   lastReadMessageIds: Record<string, string>;
   /** Message being replied to (shown in composer). */
   replyToMessage: Message | null;
+  /** Last typing-frame send timestamp per channel. */
+  typingSentAtByChannel: Record<string, number>;
 
   /** Load channel list from server. */
   loadChannels: (pseudonymId: string) => Promise<void>;
@@ -121,9 +123,6 @@ interface ChannelsState {
   setReplyTo: (message: Message | null) => void;
 }
 
-/** Timestamp of the last typing frame sent (module-level to survive store resets). */
-let lastTypingSentAt = 0;
-
 /** Typing cleanup interval handle. */
 let typingCleanupInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -147,6 +146,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
   unreadCounts: {},
   lastReadMessageIds: {},
   replyToMessage: null,
+  typingSentAtByChannel: {},
 
   loadChannels: async (pseudonymId: string) => {
     set({ loading: true, error: null });
@@ -269,9 +269,14 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
         return;
       }
       if (frame.type === 'channel_deleted' && frame.channelId) {
-        set((state) => ({
-          channels: state.channels.filter((c) => c.channel_id !== frame.channelId),
-        }));
+        set((state) => {
+          const typingSentAtByChannel = { ...state.typingSentAtByChannel };
+          delete typingSentAtByChannel[frame.channelId!];
+          return {
+            channels: state.channels.filter((c) => c.channel_id !== frame.channelId),
+            typingSentAtByChannel,
+          };
+        });
         // If the deleted channel was active, clear the view
         if (get().activeChannelId === frame.channelId) {
           set({ activeChannelId: null, messages: [], typingUsers: [] });
@@ -524,7 +529,9 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     set((s) => {
       const joined = new Set(s.joinedChannelIds);
       joined.delete(channelId);
-      return { joinedChannelIds: joined };
+      const typingSentAtByChannel = { ...s.typingSentAtByChannel };
+      delete typingSentAtByChannel[channelId];
+      return { joinedChannelIds: joined, typingSentAtByChannel };
     });
 
     // If the user is in a voice call on this channel, leave it too.
@@ -598,15 +605,22 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       typingUsers: [],
       unreadCounts: {},
       lastReadMessageIds: {},
+      typingSentAtByChannel: {},
     });
   },
 
   sendTyping: () => {
-    const { ws, activeChannelId } = get();
+    const { ws, activeChannelId, typingSentAtByChannel } = get();
     if (!ws || !activeChannelId) return;
     const now = Date.now();
+    const lastTypingSentAt = typingSentAtByChannel[activeChannelId] ?? 0;
     if (now - lastTypingSentAt < TYPING_DEBOUNCE_MS) return;
-    lastTypingSentAt = now;
+    set((state) => ({
+      typingSentAtByChannel: {
+        ...state.typingSentAtByChannel,
+        [activeChannelId]: now,
+      },
+    }));
     ws.sendTyping(activeChannelId);
   },
 
