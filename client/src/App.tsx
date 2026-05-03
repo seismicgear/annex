@@ -56,6 +56,26 @@ const PROVING_STATUS_LABELS: Record<ProvingStatus, string> = {
   generating_proof: 'Generating proof...',
 };
 
+const NOTIFICATION_PERMISSION_PROMPTED_KEY = 'annex:notificationPermissionPrompted';
+
+function hasPromptedNotificationPermission(): boolean {
+  if (typeof localStorage === 'undefined') return false;
+  try {
+    return localStorage.getItem(NOTIFICATION_PERMISSION_PROMPTED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function markNotificationPermissionPrompted(): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(NOTIFICATION_PERMISSION_PROMPTED_KEY, '1');
+  } catch {
+    // Ignore storage failures (private mode, quota errors, etc.)
+  }
+}
+
 /** Reconnection banner — shown when the WebSocket disconnects.
  * Uses Zustand subscription to track connection state transitions
  * without violating React strict-mode lint rules.
@@ -113,6 +133,9 @@ export default function App() {
     registerWithServer,
   } = useIdentityStore();
   const { connectWs, disconnectWs, selectChannel, joinChannel, loadChannels } = useChannelsStore();
+  const wsConnected = useChannelsStore((s) => s.wsConnected);
+  const activeChannelId = useChannelsStore((s) => s.activeChannelId);
+  const loadedChannels = useChannelsStore((s) => s.channels);
   const { servers, loadServers, saveCurrentServer, fetchServerImage } = useServersStore();
   const activeServer = useServersStore((s) => s.getActiveServer());
   const serverImageUrl = useServersStore((s) => s.serverImageUrl);
@@ -547,10 +570,6 @@ export default function App() {
         }
 
         if (cancelled) return;
-        // Request notification permission for background message alerts
-        if ('Notification' in globalThis && Notification.permission === 'default') {
-          Notification.requestPermission().catch(() => {});
-        }
         const baseUrl = getApiBaseUrl();
         const sessionToken = getSessionToken();
         connectWs(identity.pseudonymId!, baseUrl || undefined, sessionToken);
@@ -585,6 +604,25 @@ export default function App() {
       };
     }
   }, [phase, identity?.pseudonymId, connectWs, disconnectWs, loadPermissions, fetchServerImage]);
+
+  // Prompt for notification permission only when chat functionality is active:
+  // - user identity/session is ready
+  // - websocket is connected
+  // - channels have been loaded
+  // - user has selected a channel (about to use unread/mentions behavior)
+  // Also persist that we already prompted so we don't repeatedly interrupt users.
+  useEffect(() => {
+    if (phase !== 'ready' || !identity?.pseudonymId) return;
+    if (!wsConnected) return;
+    if (loadedChannels.length === 0) return;
+    if (!activeChannelId) return;
+    if (!('Notification' in globalThis)) return;
+    if (Notification.permission !== 'default') return;
+    if (hasPromptedNotificationPermission()) return;
+
+    markNotificationPermissionPrompted();
+    Notification.requestPermission().catch(() => {});
+  }, [phase, identity?.pseudonymId, wsConnected, loadedChannels.length, activeChannelId]);
 
   // Auto-set public endpoint as server public URL and create invite link (Tauri host mode)
   useEffect(() => {
