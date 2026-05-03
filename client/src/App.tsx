@@ -162,13 +162,19 @@ export default function App() {
   const [pendingProtocolInviteConfirmation, setPendingProtocolInviteConfirmation] = useState<InvitePayload | null>(null);
   const [pendingInviteCode, setPendingInviteCode] = useState<string | null>(null);
   const [pendingServerSlug, setPendingServerSlug] = useState<string | null>(null);
+  const startupFlowId = useRef(0);
   const inviteProcessed = useRef(false);
   /** Track which identity+server pairs have already been saved to avoid duplicates. */
   const savedServerKeys = useRef(new Set<string>());
   const prevPhaseRef = useRef(phase);
   const canModerate = permissions?.capabilities.can_moderate === true;
+  const beginStartupFlow = () => {
+    startupFlowId.current += 1;
+    return startupFlowId.current;
+  };
 
   const resetToServerSelection = async () => {
+    beginStartupFlow();
     if (isProofGenerationInFlight()) {
       await cancelMembershipProofGeneration('Proof generation cancelled before retry.');
     }
@@ -338,6 +344,8 @@ export default function App() {
       return;
     }
     let cancelled = false;
+    const flowId = beginStartupFlow();
+    const isCurrentFlow = () => startupFlowId.current === flowId;
 
     (async () => {
       try {
@@ -346,7 +354,7 @@ export default function App() {
         try {
           redeemResult = await redeemInvite(pendingProtocolInvite.server, pendingProtocolInvite.code);
         } catch (fetchErr) {
-          if (cancelled) return;
+          if (cancelled || !isCurrentFlow()) return;
           // Distinguish network errors from server-side rejections
           const isNetworkError = fetchErr instanceof TypeError && /failed to fetch/i.test(fetchErr.message);
           const message = isNetworkError
@@ -356,13 +364,13 @@ export default function App() {
           setPendingProtocolInvite(null);
           return;
         }
-        if (cancelled) return;
+        if (cancelled || !isCurrentFlow()) return;
 
         // 2. Add remote server, clone identity, and switch API target
         const { beginRemoteRegistration } = useServersStore.getState();
         const server = await beginRemoteRegistration(pendingProtocolInvite.server);
         if (!server) {
-          if (cancelled) return;
+          if (cancelled || !isCurrentFlow()) return;
           useIdentityStore.setState({
             phase: 'error',
             error: `Failed to connect to server at ${pendingProtocolInvite.server}.`,
@@ -378,6 +386,7 @@ export default function App() {
             startup_mode: { mode: 'client', server_url: pendingProtocolInvite.server },
           }).catch(() => {});
         }
+        if (!isCurrentFlow()) return;
 
         // 4. Store invite code + slug for registration, mark server ready
         // (beginRemoteRegistration already reset phase to keys_ready)
@@ -386,7 +395,7 @@ export default function App() {
         setServerReady(true);
         setPendingProtocolInvite(null);
       } catch (err) {
-        if (cancelled) return;
+        if (cancelled || !isCurrentFlow()) return;
         useIdentityStore.setState({
           phase: 'error',
           error: err instanceof Error ? err.message : 'Invite validation failed',
@@ -401,12 +410,16 @@ export default function App() {
 
   const handleAcceptProtocolInvite = async () => {
     if (!pendingProtocolInviteConfirmation) return;
+    const flowId = beginStartupFlow();
+    const isCurrentFlow = () => startupFlowId.current === flowId;
     const invite = pendingProtocolInviteConfirmation;
     setPendingProtocolInviteConfirmation(null);
     try {
       const redeemResult = await redeemInvite(invite.server, invite.code);
+      if (!isCurrentFlow()) return;
       const { beginRemoteRegistration } = useServersStore.getState();
       const server = await beginRemoteRegistration(invite.server);
+      if (!isCurrentFlow()) return;
       if (!server) {
         useIdentityStore.setState({
           phase: 'error',
@@ -420,6 +433,7 @@ export default function App() {
           startup_mode: { mode: 'client', server_url: invite.server },
         }).catch(() => {});
       }
+      if (!isCurrentFlow()) return;
       setPendingInviteCode(invite.code);
       setPendingServerSlug(redeemResult.serverSlug);
       setServerReady(true);
@@ -446,6 +460,8 @@ export default function App() {
   useEffect(() => {
     if (!serverReady || phase !== 'keys_ready' || !identity?.sk) return;
     let cancelled = false;
+    const flowId = startupFlowId.current;
+    const isCurrentFlow = () => startupFlowId.current === flowId;
 
     const MAX_RETRIES = 5;
     const BASE_DELAY_MS = 500;
@@ -458,17 +474,20 @@ export default function App() {
         if (cancelled) return;
         try {
           const summary = await getServerSummary();
+          if (cancelled || !isCurrentFlow()) return;
           const slug = pendingServerSlug ?? summary.slug;
 
           // If the server requires a password and we don't have one yet,
           // show a password prompt and wait for the user to provide it.
           if (summary.access_mode === 'password' && !serverPassword) {
+            if (!isCurrentFlow()) return;
             setPasswordRequired(true);
             return; // Effect will re-run when serverPassword changes
           }
 
-          if (!cancelled) {
+          if (!cancelled && isCurrentFlow()) {
             await registerWithServer(slug, pendingInviteCode ?? undefined, serverPassword || undefined);
+            if (!isCurrentFlow()) return;
             setPendingInviteCode(null);
             setPendingServerSlug(null);
             setPasswordRequired(false);
@@ -489,7 +508,7 @@ export default function App() {
           }
         }
       }
-      if (!cancelled) {
+      if (!cancelled && isCurrentFlow()) {
         const message = lastError instanceof Error ? lastError.message : 'Failed to reach server';
         const likelyNetworkError =
           lastError instanceof TypeError && /failed to fetch/i.test(lastError.message);
@@ -874,6 +893,7 @@ export default function App() {
         <main className="app-main setup">
           <StartupModeSelector
             onReady={(degraded) => {
+              beginStartupFlow();
               setServerReady(true);
               if (degraded) setDegradedStartup(degraded);
             }}
