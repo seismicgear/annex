@@ -25,6 +25,7 @@ export function StatusBar() {
   const logout = useIdentityStore((s) => s.logout);
   const exportCurrent = useIdentityStore((s) => s.exportCurrent);
   const wsConnected = useChannelsStore((s) => s.wsConnected);
+  const wsAuthRefreshing = useChannelsStore((s) => s.wsAuthRefreshing);
   const channels = useChannelsStore((s) => s.channels);
 
   const {
@@ -120,6 +121,18 @@ export function StatusBar() {
 
   return (
     <>
+      {wsAuthRefreshing && (
+        <div className="voice-status-strip">
+          <div className="voice-status-info">
+            <span className="voice-status-dot" />
+            <div className="voice-status-text">
+              <span className="voice-status-label">Reconnecting</span>
+              <span className="voice-status-channel">Refreshing session authentication…</span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Persistent voice status strip (Discord-style) ── */}
       {inCall && (
         <div className="voice-status-strip">

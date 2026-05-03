@@ -54,6 +54,8 @@ interface ChannelsState {
   error: string | null;
   /** Error message from send/edit/delete operations (shown inline near composer). */
   composerError: string | null;
+  /** True while intentionally reconnecting WS to apply a refreshed auth token. */
+  wsAuthRefreshing: boolean;
   /** Whether channel history is currently loading. */
   historyLoading: boolean;
   /** Error message from loading channel history (distinct from channel list error). */
@@ -134,6 +136,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
   loading: false,
   error: null,
   composerError: null,
+  wsAuthRefreshing: false,
   historyLoading: false,
   historyError: null,
   loadingOlder: false,
@@ -229,7 +232,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
 
     const ws = new AnnexWebSocket(pseudonymId, baseUrl, sessionToken ?? null);
 
-    ws.onStatus((connected) => set({ wsConnected: connected }));
+    ws.onStatus((connected) => set({ wsConnected: connected, wsAuthRefreshing: connected ? false : get().wsAuthRefreshing }));
 
     ws.onMessage((frame: WsReceiveFrame) => {
       // Handle error frames — route to composerError for chat-flow errors.
@@ -558,9 +561,13 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
 
   updateWsSessionToken: (token: string | null) => {
     const { ws } = get();
-    if (ws) {
-      ws.setSessionToken(token);
+    if (!ws) return;
+    if (ws.connected) {
+      set({ wsAuthRefreshing: true });
+      ws.reconnectForAuthRefresh(token);
+      return;
     }
+    ws.setSessionToken(token);
   },
 
   resetServerState: () => {
@@ -578,6 +585,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       joinedChannelIds: new Set<string>(),
       messages: [],
       wsConnected: false,
+      wsAuthRefreshing: false,
       loading: false,
       error: null,
       composerError: null,
@@ -623,6 +631,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     set((state) => ({
       messages: state.messages.filter((m) => m.clientRequestId !== clientRequestId),
       composerError: null,
+  wsAuthRefreshing: false,
     }));
     get().sendMessage(failedMsg.content, pseudonymId, failedMsg.reply_to_message_id);
   },

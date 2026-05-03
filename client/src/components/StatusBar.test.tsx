@@ -12,6 +12,7 @@ let identityState: {
 
 let channelsState: {
   wsConnected: boolean;
+  wsAuthRefreshing: boolean;
   channels: Array<{ channel_id: string; name: string }>;
 };
 
@@ -75,6 +76,7 @@ describe('StatusBar voice strip', () => {
 
     channelsState = {
       wsConnected: true,
+      wsAuthRefreshing: false,
       channels: [{ channel_id: 'chan-1', name: 'General' }],
     };
 
@@ -155,4 +157,12 @@ describe('StatusBar voice strip', () => {
     render(<StatusBar />);
     expect(screen.queryByText('Voice Connected')).not.toBeInTheDocument();
   });
+});
+
+
+it('shows auth refresh reconnect banner', () => {
+  channelsState.wsAuthRefreshing = true;
+  render(<StatusBar />);
+  expect(screen.getByText('Reconnecting')).toBeInTheDocument();
+  expect(screen.getByText('Refreshing session authentication…')).toBeInTheDocument();
 });

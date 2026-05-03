@@ -17,6 +17,9 @@ vi.mock('@/lib/ws', () => ({
     subscribe: vi.fn(),
     unsubscribe: vi.fn(),
     send: vi.fn(),
+    setSessionToken: vi.fn(),
+    reconnectForAuthRefresh: vi.fn(),
+    connected: false,
   })),
 }));
 
@@ -286,6 +289,9 @@ describe('channels store', () => {
       subscribe: vi.fn(),
       unsubscribe: vi.fn(),
       send: vi.fn(),
+    setSessionToken: vi.fn(),
+    reconnectForAuthRefresh: vi.fn(),
+    connected: false,
       trackLastMessageId: vi.fn(),
     };
     useChannelsStore.setState({ ws: ws as unknown });
@@ -347,3 +353,35 @@ describe('channels store', () => {
     expect(state.historyError).toBe('boom');
   });
 });
+
+
+  it('updateWsSessionToken reconnects immediately when ws is connected', async () => {
+    const { useChannelsStore } = await import('./channels');
+    const ws = {
+      reconnectForAuthRefresh: vi.fn(),
+      setSessionToken: vi.fn(),
+      connected: true,
+    };
+    useChannelsStore.setState({ ws: ws as unknown as import('@/lib/ws').AnnexWebSocket, wsAuthRefreshing: false });
+
+    useChannelsStore.getState().updateWsSessionToken('new-token');
+
+    expect(ws.reconnectForAuthRefresh).toHaveBeenCalledWith('new-token');
+    expect(useChannelsStore.getState().wsAuthRefreshing).toBe(true);
+  });
+
+  it('updateWsSessionToken only updates token when ws is disconnected', async () => {
+    const { useChannelsStore } = await import('./channels');
+    const ws = {
+      reconnectForAuthRefresh: vi.fn(),
+      setSessionToken: vi.fn(),
+      connected: false,
+    };
+    useChannelsStore.setState({ ws: ws as unknown as import('@/lib/ws').AnnexWebSocket, wsAuthRefreshing: false });
+
+    useChannelsStore.getState().updateWsSessionToken('new-token');
+
+    expect(ws.setSessionToken).toHaveBeenCalledWith('new-token');
+    expect(ws.reconnectForAuthRefresh).not.toHaveBeenCalled();
+    expect(useChannelsStore.getState().wsAuthRefreshing).toBe(false);
+  });
