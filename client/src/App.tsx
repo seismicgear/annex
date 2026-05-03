@@ -80,9 +80,16 @@ function markNotificationPermissionPrompted(): void {
  * Uses Zustand subscription to track connection state transitions
  * without violating React strict-mode lint rules.
  */
-function ReconnectionBanner() {
+export function ReconnectionBanner() {
   const wsConnected = useChannelsStore((s) => s.wsConnected);
   const [banner, setBanner] = useState<'hidden' | 'disconnected' | 'reconnected'>('hidden');
+
+  // Reflect initial websocket state on first mount.
+  useEffect(() => {
+    if (!wsConnected) {
+      setBanner('disconnected');
+    }
+  }, [wsConnected]);
 
   // Subscribe to wsConnected changes at the store level to detect transitions
   useEffect(() => {
