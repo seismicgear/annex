@@ -26,18 +26,12 @@ import {
   desktopCorsGuidance,
 } from '@/lib/tauri';
 import { setApiBaseUrl, fetchWithTimeout } from '@/lib/api';
-import { clearWebStartupMode } from '@/lib/startup-prefs';
+import { clearWebStartupMode, loadWebStartupMode, saveWebStartupMode } from '@/lib/startup-prefs';
 import { normalizeServerUrl } from '@/lib/url';
 import { useServersStore } from '@/stores/servers';
 import { useIdentityStore } from '@/stores/identity';
 import { useVoiceStore } from '@/stores/voice';
 
-const STORAGE_KEY = 'annex:startup-mode';
-
-interface WebPrefs {
-  mode: 'local' | 'remote';
-  server_url?: string;
-}
 
 /** Describes which optional subsystems failed during host startup. */
 export interface DegradedStartupInfo {
@@ -61,25 +55,6 @@ type Phase =
   | 'acquiring_endpoint'
   | 'connecting'
   | 'error';
-
-// ── localStorage helpers (web/Docker) ──
-
-function loadWebPrefs(): WebPrefs | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as WebPrefs) : null;
-  } catch {
-    return null;
-  }
-}
-
-function saveWebPrefs(prefs: WebPrefs): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs));
-  } catch {
-    // Storage full or blocked — non-fatal.
-  }
-}
 
 export function StartupModeSelector({ onReady }: Props) {
   const [phase, setPhase] = useState<Phase>('loading');
@@ -210,7 +185,7 @@ export function StartupModeSelector({ onReady }: Props) {
             startup_mode: { mode: 'client', server_url: normalized },
           });
         } else {
-          saveWebPrefs({ mode: 'remote', server_url: normalized });
+          saveWebStartupMode({ mode: 'remote', server_url: normalized });
         }
       }
 
@@ -247,7 +222,7 @@ export function StartupModeSelector({ onReady }: Props) {
       // Clear any stale voice-disabled state from a previous startup failure.
       useVoiceStore.getState().setVoiceSessionDisabled(false);
       if (!skipSave) {
-        saveWebPrefs({ mode: 'local' });
+        saveWebStartupMode({ mode: 'local' });
       }
       onReady();
     },
@@ -285,7 +260,7 @@ export function StartupModeSelector({ onReady }: Props) {
           setPhase('choose');
         } else {
           // Web/Docker — pre-fill only, no auto-resume
-          const prefs = loadWebPrefs();
+          const prefs = loadWebStartupMode();
           if (cancelled) return;
           if (!prefs) {
             setPhase('choose');
