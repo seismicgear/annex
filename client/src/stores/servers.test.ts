@@ -9,6 +9,8 @@ const mockSaveServer = vi.fn(async () => {});
 const mockListServers = vi.fn(async () => []);
 const mockGetServerByIdentityId = vi.fn(async () => null);
 const mockRemoveServer = vi.fn(async () => {});
+const mockUpdateCachedSummary = vi.fn(async () => {});
+const mockGetServerSummary = vi.fn(async () => ({ slug: 'test', label: 'Test' }));
 const mockCreateServerEntry = vi.fn(
   (baseUrl: string, slug: string, label: string, identityId: string) => ({
     id: `gen-${Math.random().toString(36).slice(2)}`,
@@ -31,7 +33,7 @@ vi.mock('@/lib/servers', () => ({
   getServerByIdentityId: (...args: unknown[]) => mockGetServerByIdentityId(...args),
   createServerEntry: (...args: unknown[]) => (mockCreateServerEntry as (...a: unknown[]) => unknown)(...args),
   removeServer: (...args: unknown[]) => mockRemoveServer(...args),
-  updateCachedSummary: vi.fn(async () => {}),
+  updateCachedSummary: (...args: unknown[]) => mockUpdateCachedSummary(...args),
   getServerBySlug: vi.fn(async () => undefined),
 }));
 
@@ -46,7 +48,7 @@ vi.mock('@/lib/api', () => ({
   setApiBaseUrl: (...args: unknown[]) => { mockCurrentApiBaseUrl = args[0] as string; mockSetApiBaseUrl(...args); },
   getApiBaseUrl: () => mockCurrentApiBaseUrl,
   getServerImage: (...args: unknown[]) => mockGetServerImage(...args),
-  getServerSummary: vi.fn(async () => ({ slug: 'test', label: 'Test' })),
+  getServerSummary: (...args: unknown[]) => mockGetServerSummary(...args),
   getRemoteServerSummary: (...args: unknown[]) => mockGetRemoteServerSummary(...args),
   resolveUrl: (url: string) => url,
 }));
@@ -106,6 +108,9 @@ describe('servers store', () => {
         cachedSummary: null,
       }),
     );
+    mockUpdateCachedSummary.mockReset();
+    mockGetServerSummary.mockReset();
+    mockGetServerSummary.mockResolvedValue({ slug: 'test', label: 'Test' });
   });
 
   it('fetchServerImage sets serverImageUrl to null on failure', async () => {
@@ -336,5 +341,44 @@ describe('servers store', () => {
         identityId: 'identity-xyz',
       }),
     );
+  });
+
+  it('guards async writes during rapid A→B→A switches', async () => {
+    const { useServersStore } = await import('./servers');
+
+    const serverA = {
+      id: 'srv-a', baseUrl: 'https://a.example.com', slug: 'a', label: 'A', identityId: 'id-a',
+      personaId: null, accentColor: '#e63946', vrpTopic: '', lastConnectedAt: '2025-01-01', cachedSummary: null,
+    };
+    const serverB = {
+      id: 'srv-b', baseUrl: 'https://b.example.com', slug: 'b', label: 'B', identityId: 'id-b',
+      personaId: null, accentColor: '#646cff', vrpTopic: '', lastConnectedAt: '2025-01-02', cachedSummary: null,
+    };
+    useServersStore.setState({ servers: [serverA, serverB], activeServerId: null });
+
+    let resolveBImage: ((value: { image_url: string | null }) => void) | null = null;
+    mockGetServerImage.mockImplementation(() => new Promise((resolve) => {
+      if (mockCurrentApiBaseUrl === 'https://b.example.com') {
+        resolveBImage = resolve;
+        return;
+      }
+      resolve({ image_url: '/a.png' });
+    }));
+    mockGetServerSummary.mockImplementation(async () => ({ slug: mockCurrentApiBaseUrl, label: mockCurrentApiBaseUrl }));
+
+    await useServersStore.getState().switchServer('srv-a');
+    expect(useServersStore.getState().serverImageUrl).toBe('/a.png');
+
+    const pendingB = useServersStore.getState().switchServer('srv-b');
+    await Promise.resolve();
+    const backToA = useServersStore.getState().switchServer('srv-a');
+    await backToA;
+
+    resolveBImage?.({ image_url: '/b.png' });
+    await pendingB;
+
+    expect(useServersStore.getState().activeServerId).toBe('srv-a');
+    expect(useServersStore.getState().serverImageUrl).toBe('/a.png');
+    expect(mockUpdateCachedSummary).not.toHaveBeenCalledWith('srv-b', expect.anything());
   });
 });
