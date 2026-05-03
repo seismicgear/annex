@@ -133,7 +133,7 @@ export interface WsSendFrame {
 export interface WsReceiveFrame {
   type: 'message' | 'message_edited' | 'message_deleted' | 'rtx_bundle' | 'transcription' | 'error'
     | 'channel_created' | 'channel_updated' | 'channel_deleted' | 'typing' | 'resumed'
-    | 'webrtc_answer' | 'webrtc_ice_candidate';
+    | 'webrtc_answer' | 'webrtc_ice_candidate' | 'internal_error';
   // Message fields (camelCase from WsMessagePayload)
   channelId?: string;
   messageId?: string;
@@ -157,6 +157,8 @@ export interface WsReceiveFrame {
   message?: string;
   /** Echoed client request ID from the originating send frame. */
   clientRequestId?: string;
+  /** Client-side preview of malformed raw payloads for diagnostics. */
+  rawPayloadPreview?: string;
   // WebRTC signaling fields
   sdp?: string;
   candidate?: string;

@@ -46,3 +46,50 @@ describe('AnnexWebSocket auth refresh', () => {
     expect(secondSent).toContainEqual({ type: 'resume', channelId: 'chan-1', lastMessageId: 'm-9' });
   });
 });
+
+
+describe('AnnexWebSocket frame validation', () => {
+  const sockets: MockSocket[] = [];
+
+  beforeEach(() => {
+    sockets.length = 0;
+    class WebSocketCtor extends MockSocket {
+      constructor(_url: string) {
+        super();
+        sockets.push(this);
+      }
+    }
+    const ctorSpy = vi.fn(WebSocketCtor);
+    vi.stubGlobal('WebSocket', ctorSpy as unknown as typeof WebSocket);
+    vi.stubGlobal('window', { location: { protocol: 'http:', host: 'localhost:5173' } });
+  });
+
+  it('emits internal warning frame for malformed JSON payloads', () => {
+    const ws = new AnnexWebSocket('p1');
+    const handler = vi.fn();
+    ws.onMessage(handler);
+
+    ws.connect();
+    sockets[0].onmessage?.({ data: '{not-json' });
+
+    expect(handler).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'internal_error',
+      error: 'failed to parse websocket frame as JSON',
+      rawPayloadPreview: '{not-json',
+    }));
+  });
+
+  it('emits internal warning frame for unknown/malformed frame shapes', () => {
+    const ws = new AnnexWebSocket('p1');
+    const handler = vi.fn();
+    ws.onMessage(handler);
+
+    ws.connect();
+    sockets[0].onmessage?.({ data: JSON.stringify({ foo: 'bar' }) });
+
+    expect(handler).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'internal_error',
+      error: 'received malformed websocket frame shape',
+    }));
+  });
+});
