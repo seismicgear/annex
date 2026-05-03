@@ -241,4 +241,50 @@ describe('channels store', () => {
     useChannelsStore.getState().resetServerState();
     expect(useChannelsStore.getState().pendingSends.size).toBe(0);
   });
+
+  it('selectChannel ignores stale history response and stale subscribe on rapid switch', async () => {
+    const apiModule = await import('@/lib/api');
+    const deferred = <T,>() => {
+      let resolve!: (value: T) => void;
+      const promise = new Promise<T>((res) => { resolve = res; });
+      return { promise, resolve };
+    };
+    const a = deferred<Array<{ message_id: string; channel_id: string; sender_pseudonym: string; content: string; created_at: string }>>();
+    const b = deferred<Array<{ message_id: string; channel_id: string; sender_pseudonym: string; content: string; created_at: string }>>();
+
+    vi.mocked(apiModule.getMessages).mockImplementation((_p, channelId) => (
+      channelId === 'A' ? a.promise : channelId === 'B' ? b.promise : Promise.resolve([])
+    ));
+
+    const { useChannelsStore } = await import('./channels');
+    const ws = {
+      onStatus: vi.fn(),
+      onMessage: vi.fn(),
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+      subscribe: vi.fn(),
+      unsubscribe: vi.fn(),
+      send: vi.fn(),
+      trackLastMessageId: vi.fn(),
+    };
+    useChannelsStore.setState({ ws: ws as unknown });
+
+    const selectA = useChannelsStore.getState().selectChannel('p1', 'A');
+    const selectB = useChannelsStore.getState().selectChannel('p1', 'B');
+
+    await Promise.resolve();
+    b.resolve([{ message_id: 'b1', channel_id: 'B', sender_pseudonym: 'p2', content: 'new', created_at: '' }]);
+    await selectB;
+
+    a.resolve([{ message_id: 'a1', channel_id: 'A', sender_pseudonym: 'p2', content: 'old', created_at: '' }]);
+    await selectA;
+
+    const state = useChannelsStore.getState();
+    expect(state.activeChannelId).toBe('B');
+    expect(state.messages.map((m) => m.channel_id)).toEqual(['B']);
+    expect(ws.subscribe).toHaveBeenCalledTimes(1);
+    expect(ws.subscribe).toHaveBeenCalledWith('B');
+    expect(ws.trackLastMessageId).toHaveBeenCalledTimes(1);
+    expect(ws.trackLastMessageId).toHaveBeenCalledWith('B', 'b1');
+  });
 });

@@ -163,6 +163,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
   },
 
   selectChannel: async (pseudonymId: string, channelId: string) => {
+    const requestedChannelId = channelId;
     const { ws } = get();
     // Note: we intentionally do NOT unsubscribe from the previous channel.
     // Staying subscribed to all joined channels lets us receive messages
@@ -191,14 +192,16 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     // messages arriving between subscribe() and getMessages() completion
     // are silently dropped when the history response replaces the array.
     try {
-      const messages = await api.getMessages(pseudonymId, channelId, undefined, PAGE_SIZE);
+      const messages = await api.getMessages(pseudonymId, requestedChannelId, undefined, PAGE_SIZE);
+      if (get().activeChannelId !== requestedChannelId) return;
       const reversed = messages.reverse();
       set({ messages: reversed, hasMoreMessages: messages.length >= PAGE_SIZE, historyLoading: false, historyError: null });
       // Track the newest message ID for resume
       if (reversed.length > 0 && ws) {
-        ws.trackLastMessageId(channelId, reversed[reversed.length - 1].message_id);
+        ws.trackLastMessageId(requestedChannelId, reversed[reversed.length - 1].message_id);
       }
     } catch (err) {
+      if (get().activeChannelId !== requestedChannelId) return;
       // Keep the channel selected but surface the history error so the
       // message pane can show a retry affordance instead of staying blank.
       set({
@@ -209,8 +212,9 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
 
     // Subscribe to real-time updates AFTER history is loaded so no
     // messages are lost in the gap.
+    if (get().activeChannelId !== requestedChannelId) return;
     if (ws) {
-      ws.subscribe(channelId);
+      ws.subscribe(requestedChannelId);
     }
   },
 
