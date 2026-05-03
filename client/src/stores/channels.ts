@@ -158,6 +158,10 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
         if (ch.is_member) joined.add(ch.channel_id);
       }
       set({ channels, joinedChannelIds: joined });
+      const { ws } = get();
+      if (ws?.connected) {
+        for (const channelId of joined) ws.subscribe(channelId);
+      }
     } catch (err) {
       set({ channels: [], error: err instanceof Error ? err.message : String(err) });
     } finally {
@@ -231,8 +235,15 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     }
 
     const ws = new AnnexWebSocket(pseudonymId, baseUrl, sessionToken ?? null);
+    const subscribeJoinedChannels = () => {
+      const { joinedChannelIds } = get();
+      for (const channelId of joinedChannelIds) ws.subscribe(channelId);
+    };
 
-    ws.onStatus((connected) => set({ wsConnected: connected, wsAuthRefreshing: connected ? false : get().wsAuthRefreshing }));
+    ws.onStatus((connected) => {
+      set({ wsConnected: connected, wsAuthRefreshing: connected ? false : get().wsAuthRefreshing });
+      if (connected) subscribeJoinedChannels();
+    });
 
     ws.onMessage((frame: WsReceiveFrame) => {
       // Handle error frames — route to composerError for chat-flow errors.
@@ -398,6 +409,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
 
     ws.connect();
     set({ ws });
+    if (ws.connected) subscribeJoinedChannels();
 
     // Start typing cleanup interval — remove stale typing indicators every second
     typingCleanupInterval = setInterval(() => {
@@ -521,6 +533,8 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       joined.add(channelId);
       return { joinedChannelIds: joined };
     });
+    const { ws } = get();
+    if (ws?.connected) ws.subscribe(channelId);
   },
 
   leaveChannel: async (pseudonymId, channelId) => {
@@ -544,7 +558,8 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     }
     voiceStore.clearChannelCallState(channelId);
 
-    const { activeChannelId } = get();
+    const { activeChannelId, ws } = get();
+    if (ws?.connected) ws.unsubscribe(channelId);
     if (activeChannelId === channelId) {
       set({ activeChannelId: null, messages: [], typingUsers: [] });
     }

@@ -352,6 +352,45 @@ describe('channels store', () => {
     expect(state.lastReadMessageIds.A).toBe('m1');
     expect(state.historyError).toBe('boom');
   });
+
+  it('connectWs subscribes to joined channels and counts unread for background messages', async () => {
+    const { AnnexWebSocket } = await import('@/lib/ws');
+    const onStatusHandlers: Array<(connected: boolean) => void> = [];
+    const onMessageHandlers: Array<(frame: import('@/types').WsReceiveFrame) => void> = [];
+    const subscribe = vi.fn();
+    vi.mocked(AnnexWebSocket).mockImplementationOnce(function mockAnnexWebSocket() {
+      return {
+      onStatus: vi.fn((cb: (connected: boolean) => void) => { onStatusHandlers.push(cb); }),
+      onMessage: vi.fn((cb: (frame: import('@/types').WsReceiveFrame) => void) => { onMessageHandlers.push(cb); }),
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+      subscribe,
+      unsubscribe: vi.fn(),
+      send: vi.fn(),
+      setSessionToken: vi.fn(),
+      reconnectForAuthRefresh: vi.fn(),
+      connected: false,
+      } as unknown as import('@/lib/ws').AnnexWebSocket;
+    });
+
+    const { useChannelsStore } = await import('./channels');
+    useChannelsStore.setState({ joinedChannelIds: new Set(['A', 'B']), activeChannelId: 'A', unreadCounts: {} });
+    useChannelsStore.getState().connectWs('p1');
+    onStatusHandlers[0]?.(true);
+
+    expect(subscribe).toHaveBeenCalledWith('A');
+    expect(subscribe).toHaveBeenCalledWith('B');
+
+    onMessageHandlers[0]?.({
+      type: 'message',
+      channelId: 'B',
+      messageId: 'm1',
+      senderPseudonym: 'p2',
+      content: 'background',
+      createdAt: new Date().toISOString(),
+    });
+    expect(useChannelsStore.getState().unreadCounts.B).toBe(1);
+  });
 });
 
 
