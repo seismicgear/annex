@@ -1,66 +1,29 @@
-const fs = require("fs");
+#!/usr/bin/env node
+// setup-groth16.js — Compatibility shim.
+//
+// The historical entry point for the local Groth16 trusted setup. The
+// production / dev split now lives in two scripts:
+//
+//   - zk/scripts/dev-setup-groth16.js   (random-entropy, dev fixtures only)
+//   - zk/scripts/verify-artifacts.js    (verifies pinned artifacts in prod)
+//
+// Production builds MUST NOT invoke this script. It is preserved only so
+// that existing dev workflows (CI lanes, scripts/claude-setup.sh,
+// crates/annex-identity/tests/common.rs) that already run setup-groth16.js
+// keep working — but they now pass through dev-setup-groth16.js, which:
+//
+//   - prints an explicit DEV-ONLY banner
+//   - refuses to run when ANNEX_BUILD_PROFILE=production|release
+//
+// See docs/refactor/zk-merkle-production.md.
+
+"use strict";
+
 const path = require("path");
-const crypto = require("crypto");
-const { execSync } = require("child_process");
 
-const buildPath = path.resolve(__dirname, "../build");
-const keysPath = path.resolve(__dirname, "../keys");
+process.stdout.write(
+  "[setup-groth16] NOTE: this is a compatibility shim. " +
+    "Delegating to dev-setup-groth16.js (dev-only).\n"
+);
 
-/// Generates a cryptographically random hex string for ceremony entropy.
-/// SECURITY: Using hardcoded strings (e.g., "random text") as ceremony
-/// entropy completely compromises the trusted setup — any adversary knowing
-/// the entropy can forge valid proofs for arbitrary statements.
-function randomEntropy() {
-    return crypto.randomBytes(32).toString("hex");
-}
-
-if (!fs.existsSync(keysPath)) {
-    fs.mkdirSync(keysPath);
-}
-
-const circuits = ['identity', 'membership'];
-
-function run(cmd) {
-    console.log(`Running: ${cmd}`);
-    execSync(cmd, { stdio: 'inherit', cwd: path.resolve(__dirname, "..") });
-}
-
-async function setup() {
-    const ptauPath = path.join(keysPath, "pot14_final.ptau");
-    const ptau0 = path.join(keysPath, "pot14_0000.ptau");
-    const ptau1 = path.join(keysPath, "pot14_0001.ptau");
-
-    if (!fs.existsSync(ptauPath)) {
-        console.log("Generating Powers of Tau...");
-        // 1. Start a new powers of tau ceremony
-        run(`npx snarkjs powersoftau new bn128 14 "${ptau0}" -v`);
-        // 2. Contribute to the ceremony
-        run(`npx snarkjs powersoftau contribute "${ptau0}" "${ptau1}" --name="First Contribution" -v -e="${randomEntropy()}"`);
-        // 3. Prepare for phase 2
-        run(`npx snarkjs powersoftau prepare phase2 "${ptau1}" "${ptauPath}" -v`);
-    }
-
-    for (const circuit of circuits) {
-        console.log(`Setting up ${circuit}...`);
-        const r1csPath = path.join(buildPath, `${circuit}.r1cs`);
-        const zkey0 = path.join(keysPath, `${circuit}_0.zkey`);
-        const zkeyFinal = path.join(keysPath, `${circuit}_final.zkey`);
-        const vkeyPath = path.join(keysPath, `${circuit}_vkey.json`);
-
-        // 4. Setup Phase 2
-        run(`npx snarkjs groth16 setup "${r1csPath}" "${ptauPath}" "${zkey0}"`);
-
-        // 5. Contribute to Phase 2
-        run(`npx snarkjs zkey contribute "${zkey0}" "${zkeyFinal}" --name="Second Contribution" -v -e="${randomEntropy()}"`);
-
-        // 6. Export verification key
-        run(`npx snarkjs zkey export verificationkey "${zkeyFinal}" "${vkeyPath}"`);
-
-        console.log(`${circuit} setup complete.`);
-    }
-}
-
-setup().catch(err => {
-    console.error(err);
-    process.exit(1);
-});
+require(path.resolve(__dirname, "dev-setup-groth16.js"));

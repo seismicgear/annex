@@ -64,8 +64,8 @@ The reader is assumed to know that production-grade requires:
 - **Nullifier scoping is per-topic only.** There is no per-epoch or per-server-slug nullifier prefix. Two servers that happen to import the same identity registry would collide on nullifier rows.
 - **Root canonical form is implicit.** The middleware compares `current_root` (a hex string from `tree.root_hex()`) against `payload.root_hex` (a hex string from the client). Both happen to use lowercase no-prefix; a client serializing differently would silently fail. There is no normalisation layer.
 - **Trusted setup is not auditable.** Single-machine ceremony, ephemeral entropy, no public contribution log. Acceptable for staging; insufficient for a public release that claims production-grade ZK.
-- **Vkey provenance is not enforced.** A bundled vkey could be substituted at install time and the server would happily verify proofs against the wrong key. There is no per-build attestation hash compared at runtime.
-- **CI workflow `.github/workflows/release-desktop.yml`** uses `|| true` after the ZK setup step on Windows/macOS to avoid failing the build when the snarkjs ceremony hits transient errors. That fallback can produce a `membership_vkey.json` that is the literal `'{}'` placeholder. A release artifact built from that tree ships an empty vkey.
+- **Vkey provenance is not enforced AT RUNTIME.** Build-time verification now exists (see "Implemented: dev / production artifact split" below) but the server does not yet recompute and assert the vkey hash on startup. A swap between build and install is still undetected by the running process.
+- **CI workflow `.github/workflows/release-desktop.yml`** uses `|| true` after the ZK setup step on Windows/macOS to avoid failing the build when the snarkjs ceremony hits transient errors. That fallback can produce a `membership_vkey.json` that is the literal `'{}'` placeholder. A release artifact built from that tree ships an empty vkey. **Mitigation**: set `ANNEX_BUILD_PROFILE=production` in that workflow so `build-desktop.js` calls `verify-artifacts.js`, which refuses an empty / mismatched vkey. This is a one-line follow-up; until it lands, the `|| true` is the remaining hole.
 
 ---
 
@@ -148,6 +148,137 @@ A new unit test in `crates/annex-server/src/middleware.rs` (or a dedicated
 - Non-hex input is rejected with a clear error.
 
 **Spec doc:** copy this section into `docs/protocol/` once the encoding is implemented.
+
+---
+
+## Implemented: dev / production artifact split
+
+A first slice of the production posture is in place. Random-entropy "build-time
+trusted setup" is now a **dev-only** path; production builds consume pinned
+artifacts whose hashes are verified against a manifest before the bundle
+moves forward.
+
+### Files
+
+- `zk/artifacts/<circuit>/manifest.json` — committed manifest. For
+  `circuit=membership` it pins the SHA-256 of `wasm`, `zkey`, `vkey`, and
+  `r1cs`, plus circuit metadata (`circuit`, `circuitVersion`, `curve`,
+  `provingSystem`, `treeDepth`, `publicSignals`). The
+  `ceremony.type` field labels how the pinned artifacts were produced.
+  Today every shipped manifest carries `ceremony.type: "dev-fixture"`;
+  flipping that to `"ceremony-vN"` is the documentation event that
+  accompanies a real ceremony.
+- `zk/scripts/verify-artifacts.js` — side-effect-free verifier. Reads a
+  manifest (default `zk/artifacts/membership/manifest.json`), computes
+  SHA-256 of each referenced file, exits 0 only if every required artifact
+  is present and matches. Prints a loud warning when
+  `ceremony.type == "dev-fixture"`.
+- `zk/scripts/dev-setup-groth16.js` — the random-entropy trusted setup that
+  used to live in `zk/scripts/setup-groth16.js`. Banners loudly that it is
+  dev-only, refuses to run when `ANNEX_BUILD_PROFILE=production` (or
+  `release`).
+- `zk/scripts/setup-groth16.js` — preserved as a thin compat shim that
+  delegates to `dev-setup-groth16.js`. Existing call sites
+  (`scripts/claude-setup.sh`, `crates/annex-identity/tests/common.rs`, ad
+  hoc CI lanes) keep working without modification, but the dev-only nature
+  is now explicit in their output.
+
+### Profiles
+
+`scripts/build-desktop.js` reads `ANNEX_BUILD_PROFILE`:
+
+| Profile      | ZK behaviour                                                  | Missing client artifact |
+| ------------ | ------------------------------------------------------------- | ----------------------- |
+| `dev` (default) | runs `dev-setup-groth16.js` if artifacts are absent         | warn, continue         |
+| `production` (or `release`) | runs `verify-artifacts.js`; never generates new keys; `SKIP_ZK=1` is rejected | hard fail (`process.exit(1)`) |
+
+`scripts/prepare-zk-dev.js` (used by `cargo tauri dev` and the standalone
+Vite dev server) also reads `ANNEX_BUILD_PROFILE` and refuses to run in
+production. There is no path by which `prepare-zk-dev.js` can land random
+keys into a production bundle.
+
+### Files copied into `client/public/zk`
+
+In both profiles, on success, exactly two files are placed under
+`client/public/zk/` for the Vite dev server / Vite build to pick up:
+
+| Destination                                       | Source                                          |
+| ------------------------------------------------- | ----------------------------------------------- |
+| `client/public/zk/membership.wasm`                | `zk/build/membership_js/membership.wasm`        |
+| `client/public/zk/membership_final.zkey`          | `zk/keys/membership_final.zkey`                 |
+
+The verification key (`zk/keys/membership_vkey.json`) is **not** placed in
+`client/public/zk`; it is consumed only by the server, bundled into the
+Tauri app via `crates/annex-desktop/tauri.conf.json::bundle::resources` and
+loaded at boot in `crates/annex-server/src/lib.rs`.
+
+### Dev path
+
+```
+$ node scripts/build-desktop.js                   # ANNEX_BUILD_PROFILE=dev (implicit)
+[build-desktop] profile: dev
+[build-desktop] ZK artifacts already exist — skipping ZK build (dev)
+[build-desktop] Copying ZK artifacts to client/public/zk/...
+[build-desktop]   Copied membership.wasm
+[build-desktop]   Copied membership_final.zkey
+…
+```
+
+If `zk/build/...` and `zk/keys/...` are empty, `build-desktop.js` runs
+`build-circuits.js` and then `dev-setup-groth16.js`. The freshly-generated
+keys will not match the pinned manifest hashes (different entropy each
+run). That's expected and harmless in dev: the manifest is consulted only
+in production mode.
+
+### Production path
+
+```
+$ ANNEX_BUILD_PROFILE=production node scripts/build-desktop.js
+[build-desktop] profile: production
+[build-desktop] Verifying pinned ZK artifacts against manifest...
+[build-desktop]   $ node scripts/verify-artifacts.js
+[verify-artifacts] manifest: …/zk/artifacts/membership/manifest.json
+[verify-artifacts] circuit: membership (version 1.0.0)
+[verify-artifacts] proving system: groth16 over bn254, tree depth 20
+[verify-artifacts] public signals: [root, commitment]
+[verify-artifacts] WARN manifest is marked ceremony.type="dev-fixture". …
+[verify-artifacts]   OK wasm …/zk/build/membership_js/membership.wasm (sha256 c6d5057059a96961…)
+[verify-artifacts]   OK zkey …/zk/keys/membership_final.zkey         (sha256 d8991bf1fc81a335…)
+[verify-artifacts]   OK vkey …/zk/keys/membership_vkey.json          (sha256 9412beaaeaab3d68…)
+[verify-artifacts]   OK r1cs …/zk/build/membership.r1cs              (sha256 a9a7976e08b8fa52…)
+[verify-artifacts] All artifacts verified against manifest.
+[build-desktop] ZK artifacts verified.
+[build-desktop] Copying ZK artifacts to client/public/zk/...
+[build-desktop]   Copied membership.wasm
+[build-desktop]   Copied membership_final.zkey
+…
+```
+
+Production mode never generates new keys. If artifacts are missing or
+hash-mismatched, `verify-artifacts.js` exits non-zero, propagating into
+`build-desktop.js`'s `execSync`, which terminates the bundle build.
+
+### Replacing the dev-fixture with a real ceremony
+
+When a multi-party ceremony output is ready:
+
+1. Drop the new `membership.wasm`, `membership_final.zkey`,
+   `membership_vkey.json`, and `membership.r1cs` into `zk/build/...` and
+   `zk/keys/...` at the manifest's `paths.*` locations.
+2. Regenerate hashes (e.g. `sha256sum zk/build/membership_js/membership.wasm`)
+   and update the four `*_sha256` fields in
+   `zk/artifacts/membership/manifest.json`.
+3. Set `ceremony.type` to a stable name like `"ceremony-v1"` and fill out
+   `ceremony.note` (or add a richer `ceremony.contributions` array — the
+   schema allows it).
+4. Bump `circuitVersion` if the underlying circuit changed.
+5. Run `node zk/scripts/verify-artifacts.js` locally and confirm
+   `[verify-artifacts] All artifacts verified against manifest.` plus no
+   `dev-fixture` warning.
+6. Commit the manifest. Production builds elsewhere will refuse anything
+   that doesn't match.
+
+The dev path keeps working — it doesn't read the manifest.
 
 ---
 

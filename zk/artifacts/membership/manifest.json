@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "circuit": "membership",
+  "circuitVersion": "1.0.0",
+  "curve": "bn254",
+  "provingSystem": "groth16",
+  "treeDepth": 20,
+  "publicSignals": ["root", "commitment"],
+  "wasm_sha256": "c6d5057059a9696174f92f23323ca0dbe7dbb157602ea779ec0c3b3043fffee7",
+  "zkey_sha256": "d8991bf1fc81a335f03e3f52b387bed1db9222a89f3d8cffb68d7ce22ab7ef13",
+  "vkey_sha256": "9412beaaeaab3d68ac4a323947f06fd8be5f9ccef6aa713ffea0793277dcee94",
+  "r1cs_sha256": "a9a7976e08b8fa52568860e22653d1784d55b0c800bc88c1e44669d0e36bac46",
+  "paths": {
+    "wasm": "../../build/membership_js/membership.wasm",
+    "zkey": "../../keys/membership_final.zkey",
+    "vkey": "../../keys/membership_vkey.json",
+    "r1cs": "../../build/membership.r1cs"
+  },
+  "ceremony": {
+    "type": "dev-fixture",
+    "generatedAt": "2026-05-05",
+    "note": "These hashes pin the artifacts produced by zk/scripts/dev-setup-groth16.js with random entropy on 2026-05-05. They are NOT the output of a multi-party trusted-setup ceremony and MUST be replaced (along with the artifacts themselves) before any public production release. See docs/refactor/zk-merkle-production.md."
+  }
+}
