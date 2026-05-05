@@ -56,7 +56,7 @@ jobs:
       - name: Verify WebKitGTK version (>= 2.40 required for WebRTC)
         if: matrix.platform == 'ubuntu-22.04'
         run: |
-          version=$(pkg-config --modversion webkitgtk-4.1)
+          version=$(pkg-config --modversion webkit2gtk-4.1)
           echo "WebKitGTK version: $version"
           major=$(echo "$version" | cut -d. -f1)
           minor=$(echo "$version" | cut -d. -f2)

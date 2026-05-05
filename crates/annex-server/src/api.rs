@@ -5,9 +5,9 @@ use annex_graph::{ensure_graph_node, role_code_to_node_type};
 use annex_identity::{
     create_platform_identity, derive_nullifier_hex, derive_pseudonym_id, ensure_founder,
     get_all_roles, get_all_topics, get_path_for_commitment, get_platform_identity,
-    insert_nullifier, register_identity, RegistrationResult,
+    insert_nullifier, register_identity,
     zk::{parse_fr_from_hex, parse_proof, parse_public_signals, verify_proof},
-    Capabilities, PlatformIdentity, RoleCode, VrpRoleEntry, VrpTopic,
+    Capabilities, PlatformIdentity, RegistrationResult, RoleCode, VrpRoleEntry, VrpTopic,
 };
 use annex_observe::EventPayload;
 use annex_types::PresenceEvent;

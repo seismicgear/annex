@@ -4,7 +4,7 @@ fn main() {
     #[cfg(target_os = "linux")]
     {
         if let Ok(output) = std::process::Command::new("pkg-config")
-            .args(["--modversion", "webkitgtk-4.1"])
+            .args(["--modversion", "webkit2gtk-4.1"])
             .output()
         {
             if output.status.success() {

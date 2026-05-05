@@ -698,17 +698,36 @@ mod tests {
     }
 
     fn clear_env() {
-        std::env::remove_var("ANNEX_HOST");
-        std::env::remove_var("ANNEX_PORT");
-        std::env::remove_var("ANNEX_DB_PATH");
-        std::env::remove_var("ANNEX_DB_BUSY_TIMEOUT_MS");
-        std::env::remove_var("ANNEX_DB_POOL_MAX_SIZE");
-        std::env::remove_var("ANNEX_LOG_LEVEL");
-        std::env::remove_var("ANNEX_LOG_JSON");
-        std::env::remove_var("ANNEX_TTS_VOICES_DIR");
-        std::env::remove_var("ANNEX_TTS_BINARY_PATH");
-        std::env::remove_var("ANNEX_STT_MODEL_PATH");
-        std::env::remove_var("ANNEX_STT_BINARY_PATH");
+        // Mirror every ANNEX_* var that load_config reads. Missing any of these
+        // leaves cross-test residue that re-poisons env_lock for subsequent tests.
+        for name in [
+            "ANNEX_HOST",
+            "ANNEX_PORT",
+            "ANNEX_RETENTION_CHECK_INTERVAL_SECONDS",
+            "ANNEX_INACTIVITY_THRESHOLD_SECONDS",
+            "ANNEX_PUBLIC_URL",
+            "ANNEX_MERKLE_TREE_DEPTH",
+            "ANNEX_PRESENCE_BROADCAST_CAPACITY",
+            "ANNEX_INVITE_BASE_URL",
+            "ANNEX_DB_PATH",
+            "ANNEX_DB_BUSY_TIMEOUT_MS",
+            "ANNEX_DB_POOL_MAX_SIZE",
+            "ANNEX_LOG_LEVEL",
+            "ANNEX_LOG_JSON",
+            "ANNEX_WEBRTC_URL",
+            "ANNEX_WEBRTC_PUBLIC_URL",
+            "ANNEX_WEBRTC_API_KEY",
+            "ANNEX_WEBRTC_API_SECRET",
+            "ANNEX_TTS_VOICES_DIR",
+            "ANNEX_TTS_BINARY_PATH",
+            "ANNEX_STT_MODEL_PATH",
+            "ANNEX_STT_BINARY_PATH",
+            "ANNEX_BARK_BINARY_PATH",
+            "ANNEX_CORS_ORIGINS",
+            "ANNEX_ENFORCE_ZK_PROOFS",
+        ] {
+            std::env::remove_var(name);
+        }
     }
 
     fn write_temp_config(contents: &str) -> String {
@@ -1021,10 +1040,14 @@ retention_check_interval_seconds = 0
         let _guard = env_lock().lock().expect("env lock poisoned");
         clear_env();
 
+        // The fixture pins `server_slug` so the slug-autogen path in
+        // `load_config` does not rewrite the file; that lets us assert the
+        // narrow invariant this test owns: forward-slash paths trigger no I/O.
         let original = r#"
 [server]
 host = "127.0.0.1"
 port = 3000
+server_slug = "fixture00001"
 
 [database]
 path = "C:/Users/monty/AppData/Roaming/Annex/annex.db"
@@ -1062,8 +1085,10 @@ json = false
         let file_name = format!("annex-config-multi-{unique_suffix}.toml");
         let path = std::env::temp_dir().join(file_name);
 
-        // Config with multiple Windows paths
-        let raw = b"[database]\npath = \"D:\\Servers\\Annex\\data\\annex.db\"\nbusy_timeout_ms = 5000\npool_max_size = 8\n\n[voice]\ntts_voices_dir = \"D:\\Servers\\Annex\\voices\"\ntts_binary_path = \"D:\\Servers\\Annex\\piper\\piper.exe\"\nstt_model_path = \"D:\\Servers\\Annex\\models\\ggml-base.en.bin\"\nstt_binary_path = \"D:\\Servers\\Annex\\whisper\\whisper.exe\"\n\n[logging]\nlevel = \"info\"\njson = false\n";
+        // Config with multiple Windows paths. `server_slug` is pre-set so the
+        // only rewrite this test exercises is the backslash-fix path; the
+        // slug-autogen path is inert for fixture stability.
+        let raw = b"[server]\nserver_slug = \"fixture00002\"\n\n[database]\npath = \"D:\\Servers\\Annex\\data\\annex.db\"\nbusy_timeout_ms = 5000\npool_max_size = 8\n\n[voice]\ntts_voices_dir = \"D:\\Servers\\Annex\\voices\"\ntts_binary_path = \"D:\\Servers\\Annex\\piper\\piper.exe\"\nstt_model_path = \"D:\\Servers\\Annex\\models\\ggml-base.en.bin\"\nstt_binary_path = \"D:\\Servers\\Annex\\whisper\\whisper.exe\"\n\n[logging]\nlevel = \"info\"\njson = false\n";
         fs::write(&path, raw).expect("failed to write");
 
         let path_str = path.to_string_lossy().into_owned();

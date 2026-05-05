@@ -82,14 +82,11 @@ function markNotificationPermissionPrompted(): void {
  */
 export function ReconnectionBanner() {
   const wsConnected = useChannelsStore((s) => s.wsConnected);
-  const [banner, setBanner] = useState<'hidden' | 'disconnected' | 'reconnected'>('hidden');
-
-  // Reflect initial websocket state on first mount.
-  useEffect(() => {
-    if (!wsConnected) {
-      setBanner('disconnected');
-    }
-  }, [wsConnected]);
+  // Initialise from the current ws state at mount so a session that boots
+  // already-disconnected shows the banner without a setState-in-effect.
+  const [banner, setBanner] = useState<'hidden' | 'disconnected' | 'reconnected'>(
+    () => (useChannelsStore.getState().wsConnected ? 'hidden' : 'disconnected'),
+  );
 
   // Subscribe to wsConnected changes at the store level to detect transitions
   useEffect(() => {
