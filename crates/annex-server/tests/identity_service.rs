@@ -218,10 +218,7 @@ async fn get_merkle_path_returns_path_for_registered_commitment() {
     };
     let registered = svc.register_identity(payload).await.expect("register");
 
-    let path = svc
-        .get_merkle_path(commitment)
-        .await
-        .expect("path lookup");
+    let path = svc.get_merkle_path(commitment).await.expect("path lookup");
     assert_eq!(path.leaf_index, registered.leaf_index);
     assert_eq!(path.path_indices, registered.path_indices);
     assert_eq!(path.path_elements, registered.path_elements);
