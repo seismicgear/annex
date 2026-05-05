@@ -114,8 +114,12 @@ pub fn register_identity(
         Err(e) => return Err(IdentityError::DatabaseError(e)),
     };
 
-    // 3. Persist Merkle Tree update (In Transaction)
-    tree.persist_leaf_and_root(&tx, leaf_index, leaf, new_root)?;
+    // 3. Persist Merkle Tree update (In Transaction). The `updates` slice
+    //    carries the (level, index) -> hash assignments along the leaf's
+    //    Merkle path so `persist_leaf_and_root` can write only the
+    //    touched nodes into `vrp_merkle_nodes` instead of reserialising
+    //    the whole tree.
+    tree.persist_leaf_and_root(&tx, leaf_index, leaf, new_root, &updates)?;
 
     // 4. Commit Transaction
     tx.commit().map_err(IdentityError::DatabaseError)?;

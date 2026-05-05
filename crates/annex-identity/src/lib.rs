@@ -79,6 +79,11 @@ pub enum IdentityError {
     /// Merkle root mismatch between stored and computed values.
     #[error("merkle root mismatch: stored={stored}, computed={computed}")]
     MerkleRootMismatch { stored: String, computed: String },
+    /// Persisted Merkle tree depth differs from the depth requested at boot.
+    /// Refusing to silently re-shard a tree of identities into a tree of a
+    /// different size — that would invalidate every previously-issued proof.
+    #[error("merkle tree depth mismatch: persisted={stored}, configured={configured}")]
+    MerkleTreeDepthMismatch { stored: usize, configured: usize },
     /// Database error.
     #[error("database error: {0}")]
     DatabaseError(#[from] rusqlite::Error),
@@ -110,6 +115,16 @@ impl PartialEq for IdentityError {
                 Self::MerkleRootMismatch {
                     stored: s2,
                     computed: c2,
+                },
+            ) => s1 == s2 && c1 == c2,
+            (
+                Self::MerkleTreeDepthMismatch {
+                    stored: s1,
+                    configured: c1,
+                },
+                Self::MerkleTreeDepthMismatch {
+                    stored: s2,
+                    configured: c2,
                 },
             ) => s1 == s2 && c1 == c2,
             (Self::DatabaseError(a), Self::DatabaseError(b)) => a.to_string() == b.to_string(),
