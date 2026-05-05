@@ -48,6 +48,67 @@ pub fn parse_fr(s: &str) -> Result<Fr, ZkError> {
     Fr::from_str(s).map_err(|_| ZkError::FieldElementError)
 }
 
+/// Canonical hex serialisation for a BN254 scalar field element.
+///
+/// Always produces a fixed-width **64-character lowercase** hex string with
+/// no `0x` prefix and no leading-zero stripping. This is the single
+/// canonical wire and DB encoding for every `Fr` exposed to clients,
+/// stored in `vrp_leaves` / `vrp_roots`, returned in registry responses,
+/// or fed into the membership-proof public-input parser.
+///
+/// Implementation note: `BigInteger256::to_bytes_be` always emits exactly
+/// 32 bytes — the canonical 256-bit big-endian representation — so the
+/// debug assertion below is a tripwire for an arkworks behaviour change,
+/// not a runtime branch.
+pub fn fr_to_canonical_hex(fr: Fr) -> String {
+    let bytes = fr.into_bigint().to_bytes_be();
+    debug_assert_eq!(
+        bytes.len(),
+        32,
+        "BN254 Fr must serialise to exactly 32 bytes",
+    );
+    hex::encode(bytes)
+}
+
+/// Strict canonical-hex parser for a BN254 scalar field element.
+///
+/// Accepts **only** a 64-character lowercase hex string with no `0x`
+/// prefix, and only when the encoded value is `< BN254 scalar field
+/// modulus`. Rejects:
+///   - empty input
+///   - non-hex characters
+///   - any string of length other than 64
+///   - uppercase hex digits (`A-F`)
+///   - 64 chars whose value `>=` the field modulus (would be silently
+///     reduced by `from_be_bytes_mod_order`, breaking 1:1 hex ↔ Fr)
+///
+/// This is the parser to use on every NEW boundary that owns its own
+/// canonical encoding (writers, freshly-defined APIs, freshly-defined DB
+/// columns). Boundaries that must remain backward-compatible with
+/// pre-canonical hex (e.g. the membership middleware reading
+/// proof.public_signals from a third-party prover) should keep using
+/// [`parse_fr_from_hex`].
+pub fn parse_canonical_fr_hex(s: &str) -> Result<Fr, ZkError> {
+    if s.len() != 64 {
+        return Err(ZkError::FieldElementError);
+    }
+    for c in s.chars() {
+        match c {
+            '0'..='9' | 'a'..='f' => {}
+            _ => return Err(ZkError::FieldElementError),
+        }
+    }
+    parse_fr_from_hex(s)
+}
+
+/// Tolerant hex parser for a BN254 scalar field element.
+///
+/// Accepts any even-length hex up to 64 characters, lowercase or
+/// uppercase, decodes big-endian, and rejects values that would be
+/// silently reduced modulo the field order. Retained for boundaries that
+/// historically accepted variable-length / mixed-case hex from
+/// third-party provers and from rows persisted before the canonical
+/// helpers existed. New code should use [`parse_canonical_fr_hex`].
 pub fn parse_fr_from_hex(hex: &str) -> Result<Fr, ZkError> {
     let bytes = hex::decode(hex).map_err(|_| ZkError::FieldElementError)?;
     let fr = Fr::from_be_bytes_mod_order(&bytes);
@@ -304,5 +365,114 @@ mod tests {
             parse_fr_from_hex(hex).is_err(),
             "inputs > 32 bytes should be rejected"
         );
+    }
+
+    #[test]
+    fn fr_to_canonical_hex_one_is_64_chars_ending_01() {
+        let h = fr_to_canonical_hex(Fr::from(1u64));
+        assert_eq!(h.len(), 64, "canonical hex must always be 64 characters");
+        assert!(
+            h.ends_with("01"),
+            "Fr::from(1) canonical hex should end in '01': got {h}"
+        );
+        assert!(
+            h.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')),
+            "canonical hex must be lowercase: got {h}"
+        );
+    }
+
+    #[test]
+    fn fr_to_canonical_hex_zero_is_64_zeros() {
+        let h = fr_to_canonical_hex(Fr::from(0u64));
+        assert_eq!(h.len(), 64);
+        assert_eq!(h, "0".repeat(64));
+    }
+
+    #[test]
+    fn fr_to_canonical_hex_roundtrips_via_canonical_parser() {
+        for v in [0u64, 1, 7, 42, 0xdead_beef] {
+            let fr = Fr::from(v);
+            let h = fr_to_canonical_hex(fr);
+            let back = parse_canonical_fr_hex(&h).expect("canonical hex must parse");
+            assert_eq!(fr, back, "round-trip lost value {v}");
+        }
+    }
+
+    #[test]
+    fn parse_canonical_fr_hex_rejects_non_hex() {
+        let bad = "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz";
+        assert_eq!(bad.len(), 64);
+        assert!(
+            parse_canonical_fr_hex(bad).is_err(),
+            "non-hex input must be rejected"
+        );
+    }
+
+    #[test]
+    fn parse_canonical_fr_hex_rejects_too_short() {
+        let short = "abcd";
+        assert!(
+            parse_canonical_fr_hex(short).is_err(),
+            "shorter than 64 chars must be rejected"
+        );
+    }
+
+    #[test]
+    fn parse_canonical_fr_hex_rejects_oversized() {
+        let too_long = "0".repeat(65);
+        assert!(
+            parse_canonical_fr_hex(&too_long).is_err(),
+            "longer than 64 chars must be rejected"
+        );
+        let way_too_long = "0".repeat(128);
+        assert!(
+            parse_canonical_fr_hex(&way_too_long).is_err(),
+            "much-longer-than-64 must be rejected"
+        );
+    }
+
+    #[test]
+    fn parse_canonical_fr_hex_rejects_uppercase() {
+        // Same value, but with uppercase A-F. Strict canonical refuses these
+        // to keep DB / wire byte-comparisons unambiguous; callers that need
+        // to accept mixed case must lowercase up front.
+        let upper = "0000000000000000000000000000000000000000000000000000000000ABCDEF";
+        assert!(
+            parse_canonical_fr_hex(upper).is_err(),
+            "uppercase must be rejected by the strict canonical parser"
+        );
+        // The legacy tolerant parser still accepts it.
+        assert!(
+            parse_fr_from_hex(upper).is_ok(),
+            "legacy parser still accepts uppercase for backwards compat"
+        );
+    }
+
+    #[test]
+    fn parse_canonical_fr_hex_rejects_0x_prefix() {
+        let prefixed = "0x00000000000000000000000000000000000000000000000000000000000000ab";
+        assert_eq!(prefixed.len(), 66);
+        assert!(
+            parse_canonical_fr_hex(prefixed).is_err(),
+            "0x prefix must be rejected"
+        );
+    }
+
+    #[test]
+    fn parse_canonical_fr_hex_rejects_value_above_modulus() {
+        // 64 lowercase hex chars but the value >= BN254 scalar modulus.
+        let above = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+        assert!(
+            parse_canonical_fr_hex(above).is_err(),
+            "values >= field modulus must be rejected even when canonically encoded"
+        );
+    }
+
+    #[test]
+    fn parse_canonical_fr_hex_accepts_lowercase_64() {
+        let ok = "0000000000000000000000000000000000000000000000000000000000000001";
+        assert_eq!(ok.len(), 64);
+        let fr = parse_canonical_fr_hex(ok).expect("lowercase 64-char hex must parse");
+        assert_eq!(fr, Fr::from(1u64));
     }
 }

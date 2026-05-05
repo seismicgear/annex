@@ -14,10 +14,15 @@
 //! would race on the global env.
 
 use annex_server::{config, prepare_server, StartupError};
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
+use tokio::sync::Mutex;
 
 /// Process-wide mutex serialising every test that reads or mutates env vars
 /// used by `prepare_server`. Must wrap **every** call into the function.
+///
+/// `tokio::sync::Mutex` (not `std::sync::Mutex`) so we can hold the guard
+/// across the `prepare_server(cfg).await` point without tripping the
+/// `clippy::await_holding_lock` defence-in-depth lint.
 fn env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -77,13 +82,13 @@ fn zk_config_default_enforces_zk() {
 
 #[tokio::test]
 async fn zk_enforced_mode_missing_vkey_returns_startup_error() {
-    let _guard = env_lock().lock().expect("env lock poisoned");
+    let _guard = env_lock().lock().await;
     clear_env();
 
     let path = unique_missing_path("enforced");
     std::env::set_var("ANNEX_ZK_KEY_PATH", &path);
     // Avoid touching disk for the signing key.
-    std::env::set_var("ANNEX_SIGNING_KEY", &"00".repeat(32));
+    std::env::set_var("ANNEX_SIGNING_KEY", "00".repeat(32));
     std::env::set_var(
         "ANNEX_UPLOAD_DIR",
         std::env::temp_dir().to_string_lossy().as_ref(),
@@ -110,12 +115,12 @@ async fn zk_enforced_mode_missing_vkey_returns_startup_error() {
 
 #[tokio::test]
 async fn zk_unenforced_mode_missing_vkey_starts_with_dummy() {
-    let _guard = env_lock().lock().expect("env lock poisoned");
+    let _guard = env_lock().lock().await;
     clear_env();
 
     let path = unique_missing_path("unenforced");
     std::env::set_var("ANNEX_ZK_KEY_PATH", &path);
-    std::env::set_var("ANNEX_SIGNING_KEY", &"01".repeat(32));
+    std::env::set_var("ANNEX_SIGNING_KEY", "01".repeat(32));
     std::env::set_var(
         "ANNEX_UPLOAD_DIR",
         std::env::temp_dir().to_string_lossy().as_ref(),
@@ -139,7 +144,7 @@ async fn zk_unenforced_mode_missing_vkey_starts_with_dummy() {
 
 #[tokio::test]
 async fn zk_enforced_mode_invalid_vkey_returns_startup_error() {
-    let _guard = env_lock().lock().expect("env lock poisoned");
+    let _guard = env_lock().lock().await;
     clear_env();
 
     // Write garbage to a tempfile and point ANNEX_ZK_KEY_PATH at it. The
@@ -154,7 +159,7 @@ async fn zk_enforced_mode_invalid_vkey_returns_startup_error() {
     let bad_path_str = bad_path.to_string_lossy().into_owned();
 
     std::env::set_var("ANNEX_ZK_KEY_PATH", &bad_path_str);
-    std::env::set_var("ANNEX_SIGNING_KEY", &"02".repeat(32));
+    std::env::set_var("ANNEX_SIGNING_KEY", "02".repeat(32));
     std::env::set_var(
         "ANNEX_UPLOAD_DIR",
         std::env::temp_dir().to_string_lossy().as_ref(),

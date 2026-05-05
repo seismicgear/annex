@@ -3,6 +3,7 @@
 //! A binary Merkle tree using Poseidon hash function.
 //! Supports append-only insertion and proof generation.
 
+use crate::zk::fr_to_canonical_hex;
 use crate::{poseidon::hash_inputs, IdentityError};
 use ark_bn254::Fr;
 use ark_ff::{BigInteger, PrimeField};
@@ -133,11 +134,10 @@ impl MerkleTree {
             .unwrap_or(&self.zeros[self.depth])
     }
 
-    /// Returns the current Merkle root as a big-endian hex string.
+    /// Returns the current Merkle root as a canonical 64-character lowercase
+    /// hex string (see [`fr_to_canonical_hex`]).
     pub fn root_hex(&self) -> String {
-        let root = self.root();
-        let bytes = root.into_bigint().to_bytes_be();
-        hex::encode(bytes)
+        fr_to_canonical_hex(self.root())
     }
 
     /// Generates a Merkle proof for the leaf at the given index.
@@ -229,10 +229,14 @@ impl MerkleTree {
             .map_err(IdentityError::DatabaseError)?;
 
         if let Some(stored_hex) = stored_root_hex {
-            let current_root_bytes = tree.root().into_bigint().to_bytes_be();
-            let current_root_hex = hex::encode(current_root_bytes);
-
-            if current_root_hex != stored_hex {
+            // Compare against canonical form. Pre-canonical rows might be
+            // stored in mixed case or stripped-leading-zero form; lowercasing
+            // the stored value gives those a chance to match without forcing
+            // an in-place migration. Canonical writers (this code path) only
+            // ever insert all-lowercase 64-char rows going forward.
+            let current_root_hex = fr_to_canonical_hex(tree.root());
+            let stored_normalised = stored_hex.to_ascii_lowercase();
+            if current_root_hex != stored_normalised {
                 return Err(IdentityError::MerkleRootMismatch {
                     stored: stored_hex,
                     computed: current_root_hex,
@@ -257,10 +261,10 @@ impl MerkleTree {
         leaf: Fr,
         root: Fr,
     ) -> Result<(), IdentityError> {
-        let leaf_bytes = leaf.into_bigint().to_bytes_be();
-        let leaf_hex = hex::encode(leaf_bytes);
-        let root_bytes = root.into_bigint().to_bytes_be();
-        let root_hex = hex::encode(root_bytes);
+        // Canonical writes — every new row in vrp_leaves and vrp_roots uses
+        // 64-character lowercase hex.
+        let leaf_hex = fr_to_canonical_hex(leaf);
+        let root_hex = fr_to_canonical_hex(root);
 
         // Note: rusqlite::Connection executes directly.
         // If called with a Transaction object (which Derefs to Connection), it works within that transaction.
@@ -443,5 +447,53 @@ mod tests {
             usize::MAX,
             "depth 64 should saturate to usize::MAX"
         );
+    }
+
+    #[test]
+    fn root_hex_of_empty_tree_is_64_chars() {
+        let tree = MerkleTree::new(20).expect("failed to create tree");
+        let h = tree.root_hex();
+        assert_eq!(
+            h.len(),
+            64,
+            "empty-tree root_hex must be canonical 64-char hex"
+        );
+        assert!(
+            h.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')),
+            "root_hex must be lowercase hex: got {h}"
+        );
+    }
+
+    #[test]
+    fn root_hex_after_inserts_is_64_chars() {
+        let mut tree = MerkleTree::new(5).expect("failed to create tree");
+        for v in 1u64..=4 {
+            tree.insert(Fr::from(v)).expect("insert");
+            let h = tree.root_hex();
+            assert_eq!(
+                h.len(),
+                64,
+                "root_hex must remain 64 chars after insert (after {v} insertions): got {h}"
+            );
+        }
+    }
+
+    #[test]
+    fn proof_path_elements_serialise_to_64_chars_each() {
+        // Build a small tree and compute a proof for a leaf, then exercise the
+        // same canonical serialisation registry.rs uses on the wire.
+        let mut tree = MerkleTree::new(5).expect("failed to create tree");
+        let leaf = Fr::from(123u64);
+        let index = tree.insert(leaf).expect("insert");
+        let (path_elements, _path_indices) = tree.get_proof(index).expect("proof");
+        assert_eq!(path_elements.len(), 5, "depth-5 tree => 5 path elements");
+        for fr in path_elements {
+            let h = crate::zk::fr_to_canonical_hex(fr);
+            assert_eq!(h.len(), 64, "path element hex must be 64 chars: got {h}");
+            assert!(
+                h.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')),
+                "path element must be lowercase hex: got {h}"
+            );
+        }
     }
 }
