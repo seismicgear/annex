@@ -196,6 +196,16 @@ pub enum StartupError {
     /// The `ANNEX_SIGNING_KEY` environment variable was malformed.
     #[error("invalid ANNEX_SIGNING_KEY: {0}")]
     InvalidSigningKey(String),
+    /// `enforce_zk_proofs` is enabled but the membership verification key is
+    /// missing on disk. Refusing to start with the dummy key fallback.
+    #[error(
+        "ZK enforcement is enabled but the membership verification key was not found at '{path}': \
+         {reason}. Refusing to start with a dummy key. \
+         Provide a real key (e.g. via ANNEX_ZK_KEY_PATH or by generating one with \
+         `node zk/scripts/dev-setup-groth16.js`), or set security.enforce_zk_proofs = false \
+         for development."
+    )]
+    MissingVerificationKey { path: String, reason: String },
 }
 
 /// Native WebRTC is embedded in-process; no external sidecar startup is required.
@@ -430,23 +440,42 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
     // Priority:
     // 1. ANNEX_ZK_KEY_PATH env var (explicit path)
     // 2. Default path: zk/keys/membership_vkey.json
-    // 3. Fallback: generate a dummy vkey so the server can still start.
-    //    With a dummy vkey all real proof verifications will fail, so identity
-    //    creation will be blocked — but the server process won't crash.
+    //
+    // Behaviour when the file is missing or invalid depends on
+    // `config.security.enforce_zk_proofs`:
+    //   - enforced (default): a missing OR invalid key is `StartupError`.
+    //     The dummy verification key is never used in this mode.
+    //   - unenforced: a missing key falls back to the dummy verification key
+    //     with a loud warning. Invalid (file present but unparseable) is
+    //     still `StartupError` because it signals corruption / tampering and
+    //     is distinct from "no key configured yet". `generate_dummy_vkey()`
+    //     remains exported for tests that explicitly construct an
+    //     `AppState` with `enforce_zk_proofs = false`.
     let vkey_path = std::env::var("ANNEX_ZK_KEY_PATH")
         .unwrap_or_else(|_| "zk/keys/membership_vkey.json".to_string());
+    let enforce_zk_proofs = config.security.enforce_zk_proofs;
     let membership_vkey = match std::fs::read_to_string(&vkey_path) {
         Ok(vkey_json) => {
             annex_identity::zk::parse_verification_key(&vkey_json).map_err(StartupError::ZkError)?
         }
         Err(e) => {
+            if enforce_zk_proofs {
+                return Err(StartupError::MissingVerificationKey {
+                    path: vkey_path.clone(),
+                    reason: e.to_string(),
+                });
+            }
             tracing::warn!(
                 path = %vkey_path,
                 error = %e,
                 "ZK verification key not found — using dummy key. \
-                 Identity creation will fail until a real key is provided. \
-                 Run the ZK build (cd zk && npm ci && node scripts/build-circuits.js && \
-                 node scripts/setup-groth16.js) to generate one."
+                 IDENTITY SECURITY IS DISABLED on this server: \
+                 security.enforce_zk_proofs is false, raw pseudonym auth is \
+                 permitted, and the dummy key cannot verify any real proof. \
+                 This must only happen in development or test runs. \
+                 To restore enforcement: set security.enforce_zk_proofs = true \
+                 (the default) and provide a real key (e.g. via ANNEX_ZK_KEY_PATH \
+                 or `node zk/scripts/dev-setup-groth16.js`)."
             );
             annex_identity::zk::generate_dummy_vkey()
         }
