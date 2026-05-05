@@ -56,7 +56,7 @@ pub async fn recalculate_agent_alignments(state: Arc<AppState>) -> Result<(), Ap
     let state_clone = state.clone();
 
     // 3. Process Agents in Background (wrapped in a transaction for atomicity)
-    let agents_to_disconnect = tokio::task::spawn_blocking(move || {
+    let agents_to_disconnect = tokio::task::spawn_blocking(move || -> Result<Vec<String>, ApiError> {
         let mut conn = state_clone
             .pool
             .get()

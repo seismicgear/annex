@@ -20,6 +20,7 @@ pub mod config;
 pub mod middleware;
 pub mod policy;
 pub mod retention;
+pub mod services;
 
 use annex_db::DbPool;
 use annex_identity::zk::{Bn254, VerifyingKey};

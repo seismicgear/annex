@@ -1,28 +1,33 @@
 //! API handlers for the Annex server.
+//!
+//! Handlers in this file follow the rule documented in
+//! `crates/annex-server/src/services/mod.rs`: each one
+//!   1. extracts `Extension<Arc<AppState>>`,
+//!   2. accepts a parsed request body / path parameter,
+//!   3. delegates to a service in `crate::services::*`,
+//!   4. wraps the typed response in `Json(...)`.
+//!
+//! Storage / Merkle / ZK / observe-bus orchestration lives in the
+//! services module. See `IdentityService` for the
+//! register / path / current-root / verify-membership flows that used
+//! to live inline in this file.
 
 use crate::AppState;
-use annex_graph::{ensure_graph_node, role_code_to_node_type};
 use annex_identity::{
-    create_platform_identity, derive_nullifier_hex, derive_pseudonym_id, ensure_founder,
-    get_all_roles, get_all_topics, get_path_for_commitment, get_platform_identity,
-    insert_nullifier, register_identity,
-    zk::{fr_to_canonical_hex, parse_fr_from_hex, parse_proof, parse_public_signals, verify_proof},
-    Capabilities, PlatformIdentity, RegistrationResult, RoleCode, VrpRoleEntry, VrpTopic,
+    ensure_founder, get_all_roles, get_all_topics, get_platform_identity, Capabilities,
+    PlatformIdentity, RoleCode, VrpRoleEntry, VrpTopic,
 };
-use annex_observe::EventPayload;
-use annex_types::PresenceEvent;
 use axum::{
     extract::{Extension, Json, Path},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use thiserror::Error;
 
 /// Request body for identity registration.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct RegisterRequest {
     /// The identity commitment (64-char hex string).
     #[serde(rename = "commitmentHex")]
@@ -232,233 +237,9 @@ pub async fn register_handler(
     Extension(state): Extension<Arc<AppState>>,
     Json(payload): Json<RegisterRequest>,
 ) -> Result<Json<RegisterResponse>, ApiError> {
-    // Validate role code
-    let role = RoleCode::from_u8(payload.role_code)
-        .ok_or_else(|| ApiError::BadRequest(format!("invalid role code: {}", payload.role_code)))?;
-
-    // Enforce access_mode policy
-    let access_mode = {
-        let policy = state
-            .policy
-            .read()
-            .map_err(|_| ApiError::InternalServerError("policy lock poisoned".to_string()))?;
-        policy.access_mode.clone()
-    };
-
-    // Pre-validate invite code format before the blocking task.
-    // The actual atomically-safe validation + use_count increment happens
-    // inside the same transaction as registration (below).
-    let invite_code_for_registration = if access_mode == "invite_only" {
-        let invite_code = payload.invite_code.as_deref().unwrap_or("").trim();
-        if invite_code.is_empty() {
-            return Err(ApiError::Forbidden(
-                "This server requires an invite code to register.".to_string(),
-            ));
-        }
-        Some(invite_code.to_string())
-    } else {
-        None
-    };
-
-    // Enforce password access mode
-    if access_mode == "password" {
-        let expected_password = {
-            let policy = state
-                .policy
-                .read()
-                .map_err(|_| ApiError::InternalServerError("policy lock poisoned".to_string()))?;
-            policy.access_password.clone()
-        };
-        let provided = payload.server_password.as_deref().unwrap_or("").trim();
-        if provided.is_empty() || provided != expected_password {
-            return Err(ApiError::Forbidden(
-                "This server requires a password to register.".to_string(),
-            ));
-        }
-    }
-
-    let result =
-        tokio::task::spawn_blocking(move || {
-            // Get DB connection
-            let mut conn = state.pool.get().map_err(|e| {
-                ApiError::InternalServerError(format!("db connection failed: {e}"))
-            })?;
-
-            // Enforce max_members policy
-            {
-                let max_members = state
-                    .policy
-                    .read()
-                    .map_err(|_| {
-                        ApiError::InternalServerError("policy lock poisoned".to_string())
-                    })?
-                    .max_members;
-                let current_count: i64 = conn
-                    .query_row(
-                        "SELECT COUNT(*) FROM platform_identities WHERE server_id = ?1 AND active = 1",
-                        rusqlite::params![state.server_id],
-                        |row| row.get(0),
-                    )
-                    .map_err(|e| {
-                        ApiError::InternalServerError(format!("member count query failed: {e}"))
-                    })?;
-                if current_count >= max_members as i64 {
-                    return Err(ApiError::Forbidden(
-                        "This server has reached its maximum member limit.".to_string(),
-                    ));
-                }
-            }
-
-            // Validate invite code (check expiry, max_uses) before
-            // registration, but defer use_count increment until AFTER
-            // registration succeeds. This prevents wasting invite uses
-            // when registration fails (duplicate commitment, tree full).
-            if let Some(ref code) = invite_code_for_registration {
-                let row: Result<(Option<i64>, i64, Option<String>), _> = conn.query_row(
-                    "SELECT max_uses, use_count, expires_at FROM invite_codes WHERE server_id = ?1 AND code = ?2",
-                    rusqlite::params![state.server_id, code],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                );
-                let (max_uses, use_count, expires_at) = row.map_err(|_| {
-                    ApiError::Forbidden("Invalid or expired invite code.".to_string())
-                })?;
-                if let Some(ref exp) = expires_at {
-                    if let Ok(exp_dt) =
-                        chrono::NaiveDateTime::parse_from_str(exp, "%Y-%m-%d %H:%M:%S")
-                    {
-                        let now = chrono::Utc::now().naive_utc();
-                        if exp_dt < now {
-                            return Err(ApiError::Forbidden(
-                                "Invalid or expired invite code.".to_string(),
-                            ));
-                        }
-                    }
-                }
-                if let Some(max) = max_uses {
-                    if use_count >= max {
-                        return Err(ApiError::Forbidden(
-                            "Invalid or expired invite code.".to_string(),
-                        ));
-                    }
-                }
-            }
-
-            // Lock Merkle Tree
-            let mut tree = state.merkle_tree.lock().map_err(|_| {
-                ApiError::InternalServerError("merkle tree lock poisoned".to_string())
-            })?;
-
-            // Perform registration. If the commitment already exists (client
-            // retry or app restart), treat it as idempotent: look up the
-            // existing leaf and return the current Merkle path so the client
-            // can proceed with proof generation.
-            let result = match register_identity(
-                &mut tree,
-                &mut conn,
-                &payload.commitment_hex,
-                role,
-                payload.node_id,
-            ) {
-                Ok(result) => result,
-                Err(annex_identity::IdentityError::DuplicateCommitment(_)) => {
-                    let commitment = payload.commitment_hex.to_ascii_lowercase();
-                    let (leaf_index, root_hex, path_elements, path_indices) =
-                        get_path_for_commitment(&tree, &conn, &commitment).map_err(|e| {
-                            ApiError::InternalServerError(format!(
-                                "duplicate commitment lookup failed: {e}"
-                            ))
-                        })?;
-                    // Look up the identity_id from vrp_identities for the response.
-                    let identity_id: i64 = conn
-                        .query_row(
-                            "SELECT rowid FROM vrp_identities WHERE commitment_hex = ?1",
-                            rusqlite::params![commitment],
-                            |row| row.get(0),
-                        )
-                        .map_err(|e| {
-                            ApiError::InternalServerError(format!(
-                                "duplicate commitment id lookup failed: {e}"
-                            ))
-                        })?;
-                    tracing::info!(
-                        commitment = %commitment,
-                        leaf_index,
-                        "idempotent re-registration: commitment already exists, returning existing path"
-                    );
-                    RegistrationResult {
-                        identity_id,
-                        leaf_index,
-                        root_hex,
-                        path_elements,
-                        path_indices,
-                    }
-                }
-                Err(e) => {
-                    return Err(match e {
-                        annex_identity::IdentityError::InvalidCommitmentFormat
-                        | annex_identity::IdentityError::InvalidRoleCode(_)
-                        | annex_identity::IdentityError::InvalidHex => {
-                            ApiError::BadRequest(e.to_string())
-                        }
-                        annex_identity::IdentityError::TreeFull => {
-                            ApiError::InternalServerError(e.to_string())
-                        }
-                        _ => ApiError::InternalServerError(e.to_string()),
-                    });
-                }
-            };
-
-            // Registration succeeded — now atomically claim the invite.
-            // The WHERE clause re-checks max_uses to prevent races.
-            if let Some(ref code) = invite_code_for_registration {
-                let updated = conn
-                    .execute(
-                        "UPDATE invite_codes SET use_count = use_count + 1 \
-                         WHERE server_id = ?1 AND code = ?2 \
-                         AND (max_uses IS NULL OR use_count < max_uses)",
-                        rusqlite::params![state.server_id, code],
-                    )
-                    .map_err(|e| {
-                        ApiError::InternalServerError(format!("invite update failed: {e}"))
-                    })?;
-                if updated == 0 {
-                    // Another concurrent request used the last invite between
-                    // our validation and this point. Registration already
-                    // succeeded so we don't roll it back — the identity is
-                    // valid. Log a warning for audit purposes.
-                    tracing::warn!(
-                        code = %code,
-                        "invite code exhausted between validation and claim; \
-                         registration succeeded but invite use not counted"
-                    );
-                }
-            }
-
-            // Emit IDENTITY_REGISTERED to the public event log
-            let observe_payload = EventPayload::IdentityRegistered {
-                commitment_hex: payload.commitment_hex.clone(),
-                role_code: role.as_u8(),
-            };
-            crate::emit_and_broadcast(
-                &conn,
-                state.server_id,
-                &payload.commitment_hex,
-                &observe_payload,
-                &state.observe_tx,
-            );
-
-            Ok(result)
-        })
-        .await
-        .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
-
-    Ok(Json(RegisterResponse {
-        identity_id: result.identity_id,
-        leaf_index: result.leaf_index,
-        root_hex: result.root_hex,
-        path_elements: result.path_elements,
-        path_indices: result.path_indices,
-    }))
+    let svc = crate::services::IdentityService::new(state);
+    let resp = svc.register_identity(payload).await?;
+    Ok(Json(resp))
 }
 
 /// Handler for `GET /api/registry/path/:commitmentHex`.
@@ -466,71 +247,18 @@ pub async fn get_path_handler(
     Extension(state): Extension<Arc<AppState>>,
     Path(commitment_hex): Path<String>,
 ) -> Result<Json<GetPathResponse>, ApiError> {
-    let result = tokio::task::spawn_blocking(move || {
-        let conn = state
-            .pool
-            .get()
-            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
-
-        let tree = state
-            .merkle_tree
-            .lock()
-            .map_err(|_| ApiError::InternalServerError("merkle tree lock poisoned".to_string()))?;
-
-        get_path_for_commitment(&tree, &conn, &commitment_hex).map_err(|e| match e {
-            annex_identity::IdentityError::CommitmentNotFound(_) => {
-                ApiError::NotFound(format!("commitment not found: {commitment_hex}"))
-            }
-            _ => ApiError::InternalServerError(e.to_string()),
-        })
-    })
-    .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
-
-    Ok(Json(GetPathResponse {
-        leaf_index: result.0,
-        root_hex: result.1,
-        path_elements: result.2,
-        path_indices: result.3,
-    }))
+    let svc = crate::services::IdentityService::new(state);
+    let resp = svc.get_merkle_path(commitment_hex).await?;
+    Ok(Json(resp))
 }
 
 /// Handler for `GET /api/registry/current-root`.
 pub async fn get_current_root_handler(
     Extension(state): Extension<Arc<AppState>>,
 ) -> Result<Json<GetRootResponse>, ApiError> {
-    let result = tokio::task::spawn_blocking(move || {
-        let conn = state
-            .pool
-            .get()
-            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
-
-        let (root_hex, leaf_count) = {
-            let tree = state.merkle_tree.lock().map_err(|_| {
-                ApiError::InternalServerError("merkle tree lock poisoned".to_string())
-            })?;
-            (tree.root_hex(), tree.next_index)
-        };
-
-        let updated_at: Option<String> = conn
-            .query_row(
-                "SELECT created_at FROM vrp_roots WHERE root_hex = ?1",
-                [&root_hex],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|e| ApiError::InternalServerError(format!("db query failed: {e}")))?;
-
-        Ok((root_hex, leaf_count, updated_at))
-    })
-    .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
-
-    Ok(Json(GetRootResponse {
-        root_hex: result.0,
-        leaf_count: result.1,
-        updated_at: result.2,
-    }))
+    let svc = crate::services::IdentityService::new(state);
+    let resp = svc.get_current_root().await?;
+    Ok(Json(resp))
 }
 
 /// Handler for `POST /api/zk/verify-membership`.
@@ -538,347 +266,9 @@ pub async fn verify_membership_handler(
     Extension(state): Extension<Arc<AppState>>,
     Json(payload): Json<VerifyMembershipRequest>,
 ) -> Result<Json<VerifyMembershipResponse>, ApiError> {
-    let ws_token_secret = state.ws_token_secret.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        // 1. Resolve protocol version BEFORE any DB or proof work. A
-        //    structurally invalid `protocolVersion` is a 400 regardless of
-        //    DB state — we don't want a stale root to mask the version
-        //    error and report 409 instead. Recognised values: None /
-        //    Some("v1") / Some("v2"). The server NEVER silently verifies
-        //    a v2 payload as v1 (or vice-versa).
-        let protocol_version = payload.protocol_version.as_deref().unwrap_or("v1");
-        let (vkey_for_proof, expected_signals_len) = match protocol_version {
-            "v1" => (state.membership_vkey.clone(), 2usize),
-            "v2" => {
-                let v2_key = state.membership_vkey_v2.clone().ok_or_else(|| {
-                    ApiError::Conflict(
-                        "membership v2 is not enabled on this server (security.enabled_zk_versions \
-                         does not include \"v2\")".to_string(),
-                    )
-                })?;
-                (v2_key, 4usize)
-            }
-            other => {
-                return Err(ApiError::BadRequest(format!(
-                    "unsupported protocol_version '{other}' (expected \"v1\" or \"v2\")"
-                )));
-            }
-        };
-
-        let conn = state
-            .pool
-            .get()
-            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
-
-        // 2. Verify root exists and is active (not a stale historical root).
-        // Only active roots are accepted to prevent revoked identities from
-        // generating valid proofs against old Merkle tree states.
-        let root_exists: bool = conn
-            .query_row(
-                "SELECT COUNT(*) FROM vrp_roots WHERE root_hex = ?1 AND active = 1",
-                [&payload.root],
-                |row| row.get(0),
-            )
-            .map_err(|e| ApiError::InternalServerError(format!("db query failed: {e}")))
-            .map(|count: i64| count > 0)?;
-
-        if !root_exists {
-            return Err(ApiError::Conflict(format!(
-                "stale or invalid root: {}",
-                payload.root
-            )));
-        }
-
-        // 3. Parse proof and public signals.
-        let proof = parse_proof(&payload.proof.to_string())
-            .map_err(|e| ApiError::BadRequest(format!("invalid proof format: {e}")))?;
-
-        let public_signals_json = serde_json::to_string(&payload.public_signals).map_err(|e| {
-            ApiError::BadRequest(format!("failed to serialize public signals: {e}"))
-        })?;
-        let public_signals = parse_public_signals(&public_signals_json)
-            .map_err(|e| ApiError::BadRequest(format!("invalid public signals format: {e}")))?;
-
-        if public_signals.len() != expected_signals_len {
-            return Err(ApiError::BadRequest(format!(
-                "invalid number of public signals: expected {} for protocol_version '{}', got {}",
-                expected_signals_len,
-                protocol_version,
-                public_signals.len()
-            )));
-        }
-
-        // 4. Verify proof against the version-matched vkey. Mismatched signal
-        // count vs. vkey size already returns Err here, so a v2 proof against
-        // the v1 vkey (or vice-versa) is rejected as a verification failure.
-        let valid = verify_proof(&vkey_for_proof, &proof, &public_signals)
-            .map_err(|e| ApiError::Unauthorized(format!("proof verification failed: {e}")))?;
-
-        if !valid {
-            return Err(ApiError::Unauthorized("invalid proof".to_string()));
-        }
-
-        // 5. Verify public signals match claimed root + commitment (both
-        // protocol versions share the first two slots: [root, commitment, ...]).
-        let claimed_root = parse_fr_from_hex(&payload.root)
-            .map_err(|e| ApiError::BadRequest(format!("invalid root hex: {e}")))?;
-        let claimed_commitment = parse_fr_from_hex(&payload.commitment)
-            .map_err(|e| ApiError::BadRequest(format!("invalid commitment hex: {e}")))?;
-
-        if public_signals[0] != claimed_root {
-            return Err(ApiError::BadRequest(
-                "proof root does not match claimed root".to_string(),
-            ));
-        }
-        if public_signals[1] != claimed_commitment {
-            return Err(ApiError::BadRequest(
-                "proof commitment does not match claimed commitment".to_string(),
-            ));
-        }
-
-        // 5b. v2-specific: extract the secret-derived nullifier and topicHash
-        // from the proof's public signals. Index 2 is the in-circuit
-        // Poseidon(sk, topicHash, DOMAIN_NULLIFIER_V2). Index 3 echoes the
-        // topicHash the prover bound to. If the caller supplied an explicit
-        // `nullifierHex` / `topicHashHex` we cross-check them against the
-        // proof so a malicious response can't substitute a different
-        // nullifier than the one actually computed inside the circuit.
-        //
-        // NOTE: the server-side mapping from `payload.topic` to the
-        // canonical topicHash field element is intentionally NOT performed
-        // here yet — wiring that requires a Poseidon-of-string convention
-        // shared with the client and is tracked as a follow-up in
-        // docs/refactor/zk-merkle-production.md. Until then, the server
-        // accepts the prover-supplied topicHash as the binding value and
-        // records it in the audit log alongside `payload.topic`.
-        let nullifier_v2_hex = if protocol_version == "v2" {
-            let nh = fr_to_canonical_hex(public_signals[2]);
-            if let Some(claimed) = payload.nullifier_hex.as_deref() {
-                if claimed.to_ascii_lowercase() != nh {
-                    return Err(ApiError::BadRequest(
-                        "claimed nullifierHex does not match proof's public signal".to_string(),
-                    ));
-                }
-            }
-            if let Some(claimed_topic_hash) = payload.topic_hash_hex.as_deref() {
-                let claimed_th = parse_fr_from_hex(claimed_topic_hash).map_err(|e| {
-                    ApiError::BadRequest(format!("invalid topicHashHex: {e}"))
-                })?;
-                if public_signals[3] != claimed_th {
-                    return Err(ApiError::BadRequest(
-                        "claimed topicHashHex does not match proof's public signal".to_string(),
-                    ));
-                }
-            }
-            Some(nh)
-        } else {
-            None
-        };
-
-        // 5c. Emit IDENTITY_VERIFIED to the public event log.
-        // This must happen AFTER all validation checks pass (proof verification +
-        // public signal matching) to prevent false positive audit entries that
-        // could never be corrected.
-        let observe_payload = EventPayload::IdentityVerified {
-            commitment_hex: payload.commitment.clone(),
-            topic: payload.topic.clone(),
-        };
-        crate::emit_and_broadcast(
-            &conn,
-            state.server_id,
-            &payload.commitment,
-            &observe_payload,
-            &state.observe_tx,
-        );
-
-        // 6. Resolve the canonical nullifier_hex for downstream double-join
-        // tracking and pseudonym derivation. v1 derives it from the
-        // (commitment, topic) pair on the server (commitment-derived). v2
-        // takes it from the proof itself (secret-derived inside the
-        // circuit). The server NEVER cross-blends the two: a v1 proof never
-        // produces a v2 nullifier and vice-versa.
-        let nullifier_hex = match protocol_version {
-            "v1" => derive_nullifier_hex(&payload.commitment, &payload.topic)
-                .map_err(|e| ApiError::BadRequest(format!("failed to derive nullifier: {e}")))?,
-            "v2" => nullifier_v2_hex
-                .clone()
-                .expect("v2 path always populates nullifier_v2_hex"),
-            // Already validated above; unreachable here.
-            other => {
-                return Err(ApiError::BadRequest(format!(
-                    "unsupported protocol_version '{other}'"
-                )));
-            }
-        };
-
-        // 7. Derive pseudonym (pure computation, no DB needed)
-        let pseudonym_id = derive_pseudonym_id(&payload.topic, &nullifier_hex).map_err(|e| {
-            ApiError::InternalServerError(format!("failed to derive pseudonym: {e}"))
-        })?;
-
-        // 7. Lookup role code from vrp_identities (read-only, before transaction)
-        let role_code_int: u8 = conn
-            .query_row(
-                "SELECT role_code FROM vrp_identities WHERE commitment_hex = ?1",
-                [&payload.commitment],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|e| ApiError::InternalServerError(format!("db query failed: {e}")))?
-            .ok_or_else(|| ApiError::NotFound("identity not found in registry".to_string()))?;
-
-        let role_code = RoleCode::from_u8(role_code_int).ok_or_else(|| {
-            ApiError::InternalServerError(format!("invalid role code in db: {role_code_int}"))
-        })?;
-
-        // 8. Get Server ID (read-only, before transaction)
-        let server_id: i64 = conn
-            .query_row("SELECT id FROM servers LIMIT 1", [], |row| row.get(0))
-            .optional()
-            .map_err(|e| ApiError::InternalServerError(format!("db query failed: {e}")))?
-            .ok_or_else(|| ApiError::InternalServerError("no server configured".to_string()))?;
-
-        // 9. Pre-fetch agent metadata if applicable (read-only, before transaction)
-        let node_type = role_code_to_node_type(role_code);
-        let metadata_json = if role_code == RoleCode::AiAgent {
-            let agent_data: Option<(String, String, String, f64)> = conn
-                .query_row(
-                    "SELECT alignment_status, transfer_scope, capability_contract_json, reputation_score
-                     FROM agent_registrations
-                     WHERE server_id = ?1 AND pseudonym_id = ?2",
-                    rusqlite::params![server_id, pseudonym_id],
-                    |row| Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                    )),
-                )
-                .optional()
-                .map_err(|e| ApiError::InternalServerError(format!("db query failed: {e}")))?;
-
-            if let Some((alignment, scope, contract, reputation)) = agent_data {
-                let parsed_contract: serde_json::Value = serde_json::from_str(&contract)
-                    .map_err(|e| {
-                        tracing::error!(
-                            pseudonym_id = %pseudonym_id,
-                            raw_contract = %contract,
-                            error = %e,
-                            "corrupted capability_contract_json in agent_registrations; refusing to propagate"
-                        );
-                        ApiError::InternalServerError(
-                            "corrupted agent capability contract in database".to_string()
-                        )
-                    })?;
-                let metadata = serde_json::json!({
-                    "alignment_status": alignment,
-                    "transfer_scope": scope,
-                    "capability_contract": parsed_contract,
-                    "reputation_score": reputation
-                });
-                Some(metadata.to_string())
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        // 10. Wrap all mutating operations in a single transaction to ensure
-        // atomicity: nullifier insert, identity creation, graph node, and
-        // audit log entries either all succeed or all roll back.
-        //
-        // The previous code had two bugs:
-        // (a) A TOCTOU race between check_nullifier_exists and insert_nullifier
-        //     (another request could insert between the check and the insert).
-        //     Fixed by removing the redundant check and relying on insert_nullifier's
-        //     UNIQUE constraint handling which returns DuplicateNullifier/DuplicateCommitment on conflict.
-        // (b) create_platform_identity, ensure_graph_node, and emit_and_broadcast
-        //     were not wrapped in a transaction, so a failure partway through
-        //     could leave inconsistent state (e.g., identity exists but no graph node).
-        let mut conn = conn;
-        let tx = conn.transaction().map_err(|e| {
-            ApiError::InternalServerError(format!("failed to start transaction: {e}"))
-        })?;
-
-        // Insert nullifier with denormalized lookup columns for O(1) pseudonym resolution
-        insert_nullifier(
-            &tx,
-            &payload.topic,
-            &nullifier_hex,
-            Some(&pseudonym_id),
-            Some(&payload.commitment),
-        )
-        .map_err(|e| match e {
-            annex_identity::IdentityError::DuplicateNullifier(_) => {
-                ApiError::Conflict(e.to_string())
-            }
-            _ => ApiError::InternalServerError(format!("failed to insert nullifier: {e}")),
-        })?;
-
-        // Emit PSEUDONYM_DERIVED to the public event log (inside transaction)
-        let observe_payload = EventPayload::PseudonymDerived {
-            pseudonym_id: pseudonym_id.clone(),
-            topic: payload.topic.clone(),
-        };
-        crate::emit_and_broadcast(
-            &tx,
-            state.server_id,
-            &pseudonym_id,
-            &observe_payload,
-            &state.observe_tx,
-        );
-
-        // Create Platform Identity
-        create_platform_identity(&tx, server_id, &pseudonym_id, role_code).map_err(|e| {
-            ApiError::InternalServerError(format!("failed to create platform identity: {e}"))
-        })?;
-
-        // Create/Update Graph Node
-        ensure_graph_node(&tx, server_id, &pseudonym_id, node_type, metadata_json).map_err(|e| {
-            ApiError::InternalServerError(format!("failed to ensure graph node: {e}"))
-        })?;
-
-        // Emit NodeAdded to the public event log (inside transaction)
-        let observe_payload = EventPayload::NodeAdded {
-            pseudonym_id: pseudonym_id.clone(),
-            node_type: format!("{node_type:?}"),
-        };
-        crate::emit_and_broadcast(
-            &tx,
-            server_id,
-            &pseudonym_id,
-            &observe_payload,
-            &state.observe_tx,
-        );
-
-        tx.commit().map_err(|e| {
-            ApiError::InternalServerError(format!("failed to commit transaction: {e}"))
-        })?;
-
-        // 11. Emit Presence Event (SSE broadcast only, no DB write needed after commit)
-        let event = PresenceEvent::NodeUpdated {
-            pseudonym_id: pseudonym_id.clone(),
-            active: true,
-        };
-        let _ = state.presence_tx.send(event);
-
-        Ok(pseudonym_id)
-    })
-    .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
-
-    let session_token = crate::api_ws::generate_session_token(
-        &result,
-        &ws_token_secret,
-        crate::api_ws::SESSION_TOKEN_TTL_SECS,
-    );
-
-    Ok(Json(VerifyMembershipResponse {
-        ok: true,
-        pseudonym_id: result,
-        session_token,
-    }))
+    let svc = crate::services::IdentityService::new(state);
+    let resp = svc.verify_membership(payload).await?;
+    Ok(Json(resp))
 }
 
 /// Handler for `GET /api/registry/topics`.
