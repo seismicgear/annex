@@ -6,6 +6,15 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      include_macos:
+        description: "Include macOS desktop build (deferred / non-blocking)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 env:
   CARGO_TERM_COLOR: always
@@ -46,9 +55,11 @@ jobs:
       - name: cargo test
         run: cargo test --workspace --exclude annex-desktop
 
-  # Desktop build check — requires WebKitGTK and system dependencies
-  check-desktop:
-    name: Check (Desktop)
+  # Linux desktop build — REQUIRED for release. Validates the full Tauri pipeline:
+  # build-desktop.js runs, ZK artifacts must verify, frontend builds, Rust links
+  # against system WebKitGTK.
+  check-desktop-linux:
+    name: Build Desktop (Linux, required)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -56,19 +67,24 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-desktop
 
-      - name: Install Linux dependencies (WebKitGTK, PipeWire, GTK)
+      # WebRTC needs WebKitGTK >= 2.40. Tauri 2 uses webkit2gtk-4.1 (NOT 4.0).
+      # The Ubuntu package for libjavascriptcoregtk has the `lib` prefix —
+      # `javascriptcoregtk-4.1-dev` is NOT a real package and apt will fail.
+      - name: Install Linux dependencies (WebKitGTK 4.1, GTK3, PipeWire)
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            libgtk-3-dev \
             libappindicator3-dev \
             librsvg2-dev \
-            patchelf \
-            libgtk-3-dev \
-            libsoup-3.0-dev \
-            javascriptcoregtk-4.1-dev \
-            libpipewire-0.3-dev
+            libpipewire-0.3-dev \
+            patchelf
 
       - name: Verify WebKitGTK version (>= 2.40 required for WebRTC)
         run: |
@@ -81,22 +97,143 @@ jobs:
             exit 1
           fi
 
-      - name: Setup Node.js (for ZK key generation)
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: 'npm'
-          cache-dependency-path: zk/package-lock.json
+          cache-dependency-path: |
+            client/package-lock.json
+            zk/package-lock.json
 
-      - name: Generate ZK keys and prepare assets
+      - name: Install client dependencies
+        run: npm ci
+        working-directory: client
+
+      # Real ZK keys, real circuits — no `|| true` and no `{}` fallback.
+      # Production profile would also enforce the manifest; here we accept
+      # dev-fixture entropy because PRs don't ship a ceremony.
+      - name: Generate ZK keys (dev-fixture entropy)
         run: |
-          (cd zk && npm ci && node scripts/build-circuits.js && node scripts/setup-groth16.js)
-          mkdir -p zk/keys assets/piper assets/voices crates/annex-desktop/dist
-          test -f zk/keys/membership_vkey.json || echo '{}' > zk/keys/membership_vkey.json
-          echo '<!DOCTYPE html><html><body></body></html>' > crates/annex-desktop/dist/index.html
+          npm ci
+          node scripts/build-circuits.js
+          node scripts/setup-groth16.js
+        working-directory: zk
 
-      - name: cargo build (release)
-        run: cargo build --release
+      # `cargo tauri build` runs build-desktop.js as beforeBuildCommand,
+      # which copies client/public/zk/* into the frontend dist and Tauri
+      # then bundles membership_vkey.json + assets/ as resources.
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli@2 --locked
+
+      - name: Tauri build (debug — validates bundle wiring)
+        working-directory: crates/annex-desktop
+        # We run the debug build (faster cache reuse) but execute the full
+        # beforeBuildCommand. SKIP_PIPER avoids hitting GitHub from CI on
+        # every PR — the production release workflow downloads piper.
+        run: SKIP_PIPER=1 cargo tauri build --debug --bundles deb,appimage
+        env:
+          ANNEX_BUILD_PROFILE: dev
+
+  # Windows desktop build — REQUIRED for release. Validates MSVC / WebView2 link.
+  check-desktop-windows:
+    name: Build Desktop (Windows, required)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-desktop
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: |
+            client/package-lock.json
+            zk/package-lock.json
+
+      - name: Verify Visual Studio C++ workload
+        run: |
+          "$env:ProgramFiles(x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * `
+            -requires Microsoft.VisualStudio.Workload.NativeDesktop `
+            -property installationPath
+        shell: pwsh
+
+      # No `|| true` and no `{}` fallback — if ZK setup fails on Windows we
+      # want CI red. The runners ship modern Node/Git, so circom + snarkjs
+      # work without extra setup.
+      - name: Generate ZK keys (dev-fixture entropy)
+        shell: bash
+        run: |
+          npm ci
+          node scripts/build-circuits.js
+          node scripts/setup-groth16.js
+        working-directory: zk
+
+      - name: Install client dependencies
+        run: npm ci
+        working-directory: client
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli@2 --locked
+
+      # Skip piper on PR builds (avoids reaching out to release CDN every PR).
+      # The release-desktop workflow runs the full pipeline including piper.
+      - name: Tauri build (debug — validates bundle wiring)
+        working-directory: crates/annex-desktop
+        shell: bash
+        run: SKIP_PIPER=1 cargo tauri build --debug --bundles nsis
+        env:
+          ANNEX_BUILD_PROFILE: dev
+          CMAKE_ARGS: -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+
+  # macOS desktop build — DEFERRED / non-blocking. Only runs when manually
+  # dispatched with include_macos=true. Removing this from PR/main is intentional:
+  # we don't claim macOS works on every commit, and Apple-side toolchain churn
+  # shouldn't block Windows/Linux releases.
+  check-desktop-macos:
+    name: Build Desktop (macOS, deferred)
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.include_macos == 'true' }}
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-desktop
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: |
+            client/package-lock.json
+            zk/package-lock.json
+
+      - name: Generate ZK keys (dev-fixture entropy)
+        run: |
+          npm ci
+          node scripts/build-circuits.js
+          node scripts/setup-groth16.js
+        working-directory: zk
+
+      - name: Install client dependencies
+        run: npm ci
+        working-directory: client
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli@2 --locked
+
+      - name: Tauri build (debug)
+        working-directory: crates/annex-desktop
+        run: SKIP_PIPER=1 cargo tauri build --debug --bundles app
+        env:
+          ANNEX_BUILD_PROFILE: dev
 
   # Frontend tests
   test-frontend:
@@ -116,67 +253,3 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run lint
-
-  build-windows:
-    name: Build (Windows)
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.88
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: windows
-
-      - name: Setup Node.js (for ZK key generation)
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: 'npm'
-          cache-dependency-path: zk/package-lock.json
-
-      - name: Verify Visual Studio C++ workload
-        run: |
-          "$env:ProgramFiles(x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * `
-            -requires Microsoft.VisualStudio.Workload.NativeDesktop `
-            -property installationPath
-        shell: pwsh
-
-      - name: Generate ZK keys and prepare assets
-        run: |
-          (cd zk && npm ci && node scripts/build-circuits.js && node scripts/setup-groth16.js) || true
-          mkdir -p zk/keys assets/piper assets/voices crates/annex-desktop/dist
-          test -f zk/keys/membership_vkey.json || echo '{}' > zk/keys/membership_vkey.json
-          echo '<!DOCTYPE html><html><body></body></html>' > crates/annex-desktop/dist/index.html
-        shell: bash
-
-      - name: cargo build (release)
-        run: cargo build -p annex-desktop --release
-        env:
-          CMAKE_ARGS: -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-
-  build-macos:
-    name: Build (macOS)
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.88
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: macos
-
-      - name: Setup Node.js (for ZK key generation)
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: 'npm'
-          cache-dependency-path: zk/package-lock.json
-
-      - name: Generate ZK keys and prepare assets
-        run: |
-          (cd zk && npm ci && node scripts/build-circuits.js && node scripts/setup-groth16.js) || true
-          mkdir -p zk/keys assets/piper assets/voices crates/annex-desktop/dist
-          test -f zk/keys/membership_vkey.json || echo '{}' > zk/keys/membership_vkey.json
-          echo '<!DOCTYPE html><html><body></body></html>' > crates/annex-desktop/dist/index.html
-
-      - name: cargo build (release)
-        run: cargo build -p annex-desktop --release

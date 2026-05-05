@@ -146,6 +146,25 @@ for (const a of clientArtifacts) {
   log(`  Copied ${a.label}`);
 }
 
+// Belt-and-suspenders: the server-side verification key is shipped as a
+// Tauri `bundle.resources` entry (see crates/annex-desktop/tauri.conf.json).
+// If it's missing, Tauri's bundler will fail with a confusing "resource not
+// found" error AFTER the long Cargo build. Fail here instead — fast and clear.
+const SERVER_VKEY = path.join(ZK_KEYS_DIR, "membership_vkey.json");
+if (!fs.existsSync(SERVER_VKEY)) {
+  if (IS_PRODUCTION) {
+    fatal(
+      `${SERVER_VKEY} is missing. The desktop bundle requires it as a Tauri ` +
+        `resource so the embedded server can verify membership proofs.`
+    );
+  } else {
+    log(
+      `  WARNING (dev): ${SERVER_VKEY} is missing. Tauri bundling will fail; ` +
+        `desktop binary builds (cargo build) will fall back to the dummy vkey.`
+    );
+  }
+}
+
 // ── Step 3: Setup Piper TTS (download binary + voice model if missing) ──
 
 if (process.env.SKIP_PIPER === "1") {
@@ -194,21 +213,34 @@ run("npm run build", CLIENT_DIR);
 log("Client build complete.");
 
 // Copy client dist into the Tauri project directory.
+//
 // Tauri on Windows uses \\?\ extended-length paths which don't follow NTFS
 // reparse points (junctions/symlinks). Copying the dist here ensures Tauri
-// finds it at ./dist without traversing any junctions.
+// finds it at ./dist without traversing any junctions. We also use plain
+// path.join (no shell quoting) and fs.* primitives throughout so paths with
+// spaces — e.g. `C:\Users\My Name\…` — round-trip correctly.
 const CLIENT_DIST = path.join(CLIENT_DIR, "dist");
 const TAURI_DIST = path.join(ROOT_DIR, "crates", "annex-desktop", "dist");
 
 if (!fs.existsSync(path.join(CLIENT_DIST, "index.html"))) {
-  console.error(`[build-desktop] ERROR: client dist not found at ${CLIENT_DIST}`);
-  process.exit(1);
+  fatal(`client dist not found at ${CLIENT_DIST} — vite build did not produce index.html`);
 }
 
+// Replace the Tauri dist atomically-ish: remove the old tree, then copy.
+// rmSync({force:true}) so a partial copy from a previous interrupted run
+// can't leave us deadlocked. maxRetries handles transient AV/indexer
+// locks on Windows that briefly hold files open after the build finishes.
 if (fs.existsSync(TAURI_DIST)) {
-  fs.rmSync(TAURI_DIST, { recursive: true });
+  fs.rmSync(TAURI_DIST, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
 fs.cpSync(CLIENT_DIST, TAURI_DIST, { recursive: true });
-log("Copied client dist to Tauri project directory.");
+
+// Verify the copy actually produced the entrypoint Tauri will load.
+if (!fs.existsSync(path.join(TAURI_DIST, "index.html"))) {
+  fatal(
+    `failed to copy client dist into ${TAURI_DIST} — index.html is missing after cpSync`
+  );
+}
+log(`Copied client dist to ${TAURI_DIST}.`);
 
 log("All done.");

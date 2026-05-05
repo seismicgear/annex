@@ -58,6 +58,34 @@ If you need to run the prep manually:
 node scripts/prepare-zk-dev.js
 ```
 
+### Desktop releases
+
+Tagged builds (`git tag v*` → push) trigger `.github/workflows/release-desktop.yml`,
+which produces installers for the **release-critical** platforms:
+
+| Platform | Status | Artifacts |
+|----------|--------|-----------|
+| **Windows x86_64** | Required (blocking) | `.exe` (NSIS), `.msi` |
+| **Linux x86_64** | Required (blocking) | `.deb`, `.AppImage` |
+| **macOS arm64 / x86_64** | Deferred / opt-in | `.dmg` (only when `workflow_dispatch` is triggered with `include_macos=true`) |
+
+macOS code paths remain in the source tree (`tauri.conf.json` macOS bundle config,
+`Entitlements.plist`, `Info.plist`, `crates/annex-desktop/src/media.rs` macOS branches)
+and the binary still builds locally with `cargo build -p annex-desktop --release` on
+a Mac. We just don't claim it works on every commit, because the macOS leg is not
+exercised by PR CI today and Apple-side toolchain churn shouldn't block Windows /
+Linux releases. To produce a macOS DMG, run the **Release Desktop App** workflow
+manually and set `include_macos=true`; the macOS job is `continue-on-error: true`,
+so a Mac-side failure won't block the GitHub Release from publishing.
+
+Release builds set `ANNEX_BUILD_PROFILE=production`, which makes
+`scripts/build-desktop.js` call `zk/scripts/verify-artifacts.js` against the pinned
+manifest at `zk/artifacts/membership/manifest.json`. Any missing or hash-mismatched
+ZK artifact (`membership.wasm`, `membership_final.zkey`, `membership_vkey.json`)
+fails the build before Tauri starts bundling. PR CI runs the same Tauri pipeline
+in `dev` profile (random-entropy keys) so changes that break bundle wiring still
+get caught early.
+
 ### Prerequisites
 
 | Requirement | Version | Notes |
