@@ -282,6 +282,141 @@ The dev path keeps working — it doesn't read the manifest.
 
 ---
 
+## Implemented: membership v2 with secret-derived nullifier
+
+A second slice of the production posture is in place: the membership
+circuit now has a v2 variant that derives the per-topic nullifier from
+the holder's **secret key** inside the circuit, rather than from the
+public commitment outside it. The two versions ship side-by-side; the
+server dispatches incoming proofs to exactly one verifier by an
+explicit `protocolVersion` field and never silently mixes them.
+
+### Why v2
+
+v1 derives the nullifier as `sha256(commitmentHex + ":" + topic)` on the
+client. The commitment is a public Merkle leaf, so anyone with read
+access to the registry — federation peers, leaked snapshots, ex-operators
+— can compute every pseudonym for every topic. That is not zero-knowledge;
+it is a deterministic public mapping from leaf to handle.
+
+v2 binds the nullifier to `sk` inside the circuit:
+
+    nullifier = Poseidon(sk, topicHash, DOMAIN_NULLIFIER_V2)
+
+Knowledge of `sk` is now required to compute the nullifier. The
+commitment alone is not enough.
+
+### Files
+
+- `zk/circuits/membership_v2.circom` — the new circuit. Same Merkle
+  inclusion proof and `leafIndex ↔ pathIndexBits` binding as v1, plus a
+  Poseidon-3 hash of `(sk, topicHash, DOMAIN_NULLIFIER_V2)`. Public
+  signals (in snarkjs ordering): `[root, commitment, nullifier, topicHash]`
+  — length 4. `topicHash` is declared `public` so the verifier supplies
+  it; `DOMAIN_NULLIFIER_V2 = 1` is a hard-coded domain separator.
+- `zk/scripts/build-circuits.js` and `zk/scripts/dev-setup-groth16.js`
+  — both now build / set up `membership_v2` alongside `identity` and
+  `membership`. v1 artifacts are untouched.
+- `zk/scripts/test-proofs.js` — six new v2 assertions:
+    1. valid v2 proof verifies; `publicSignals[2]` matches
+       `Poseidon(sk, topicHash, 1)`; `publicSignals[3]` echoes `topicHash`.
+    2. tampering `publicSignals[2]` (the nullifier) is rejected.
+    3. tampering `publicSignals[3]` (the topicHash) is rejected.
+    4. mismatched `leafIndex` vs `pathIndexBits` rejected at witness
+       generation (same invariant as v1).
+    5. same `sk` + same `topicHash` produces the same nullifier
+       (deterministic — required for double-join detection).
+    6. same `sk` + different `topicHash` produces a different nullifier
+       (required so per-topic pseudonyms are unlinkable).
+
+### Server config + dispatch
+
+- `Config::security.enabled_zk_versions: Vec<String>` (default `["v1"]`).
+  Recognised values: `"v1"`, `"v2"`. Anything else fails startup with
+  `StartupError::UnknownZkVersion`.
+- `AppState::membership_vkey_v2: Option<Arc<VerifyingKey<Bn254>>>`.
+  Loaded only when `"v2"` is enabled. Path priority:
+  `ANNEX_ZK_KEY_PATH_V2`, otherwise `zk/keys/membership_v2_vkey.json`.
+  Same enforcement as v1: with `enforce_zk_proofs = true`, missing or
+  invalid v2 vkey is `StartupError::MissingVerificationKey`.
+- `VerifyMembershipRequest` adds three optional fields:
+    - `protocolVersion: Option<String>` — `None` or `"v1"` selects the
+      legacy verifier; `"v2"` selects the secret-derived-nullifier
+      verifier and requires the v2 vkey to be loaded.
+    - `nullifierHex: Option<String>` — v2 only. Cross-checked against
+      `publicSignals[2]` after canonical-hex normalisation, so a
+      malicious response cannot substitute a different nullifier than
+      the one the prover actually computed inside the circuit.
+    - `topicHashHex: Option<String>` — v2 only. Cross-checked against
+      `publicSignals[3]`.
+- `verify_membership_handler` (`crates/annex-server/src/api.rs`):
+    1. Resolves `protocolVersion` first, before any DB or proof work,
+       so an unknown version is `400 Bad Request` regardless of state.
+    2. Selects the right vkey + expected `publicSignals.len()` (2 for
+       v1, 4 for v2).
+    3. Verifies the proof against the version-matched vkey. A v2 proof
+       against the v1 vkey (or vice-versa) is rejected as a
+       verification failure — the vkey size encodes the public-input
+       count.
+    4. Validates `publicSignals[0]` ↔ claimed root and `publicSignals[1]`
+       ↔ claimed commitment in both versions.
+    5. v2 only: extracts `nullifier_v2_hex = canonical(publicSignals[2])`
+       and uses **that** as the nullifier going into double-join
+       tracking and pseudonym derivation. v1's
+       `derive_nullifier_hex(commitment, topic)` is never called for
+       a v2 proof.
+- `crates/annex-server/tests/zk_startup.rs` adds four v2-specific tests:
+  default `enabled_zk_versions == ["v1"]`; unknown version is a
+  startup error; v2 enabled with v2 vkey present boots cleanly; v2
+  enabled with v2 vkey missing under enforcement is
+  `StartupError::MissingVerificationKey`.
+- `crates/annex-server/tests/api_zk_v2.rs` covers routing: v2 payload
+  on a v1-only server → `409 Conflict`; unknown `protocolVersion`
+  → `400 Bad Request`; missing `protocolVersion` → defaults to v1
+  (does not return the v2-not-enabled message).
+
+### Migration semantics — keep v1 intact
+
+- v1 keys, vkey, circuit, and on-the-wire shape are **untouched**. The
+  only behavioural change for v1 clients on v1-only servers is: none.
+- v2 is opt-in per server (`enabled_zk_versions` must include `"v2"`)
+  AND opt-in per request (`protocolVersion: "v2"`). A server that
+  enables both still rejects v1 payloads against the v2 vkey and
+  vice versa.
+- v1 nullifiers in `zk_nullifiers` and v2 nullifiers in the same table
+  are different 64-char hex strings; rows do not collide.
+- v1 cannot be removed until every client has been updated. Both
+  versions remain enabled during the migration window.
+
+### Open follow-ups
+
+These are deliberately out of scope for the v2-introduction task and
+are tracked here:
+
+- **Server-side `topic → topicHash` mapping**. Today the server accepts
+  the prover-supplied `topicHashHex` and binds the proof to it. That is
+  enough to detect double-joins per-topic (because same sk+topicHash
+  always produces the same nullifier), but it lets a malicious client
+  claim a proof was made for topic A while binding `topicHash` for
+  topic B. Closing this requires a Poseidon-of-string convention
+  shared by client and server. Until it lands, the server records
+  both `payload.topic` and `publicSignals[3]` in the audit log so the
+  discrepancy is observable.
+- **v1 retirement**. Once every shipped client has switched to v2 and
+  every active VRP nullifier is v2-derived, drop v1 from
+  `enabled_zk_versions`, then remove the v1 wasm/zkey bundle and the
+  v1 verification path. No active deployment is at this stage yet.
+- **Federation `protocolVersion` exchange**. Two federated servers
+  must both be on v2 (or both on v1) for cross-server proof acceptance
+  to work. The handshake envelope in `crates/annex-federation::handshake`
+  needs to advertise the supported set and reject mismatched peers.
+- **Client-side v2 prover**. `client/src/lib/zk.ts` and the proof
+  worker still build v1 proofs only. A future task adds the v2 prover
+  with `topicHash` as a public input and `protocolVersion: "v2"` in
+  the verify-membership request.
+
+---
+
 ## Migration sequence to reach the target
 
 Each step is its own task using the template in `agent-playbook.md`. Steps

@@ -51,8 +51,17 @@ pub struct AppState {
     pub pool: DbPool,
     /// In-memory Merkle tree state.
     pub merkle_tree: Arc<Mutex<MerkleTree>>,
-    /// ZK Membership verification key.
+    /// ZK Membership verification key (v1 — commitment-derived nullifier).
     pub membership_vkey: Arc<VerifyingKey<Bn254>>,
+    /// ZK Membership verification key (v2 — secret-derived nullifier).
+    ///
+    /// `Some` only when `"v2"` is in `Config::security.enabled_zk_versions`
+    /// at boot. The server uses this to verify proofs whose `protocol_version`
+    /// field is `"v2"`; an incoming `"v2"` payload on a server where this is
+    /// `None` is rejected with `409 Conflict`. v1 and v2 are NEVER merged
+    /// silently — each proof is dispatched to exactly one verifier by its
+    /// declared protocol version.
+    pub membership_vkey_v2: Option<Arc<VerifyingKey<Bn254>>>,
     /// The local server ID.
     pub server_id: i64,
     /// The local server signing key (Ed25519).
@@ -206,6 +215,13 @@ pub enum StartupError {
          for development."
     )]
     MissingVerificationKey { path: String, reason: String },
+    /// `Config::security.enabled_zk_versions` listed a value other than the
+    /// recognised set (`"v1"`, `"v2"`).
+    #[error(
+        "unknown ZK protocol version '{version}' in security.enabled_zk_versions \
+         (recognised values: \"v1\", \"v2\")"
+    )]
+    UnknownZkVersion { version: String },
 }
 
 /// Native WebRTC is embedded in-process; no external sidecar startup is required.
@@ -481,6 +497,62 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
         }
     };
 
+    // Validate and load v2 vkey if v2 is enabled.
+    //
+    // Recognised versions: "v1" (always implicit; matched the file loaded
+    // above) and "v2" (secret-derived nullifier; loaded here only when
+    // explicitly enabled by `Config::security.enabled_zk_versions`).
+    //
+    // Path priority for v2: ANNEX_ZK_KEY_PATH_V2 env var, otherwise
+    // `zk/keys/membership_v2_vkey.json`. Same enforcement rules as v1: if
+    // `enforce_zk_proofs` is true and v2 is enabled, a missing or invalid
+    // v2 vkey is a hard `StartupError`. If v2 is NOT enabled, this block
+    // does nothing — the server simply rejects v2 payloads at request
+    // time.
+    let mut v2_enabled = false;
+    for ver in &config.security.enabled_zk_versions {
+        match ver.as_str() {
+            "v1" => {}
+            "v2" => v2_enabled = true,
+            other => {
+                return Err(StartupError::UnknownZkVersion {
+                    version: other.to_string(),
+                });
+            }
+        }
+    }
+    let membership_vkey_v2 = if v2_enabled {
+        let path_v2 = std::env::var("ANNEX_ZK_KEY_PATH_V2")
+            .unwrap_or_else(|_| "zk/keys/membership_v2_vkey.json".to_string());
+        match std::fs::read_to_string(&path_v2) {
+            Ok(vkey_json) => Some(Arc::new(
+                annex_identity::zk::parse_verification_key(&vkey_json)
+                    .map_err(StartupError::ZkError)?,
+            )),
+            Err(e) => {
+                if enforce_zk_proofs {
+                    return Err(StartupError::MissingVerificationKey {
+                        path: path_v2,
+                        reason: format!("(membership v2) {e}"),
+                    });
+                }
+                tracing::warn!(
+                    path = %path_v2,
+                    error = %e,
+                    "v2 ZK verification key not found — using dummy key for v2. \
+                     IDENTITY SECURITY IS DISABLED for v2 proofs on this server. \
+                     security.enforce_zk_proofs is false. \
+                     To restore enforcement: set security.enforce_zk_proofs = true \
+                     and provide the v2 key at ANNEX_ZK_KEY_PATH_V2 (or run \
+                     `node zk/scripts/dev-setup-groth16.js`)."
+                );
+                Some(Arc::new(annex_identity::zk::generate_dummy_vkey()))
+            }
+        }
+    } else {
+        None
+    };
+
     // Load or generate Signing Key.
     // Priority: (1) ANNEX_SIGNING_KEY env var, (2) persistent file on disk, (3) generate + persist.
     let signing_key = resolve_signing_key(&config.database.path)?;
@@ -520,6 +592,7 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: Arc::new(membership_vkey),
+        membership_vkey_v2: membership_vkey_v2.clone(),
         server_id,
         signing_key: Arc::new(signing_key),
         // Config/env public_url takes precedence; fall back to DB-persisted value

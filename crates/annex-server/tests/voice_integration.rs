@@ -42,6 +42,7 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool) {
         pool: pool.clone(),
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: common::load_vkey_or_dummy(),
+        membership_vkey_v2: None,
         server_id: 1,
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,
@@ -345,6 +346,7 @@ async fn setup_app_voice_disabled() -> axum::Router {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: common::load_vkey_or_dummy(),
+        membership_vkey_v2: None,
         server_id: 1,
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,
@@ -478,6 +480,7 @@ async fn test_voice_config_status_enabled() {
         pool: pool.clone(),
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: common::load_vkey_or_dummy(),
+        membership_vkey_v2: None,
         server_id: 1,
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,
@@ -572,6 +575,7 @@ async fn test_voice_join_not_configured_returns_structured_error() {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: common::load_vkey_or_dummy(),
+        membership_vkey_v2: None,
         server_id: 1,
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,

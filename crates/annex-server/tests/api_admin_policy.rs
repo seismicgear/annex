@@ -93,6 +93,7 @@ async fn test_update_policy_and_recalculate() {
         pool: pool.clone(),
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: load_dummy_vkey(),
+        membership_vkey_v2: None,
         server_id: 1,
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,

@@ -61,6 +61,7 @@ async fn setup_app() -> (axum::Router, Arc<AppState>, TempDir) {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: Arc::new(membership_vkey),
+        membership_vkey_v2: None,
         server_id,
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,

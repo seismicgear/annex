@@ -62,6 +62,9 @@ pub fn build_app_state(pool: DbPool, tree: MerkleTree, policy: ServerPolicy) -> 
         pool: pool.clone(),
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: load_vkey_or_dummy(),
+        // Default test harness disables v2; tests that exercise v2 should
+        // construct an AppState with this field set explicitly.
+        membership_vkey_v2: None,
         server_id: 1,
         signing_key: Arc::new(ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng)),
         public_url: Arc::new(RwLock::new("http://localhost:3000".to_string())),

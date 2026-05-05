@@ -34,6 +34,7 @@ fn env_lock() -> &'static Mutex<()> {
 fn clear_env() {
     for k in [
         "ANNEX_ZK_KEY_PATH",
+        "ANNEX_ZK_KEY_PATH_V2",
         "ANNEX_SIGNING_KEY",
         "ANNEX_UPLOAD_DIR",
         "ANNEX_SERVER_SLUG",
@@ -140,6 +141,124 @@ async fn zk_unenforced_mode_missing_vkey_starts_with_dummy() {
         .expect("test listener must report a bound address");
     assert!(local_addr.port() != 0, "OS should have picked a real port");
     drop(listener);
+}
+
+#[test]
+fn zk_config_default_only_enables_v1() {
+    // The v2 circuit ships alongside v1 but must not be enabled by default
+    // — Config::default() carries an explicit ["v1"] so a server running on
+    // a stock config never silently accepts v2 payloads (or rejects v1
+    // payloads) just because the v2 vkey happens to be on disk.
+    let cfg = config::Config::default();
+    assert_eq!(
+        cfg.security.enabled_zk_versions,
+        vec!["v1".to_string()],
+        "Config::default().security.enabled_zk_versions must be exactly [\"v1\"]"
+    );
+}
+
+#[tokio::test]
+async fn zk_unknown_version_in_config_is_startup_error() {
+    let _guard = env_lock().lock().await;
+    clear_env();
+    std::env::set_var("ANNEX_SIGNING_KEY", "03".repeat(32));
+    std::env::set_var(
+        "ANNEX_UPLOAD_DIR",
+        std::env::temp_dir().to_string_lossy().as_ref(),
+    );
+
+    let mut cfg = config_for_test(false);
+    cfg.security.enabled_zk_versions = vec!["v1".to_string(), "v3-future".to_string()];
+
+    let result = prepare_server(cfg).await;
+    clear_env();
+
+    match result {
+        Err(StartupError::UnknownZkVersion { version }) => {
+            assert_eq!(version, "v3-future");
+        }
+        Err(other) => panic!("expected StartupError::UnknownZkVersion, got: {other:?}"),
+        Ok(_) => panic!("prepare_server unexpectedly accepted an unknown version"),
+    }
+}
+
+#[tokio::test]
+async fn zk_v2_enabled_loads_v2_vkey() {
+    let _guard = env_lock().lock().await;
+    clear_env();
+    // Use the dev-fixture v2 vkey produced by `node zk/scripts/dev-setup-groth16.js`
+    // — committed at zk/keys/membership_v2_vkey.json. If the file is absent
+    // (e.g. fresh checkout that has never run dev-setup), gracefully skip
+    // the test rather than fail spuriously: the unenforced path's dummy
+    // fallback is exercised by other tests in this file.
+    let v2_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../zk/keys/membership_v2_vkey.json");
+    if !v2_path.exists() {
+        eprintln!("[zk_startup] skipping: {} not found", v2_path.display());
+        return;
+    }
+    let v1_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../zk/keys/membership_vkey.json");
+
+    std::env::set_var("ANNEX_ZK_KEY_PATH", v1_path.to_string_lossy().as_ref());
+    std::env::set_var("ANNEX_ZK_KEY_PATH_V2", v2_path.to_string_lossy().as_ref());
+    std::env::set_var("ANNEX_SIGNING_KEY", "04".repeat(32));
+    std::env::set_var(
+        "ANNEX_UPLOAD_DIR",
+        std::env::temp_dir().to_string_lossy().as_ref(),
+    );
+
+    let mut cfg = config_for_test(true);
+    cfg.security.enabled_zk_versions = vec!["v1".to_string(), "v2".to_string()];
+
+    let result = prepare_server(cfg).await;
+    clear_env();
+
+    let (listener, _router) =
+        result.expect("v1+v2 enabled with both keys present must boot cleanly");
+    drop(listener);
+}
+
+#[tokio::test]
+async fn zk_v2_enforced_missing_vkey_returns_startup_error() {
+    let _guard = env_lock().lock().await;
+    clear_env();
+
+    // v1 key resolves (use the real one); v2 key explicitly missing.
+    let v1_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../zk/keys/membership_vkey.json");
+    if !v1_path.exists() {
+        eprintln!("[zk_startup] skipping: {} not found", v1_path.display());
+        return;
+    }
+    let missing_v2 = unique_missing_path("v2-enforced");
+    std::env::set_var("ANNEX_ZK_KEY_PATH", v1_path.to_string_lossy().as_ref());
+    std::env::set_var("ANNEX_ZK_KEY_PATH_V2", &missing_v2);
+    std::env::set_var("ANNEX_SIGNING_KEY", "05".repeat(32));
+    std::env::set_var(
+        "ANNEX_UPLOAD_DIR",
+        std::env::temp_dir().to_string_lossy().as_ref(),
+    );
+
+    let mut cfg = config_for_test(true);
+    cfg.security.enabled_zk_versions = vec!["v1".to_string(), "v2".to_string()];
+
+    let result = prepare_server(cfg).await;
+    clear_env();
+
+    match result {
+        Err(StartupError::MissingVerificationKey { path, reason }) => {
+            assert_eq!(path, missing_v2, "error must echo the missing v2 path");
+            assert!(
+                reason.contains("membership v2"),
+                "v2 missing-key error must label the version: {reason}"
+            );
+        }
+        Err(other) => panic!("expected StartupError::MissingVerificationKey, got: {other:?}"),
+        Ok(_) => panic!(
+            "prepare_server must refuse to start with v2 enabled + missing v2 vkey under enforcement"
+        ),
+    }
 }
 
 #[tokio::test]

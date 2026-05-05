@@ -6,7 +6,7 @@ use annex_identity::{
     create_platform_identity, derive_nullifier_hex, derive_pseudonym_id, ensure_founder,
     get_all_roles, get_all_topics, get_path_for_commitment, get_platform_identity,
     insert_nullifier, register_identity,
-    zk::{parse_fr_from_hex, parse_proof, parse_public_signals, verify_proof},
+    zk::{fr_to_canonical_hex, parse_fr_from_hex, parse_proof, parse_public_signals, verify_proof},
     Capabilities, PlatformIdentity, RegistrationResult, RoleCode, VrpRoleEntry, VrpTopic,
 };
 use annex_observe::EventPayload;
@@ -113,8 +113,37 @@ pub struct VerifyMembershipRequest {
     /// The Groth16 proof (JSON object).
     pub proof: serde_json::Value,
     /// The public signals (array of strings).
+    ///
+    /// v1: ordering is `[root, commitment]` (length 2).
+    /// v2: ordering is `[root, commitment, nullifier, topicHash]` (length 4).
     #[serde(rename = "publicSignals")]
     pub public_signals: Vec<String>,
+
+    /// Membership-circuit version this proof was produced for.
+    ///
+    /// `None` or `Some("v1")` selects the legacy v1 verifier (commitment-derived
+    /// nullifier). `Some("v2")` selects the secret-derived nullifier verifier and
+    /// requires the v2 vkey to be loaded (i.e. `"v2"` in
+    /// `Config::security.enabled_zk_versions`).
+    ///
+    /// Any other value is rejected with `400 Bad Request`. The server never
+    /// silently downgrades or upgrades a proof's protocol version.
+    #[serde(rename = "protocolVersion", default)]
+    pub protocol_version: Option<String>,
+
+    /// v2-only: claimed nullifier (hex). When present and `protocol_version`
+    /// is `"v2"`, the server checks that this matches `public_signals[2]`
+    /// after canonicalisation, so an attacker cannot swap the nullifier in
+    /// the response without producing a fresh valid proof. Optional for v1.
+    #[serde(rename = "nullifierHex", default)]
+    pub nullifier_hex: Option<String>,
+
+    /// v2-only: the topicHash (hex BN254 scalar) the proof was produced for.
+    /// When `protocol_version` is `"v2"`, this is the value the verifier
+    /// passed in as the public input; the server checks that
+    /// `public_signals[3]` matches.
+    #[serde(rename = "topicHashHex", default)]
+    pub topic_hash_hex: Option<String>,
 }
 
 /// Response body for successful membership verification.
@@ -511,12 +540,37 @@ pub async fn verify_membership_handler(
 ) -> Result<Json<VerifyMembershipResponse>, ApiError> {
     let ws_token_secret = state.ws_token_secret.clone();
     let result = tokio::task::spawn_blocking(move || {
+        // 1. Resolve protocol version BEFORE any DB or proof work. A
+        //    structurally invalid `protocolVersion` is a 400 regardless of
+        //    DB state — we don't want a stale root to mask the version
+        //    error and report 409 instead. Recognised values: None /
+        //    Some("v1") / Some("v2"). The server NEVER silently verifies
+        //    a v2 payload as v1 (or vice-versa).
+        let protocol_version = payload.protocol_version.as_deref().unwrap_or("v1");
+        let (vkey_for_proof, expected_signals_len) = match protocol_version {
+            "v1" => (state.membership_vkey.clone(), 2usize),
+            "v2" => {
+                let v2_key = state.membership_vkey_v2.clone().ok_or_else(|| {
+                    ApiError::Conflict(
+                        "membership v2 is not enabled on this server (security.enabled_zk_versions \
+                         does not include \"v2\")".to_string(),
+                    )
+                })?;
+                (v2_key, 4usize)
+            }
+            other => {
+                return Err(ApiError::BadRequest(format!(
+                    "unsupported protocol_version '{other}' (expected \"v1\" or \"v2\")"
+                )));
+            }
+        };
+
         let conn = state
             .pool
             .get()
             .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
 
-        // 1. Verify root exists and is active (not a stale historical root).
+        // 2. Verify root exists and is active (not a stale historical root).
         // Only active roots are accepted to prevent revoked identities from
         // generating valid proofs against old Merkle tree states.
         let root_exists: bool = conn
@@ -535,7 +589,7 @@ pub async fn verify_membership_handler(
             )));
         }
 
-        // 2. Parse proof and public signals
+        // 3. Parse proof and public signals.
         let proof = parse_proof(&payload.proof.to_string())
             .map_err(|e| ApiError::BadRequest(format!("invalid proof format: {e}")))?;
 
@@ -545,23 +599,27 @@ pub async fn verify_membership_handler(
         let public_signals = parse_public_signals(&public_signals_json)
             .map_err(|e| ApiError::BadRequest(format!("invalid public signals format: {e}")))?;
 
-        // 3. Verify proof
-        let valid = verify_proof(&state.membership_vkey, &proof, &public_signals)
+        if public_signals.len() != expected_signals_len {
+            return Err(ApiError::BadRequest(format!(
+                "invalid number of public signals: expected {} for protocol_version '{}', got {}",
+                expected_signals_len,
+                protocol_version,
+                public_signals.len()
+            )));
+        }
+
+        // 4. Verify proof against the version-matched vkey. Mismatched signal
+        // count vs. vkey size already returns Err here, so a v2 proof against
+        // the v1 vkey (or vice-versa) is rejected as a verification failure.
+        let valid = verify_proof(&vkey_for_proof, &proof, &public_signals)
             .map_err(|e| ApiError::Unauthorized(format!("proof verification failed: {e}")))?;
 
         if !valid {
             return Err(ApiError::Unauthorized("invalid proof".to_string()));
         }
 
-        // 4. Verify public signals match claimed root and commitment
-        // membership.circom public output: [root, commitment]
-        if public_signals.len() != 2 {
-            return Err(ApiError::BadRequest(
-                "invalid number of public signals".to_string(),
-            ));
-        }
-
-        // Convert input hex strings to Fr for comparison
+        // 5. Verify public signals match claimed root + commitment (both
+        // protocol versions share the first two slots: [root, commitment, ...]).
         let claimed_root = parse_fr_from_hex(&payload.root)
             .map_err(|e| ApiError::BadRequest(format!("invalid root hex: {e}")))?;
         let claimed_commitment = parse_fr_from_hex(&payload.commitment)
@@ -578,7 +636,46 @@ pub async fn verify_membership_handler(
             ));
         }
 
-        // 4b. Emit IDENTITY_VERIFIED to the public event log.
+        // 5b. v2-specific: extract the secret-derived nullifier and topicHash
+        // from the proof's public signals. Index 2 is the in-circuit
+        // Poseidon(sk, topicHash, DOMAIN_NULLIFIER_V2). Index 3 echoes the
+        // topicHash the prover bound to. If the caller supplied an explicit
+        // `nullifierHex` / `topicHashHex` we cross-check them against the
+        // proof so a malicious response can't substitute a different
+        // nullifier than the one actually computed inside the circuit.
+        //
+        // NOTE: the server-side mapping from `payload.topic` to the
+        // canonical topicHash field element is intentionally NOT performed
+        // here yet — wiring that requires a Poseidon-of-string convention
+        // shared with the client and is tracked as a follow-up in
+        // docs/refactor/zk-merkle-production.md. Until then, the server
+        // accepts the prover-supplied topicHash as the binding value and
+        // records it in the audit log alongside `payload.topic`.
+        let nullifier_v2_hex = if protocol_version == "v2" {
+            let nh = fr_to_canonical_hex(public_signals[2]);
+            if let Some(claimed) = payload.nullifier_hex.as_deref() {
+                if claimed.to_ascii_lowercase() != nh {
+                    return Err(ApiError::BadRequest(
+                        "claimed nullifierHex does not match proof's public signal".to_string(),
+                    ));
+                }
+            }
+            if let Some(claimed_topic_hash) = payload.topic_hash_hex.as_deref() {
+                let claimed_th = parse_fr_from_hex(claimed_topic_hash).map_err(|e| {
+                    ApiError::BadRequest(format!("invalid topicHashHex: {e}"))
+                })?;
+                if public_signals[3] != claimed_th {
+                    return Err(ApiError::BadRequest(
+                        "claimed topicHashHex does not match proof's public signal".to_string(),
+                    ));
+                }
+            }
+            Some(nh)
+        } else {
+            None
+        };
+
+        // 5c. Emit IDENTITY_VERIFIED to the public event log.
         // This must happen AFTER all validation checks pass (proof verification +
         // public signal matching) to prevent false positive audit entries that
         // could never be corrected.
@@ -594,11 +691,27 @@ pub async fn verify_membership_handler(
             &state.observe_tx,
         );
 
-        // 5. Derive nullifier
-        let nullifier_hex = derive_nullifier_hex(&payload.commitment, &payload.topic)
-            .map_err(|e| ApiError::BadRequest(format!("failed to derive nullifier: {e}")))?;
+        // 6. Resolve the canonical nullifier_hex for downstream double-join
+        // tracking and pseudonym derivation. v1 derives it from the
+        // (commitment, topic) pair on the server (commitment-derived). v2
+        // takes it from the proof itself (secret-derived inside the
+        // circuit). The server NEVER cross-blends the two: a v1 proof never
+        // produces a v2 nullifier and vice-versa.
+        let nullifier_hex = match protocol_version {
+            "v1" => derive_nullifier_hex(&payload.commitment, &payload.topic)
+                .map_err(|e| ApiError::BadRequest(format!("failed to derive nullifier: {e}")))?,
+            "v2" => nullifier_v2_hex
+                .clone()
+                .expect("v2 path always populates nullifier_v2_hex"),
+            // Already validated above; unreachable here.
+            other => {
+                return Err(ApiError::BadRequest(format!(
+                    "unsupported protocol_version '{other}'"
+                )));
+            }
+        };
 
-        // 6. Derive pseudonym (pure computation, no DB needed)
+        // 7. Derive pseudonym (pure computation, no DB needed)
         let pseudonym_id = derive_pseudonym_id(&payload.topic, &nullifier_hex).map_err(|e| {
             ApiError::InternalServerError(format!("failed to derive pseudonym: {e}"))
         })?;

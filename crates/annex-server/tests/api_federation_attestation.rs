@@ -38,6 +38,7 @@ async fn setup_app() -> axum::Router {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: load_dummy_vkey(),
+        membership_vkey_v2: None,
         server_id: 1,
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,
@@ -153,6 +154,7 @@ async fn test_attest_membership_invalid_signature() {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: load_dummy_vkey(),
+        membership_vkey_v2: None,
         server_id: 1,
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,
@@ -247,6 +249,7 @@ async fn test_attest_membership_valid_signature_fails_network() {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: load_dummy_vkey(),
+        membership_vkey_v2: None,
         server_id: 1,
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,

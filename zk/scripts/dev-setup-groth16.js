@@ -54,7 +54,7 @@ if (!fs.existsSync(keysPath)) {
     fs.mkdirSync(keysPath);
 }
 
-const circuits = ['identity', 'membership'];
+const circuits = ['identity', 'membership', 'membership_v2'];
 
 function run(cmd) {
     console.log(`Running: ${cmd}`);

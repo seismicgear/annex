@@ -52,16 +52,35 @@ pub struct SecurityConfig {
     /// guarantees.
     #[serde(default = "default_enforce_zk_proofs")]
     pub enforce_zk_proofs: bool,
+
+    /// Membership-circuit versions accepted by this server. Default: `["v1"]`.
+    ///
+    /// Each enabled version requires its corresponding verification key to
+    /// be loadable at startup (when `enforce_zk_proofs` is true). The server
+    /// dispatches incoming proof payloads to the matching verifier by an
+    /// explicit `protocol_version` field — it does NOT silently mix v1 and
+    /// v2 semantics.
+    ///
+    /// Recognised values: `"v1"` (commitment-derived nullifier; legacy) and
+    /// `"v2"` (secret-derived nullifier; production target). Unknown values
+    /// surface as a startup error.
+    #[serde(default = "default_enabled_zk_versions")]
+    pub enabled_zk_versions: Vec<String>,
 }
 
 fn default_enforce_zk_proofs() -> bool {
     true
 }
 
+fn default_enabled_zk_versions() -> Vec<String> {
+    vec!["v1".to_string()]
+}
+
 impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
             enforce_zk_proofs: default_enforce_zk_proofs(),
+            enabled_zk_versions: default_enabled_zk_versions(),
         }
     }
 }
