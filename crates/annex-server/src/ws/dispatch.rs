@@ -14,19 +14,15 @@
 //! `IncomingMessage::Message` and `IncomingMessage::EditMessage` enforce
 //! it.
 
-use crate::ws::commands::typing;
+use crate::api_federation::relay_message;
+use crate::ws::commands::{resume, typing};
 use crate::ws::context::CommandContext;
-use crate::ws::error::send_ws_error;
-use crate::ws::error::send_ws_error_with_id;
+use crate::ws::error::{send_ws_error, send_ws_error_with_id};
 use crate::ws::protocol::{IncomingMessage, OutgoingMessage, WsMessagePayload};
-use crate::AppState;
 use annex_channels::is_member;
 use annex_types::RoleCode;
 use rusqlite::OptionalExtension;
 use std::sync::Arc;
-use tokio::sync::mpsc;
-
-use crate::api_federation::relay_message;
 
 /// Maximum allowed length for a WebSocket message content field (64 KiB).
 pub(crate) const MAX_WS_MESSAGE_CONTENT_LEN: usize = 65_536;
@@ -138,7 +134,7 @@ pub(crate) async fn dispatch(ctx: &CommandContext<'_>, msg: IncomingMessage) {
             channel_id,
             last_message_id,
         } => {
-            handle_resume(ctx, channel_id, last_message_id).await;
+            resume::handle(ctx, channel_id, last_message_id).await;
         }
     }
 }
@@ -702,102 +698,5 @@ async fn handle_webrtc_ice(
         .await
     {
         send_ws_error(ctx.tx, format!("Failed to add ICE candidate: {e}"));
-    }
-}
-
-async fn handle_resume(ctx: &CommandContext<'_>, channel_id: String, last_message_id: String) {
-    let state_clone: Arc<AppState> = ctx.state.clone();
-    let pseudonym_clone = ctx.pseudonym.to_string();
-    let tx_clone: mpsc::Sender<String> = ctx.tx.clone();
-    let channel_id_for_ack = channel_id.clone();
-    let pseudonym_for_log = ctx.pseudonym.to_string();
-
-    let res = tokio::task::spawn_blocking(move || {
-        let conn = state_clone.pool.get().map_err(|e| e.to_string())?;
-        // Verify membership
-        let is_mem =
-            annex_channels::is_member(&conn, state_clone.server_id, &channel_id, &pseudonym_clone)
-                .map_err(|e| e.to_string())?;
-        if !is_mem {
-            return Ok::<Vec<annex_channels::Message>, String>(vec![]);
-        }
-        let cursor: Option<(String, i64)> = conn
-            .query_row(
-                "SELECT created_at, id FROM messages WHERE message_id = ?1",
-                [&last_message_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()
-            .map_err(|e| e.to_string())?;
-        let Some((ts, row_id)) = cursor else {
-            return Ok(vec![]);
-        };
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, server_id, channel_id, message_id, sender_pseudonym, content,
-                        reply_to_message_id, created_at, expires_at, edited_at, deleted_at
-                 FROM messages
-                 WHERE server_id = ?1 AND channel_id = ?2
-                   AND (created_at > ?3 OR (created_at = ?3 AND id > ?4))
-                 ORDER BY created_at ASC, id ASC
-                 LIMIT 200",
-            )
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map(
-                rusqlite::params![state_clone.server_id, channel_id, ts, row_id],
-                |row| {
-                    Ok(annex_channels::Message {
-                        id: row.get(0)?,
-                        server_id: row.get(1)?,
-                        channel_id: row.get(2)?,
-                        message_id: row.get(3)?,
-                        sender_pseudonym: row.get(4)?,
-                        content: row.get(5)?,
-                        reply_to_message_id: row.get(6)?,
-                        created_at: row.get(7)?,
-                        expires_at: row.get(8)?,
-                        edited_at: row.get(9)?,
-                        deleted_at: row.get(10)?,
-                    })
-                },
-            )
-            .map_err(|e| e.to_string())?;
-        let mut messages = Vec::new();
-        for row in rows {
-            messages.push(row.map_err(|e| e.to_string())?);
-        }
-        Ok(messages)
-    })
-    .await;
-
-    match res {
-        Ok(Ok(messages)) => {
-            let count = messages.len();
-            for msg in messages {
-                let ws_payload: WsMessagePayload = msg.into();
-                let out = OutgoingMessage::Message(ws_payload);
-                if let Ok(json) = serde_json::to_string(&out) {
-                    if tx_clone.try_send(json).is_err() {
-                        break;
-                    }
-                }
-            }
-            let ack = OutgoingMessage::Resumed {
-                channel_id: channel_id_for_ack,
-                missed_count: count,
-            };
-            if let Ok(json) = serde_json::to_string(&ack) {
-                let _ = tx_clone.try_send(json);
-            }
-        }
-        Ok(Err(e)) => {
-            tracing::error!(pseudonym = %pseudonym_for_log, "resume failed: {}", e);
-            send_ws_error(ctx.tx, format!("Resume failed: {e}"));
-        }
-        Err(e) => {
-            tracing::error!(pseudonym = %pseudonym_for_log, "resume task failed: {}", e);
-            send_ws_error(ctx.tx, "Resume failed: internal error".to_string());
-        }
     }
 }
