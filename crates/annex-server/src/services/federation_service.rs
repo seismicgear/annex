@@ -44,7 +44,10 @@ use annex_federation::{
 use annex_graph::{ensure_graph_node, GraphError};
 use annex_identity::{
     derive_nullifier_hex, derive_pseudonym_id,
-    zk::{parse_fr_from_hex, parse_proof, verify_proof},
+    zk::{
+        fr_to_canonical_hex, parse_fr_from_hex, parse_proof, parse_public_signals,
+        topic_hash_for_v2, verify_proof, Bn254, VerifyingKey,
+    },
 };
 use annex_observe::EventPayload;
 use annex_rtx::{check_redacted_topics, enforce_transfer_scope, validate_bundle_structure};
@@ -365,6 +368,17 @@ impl FederationService {
 
     /// `POST /api/federation/attest-membership` orchestration.
     /// Returns the `pseudonym_id` derived locally for the attested identity.
+    ///
+    /// Dispatches to the v1 or v2 verifier based on the peer's
+    /// `protocol_version`. v1 (legacy / default) verifies a 2-signal proof
+    /// against `state.membership_vkey` and derives the nullifier as
+    /// `Poseidon(commitment, topic)`. v2 verifies a 4-signal proof against
+    /// `state.membership_vkey_v2`, cross-checks `publicSignals[3]` against
+    /// the server-recomputed `topic_hash_for_v2(payload.topic)`, and uses
+    /// the secret-derived nullifier from `publicSignals[2]`. v2 attestations
+    /// are rejected with `409 Conflict` when the receiving server has not
+    /// loaded the v2 vkey (i.e., `"v2"` is not in
+    /// `Config::security.enabled_zk_versions`).
     pub async fn attest_membership(
         &self,
         payload: AttestationRequest,
@@ -377,6 +391,111 @@ impl FederationService {
                 "HUMAN participant_type is not permitted via federation attestation".to_string(),
             ));
         }
+
+        // Resolve protocol version up-front so the wire-format check fires
+        // before any DB or network I/O.
+        let protocol_version = payload.protocol_version.as_deref().unwrap_or("v1");
+        let vkey_for_proof: Arc<VerifyingKey<Bn254>> = match protocol_version {
+            "v1" => self.state.membership_vkey.clone(),
+            "v2" => self.state.membership_vkey_v2.clone().ok_or_else(|| {
+                FederationError::Forbidden(
+                    "membership v2 is not enabled on this server (security.enabled_zk_versions \
+                     does not include \"v2\")"
+                        .to_string(),
+                )
+            })?,
+            other => {
+                return Err(FederationError::ZkVerification(format!(
+                    "unsupported protocol_version '{other}' (expected \"v1\" or \"v2\")"
+                )));
+            }
+        };
+
+        // v2 input-shape validation runs BEFORE the network round-trip so
+        // a malformed v2 envelope is rejected deterministically without
+        // probing the peer. The cross-check against `remote_root` happens
+        // later, after we fetch the peer's current root.
+        struct V2Inputs {
+            public_signals: Vec<annex_identity::zk::Fr>,
+            canonical_nullifier_hex: String,
+            expected_topic_hash: annex_identity::zk::Fr,
+        }
+        let v2_inputs: Option<V2Inputs> = if protocol_version == "v2" {
+            let raw_public_signals = payload.public_signals.as_ref().ok_or_else(|| {
+                FederationError::ZkVerification(
+                    "v2 attestation must include publicSignals".to_string(),
+                )
+            })?;
+            if raw_public_signals.len() != 4 {
+                return Err(FederationError::ZkVerification(format!(
+                    "v2 attestation publicSignals must have length 4, got {}",
+                    raw_public_signals.len()
+                )));
+            }
+            let public_signals_json = serde_json::to_string(raw_public_signals)?;
+            let public_signals = parse_public_signals(&public_signals_json).map_err(|e| {
+                FederationError::ZkVerification(format!("invalid publicSignals format: {e}"))
+            })?;
+
+            // Topic-binding: same rule as `verify-membership` — the proof
+            // is bound to whatever the prover put in `topicHash`, so the
+            // server MUST require it to equal the canonical hash of
+            // `payload.topic`. Without this a malicious prover could
+            // reuse a v2 proof for topic A as a v2 attestation for
+            // topic B.
+            let expected_topic_hash = topic_hash_for_v2(&payload.topic).map_err(|e| {
+                FederationError::ZkVerification(format!(
+                    "failed to derive topicHash for v2 attestation: {e}"
+                ))
+            })?;
+            if public_signals[3] != expected_topic_hash {
+                return Err(FederationError::ZkVerification(
+                    "v2 publicSignals[3] (topicHash) does not match the canonical hash of \
+                     payload.topic — the proof is bound to a different topic"
+                        .to_string(),
+                ));
+            }
+
+            // Cross-check claimed scalars against the proof's public
+            // signals so a single field mismatch surfaces as a 400 instead
+            // of being routed into the verifier as a tampered input.
+            let claimed_nullifier_hex = payload.nullifier_hex.as_deref().ok_or_else(|| {
+                FederationError::ZkVerification(
+                    "v2 attestation must include nullifierHex".to_string(),
+                )
+            })?;
+            let canonical_nullifier_hex = fr_to_canonical_hex(public_signals[2]);
+            if claimed_nullifier_hex.to_ascii_lowercase() != canonical_nullifier_hex {
+                return Err(FederationError::ZkVerification(
+                    "v2 nullifierHex does not match publicSignals[2]".to_string(),
+                ));
+            }
+
+            if let Some(claimed_topic_hash_hex) = payload.topic_hash_hex.as_deref() {
+                let claimed_topic_hash_fr =
+                    parse_fr_from_hex(claimed_topic_hash_hex).map_err(|e| {
+                        FederationError::ZkVerification(format!("invalid topicHashHex: {e}"))
+                    })?;
+                if claimed_topic_hash_fr != expected_topic_hash {
+                    return Err(FederationError::ZkVerification(
+                        "v2 topicHashHex does not match canonical hash of payload.topic"
+                            .to_string(),
+                    ));
+                }
+            } else {
+                return Err(FederationError::ZkVerification(
+                    "v2 attestation must include topicHashHex".to_string(),
+                ));
+            }
+
+            Some(V2Inputs {
+                public_signals,
+                canonical_nullifier_hex,
+                expected_topic_hash,
+            })
+        } else {
+            None
+        };
 
         // 1. Verify Request Origin (Resolve Instance)
         let originating_server = payload.originating_server.clone();
@@ -393,14 +512,54 @@ impl FederationService {
         .await
         .map_err(pool_err)??;
 
-        // Verify Signature (newline-delimited to prevent field-boundary ambiguity)
-        let message = format!(
-            "{}\n{}\n{}",
-            payload.topic, payload.commitment, payload.participant_type
-        );
-        verify_ed25519(&public_key_hex, &payload.signature, message.as_bytes())?;
+        // Verify Signature. The signing input includes the protocol version
+        // and the v2-specific scalars when v2 is declared, so a peer cannot
+        // tamper with the version field on the wire — flipping v2 → v1 (or
+        // stripping the field entirely) breaks the signature.
+        let signing_message = if protocol_version == "v2" {
+            let nullifier_hex_for_signing = payload.nullifier_hex.as_deref().ok_or_else(|| {
+                FederationError::ZkVerification(
+                    "v2 attestation must include nullifierHex".to_string(),
+                )
+            })?;
+            let topic_hash_hex_for_signing =
+                payload.topic_hash_hex.as_deref().ok_or_else(|| {
+                    FederationError::ZkVerification(
+                        "v2 attestation must include topicHashHex".to_string(),
+                    )
+                })?;
+            format!(
+                "{}\n{}\n{}\n{}\n{}\n{}",
+                payload.topic,
+                payload.commitment,
+                payload.participant_type,
+                "v2",
+                nullifier_hex_for_signing,
+                topic_hash_hex_for_signing,
+            )
+        } else {
+            format!(
+                "{}\n{}\n{}",
+                payload.topic, payload.commitment, payload.participant_type
+            )
+        };
+        verify_ed25519(
+            &public_key_hex,
+            &payload.signature,
+            signing_message.as_bytes(),
+        )?;
 
         // 2. Fetch Remote Root (with timeout and redirect protection against SSRF)
+        // Defence-in-depth: even though the originating_server matches a
+        // known instance row (administrator-controlled), block private /
+        // loopback / link-local hosts so a misconfigured peer entry cannot
+        // turn this endpoint into an SSRF probe of internal services.
+        if crate::api_link_preview::is_url_private_or_reserved(&payload.originating_server) {
+            return Err(FederationError::Forbidden(format!(
+                "originating_server {} resolves to a private or reserved address",
+                payload.originating_server
+            )));
+        }
         let client = federation_http_client()?;
         let root_url = format!("{}/api/federation/vrp-root", payload.originating_server);
         let resp = client.get(&root_url).send().await?;
@@ -424,9 +583,38 @@ impl FederationService {
         let commitment_fr = parse_fr_from_hex(&payload.commitment)
             .map_err(|e| FederationError::ZkVerification(format!("Invalid commitment hex: {e}")))?;
 
-        let public_inputs = vec![remote_root_fr, commitment_fr];
+        // Finalise the public-inputs vector and pick the canonical
+        // nullifier we will store in `federated_identities`. For v1 the
+        // server recomputes the nullifier from `Poseidon(commitment,
+        // topic)`. For v2 the nullifier is secret-derived inside the
+        // circuit and carried in `public_signals[2]`; the server only
+        // cross-checks it against the peer's claim. The
+        // `publicSignals[0]` (root) check requires the network round-trip
+        // result, so it fires here.
+        let (public_inputs, nullifier_hex) = if let Some(v2) = v2_inputs {
+            if v2.public_signals[0] != remote_root_fr {
+                return Err(FederationError::ZkVerification(
+                    "v2 publicSignals[0] does not match remote root_hex".to_string(),
+                ));
+            }
+            if v2.public_signals[1] != commitment_fr {
+                return Err(FederationError::ZkVerification(
+                    "v2 publicSignals[1] does not match payload.commitment".to_string(),
+                ));
+            }
+            // expected_topic_hash already validated against publicSignals[3] above.
+            let _ = v2.expected_topic_hash;
+            (v2.public_signals, v2.canonical_nullifier_hex)
+        } else {
+            let v1_inputs = vec![remote_root_fr, commitment_fr];
+            let v1_nullifier =
+                derive_nullifier_hex(&payload.commitment, &payload.topic).map_err(|e| {
+                    FederationError::IdentityDerivation(format!("Failed to derive nullifier: {e}"))
+                })?;
+            (v1_inputs, v1_nullifier)
+        };
 
-        let valid = verify_proof(&state.membership_vkey, &proof, &public_inputs).map_err(|e| {
+        let valid = verify_proof(&vkey_for_proof, &proof, &public_inputs).map_err(|e| {
             FederationError::ZkVerification(format!("Proof verification error: {e}"))
         })?;
 
@@ -439,11 +627,7 @@ impl FederationService {
         tokio::task::spawn_blocking(move || {
             let mut conn = state.pool.get().map_err(pool_err)?;
 
-            // Derive local identifiers
-            let nullifier_hex =
-                derive_nullifier_hex(&payload.commitment, &payload.topic).map_err(|e| {
-                    FederationError::IdentityDerivation(format!("Failed to derive nullifier: {e}"))
-                })?;
+            // Derive local identifiers from the version-correct nullifier.
             let pseudonym_id =
                 derive_pseudonym_id(&payload.topic, &nullifier_hex).map_err(|e| {
                     FederationError::IdentityDerivation(format!("Failed to derive pseudonym: {e}"))
@@ -657,7 +841,21 @@ impl FederationService {
                 // verification time, compare against the remote's current
                 // root. A mismatch means the remote Merkle tree has changed
                 // since attestation, so the proof may no longer be valid.
-                if !identity.root_hex_at_verification.is_empty() {
+                //
+                // SSRF defence-in-depth: skip the freshness callback if the
+                // peer's base_url resolves to a private/loopback/link-local
+                // host. Peers are administratively trusted, but a misconfigured
+                // peer entry (e.g. `http://localhost:9090`) would otherwise
+                // turn this code path into an outbound probe of internal
+                // services on every received message. We log the skip rather
+                // than rejecting the message, because the freshness check is
+                // a soft "log on mismatch / continue on network error" gate,
+                // not a hard authorization step.
+                if !identity.root_hex_at_verification.is_empty()
+                    && !crate::api_link_preview::is_url_private_or_reserved(
+                        &envelope.originating_server,
+                    )
+                {
                     let root_url =
                         format!("{}/api/federation/vrp-root", envelope.originating_server);
                     let remote_root_result: Result<String, String> = (|| {
@@ -1174,6 +1372,19 @@ pub async fn relay_message(
             tracing::debug!(
                 peer = %peer.base_url,
                 "skipping message relay: transfer scope is NO_TRANSFER"
+            );
+            continue;
+        }
+
+        // SSRF defence-in-depth: skip peers whose base_url resolves to a
+        // private/loopback/link-local host. The instances table is
+        // operator-controlled but a misconfigured row would otherwise
+        // turn this background task into a continuous probe of internal
+        // services.
+        if crate::api_link_preview::is_url_private_or_reserved(&peer.base_url) {
+            tracing::warn!(
+                peer = %peer.base_url,
+                "skipping message relay: peer base_url resolves to a private or reserved host"
             );
             continue;
         }

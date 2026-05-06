@@ -94,6 +94,16 @@ impl PreviewCache {
 // Safety: block requests to private/internal IPs
 // ---------------------------------------------------------------------------
 
+/// Public re-export of [`is_private_or_reserved`] for SSRF defence in
+/// other crate modules (notably the federation service, which calls
+/// peer-supplied URLs for stale-attestation checks). Same semantics:
+/// returns `true` if the URL's host is a private/loopback/link-local
+/// address, an unparseable URL, a non-http(s) scheme, or a hostname like
+/// `localhost`/`*.local`/`*.internal` that is conventionally non-routable.
+pub(crate) fn is_url_private_or_reserved(url: &str) -> bool {
+    is_private_or_reserved(url)
+}
+
 /// Returns `true` if the URL's host resolves to a private/loopback/link-local address.
 /// This prevents SSRF attacks where a user could probe internal services.
 fn is_private_or_reserved(url: &str) -> bool {
