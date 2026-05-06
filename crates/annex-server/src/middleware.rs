@@ -562,16 +562,29 @@ pub fn verify_zk_membership_header(
         return Err(StatusCode::FORBIDDEN);
     }
 
-    // Optionally verify that the merkle root matches the current tree root
-    let current_root = {
-        let tree = state
-            .merkle_tree
-            .lock()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        tree.root_hex()
-    };
-    if current_root != payload.root_hex {
-        tracing::warn!("ZK proof root does not match current Merkle root");
+    // Verify the merkle root is acceptable.
+    //
+    // The previous strict-equality check (`current_root == payload.root_hex`)
+    // rejected every proof not built against the LATEST root. Because the
+    // root rotates on each registration, that race-conditioned any
+    // in-flight prover: a client whose Groth16 proof was generated against
+    // root_N would be rejected the moment a different client registered and
+    // produced root_N+1.
+    //
+    // `is_root_acceptable` consults `vrp_root_epochs` so the active root
+    // PLUS recently-retired roots inside the grace window
+    // (`ROOT_EPOCH_GRACE_SECONDS`, default 5 minutes) both verify. The
+    // grace window covers proof-generation latency on slow devices without
+    // ever accepting a root that has been fully retired beyond
+    // `accepted_until`.
+    let conn = state
+        .pool
+        .get()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let acceptable = annex_identity::merkle::is_root_acceptable(&conn, &payload.root_hex)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if !acceptable {
+        tracing::warn!("ZK proof root is not currently acceptable");
         return Err(StatusCode::FORBIDDEN);
     }
 

@@ -30,7 +30,10 @@ use annex_graph::{ensure_graph_node, role_code_to_node_type};
 use annex_identity::{
     create_platform_identity, derive_nullifier_hex, derive_pseudonym_id, get_path_for_commitment,
     insert_nullifier, register_identity,
-    zk::{fr_to_canonical_hex, parse_fr_from_hex, parse_proof, parse_public_signals, verify_proof},
+    zk::{
+        fr_to_canonical_hex, parse_fr_from_hex, parse_proof, parse_public_signals,
+        topic_hash_for_v2, verify_proof,
+    },
     RegistrationResult, RoleCode,
 };
 use annex_observe::EventPayload;
@@ -138,7 +141,16 @@ impl IdentityService {
         if access_mode == "password" {
             let expected_password = self.read_access_password()?;
             let provided = payload.server_password.as_deref().unwrap_or("").trim();
-            if provided.is_empty() || provided != expected_password {
+            // Constant-time compare: prevent rate-limited timing attacks from
+            // recovering byte prefixes of the access password. `String::eq`
+            // is short-circuiting; `subtle::ConstantTimeEq::ct_eq` runs in
+            // time independent of where the bytes diverge. Differing lengths
+            // also fail the check (returns false without comparing bytes).
+            use subtle::ConstantTimeEq;
+            let match_ok = !provided.is_empty()
+                && provided.len() == expected_password.len()
+                && bool::from(provided.as_bytes().ct_eq(expected_password.as_bytes()));
+            if !match_ok {
                 return Err(IdentityServiceError::Forbidden(
                     "This server requires a password to register.".to_string(),
                 ));
@@ -449,16 +461,22 @@ impl IdentityService {
                 .get()
                 .map_err(|e| IdentityServiceError::Internal(format!("db connection failed: {e}")))?;
 
-            // 2. Reject stale roots up front.
-            let root_exists: bool = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM vrp_roots WHERE root_hex = ?1 AND active = 1",
-                    [&payload.root],
-                    |row| row.get(0),
-                )
-                .map_err(|e| IdentityServiceError::Internal(format!("db query failed: {e}")))
-                .map(|count: i64| count > 0)?;
-            if !root_exists {
+            // 2. Reject roots that are neither the current active root nor a
+            //    recently retired root inside the grace window.
+            //
+            // The legacy `vrp_roots WHERE active = 1` check rejected EVERY
+            // proof not built against the latest root. With registrations
+            // bumping the root, that race-conditioned any in-flight prover —
+            // a client whose proof was generated against root_N gets a 409
+            // the moment a different client registers and produces root_N+1.
+            // `is_root_acceptable` consults `vrp_root_epochs` and accepts
+            // the active root plus the grace window (`accepted_until`)
+            // recorded at rotation time. See
+            // `annex_identity::merkle::ROOT_EPOCH_GRACE_SECONDS`.
+            let root_acceptable =
+                annex_identity::merkle::is_root_acceptable(&conn, &payload.root)
+                    .map_err(|e| IdentityServiceError::Internal(format!("root check failed: {e}")))?;
+            if !root_acceptable {
                 return Err(IdentityServiceError::Conflict(format!(
                     "stale or invalid root: {}",
                     payload.root
@@ -510,8 +528,17 @@ impl IdentityService {
             }
 
             // v2-specific: extract the secret-derived nullifier and topicHash
-            // from publicSignals[2]/[3], and cross-check any caller-supplied
-            // hex hints against them.
+            // from publicSignals[2]/[3], and bind them to `payload.topic`.
+            //
+            // The server MUST recompute the expected topicHash from the
+            // caller's claimed `payload.topic` and reject the request if it
+            // does not match `publicSignals[3]`. Without this binding a
+            // malicious prover could produce a v2 proof for topic A and
+            // submit it as a v2 proof for topic B — getting a
+            // nullifier-bound pseudonym in topic B without ever proving
+            // membership for topic B. See
+            // `annex_identity::zk::topic_hash_for_v2` for the canonical
+            // mapping.
             let nullifier_v2_hex = if protocol_version == "v2" {
                 let nh = fr_to_canonical_hex(public_signals[2]);
                 if let Some(claimed) = payload.nullifier_hex.as_deref() {
@@ -521,13 +548,27 @@ impl IdentityService {
                         ));
                     }
                 }
+                let expected_topic_hash = topic_hash_for_v2(&payload.topic).map_err(|e| {
+                    IdentityServiceError::BadRequest(format!(
+                        "failed to derive topicHash for v2 proof: {e}"
+                    ))
+                })?;
+                if public_signals[3] != expected_topic_hash {
+                    return Err(IdentityServiceError::BadRequest(
+                        "v2 proof's topicHash public signal does not match the canonical \
+                         hash of payload.topic — the proof is bound to a different topic"
+                            .to_string(),
+                    ));
+                }
                 if let Some(claimed_topic_hash) = payload.topic_hash_hex.as_deref() {
                     let claimed_th = parse_fr_from_hex(claimed_topic_hash).map_err(|e| {
                         IdentityServiceError::BadRequest(format!("invalid topicHashHex: {e}"))
                     })?;
-                    if public_signals[3] != claimed_th {
+                    if claimed_th != expected_topic_hash {
                         return Err(IdentityServiceError::BadRequest(
-                            "claimed topicHashHex does not match proof's public signal".to_string(),
+                            "claimed topicHashHex does not match the canonical hash of \
+                             payload.topic"
+                                .to_string(),
                         ));
                     }
                 }

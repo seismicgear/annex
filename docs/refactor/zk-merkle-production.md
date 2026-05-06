@@ -393,15 +393,19 @@ commitment alone is not enough.
 These are deliberately out of scope for the v2-introduction task and
 are tracked here:
 
-- **Server-side `topic → topicHash` mapping**. Today the server accepts
-  the prover-supplied `topicHashHex` and binds the proof to it. That is
-  enough to detect double-joins per-topic (because same sk+topicHash
-  always produces the same nullifier), but it lets a malicious client
-  claim a proof was made for topic A while binding `topicHash` for
-  topic B. Closing this requires a Poseidon-of-string convention
-  shared by client and server. Until it lands, the server records
-  both `payload.topic` and `publicSignals[3]` in the audit log so the
-  discrepancy is observable.
+- ~~**Server-side `topic → topicHash` mapping**.~~ **CLOSED.** The
+  server now derives `expectedTopicHash =
+  Fr::from_be_bytes_mod_order(SHA256("annex/v2/topicHash:" + topic))`
+  via `annex_identity::zk::topic_hash_for_v2` and rejects v2 proofs
+  whose `publicSignals[3]` does not match. The legacy
+  prover-supplied `topicHashHex` field, when present, is also
+  cross-checked against the server-derived value (defence in depth).
+  When the v2 client lands it MUST use the same derivation: SHA-256
+  of the UTF-8 bytes of the topic, prefixed by the constant
+  `annex/v2/topicHash:`, then `from_be_bytes_mod_order` into BN254
+  scalar `Fr`. Domain prefix ensures hashing-domain separation from
+  signing keys, nullifiers, and message digests. Tests:
+  `crates/annex-identity/src/zk.rs::tests::topic_hash_for_v2_*`.
 - **v1 retirement**. Once every shipped client has switched to v2 and
   every active VRP nullifier is v2-derived, drop v1 from
   `enabled_zk_versions`, then remove the v1 wasm/zkey bundle and the

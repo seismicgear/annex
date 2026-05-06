@@ -449,7 +449,13 @@ pub struct RedeemInviteResponse {
 /// Handler for `POST /api/invites/redeem`.
 ///
 /// Public (no auth) endpoint that validates an invite code during registration.
-/// Checks expiration and max_uses, then increments use_count.
+/// Validation only: checks expiration and max_uses but does NOT consume a
+/// seat. Seat consumption happens atomically in
+/// `IdentityService::register_identity` after a successful registration.
+///
+/// Bumping use_count here would (1) burn 2 seats per real registration and
+/// (2) let an unauthenticated attacker exhaust an invite's max_uses without
+/// ever registering.
 pub async fn redeem_invite_handler(
     Extension(state): Extension<Arc<AppState>>,
     Json(payload): Json<RedeemInviteRequest>,
@@ -502,17 +508,26 @@ pub async fn redeem_invite_handler(
             }
         }
 
-        // Atomically increment use_count. The WHERE clause re-checks
-        // max_uses to prevent TOCTOU races between concurrent requests.
-        let updated = conn.execute(
-            "UPDATE invite_codes SET use_count = use_count + 1 WHERE id = ?1 \
-             AND (max_uses IS NULL OR use_count < max_uses)",
-            [invite_id],
-        )
-        .map_err(|e| ApiError::InternalServerError(format!("failed to update invite: {e}")))?;
-        if updated == 0 {
-            return Err(ApiError::BadRequest("Invalid or expired invite code".to_string()));
-        }
+        // VALIDATION ONLY — do NOT bump use_count here.
+        //
+        // The redeem endpoint's purpose is "tell the user whether this code
+        // is valid and what server it points to so we can show the join
+        // screen". The actual seat consumption MUST happen in
+        // `IdentityService::register_identity`, which atomically bumps
+        // use_count after the identity is committed.
+        //
+        // The previous `UPDATE invite_codes SET use_count = use_count + 1`
+        // here had two real bugs:
+        //   1. Burned 2 seats per real registration (one in redeem, one
+        //      again in register).
+        //   2. Allowed an unauthenticated attacker to exhaust max_uses by
+        //      hammering this endpoint without ever registering — turning
+        //      the rate-limited public endpoint into a DOS against
+        //      time-/use-bounded invites.
+        // Validation already ran above; if max_uses was exhausted we
+        // returned `Invalid or expired invite code` at the use_count check.
+        // Suppress the unused binding from the validation lookup.
+        let _ = invite_id;
 
         // Fetch server slug and label
         let (slug, label): (String, String) = conn
