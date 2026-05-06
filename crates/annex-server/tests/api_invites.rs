@@ -7,10 +7,12 @@
 //!
 //! Why this matters: the previous implementation incremented `use_count`
 //! on every redeem call. That had two real bugs:
-//!   1. A real registration burned 2 seats (one in redeem + one in
-//!      register).
-//!   2. An unauthenticated attacker could exhaust a `max_uses`-limited
-//!      invite by hammering this endpoint, without ever registering.
+//!
+//! 1. A real registration burned 2 seats (one in redeem + one in
+//!    register).
+//! 2. An unauthenticated attacker could exhaust a `max_uses`-limited
+//!    invite by hammering this endpoint, without ever registering.
+//!
 //! Both are observable by the tests below.
 
 mod common;
