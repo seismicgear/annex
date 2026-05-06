@@ -17,9 +17,17 @@
 //!      router, an HTTP client, or a serde round-trip.
 
 use crate::api::ApiError;
+pub use channel_service::{ChannelService, ChannelServiceError};
+pub use federation_service::{FederationError, FederationService};
 pub use identity_service::{IdentityService, IdentityServiceError};
+pub use rtx_service::RtxService;
 
+pub mod channel_service;
+pub mod federation_repository;
+pub mod federation_service;
 pub mod identity_service;
+pub mod rtx_repository;
+pub mod rtx_service;
 
 /// Map an [`IdentityServiceError`] into the wire-facing [`ApiError`] used
 /// by the axum handlers. Defined here (and not on `IdentityServiceError`
@@ -33,6 +41,33 @@ impl From<IdentityServiceError> for ApiError {
             IdentityServiceError::Conflict(msg) => ApiError::Conflict(msg),
             IdentityServiceError::Unauthorized(msg) => ApiError::Unauthorized(msg),
             IdentityServiceError::Internal(msg) => ApiError::InternalServerError(msg),
+        }
+    }
+}
+
+/// Map a [`ChannelServiceError`] into the wire-facing [`ApiError`].
+///
+/// Note: the channel HTTP handlers in `api_channels.rs` historically
+/// returned bare `StatusCode` (with empty body), and the voice handlers
+/// shipped a structured `{error, message, setup_hint}` body for the
+/// `VoiceDisabled` / `VoiceNotConfigured` cases. To preserve those wire
+/// shapes the handlers use [`ChannelServiceError::status_code`] (and
+/// match those two variants explicitly) rather than this `From` impl.
+/// The impl exists so future call sites that want the standard
+/// `{"error": …}` body can opt in.
+impl From<ChannelServiceError> for ApiError {
+    fn from(err: ChannelServiceError) -> Self {
+        match err {
+            ChannelServiceError::BadRequest(msg) => ApiError::BadRequest(msg),
+            ChannelServiceError::Forbidden(msg) => ApiError::Forbidden(msg),
+            ChannelServiceError::NotFound(msg) => ApiError::NotFound(msg),
+            ChannelServiceError::Conflict(msg) => ApiError::Conflict(msg),
+            ChannelServiceError::ServiceUnavailable(msg) => ApiError::InternalServerError(msg),
+            ChannelServiceError::VoiceDisabled => ApiError::Forbidden("voice disabled".to_string()),
+            ChannelServiceError::VoiceNotConfigured => {
+                ApiError::InternalServerError("voice not configured".to_string())
+            }
+            ChannelServiceError::Internal(msg) => ApiError::InternalServerError(msg),
         }
     }
 }
