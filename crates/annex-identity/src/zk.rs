@@ -250,6 +250,50 @@ pub fn verify_proof(
         .map_err(|e| ZkError::SnarkError(e.to_string()))
 }
 
+/// Domain-separator tag mixed into v2 topic-hash derivation.
+///
+/// Prevents pre-image collisions across hashing contexts that use the same
+/// SHA-256 primitive (signing-key derivation, nullifier hashing, message
+/// digests, etc.). Changing this constant invalidates every previously
+/// produced v2 topicHash and is therefore a hard wire-format break.
+pub const V2_TOPIC_HASH_DOMAIN: &str = "annex/v2/topicHash:";
+
+/// Canonical topic → BN254 field-element mapping for v2 membership proofs.
+///
+/// Returns `Fr::from_be_bytes_mod_order(SHA256("annex/v2/topicHash:" + topic))`.
+/// The byte input is the raw UTF-8 bytes of the topic string with no
+/// canonicalisation: callers must agree on byte equality. Empty topics are
+/// rejected because empty topics cannot identify a routing context and are
+/// invalid throughout the rest of the API surface (`derive_pseudonym_id`
+/// already rejects empty topics).
+///
+/// # Why this exists
+///
+/// The `topicHash` public input of `zk/circuits/membership_v2.circom` is
+/// supplied by the verifier — the prover binds the proof to whatever value
+/// they put there. Without a server-side rule that says "topicHash MUST
+/// equal `topic_hash_for_v2(payload.topic)`", a malicious prover can produce
+/// a v2 proof for topic A and submit it as a v2 proof for topic B, getting
+/// a nullifier-bound pseudonym in topic B without ever having proved
+/// membership for topic B. Closing that gap is what this function is for.
+///
+/// # Errors
+///
+/// Returns [`ZkError::FieldElementError`] when `topic` is empty.
+pub fn topic_hash_for_v2(topic: &str) -> Result<Fr, ZkError> {
+    use sha2::{Digest, Sha256};
+    if topic.is_empty() {
+        return Err(ZkError::FieldElementError);
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(V2_TOPIC_HASH_DOMAIN.as_bytes());
+    hasher.update(topic.as_bytes());
+    let digest = hasher.finalize();
+    // SHA-256 → 32 bytes; reduce big-endian into BN254 Fr. The mod-reduction
+    // is uniform-enough for cryptographic purposes (the bias is < 2^-253).
+    Ok(Fr::from_be_bytes_mod_order(&digest))
+}
+
 /// Generates a dummy verifying key for testing purposes.
 /// This key is mathematically valid (points on curve) but useless for verification.
 /// It corresponds to an empty circuit.
@@ -474,5 +518,61 @@ mod tests {
         assert_eq!(ok.len(), 64);
         let fr = parse_canonical_fr_hex(ok).expect("lowercase 64-char hex must parse");
         assert_eq!(fr, Fr::from(1u64));
+    }
+
+    #[test]
+    fn topic_hash_for_v2_is_deterministic() {
+        let a = topic_hash_for_v2("annex:topic:test").expect("topic_hash should succeed");
+        let b = topic_hash_for_v2("annex:topic:test").expect("topic_hash should succeed");
+        assert_eq!(a, b, "same topic must produce the same hash");
+    }
+
+    #[test]
+    fn topic_hash_for_v2_different_topics_yield_different_hashes() {
+        let a = topic_hash_for_v2("annex:topic:alpha").expect("topic_hash should succeed");
+        let b = topic_hash_for_v2("annex:topic:beta").expect("topic_hash should succeed");
+        assert_ne!(
+            a, b,
+            "different topics must produce different hashes (privacy invariant)"
+        );
+    }
+
+    #[test]
+    fn topic_hash_for_v2_byte_sensitive() {
+        let lower = topic_hash_for_v2("foo").expect("topic_hash should succeed");
+        let upper = topic_hash_for_v2("FOO").expect("topic_hash should succeed");
+        assert_ne!(lower, upper, "topic_hash is byte-sensitive by design");
+    }
+
+    #[test]
+    fn topic_hash_for_v2_rejects_empty() {
+        assert!(
+            topic_hash_for_v2("").is_err(),
+            "empty topic must be rejected"
+        );
+    }
+
+    #[test]
+    fn topic_hash_for_v2_outputs_canonical_64_char_hex() {
+        let h = fr_to_canonical_hex(
+            topic_hash_for_v2("annex:topic:test").expect("topic_hash should succeed"),
+        );
+        assert_eq!(h.len(), 64, "topic hash hex must be 64 chars");
+        assert!(h
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
+    }
+
+    #[test]
+    fn topic_hash_for_v2_uses_domain_separator() {
+        // Domain separator means the topic literally "annex/v2/topicHash:foo"
+        // does NOT collide with topic "foo".
+        let plain = topic_hash_for_v2("foo").expect("topic_hash should succeed");
+        let prefix_collision =
+            topic_hash_for_v2("annex/v2/topicHash:foo").expect("topic_hash should succeed");
+        assert_ne!(
+            plain, prefix_collision,
+            "domain separator must not collide with a topic that happens to embed it"
+        );
     }
 }

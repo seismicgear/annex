@@ -110,7 +110,10 @@ fn contract_verify_membership_response_fixture_matches_struct() {
         .expect("verify-membership.response.json must deserialize into VerifyMembershipResponse");
     assert!(resp.ok);
     assert_eq!(resp.pseudonym_id, "pseudo-7c0a9c4d3e2f1a09");
-    assert_eq!(resp.session_token, "cHNldWRvLTdjMHw5OTk5OTk5OXx2YWxpZHNpZw==");
+    assert_eq!(
+        resp.session_token,
+        "cHNldWRvLTdjMHw5OTk5OTk5OXx2YWxpZHNpZw=="
+    );
 
     let round_tripped: Value = serde_json::to_value(&resp).unwrap();
     let original: Value = serde_json::from_str(FX_VERIFY_MEMBERSHIP_RESPONSE).unwrap();
@@ -141,7 +144,11 @@ fn contract_create_channel_response_fixture_is_status_object() {
     let resp: Value = serde_json::from_str(FX_CREATE_CHANNEL_RESPONSE)
         .expect("create-channel.response.json must be valid JSON");
     let obj = resp.as_object().expect("response is a JSON object");
-    assert_eq!(obj.len(), 1, "only the `status` field is part of the contract");
+    assert_eq!(
+        obj.len(),
+        1,
+        "only the `status` field is part of the contract"
+    );
     assert_eq!(obj.get("status").and_then(Value::as_str), Some("created"));
 }
 
@@ -187,10 +194,9 @@ fn contract_ws_incoming_edit_message_fixture_deserializes() {
 
 #[test]
 fn contract_ws_incoming_delete_message_fixture_deserializes() {
-    let frame: IncomingMessage =
-        serde_json::from_str(FX_WS_INCOMING_DELETE).expect(
-            "incoming-delete-message.json must deserialize into IncomingMessage::DeleteMessage",
-        );
+    let frame: IncomingMessage = serde_json::from_str(FX_WS_INCOMING_DELETE).expect(
+        "incoming-delete-message.json must deserialize into IncomingMessage::DeleteMessage",
+    );
     match frame {
         IncomingMessage::DeleteMessage {
             channel_id,
@@ -308,10 +314,9 @@ fn contract_ws_webrtc_ice_candidate_fixture_matches_serialized_outgoing() {
     // other.
     let frame = OutgoingMessage::WebRtcIceCandidate {
         channel_id: "voice-1".to_string(),
-        candidate:
-            "candidate:842163049 1 udp 1677729535 192.168.1.1 5000 typ srflx raddr 0.0.0.0 \
+        candidate: "candidate:842163049 1 udp 1677729535 192.168.1.1 5000 typ srflx raddr 0.0.0.0 \
              rport 0 generation 0 ufrag abc1 network-id 2"
-                .to_string(),
+            .to_string(),
         sdp_mid: Some("0".to_string()),
         sdp_m_line_index: Some(0),
         username_fragment: Some("abc1".to_string()),

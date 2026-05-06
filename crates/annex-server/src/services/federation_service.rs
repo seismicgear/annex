@@ -64,6 +64,15 @@ use crate::AppState;
 pub(crate) const FEDERATION_HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const FEDERATION_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Maximum content length accepted from a federated message envelope.
+///
+/// Mirrors the local WebSocket ceiling
+/// (`crate::ws::dispatch::MAX_WS_MESSAGE_CONTENT_LEN`, 64 KiB). A federated
+/// peer that bypasses the local WS path could otherwise push messages up to
+/// axum's 2 MiB request-body limit into the `messages` table — beyond what
+/// any local client can produce. Bound it before persisting.
+pub(crate) const FEDERATION_MAX_MESSAGE_CONTENT_LEN: usize = 65_536;
+
 /// Builds a reqwest client with timeouts to prevent resource exhaustion
 /// from slow or malicious federation peers. Re-exported by
 /// `api_federation::federation_http_client`.
@@ -580,6 +589,17 @@ impl FederationService {
         &self,
         envelope: FederatedMessageEnvelope,
     ) -> Result<(), FederationError> {
+        // Enforce the same per-message content cap that local WS messages
+        // honour. Without this, a federated peer (signed envelopes still
+        // pass signature verification) could push messages up to axum's
+        // 2 MiB body cap into our `messages` table, well beyond what local
+        // clients are allowed to send. Bound it before any DB I/O.
+        if envelope.content.len() > FEDERATION_MAX_MESSAGE_CONTENT_LEN {
+            return Err(FederationError::Forbidden(format!(
+                "Federated message content exceeds maximum length of {FEDERATION_MAX_MESSAGE_CONTENT_LEN} bytes"
+            )));
+        }
+
         let state = self.state.clone();
         let channel_id_for_broadcast = envelope.channel_id.clone();
 

@@ -3,24 +3,20 @@
 //!
 //! Behaviour preserved verbatim from the original inline arm:
 //!
-//!   1. Run a blocking task that:
-//!      a. Verifies channel membership. Non-members get an empty
-//!         `messages` list (the cursor is silently treated as
-//!         unresolvable, exactly as before — no error frame).
-//!      b. Resolves the supplied `last_message_id` to its
-//!         `(created_at, id)` cursor. An unknown id also produces an
-//!         empty list (the previous code path).
-//!      c. Selects the next 200 messages strictly after that cursor,
-//!         ordered by `(created_at, id)` ascending.
-//!   2. Forwards each missed message back as an
-//!      `OutgoingMessage::Message { … }` frame on the per-connection
-//!      mpsc (using `try_send`, breaking on backpressure exactly as
-//!      before).
-//!   3. Sends a final `OutgoingMessage::Resumed { channelId,
-//!      missedCount }` ack with the number of messages enqueued (zero
-//!      on the empty paths above).
-//!   4. Surfaces blocking errors / task-join errors via
-//!      `send_ws_error` with the same wording as the previous arm.
+//! 1. Run a blocking task that verifies channel membership (non-members
+//!    get an empty `messages` list — no error frame), resolves the
+//!    supplied `last_message_id` to its `(created_at, id)` cursor (an
+//!    unknown id also produces an empty list), and selects the next 200
+//!    messages strictly after that cursor, ordered by
+//!    `(created_at, id)` ascending.
+//! 2. Forwards each missed message back as an
+//!    `OutgoingMessage::Message { … }` frame on the per-connection mpsc
+//!    (using `try_send`, breaking on backpressure exactly as before).
+//! 3. Sends a final `OutgoingMessage::Resumed { channelId, missedCount }`
+//!    ack with the number of messages enqueued (zero on the empty paths
+//!    above).
+//! 4. Surfaces blocking errors / task-join errors via `send_ws_error`
+//!    with the same wording as the previous arm.
 
 use std::sync::Arc;
 

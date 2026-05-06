@@ -116,8 +116,10 @@ async fn register_identity_rejects_invalid_role() {
 
 #[tokio::test]
 async fn invite_only_mode_rejects_missing_invite_code() {
-    let mut policy = ServerPolicy::default();
-    policy.access_mode = "invite_only".to_string();
+    let policy = ServerPolicy {
+        access_mode: "invite_only".to_string(),
+        ..ServerPolicy::default()
+    };
     let state = build_state(policy);
     let svc = IdentityService::new(state);
 
@@ -139,9 +141,11 @@ async fn invite_only_mode_rejects_missing_invite_code() {
 
 #[tokio::test]
 async fn password_mode_rejects_wrong_password() {
-    let mut policy = ServerPolicy::default();
-    policy.access_mode = "password".to_string();
-    policy.access_password = "correct-horse".to_string();
+    let policy = ServerPolicy {
+        access_mode: "password".to_string(),
+        access_password: "correct-horse".to_string(),
+        ..ServerPolicy::default()
+    };
     let state = build_state(policy);
     let svc = IdentityService::new(state);
 
