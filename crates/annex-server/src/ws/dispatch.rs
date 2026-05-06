@@ -15,7 +15,7 @@
 //! it.
 
 use crate::api_federation::relay_message;
-use crate::ws::commands::{resume, typing};
+use crate::ws::commands::{delete, edit, resume, typing};
 use crate::ws::context::CommandContext;
 use crate::ws::error::{send_ws_error, send_ws_error_with_id};
 use crate::ws::protocol::{IncomingMessage, OutgoingMessage, WsMessagePayload};
@@ -96,13 +96,13 @@ pub(crate) async fn dispatch(ctx: &CommandContext<'_>, msg: IncomingMessage) {
             message_id,
             content,
         } => {
-            handle_edit(ctx, channel_id, message_id, content).await;
+            edit::handle(ctx, channel_id, message_id, content).await;
         }
         IncomingMessage::DeleteMessage {
             channel_id,
             message_id,
         } => {
-            handle_delete(ctx, channel_id, message_id).await;
+            delete::handle(ctx, channel_id, message_id).await;
         }
         IncomingMessage::VoiceIntent { channel_id, text } => {
             handle_voice_intent(ctx, channel_id, text).await;
@@ -279,135 +279,6 @@ async fn handle_message(
                 "Failed to send message: internal error".to_string(),
                 client_request_id,
             );
-        }
-    }
-}
-
-async fn handle_edit(
-    ctx: &CommandContext<'_>,
-    channel_id: String,
-    message_id: String,
-    content: String,
-) {
-    if content.trim().is_empty() {
-        send_ws_error(ctx.tx, "Message content must not be empty".to_string());
-        return;
-    }
-    if content.len() > MAX_WS_MESSAGE_CONTENT_LEN {
-        send_ws_error(
-            ctx.tx,
-            format!("Message content exceeds maximum length of {MAX_WS_MESSAGE_CONTENT_LEN} bytes"),
-        );
-        return;
-    }
-
-    match check_ws_membership(
-        ctx.state.pool.clone(),
-        ctx.state.server_id,
-        &channel_id,
-        ctx.pseudonym,
-    )
-    .await
-    {
-        MembershipResult::Allowed => {}
-        MembershipResult::Denied => {
-            send_ws_error(ctx.tx, format!("Not a member of channel {channel_id}"));
-            return;
-        }
-        MembershipResult::Error(e) => {
-            tracing::error!(
-                pseudonym = %ctx.pseudonym,
-                channel_id = %channel_id,
-                "edit membership check failed: {}",
-                e
-            );
-            send_ws_error(
-                ctx.tx,
-                "Internal error checking channel membership".to_string(),
-            );
-            return;
-        }
-    }
-
-    let svc = crate::services::ChannelService::new(ctx.state.clone());
-    match svc
-        .edit_message(ctx.pseudonym, &channel_id, &message_id, &content)
-        .await
-    {
-        Ok(updated) => {
-            let persisted_channel_id = updated.channel_id.clone();
-            let ws_payload: WsMessagePayload = updated.into();
-            let out = OutgoingMessage::MessageEdited(ws_payload);
-            match serde_json::to_string(&out) {
-                Ok(json) => {
-                    ctx.state
-                        .connection_manager
-                        .broadcast(&persisted_channel_id, json)
-                        .await;
-                }
-                Err(e) => {
-                    tracing::error!("failed to serialize edit broadcast: {}", e);
-                }
-            }
-        }
-        Err(e) => {
-            send_ws_error(ctx.tx, format!("Edit failed: {e}"));
-        }
-    }
-}
-
-async fn handle_delete(ctx: &CommandContext<'_>, channel_id: String, message_id: String) {
-    match check_ws_membership(
-        ctx.state.pool.clone(),
-        ctx.state.server_id,
-        &channel_id,
-        ctx.pseudonym,
-    )
-    .await
-    {
-        MembershipResult::Allowed => {}
-        MembershipResult::Denied => {
-            send_ws_error(ctx.tx, format!("Not a member of channel {channel_id}"));
-            return;
-        }
-        MembershipResult::Error(e) => {
-            tracing::error!(
-                pseudonym = %ctx.pseudonym,
-                channel_id = %channel_id,
-                "delete membership check failed: {}",
-                e
-            );
-            send_ws_error(
-                ctx.tx,
-                "Internal error checking channel membership".to_string(),
-            );
-            return;
-        }
-    }
-
-    let svc = crate::services::ChannelService::new(ctx.state.clone());
-    match svc
-        .delete_message(ctx.pseudonym, &channel_id, &message_id)
-        .await
-    {
-        Ok(updated) => {
-            let persisted_channel_id = updated.channel_id.clone();
-            let ws_payload: WsMessagePayload = updated.into();
-            let out = OutgoingMessage::MessageDeleted(ws_payload);
-            match serde_json::to_string(&out) {
-                Ok(json) => {
-                    ctx.state
-                        .connection_manager
-                        .broadcast(&persisted_channel_id, json)
-                        .await;
-                }
-                Err(e) => {
-                    tracing::error!("failed to serialize delete broadcast: {}", e);
-                }
-            }
-        }
-        Err(e) => {
-            send_ws_error(ctx.tx, format!("Delete failed: {e}"));
         }
     }
 }

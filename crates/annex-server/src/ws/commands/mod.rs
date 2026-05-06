@@ -17,5 +17,7 @@
 //! same membership / role gates, and emits the same protocol frames as
 //! the inline arm it replaces.
 
+pub mod delete;
+pub mod edit;
 pub mod resume;
 pub mod typing;
