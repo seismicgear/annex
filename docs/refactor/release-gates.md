@@ -19,7 +19,7 @@ as authoritative for CI and update this file.
 | Frontend          | `fe-deps`, `fe-lint`, `fe-test`, `fe-build`                                                 |
 | ZK artifacts      | `zk-deps`, `zk-circuit`, `zk-setup`, `zk-proof`, `zk-vkey-shipped`                          |
 | Migrations        | `mig-numbered`, `mig-no-edit`, `mig-applies`                                                |
-| Smoke / E2E       | `e2e-server-up`, `e2e-startup-flow`, `e2e-no-console-errors`                                |
+| Smoke / E2E       | `e2e-server-up`, `e2e-startup-flow`, `e2e-no-console-errors`, `smoke-server`, `smoke-desktop-build` |
 
 ---
 
@@ -178,6 +178,22 @@ as authoritative for CI and update this file.
   3. Send a message in default channel.
   4. Open voice; pick a channel; mute/unmute; leave.
   5. Reset (Tauri command `reset_server_data`); restart.
+
+### smoke-server
+- Linux command: `bash scripts/smoke-server.sh`
+- Windows command: `pwsh scripts/smoke-server.ps1`
+- Workflow: `.github/workflows/ci.yml::smoke-server-linux::Run server smoke` and `.github/workflows/ci.yml::smoke-server-windows::Run server smoke`
+- What it covers: boots `annex-server` against a fresh temp data dir with `ANNEX_ENFORCE_ZK_PROOFS=true`, calls `/health`, runs the full register → Merkle path → Groth16 proof (via `snarkjs.groth16.fullProve` against `zk/keys/membership_final.zkey`) → `verify-membership` → authenticated `POST /api/channels` flow, then shuts the server down cleanly. The actual API calls live in `scripts/smoke-server-flow.mjs`; both shell wrappers stay thin.
+- Artifact preconditions: `zk/keys/membership_vkey.json`, `zk/build/membership_js/membership.wasm`, `zk/keys/membership_final.zkey` must all exist as non-empty files (no dev fallback). The script exits with a clear error message if any are missing.
+- Failure modes: server fails to bind / fails to reach `/health`; ZK artifacts missing or corrupt; proof verification rejected by `enforce_zk_proofs`; founder bootstrap regressed so `POST /api/channels` returns 403; binary leaks across runs (the script execs the built binary directly so the captured PID is the server itself, not the `cargo run` wrapper).
+- Knobs: `ANNEX_SMOKE_PORT` (default `7321`), `ANNEX_SMOKE_HOST` (default `127.0.0.1`).
+
+### smoke-desktop-build
+- Linux command: `bash scripts/smoke-desktop-build.sh`
+- Windows command: `pwsh scripts/smoke-desktop-build.ps1`
+- Workflow: not currently a separate CI job — `lin-build` / `win-build` plus the Tauri bundle gates in `release-desktop.yml` are a strict superset. Use this script locally as a fast pass/fail before pushing.
+- What it covers: verifies the three release-critical ZK artifacts are present and that `membership_vkey.json` parses as JSON; runs `npm --prefix client run build`; runs `cargo build -p annex-desktop --release`; confirms `client/dist/`, `client/public/zk/`, `zk/keys/membership_vkey.json`, and `target/release/annex-desktop[.exe]` exist as non-empty files.
+- Dev-only knob: `SKIP_CLIENT_BUILD=1` (bash) / `-SkipClientBuild` (pwsh) skips the client build step. **Not for release / CI** — the script labels the branch dev-only and refuses to continue if `client/dist/index.html` is missing.
 
 ---
 
