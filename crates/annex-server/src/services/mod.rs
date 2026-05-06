@@ -20,11 +20,14 @@ use crate::api::ApiError;
 pub use channel_service::{ChannelService, ChannelServiceError};
 pub use federation_service::{FederationError, FederationService};
 pub use identity_service::{IdentityService, IdentityServiceError};
+pub use rtx_service::RtxService;
 
 pub mod channel_service;
 pub mod federation_repository;
 pub mod federation_service;
 pub mod identity_service;
+pub mod rtx_repository;
+pub mod rtx_service;
 
 /// Map an [`IdentityServiceError`] into the wire-facing [`ApiError`] used
 /// by the axum handlers. Defined here (and not on `IdentityServiceError`
