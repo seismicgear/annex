@@ -56,17 +56,16 @@ async fn test_ws_lifecycle() {
         MerkleTree::restore(&conn, 20).unwrap()
     };
 
-    // Load real vkey from repo root
+    // Load the real vkey if available, otherwise fall back to the dummy
+    // (matches tests/common/mod.rs::load_vkey_or_dummy). Test sets
+    // `enforce_zk_proofs = false`, so the dummy is acceptable.
     let vkey_path = "zk/keys/membership_vkey.json";
-    let vkey_json = match std::fs::read_to_string(vkey_path) {
-        Ok(s) => s,
-        Err(_) => {
-            std::fs::read_to_string(format!("../../{vkey_path}")).expect("failed to read vkey")
-        }
+    let vkey = match std::fs::read_to_string(vkey_path)
+        .or_else(|_| std::fs::read_to_string(format!("../../{vkey_path}")))
+    {
+        Ok(s) => annex_identity::zk::parse_verification_key(&s).expect("failed to parse vkey"),
+        Err(_) => annex_identity::zk::generate_dummy_vkey(),
     };
-
-    let vkey =
-        annex_identity::zk::parse_verification_key(&vkey_json).expect("failed to parse vkey");
 
     let state = AppState {
         pool: pool.clone(),

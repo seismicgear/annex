@@ -8,11 +8,21 @@
 // Usage:
 //   node zk/scripts/verify-artifacts.js
 //   node zk/scripts/verify-artifacts.js --manifest <path/to/manifest.json>
+//   node zk/scripts/verify-artifacts.js --profile production
+//
+// Profile is taken from --profile, otherwise from the ANNEX_BUILD_PROFILE
+// environment variable (lower-cased). Recognised values: "dev" (default),
+// "production" / "release". Under a production profile, a manifest marked
+// `ceremony.type = "dev-fixture"` is REJECTED unless the operator opts in
+// with `ANNEX_ALLOW_DEV_CEREMONY=1` (e.g. for staging dry-runs). This is
+// the gate that prevents a release build from silently shipping random-
+// entropy dev keys.
 //
 // Exit codes:
 //   0  every required artifact exists and matches the manifest hash
 //   1  manifest missing / unparseable / unsupported schema
 //   2  one or more artifacts missing or hash-mismatched
+//   3  production profile but manifest is dev-fixture (and not opted in)
 //
 // This script is intentionally side-effect-free: it never writes, downloads,
 // or regenerates anything. Production builds should call it before consuming
@@ -66,6 +76,8 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === "--manifest" && argv[i + 1]) {
       out.manifest = argv[++i];
+    } else if (a === "--profile" && argv[i + 1]) {
+      out.profile = argv[++i];
     } else if (a === "--help" || a === "-h") {
       out.help = true;
     } else {
@@ -77,11 +89,26 @@ function parseArgs(argv) {
 
 function printHelp() {
   process.stdout.write(
-    "Usage: node zk/scripts/verify-artifacts.js [--manifest <path>]\n"
+    "Usage: node zk/scripts/verify-artifacts.js [--manifest <path>] [--profile <dev|production>]\n"
   );
   process.stdout.write(
-    "\nDefault manifest: zk/artifacts/membership/manifest.json\n"
+    "\nDefault manifest: zk/artifacts/membership/manifest.json\n" +
+      "Default profile:  $ANNEX_BUILD_PROFILE (or \"dev\")\n" +
+      "\nUnder --profile production, a manifest with ceremony.type=\"dev-fixture\"\n" +
+      "is rejected unless ANNEX_ALLOW_DEV_CEREMONY=1.\n"
   );
+}
+
+/// Normalise a profile string, returning "production" / "dev" / null. Anything
+/// other than the recognised aliases falls through to null so the caller can
+/// surface a clear error.
+function normaliseProfile(raw) {
+  if (raw === undefined || raw === null) return null;
+  const v = String(raw).trim().toLowerCase();
+  if (v === "") return null;
+  if (v === "production" || v === "release") return "production";
+  if (v === "dev" || v === "development") return "dev";
+  return v; // unknown — caller decides
 }
 
 function main() {
@@ -94,6 +121,22 @@ function main() {
   const manifestPath = args.manifest
     ? path.resolve(args.manifest)
     : path.resolve(__dirname, "..", "artifacts", "membership", "manifest.json");
+
+  // Resolve the build profile. CLI flag wins; otherwise fall back to the
+  // env var. An unrecognised value is a hard error: silently treating
+  // `ANNEX_BUILD_PROFILE=produktion` as dev would defeat the whole point
+  // of the gate.
+  const profileRaw = args.profile !== undefined
+    ? args.profile
+    : process.env.ANNEX_BUILD_PROFILE;
+  const profile = normaliseProfile(profileRaw) ?? "dev";
+  if (profile !== "production" && profile !== "dev") {
+    fail(
+      `unrecognised build profile "${profileRaw}" — use "dev" or "production".`
+    );
+  }
+  const isProduction = profile === "production";
+  const allowDevCeremony = process.env.ANNEX_ALLOW_DEV_CEREMONY === "1";
 
   if (!fs.existsSync(manifestPath)) {
     fail(
@@ -128,16 +171,36 @@ function main() {
   }
 
   info(`manifest:        ${manifestPath}`);
+  info(`profile:         ${profile}`);
   info(`circuit:         ${manifest.circuit} (version ${manifest.circuitVersion})`);
   info(
     `proving system:  ${manifest.provingSystem} over ${manifest.curve}, tree depth ${manifest.treeDepth}`
   );
   info(`public signals:  [${manifest.publicSignals.join(", ")}]`);
 
+  // Ceremony gate. Under a production profile, a `dev-fixture` ceremony is a
+  // hard fail unless the operator explicitly opts in via
+  // `ANNEX_ALLOW_DEV_CEREMONY=1`. The opt-in exists so a staging release can
+  // still be cut while the real ceremony is being scheduled, without losing
+  // the production gate for tag-driven releases.
   if (manifest.ceremony && manifest.ceremony.type === "dev-fixture") {
+    if (isProduction && !allowDevCeremony) {
+      fail(
+        `manifest is marked ceremony.type="dev-fixture" but ANNEX_BUILD_PROFILE=${profile}. ` +
+          `Refusing to verify dev-fixture artifacts under a production profile. ` +
+          `Replace the manifest + artifacts with multi-party ceremony output, ` +
+          `or set ANNEX_ALLOW_DEV_CEREMONY=1 to opt in (e.g. for staging dry-runs).`,
+        3
+      );
+    }
     warn(
       "manifest is marked ceremony.type=\"dev-fixture\". The pinned hashes refer to artifacts produced by random-entropy dev setup — NOT a real ceremony. A public production release MUST replace these with real ceremony output before tagging."
     );
+    if (isProduction && allowDevCeremony) {
+      warn(
+        "ANNEX_ALLOW_DEV_CEREMONY=1 — proceeding with dev-fixture artifacts under a production profile. This must NEVER be used for a public release."
+      );
+    }
   }
 
   const manifestDir = path.dirname(manifestPath);
