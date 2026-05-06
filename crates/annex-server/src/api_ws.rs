@@ -2,12 +2,9 @@
 
 use crate::api_federation::relay_message;
 use crate::AppState;
-use annex_channels::{
-    create_message, delete_message, edit_message, get_channel, is_member, CreateMessageParams,
-    Message,
-};
+use annex_channels::{is_member, Message};
 use annex_identity::{get_platform_identity, PlatformIdentity};
-use annex_types::{FederationScope, RoleCode};
+use annex_types::RoleCode;
 use axum::{
     extract::{
         ws::{Message as AxumMessage, WebSocket},
@@ -1028,35 +1025,18 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                             }
                         }
 
-                        let message_id = Uuid::new_v4().to_string();
-                        let params = CreateMessageParams {
-                            channel_id: channel_id.clone(),
-                            message_id,
-                            sender_pseudonym: pseudonym.clone(),
-                            content,
-                            reply_to_message_id: reply_to,
-                        };
-
-                        let state_clone = state.clone();
-                        let channel_id_clone = channel_id.clone();
-
-                        // DB Insert (blocking)
-                        let res = tokio::task::spawn_blocking(move || {
-                            let conn = state_clone.pool.get().map_err(|e| e.to_string())?;
-                            let msg = create_message(&conn, &params).map_err(|e| e.to_string())?;
-
-                            // Check if channel is federated
-                            let channel =
-                                get_channel(&conn, &channel_id_clone).map_err(|e| e.to_string())?;
-                            let is_federated =
-                                matches!(channel.federation_scope, FederationScope::Federated);
-
-                            Ok::<_, String>((msg, is_federated))
-                        })
-                        .await;
-
-                        match res {
-                            Ok(Ok((message, is_federated))) => {
+                        // Persistence + federation-flag lookup is delegated
+                        // to ChannelService::send_message; broadcast and the
+                        // federated-relay spawn stay here because they are
+                        // websocket-protocol concerns. The membership gate
+                        // above runs first, so the service's own membership
+                        // check is a redundant fast read.
+                        let svc = crate::services::ChannelService::new(state.clone());
+                        match svc
+                            .send_message(&pseudonym, &channel_id, content, reply_to)
+                            .await
+                        {
+                            Ok((message, is_federated)) => {
                                 // Broadcast via WebSocket (camelCase payload).
                                 // clientRequestId is included in the broadcast for
                                 // the sender's pending-send correlation. Other clients
@@ -1089,24 +1069,11 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                     ));
                                 }
                             }
-                            Ok(Err(e)) => {
-                                tracing::error!(
-                                    pseudonym = %pseudonym,
-                                    channel_id = %channel_id,
-                                    "failed to persist message: {}",
-                                    e
-                                );
-                                send_ws_error_with_id(
-                                    &tx,
-                                    "Failed to send message: internal error".to_string(),
-                                    client_request_id,
-                                );
-                            }
                             Err(e) => {
                                 tracing::error!(
                                     pseudonym = %pseudonym,
                                     channel_id = %channel_id,
-                                    "message persist task failed: {}",
+                                    "failed to persist message: {}",
                                     e
                                 );
                                 send_ws_error_with_id(
@@ -1165,18 +1132,16 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                             }
                         }
 
-                        let state_clone = state.clone();
-                        let pseudonym_clone = pseudonym.clone();
-
-                        let res = tokio::task::spawn_blocking(move || {
-                            let conn = state_clone.pool.get().map_err(|e| e.to_string())?;
-                            edit_message(&conn, &message_id, &pseudonym_clone, &content)
-                                .map_err(|e| e.to_string())
-                        })
-                        .await;
-
-                        match res {
-                            Ok(Ok(updated)) => {
+                        // Persistence delegated to ChannelService::edit_message;
+                        // ownership and edit-window enforcement live in
+                        // annex_channels::edit_message and surface as a service
+                        // error here.
+                        let svc = crate::services::ChannelService::new(state.clone());
+                        match svc
+                            .edit_message(&pseudonym, &channel_id, &message_id, &content)
+                            .await
+                        {
+                            Ok(updated) => {
                                 // Use the persisted channel_id from DB, not the
                                 // client-supplied one, to prevent cross-channel
                                 // broadcast spoofing.
@@ -1198,12 +1163,8 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                     }
                                 }
                             }
-                            Ok(Err(e)) => {
-                                send_ws_error(&tx, format!("Edit failed: {e}"));
-                            }
                             Err(e) => {
-                                tracing::error!("edit message task failed: {}", e);
-                                send_ws_error(&tx, "Edit failed: internal error".to_string());
+                                send_ws_error(&tx, format!("Edit failed: {e}"));
                             }
                         }
                     }
@@ -1240,18 +1201,14 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                             }
                         }
 
-                        let state_clone = state.clone();
-                        let pseudonym_clone = pseudonym.clone();
-
-                        let res = tokio::task::spawn_blocking(move || {
-                            let conn = state_clone.pool.get().map_err(|e| e.to_string())?;
-                            delete_message(&conn, &message_id, &pseudonym_clone)
-                                .map_err(|e| e.to_string())
-                        })
-                        .await;
-
-                        match res {
-                            Ok(Ok(updated)) => {
+                        // Persistence delegated to ChannelService::delete_message;
+                        // ownership + edit-window checks live in annex_channels.
+                        let svc = crate::services::ChannelService::new(state.clone());
+                        match svc
+                            .delete_message(&pseudonym, &channel_id, &message_id)
+                            .await
+                        {
+                            Ok(updated) => {
                                 // Use the persisted channel_id from DB, not the
                                 // client-supplied one, to prevent cross-channel
                                 // broadcast spoofing.
@@ -1273,12 +1230,8 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, identity: Platfo
                                     }
                                 }
                             }
-                            Ok(Err(e)) => {
-                                send_ws_error(&tx, format!("Delete failed: {e}"));
-                            }
                             Err(e) => {
-                                tracing::error!("delete message task failed: {}", e);
-                                send_ws_error(&tx, "Delete failed: internal error".to_string());
+                                send_ws_error(&tx, format!("Delete failed: {e}"));
                             }
                         }
                     }
