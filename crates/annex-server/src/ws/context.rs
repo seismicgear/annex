@@ -1,0 +1,37 @@
+//! Borrowed view of per-connection state passed into each WebSocket
+//! command handler.
+//!
+//! [`CommandContext`] holds short-lived references to the four things
+//! every command needs: the shared `AppState`, the authenticated
+//! `PlatformIdentity` (so handlers can run capability / role checks),
+//! the resolved pseudonym (cached as `&str` to avoid re-cloning out of
+//! identity), and the `mpsc::Sender<String>` used to enqueue protocol
+//! frames back to this socket.
+//!
+//! The struct is intentionally a borrow rather than an owned bundle so
+//! the dispatcher in [`crate::ws::session`] can construct one cheaply on
+//! every loop iteration without touching the connection-lifetime state.
+
+use std::sync::Arc;
+
+use annex_identity::PlatformIdentity;
+use tokio::sync::mpsc;
+
+use crate::AppState;
+
+/// Borrowed per-message context shared across every command handler.
+pub struct CommandContext<'a> {
+    /// Shared application state (pool, voice service, connection manager,
+    /// policy, …). Cloned cheaply via `Arc::clone` when a handler needs
+    /// to spawn a `tokio::task::spawn_blocking` closure.
+    pub state: &'a Arc<AppState>,
+    /// Identity of the authenticated WebSocket peer.
+    pub identity: &'a PlatformIdentity,
+    /// `identity.pseudonym_id` re-borrowed for ergonomic use in arms
+    /// that pass the pseudonym to multiple helpers without cloning.
+    pub pseudonym: &'a str,
+    /// Sender for the per-connection outbound mpsc queue. Handlers push
+    /// JSON-serialised [`crate::ws::protocol::OutgoingMessage`] payloads
+    /// here; the session task forwards them to the WebSocket sink.
+    pub tx: &'a mpsc::Sender<String>,
+}
