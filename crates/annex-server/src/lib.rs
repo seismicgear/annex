@@ -37,6 +37,7 @@ pub mod routes;
 pub mod services;
 pub mod startup;
 pub mod state;
+pub mod ws;
 
 pub use routes::app;
 pub use startup::{init_tracing, prepare_server, StartupError};
