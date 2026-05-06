@@ -1,7 +1,7 @@
 # Agent Handoff
 
 ## Current branch
-`claude/fix-annex-bugs-itXFq`
+`claude/fix-annex-bugs-PxyqS` (current session; previous session was `claude/fix-annex-bugs-itXFq`)
 
 ## Session goal
 Recursive production bug-fix campaign on Annex (Tauri desktop, Rust workspace,
@@ -9,7 +9,101 @@ Groth16/Circom ZKP, SQLite). Fix highest-impact real bugs in priority order:
 ZK enforcement → ZK release artifact path → canonical hex → Merkle epoch/concurrency
 → nullifier privacy → desktop release → security sweep.
 
-## Fixed in this session
+## Fixed in this session (claude/fix-annex-bugs-PxyqS)
+
+### [F10] Clippy CI breakers (release blocker)
+`cargo clippy --workspace --exclude annex-desktop --all-targets -- -D warnings`
+was failing on a fresh checkout: 5 doc-list-overindentation warnings in
+`ws/commands/resume.rs`, 1 doc-list missing-blank-line in
+`tests/api_invites.rs`, and 2 `field assignment outside of initializer`
+in `tests/identity_service.rs`. CI runs that exact invocation, so these
+were silently breaking the release pipeline.
+- files changed:
+  - `crates/annex-server/src/ws/commands/resume.rs` — flattened the
+    nested numbered list in the module doc.
+  - `crates/annex-server/tests/api_invites.rs` — added the required
+    blank line before the start of the inline numbered list.
+  - `crates/annex-server/tests/identity_service.rs` — switched the two
+    `policy.field = ...` blocks to struct-update syntax with
+    `..ServerPolicy::default()`.
+- tests run: `cargo clippy --workspace --exclude annex-desktop
+  --all-targets -- -D warnings` — clean.
+
+### [F9] Agent handshake hijacking + role-code type bug (security)
+`POST /api/vrp/agent-handshake` is intentionally unauthenticated so a
+freshly-spun-up agent can register before any platform_identities row
+exists. But the handler was equally unauthenticated AFTER the agent had
+gone through verify-membership: the only check was a participant-type
+lookup, and the row's TEXT label was being read as `u8`, so the
+"already-registered" branch never ran in practice. Two real bugs:
+
+1. **Role-code type bug**: `participant_type` is a TEXT column populated
+   with the label (`"AI_AGENT"`, `"HUMAN"`, …), but the handler did
+   `let role_code: Option<u8> = conn.query_row(...)`. SQLite would
+   silently fail the column conversion, surface as `Err` (mapped to
+   500), and short-circuit any logic predicated on the row existing.
+   The `Some(AI_AGENT)` and `Some(_)` branches were unreachable.
+
+2. **Agent identity hijacking**: anyone who could read a public agent
+   pseudonym (visible in `/api/public/agents`, the events stream,
+   channel listings, federation handshakes) could submit a re-handshake
+   on the agent's behalf. The handler upserts `agent_registrations`,
+   replacing `capability_contract_json`, `anchor_snapshot_json`,
+   `alignment_status`, and `transfer_scope`. They could also force
+   Conflict alignment, which deactivates the row AND forcibly
+   disconnects the agent's WebSocket session.
+
+Fix:
+- Read `participant_type` as `String` and compare to
+  `RoleCode::AiAgent.label()`. (Closes the type bug.)
+- When the pseudonym IS already a registered AI_AGENT, REQUIRE a valid
+  `Authorization: Bearer <session-token>` whose bound pseudonym matches
+  `payload.pseudonymId`. Pre-registration (no platform_identities row)
+  remains unauthenticated. (Closes the hijack.)
+- files changed:
+  - `crates/annex-server/src/api_vrp.rs` — added
+    `pseudonym_from_authorization_header`; handler now takes a
+    `HeaderMap` and applies the gate.
+  - `crates/annex-server/tests/api_vrp_handshake.rs` — added 4 tests:
+    - `rehandshake_without_token_is_rejected_for_registered_agent`
+    - `rehandshake_with_mismatched_token_is_rejected`
+    - `pre_registration_handshake_remains_unauthenticated`
+    - `rehandshake_with_matching_token_is_allowed`
+- tests run: `cargo test -p annex-server --test api_vrp_handshake` —
+  6 passed; `cargo test --workspace --exclude annex-desktop` — 564
+  passed, 0 failed.
+
+### [F8] Image proxy SVG XSS (security)
+`/api/link-preview/image?url=<attacker-controlled URL>` is unauthenticated
+and proxies the response as-is with `Content-Type` from the upstream.
+SVG documents are accepted by the previous `image/*` filter and forwarded
+on to the user's browser. Loading the proxy URL via `<img>` is safe
+(browsers don't execute scripts in image documents), but a victim who
+right-clicks "Open Image in New Tab" — or just pastes the proxy URL into
+the address bar — lands on a top-level document served from the Annex
+server's origin. SVGs can carry inline `<script>` and event handlers,
+which then execute as same-origin XSS in the proxy server's context
+(cookies, sessionStorage, API tokens — all reachable).
+- files changed:
+  - `crates/annex-server/src/api_link_preview.rs` —
+    1. `image_proxy_handler` now rejects `image/svg`, `*/svg+xml`, and
+       octet-stream URLs ending in `.svg`.
+    2. `url_has_image_extension` and `infer_image_content_type` no
+       longer recognise `.svg`.
+    3. `build_image_response` adds `Content-Security-Policy: sandbox;
+       default-src 'none'` to every image response, so any SVG that
+       still slips through the content-type filter is rendered with
+       script execution disabled.
+- tests added:
+  - `url_image_extension_detection_excludes_svg`
+  - `build_image_response_sets_sandbox_csp`
+- tests run: `cargo test -p annex-server --lib api_link_preview::` —
+  15 passed (2 new).
+- result: PASS. SVG can no longer be proxied as image, and the sandbox
+  CSP closes the residual gap if any non-image MIME slipped through
+  detection.
+
+## Fixed in previous session (claude/fix-annex-bugs-itXFq)
 
 ### [F1] v2 topicHash → topic binding (privacy bug)
 The v2 verifier accepted any `topicHash` in `publicSignals[3]` as long as the
@@ -149,10 +243,25 @@ The fix mirrors the local cap.
   resource declarations. Real CI must keep enforcing the existing
   `release-desktop.yml` Linux + Windows jobs.
 
-## Commands run
+## Commands run (this session, claude/fix-annex-bugs-PxyqS)
+- `cargo fmt --all --check` → clean (after edits).
+- `cargo clippy --workspace --exclude annex-desktop --all-targets -- -D warnings`
+  → originally failing on doc-list-overindentation in
+  `ws/commands/resume.rs` and field-assignment-after-default in
+  `tests/identity_service.rs`. Fixed; now clean.
+- `cargo test -p annex-server --lib api_link_preview::` → 15 passed
+  (2 new: SVG exclusion + sandbox CSP).
+- `cargo test -p annex-server --test api_vrp_handshake` → 6 passed
+  (4 new: re-handshake auth gate, mismatched token, pre-registration,
+  matching token).
+- `cargo test --workspace --exclude annex-desktop` → **564 passed, 0
+  failed** (up from 558 baseline; 6 new tests).
+- Desktop build not exercised in this session (sandbox dependency).
+
+## Commands run (previous session, claude/fix-annex-bugs-itXFq)
 - `cargo fmt --all --check` → originally failing on `tests/contract_fixtures.rs`,
   fixed.
-- `cargo build --workspace --exclude annex-desktop` → clean (with my edits).
+- `cargo build --workspace --exclude annex-desktop` → clean (with edits).
 - `cargo test -p annex-identity --lib zk::` → 29 passed, 0 failed (includes
   the 6 new `topic_hash_for_v2_*` tests).
 - `cargo test -p annex-server --test api_registry` → 3 passed, 0 failed.
@@ -160,7 +269,7 @@ The fix mirrors the local cap.
 - `cargo test -p annex-server --test api_zk_verify` → 1 passed, 0 failed.
 - `cargo test -p annex-server --test api_invites` → 3 passed, 0 failed (new file).
 - `cargo test -p annex-server --test api_federation_relay` → 3 passed, 0 failed.
-- `cargo test --workspace --exclude annex-desktop` → **558 passed, 0 failed**.
+- `cargo test --workspace --exclude annex-desktop` → 558 passed, 0 failed.
 - `cargo build -p annex-desktop --release` → fails because the sandbox
   lacks `libgtk-3-dev`; documented as a system dependency, not a code bug.
 - `cd zk && npm ci && node scripts/build-circuits.js && node scripts/setup-groth16.js`
@@ -196,16 +305,53 @@ The fix mirrors the local cap.
   bump `use_count`. Seat consumption happens atomically in
   `IdentityService::register_identity` after successful registration —
   see [F5].
+- I-IMG-PROXY-1 (new): `/api/link-preview/image` MUST reject SVG content
+  (any `image/svg`, `*/svg+xml`, or octet-stream URL ending in `.svg`)
+  AND MUST set `Content-Security-Policy: sandbox; default-src 'none'`
+  on every response. The `url_has_image_extension` allow-list omits
+  `.svg` deliberately. See [F8].
+- I-AGENT-HANDSHAKE-1 (new): `POST /api/vrp/agent-handshake` is gated
+  conditionally:
+   * Pre-registration (no `platform_identities` row for the pseudonym)
+     remains unauthenticated.
+   * Re-handshake (row exists with `participant_type = 'AI_AGENT'`)
+     REQUIRES a valid `Authorization: Bearer <session-token>` whose
+     bound pseudonym matches `payload.pseudonymId`.
+   * `participant_type` is TEXT — read with
+     `String` and compare to `RoleCode::AiAgent.label()`. Reading as
+     `u8` silently fails the column conversion. See [F9].
 
 ## Context cutoff note
-Session ran the full priority checklist. If a future agent picks up:
+Session ran the full priority checklist with two new fixes (image
+proxy SVG XSS, agent-handshake hijack) plus CI clippy-warning cleanup.
+If a future agent picks up:
 1. Re-run `cargo test --workspace --exclude annex-desktop` to confirm
-   the 558-pass baseline holds.
-2. Highest-value remaining items are in "Still broken / suspected":
-   - federation v1/v2 vkey dispatch
-   - federation peer URL SSRF guard
-   - real multi-party ZK ceremony
-3. Next concrete files to inspect:
+   the **564-pass** baseline holds.
+2. Re-run `cargo clippy --workspace --exclude annex-desktop --all-targets -- -D warnings`
+   to confirm CI clippy gate stays clean.
+3. Highest-value remaining items are in "Still broken / suspected":
+   - federation v1/v2 vkey dispatch (release blocker for v2 rollout)
+   - federation peer URL SSRF guard (defence-in-depth)
+   - real multi-party ZK ceremony (release blocker for v0.2)
+   - desktop build smoke test in real Linux/Windows CI
+4. Next concrete files to inspect:
    - `crates/annex-server/src/services/federation_service.rs` (vkey dispatch)
    - `crates/annex-federation/src/handshake.rs` (envelope evolution)
    - `zk/scripts/setup-groth16.js` and `dev-setup-groth16.js`
+5. Areas already audited this session that look clean:
+   - WS connection_manager lock ordering — no deadlock potential.
+   - Channel CRUD / message edit-window enforcement — ownership +
+     time-window checks correct.
+   - Rate limiter / sliding window — sound.
+   - CORS / `is_dev_localhost_origin` — correctly gated on
+     `cfg!(debug_assertions)`; release builds stay strict.
+   - SQL building (`api_observe::get_events_handler`,
+     `services/rtx_repository.rs`) — parameterised correctly; no
+     injection.
+   - WebSocket auth — token-only when `enforce_zk_proofs = true`;
+     raw-pseudonym path explicitly rejected.
+   - ZK enforced-mode startup — `default_enforce_zk_proofs() = true`,
+     missing key in enforced mode is a hard `StartupError`.
+   - Image proxy URL SSRF — `is_private_or_reserved` covers
+     loopback / private / link-local / IPv4-mapped-IPv6 with
+     per-redirect-hop DNS validation. Tested.

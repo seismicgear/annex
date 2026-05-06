@@ -1,6 +1,6 @@
 //! VRP Handshake API handlers.
 
-use crate::{api::ApiError, AppState};
+use crate::{api::ApiError, api_ws::verify_ws_token_for_auth, AppState};
 use annex_graph::update_node_activity;
 use annex_observe::EventPayload;
 use annex_types::PresenceEvent;
@@ -9,7 +9,11 @@ use annex_vrp::{
     VrpAlignmentConfig, VrpAlignmentStatus, VrpCapabilitySharingContract, VrpFederationHandshake,
     VrpTransferAcceptanceConfig, VrpValidationReport,
 };
-use axum::{extract::Extension, Json};
+use axum::{
+    extract::Extension,
+    http::{HeaderMap, StatusCode},
+    Json,
+};
 use rusqlite::OptionalExtension;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -24,11 +28,45 @@ pub struct AgentHandshakeRequest {
     pub handshake: VrpFederationHandshake,
 }
 
+/// Verifies a `Authorization: Bearer <session-token>` header and returns the
+/// pseudonym bound by the token. Used to gate re-handshakes against
+/// hijacking from unauthenticated callers.
+fn pseudonym_from_authorization_header(
+    headers: &HeaderMap,
+    secret: &[u8; 32],
+) -> Result<Option<String>, ApiError> {
+    let Some(val) = headers.get("Authorization") else {
+        return Ok(None);
+    };
+    let val_str = val
+        .to_str()
+        .map_err(|_| ApiError::Forbidden("invalid Authorization header".to_string()))?;
+    let Some(token) = val_str.strip_prefix("Bearer ") else {
+        return Ok(None);
+    };
+    match verify_ws_token_for_auth(token, secret) {
+        Ok(pseudonym) => Ok(Some(pseudonym)),
+        Err(StatusCode::UNAUTHORIZED) => Err(ApiError::Forbidden(
+            "agent handshake rejected: invalid or expired session token".to_string(),
+        )),
+        Err(_) => Err(ApiError::InternalServerError(
+            "session token verification failed".to_string(),
+        )),
+    }
+}
+
 /// Handler for `POST /api/vrp/agent-handshake`.
 pub async fn agent_handshake_handler(
     Extension(state): Extension<Arc<AppState>>,
+    headers: HeaderMap,
     Json(payload): Json<AgentHandshakeRequest>,
 ) -> Result<Json<VrpValidationReport>, ApiError> {
+    // Validate Authorization header up-front (before any DB I/O) so a
+    // malformed token never produces a partial state change. The token is
+    // optional here — pre-registration handshakes do not have one yet —
+    // but if present it must be valid.
+    let token_pseudonym = pseudonym_from_authorization_header(&headers, &state.ws_token_secret)?;
+
     let pseudonym_id_for_disconnect = payload.pseudonym_id.clone();
     let state_for_disconnect = state.clone();
     let result = tokio::task::spawn_blocking(move || {
@@ -41,8 +79,33 @@ pub async fn agent_handshake_handler(
         // 1b. Validate that the pseudonym belongs to an AI agent identity.
         // Without this check, human identities could register as agents and
         // gain agent-specific capabilities (RTX, voice profiles).
+        //
+        // This endpoint is unauthenticated by design so newly-spun-up agents
+        // can establish their first handshake before any identity row
+        // exists. But once a platform_identities row DOES exist for the
+        // pseudonym, allowing unauthenticated re-handshakes is identity
+        // hijacking: any caller who knows a public agent pseudonym (visible
+        // in `/api/public/agents`, channel listings, the events stream)
+        // could submit a fresh anchor + contract and silently rewrite the
+        // agent's `agent_registrations` row, including capability
+        // contracts, alignment status, and transfer scope. They could also
+        // force the agent into Conflict alignment, which deactivates the
+        // row and cuts the agent's WebSocket session.
+        //
+        // Mitigation: when the pseudonym is already registered as an
+        // AI_AGENT, REQUIRE a valid `Authorization: Bearer <token>` whose
+        // bound pseudonym matches `payload.pseudonym_id`. Pre-registration
+        // (no platform_identities row yet) keeps the existing
+        // unauthenticated path.
+        //
+        // Note on the column type: `platform_identities.participant_type`
+        // is TEXT — populated by `create_platform_identity` with the
+        // label-form (`"HUMAN"`, `"AI_AGENT"`, …), not the role-code
+        // integer. Reading it as `u8` (as the previous version did) would
+        // silently turn a successful row read into a rusqlite type-coercion
+        // error, masking the lookup as a 500. We compare strings instead.
         {
-            let role_code: Option<u8> = conn
+            let participant_type: Option<String> = conn
                 .query_row(
                     "SELECT pi.participant_type FROM platform_identities pi
                      WHERE pi.server_id = ?1 AND pi.pseudonym_id = ?2 AND pi.active = 1",
@@ -52,8 +115,26 @@ pub async fn agent_handshake_handler(
                 .optional()
                 .map_err(|e| ApiError::InternalServerError(format!("db query failed: {e}")))?;
 
-            match role_code {
-                Some(code) if code == annex_types::RoleCode::AiAgent.as_u8() => { /* OK */ }
+            match participant_type.as_deref() {
+                Some(label) if label == annex_types::RoleCode::AiAgent.label() => {
+                    // Re-handshake path: require a session token bound to
+                    // this exact pseudonym.
+                    match token_pseudonym.as_deref() {
+                        Some(p) if p == payload.pseudonym_id => { /* OK */ }
+                        Some(_) => {
+                            return Err(ApiError::Forbidden(
+                                "agent handshake rejected: session token does not match pseudonymId"
+                                    .to_string(),
+                            ));
+                        }
+                        None => {
+                            return Err(ApiError::Forbidden(
+                                "agent handshake rejected: registered agent must present a valid \
+                                 session token for re-handshake".to_string(),
+                            ));
+                        }
+                    }
+                }
                 Some(_) => {
                     return Err(ApiError::Forbidden(
                         "agent handshake rejected: identity is not registered as AI_AGENT".to_string(),
