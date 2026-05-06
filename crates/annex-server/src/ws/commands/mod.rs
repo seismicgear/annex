@@ -22,3 +22,4 @@ pub mod edit;
 pub mod message;
 pub mod resume;
 pub mod typing;
+pub mod voice;
