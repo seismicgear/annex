@@ -1,0 +1,5 @@
+{
+  "type": "webrtc_offer",
+  "channelId": "voice-1",
+  "sdp": "v=0\r\no=- 4611731400430051336 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10;useinbandfec=1\r\na=mid:0\r\na=sendrecv\r\n"
+}
