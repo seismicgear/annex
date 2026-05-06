@@ -20,6 +20,16 @@ pub struct FederationAgreement {
 }
 
 /// Request payload for cross-server identity attestation.
+///
+/// Wire compatibility: `protocol_version`, `public_signals`, `nullifier_hex`
+/// and `topic_hash_hex` are all optional. A request that omits them is
+/// processed as v1 — the only mode v0.1 peers know how to send. v2 peers
+/// MUST send `protocol_version = "v2"` AND a `public_signals` array of
+/// length 4 (`[root, commitment, nullifier, topicHash]`); the receiving
+/// server cross-checks `public_signals[3]` against
+/// `topic_hash_for_v2(topic)` exactly the way the local
+/// `verify-membership` endpoint does, so a peer cannot smuggle a proof
+/// produced for a different topic.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AttestationRequest {
     /// The base URL of the server attesting the identity.
@@ -33,8 +43,60 @@ pub struct AttestationRequest {
     /// The type of participant (e.g., "HUMAN", "AI_AGENT").
     pub participant_type: String,
     /// The signature of the request (hex).
-    /// Signed message: SHA256(topic || commitment || participant_type).
+    /// Signed message: `topic\ncommitment\nparticipant_type` for v1 (legacy
+    /// wire format) or
+    /// `topic\ncommitment\nparticipant_type\nprotocol_version\nnullifier_hex\ntopic_hash_hex`
+    /// for v2 (each newline-separated field is the canonical lowercase
+    /// 64-char hex value or the literal protocol version).
     pub signature: String,
+
+    /// Membership-circuit version this attestation is for.
+    /// `None` or `Some("v1")` selects the legacy v1 verifier
+    /// (commitment-derived nullifier). `Some("v2")` selects the
+    /// secret-derived nullifier verifier and requires the receiving server
+    /// to have v2 enabled in its config; otherwise the attestation is
+    /// rejected. The server NEVER silently downgrades or upgrades a peer's
+    /// declared protocol version.
+    #[serde(
+        rename = "protocolVersion",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub protocol_version: Option<String>,
+
+    /// v2-only: the proof's public signals as decimal-encoded scalars in
+    /// the order `[root, commitment, nullifier, topicHash]`. Required when
+    /// `protocol_version == Some("v2")`. Ignored on v1.
+    #[serde(
+        rename = "publicSignals",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub public_signals: Option<Vec<String>>,
+
+    /// v2-only: the secret-derived nullifier (hex). When present and
+    /// `protocol_version == Some("v2")`, the server checks that this
+    /// matches `public_signals[2]` after canonicalisation. Required for v2
+    /// so the federated identity row can be inserted with the same
+    /// nullifier the originating server bound the proof to.
+    #[serde(
+        rename = "nullifierHex",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub nullifier_hex: Option<String>,
+
+    /// v2-only: the canonical topicHash (BN254 scalar in 64-char hex)
+    /// the proof was bound to. Optional — when present it is cross-checked
+    /// against both `public_signals[3]` and the server-recomputed
+    /// `topic_hash_for_v2(topic)` so a single field mismatch surfaces as
+    /// a deterministic 400 instead of a silent verifier failure.
+    #[serde(
+        rename = "topicHashHex",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub topic_hash_hex: Option<String>,
 }
 
 /// A message relayed from a federation peer.

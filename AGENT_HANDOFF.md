@@ -1,7 +1,7 @@
 # Agent Handoff
 
 ## Current branch
-`claude/fix-annex-bugs-PxyqS` (current session; previous session was `claude/fix-annex-bugs-itXFq`)
+`claude/fix-annex-bugs-Las84` (current session; chain: `…itXFq` → `…PxyqS` → `…Las84`)
 
 ## Session goal
 Recursive production bug-fix campaign on Annex (Tauri desktop, Rust workspace,
@@ -9,7 +9,134 @@ Groth16/Circom ZKP, SQLite). Fix highest-impact real bugs in priority order:
 ZK enforcement → ZK release artifact path → canonical hex → Merkle epoch/concurrency
 → nullifier privacy → desktop release → security sweep.
 
-## Fixed in this session (claude/fix-annex-bugs-PxyqS)
+## Fixed in this session (claude/fix-annex-bugs-Las84)
+
+### [F11] Federation v1/v2 vkey dispatch (release blocker for v2 rollout)
+`services/federation_service.rs::attest_membership` always verified incoming
+attestations against `state.membership_vkey` (v1) regardless of what the
+peer sent. v2 federation peers (those whose proofs use the v2 circuit with
+secret-derived nullifiers) had no working federation path: their
+attestations would be silently routed into the v1 verifier and fail with a
+generic "Invalid proof" error, so their identities could never be cross-
+attested across servers. Listed as the top "Still broken" item in the
+previous handoff.
+
+The fix mirrors the local `/api/zk/verify-membership` dispatch: extend
+`AttestationRequest` with optional `protocolVersion`, `publicSignals`,
+`nullifierHex`, and `topicHashHex` fields, and pick the matching vkey at
+runtime. v2 attestations are rejected with `403 Forbidden` when the
+receiving server has not loaded the v2 vkey, so v2 enablement is opt-in
+per server (`Config::security.enabled_zk_versions`).
+
+Topic-binding is enforced exactly the way the local verifier does it:
+`publicSignals[3]` MUST equal `topic_hash_for_v2(payload.topic)`, otherwise
+the proof is bound to a different topic. Without this, a v2 prover could
+reuse a v2 proof for topic A as a v2 attestation for topic B (same closed
+gap as [F1] in the previous session, but for the federation path).
+
+The signed-payload shape also binds protocol_version + nullifierHex +
+topicHashHex when v2 is declared, so a peer cannot strip the v2 fields
+off the wire to coerce v1 dispatch — the signature would not verify. v1
+keeps the legacy 3-field signing input for wire compatibility.
+
+- files changed:
+  - `crates/annex-federation/src/types.rs` — extended
+    `AttestationRequest` with `protocolVersion`, `publicSignals`,
+    `nullifierHex`, `topicHashHex` (all `Option<...>`,
+    `skip_serializing_if = "Option::is_none"` so v1 wire shape is
+    unchanged).
+  - `crates/annex-server/src/services/federation_service.rs` —
+    `attest_membership` now dispatches to v1 or v2 based on
+    `protocol_version`. v2 wire-shape validation runs BEFORE the network
+    round-trip so a malformed envelope is rejected without probing the
+    peer. Cross-checks: `publicSignals[3] ==
+    topic_hash_for_v2(payload.topic)`, `publicSignals[2] ==
+    canonicalised(claimed nullifierHex)`, `publicSignals[0..2] ==
+    (remote_root_fr, commitment_fr)` (the root-cross-check fires after
+    the network call). For v2 the canonical nullifier is taken from
+    `publicSignals[2]` (secret-derived, server cannot recompute);
+    `derive_nullifier_hex(commitment, topic)` is still the v1 source of
+    truth.
+  - `crates/annex-server/tests/api_federation_attestation.rs` — updated
+    existing tests for the new `AttestationRequest` field set; added 5
+    new tests:
+    - `test_attest_membership_v2_rejected_when_v2_not_enabled`
+    - `test_attest_membership_unknown_protocol_version_rejected`
+    - `test_attest_membership_v2_requires_nullifier_hex_in_signing_input`
+    - `test_attest_membership_v2_topic_mismatch_rejected`
+    - `test_attest_membership_v2_requires_public_signals`
+- tests run: `cargo test -p annex-server --test api_federation_attestation`
+  → 10 passed; full workspace `cargo test -p annex-server` → 350 passed,
+  0 failed (118 lib + 232 integration; up from 345 baseline + 5 new).
+- result: PASS. v2 attestations are now first-class: dispatched to
+  v2 vkey, topic-bound, signature-bound to the v2 wire shape, and
+  rejected with deterministic 4xx errors on every malformed v2 path.
+
+### [F12] SSRF defence-in-depth on federation peer URLs
+The federation paths take peer-supplied URLs from the wire and (for the
+attestation freshness callback and the `attest_membership` root-fetch)
+turn them into outbound HTTP requests. Peers are administratively trusted
+via `federation_agreements`, but a misconfigured `instances` row (e.g.
+`http://localhost:9090` for a Prometheus port) would otherwise turn these
+endpoints into a continuous probe of internal services from inside the
+server's trust boundary. Listed in the previous handoff as a defence-in-
+depth gap.
+
+Fix: re-export
+`api_link_preview::is_url_private_or_reserved` (the same predicate used
+by the link preview / image proxy SSRF gate, with full IPv4-mapped-IPv6
++ CGNAT + 169.254 + .local + .internal coverage) and call it from:
+1. `attest_membership` — return 403 BEFORE the network call when the
+   peer's `originating_server` URL is private/loopback. New regression
+   test `test_attest_membership_valid_signature_fails_network` updated
+   to assert the new 403 + "private or reserved" message; the previous
+   "network error → 500" path is no longer reachable on a localhost
+   peer URL.
+2. `receive_federated_message` — skip the freshness-check callback when
+   the peer URL is private. The freshness check is a soft gate
+   ("log on mismatch / continue on network error"), so we log + skip
+   instead of rejecting the whole message.
+3. `relay_message` (background relay) — skip relay to peers whose
+   `base_url` resolves to a private/reserved host, with a warn-level
+   log naming the peer.
+
+- files changed:
+  - `crates/annex-server/src/api_link_preview.rs` — exposed the existing
+    private-IP/host predicate as `pub(crate) fn
+    is_url_private_or_reserved`.
+  - `crates/annex-server/src/services/federation_service.rs` — three
+    SSRF gates as above.
+- tests run: same as [F11].
+
+### [F13] Per-request `x-annex-zk-proof` header now supports v2
+`middleware::verify_zk_membership_header` is the per-request membership
+re-prove gate (called from `channel_service::join_channel`,
+`create_message`, etc.) and was hard-wired to the v1 vkey. v2 clients
+hitting a channel-protected endpoint with a v2 proof in the
+`x-annex-zk-proof` header would be silently routed into the v1 verifier
+and 403'd. Same shape of bug as [F11] but on the request-time path.
+
+Fix: extend `ZkProofPayload` with `protocolVersion`, `publicSignals`,
+and `topic` fields. Dispatch on version exactly like the federation +
+local verify-membership paths. Topic-binding identical to [F11].
+
+The `topic` field is required for v2 because the topic is what binds the
+nullifier to a routing context — without it the server cannot recompute
+`topic_hash_for_v2`. v1 doesn't need a topic at this layer because the
+nullifier isn't part of the proof's public signals.
+
+- files changed:
+  - `crates/annex-server/src/middleware.rs` — extended `ZkProofPayload`
+    and rewrote `verify_zk_membership_header` to dispatch on
+    `protocol_version`. v1 path is byte-for-byte unchanged
+    (`protocol_version` defaults to `None` → "v1", same 2-signal
+    public-input vector).
+- tests run: full workspace test suite is green; the existing channel
+  tests cover the v1 path. v2 path uses the same dispatch + topic-binding
+  rules tested in [F11], so no new tests are added on this side; the
+  guarantee is structural (same logic, same vkey, same topicHash check).
+
+## Fixed in earlier session (claude/fix-annex-bugs-PxyqS)
 
 ### [F10] Clippy CI breakers (release blocker)
 `cargo clippy --workspace --exclude annex-desktop --all-targets -- -D warnings`
@@ -205,17 +332,14 @@ The fix mirrors the local cap.
 
 ## Still broken / suspected
 
-- [ ] **Federation v1/v2 dispatch**. `services/federation_service.rs` always
-  uses `state.membership_vkey` (v1 vkey) regardless of what version the
-  federated peer sent. v2 federation is not yet wired. Documented as an
-  open follow-up. Low impact today (no v2 client), but a release blocker
-  for the v2 rollout window.
-
 - [ ] **CORS in debug builds bypasses configured origins on `localhost`**.
   `http/cors.rs::is_dev_localhost_origin` is gated on `cfg!(debug_assertions)`
   so release binaries are unaffected, but a misconfigured release build
   would silently accept any localhost origin. Worth a config flag rather
   than a cfg gate. Low priority given the gate is correct for normal usage.
+  Verified this session: `cfg!(debug_assertions)` is `false` under
+  `--release` so the original concern is partially overstated, but a
+  config flag would still be cleaner than the cfg gate.
 
 - [ ] **Trusted-setup ceremony is single-machine, dev-fixture entropy**.
   `manifest.json` for membership pins SHA-256 hashes of artifacts produced
@@ -227,14 +351,13 @@ The fix mirrors the local cap.
   membership circuit fits in ~5k constraints, but if the circuit grows past
   ~16k constraints the script will need a depth-15+ PoT.
 
-- [ ] **Federation peer-supplied URL not SSRF-guarded**. When
-  `receive_federated_message` makes the freshness callback to
-  `{originating_server}/api/federation/vrp-root`, the URL comes from the
-  peer-signed envelope. Peers are administratively trusted via
-  `federation_agreements`, but an explicit "is this URL public-routable"
-  check would be defence-in-depth (matches what
-  `api_link_preview::is_private_or_reserved` does). The federation HTTP
-  client has redirect=none and timeouts, so the worst case is bounded.
+- [ ] **Uploaded files are public by URL**. `/uploads/*` is mounted via
+  `ServeDir` with no auth. Filenames are UUIDs, so unguessable, but
+  there is no per-channel access control — a leaked URL is a permanent
+  access grant for that file. Acceptable for the "public-ish" content
+  pattern of v0.1, but a release blocker for any private-channel mode.
+  No fix this session because the architectural change is large and the
+  URL-as-capability model is documented behaviour today.
 
 - [ ] **Desktop build cannot be exercised in this environment** — system
   GTK/WebKitGTK packages are missing from the sandbox. Code review of
@@ -243,7 +366,44 @@ The fix mirrors the local cap.
   resource declarations. Real CI must keep enforcing the existing
   `release-desktop.yml` Linux + Windows jobs.
 
-## Commands run (this session, claude/fix-annex-bugs-PxyqS)
+## Fixed in this session, previously listed as "Still broken"
+- **[F11] Federation v1/v2 dispatch** — wired v1/v2 vkey dispatch in
+  `attest_membership` with full topic + nullifier + signature binding.
+  v2 attestations no longer silently fail.
+- **[F12] Federation peer-supplied URL SSRF guard** — the
+  `is_url_private_or_reserved` predicate is now applied at three federation
+  outbound-call sites. Misconfigured peer entries can no longer turn the
+  attestation freshness callback or message relay into a private-network
+  probe.
+- **[F13] verify_zk_membership_header now supports v2** — the per-request
+  channel ZK header now dispatches to the right vkey + topicHash check, so
+  v2 clients can hit channel-protected endpoints with v2 proofs.
+
+## Commands run (this session, claude/fix-annex-bugs-Las84)
+- `cargo fmt --all --check` → clean (after auto-format).
+- `cargo clippy --workspace --exclude annex-desktop --all-targets -- -D warnings`
+  → clean.
+- `cargo test -p annex-server --test api_federation_attestation` → 10
+  passed (5 new: v2 dispatch + topic mismatch + missing publicSignals +
+  missing nullifierHex + unknown protocolVersion).
+- `cargo test -p annex-server` → **350 passed, 0 failed** (118 lib +
+  232 integration).
+- `cargo test --workspace --exclude annex-desktop --exclude annex-server`
+  → 219 passed, 0 failed (other crates unchanged).
+- Workspace total: **569 passed, 0 failed** (up from 564 baseline; 5
+  new tests).
+- Client: `npm ci && ./node_modules/.bin/vitest run` → 165 passed across
+  16 files.
+- Client: `npm run lint` → clean.
+- Desktop build: not exercised (sandbox lacks GTK/WebKitGTK).
+- Disk note: `/home/user/annex/target` debug artifacts hit ~30 GB twice
+  during the session and required `cargo clean -p annex-server` +
+  `rm -rf target/debug/incremental` to recover. The full integration
+  test suite alone needs ~24 GB of test-binary space; on tight CI
+  runners, prefer running tests by crate rather than `--workspace` in a
+  single shot.
+
+## Commands run (previous session, claude/fix-annex-bugs-PxyqS)
 - `cargo fmt --all --check` → clean (after edits).
 - `cargo clippy --workspace --exclude annex-desktop --all-targets -- -D warnings`
   → originally failing on doc-list-overindentation in
@@ -320,38 +480,86 @@ The fix mirrors the local cap.
    * `participant_type` is TEXT — read with
      `String` and compare to `RoleCode::AiAgent.label()`. Reading as
      `u8` silently fails the column conversion. See [F9].
+- I-FED-V2-1 (new): `POST /api/federation/attest-membership` dispatches
+  to the v1 vkey by default and to the v2 vkey when
+  `protocolVersion = "v2"`. v2 attestations REQUIRE `publicSignals`
+  (length 4), `nullifierHex`, and `topicHashHex`, and the server checks
+  that `publicSignals[3] == topic_hash_for_v2(topic)`. v2 is rejected
+  with `403 Forbidden` when the receiving server has not loaded the v2
+  vkey. The signed message includes the v2 fields when v2 is declared
+  so the wire shape cannot be downgraded by stripping fields. See [F11].
+- I-FED-SSRF-1 (new): `is_url_private_or_reserved` (re-exported from
+  `api_link_preview`) is the canonical predicate for SSRF defence on
+  every federation outbound URL — `attest_membership` (hard reject),
+  `receive_federated_message` freshness callback (skip + log), and
+  `relay_message` background relay (skip + warn). Future federation
+  callers MUST go through this predicate. See [F12].
+- I-ZK-HEADER-V2 (new): `verify_zk_membership_header` (the per-request
+  channel ZK gate read from `x-annex-zk-proof`) accepts an optional
+  `protocolVersion` field and dispatches to the v2 vkey when set to
+  `"v2"`. v2 also requires `publicSignals` (length 4) and `topic`
+  for the canonical topicHash binding. v1 wire shape is unchanged. See
+  [F13].
 
 ## Context cutoff note
-Session ran the full priority checklist with two new fixes (image
-proxy SVG XSS, agent-handshake hijack) plus CI clippy-warning cleanup.
+Session [F11..F13] wired v2 federation attestation, added SSRF defence-
+in-depth on every federation outbound URL, and extended the per-request
+`x-annex-zk-proof` gate to support v2. Workspace test count rose from 564
+to 569 (5 new tests). All clippy + fmt clean.
+
 If a future agent picks up:
-1. Re-run `cargo test --workspace --exclude annex-desktop` to confirm
-   the **564-pass** baseline holds.
+1. Re-run `cargo test -p annex-server` (350 expected) and
+   `cargo test --workspace --exclude annex-desktop --exclude annex-server`
+   (219 expected) to confirm the **569-pass** baseline holds. Watch out
+   for the disk-pressure issue described under "Commands run".
 2. Re-run `cargo clippy --workspace --exclude annex-desktop --all-targets -- -D warnings`
    to confirm CI clippy gate stays clean.
 3. Highest-value remaining items are in "Still broken / suspected":
-   - federation v1/v2 vkey dispatch (release blocker for v2 rollout)
-   - federation peer URL SSRF guard (defence-in-depth)
    - real multi-party ZK ceremony (release blocker for v0.2)
+   - PoT depth ceiling (only matters if circuit grows)
+   - uploads-as-public-URL design question (release blocker for any
+     private-channel mode)
    - desktop build smoke test in real Linux/Windows CI
-4. Next concrete files to inspect:
-   - `crates/annex-server/src/services/federation_service.rs` (vkey dispatch)
-   - `crates/annex-federation/src/handshake.rs` (envelope evolution)
-   - `zk/scripts/setup-groth16.js` and `dev-setup-groth16.js`
+4. Next concrete files to inspect (none of these are bugs today, but are
+   the most likely places for the NEXT class of v2-specific bugs):
+   - `zk/scripts/setup-groth16.js` and `dev-setup-groth16.js` — confirm
+     v2 production setup ceremony is parameterised separately from v1.
+   - `crates/annex-server/src/services/federation_service.rs::relay_message`
+     and the matching `api_federation::receive_federated_message_handler` —
+     when a v2 client sends a federated message, the attestation_ref
+     format must still resolve to the same federated_identities row.
+     Currently the row is keyed by (instance_id, commitment_hex), which
+     is version-agnostic, so v2 should "just work" — but this is worth
+     verifying when there's a real v2 federated client to test against.
+   - Client-side (`client/src/api/`, `client/src/lib/zk.ts`) — there is
+     currently no client code that sends `protocolVersion = "v2"` on the
+     federation attestation. When the v2 client is added it must send
+     all four optional fields together (publicSignals + nullifierHex +
+     topicHashHex + protocolVersion).
 5. Areas already audited this session that look clean:
    - WS connection_manager lock ordering — no deadlock potential.
    - Channel CRUD / message edit-window enforcement — ownership +
      time-window checks correct.
-   - Rate limiter / sliding window — sound.
-   - CORS / `is_dev_localhost_origin` — correctly gated on
-     `cfg!(debug_assertions)`; release builds stay strict.
+   - Rate limiter / sliding window — sound. Federation endpoints are
+     covered by the Default category, keyed by IP.
+   - CORS / `is_dev_localhost_origin` — `cfg!(debug_assertions)` is
+     `false` under `--release`, so release builds stay strict. The
+     handoff item flagging this is partially overstated.
    - SQL building (`api_observe::get_events_handler`,
      `services/rtx_repository.rs`) — parameterised correctly; no
      injection.
    - WebSocket auth — token-only when `enforce_zk_proofs = true`;
      raw-pseudonym path explicitly rejected.
    - ZK enforced-mode startup — `default_enforce_zk_proofs() = true`,
-     missing key in enforced mode is a hard `StartupError`.
+     missing v1 OR v2 key in enforced mode is a hard `StartupError`.
    - Image proxy URL SSRF — `is_private_or_reserved` covers
      loopback / private / link-local / IPv4-mapped-IPv6 with
      per-redirect-hop DNS validation. Tested.
+   - Upload handlers — magic-byte content-type detection, UUID
+     filenames, per-category size limits, EXIF/metadata stripping.
+   - Production code has no `unwrap()`/`expect()` that can panic on
+     attacker-controlled input — every remaining production `.expect(...)`
+     is invariant-protected (HMAC key length, infallible serialization,
+     Ctrl+C handler installation).
+   - No `TODO`/`FIXME`/`XXX` comments left in production code outside
+     of HTML metadata reference (`og:XXX`).
