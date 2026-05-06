@@ -352,7 +352,7 @@ pub fn is_dummy_vkey(vk: &VerifyingKey<Bn254>) -> bool {
 pub fn serialize_vkey_to_snarkjs_json(vk: &VerifyingKey<Bn254>) -> String {
     use std::fmt::Write;
     fn fq_str(x: &Fq) -> String {
-        format!("{}", x)
+        format!("{x}")
     }
     fn g1_array(p: &G1Affine) -> String {
         if p.is_zero() {
