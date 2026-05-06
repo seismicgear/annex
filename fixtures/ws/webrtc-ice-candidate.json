@@ -1,0 +1,8 @@
+{
+  "type": "webrtc_ice_candidate",
+  "channelId": "voice-1",
+  "candidate": "candidate:842163049 1 udp 1677729535 192.168.1.1 5000 typ srflx raddr 0.0.0.0 rport 0 generation 0 ufrag abc1 network-id 2",
+  "sdpMid": "0",
+  "sdpMLineIndex": 0,
+  "usernameFragment": "abc1"
+}

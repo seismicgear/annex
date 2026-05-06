@@ -253,3 +253,73 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run lint
+
+  # Server smoke — boots annex-server with enforce_zk_proofs=true and
+  # drives the full register → Merkle path → Groth16 proof →
+  # verify-membership → authenticated channel-create flow against it.
+  # Linux runner only because of the system libraries needed for the
+  # release build profile; the Windows variant lives in
+  # release-desktop.yml's pre-flight gates.
+  smoke-server-linux:
+    name: Smoke (Server, Linux)
+    runs-on: ubuntu-latest
+    needs: check-server
+    env:
+      ANNEX_SMOKE_PORT: 7321
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: smoke-server-linux
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: zk/package-lock.json
+
+      - name: Install ZK deps + generate keys (real, no `|| true` fallback)
+        run: |
+          npm ci
+          node scripts/build-circuits.js
+          node scripts/setup-groth16.js
+        working-directory: zk
+
+      - name: Run server smoke
+        run: bash scripts/smoke-server.sh
+
+  # Server smoke — Windows. Same flow as the Linux smoke, exercised on
+  # PowerShell so the .ps1 doesn't regress.
+  smoke-server-windows:
+    name: Smoke (Server, Windows)
+    runs-on: windows-latest
+    needs: check-server
+    env:
+      ANNEX_SMOKE_PORT: 7321
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: smoke-server-windows
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: zk/package-lock.json
+
+      - name: Install ZK deps + generate keys (real, no `|| true` fallback)
+        shell: bash
+        run: |
+          npm ci
+          node scripts/build-circuits.js
+          node scripts/setup-groth16.js
+        working-directory: zk
+
+      - name: Run server smoke
+        shell: pwsh
+        run: pwsh ./scripts/smoke-server.ps1

@@ -1,0 +1,5 @@
+{
+  "type": "error",
+  "message": "Send rejected: rate limit exceeded",
+  "clientRequestId": "req-018dSCao"
+}
