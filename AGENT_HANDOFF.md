@@ -995,7 +995,28 @@ The fix mirrors the local cap.
   channel ZK header now dispatches to the right vkey + topicHash check, so
   v2 clients can hit channel-protected endpoints with v2 proofs.
 
-## Commands run (this session, claude/fix-annex-bugs-AqBJk)
+## Commands run (this session, claude/fix-annex-bugs-Fshec)
+- `cargo fmt --all --check` → clean.
+- `cargo clippy --workspace --exclude annex-desktop --all-targets -- -D warnings`
+  → clean (after fixing 6 `uninlined_format_args` warnings introduced by
+  the new [F21]/[F22] tests).
+- `cargo test -p annex-rtx` → **39 passed** (12 new for [F23]
+  size caps + boundary cases).
+- `cargo test -p annex-voice --lib` → **12 passed** (7 new for [F21]
+  PCM scaling + 5 new for [F22] encoder normalisation including the
+  encode→decode round-trip regression).
+- `cargo test -p annex-server --lib services::rtx_service` → **12 passed**
+  (4 new for [F20] SSRF predicate coverage).
+- `cargo test -p annex-server --tests` → all integration tests pass
+  (no regressions; existing 16 federation_rtx_relay tests still pass
+  with the new bundle size caps).
+- Workspace lib tests: `cargo test -p annex-rtx -p annex-identity -p
+  annex-voice -p annex-vrp -p annex-channels -p annex-db --lib`
+  → 173 passed (20 new).
+- Branch pushed: `claude/fix-annex-bugs-Fshec` → 3 commits
+  (F20–F25 batch, F26, handoff updates).
+
+## Commands run (previous session, claude/fix-annex-bugs-AqBJk)
 - `cargo fmt --all --check` → clean.
 - `cargo clippy --workspace --exclude annex-desktop --all-targets -- -D warnings`
   → clean.
@@ -1208,7 +1229,60 @@ The fix mirrors the local cap.
   on STT_TIMEOUT / TTS_TIMEOUT) leaves the child process orphaned in
   the OS. See [F26].
 
-## Context cutoff note
+## Context cutoff note (current session, claude/fix-annex-bugs-Fshec)
+Session [F20..F26] focused on SSRF / DOS / voice-pipeline correctness:
+
+* [F20] RTX federation relay was missing the SSRF guard that [F12]
+  applied elsewhere. New `rtx_peer_url_is_private_or_reserved` helper +
+  4 unit tests directly testing the predicate from `rtx_service::tests`.
+* [F21] STT tap was emitting silence — `opus-rs` returns normalised
+  `[-1.0, 1.0]` floats; the s16 conversion was missing the `* i16::MAX`
+  scaling step. Pure helper `pcm_f32_to_s16le_bytes` + 7 tests.
+* [F22] TTS-to-Opus encoder was driving every sample to ±32767 inside
+  the encoder — passing raw i16-range floats to an encoder that
+  expects normalised input. 5 tests including a `encode→decode`
+  round-trip regression that asserts the peak amplitude stays in
+  `(0.2, 0.85)` after Opus's lossy compression. Both [F21] and [F22]
+  were verified by temporarily reverting the fix and observing the
+  test fail (peak hits 1.0 under the bug).
+* [F23] RTX bundle fields had no size caps — added field-level limits
+  in `validate_bundle_structure` (`summary` 64 KiB, `reasoning_chain`
+  256 KiB, etc.) so the federated receive path and local publish path
+  refuse pathologically large bundles before DB / WS / relay fan-out.
+  12 new tests covering each cap and its boundary case.
+* [F24] WebSocket connections were upgraded without
+  `max_message_size`, leaving tungstenite's 64 MiB default exposed.
+  Pinned to `WS_MAX_MESSAGE_BYTES = 128 KiB` at upgrade time.
+* [F25] `policy::notify_federation_peers_of_policy_change` was the
+  last federation outbound path missing the SSRF guard. Same shape as
+  [F20].
+* [F26] STT/TTS subprocess timeouts leaked orphan processes —
+  `tokio::process::Child` does not kill on drop by default. Chained
+  `.kill_on_drop(true)` onto every voice-pipeline `Command`.
+
+`fmt`, `clippy --all-targets -- -D warnings`, and the relevant unit /
+integration test suites are all green. Branch pushed to
+`origin/claude/fix-annex-bugs-Fshec` over 3 commits.
+
+If a future agent picks up:
+1. Re-run baseline (fmt + clippy + `cargo test -p annex-rtx -p
+   annex-voice -p annex-server --lib services::rtx_service`).
+2. The previous handoff's open items remain unaddressed:
+   - real multi-party ZK ceremony (still blocks tagged release because
+     `verify-artifacts.js` correctly refuses dev-fixture under
+     production profile).
+   - v1 nullifier privacy gap (release blocker for any deployment
+     claiming topic unlinkability; v2 is implemented + opt-in).
+   - PoT depth ceiling (only matters if circuit grows past ~16k
+     constraints).
+   - uploads-as-public-URL design question (release blocker for
+     private-channel mode).
+   - desktop build smoke test in real Linux/Windows CI.
+3. New open items from this session (see "Still broken / suspected"):
+   - `VoiceService::rooms` slow memory leak (insert-only DashMap).
+   - `IncomingMessage::Typing` has no per-connection rate limit (DOS).
+
+## Context cutoff note (previous session, claude/fix-annex-bugs-AqBJk)
 Session [F14..F18] tightened the production gates around the ZK toolchain
 end-to-end:
 - `verify-artifacts.js` is now profile-aware and refuses to ship dev-fixture
