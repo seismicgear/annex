@@ -46,6 +46,13 @@ jobs:
           node scripts/build-circuits.js
           node scripts/setup-groth16.js
 
+      # Tests the production-profile dev-fixture gate in verify-artifacts.js.
+      # Cheap (~1s) and the regression class — release silently shipping
+      # dev keys — is too painful to leave ungated.
+      - name: ZK script tests
+        run: npm test
+        working-directory: zk
+
       - name: cargo fmt
         run: cargo fmt --all --check
 

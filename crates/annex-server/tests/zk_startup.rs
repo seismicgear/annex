@@ -262,6 +262,135 @@ async fn zk_v2_enforced_missing_vkey_returns_startup_error() {
 }
 
 #[tokio::test]
+async fn zk_enforced_mode_rejects_on_disk_dummy_vkey() {
+    // Defence in depth: even if a dummy vkey somehow ends up on disk at the
+    // configured path (e.g. a build pipeline accidentally copies the wrong
+    // file, or a developer hand-crafts one), startup MUST refuse rather than
+    // silently load it. A dummy vkey accepts every membership proof.
+    let _guard = env_lock().lock().await;
+    clear_env();
+
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dummy_path = std::env::temp_dir().join(format!("annex-zk-startup-dummy-{nanos}.json"));
+    let dummy_json = annex_identity::zk::serialize_vkey_to_snarkjs_json(
+        &annex_identity::zk::generate_dummy_vkey(),
+    );
+    std::fs::write(&dummy_path, dummy_json).expect("must be able to write dummy vkey tempfile");
+    let dummy_path_str = dummy_path.to_string_lossy().into_owned();
+
+    std::env::set_var("ANNEX_ZK_KEY_PATH", &dummy_path_str);
+    std::env::set_var("ANNEX_SIGNING_KEY", "06".repeat(32));
+    std::env::set_var(
+        "ANNEX_UPLOAD_DIR",
+        std::env::temp_dir().to_string_lossy().as_ref(),
+    );
+
+    let cfg = config_for_test(true);
+
+    let result = prepare_server(cfg).await;
+    clear_env();
+    let _ = std::fs::remove_file(&dummy_path);
+
+    match result {
+        Err(StartupError::DummyVerificationKey { path }) => {
+            assert_eq!(path, dummy_path_str, "error must echo the dummy path");
+        }
+        Err(other) => panic!("expected StartupError::DummyVerificationKey, got: {other:?}"),
+        Ok(_) => {
+            panic!("prepare_server unexpectedly accepted an on-disk dummy vkey under enforcement")
+        }
+    }
+}
+
+#[tokio::test]
+async fn zk_unenforced_mode_accepts_on_disk_dummy_vkey() {
+    // The same dummy file must load fine in unenforced (dev) mode — the dummy
+    // is the explicit fallback for that mode and is accepted by design.
+    let _guard = env_lock().lock().await;
+    clear_env();
+
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dummy_path = std::env::temp_dir().join(format!("annex-zk-startup-dummy-dev-{nanos}.json"));
+    let dummy_json = annex_identity::zk::serialize_vkey_to_snarkjs_json(
+        &annex_identity::zk::generate_dummy_vkey(),
+    );
+    std::fs::write(&dummy_path, dummy_json).expect("must be able to write dummy vkey tempfile");
+
+    std::env::set_var("ANNEX_ZK_KEY_PATH", dummy_path.to_string_lossy().as_ref());
+    std::env::set_var("ANNEX_SIGNING_KEY", "07".repeat(32));
+    std::env::set_var(
+        "ANNEX_UPLOAD_DIR",
+        std::env::temp_dir().to_string_lossy().as_ref(),
+    );
+
+    let cfg = config_for_test(false);
+
+    let result = prepare_server(cfg).await;
+    clear_env();
+    let _ = std::fs::remove_file(&dummy_path);
+
+    let (listener, _router) = result
+        .expect("dev mode must accept an on-disk dummy vkey (matches the in-memory fallback path)");
+    drop(listener);
+}
+
+#[tokio::test]
+async fn zk_v2_enforced_mode_rejects_on_disk_dummy_vkey() {
+    // Same gate must also fire on the v2 vkey path when v2 is enabled.
+    let _guard = env_lock().lock().await;
+    clear_env();
+
+    let v1_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../zk/keys/membership_vkey.json");
+    if !v1_path.exists() {
+        eprintln!("[zk_startup] skipping: {} not found", v1_path.display());
+        return;
+    }
+
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dummy_v2 = std::env::temp_dir().join(format!("annex-zk-startup-dummy-v2-{nanos}.json"));
+    let dummy_json = annex_identity::zk::serialize_vkey_to_snarkjs_json(
+        &annex_identity::zk::generate_dummy_vkey(),
+    );
+    std::fs::write(&dummy_v2, dummy_json).expect("must be able to write dummy v2 vkey tempfile");
+    let dummy_v2_str = dummy_v2.to_string_lossy().into_owned();
+
+    std::env::set_var("ANNEX_ZK_KEY_PATH", v1_path.to_string_lossy().as_ref());
+    std::env::set_var("ANNEX_ZK_KEY_PATH_V2", &dummy_v2_str);
+    std::env::set_var("ANNEX_SIGNING_KEY", "08".repeat(32));
+    std::env::set_var(
+        "ANNEX_UPLOAD_DIR",
+        std::env::temp_dir().to_string_lossy().as_ref(),
+    );
+
+    let mut cfg = config_for_test(true);
+    cfg.security.enabled_zk_versions = vec!["v1".to_string(), "v2".to_string()];
+
+    let result = prepare_server(cfg).await;
+    clear_env();
+    let _ = std::fs::remove_file(&dummy_v2);
+
+    match result {
+        Err(StartupError::DummyVerificationKey { path }) => {
+            assert_eq!(path, dummy_v2_str, "error must echo the v2 dummy path");
+        }
+        Err(other) => panic!("expected StartupError::DummyVerificationKey, got: {other:?}"),
+        Ok(_) => panic!(
+            "prepare_server unexpectedly accepted an on-disk dummy v2 vkey under enforcement"
+        ),
+    }
+}
+
+#[tokio::test]
 async fn zk_enforced_mode_invalid_vkey_returns_startup_error() {
     let _guard = env_lock().lock().await;
     clear_env();

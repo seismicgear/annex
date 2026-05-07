@@ -33,12 +33,18 @@ async fn test_get_identity_endpoints() {
     } // Drop conn
 
     let tree = annex_identity::MerkleTree::new(20).unwrap();
-    // Use dummy vkey since app() requires it
+    // Load the real vkey if available, otherwise fall back to the dummy
+    // (matches the harness in tests/common/mod.rs::load_vkey_or_dummy).
+    // `enforce_zk_proofs = false` below makes the dummy acceptable, so this
+    // test runs cleanly in fresh sandboxes without `node zk/scripts/dev-setup-groth16.js`.
     let vkey_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../zk/keys/membership_vkey.json");
-
-    let vkey_json = std::fs::read_to_string(&vkey_path).expect("failed to read vkey");
-    let vk = annex_identity::zk::parse_verification_key(&vkey_json).expect("failed to parse vkey");
+    let vk = match std::fs::read_to_string(&vkey_path) {
+        Ok(json) => {
+            annex_identity::zk::parse_verification_key(&json).expect("failed to parse vkey")
+        }
+        Err(_) => annex_identity::zk::generate_dummy_vkey(),
+    };
 
     let state = AppState {
         pool: pool.clone(),

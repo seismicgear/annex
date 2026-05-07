@@ -77,6 +77,17 @@ pub enum StartupError {
          for development."
     )]
     MissingVerificationKey { path: String, reason: String },
+    /// `enforce_zk_proofs` is enabled but the file at the verification-key
+    /// path is byte-identical to [`annex_identity::zk::generate_dummy_vkey`].
+    /// Refusing to load a dummy verifying key in enforced mode even if it's
+    /// on disk — that would silently accept every membership proof.
+    #[error(
+        "ZK enforcement is enabled but '{path}' contains the dummy verification key. \
+         Refusing to start: a dummy vkey would accept any proof. \
+         Replace the file with a real key produced by the trusted setup ceremony, \
+         or set security.enforce_zk_proofs = false for development."
+    )]
+    DummyVerificationKey { path: String },
     /// `Config::security.enabled_zk_versions` listed a value other than the
     /// recognised set (`"v1"`, `"v2"`).
     #[error(
@@ -331,7 +342,17 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
     let enforce_zk_proofs = config.security.enforce_zk_proofs;
     let membership_vkey = match std::fs::read_to_string(&vkey_path) {
         Ok(vkey_json) => {
-            annex_identity::zk::parse_verification_key(&vkey_json).map_err(StartupError::ZkError)?
+            let parsed = annex_identity::zk::parse_verification_key(&vkey_json)
+                .map_err(StartupError::ZkError)?;
+            // Defence in depth: even if the file parses, refuse to start with a
+            // dummy vkey under enforcement. A dummy vkey would silently accept
+            // every membership proof.
+            if enforce_zk_proofs && annex_identity::zk::is_dummy_vkey(&parsed) {
+                return Err(StartupError::DummyVerificationKey {
+                    path: vkey_path.clone(),
+                });
+            }
+            parsed
         }
         Err(e) => {
             if enforce_zk_proofs {
@@ -384,10 +405,16 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
         let path_v2 = std::env::var("ANNEX_ZK_KEY_PATH_V2")
             .unwrap_or_else(|_| "zk/keys/membership_v2_vkey.json".to_string());
         match std::fs::read_to_string(&path_v2) {
-            Ok(vkey_json) => Some(Arc::new(
-                annex_identity::zk::parse_verification_key(&vkey_json)
-                    .map_err(StartupError::ZkError)?,
-            )),
+            Ok(vkey_json) => {
+                let parsed = annex_identity::zk::parse_verification_key(&vkey_json)
+                    .map_err(StartupError::ZkError)?;
+                // Same defence-in-depth gate as v1: refuse a dummy v2 vkey under
+                // enforcement.
+                if enforce_zk_proofs && annex_identity::zk::is_dummy_vkey(&parsed) {
+                    return Err(StartupError::DummyVerificationKey { path: path_v2 });
+                }
+                Some(Arc::new(parsed))
+            }
             Err(e) => {
                 if enforce_zk_proofs {
                     return Err(StartupError::MissingVerificationKey {

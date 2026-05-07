@@ -311,6 +311,95 @@ pub fn generate_dummy_vkey() -> VerifyingKey<Bn254> {
     }
 }
 
+/// Returns true if `vk` is byte-identical to [`generate_dummy_vkey`].
+///
+/// The dummy verifying key uses the BN254 generator points for every group
+/// element, which is what `generate_dummy_vkey` constructs in-memory for
+/// tests when the real key is missing. A genuine Groth16 vkey produced by
+/// a real ceremony has effectively zero probability of matching this
+/// pattern (each element is sampled from a 254-bit field with cryptographic
+/// entropy).
+///
+/// Used by startup code to harden the enforced-mode ZK gate: if `enforce_zk_proofs`
+/// is enabled and the file at `membership_vkey.json` happens to be a dummy
+/// (e.g. someone serialised the dummy by hand and committed it, or a build
+/// pipeline accidentally copied it), startup must refuse rather than silently
+/// accept any membership proof.
+pub fn is_dummy_vkey(vk: &VerifyingKey<Bn254>) -> bool {
+    let dummy = generate_dummy_vkey();
+    vk.alpha_g1 == dummy.alpha_g1
+        && vk.beta_g2 == dummy.beta_g2
+        && vk.gamma_g2 == dummy.gamma_g2
+        && vk.delta_g2 == dummy.delta_g2
+        && vk.gamma_abc_g1.len() == dummy.gamma_abc_g1.len()
+        && vk
+            .gamma_abc_g1
+            .iter()
+            .zip(dummy.gamma_abc_g1.iter())
+            .all(|(a, b)| a == b)
+}
+
+/// Render a `VerifyingKey<Bn254>` to the snarkjs JSON wire shape that
+/// [`parse_verification_key`] consumes.
+///
+/// Round-trip property: `parse_verification_key(&serialize_vkey_to_snarkjs_json(vk))`
+/// returns a key equal to `vk` (used by the unit tests below).
+///
+/// This is exposed primarily so tests can write a dummy vkey to disk in the
+/// same JSON shape the production loader expects, without committing a
+/// fixture file. Production code never serialises a vkey.
+#[doc(hidden)]
+pub fn serialize_vkey_to_snarkjs_json(vk: &VerifyingKey<Bn254>) -> String {
+    use std::fmt::Write;
+    fn fq_str(x: &Fq) -> String {
+        format!("{x}")
+    }
+    fn g1_array(p: &G1Affine) -> String {
+        if p.is_zero() {
+            // snarkjs uses the [0, 1, 0] encoding for the point at infinity.
+            "[\"0\",\"1\",\"0\"]".to_string()
+        } else {
+            let (x, y) = (p.x, p.y);
+            format!("[\"{}\",\"{}\",\"1\"]", fq_str(&x), fq_str(&y))
+        }
+    }
+    fn g2_array(p: &G2Affine) -> String {
+        if p.is_zero() {
+            "[[\"0\",\"0\"],[\"1\",\"0\"],[\"0\",\"0\"]]".to_string()
+        } else {
+            let (x, y) = (p.x, p.y);
+            format!(
+                "[[\"{}\",\"{}\"],[\"{}\",\"{}\"],[\"1\",\"0\"]]",
+                fq_str(&x.c0),
+                fq_str(&x.c1),
+                fq_str(&y.c0),
+                fq_str(&y.c1)
+            )
+        }
+    }
+    let mut out = String::new();
+    out.push_str("{\n");
+    out.push_str("  \"protocol\": \"groth16\",\n");
+    out.push_str("  \"curve\": \"bn128\",\n");
+    out.push_str(&format!(
+        "  \"nPublic\": {},\n",
+        vk.gamma_abc_g1.len().saturating_sub(1)
+    ));
+    out.push_str(&format!("  \"vk_alpha_1\": {},\n", g1_array(&vk.alpha_g1)));
+    out.push_str(&format!("  \"vk_beta_2\": {},\n", g2_array(&vk.beta_g2)));
+    out.push_str(&format!("  \"vk_gamma_2\": {},\n", g2_array(&vk.gamma_g2)));
+    out.push_str(&format!("  \"vk_delta_2\": {},\n", g2_array(&vk.delta_g2)));
+    out.push_str("  \"IC\": [");
+    for (i, p) in vk.gamma_abc_g1.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        let _ = write!(out, "{}", g1_array(p));
+    }
+    out.push_str("]\n}\n");
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -573,6 +662,53 @@ mod tests {
         assert_ne!(
             plain, prefix_collision,
             "domain separator must not collide with a topic that happens to embed it"
+        );
+    }
+
+    #[test]
+    fn is_dummy_vkey_detects_in_memory_dummy() {
+        let vk = generate_dummy_vkey();
+        assert!(
+            is_dummy_vkey(&vk),
+            "is_dummy_vkey must return true for the in-memory dummy"
+        );
+    }
+
+    #[test]
+    fn is_dummy_vkey_rejects_non_dummy_alpha() {
+        // Tweak alpha_g1 to a different on-curve point — the predicate must
+        // no longer report the key as dummy.
+        let mut vk = generate_dummy_vkey();
+        // Double the generator: still valid G1, but ≠ generator.
+        use ark_ec::CurveGroup;
+        let two_g = (G1Affine::generator() + G1Affine::generator()).into_affine();
+        vk.alpha_g1 = two_g;
+        assert!(!is_dummy_vkey(&vk), "tweaked alpha must not match dummy");
+    }
+
+    #[test]
+    fn is_dummy_vkey_rejects_different_ic_length() {
+        // A real membership.circom vkey for [root, commitment] has 3 IC
+        // entries, not 2 — the in-memory dummy uses 2.
+        let mut vk = generate_dummy_vkey();
+        vk.gamma_abc_g1.push(G1Affine::generator());
+        assert!(
+            !is_dummy_vkey(&vk),
+            "vkey with extra IC entry must not match dummy"
+        );
+    }
+
+    #[test]
+    fn dummy_vkey_round_trips_through_snarkjs_json() {
+        // serialize_vkey_to_snarkjs_json(dummy) → parse_verification_key → is_dummy_vkey
+        // proves both halves agree on the dummy shape AND that the JSON
+        // emitter matches the snarkjs grammar parse_verification_key expects.
+        let vk = generate_dummy_vkey();
+        let json = serialize_vkey_to_snarkjs_json(&vk);
+        let round = parse_verification_key(&json).expect("dummy vkey JSON must parse");
+        assert!(
+            is_dummy_vkey(&round),
+            "round-tripped dummy vkey must still register as dummy"
         );
     }
 }

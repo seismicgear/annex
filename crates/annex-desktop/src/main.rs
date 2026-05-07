@@ -67,7 +67,16 @@ fn main() {
     //   1. Tauri bundle resource directory (platform-specific, set by bundle.resources)
     //   2. Alongside the executable (flat layout)
     //   3. Workspace root (development builds)
-    // The server falls back to a dummy vkey if none is found (see lib.rs).
+    //
+    // Behaviour when no candidate exists depends on the embedded server's
+    // `security.enforce_zk_proofs`:
+    //   - Default (enforce_zk_proofs = true, the production posture): the
+    //     embedded server will refuse to start with a `StartupError`. We
+    //     surface a clear stderr line up-front so the user doesn't have to
+    //     fish the error out of the server log.
+    //   - Dev override (enforce_zk_proofs = false in the user's config): the
+    //     server falls back to the in-memory dummy vkey and accepts no real
+    //     proofs. That's documented and only meaningful for local dev.
     let vkey_candidates = [
         // Tauri bundle resources (beside exe on Windows/Linux)
         exe_dir.join("membership_vkey.json"),
@@ -85,6 +94,21 @@ fn main() {
             .join("membership_vkey.json"),
     ];
     let zk_vkey = vkey_candidates.iter().find(|p| p.exists());
+    if zk_vkey.is_none() {
+        eprintln!(
+            "[annex-desktop] WARNING: no membership_vkey.json found in any of: {}",
+            vkey_candidates
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        eprintln!(
+            "[annex-desktop] If security.enforce_zk_proofs is true (the default), \
+             the embedded server will refuse to start. Reinstall the app or copy \
+             the vkey file to one of the locations above."
+        );
+    }
 
     // Resolve Piper TTS binary from bundled resources or dev workspace.
     let piper_bin_name = if cfg!(target_os = "windows") {
