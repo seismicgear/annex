@@ -933,6 +933,34 @@ The fix mirrors the local cap.
   No fix this session because the architectural change is large and the
   URL-as-capability model is documented behaviour today.
 
+- [ ] **`VoiceService` rooms never reaped** (slow memory leak).
+  `crates/annex-voice/src/service.rs::get_or_create_room` only ever
+  *inserts* into the `rooms: DashMap<String, Arc<Room>>`. There is no
+  removal path: `remove_participant` only drops the peer from the room
+  (line 222), and `on_peer_connection_state_change` only drops the
+  peer (line 333). When every peer of a channel disconnects, the
+  `Room { peers: DashMap, agent_track: Arc<...> }` stays in memory
+  forever. Memory grows linearly with the number of *distinct* channel
+  IDs ever joined. Not a security issue — channel IDs are
+  operator/user-controlled, not attacker-controlled. But on a long-
+  running server with many short-lived voice channels, the leak
+  accumulates. Recommended fix: when `on_peer_connection_state_change`
+  observes Failed/Closed/Disconnected and `room.peers.is_empty()`,
+  remove `rooms.remove(&channel_id)`. Watch for the obvious race where
+  another `get_or_create_room` is concurrently inserting; the safe
+  pattern is to use DashMap's `remove_if` or to take the entry and
+  re-insert if the peer count is non-zero. Out of scope this session.
+
+- [ ] **WS typing-indicator has no per-connection rate limit**.
+  `IncomingMessage::Typing` is dispatched to every channel subscriber
+  via `connection_manager.broadcast`. The HTTP rate-limit middleware
+  does NOT apply to WS frames; a malicious client could send 10k
+  typing events per second and saturate the broadcast fan-out. The
+  [F24] WS frame size cap doesn't help — typing frames are tiny.
+  Recommended fix: per-connection token bucket on `Typing` events, or
+  a server-side debounce that drops typing events from the same
+  pseudonym within ~1s. Out of scope this session.
+
 - [ ] **Desktop build cannot be exercised in this environment** — system
   GTK/WebKitGTK packages are missing from the sandbox. Code review of
   `crates/annex-desktop/src/main.rs`, `embedded_server.rs`, and
