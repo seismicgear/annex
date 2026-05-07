@@ -100,6 +100,11 @@ impl TtsService {
             ));
         }
 
+        // `kill_on_drop(true)` ensures the piper child process is reaped
+        // if the tokio future is cancelled (e.g. on TTS_TIMEOUT). Without
+        // it, every timeout leaks an orphaned piper process; with the
+        // 64 KiB text cap and the 60s timeout that's still a real
+        // resource leak under sustained malicious inputs.
         let mut command = Command::new(&self.piper_binary);
         command
             .arg("--model")
@@ -111,7 +116,8 @@ impl TtsService {
             .arg((1.0 / profile.speed).to_string())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
 
         // If config path is explicit, maybe pass it? Piper usually infers it as .json
         if let Some(config) = &profile.config_path {
@@ -201,13 +207,17 @@ impl TtsService {
             )));
         }
 
+        // Reap on cancellation so a TTS_TIMEOUT doesn't leak an
+        // orphaned Python process. Same reasoning as in
+        // `synthesize_piper`.
         let mut command = Command::new(&self.bark_binary);
         command
             .arg("--text")
             .arg(text)
             .arg("--output_raw")
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
 
         let child = command
             .spawn()
@@ -251,12 +261,17 @@ impl TtsService {
 
         // Use espeak-ng as the cross-platform fallback. It outputs WAV to stdout
         // via --stdout; we strip the 44-byte WAV header to get raw PCM.
+        //
+        // `kill_on_drop(true)` reaps the espeak-ng child if the tokio
+        // future is cancelled (e.g. on TTS_TIMEOUT) — same reasoning as
+        // in `synthesize_piper` and `synthesize_bark`.
         let mut command = Command::new("espeak-ng");
         command
             .arg("--stdout")
             .arg(text)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
 
         let child = command
             .spawn()

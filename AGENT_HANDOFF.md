@@ -11,6 +11,46 @@ ZK enforcement → ZK release artifact path → canonical hex → Merkle epoch/c
 
 ## Fixed in this session (claude/fix-annex-bugs-Fshec)
 
+### [F26] STT/TTS child processes leaked on tokio future cancellation (DOS)
+`crates/annex-voice/src/stt.rs::SttService::transcribe`,
+`tts.rs::synthesize_piper`, `synthesize_bark`, and `synthesize_system`
+all wrap `child.wait_with_output()` in `tokio::time::timeout(...)`. When
+the timeout fires, the inner future is cancelled (dropped) — but
+`tokio::process::Child` does NOT kill the underlying OS process on
+drop by default. Quoting tokio docs: "By default, dropping a `Child`
+does not kill the child process. To kill the child process when the
+`Child` is dropped, call `Child::kill_on_drop(true)`."
+
+So every STT timeout (default 120s) leaks a `whisper.cpp` orphan, every
+piper TTS timeout (60s) leaks a `piper` orphan, etc. Under sustained
+malicious input — many oversized payloads, many timeouts — the server
+exhausts process slots and / or RAM. The 64 KiB / 10 MiB content caps
+on input bound the per-request cost, but they don't bound the
+across-requests leak rate.
+
+Fix: chain `.kill_on_drop(true)` onto every `tokio::process::Command`
+builder before spawn. tokio reaps the child on `Child::drop`, which is
+what the timeout path produces. No behavioural change on the success
+path (the child completes normally before drop). The fix is a single
+builder call per command and inherits zero overhead on the happy path.
+
+- files changed:
+  - `crates/annex-voice/src/stt.rs::transcribe` — `.kill_on_drop(true)`
+    on the whisper command, with a comment naming the timeout +
+    leak-rate reasoning.
+  - `crates/annex-voice/src/tts.rs::synthesize_piper` — same for piper.
+  - `crates/annex-voice/src/tts.rs::synthesize_bark` — same for the
+    Bark Python wrapper.
+  - `crates/annex-voice/src/tts.rs::synthesize_system` — same for
+    espeak-ng.
+- tests run: `cargo check -p annex-voice` clean. Existing voice tests
+  (12 passed including the [F21] / [F22] regression tests) still pass.
+  The kill-on-drop behaviour is a tokio internal — unit-testing it
+  requires a real subprocess and is exercised by the existing
+  `voice_integration` tests under CI.
+- result: PASS. STT / TTS subprocess timeouts no longer leak orphan
+  processes.
+
 ### [F25] Policy re-handshake notification missed the SSRF guard (security)
 Companion gap to [F12]/[F20]. `policy::notify_federation_peers_of_policy_change`
 is the background task that POSTs a fresh VRP handshake to every
@@ -1133,6 +1173,12 @@ The fix mirrors the local cap.
   IncomingMessage variants whose total wire size exceeds 128 KiB MUST
   bump `WS_MAX_MESSAGE_BYTES` AND `MAX_WS_MESSAGE_CONTENT_LEN` together;
   do not bump only one. See [F24].
+- I-VOICE-CHILD-KILL-ON-DROP (new): Every `tokio::process::Command`
+  spawned in `annex-voice` (STT whisper, TTS piper, TTS bark,
+  TTS espeak-ng) MUST call `.kill_on_drop(true)` on the builder
+  before `.spawn()`. Without it, a tokio future cancellation (e.g.
+  on STT_TIMEOUT / TTS_TIMEOUT) leaves the child process orphaned in
+  the OS. See [F26].
 
 ## Context cutoff note
 Session [F14..F18] tightened the production gates around the ZK toolchain

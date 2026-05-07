@@ -41,6 +41,12 @@ impl SttService {
         // -otxt: output text format (implied if capturing stdout, but some versions output metadata)
         // We assume the binary outputs pure text to stdout or we parse it.
         // For simplicity, we assume stdout contains the transcription.
+        //
+        // `kill_on_drop(true)` ensures the child process is reaped if the
+        // tokio future is cancelled (e.g. on STT_TIMEOUT). Without it,
+        // every timeout leaks an orphaned whisper.cpp process — under a
+        // malicious workload that pushes many oversized payloads, the
+        // server eventually exhausts process slots / RAM.
         command
             .arg("-m")
             .arg(&self.model_path)
@@ -48,7 +54,8 @@ impl SttService {
             .arg("-") // read from stdin
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
 
         let mut child = command
             .spawn()
