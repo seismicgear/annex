@@ -52,13 +52,21 @@ impl ConnectionManager {
     /// are cleaned up before replacement to prevent orphaned entries in
     /// `channel_subscriptions` and `user_subscriptions`.
     ///
+    /// Lock ordering: sessions → channel_subscriptions → user_subscriptions
+    /// (matches `remove_session`, `subscribe`, and `unsubscribe`). The
+    /// previous version of this method took the user_subscriptions
+    /// write lock *before* the channel_subscriptions write lock, which
+    /// inverted the documented invariant and could deadlock against
+    /// any concurrent `subscribe()` (which takes them in the
+    /// chan_subs → user_subs order).
+    ///
     /// Returns the unique session ID.
     pub async fn add_session(&self, pseudonym: String, sender: mpsc::Sender<String>) -> Uuid {
         let session_id = Uuid::new_v4();
 
-        // Atomically replace any existing session under a single write lock
-        // to prevent TOCTOU races when two connections for the same pseudonym
-        // arrive concurrently.
+        // 1. Atomically replace any existing session under a single
+        //    write lock to prevent TOCTOU races when two connections
+        //    for the same pseudonym arrive concurrently.
         let had_previous = {
             let mut sessions = self.sessions.write().await;
             let old = sessions.insert(pseudonym.clone(), (session_id, sender));
@@ -66,12 +74,19 @@ impl ConnectionManager {
         };
 
         if had_previous {
-            // Clean up old subscriptions (channel_subscriptions → user_subscriptions order).
+            // 2. Read user_subscriptions briefly to collect the old
+            //    session's channel list. A read lock is sufficient
+            //    because no other writer can race us — concurrent
+            //    `add_session(pseudonym)` callers were serialised by
+            //    the sessions write lock above, and any concurrent
+            //    `unsubscribe()` will simply observe a smaller set
+            //    than we cleaned (idempotent).
             let channels = {
-                let mut user_subs = self.user_subscriptions.write().await;
-                user_subs.remove(&pseudonym)
+                let user_subs = self.user_subscriptions.read().await;
+                user_subs.get(&pseudonym).cloned()
             };
 
+            // 3. Write channel_subscriptions first (lock invariant).
             if let Some(ref channels) = channels {
                 let mut chan_subs = self.channel_subscriptions.write().await;
                 for channel_id in channels {
@@ -82,6 +97,12 @@ impl ConnectionManager {
                         }
                     }
                 }
+            }
+
+            // 4. Write user_subscriptions last.
+            if channels.is_some() {
+                let mut user_subs = self.user_subscriptions.write().await;
+                user_subs.remove(&pseudonym);
             }
 
             tracing::info!(
@@ -243,6 +264,115 @@ impl ConnectionManager {
                     e
                 );
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dummy_sender() -> mpsc::Sender<String> {
+        let (tx, _rx) = mpsc::channel::<String>(8);
+        tx
+    }
+
+    #[tokio::test]
+    async fn add_session_replacement_cleans_up_old_subscriptions() {
+        // After [F27]: re-registering a pseudonym with a new session
+        // must clear stale entries from BOTH chan_subs and user_subs.
+        let mgr = ConnectionManager::new();
+        let _id1 = mgr.add_session("alice".to_string(), dummy_sender()).await;
+        mgr.subscribe("ch1".to_string(), "alice".to_string()).await;
+        mgr.subscribe("ch2".to_string(), "alice".to_string()).await;
+
+        // Sanity: alice is in both channel sets.
+        assert_eq!(
+            mgr.channel_subscriptions
+                .read()
+                .await
+                .get("ch1")
+                .map(|s| s.len()),
+            Some(1)
+        );
+        assert_eq!(
+            mgr.user_subscriptions
+                .read()
+                .await
+                .get("alice")
+                .map(|s| s.len()),
+            Some(2)
+        );
+
+        // Re-register: stale subscriptions must be wiped.
+        let _id2 = mgr.add_session("alice".to_string(), dummy_sender()).await;
+
+        let chan_subs = mgr.channel_subscriptions.read().await;
+        // Either the channel entry is gone entirely (last subscriber
+        // removed → empty set → entry pruned) or alice is no longer
+        // in it.
+        assert!(
+            chan_subs
+                .get("ch1")
+                .map(|s| !s.contains("alice"))
+                .unwrap_or(true),
+            "chan_subs[ch1] must not contain alice after replacement"
+        );
+        assert!(
+            chan_subs
+                .get("ch2")
+                .map(|s| !s.contains("alice"))
+                .unwrap_or(true),
+            "chan_subs[ch2] must not contain alice after replacement"
+        );
+        drop(chan_subs);
+
+        let user_subs = mgr.user_subscriptions.read().await;
+        assert!(
+            user_subs.get("alice").is_none(),
+            "user_subs[alice] must be empty/absent after replacement"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_session_replacement_does_not_deadlock_with_concurrent_subscribe() {
+        // Regression test for [F27]: the previous version of
+        // `add_session` took user_subscriptions(write) before
+        // channel_subscriptions(write), inverting the documented lock
+        // order and risking a deadlock with `subscribe()` (which takes
+        // chan_subs(write) before user_subs(write)).
+        //
+        // We can't deterministically force the deadlock from a test
+        // — RwLock doesn't expose lock-acquisition timestamps — but we
+        // can confirm that interleaved calls complete in bounded
+        // time. If the lock ordering regresses, this test will hang
+        // until the harness timeout under high contention.
+        let mgr = std::sync::Arc::new(ConnectionManager::new());
+        let _id = mgr.add_session("bob".to_string(), dummy_sender()).await;
+        for i in 0..10 {
+            mgr.subscribe(format!("ch{i}"), "bob".to_string()).await;
+        }
+
+        // Spawn N concurrent subscribers and replacers, each touching
+        // both locks. The test passes by completing.
+        let mut handles = vec![];
+        for i in 0..16 {
+            let mgr = mgr.clone();
+            handles.push(tokio::spawn(async move {
+                if i % 2 == 0 {
+                    mgr.subscribe(format!("ch{i}-extra"), "bob".to_string())
+                        .await;
+                } else {
+                    let _id = mgr.add_session("bob".to_string(), dummy_sender()).await;
+                }
+            }));
+        }
+        for h in handles {
+            // 5s timeout: a deadlock would block forever.
+            tokio::time::timeout(std::time::Duration::from_secs(5), h)
+                .await
+                .expect("connection_manager deadlocked under contention")
+                .expect("task panicked");
         }
     }
 }

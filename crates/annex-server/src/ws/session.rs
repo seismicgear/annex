@@ -28,6 +28,7 @@ use crate::ws::context::CommandContext;
 use crate::ws::dispatch::dispatch;
 use crate::ws::error::send_ws_error;
 use crate::ws::protocol::{IncomingMessage, OutgoingMessage};
+use crate::ws::typing_throttle::TypingThrottle;
 use crate::AppState;
 
 /// Minimum interval between activity updates per WebSocket connection.
@@ -94,6 +95,12 @@ impl WsSession {
         });
 
         let mut last_activity = std::time::Instant::now();
+        // Per-session throttle for IncomingMessage::Typing. Typing
+        // events are not subject to the HTTP rate-limit middleware —
+        // without a per-session debouncer a malicious client can fan a
+        // single WS connection out to N subscribers per channel at any
+        // rate the OS will deliver frames.
+        let typing_throttle = TypingThrottle::new();
 
         while let Some(Ok(msg)) = receiver.next().await {
             if last_activity.elapsed() >= ACTIVITY_DEBOUNCE {
@@ -110,6 +117,7 @@ impl WsSession {
                                 identity: &identity,
                                 pseudonym: &pseudonym,
                                 tx: &tx,
+                                typing_throttle: &typing_throttle,
                             };
                             dispatch(&ctx, incoming).await;
                         }
