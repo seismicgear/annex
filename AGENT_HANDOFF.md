@@ -11,6 +11,90 @@ ZK enforcement → ZK release artifact path → canonical hex → Merkle epoch/c
 
 ## Fixed in this session (claude/fix-annex-bugs-AT8va)
 
+### [F31] `edit_message` / `delete_message` used DEFERRED tx but comment claimed IMMEDIATE (lost-update bug)
+`crates/annex-channels/src/messages.rs::edit_message` and
+`delete_message` both wrap their critical sections in
+`conn.unchecked_transaction()`. The comment above each block claimed
+"Use IMMEDIATE transaction to serialize concurrent edit/delete
+operations. Without this, two concurrent edits could both pass the
+ownership and time-window checks, losing an edit from the audit
+trail." That is the correct intent. But `unchecked_transaction()`
+defaults to `TransactionBehavior::Deferred`, not Immediate
+(`rusqlite-0.32.1/src/transaction.rs`). The code was doing exactly
+the thing the comment warned against.
+
+Concrete failure mode under DEFERRED + WAL:
+1. Tx A: `BEGIN DEFERRED`. Reads message → snapshot S1, content =
+   "original".
+2. Tx B: `BEGIN DEFERRED`. Reads message → snapshot S1 (same WAL
+   snapshot), content = "original".
+3. Tx A: `INSERT INTO message_edits (..., 'original')`. Acquires
+   RESERVED. `UPDATE messages SET content = 'A1'`. `COMMIT`.
+4. Tx B: `INSERT INTO message_edits (..., 'original')`. Waits at
+   RESERVED, eventually acquires it after A commits. SQLite WAL
+   detects the snapshot conflict (Tx B's snapshot read a row that
+   another writer has since modified) and either:
+   * returns `SQLITE_BUSY_SNAPSHOT` (B's edit fails noisily — surface-
+     level "edit failed" to the user), or
+   * silently allows the write through with B's stale snapshot data
+     (depends on busy_handler implementation), at which point
+     `message_edits` ends up with two "original" rows and the latest
+     content is "B1" — A's edit is lost from both the message and
+     the audit trail.
+
+The fix: switch to `Transaction::new_unchecked(conn,
+TransactionBehavior::Immediate)`. `BEGIN IMMEDIATE` acquires the
+RESERVED lock at transaction start, serializing the entire
+critical section across the WAL writer boundary. Tx B blocks at
+BEGIN until Tx A commits, then re-reads the post-A state and
+saves the LATEST content to `message_edits` — preserving the full
+audit chain.
+
+The comments above both call sites are rewritten to name the
+specific lost-update scenario, the SQLite mechanism that prevents
+it, and the rusqlite API choice (`unchecked_transaction` is
+Deferred-only; `Transaction::new_unchecked` lets us pass
+`Immediate` without taking `&mut Connection`, which would have been
+an API break for every call site).
+
+`delete_channel` in `channels.rs` was reviewed for the same pattern
+but its DEFERRED transaction is fine — the multi-step delete only
+worries about partial-failure atomicity, not about read-then-write
+races against a concurrent peer.
+
+- files changed:
+  - `crates/annex-channels/src/messages.rs::edit_message` and
+    `delete_message` —
+    * import `Transaction, TransactionBehavior`.
+    * replace `conn.unchecked_transaction()?` with
+      `Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?`.
+    * rewrite the doc comments to name the exact bug + mechanism.
+  - `crates/annex-channels/Cargo.toml` — new `[dev-dependencies]
+    tempfile = { workspace = true }` for the regression test.
+  - `crates/annex-channels/src/lib.rs` —
+    * 1 new test
+      `edit_message_uses_immediate_to_serialize_with_external_writer`
+      that opens a real on-disk WAL DB, holds a manually-issued
+      `BEGIN IMMEDIATE` + UPDATE on conn1 (uncommitted), spawns a
+      thread B calling `edit_message` on conn2, and asserts:
+      1. Thread B BLOCKS for at least 200ms (does not return
+         early). Under DEFERRED, B's BEGIN succeeds immediately and
+         B returns SQLITE_BUSY at the INSERT step within ~milliseconds
+         — `recv_timeout(200ms).is_err()` would be false → test
+         fails. Verified by temporarily reverting messages.rs to
+         DEFERRED — test failed with the exact expected diagnostic
+         ("got early result Ok(Err('Database(SqliteFailure(Error
+         { code: DatabaseBusy ...))))").
+      2. After conn1 commits, thread B unblocks and the audit row
+         it inserts is `"from-conn1"` (the post-A snapshot), NOT
+         `"Original"` (the pre-A snapshot a DEFERRED tx would have
+         saved).
+- tests run: `cargo test -p annex-channels` → **21 passed** (1 new
+  for [F31]).
+- result: PASS. Concurrent edit/delete operations are now
+  guaranteed to serialize at the WAL writer boundary; the audit
+  trail preserves every committed edit.
+
 ### [F30] AgentVoiceClient transcription task leaked on agent disconnect (slow leak)
 `crates/annex-voice/src/agent.rs::AgentVoiceClient::connect` spawned a
 fire-and-forget `tokio::spawn` task that consumed STT tap frames from
@@ -1211,6 +1295,11 @@ The fix mirrors the local cap.
   `rooms_dashmap_remove_if_handles_concurrent_insert_race`; 2 new
   for [F30]: `drop_aborts_transcription_task`,
   `drop_does_not_panic_when_task_already_finished`).
+- `cargo test -p annex-channels` → **21 passed** (1 new for [F31]:
+  `edit_message_uses_immediate_to_serialize_with_external_writer`).
+  Verified the test catches DEFERRED regressions by temporarily
+  reverting messages.rs — test failed with the expected
+  "early result Ok(Err(DatabaseBusy))" diagnostic.
 - `cargo test -p annex-server --lib ws::` → **11 passed** (8 new):
   - 6 in `ws::typing_throttle::tests` for [F29]
     (`first_typing_event_is_admitted`,
@@ -1493,14 +1582,26 @@ The fix mirrors the local cap.
   `VoiceService::stt_tap_tx` broadcast sender is process-lifetime,
   so any task subscribed to it that does not abort on agent drop
   will leak for the lifetime of the server. See [F30].
+- I-CHANNELS-IMMEDIATE-TX (new): Any function in `annex-channels`
+  that performs a read-then-write critical section across a
+  Connection MUST use
+  `Transaction::new_unchecked(conn, TransactionBehavior::Immediate)`,
+  NOT `conn.unchecked_transaction()` (which defaults to Deferred).
+  Currently this applies to `edit_message` and `delete_message`;
+  any future ownership-checked update (e.g. message reactions, read
+  receipts) MUST follow the same pattern to avoid the lost-update /
+  audit-trail-loss bug. `delete_channel` is exempt — its DEFERRED
+  tx is fine because it only worries about partial-failure
+  atomicity, not concurrent-writer races. See [F31].
 
 ## Context cutoff note (current session, claude/fix-annex-bugs-AT8va)
-Session [F27..F30] focused on long-lived production correctness — the
+Session [F27..F31] focused on long-lived production correctness — the
 two outstanding "Still broken" items from the previous session
 (rooms-leak + typing-DOS), a real lock-inversion deadlock in the
 WebSocket connection manager that was hiding behind a misleading
-comment, and one additional spawn-and-forget task leak found
-during the code survey.
+comment, one additional spawn-and-forget task leak, and a
+DEFERRED-vs-IMMEDIATE transaction bug whose comment claimed
+IMMEDIATE behaviour while the code did the opposite.
 
 * [F27] `VoiceService::rooms` was insert-only — every distinct channel
   ID joined since process start stayed in the DashMap forever. New
@@ -1525,12 +1626,21 @@ during the code survey.
   agent connect/disconnect cycle leaked one such task. New
   `transcription_task: JoinHandle<()>` field + `Drop` impl that
   aborts it; 2 unit tests (full-cycle abort + double-abort no-op).
+* [F31] `edit_message` and `delete_message` used
+  `conn.unchecked_transaction()` (DEFERRED) while their comments
+  claimed IMMEDIATE serialization. Two concurrent DEFERRED tx
+  could read the pre-edit snapshot, both write, and lose one
+  edit's audit row + content. Switched to
+  `Transaction::new_unchecked(conn, TransactionBehavior::Immediate)`.
+  1 deterministic regression test that holds an external IMMEDIATE
+  tx and asserts the second writer BLOCKS at BEGIN.
 
 `fmt`, `clippy --workspace --exclude annex-desktop --all-targets --
--D warnings`, and the `annex-server` + `annex-voice` lib test suites
-are all green. New totals: `annex-voice --lib` → 18 passed (+6);
-`annex-server --lib` → 130 passed (+8); `annex-server --tests` →
-all integration tests pass.
+-D warnings`, and the `annex-server` + `annex-voice` +
+`annex-channels` lib test suites are all green. New totals:
+`annex-voice --lib` → 18 passed (+6); `annex-server --lib` → 130
+passed (+8); `annex-channels` → 21 passed (+1); `annex-server
+--tests` → all integration tests pass.
 
 If a future agent picks up:
 1. Re-run baseline (fmt + clippy + `cargo test -p annex-server --lib

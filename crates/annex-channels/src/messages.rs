@@ -8,7 +8,7 @@
 //! `ServerPolicy::default_retention_days` for `None`.
 
 use annex_types::ServerPolicy;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
 use crate::error::ChannelError;
 use crate::types::{map_row_to_message, CreateMessageParams, Message, MessageEdit};
@@ -154,10 +154,25 @@ pub fn edit_message(
     sender_pseudonym: &str,
     new_content: &str,
 ) -> Result<Message, ChannelError> {
-    // Use IMMEDIATE transaction to serialize concurrent edit/delete operations.
-    // Without this, two concurrent edits could both pass the ownership and
-    // time-window checks, losing an edit from the audit trail.
-    let tx = conn.unchecked_transaction()?;
+    // BEGIN IMMEDIATE — serialize concurrent edit/delete operations.
+    //
+    // The previous version used `conn.unchecked_transaction()`, which
+    // defaults to `TransactionBehavior::Deferred`. Under WAL mode with
+    // snapshot isolation, two concurrent DEFERRED transactions both
+    // observe the pre-edit state on read, both pass the ownership +
+    // time-window checks, and then both write — and the second
+    // committer's UPDATE silently overwrites the first committer's,
+    // losing an edit from the audit trail (the message_edits row of
+    // the loser still references the original content, not the
+    // intermediate state).
+    //
+    // `Transaction::new_unchecked(conn, Immediate)` issues
+    // `BEGIN IMMEDIATE`, which acquires SQLite's RESERVED lock at
+    // transaction start. Only one IMMEDIATE writer can be active at a
+    // time across the database, which is exactly the serialization
+    // the surrounding ownership-check / time-window-check / update
+    // critical section needs.
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
 
     let msg = get_message(&tx, message_id)?;
 
@@ -210,8 +225,10 @@ pub fn delete_message(
     message_id: &str,
     sender_pseudonym: &str,
 ) -> Result<Message, ChannelError> {
-    // Use IMMEDIATE transaction to serialize concurrent operations.
-    let tx = conn.unchecked_transaction()?;
+    // BEGIN IMMEDIATE — serialize concurrent edit/delete operations.
+    // See `edit_message` above for the full lost-update analysis;
+    // delete is the symmetric path and shares the bug under DEFERRED.
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
 
     let msg = get_message(&tx, message_id)?;
 
