@@ -771,6 +771,17 @@ impl RtxService {
     }
 }
 
+/// SSRF gate for the RTX relay outbound path. Wraps
+/// `api_link_preview::is_url_private_or_reserved` so the dependency is
+/// directly testable from this module's unit tests and the call site stays
+/// readable. Returns `true` when the peer's `base_url` must NOT be
+/// contacted (loopback, private, link-local, CGNAT, IPv4-mapped IPv6 of
+/// any of the above, `localhost`, `*.local`, `*.internal`, unparseable, or
+/// non-http(s) scheme).
+pub(crate) fn rtx_peer_url_is_private_or_reserved(base_url: &str) -> bool {
+    crate::api_link_preview::is_url_private_or_reserved(base_url)
+}
+
 /// Background relay: post a freshly published RTX bundle to every active
 /// federation peer's `/api/federation/rtx` endpoint. Spawned from
 /// `RtxService::publish_bundle` and re-exported through `api_rtx` so the
@@ -781,6 +792,8 @@ impl RtxService {
 ///   * Skip peers whose `transfer_scope == "NO_TRANSFER"` or unparseable.
 ///   * Skip peers whose `base_url` already appears in the relay path or
 ///     equals the bundle's `source_server` (cycle prevention).
+///   * Skip peers whose `base_url` is private/loopback/link-local
+///     (SSRF defence-in-depth — mirrors `federation_service::relay_message`).
 ///   * Apply each peer's transfer scope to the bundle (may strip
 ///     `reasoning_chain` when the scope is `ReflectionSummariesOnly`).
 ///   * Sign the relay envelope with the canonical
@@ -838,6 +851,21 @@ pub async fn relay_rtx_bundles(state: Arc<AppState>, bundle: ReflectionSummaryBu
                 peer = %peer.base_url,
                 bundle_id = %bundle.bundle_id,
                 "skipping RTX relay to peer: already in relay path or is origin"
+            );
+            continue;
+        }
+
+        // SSRF defence-in-depth: skip peers whose base_url resolves to a
+        // private/loopback/link-local host. The instances table is
+        // operator-controlled but a misconfigured row would otherwise
+        // turn this background relay into a continuous probe of internal
+        // services (and re-emit signed RTX envelopes to internal hosts).
+        // Mirrors the guard in `federation_service::relay_message`.
+        if rtx_peer_url_is_private_or_reserved(&peer.base_url) {
+            tracing::warn!(
+                peer = %peer.base_url,
+                bundle_id = %bundle.bundle_id,
+                "skipping RTX relay: peer base_url resolves to a private or reserved host"
             );
             continue;
         }
@@ -990,5 +1018,70 @@ mod tests {
             payload,
             "bundle-123\nhttp://relay.com\nhttp://origin.com\nhttp://hop1.com|http://hop2.com"
         );
+    }
+
+    #[test]
+    fn rtx_peer_url_is_private_or_reserved_blocks_loopback() {
+        assert!(rtx_peer_url_is_private_or_reserved("http://127.0.0.1:9000"));
+        assert!(rtx_peer_url_is_private_or_reserved(
+            "https://localhost/api/federation/rtx"
+        ));
+        assert!(rtx_peer_url_is_private_or_reserved("http://[::1]:9000"));
+    }
+
+    #[test]
+    fn rtx_peer_url_is_private_or_reserved_blocks_private_ranges() {
+        // RFC1918
+        assert!(rtx_peer_url_is_private_or_reserved("http://10.0.0.5"));
+        assert!(rtx_peer_url_is_private_or_reserved("http://172.16.0.1"));
+        assert!(rtx_peer_url_is_private_or_reserved("http://192.168.1.1"));
+        // Link-local (cloud metadata)
+        assert!(rtx_peer_url_is_private_or_reserved(
+            "http://169.254.169.254"
+        ));
+        // CGNAT
+        assert!(rtx_peer_url_is_private_or_reserved("http://100.64.0.1"));
+        // IPv4-mapped IPv6
+        assert!(rtx_peer_url_is_private_or_reserved(
+            "http://[::ffff:10.0.0.1]"
+        ));
+        // Reserved hostnames
+        assert!(rtx_peer_url_is_private_or_reserved(
+            "http://server.local/api/federation/rtx"
+        ));
+        assert!(rtx_peer_url_is_private_or_reserved(
+            "https://service.internal"
+        ));
+        assert!(rtx_peer_url_is_private_or_reserved(
+            "http://metadata.google.internal/"
+        ));
+    }
+
+    #[test]
+    fn rtx_peer_url_is_private_or_reserved_blocks_unparseable_or_non_http() {
+        // Unparseable URLs — fail closed.
+        assert!(rtx_peer_url_is_private_or_reserved("not a url"));
+        assert!(rtx_peer_url_is_private_or_reserved(""));
+        // Non-http(s) schemes — fail closed (no relay over file://, ftp://, etc.).
+        assert!(rtx_peer_url_is_private_or_reserved("file:///etc/hostname"));
+        assert!(rtx_peer_url_is_private_or_reserved(
+            "ftp://example.com/api/federation/rtx"
+        ));
+    }
+
+    #[test]
+    fn rtx_peer_url_is_private_or_reserved_allows_public_hosts() {
+        assert!(!rtx_peer_url_is_private_or_reserved(
+            "https://annex-peer.example.com"
+        ));
+        assert!(!rtx_peer_url_is_private_or_reserved(
+            "http://203.0.113.42:8080/api/federation/rtx"
+        ));
+        // Public IPv6 (2001:db8::/32 is documentation-reserved per RFC3849
+        // but is not in our private/loopback set, so it's allowed at this
+        // layer; the wire shape is what matters here).
+        assert!(!rtx_peer_url_is_private_or_reserved(
+            "http://[2001:db8::1]/api/federation/rtx"
+        ));
     }
 }

@@ -534,16 +534,112 @@ impl VoiceService {
     ) {
         let mut pcm = vec![0f32; 1920];
         if let Ok(samples) = decoder.decode(&rtp.payload, 960, &mut pcm) {
-            let mut raw = Vec::with_capacity(samples * 2);
-            for s in pcm.into_iter().take(samples) {
-                let sample = s.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16;
-                raw.extend_from_slice(&sample.to_le_bytes());
-            }
+            let raw = pcm_f32_to_s16le_bytes(&pcm[..samples]);
             let _ = self.stt_tap_tx.send(SttTapFrame {
                 channel_id: channel_id.to_string(),
                 speaker_pseudonym: speaker.to_string(),
                 pcm_s16le: raw,
             });
         }
+    }
+}
+
+/// Convert normalized float PCM (`[-1.0, 1.0]`, the output range of
+/// `opus-rs::OpusDecoder::decode`) to little-endian signed 16-bit PCM.
+///
+/// Multiplies by `i16::MAX` (32767) to keep the output range symmetric
+/// around zero — `s = -1.0` maps to `-32767`, not `-32768`. This avoids
+/// asymmetric clipping at the negative bound, which downstream STT models
+/// (especially small whisper variants) can read as a steady-state DC
+/// offset on quiet input. Out-of-range floats (Opus produces them only
+/// during the SilkOnly/CELTOnly paths that *don't* explicitly clamp) are
+/// saturated.
+///
+/// Returns a freshly-allocated `Vec<u8>` in s16-le format ready to be
+/// shipped over the STT tap broadcast channel.
+fn pcm_f32_to_s16le_bytes(pcm: &[f32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(pcm.len() * 2);
+    for &s in pcm {
+        let scaled = (s * i16::MAX as f32)
+            .round()
+            .clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+        out.extend_from_slice(&scaled.to_le_bytes());
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn s16_at(bytes: &[u8], idx: usize) -> i16 {
+        i16::from_le_bytes([bytes[idx * 2], bytes[idx * 2 + 1]])
+    }
+
+    #[test]
+    fn pcm_f32_to_s16le_zero_input_is_zero() {
+        let out = pcm_f32_to_s16le_bytes(&[0.0; 4]);
+        assert_eq!(out.len(), 8);
+        for i in 0..4 {
+            assert_eq!(s16_at(&out, i), 0);
+        }
+    }
+
+    #[test]
+    fn pcm_f32_to_s16le_full_scale_positive_maps_to_i16_max() {
+        // Full-scale +1.0 must produce i16::MAX (32767), not 1.
+        let out = pcm_f32_to_s16le_bytes(&[1.0]);
+        assert_eq!(s16_at(&out, 0), i16::MAX);
+    }
+
+    #[test]
+    fn pcm_f32_to_s16le_full_scale_negative_maps_to_minus_i16_max() {
+        // Full-scale -1.0 must produce -32767 (symmetric around zero), not -1.
+        let out = pcm_f32_to_s16le_bytes(&[-1.0]);
+        assert_eq!(s16_at(&out, 0), -i16::MAX);
+    }
+
+    #[test]
+    fn pcm_f32_to_s16le_mid_scale_speech_levels_are_audible() {
+        // A 0.5-amplitude tone (typical speech RMS region) MUST produce
+        // a substantial i16 sample, not 0/1. The previous implementation
+        // would have produced only 0 or 1 here, which is silence.
+        let out = pcm_f32_to_s16le_bytes(&[0.5]);
+        let s = s16_at(&out, 0);
+        assert!(
+            s.abs() > 1000,
+            "0.5 normalized float must scale to a real PCM amplitude, got {s}"
+        );
+    }
+
+    #[test]
+    fn pcm_f32_to_s16le_clips_above_full_scale() {
+        // Out-of-range positive float clamps to i16::MAX.
+        let out = pcm_f32_to_s16le_bytes(&[2.0]);
+        assert_eq!(s16_at(&out, 0), i16::MAX);
+    }
+
+    #[test]
+    fn pcm_f32_to_s16le_clips_below_full_scale() {
+        // Out-of-range negative float clamps to i16::MIN.
+        // Note we scale by i16::MAX, so -2.0 * 32767 = -65534, which the
+        // clamp pulls up to -32768 (i16::MIN).
+        let out = pcm_f32_to_s16le_bytes(&[-2.0]);
+        assert_eq!(s16_at(&out, 0), i16::MIN);
+    }
+
+    #[test]
+    fn pcm_f32_to_s16le_preserves_sample_count() {
+        let out = pcm_f32_to_s16le_bytes(&[0.1, -0.2, 0.3, -0.4]);
+        assert_eq!(out.len(), 8);
+        // Round-trip: each sample in [-1, 1] must land in a sane range.
+        let s0 = s16_at(&out, 0);
+        let s1 = s16_at(&out, 1);
+        let s2 = s16_at(&out, 2);
+        let s3 = s16_at(&out, 3);
+        assert!(s0 > 2000 && s0 < 4000, "0.1 → {s0}");
+        assert!(s1 < -5000 && s1 > -8000, "-0.2 → {s1}");
+        assert!(s2 > 8000 && s2 < 11000, "0.3 → {s2}");
+        assert!(s3 < -11000 && s3 > -14000, "-0.4 → {s3}");
     }
 }

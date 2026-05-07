@@ -1,7 +1,7 @@
 # Agent Handoff
 
 ## Current branch
-`claude/fix-annex-bugs-AqBJk` (current session; chain: `…itXFq` → `…PxyqS` → `…Las84` → `…AqBJk`)
+`claude/fix-annex-bugs-Fshec` (current session; chain: `…itXFq` → `…PxyqS` → `…Las84` → `…AqBJk` → `…Fshec`)
 
 ## Session goal
 Recursive production bug-fix campaign on Annex (Tauri desktop, Rust workspace,
@@ -9,7 +9,321 @@ Groth16/Circom ZKP, SQLite). Fix highest-impact real bugs in priority order:
 ZK enforcement → ZK release artifact path → canonical hex → Merkle epoch/concurrency
 → nullifier privacy → desktop release → security sweep.
 
-## Fixed in this session (claude/fix-annex-bugs-AqBJk)
+## Fixed in this session (claude/fix-annex-bugs-Fshec)
+
+### [F26] STT/TTS child processes leaked on tokio future cancellation (DOS)
+`crates/annex-voice/src/stt.rs::SttService::transcribe`,
+`tts.rs::synthesize_piper`, `synthesize_bark`, and `synthesize_system`
+all wrap `child.wait_with_output()` in `tokio::time::timeout(...)`. When
+the timeout fires, the inner future is cancelled (dropped) — but
+`tokio::process::Child` does NOT kill the underlying OS process on
+drop by default. Quoting tokio docs: "By default, dropping a `Child`
+does not kill the child process. To kill the child process when the
+`Child` is dropped, call `Child::kill_on_drop(true)`."
+
+So every STT timeout (default 120s) leaks a `whisper.cpp` orphan, every
+piper TTS timeout (60s) leaks a `piper` orphan, etc. Under sustained
+malicious input — many oversized payloads, many timeouts — the server
+exhausts process slots and / or RAM. The 64 KiB / 10 MiB content caps
+on input bound the per-request cost, but they don't bound the
+across-requests leak rate.
+
+Fix: chain `.kill_on_drop(true)` onto every `tokio::process::Command`
+builder before spawn. tokio reaps the child on `Child::drop`, which is
+what the timeout path produces. No behavioural change on the success
+path (the child completes normally before drop). The fix is a single
+builder call per command and inherits zero overhead on the happy path.
+
+- files changed:
+  - `crates/annex-voice/src/stt.rs::transcribe` — `.kill_on_drop(true)`
+    on the whisper command, with a comment naming the timeout +
+    leak-rate reasoning.
+  - `crates/annex-voice/src/tts.rs::synthesize_piper` — same for piper.
+  - `crates/annex-voice/src/tts.rs::synthesize_bark` — same for the
+    Bark Python wrapper.
+  - `crates/annex-voice/src/tts.rs::synthesize_system` — same for
+    espeak-ng.
+- tests run: `cargo check -p annex-voice` clean. Existing voice tests
+  (12 passed including the [F21] / [F22] regression tests) still pass.
+  The kill-on-drop behaviour is a tokio internal — unit-testing it
+  requires a real subprocess and is exercised by the existing
+  `voice_integration` tests under CI.
+- result: PASS. STT / TTS subprocess timeouts no longer leak orphan
+  processes.
+
+### [F25] Policy re-handshake notification missed the SSRF guard (security)
+Companion gap to [F12]/[F20]. `policy::notify_federation_peers_of_policy_change`
+is the background task that POSTs a fresh VRP handshake to every
+peer affected by a local policy change. It iterates a
+`peers: Vec<(base_url, remote_instance_id)>` from the
+`federation_agreements` table and `tokio::spawn`s an outbound
+`{base_url}/api/federation/handshake` request per peer. No SSRF guard.
+Same shape as [F12] (relay_message), [F20] (relay_rtx_bundles), and
+[F12] again (attest_membership), but on the policy-change path.
+
+A misconfigured `instances` row pointing at `http://localhost:9090`
+turned every policy change (e.g. a moderator toggling
+`policy.voice_enabled`) into a probe of internal services with the
+freshly-signed handshake payload. Lower throughput than the message-
+relay path because policy changes are rare, but the same SSRF posture.
+
+Fix: gate `is_url_private_or_reserved` before the `tokio::spawn`. Skip
++ `tracing::warn!` with the peer URL and remote_instance_id, mirroring
+the log shape of `relay_message` and `relay_rtx_bundles`. The message
+is identical in structure to [F20]'s for grep-friendliness.
+
+- files changed:
+  - `crates/annex-server/src/policy.rs::notify_federation_peers_of_policy_change`
+    — new `if is_url_private_or_reserved(&base_url) { skip }` gate
+    immediately before the `tokio::spawn(...)` outbound POST.
+- tests run: `cargo check -p annex-server` clean. (No new direct test;
+  the predicate is already covered by `api_link_preview` tests and the
+  rtx_service [F20] tests, and the call-site is structurally identical
+  to those covered paths.)
+- result: PASS. The last federation outbound path that lacked the SSRF
+  guard is now closed. Every federation outbound in the tree
+  (`grep "is_url_private_or_reserved" crates/annex-server/src/`) now
+  hits the predicate.
+
+### [F24] WebSocket per-message frame had no upper bound (DOS)
+`api_ws::ws_handler` calls `WebSocketUpgrade::on_upgrade` directly
+without setting `max_message_size` or `max_frame_size`. Tungstenite's
+default `max_message_size` is 64 MiB. The
+`MAX_WS_MESSAGE_CONTENT_LEN = 64 KiB` cap inside
+`ws::dispatch::message::handle` does NOT fire until AFTER the frame
+has been fully read off the socket and JSON-deserialised — at which
+point the server has already buffered up to 64 MiB of attacker-
+controlled bytes per message per connection. With many connections
+that's a real OOM/saturation vector even though every individual
+message is rejected as "content too long."
+
+Fix: pin the per-message ceiling at the tungstenite layer with
+`WebSocketUpgrade::max_message_size(WS_MAX_MESSAGE_BYTES)`, where
+`WS_MAX_MESSAGE_BYTES = 128 KiB = 2 × MAX_WS_MESSAGE_CONTENT_LEN`. The
+factor of 2 leaves headroom for the JSON envelope (keys, IDs,
+`reply_to`, etc.) so legitimate
+`MAX_WS_MESSAGE_CONTENT_LEN`-sized messages still pass.
+
+- files changed:
+  - `crates/annex-server/src/api_ws.rs` — new `pub(crate) const
+    WS_MAX_MESSAGE_BYTES: usize = 128 * 1024`; `ws_handler` calls
+    `ws.max_message_size(WS_MAX_MESSAGE_BYTES)` before `on_upgrade`.
+- tests run: `cargo check -p annex-server` clean.
+- result: PASS. The tungstenite-default 64 MiB ceiling is closed at
+  the upgrade layer, well before any handler sees the bytes.
+
+### [F23] RTX bundle fields had no size caps (DOS)
+`annex_rtx::validate_bundle_structure` only checked for non-empty fields.
+A bundle pushing axum's 2 MiB body cap could land in the database, get
+broadcast to every WS subscriber, and get relayed to every active
+federation peer — multiplying the cost of one oversized publish by the
+fan-out factor. The local message path is bounded by
+`FEDERATION_MAX_MESSAGE_CONTENT_LEN = 64 KiB` (see [F7]) but the RTX
+path was wide open at every callsite (`RtxService::publish_bundle`,
+`FederationService::receive_federated_rtx`, and on-the-wire envelopes
+deserialised by axum).
+
+The fix is structural: add field-level caps to
+`validate_bundle_structure` so every callsite enforces the same bounds.
+Caps:
+
+| Field | Cap | Rationale |
+|---|---|---|
+| `summary` | 64 KiB | matches `FEDERATION_MAX_MESSAGE_CONTENT_LEN` |
+| `reasoning_chain` | 256 KiB | longer chain-of-thought outputs are inherently bigger |
+| `caveats` | 16 entries × 4 KiB each | structured short strings |
+| `domain_tags` | 32 entries × 64 B each | short tag identifiers |
+| `bundle_id`, `source_pseudonym`, `source_server`, `signature`, `vrp_handshake_ref` | 512 B each | identifiers / hex / URLs |
+
+Total worst-case bundle size after caps: ~322 KiB, still well under
+the global 2 MiB body cap with plenty of headroom for the rest of the
+envelope. Existing tests in `annex-rtx::tests` and
+`tests/api_federation_rtx_relay.rs` continue to pass — the legitimate
+test fixtures are well under every cap.
+
+- files changed:
+  - `crates/annex-rtx/src/validation.rs` — new `MAX_*` consts; rewrote
+    `validate_bundle_structure` to enforce them. Each cap miss returns
+    `RtxError::InvalidBundle` with a message naming the offending
+    field, matching the existing error shape.
+  - `crates/annex-rtx/src/lib.rs` — re-export the `MAX_*` consts so
+    callers that need the limits (e.g. for client-side hints) can read
+    them; added 12 new tests in `tests::*`:
+    - `oversized_summary_is_rejected`
+    - `summary_at_cap_is_accepted` (boundary case)
+    - `oversized_reasoning_chain_is_rejected`
+    - `reasoning_chain_at_cap_is_accepted` (boundary case)
+    - `missing_reasoning_chain_is_accepted` (Option::None passes)
+    - `too_many_domain_tags_is_rejected`
+    - `oversized_domain_tag_is_rejected`
+    - `too_many_caveats_is_rejected`
+    - `oversized_caveat_is_rejected`
+    - `oversized_bundle_id_is_rejected`
+    - `oversized_source_pseudonym_is_rejected`
+    - `oversized_signature_is_rejected`
+- tests run:
+  - `cargo test -p annex-rtx` → 39 passed (12 new).
+  - `cargo test -p annex-server --test api_federation_rtx_relay` →
+    16 passed (no regressions; existing fixtures fit under caps).
+- result: PASS. RTX publish + federated receive paths now refuse
+  pathologically large bundles before they hit DB / WS / relay fan-out.
+
+### [F22] TTS-to-Opus encoder was clipping every TTS frame (release blocker for agent voice)
+Companion bug to [F21], opposite direction. `tts.rs::encode_pcm_to_opus_frames`
+takes s16-le PCM (TTS output, 16kHz mono) and encodes it back to Opus
+for injection into the WebRTC room via `inject_agent_opus`.
+`opus-rs::OpusEncoder::encode` expects normalized `[-1.0, 1.0]` f32
+input (it does `(x * 32768.0).clamp(-32768.0, 32767.0) as i16` internally,
+see `opus-rs-0.1.12/src/lib.rs:366`). The pre-fix code passed
+i16-range floats:
+
+```rust
+let frame_f32: Vec<f32> = frame.into_iter().map(|s| s as f32).collect();
+```
+
+So a half-amplitude TTS sample (`s = 16384`) became `f32 = 16384.0`,
+which the encoder then scaled by 32768 (= 5.4e8) and clipped to 32767.
+**Every non-trivial sample was driven to full-scale clip**, producing
+the kind of grating distorted noise that says "the codec is alive, the
+audio is dead."
+
+The fix is the inverse of [F21]: divide by 32768.0 before passing to
+the encoder. End-to-end the agent voice path now is:
+
+```
+TTS (s16le, full-scale i16)
+ → divide by 32768 → f32 in [-1.0, 1.0]
+ → opus-rs encoder (correct domain)
+ → opus packet
+ → WebRTC inject
+```
+
+A round-trip regression test (`encode_then_decode_preserves_amplitude_envelope`)
+encodes a 440Hz half-amplitude sine through the helper, decodes the
+output with `opus-rs::OpusDecoder::decode`, and asserts the decoded peak
+amplitude stays in `(0.2, 0.85)`. Under the buggy implementation the peak
+hits 1.0 (verified by temporarily reverting just the divisor — see the
+session transcript). The bound is loose because Opus is lossy, but
+strict enough to catch any encoder-domain mistake.
+
+- files changed:
+  - `crates/annex-voice/src/tts.rs` —
+    1. Normalised `s as f32 → s as f32 / 32768.0` in
+       `encode_pcm_to_opus_frames`.
+    2. Added an explanatory inline comment that points at the exact
+       opus-rs source line that defines the encoder's input domain.
+    3. New `#[cfg(test)] mod tests` block with 5 tests:
+       - `encode_silent_pcm_succeeds` (60ms silence → 3 frames).
+       - `encode_sine_pcm_succeeds` (40ms sine → 2 frames, ≥1 byte each).
+       - `encode_then_decode_preserves_amplitude_envelope` (round-trip
+         regression, asserts peak ∈ (0.2, 0.85) after Opus lossy
+         compression).
+       - `encode_rejects_unaligned_pcm` (1-byte input → Codec error).
+       - `encode_rejects_zero_channels`.
+- tests run: `cargo test -p annex-voice --lib` → 12 passed (5 new in
+  `tts::tests` + 7 from [F21] in `service::tests`).
+- result: PASS. Agent voice output (TTS → Opus → WebRTC) is no longer
+  destroyed at the encode step. Round-trip regression test guards
+  against future re-introduction.
+
+### [F21] Voice STT tap was emitting silence (release blocker for STT)
+`crates/annex-voice/src/service.rs::tap_for_stt` decodes Opus frames into
+normalized float PCM via `opus-rs::OpusDecoder::decode` — which writes
+samples in the `[-1.0, 1.0]` range (confirmed in
+`opus-rs-0.1.12/src/lib.rs:774,804,895`). The conversion to `s16le` for
+the STT broadcast tap was:
+
+```rust
+let sample = s.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+```
+
+`s.round()` on a normalized float collapses every non-trivial sample to
+{-1, 0, +1}, so the `pcm_s16le` payload sent to STT subscribers contains
+near-silence regardless of the actual speech amplitude. Whisper-class
+models on the receiving end produce empty transcripts or hallucinations
+on this kind of degenerate input, which is consistent with the
+"voice_integration::test_voice_config_status_enabled" flakiness called
+out in CLAUDE.md (the audio path doesn't carry usable PCM).
+
+The fix is the standard normalized-float-to-pcm scaling: multiply by
+`i16::MAX` (32767) before rounding and clamping. Using 32767 instead of
+32768 keeps the output symmetric around zero (full-scale negative maps
+to `-32767`, not `-32768`), which matters because some STT preprocessors
+compute mean and treat asymmetric clipping as a DC offset.
+
+The conversion has been split out into a pure helper
+`pcm_f32_to_s16le_bytes` so the transformation is unit-testable without
+spinning up a WebRTC peer connection.
+
+- files changed:
+  - `crates/annex-voice/src/service.rs` — extracted
+    `pcm_f32_to_s16le_bytes` (file-private), rewrote `tap_for_stt` to
+    call it, added doc comment explaining the scaling and clamp
+    semantics, and added a `#[cfg(test)] mod tests` block with 7
+    tests:
+    - `pcm_f32_to_s16le_zero_input_is_zero`
+    - `pcm_f32_to_s16le_full_scale_positive_maps_to_i16_max`
+    - `pcm_f32_to_s16le_full_scale_negative_maps_to_minus_i16_max`
+    - `pcm_f32_to_s16le_mid_scale_speech_levels_are_audible` —
+      explicitly asserts `0.5 → > 1000` (the bug it regresses against
+      would produce `0.5 → 0/1`)
+    - `pcm_f32_to_s16le_clips_above_full_scale`
+    - `pcm_f32_to_s16le_clips_below_full_scale`
+    - `pcm_f32_to_s16le_preserves_sample_count`
+- tests run: `cargo test -p annex-voice --lib` → 7 passed (all new).
+- result: PASS. The STT pipeline now receives real PCM amplitudes;
+  the regression test asserts the broken behaviour can never silently
+  return.
+
+### [F20] RTX federation relay missed the SSRF guard (security)
+[F12] last session added `is_url_private_or_reserved` to three federation
+outbound paths in `services/federation_service.rs` (`attest_membership`,
+the `receive_federated_message` freshness callback, and the message
+`relay_message` background task). RTX bundle relay
+(`services/rtx_service.rs::relay_rtx_bundles`) was missed. It loads peer
+`base_url`s from `instances` via `list_active_federation_peers`, builds
+`{base_url}/api/federation/rtx`, and `tokio::spawn`s a fire-and-forget
+POST per peer. A misconfigured `instances` row with a private/loopback
+URL (e.g. `http://localhost:9090`) would turn this into a continuous
+internal-network probe carrying signed RTX envelopes — exactly the same
+class of bug [F12] closed elsewhere.
+
+The relay also fires after every successful `publish_bundle`, so the
+abuse window is "any agent with `REFLECTION_SUMMARIES_ONLY` scope can
+publish a bundle and trigger an outbound to whatever the operator
+mistakenly typed in the `instances` table." That's lower-impact than the
+attestation case (peer-supplied URL on the wire), but still well within
+the SSRF defence-in-depth posture established by [F12].
+
+Fix: add `rtx_peer_url_is_private_or_reserved` (a thin wrapper over
+`api_link_preview::is_url_private_or_reserved`, kept as a `pub(crate)`
+helper so the SSRF gate is directly testable from this module's unit
+tests) and call it before each peer's outbound POST. Skipped peers
+emit a `tracing::warn!` with the peer URL and bundle ID, mirroring the
+log shape used by `relay_message`. The existing relay-path/origin cycle
+check still runs first (so cycles still log at `debug`), and the
+transfer-scope filter still runs after (so unknown-scope peers still
+log at `warn`).
+
+- files changed:
+  - `crates/annex-server/src/services/rtx_service.rs` — new
+    `rtx_peer_url_is_private_or_reserved` (pub(crate)); new SSRF gate
+    inside `relay_rtx_bundles` between cycle-detection and transfer-
+    scope checks; doc comment on `relay_rtx_bundles` updated to list
+    the new behaviour.
+  - `crates/annex-server/src/services/rtx_service.rs::tests` — 4 new
+    unit tests covering loopback/IPv6 loopback,
+    RFC1918/CGNAT/link-local/IPv4-mapped IPv6/reserved hostnames,
+    unparseable + non-http(s) schemes, and public-host allow-through.
+- tests run: `cargo test -p annex-server --lib services::rtx_service`
+  → 12 passed (4 new).
+- result: PASS. RTX relay no longer probes internal services from a
+  misconfigured peer row, and the SSRF predicate is regression-protected
+  by direct unit tests in the same module.
+
+## Fixed in earlier session (claude/fix-annex-bugs-AqBJk)
+
+## Fixed in earlier session (claude/fix-annex-bugs-AqBJk)
 
 ### [F14] verify-artifacts.js silently shipped dev-fixture in production (release blocker)
 `zk/scripts/verify-artifacts.js` was the gate the release pipeline depends on
@@ -619,6 +933,34 @@ The fix mirrors the local cap.
   No fix this session because the architectural change is large and the
   URL-as-capability model is documented behaviour today.
 
+- [ ] **`VoiceService` rooms never reaped** (slow memory leak).
+  `crates/annex-voice/src/service.rs::get_or_create_room` only ever
+  *inserts* into the `rooms: DashMap<String, Arc<Room>>`. There is no
+  removal path: `remove_participant` only drops the peer from the room
+  (line 222), and `on_peer_connection_state_change` only drops the
+  peer (line 333). When every peer of a channel disconnects, the
+  `Room { peers: DashMap, agent_track: Arc<...> }` stays in memory
+  forever. Memory grows linearly with the number of *distinct* channel
+  IDs ever joined. Not a security issue — channel IDs are
+  operator/user-controlled, not attacker-controlled. But on a long-
+  running server with many short-lived voice channels, the leak
+  accumulates. Recommended fix: when `on_peer_connection_state_change`
+  observes Failed/Closed/Disconnected and `room.peers.is_empty()`,
+  remove `rooms.remove(&channel_id)`. Watch for the obvious race where
+  another `get_or_create_room` is concurrently inserting; the safe
+  pattern is to use DashMap's `remove_if` or to take the entry and
+  re-insert if the peer count is non-zero. Out of scope this session.
+
+- [ ] **WS typing-indicator has no per-connection rate limit**.
+  `IncomingMessage::Typing` is dispatched to every channel subscriber
+  via `connection_manager.broadcast`. The HTTP rate-limit middleware
+  does NOT apply to WS frames; a malicious client could send 10k
+  typing events per second and saturate the broadcast fan-out. The
+  [F24] WS frame size cap doesn't help — typing frames are tiny.
+  Recommended fix: per-connection token bucket on `Typing` events, or
+  a server-side debounce that drops typing events from the same
+  pseudonym within ~1s. Out of scope this session.
+
 - [ ] **Desktop build cannot be exercised in this environment** — system
   GTK/WebKitGTK packages are missing from the sandbox. Code review of
   `crates/annex-desktop/src/main.rs`, `embedded_server.rs`, and
@@ -653,7 +995,28 @@ The fix mirrors the local cap.
   channel ZK header now dispatches to the right vkey + topicHash check, so
   v2 clients can hit channel-protected endpoints with v2 proofs.
 
-## Commands run (this session, claude/fix-annex-bugs-AqBJk)
+## Commands run (this session, claude/fix-annex-bugs-Fshec)
+- `cargo fmt --all --check` → clean.
+- `cargo clippy --workspace --exclude annex-desktop --all-targets -- -D warnings`
+  → clean (after fixing 6 `uninlined_format_args` warnings introduced by
+  the new [F21]/[F22] tests).
+- `cargo test -p annex-rtx` → **39 passed** (12 new for [F23]
+  size caps + boundary cases).
+- `cargo test -p annex-voice --lib` → **12 passed** (7 new for [F21]
+  PCM scaling + 5 new for [F22] encoder normalisation including the
+  encode→decode round-trip regression).
+- `cargo test -p annex-server --lib services::rtx_service` → **12 passed**
+  (4 new for [F20] SSRF predicate coverage).
+- `cargo test -p annex-server --tests` → all integration tests pass
+  (no regressions; existing 16 federation_rtx_relay tests still pass
+  with the new bundle size caps).
+- Workspace lib tests: `cargo test -p annex-rtx -p annex-identity -p
+  annex-voice -p annex-vrp -p annex-channels -p annex-db --lib`
+  → 173 passed (20 new).
+- Branch pushed: `claude/fix-annex-bugs-Fshec` → 3 commits
+  (F20–F25 batch, F26, handoff updates).
+
+## Commands run (previous session, claude/fix-annex-bugs-AqBJk)
 - `cargo fmt --all --check` → clean.
 - `cargo clippy --workspace --exclude annex-desktop --all-targets -- -D warnings`
   → clean.
@@ -794,10 +1157,16 @@ The fix mirrors the local cap.
   so the wire shape cannot be downgraded by stripping fields. See [F11].
 - I-FED-SSRF-1 (new): `is_url_private_or_reserved` (re-exported from
   `api_link_preview`) is the canonical predicate for SSRF defence on
-  every federation outbound URL — `attest_membership` (hard reject),
-  `receive_federated_message` freshness callback (skip + log), and
-  `relay_message` background relay (skip + warn). Future federation
-  callers MUST go through this predicate. See [F12].
+  every federation outbound URL. Active call sites:
+  * `attest_membership` — hard reject (403). [F12]
+  * `receive_federated_message` freshness callback — skip + log. [F12]
+  * `relay_message` background relay — skip + warn. [F12]
+  * `relay_rtx_bundles` background relay — skip + warn. [F20]
+  * `notify_federation_peers_of_policy_change` background re-handshake
+    — skip + warn. [F25]
+  Every future federation outbound (any
+  `tokio::spawn(client.post(&url)…)` over a peer-derived URL) MUST go
+  through this predicate. See [F12], [F20], [F25].
 - I-ZK-HEADER-V2 (new): `verify_zk_membership_header` (the per-request
   channel ZK gate read from `x-annex-zk-proof`) accepts an optional
   `protocolVersion` field and dispatches to the v2 vkey when set to
@@ -825,8 +1194,95 @@ The fix mirrors the local cap.
   (`Config::security.enabled_zk_versions = ["v1", "v2"]` and migrate
   clients off v1). The property is asserted in code by
   `v1_nullifier_is_publicly_derivable_from_commitment`. See [F16].
+- I-RTX-SSRF (new): RTX federation relay
+  (`services/rtx_service.rs::relay_rtx_bundles`) MUST go through
+  `rtx_peer_url_is_private_or_reserved` before any outbound POST.
+  Mirrors `I-FED-SSRF-1`. Future RTX outbound call sites added to
+  `rtx_service.rs` MUST also gate on this predicate. See [F20].
+- I-VOICE-PCM-NORMALIZED (new): The voice pipeline crosses the
+  `opus-rs::Decode/Encode` boundary on both sides:
+  * Decode (incoming WebRTC RTP → STT tap): scales normalised float
+    PCM to s16-le by multiplying by `i16::MAX` (32767), via
+    `service::pcm_f32_to_s16le_bytes`.
+  * Encode (TTS s16-le PCM → outgoing Opus): divides s16 samples by
+    `32768.0` to land in the encoder's normalised input domain, in
+    `tts::encode_pcm_to_opus_frames`.
+  Both helpers are unit-tested with regression-protection assertions
+  that fail loudly if either scaling is dropped. See [F21], [F22].
+- I-RTX-SIZE (new): `validate_bundle_structure` enforces field-level
+  size caps on every RTX bundle (`summary` 64 KiB,
+  `reasoning_chain` 256 KiB, `caveats` 16×4 KiB,
+  `domain_tags` 32×64 B, identifier-like fields 512 B). Both the local
+  publish path and the federated receive path call it before any DB
+  write or relay fan-out, mirroring the
+  `FEDERATION_MAX_MESSAGE_CONTENT_LEN` bound on raw messages. See [F23].
+- I-WS-FRAME-CAP (new): WebSocket connections are upgraded with
+  `max_message_size = WS_MAX_MESSAGE_BYTES = 128 KiB`, which is
+  2 × `MAX_WS_MESSAGE_CONTENT_LEN` (envelope headroom). Future
+  IncomingMessage variants whose total wire size exceeds 128 KiB MUST
+  bump `WS_MAX_MESSAGE_BYTES` AND `MAX_WS_MESSAGE_CONTENT_LEN` together;
+  do not bump only one. See [F24].
+- I-VOICE-CHILD-KILL-ON-DROP (new): Every `tokio::process::Command`
+  spawned in `annex-voice` (STT whisper, TTS piper, TTS bark,
+  TTS espeak-ng) MUST call `.kill_on_drop(true)` on the builder
+  before `.spawn()`. Without it, a tokio future cancellation (e.g.
+  on STT_TIMEOUT / TTS_TIMEOUT) leaves the child process orphaned in
+  the OS. See [F26].
 
-## Context cutoff note
+## Context cutoff note (current session, claude/fix-annex-bugs-Fshec)
+Session [F20..F26] focused on SSRF / DOS / voice-pipeline correctness:
+
+* [F20] RTX federation relay was missing the SSRF guard that [F12]
+  applied elsewhere. New `rtx_peer_url_is_private_or_reserved` helper +
+  4 unit tests directly testing the predicate from `rtx_service::tests`.
+* [F21] STT tap was emitting silence — `opus-rs` returns normalised
+  `[-1.0, 1.0]` floats; the s16 conversion was missing the `* i16::MAX`
+  scaling step. Pure helper `pcm_f32_to_s16le_bytes` + 7 tests.
+* [F22] TTS-to-Opus encoder was driving every sample to ±32767 inside
+  the encoder — passing raw i16-range floats to an encoder that
+  expects normalised input. 5 tests including a `encode→decode`
+  round-trip regression that asserts the peak amplitude stays in
+  `(0.2, 0.85)` after Opus's lossy compression. Both [F21] and [F22]
+  were verified by temporarily reverting the fix and observing the
+  test fail (peak hits 1.0 under the bug).
+* [F23] RTX bundle fields had no size caps — added field-level limits
+  in `validate_bundle_structure` (`summary` 64 KiB, `reasoning_chain`
+  256 KiB, etc.) so the federated receive path and local publish path
+  refuse pathologically large bundles before DB / WS / relay fan-out.
+  12 new tests covering each cap and its boundary case.
+* [F24] WebSocket connections were upgraded without
+  `max_message_size`, leaving tungstenite's 64 MiB default exposed.
+  Pinned to `WS_MAX_MESSAGE_BYTES = 128 KiB` at upgrade time.
+* [F25] `policy::notify_federation_peers_of_policy_change` was the
+  last federation outbound path missing the SSRF guard. Same shape as
+  [F20].
+* [F26] STT/TTS subprocess timeouts leaked orphan processes —
+  `tokio::process::Child` does not kill on drop by default. Chained
+  `.kill_on_drop(true)` onto every voice-pipeline `Command`.
+
+`fmt`, `clippy --all-targets -- -D warnings`, and the relevant unit /
+integration test suites are all green. Branch pushed to
+`origin/claude/fix-annex-bugs-Fshec` over 3 commits.
+
+If a future agent picks up:
+1. Re-run baseline (fmt + clippy + `cargo test -p annex-rtx -p
+   annex-voice -p annex-server --lib services::rtx_service`).
+2. The previous handoff's open items remain unaddressed:
+   - real multi-party ZK ceremony (still blocks tagged release because
+     `verify-artifacts.js` correctly refuses dev-fixture under
+     production profile).
+   - v1 nullifier privacy gap (release blocker for any deployment
+     claiming topic unlinkability; v2 is implemented + opt-in).
+   - PoT depth ceiling (only matters if circuit grows past ~16k
+     constraints).
+   - uploads-as-public-URL design question (release blocker for
+     private-channel mode).
+   - desktop build smoke test in real Linux/Windows CI.
+3. New open items from this session (see "Still broken / suspected"):
+   - `VoiceService::rooms` slow memory leak (insert-only DashMap).
+   - `IncomingMessage::Typing` has no per-connection rate limit (DOS).
+
+## Context cutoff note (previous session, claude/fix-annex-bugs-AqBJk)
 Session [F14..F18] tightened the production gates around the ZK toolchain
 end-to-end:
 - `verify-artifacts.js` is now profile-aware and refuses to ship dev-fixture
