@@ -22,6 +22,14 @@ use axum::{
 };
 use std::{net::SocketAddr, sync::Arc};
 
+/// Hard cap on the size of a single incoming WebSocket message, applied
+/// at the tungstenite layer via `WebSocketUpgrade::max_message_size`.
+/// 128 KiB = 2 × `ws::dispatch::MAX_WS_MESSAGE_CONTENT_LEN` (64 KiB,
+/// the per-message `content` field cap), which gives headroom for
+/// envelope keys, message IDs, and `reply_to` fields without leaving
+/// the tungstenite default of 64 MiB exposed.
+pub(crate) const WS_MAX_MESSAGE_BYTES: usize = 128 * 1024;
+
 // ── Public re-exports — preserve `annex_server::api_ws::Foo` paths ──────
 pub use crate::ws::connection_manager::ConnectionManager;
 pub use crate::ws::protocol::{
@@ -195,7 +203,17 @@ pub async fn ws_handler(
                 token_auth = params.token.is_some(),
                 "websocket auth success"
             );
-            ws.on_upgrade(move |socket: WebSocket| WsSession::run(socket, state, identity))
+            // Cap the per-message frame size at 128 KiB. The largest
+            // legitimate IncomingMessage is `Message`/`EditMessage`,
+            // whose `content` field is bounded by
+            // `ws::dispatch::MAX_WS_MESSAGE_CONTENT_LEN = 64 KiB`. The
+            // 128 KiB ceiling leaves headroom for envelope keys, IDs,
+            // and reply_to fields without leaving the underlying
+            // tungstenite default at 64 MiB — which would let one
+            // misbehaving client allocate up to 64 MiB per frame on a
+            // single TCP connection before our content cap fires.
+            let socket_cap = ws.max_message_size(WS_MAX_MESSAGE_BYTES);
+            socket_cap.on_upgrade(move |socket: WebSocket| WsSession::run(socket, state, identity))
         }
         Ok(Err(code)) => {
             tracing::warn!(

@@ -503,6 +503,23 @@ pub async fn notify_federation_peers_of_policy_change(
     };
 
     for (base_url, remote_instance_id) in peers {
+        // SSRF defence-in-depth: skip peers whose base_url resolves to a
+        // private/loopback/link-local host. The `peers` Vec is built from
+        // operator-controlled `instances` rows, but a misconfigured row
+        // (e.g. `http://localhost:9090` from a forgotten dev fixture) would
+        // turn this background re-handshake task into a continuous probe of
+        // internal services on every policy change. Mirrors the guards in
+        // `federation_service::relay_message`, `attest_membership`, and
+        // `rtx_service::relay_rtx_bundles`.
+        if crate::api_link_preview::is_url_private_or_reserved(&base_url) {
+            tracing::warn!(
+                peer = %base_url,
+                remote_instance_id = remote_instance_id,
+                "skipping policy re-handshake: peer base_url resolves to a private or reserved host"
+            );
+            continue;
+        }
+
         let url = format!("{base_url}/api/federation/handshake");
         let payload = serde_json::json!({
             "base_url": public_url,

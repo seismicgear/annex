@@ -362,7 +362,12 @@ pub fn encode_pcm_to_opus_frames(
         let mut frame = vec![0i16; frame_size];
         frame[..take].copy_from_slice(&mono_48k[cursor..cursor + take]);
 
-        let frame_f32: Vec<f32> = frame.into_iter().map(|s| s as f32).collect();
+        // opus-rs::OpusEncoder::encode expects normalized [-1.0, 1.0] f32
+        // (it scales by 32768 internally and clamps to i16 — see
+        // opus-rs-0.1.12/src/lib.rs:366). Passing raw i16-range floats
+        // here drove every non-trivial sample to ±32767 inside the
+        // encoder, producing maximally-clipped agent audio.
+        let frame_f32: Vec<f32> = frame.into_iter().map(|s| s as f32 / 32768.0).collect();
         let mut encoded = vec![0u8; 4000];
         let written = encoder
             .encode(&frame_f32, frame_size, &mut encoded)
@@ -373,4 +378,121 @@ pub fn encode_pcm_to_opus_frames(
     }
 
     Ok(packets)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a silent 16kHz mono s16le buffer of the given duration.
+    fn silent_pcm_16k(duration_ms: usize) -> Vec<u8> {
+        let samples = 16 * duration_ms; // 16 samples / ms
+        vec![0u8; samples * 2]
+    }
+
+    /// Build a 16kHz mono s16le buffer that contains a 440Hz sine wave
+    /// at half-scale amplitude (16384). This simulates real TTS output.
+    fn sine_pcm_16k(duration_ms: usize) -> Vec<u8> {
+        let samples = 16 * duration_ms;
+        let mut out = Vec::with_capacity(samples * 2);
+        for i in 0..samples {
+            let phase = (i as f32) * 2.0 * std::f32::consts::PI * 440.0 / 16_000.0;
+            let amp = (phase.sin() * 16_384.0) as i16;
+            out.extend_from_slice(&amp.to_le_bytes());
+        }
+        out
+    }
+
+    #[test]
+    fn encode_silent_pcm_succeeds() {
+        // 60ms of silence → 3 frames of 20ms each at 48kHz mono.
+        let pcm = silent_pcm_16k(60);
+        let packets = encode_pcm_to_opus_frames(&pcm, 16_000, 1).expect("encode");
+        assert_eq!(packets.len(), 3);
+        for p in &packets {
+            assert!(!p.is_empty(), "every opus frame should have ≥1 byte");
+        }
+    }
+
+    #[test]
+    fn encode_sine_pcm_succeeds() {
+        // Real TTS-like signal — half-amplitude 440Hz tone. This used to
+        // pass through the encoder as raw [-16384, 16384] floats, which
+        // got internally scaled to ±32767 (full clip). Now we normalise
+        // first, so the encoded packets should be well-formed.
+        let pcm = sine_pcm_16k(40);
+        let packets = encode_pcm_to_opus_frames(&pcm, 16_000, 1).expect("encode");
+        assert_eq!(packets.len(), 2);
+        for p in &packets {
+            assert!(!p.is_empty(), "every opus frame should have ≥1 byte");
+        }
+    }
+
+    /// End-to-end regression: the half-amplitude 440Hz tone must
+    /// round-trip through encode → decode without exploding to clipped
+    /// noise. The previous implementation passed raw i16-range floats
+    /// to the encoder, which the encoder internally scaled by 32768
+    /// before clamping — driving every non-zero sample to ±32767 and
+    /// destroying the signal. We don't try to assert exact PCM equality
+    /// (Opus is lossy), but the decoded peak amplitude should be in the
+    /// same ballpark as the input amplitude (~16384). A maximally
+    /// clipped encoder produces full-scale noise (peaks pushed to
+    /// ±32767), which the round-trip below would surface as a peak
+    /// noticeably above the input's 16384.
+    #[test]
+    fn encode_then_decode_preserves_amplitude_envelope() {
+        use opus_rs::OpusDecoder;
+
+        let pcm = sine_pcm_16k(40);
+        let packets = encode_pcm_to_opus_frames(&pcm, 16_000, 1).expect("encode");
+
+        let mut decoder = OpusDecoder::new(48_000, 1).expect("decoder");
+        let mut decoded_peak: f32 = 0.0;
+        let mut decoded_total_samples = 0usize;
+        for pkt in &packets {
+            let mut out = vec![0f32; 1920];
+            if let Ok(n) = decoder.decode(pkt, 960, &mut out) {
+                for s in &out[..n] {
+                    decoded_peak = decoded_peak.max(s.abs());
+                }
+                decoded_total_samples += n;
+            }
+        }
+        assert!(
+            decoded_total_samples > 0,
+            "decoder produced no samples — encoder output is unusable"
+        );
+        // Decoded floats are normalised [-1.0, 1.0]. Half-amplitude
+        // input is ~0.5; after Opus's lossy compression the peak should
+        // still be below ~0.85 (well under full-scale clip). The pre-
+        // fix behaviour clipped to ±32767 / 32768 ≈ 1.0.
+        assert!(
+            decoded_peak < 0.85,
+            "decoded peak amplitude {decoded_peak} suggests encoder is clipping the input"
+        );
+        assert!(
+            decoded_peak > 0.2,
+            "decoded peak amplitude {decoded_peak} suggests encoder is dropping the signal"
+        );
+    }
+
+    #[test]
+    fn encode_rejects_unaligned_pcm() {
+        // 1 byte → not 16-bit aligned.
+        let err = encode_pcm_to_opus_frames(&[0u8], 16_000, 1).expect_err("must reject odd-length");
+        match err {
+            VoiceError::Codec(msg) => assert!(msg.contains("16-bit aligned")),
+            other => panic!("wrong error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn encode_rejects_zero_channels() {
+        let err =
+            encode_pcm_to_opus_frames(&[0u8; 4], 16_000, 0).expect_err("must reject zero channels");
+        match err {
+            VoiceError::Codec(msg) => assert!(msg.contains("channels cannot be zero")),
+            other => panic!("wrong error: {other:?}"),
+        }
+    }
 }
