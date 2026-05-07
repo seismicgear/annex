@@ -682,4 +682,165 @@ mod tests {
         let current = get_message(&conn, &msg.message_id).expect("get msg failed");
         assert_eq!(current.content, "Edit 3");
     }
+
+    /// Regression test for [F31]: `edit_message` must use
+    /// `BEGIN IMMEDIATE`, not `BEGIN DEFERRED`.
+    ///
+    /// Setup: thread A holds an IMMEDIATE transaction on conn1 that
+    /// writes (but does not yet commit) a new content for the
+    /// message. Thread B then calls `edit_message` on conn2.
+    ///
+    /// Under IMMEDIATE (correct): thread B's `BEGIN IMMEDIATE`
+    /// blocks until conn1's tx commits (busy_timeout=5s). After
+    /// commit, B's BEGIN succeeds, B re-reads the LATEST content
+    /// ("from-conn1"), saves it to `message_edits`, and updates
+    /// content to "from-thread-B". `message_edits` ends up with one
+    /// row: "from-conn1" (the post-A pre-B state).
+    ///
+    /// Under DEFERRED (the bug being prevented): thread B's
+    /// `BEGIN DEFERRED` succeeds immediately. B reads the pre-A
+    /// snapshot inside its tx — content="Original". B waits at the
+    /// INSERT step for the RESERVED lock. After conn1 commits, B
+    /// retries, but SQLite under WAL detects the snapshot conflict
+    /// (B's snapshot read a row that conn1 wrote) and returns
+    /// `SQLITE_BUSY_SNAPSHOT`, which propagates as an error from
+    /// `edit_message`. The test then asserts `res_b.is_ok()` —
+    /// which fails under DEFERRED. (Even if SQLite were to silently
+    /// continue under DEFERRED, the audit trail would record
+    /// "Original" instead of "from-conn1", which the assertion at
+    /// the end of the test catches.)
+    #[test]
+    fn edit_message_uses_immediate_to_serialize_with_external_writer() {
+        use std::sync::mpsc;
+        use std::thread;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db_path = tmp.path().join("annex-imm-serialize-test.sqlite");
+
+        // Bootstrap.
+        {
+            let conn = Connection::open(&db_path).expect("open");
+            conn.execute_batch("PRAGMA journal_mode = WAL;")
+                .expect("enable WAL");
+            run_migrations(&conn).expect("migrations");
+
+            let policy_json = serde_json::to_string(&ServerPolicy::default()).expect("policy");
+            conn.execute(
+                "INSERT INTO servers (slug, label, policy_json) VALUES ('test', 'Test', ?1)",
+                [policy_json],
+            )
+            .expect("seed server");
+
+            let server_id: i64 = conn
+                .query_row("SELECT id FROM servers WHERE slug='test'", [], |r| r.get(0))
+                .expect("server id");
+
+            create_channel(
+                &conn,
+                &CreateChannelParams {
+                    server_id,
+                    channel_id: "chan-imm".to_string(),
+                    name: "Imm".to_string(),
+                    channel_type: ChannelType::Text,
+                    topic: None,
+                    vrp_topic_binding: None,
+                    required_capabilities_json: None,
+                    agent_min_alignment: None,
+                    retention_days: Some(7),
+                    federation_scope: FederationScope::Local,
+                },
+            )
+            .expect("create channel");
+
+            create_message(
+                &conn,
+                &CreateMessageParams {
+                    channel_id: "chan-imm".to_string(),
+                    message_id: "msg-imm".to_string(),
+                    sender_pseudonym: "user-x".to_string(),
+                    content: "Original".to_string(),
+                    reply_to_message_id: None,
+                },
+            )
+            .expect("create msg");
+        }
+
+        // conn1: external writer that holds an IMMEDIATE tx with a
+        // pending UPDATE to the message. A pre-flight write is what
+        // causes `BEGIN_DEFERRED` (the bug) on conn2 to read a stale
+        // snapshot — that snapshot conflict only manifests when conn1
+        // has actually written something B's snapshot would have
+        // read.
+        let conn1 = Connection::open(&db_path).expect("open conn1");
+        conn1
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .expect("conn1 busy_timeout");
+        conn1
+            .execute_batch("BEGIN IMMEDIATE")
+            .expect("conn1 BEGIN IMMEDIATE");
+        conn1
+            .execute(
+                "UPDATE messages SET content = ?1 WHERE message_id = ?2",
+                ["from-conn1", "msg-imm"],
+            )
+            .expect("conn1 UPDATE");
+        // (conn1 has NOT committed yet — its UPDATE is buffered in
+        // its tx.)
+
+        // Spawn thread B: try to edit_message on conn2. Under
+        // IMMEDIATE, B's BEGIN must wait. Use a channel so the test
+        // observes the wait.
+        let (tx, rx) = mpsc::channel::<Result<String, String>>();
+        let path_b = db_path.clone();
+        let h_b = thread::spawn(move || {
+            let conn = Connection::open(&path_b).expect("open conn b");
+            conn.busy_timeout(std::time::Duration::from_secs(5))
+                .expect("conn2 busy_timeout");
+            let result = edit_message(&conn, "msg-imm", "user-x", "from-thread-B")
+                .map(|m| m.content)
+                .map_err(|e| format!("{e:?}"));
+            tx.send(result).expect("send result");
+        });
+
+        // Confirm thread B is BLOCKED inside edit_message (i.e. it
+        // hasn't returned a result within 200ms). If B returned, it
+        // either failed with SQLITE_BUSY_SNAPSHOT (DEFERRED bug) or
+        // somehow bypassed conn1's lock (unlikely).
+        let early = rx.recv_timeout(std::time::Duration::from_millis(200));
+        assert!(
+            early.is_err(),
+            "thread B's edit_message should be blocked while conn1 holds IMMEDIATE; \
+             got early result {early:?}"
+        );
+
+        // Commit conn1's tx. This releases the RESERVED lock and
+        // makes "from-conn1" the visible content.
+        conn1.execute_batch("COMMIT").expect("conn1 COMMIT");
+
+        // Now thread B should unblock and complete.
+        let res_b = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("thread B should complete after conn1 commits")
+            .expect("thread B's edit_message must succeed under IMMEDIATE");
+        assert_eq!(res_b, "from-thread-B", "thread B's UPDATE was applied");
+
+        h_b.join().expect("thread B join");
+
+        // Verify the audit trail. Under IMMEDIATE, B's BEGIN waited,
+        // so when B's read finally ran it saw "from-conn1" — that's
+        // what B saved to message_edits. Under DEFERRED (the bug)
+        // B's read happened immediately and saw "Original", so
+        // message_edits would have "Original" (and the snapshot
+        // conflict at INSERT would either fail or — if the bug
+        // happened to slip through SQLite's snapshot check —
+        // produce "Original" in the history).
+        let final_conn = Connection::open(&db_path).expect("open final conn");
+        let history = get_edit_history(&final_conn, "msg-imm").expect("history");
+        assert_eq!(history.len(), 1, "expected exactly 1 edit history row");
+        assert_eq!(
+            history[0].old_content, "from-conn1",
+            "audit row must be the post-conn1 snapshot, not 'Original'; \
+             a value of 'Original' here indicates a DEFERRED-tx regression"
+        );
+    }
 }

@@ -37,6 +37,7 @@ pub mod error;
 pub mod protocol;
 pub mod session;
 pub mod tokens;
+pub mod typing_throttle;
 
 pub use connection_manager::ConnectionManager;
 pub use protocol::{IncomingMessage, OutgoingMessage, WsConnectParams, WsMessagePayload};

@@ -1,7 +1,7 @@
 # Agent Handoff
 
 ## Current branch
-`claude/fix-annex-bugs-Fshec` (current session; chain: `…itXFq` → `…PxyqS` → `…Las84` → `…AqBJk` → `…Fshec`)
+`claude/fix-annex-bugs-AT8va` (current session; chain: `…itXFq` → `…PxyqS` → `…Las84` → `…AqBJk` → `…Fshec` → `…AT8va`)
 
 ## Session goal
 Recursive production bug-fix campaign on Annex (Tauri desktop, Rust workspace,
@@ -9,7 +9,315 @@ Groth16/Circom ZKP, SQLite). Fix highest-impact real bugs in priority order:
 ZK enforcement → ZK release artifact path → canonical hex → Merkle epoch/concurrency
 → nullifier privacy → desktop release → security sweep.
 
-## Fixed in this session (claude/fix-annex-bugs-Fshec)
+## Fixed in this session (claude/fix-annex-bugs-AT8va)
+
+### [F31] `edit_message` / `delete_message` used DEFERRED tx but comment claimed IMMEDIATE (lost-update bug)
+`crates/annex-channels/src/messages.rs::edit_message` and
+`delete_message` both wrap their critical sections in
+`conn.unchecked_transaction()`. The comment above each block claimed
+"Use IMMEDIATE transaction to serialize concurrent edit/delete
+operations. Without this, two concurrent edits could both pass the
+ownership and time-window checks, losing an edit from the audit
+trail." That is the correct intent. But `unchecked_transaction()`
+defaults to `TransactionBehavior::Deferred`, not Immediate
+(`rusqlite-0.32.1/src/transaction.rs`). The code was doing exactly
+the thing the comment warned against.
+
+Concrete failure mode under DEFERRED + WAL:
+1. Tx A: `BEGIN DEFERRED`. Reads message → snapshot S1, content =
+   "original".
+2. Tx B: `BEGIN DEFERRED`. Reads message → snapshot S1 (same WAL
+   snapshot), content = "original".
+3. Tx A: `INSERT INTO message_edits (..., 'original')`. Acquires
+   RESERVED. `UPDATE messages SET content = 'A1'`. `COMMIT`.
+4. Tx B: `INSERT INTO message_edits (..., 'original')`. Waits at
+   RESERVED, eventually acquires it after A commits. SQLite WAL
+   detects the snapshot conflict (Tx B's snapshot read a row that
+   another writer has since modified) and either:
+   * returns `SQLITE_BUSY_SNAPSHOT` (B's edit fails noisily — surface-
+     level "edit failed" to the user), or
+   * silently allows the write through with B's stale snapshot data
+     (depends on busy_handler implementation), at which point
+     `message_edits` ends up with two "original" rows and the latest
+     content is "B1" — A's edit is lost from both the message and
+     the audit trail.
+
+The fix: switch to `Transaction::new_unchecked(conn,
+TransactionBehavior::Immediate)`. `BEGIN IMMEDIATE` acquires the
+RESERVED lock at transaction start, serializing the entire
+critical section across the WAL writer boundary. Tx B blocks at
+BEGIN until Tx A commits, then re-reads the post-A state and
+saves the LATEST content to `message_edits` — preserving the full
+audit chain.
+
+The comments above both call sites are rewritten to name the
+specific lost-update scenario, the SQLite mechanism that prevents
+it, and the rusqlite API choice (`unchecked_transaction` is
+Deferred-only; `Transaction::new_unchecked` lets us pass
+`Immediate` without taking `&mut Connection`, which would have been
+an API break for every call site).
+
+`delete_channel` in `channels.rs` was reviewed for the same pattern
+but its DEFERRED transaction is fine — the multi-step delete only
+worries about partial-failure atomicity, not about read-then-write
+races against a concurrent peer.
+
+- files changed:
+  - `crates/annex-channels/src/messages.rs::edit_message` and
+    `delete_message` —
+    * import `Transaction, TransactionBehavior`.
+    * replace `conn.unchecked_transaction()?` with
+      `Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?`.
+    * rewrite the doc comments to name the exact bug + mechanism.
+  - `crates/annex-channels/Cargo.toml` — new `[dev-dependencies]
+    tempfile = { workspace = true }` for the regression test.
+  - `crates/annex-channels/src/lib.rs` —
+    * 1 new test
+      `edit_message_uses_immediate_to_serialize_with_external_writer`
+      that opens a real on-disk WAL DB, holds a manually-issued
+      `BEGIN IMMEDIATE` + UPDATE on conn1 (uncommitted), spawns a
+      thread B calling `edit_message` on conn2, and asserts:
+      1. Thread B BLOCKS for at least 200ms (does not return
+         early). Under DEFERRED, B's BEGIN succeeds immediately and
+         B returns SQLITE_BUSY at the INSERT step within ~milliseconds
+         — `recv_timeout(200ms).is_err()` would be false → test
+         fails. Verified by temporarily reverting messages.rs to
+         DEFERRED — test failed with the exact expected diagnostic
+         ("got early result Ok(Err('Database(SqliteFailure(Error
+         { code: DatabaseBusy ...))))").
+      2. After conn1 commits, thread B unblocks and the audit row
+         it inserts is `"from-conn1"` (the post-A snapshot), NOT
+         `"Original"` (the pre-A snapshot a DEFERRED tx would have
+         saved).
+- tests run: `cargo test -p annex-channels` → **21 passed** (1 new
+  for [F31]).
+- result: PASS. Concurrent edit/delete operations are now
+  guaranteed to serialize at the WAL writer boundary; the audit
+  trail preserves every committed edit.
+
+### [F30] AgentVoiceClient transcription task leaked on agent disconnect (slow leak)
+`crates/annex-voice/src/agent.rs::AgentVoiceClient::connect` spawned a
+fire-and-forget `tokio::spawn` task that consumed STT tap frames from
+`VoiceService::stt_tap_tx` and forwarded transcriptions through
+`agent.transcription_tx`. The `JoinHandle` was discarded. The task's
+exit condition was `tap_rx.recv()` returning `Err(Closed)` — which
+fires only when the broadcast sender drops, i.e. when the global
+`VoiceService` drops, i.e. server shutdown.
+
+So every agent join/leave cycle permanently leaked one tokio task
+that:
+* held an `Arc<SttService>` (preventing the SttService from
+  dropping),
+* consumed every STT tap frame (decode + room-name compare CPU work
+  for nothing — once the agent's room was reaped by [F27], the
+  filter never matched, so the work was wasted but the task kept
+  running),
+* held a clone of the now-orphaned `transcription_tx`
+  (broadcast to no subscribers).
+
+The task count grew linearly with the number of agent
+connect/disconnect cycles since process start. On a long-running
+server with many short-lived agent sessions, this accumulates.
+
+Fix: store the `JoinHandle<()>` in a new `transcription_task` field
+on `AgentVoiceClient`, and add a `Drop` impl that calls
+`self.transcription_task.abort()`. tokio observes the abort at the
+task's next `.await` point (`tap_rx.recv().await`) and reaps it.
+Also added a `#[cfg(test)] pub(crate) fn
+transcription_abort_handle(&self)` accessor so the regression test
+can observe the task state independently of the agent's own lifetime.
+
+- files changed:
+  - `crates/annex-voice/src/agent.rs` —
+    * new `transcription_task: JoinHandle<()>` field on
+      `AgentVoiceClient` with full doc comment naming the leak.
+    * new `Drop` impl that aborts the task.
+    * `connect` captures the JoinHandle from `tokio::spawn` and
+      stores it on the constructed agent.
+    * new `#[cfg(test)] pub(crate) fn transcription_abort_handle`
+      method.
+    * 2 new tests:
+      - `drop_aborts_transcription_task` — exercises the full
+        connect → abort_handle clone → drop → poll-for-finish flow
+        with a 500ms timeout.
+      - `drop_does_not_panic_when_task_already_finished` — defensive
+        test for the case where the task exits before Drop runs
+        (double-abort must be a tokio-side no-op).
+- tests run: `cargo test -p annex-voice --lib` → 18 passed (2 new for
+  this fix).
+- result: PASS. Agent task lifetime is now bounded by the
+  AgentVoiceClient's lifetime; long-running servers no longer
+  accumulate dead transcription tasks.
+
+### [F29] WebSocket typing-indicator had no per-connection rate limit (DOS)
+`IncomingMessage::Typing` is dispatched to every channel subscriber via
+`connection_manager.broadcast`. The HTTP rate-limit middleware does NOT
+apply to WebSocket frames (it runs on the HTTP layer, not on the
+post-upgrade frame stream), so an authenticated peer could fire
+typing events at any rate the OS would deliver. Each event triggers a
+fan-out to every channel subscriber — N concurrent connections × M
+subscribers per channel = a multiplicative broadcast load.
+
+The [F24] WS frame-size cap (128 KiB) doesn't help: typing frames are
+tiny. The mpsc back-pressure (256-deep outbound queue per session)
+caps the *delivery* side but not the *broadcast* invocation cost,
+which still goes through `connection_manager.broadcast`'s read locks
+and a `try_send` per subscriber.
+
+Fix: per-WebSocket-session, per-channel debouncer
+`TypingThrottle` in a new `ws/typing_throttle.rs` module. Admits at
+most one typing event per `TYPING_DEBOUNCE = 800ms` window per
+channel per connection. Legitimate clients re-send typing pings at
+~1Hz and stay under the cap; a malicious client sending 1000 events/s
+gets at most 1-2 admitted per second per channel. Map is opportunistically
+GC'd at a 60s horizon so it cannot grow without bound across many
+distinct channels.
+
+The throttle is owned by `WsSession::run` and borrowed via a new
+`typing_throttle: &'a TypingThrottle` field on `CommandContext`. Only
+the typing handler reads it; the rest of the dispatch path is
+unchanged. No protocol or wire-shape change.
+
+- files changed:
+  - `crates/annex-server/src/ws/typing_throttle.rs` — new module with
+    `TypingThrottle` and `TYPING_DEBOUNCE` const. 6 unit tests:
+    `first_typing_event_is_admitted`,
+    `second_typing_event_within_debounce_is_dropped`,
+    `typing_event_after_debounce_is_admitted`,
+    `debounce_is_per_channel`,
+    `flood_at_high_frequency_admits_at_most_one_per_debounce`,
+    `old_entries_are_garbage_collected`.
+  - `crates/annex-server/src/ws/mod.rs` — `pub mod typing_throttle`.
+  - `crates/annex-server/src/ws/context.rs` — new
+    `typing_throttle: &'a TypingThrottle` field on `CommandContext`.
+  - `crates/annex-server/src/ws/session.rs` — owns
+    `TypingThrottle::new()` for the lifetime of the connection;
+    passes it into every `CommandContext`.
+  - `crates/annex-server/src/ws/commands/typing.rs` — gates the
+    broadcast on `ctx.typing_throttle.try_admit(&channel_id)`. The
+    membership check still runs first so the throttle behaviour
+    doesn't leak channel existence to non-members.
+- tests run: `cargo test -p annex-server --lib ws::typing_throttle`
+  → 6 passed (all new).
+- result: PASS. The flood test exercises the abuse shape directly:
+  1000 events/s × 1 channel admits ≤ 2 events/s. Legitimate ~1Hz
+  clients are unchanged.
+
+### [F28] WebSocket session takeover deadlocked on lock inversion (latent DOS)
+The connection_manager invariant is documented at module level:
+`sessions → channel_subscriptions → user_subscriptions`. Every method
+in the file follows that order — `subscribe`, `unsubscribe`,
+`unsubscribe_channel`, `remove_session`, `disconnect_user`, `broadcast`
+— except `add_session`, which inverted it: when replacing an existing
+session for the same pseudonym, it acquired
+`user_subscriptions.write()` *before* `channel_subscriptions.write()`.
+
+The deadlock is concrete:
+* Thread A in `subscribe(channel, pseudonym)` holds `chan_subs (write)`
+  and is waiting for `user_subs (write)`.
+* Thread B in `add_session(pseudonym)` (replacing) holds
+  `user_subs (write)` and is waiting for `chan_subs (write)`.
+Both wait forever. The only thing that has prevented this from
+manifesting in CI is that session replacement is rare (it requires
+the same pseudonym to reconnect with an existing session still
+registered) — but on a real server it triggers any time a user
+reconnects faster than the previous session's WebSocket has
+disconnected, which is exactly the network-flap-and-reconnect path.
+
+The pre-existing comment on the buggy block ("channel_subscriptions
+→ user_subscriptions order") was *correct in intent* and *false in
+the code below it* — the comment described the documented invariant
+while the code did the opposite. Past readers were misled.
+
+Fix: rewrote `add_session`'s replacement-cleanup block to mirror
+`remove_session` exactly:
+1. Read user_subs briefly (read lock) to copy the channel list.
+2. Write chan_subs to remove pseudonym from each channel.
+3. Write user_subs to remove the pseudonym entry.
+
+The read-then-write split is safe because the previous session's
+mpsc sender was already replaced under the `sessions` write lock at
+the top of `add_session` — concurrent `subscribe()` calls for the
+same pseudonym from the new session can only run after `add_session`
+returns (they can't observe the previous-session takeover from inside
+the WS event loop until then). Worst case is a benign idempotency:
+a concurrent `unsubscribe()` removes a pseudonym from chan_subs that
+we then redundantly try to remove.
+
+- files changed:
+  - `crates/annex-server/src/ws/connection_manager.rs::add_session` —
+    rewrote the cleanup block in the documented lock order. New
+    docstring explains the invariant and the regression that the fix
+    closes.
+  - Same file — added 2 unit tests:
+    `add_session_replacement_cleans_up_old_subscriptions` (asserts
+    chan_subs and user_subs are wiped post-replacement) and
+    `add_session_replacement_does_not_deadlock_with_concurrent_subscribe`
+    (16 concurrent tasks alternating `subscribe` and `add_session` on
+    the same pseudonym; 5s timeout per join — the pre-fix code can
+    deadlock here under enough scheduling pressure).
+- tests run: `cargo test -p annex-server --lib
+  ws::connection_manager` → 2 passed (both new).
+- result: PASS. Lock invariant holds across every method in
+  `connection_manager.rs`. Future writers must keep
+  `sessions → chan_subs → user_subs` ordering everywhere; the
+  documented invariant + the 2 regression tests are the guard rails.
+
+### [F27] VoiceService::rooms never reaped — slow memory leak
+`crates/annex-voice/src/service.rs::get_or_create_room` was insert-only.
+`remove_participant` only dropped the peer from `room.peers`;
+`on_peer_connection_state_change` did the same. When every peer of a
+channel disconnected, the `Room { peers: DashMap, agent_track:
+Arc<...> }` stayed in `self.rooms` forever. Memory grew linearly with
+the number of *distinct* channel IDs ever joined since process start.
+Not a security issue (channel IDs are not attacker-controlled) but a
+real production concern on long-running servers with many short-lived
+voice channels.
+
+Fix: introduce `drop_peer_and_maybe_reap(channel_id, peer_id) ->
+Option<Arc<PeerSession>>`. Removes the peer from `room.peers`; if
+that was the last peer, atomically reaps the room from `self.rooms`
+via `DashMap::remove_if(|_, r| r.peers.is_empty())`. Returns the
+dropped `PeerSession` for the caller to close (only `remove_participant`
+needs this; `on_peer_connection_state_change` runs while the pc is
+already terminating).
+
+The reap predicate is evaluated under DashMap's entry lock, so the
+race "another `get_or_create_room` runs concurrently" resolves
+cleanly:
+* If the racer inserts a peer *before* the predicate runs, the
+  predicate returns false and the room is preserved.
+* If the racer inserts a peer *after* the predicate runs, the room
+  is reaped and the racer creates a fresh one with a new `agent_track`
+  on its next `get_or_create_room` call. New peers see the new
+  agent_track; in-flight `inject_agent_opus` writes hit the new room
+  too (they re-resolve through `get_or_create_room` each call).
+
+Crucially, reap fires only when a peer was *actually* removed (i.e.
+`peers.remove(peer_id).is_some()`). This preserves the semantics of
+`create_room` and `inject_agent_opus`, which create empty rooms
+intentionally (the agent prepares a room before any human peer
+joins) and must not be torn down by a stray
+`remove_participant("nonexistent")` call.
+
+- files changed:
+  - `crates/annex-voice/src/service.rs` —
+    new `drop_peer_and_maybe_reap` helper with full doc comment;
+    `remove_participant` and the `on_peer_connection_state_change`
+    callback both delegate to it; 4 new tests:
+    `create_room_then_remove_unknown_participant_does_not_reap_room`
+    (semantics-preserving for the agent path),
+    `drop_peer_and_maybe_reap_returns_none_for_unknown_room`,
+    `drop_peer_and_maybe_reap_returns_none_for_known_room_unknown_peer`
+    (no peer removed → no reap),
+    `rooms_dashmap_remove_if_handles_concurrent_insert_race` (drives
+    the `remove_if` predicate path directly).
+- tests run: `cargo test -p annex-voice --lib` → 16 passed (4 new for
+  this fix, 7 from [F21], 5 from [F22]).
+- result: PASS. Long-running servers no longer accumulate dead Room
+  entries.
+
+## Fixed in earlier session (claude/fix-annex-bugs-Fshec)
 
 ### [F26] STT/TTS child processes leaked on tokio future cancellation (DOS)
 `crates/annex-voice/src/stt.rs::SttService::transcribe`,
@@ -933,33 +1241,11 @@ The fix mirrors the local cap.
   No fix this session because the architectural change is large and the
   URL-as-capability model is documented behaviour today.
 
-- [ ] **`VoiceService` rooms never reaped** (slow memory leak).
-  `crates/annex-voice/src/service.rs::get_or_create_room` only ever
-  *inserts* into the `rooms: DashMap<String, Arc<Room>>`. There is no
-  removal path: `remove_participant` only drops the peer from the room
-  (line 222), and `on_peer_connection_state_change` only drops the
-  peer (line 333). When every peer of a channel disconnects, the
-  `Room { peers: DashMap, agent_track: Arc<...> }` stays in memory
-  forever. Memory grows linearly with the number of *distinct* channel
-  IDs ever joined. Not a security issue — channel IDs are
-  operator/user-controlled, not attacker-controlled. But on a long-
-  running server with many short-lived voice channels, the leak
-  accumulates. Recommended fix: when `on_peer_connection_state_change`
-  observes Failed/Closed/Disconnected and `room.peers.is_empty()`,
-  remove `rooms.remove(&channel_id)`. Watch for the obvious race where
-  another `get_or_create_room` is concurrently inserting; the safe
-  pattern is to use DashMap's `remove_if` or to take the entry and
-  re-insert if the peer count is non-zero. Out of scope this session.
+- [x] **`VoiceService` rooms never reaped** — closed by [F27] this
+  session.
 
-- [ ] **WS typing-indicator has no per-connection rate limit**.
-  `IncomingMessage::Typing` is dispatched to every channel subscriber
-  via `connection_manager.broadcast`. The HTTP rate-limit middleware
-  does NOT apply to WS frames; a malicious client could send 10k
-  typing events per second and saturate the broadcast fan-out. The
-  [F24] WS frame size cap doesn't help — typing frames are tiny.
-  Recommended fix: per-connection token bucket on `Typing` events, or
-  a server-side debounce that drops typing events from the same
-  pseudonym within ~1s. Out of scope this session.
+- [x] **WS typing-indicator has no per-connection rate limit** — closed
+  by [F29] this session.
 
 - [ ] **Desktop build cannot be exercised in this environment** — system
   GTK/WebKitGTK packages are missing from the sandbox. Code review of
@@ -995,7 +1281,47 @@ The fix mirrors the local cap.
   channel ZK header now dispatches to the right vkey + topicHash check, so
   v2 clients can hit channel-protected endpoints with v2 proofs.
 
-## Commands run (this session, claude/fix-annex-bugs-Fshec)
+## Commands run (this session, claude/fix-annex-bugs-AT8va)
+- `cargo fmt --all --check` → clean (after auto-fmt of [F27] test
+  block).
+- `cargo clippy -p annex-server -p annex-voice --all-targets -- -D
+  warnings` → clean.
+- `cargo clippy --workspace --exclude annex-desktop --all-targets --
+  -D warnings` → clean.
+- `cargo test -p annex-voice --lib` → **18 passed** (4 new for [F27]:
+  `create_room_then_remove_unknown_participant_does_not_reap_room`,
+  `drop_peer_and_maybe_reap_returns_none_for_unknown_room`,
+  `drop_peer_and_maybe_reap_returns_none_for_known_room_unknown_peer`,
+  `rooms_dashmap_remove_if_handles_concurrent_insert_race`; 2 new
+  for [F30]: `drop_aborts_transcription_task`,
+  `drop_does_not_panic_when_task_already_finished`).
+- `cargo test -p annex-channels` → **21 passed** (1 new for [F31]:
+  `edit_message_uses_immediate_to_serialize_with_external_writer`).
+  Verified the test catches DEFERRED regressions by temporarily
+  reverting messages.rs — test failed with the expected
+  "early result Ok(Err(DatabaseBusy))" diagnostic.
+- `cargo test -p annex-server --lib ws::` → **11 passed** (8 new):
+  - 6 in `ws::typing_throttle::tests` for [F29]
+    (`first_typing_event_is_admitted`,
+    `second_typing_event_within_debounce_is_dropped`,
+    `typing_event_after_debounce_is_admitted`,
+    `debounce_is_per_channel`,
+    `flood_at_high_frequency_admits_at_most_one_per_debounce`,
+    `old_entries_are_garbage_collected`).
+  - 2 in `ws::connection_manager::tests` for [F28]
+    (`add_session_replacement_cleans_up_old_subscriptions`,
+    `add_session_replacement_does_not_deadlock_with_concurrent_subscribe`).
+- `cargo test -p annex-server --lib` → **130 passed** (up from 122
+  baseline; 8 new tests).
+- `cargo test -p annex-server --tests` → all integration tests pass
+  (no regressions; existing fixtures and mocks unchanged).
+- Disk note: `target/debug/incremental` and the `annex-server` test
+  binaries hit the 252G volume's last 109M during the workspace
+  test run. `cargo clean -p annex-server` + removing
+  `target/debug/incremental` recovered ~25 GiB. On tight runners,
+  prefer `--lib` and per-crate test invocations.
+
+## Commands run (previous session, claude/fix-annex-bugs-Fshec)
 - `cargo fmt --all --check` → clean.
 - `cargo clippy --workspace --exclude annex-desktop --all-targets -- -D warnings`
   → clean (after fixing 6 `uninlined_format_args` warnings introduced by
@@ -1228,8 +1554,141 @@ The fix mirrors the local cap.
   before `.spawn()`. Without it, a tokio future cancellation (e.g.
   on STT_TIMEOUT / TTS_TIMEOUT) leaves the child process orphaned in
   the OS. See [F26].
+- I-VOICE-ROOM-REAP (new): When the last peer of a `VoiceService`
+  room disconnects, the room MUST be reaped from `self.rooms` via
+  `drop_peer_and_maybe_reap` (which uses `DashMap::remove_if` for
+  race-safety). Reap fires only when a peer was actually removed —
+  empty rooms created intentionally by `create_room` /
+  `inject_agent_opus` (the agent path) are preserved. See [F27].
+- I-WS-LOCK-ORDER (new): `connection_manager.rs` documents the
+  invariant `sessions → channel_subscriptions → user_subscriptions`.
+  Every write path in the file MUST take locks in that order.
+  Previously `add_session` violated this with an inverted ordering
+  on the replacement-cleanup branch, which deadlocked against
+  `subscribe()` under contention. The 2 regression tests in
+  `ws::connection_manager::tests` are the guard rails for future
+  edits. See [F28].
+- I-WS-TYPING-DEBOUNCE (new): `IncomingMessage::Typing` is gated by
+  `TypingThrottle` — at most one event per `TYPING_DEBOUNCE = 800ms`
+  per (connection, channel) pair. The throttle is owned per-session
+  in `WsSession::run` and borrowed via `CommandContext.typing_throttle`.
+  Future bandwidth-sensitive WS variants (presence pings, read
+  receipts, etc.) should follow the same per-session, per-channel
+  debouncer pattern. See [F29].
+- I-VOICE-AGENT-TASK-LIFETIME (new): Every `tokio::spawn` inside
+  `AgentVoiceClient::connect` MUST have its `JoinHandle` stored on
+  the agent and aborted by an explicit `Drop` impl. Future task
+  spawns under `agent.rs` MUST follow the same pattern — the global
+  `VoiceService::stt_tap_tx` broadcast sender is process-lifetime,
+  so any task subscribed to it that does not abort on agent drop
+  will leak for the lifetime of the server. See [F30].
+- I-CHANNELS-IMMEDIATE-TX (new): Any function in `annex-channels`
+  that performs a read-then-write critical section across a
+  Connection MUST use
+  `Transaction::new_unchecked(conn, TransactionBehavior::Immediate)`,
+  NOT `conn.unchecked_transaction()` (which defaults to Deferred).
+  Currently this applies to `edit_message` and `delete_message`;
+  any future ownership-checked update (e.g. message reactions, read
+  receipts) MUST follow the same pattern to avoid the lost-update /
+  audit-trail-loss bug. `delete_channel` is exempt — its DEFERRED
+  tx is fine because it only worries about partial-failure
+  atomicity, not concurrent-writer races. See [F31].
 
-## Context cutoff note (current session, claude/fix-annex-bugs-Fshec)
+## Context cutoff note (current session, claude/fix-annex-bugs-AT8va)
+Session [F27..F31] focused on long-lived production correctness — the
+two outstanding "Still broken" items from the previous session
+(rooms-leak + typing-DOS), a real lock-inversion deadlock in the
+WebSocket connection manager that was hiding behind a misleading
+comment, one additional spawn-and-forget task leak, and a
+DEFERRED-vs-IMMEDIATE transaction bug whose comment claimed
+IMMEDIATE behaviour while the code did the opposite.
+
+* [F27] `VoiceService::rooms` was insert-only — every distinct channel
+  ID joined since process start stayed in the DashMap forever. New
+  `drop_peer_and_maybe_reap` helper uses `DashMap::remove_if` for
+  race-safe reap. Reap fires only when a peer was actually removed,
+  preserving the agent path's intentional pre-create-room semantics.
+  4 unit tests including the concurrent-insert race shape.
+* [F28] `ConnectionManager::add_session` violated the
+  `sessions → chan_subs → user_subs` invariant on its replacement
+  branch, deadlocking against any concurrent `subscribe()`. The
+  comment claimed the correct order; the code did the opposite.
+  Rewrote the cleanup block in the documented order. 2 unit tests
+  (cleanup-correctness + 16-task contention with a 5s timeout).
+* [F29] `IncomingMessage::Typing` had no per-connection rate limit
+  beyond axum's HTTP rate limiter (which does NOT apply to WS frames).
+  New `TypingThrottle` per-session debouncer admits at most one
+  typing event per (channel, 800ms) pair. 6 unit tests including the
+  flood shape (1000 events/s → ≤ 2 admitted).
+* [F30] `AgentVoiceClient::connect` spawned a fire-and-forget
+  transcription forwarding task whose only exit condition was
+  `VoiceService::stt_tap_tx` closing — i.e. server shutdown. Each
+  agent connect/disconnect cycle leaked one such task. New
+  `transcription_task: JoinHandle<()>` field + `Drop` impl that
+  aborts it; 2 unit tests (full-cycle abort + double-abort no-op).
+* [F31] `edit_message` and `delete_message` used
+  `conn.unchecked_transaction()` (DEFERRED) while their comments
+  claimed IMMEDIATE serialization. Two concurrent DEFERRED tx
+  could read the pre-edit snapshot, both write, and lose one
+  edit's audit row + content. Switched to
+  `Transaction::new_unchecked(conn, TransactionBehavior::Immediate)`.
+  1 deterministic regression test that holds an external IMMEDIATE
+  tx and asserts the second writer BLOCKS at BEGIN.
+
+`fmt`, `clippy --workspace --exclude annex-desktop --all-targets --
+-D warnings`, and the `annex-server` + `annex-voice` +
+`annex-channels` lib test suites are all green. New totals:
+`annex-voice --lib` → 18 passed (+6); `annex-server --lib` → 130
+passed (+8); `annex-channels` → 21 passed (+1); `annex-server
+--tests` → all integration tests pass.
+
+If a future agent picks up:
+1. Re-run baseline (fmt + clippy + `cargo test -p annex-server --lib
+   ws::` and `cargo test -p annex-voice --lib`).
+2. Open items from previous sessions remain:
+   - real multi-party ZK ceremony (still blocks tagged release because
+     `verify-artifacts.js` correctly refuses dev-fixture under
+     production profile).
+   - v1 nullifier privacy gap (release blocker for any deployment
+     claiming topic unlinkability; v2 path is implemented and opt-in).
+   - PoT depth ceiling (only matters if circuit grows past ~16k
+     constraints).
+   - uploads-as-public-URL design question (release blocker for any
+     private-channel mode).
+   - desktop build smoke test in real Linux/Windows CI.
+3. Areas already audited this session that look clean:
+   - `connection_manager.rs` lock ordering — every method now follows
+     the documented `sessions → chan_subs → user_subs` invariant.
+   - `VoiceService` room lifecycle — no more leaks; `try_reap_room`
+     is the canonical reap point, called from both
+     `remove_participant` and `on_peer_connection_state_change`.
+   - WS DOS surface — `Typing` is now bounded; `Message`/`EditMessage`
+     are bounded by `MAX_WS_MESSAGE_CONTENT_LEN` and the
+     mpsc back-pressure (256-deep outbound queue).
+   - HTTP outbound paths in `services/federation_service.rs` and
+     `services/rtx_service.rs` — every `tokio::spawn(client.post(&url)…)`
+     gates on `is_url_private_or_reserved` (verified by re-running
+     [F12], [F20], [F25] grep).
+   - `api_link_preview::PreviewCache` — capacity-bounded
+     (MAX_CACHE_ENTRIES = 2000, MAX_IMAGE_CACHE_ENTRIES = 500).
+     Stale entries past TTL are not aggressively pruned but capacity
+     eviction caps total size.
+4. Next concrete files to inspect for the *next* class of bugs (none
+   are bugs today, but they're the most likely places):
+   - `crates/annex-server/src/api_link_preview.rs` — TTL-based
+     pruning on read could be tightened (currently entries past TTL
+     stay until capacity-eviction; safe but slightly wasteful).
+   - `crates/annex-voice/src/agent.rs::connect_native_room` — the
+     spawn-and-forget transcription task does not have a
+     cancellation handle. If the agent disconnects, the task
+     eventually exits when the broadcast sender closes, but a
+     long-running server with frequent agent join/leave cycles
+     accumulates briefly-spawned tasks.
+   - `client/src/lib/zk.ts` — when the v2 client lands, ensure all
+     four optional federation fields go together (publicSignals +
+     nullifierHex + topicHashHex + protocolVersion); see I-FED-V2-1.
+
+## Context cutoff note (previous session, claude/fix-annex-bugs-Fshec)
 Session [F20..F26] focused on SSRF / DOS / voice-pipeline correctness:
 
 * [F20] RTX federation relay was missing the SSRF guard that [F12]
