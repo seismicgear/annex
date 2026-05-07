@@ -4,6 +4,7 @@ use crate::stt::SttService;
 use crate::tts::encode_pcm_to_opus_frames;
 use std::sync::Arc;
 use tokio::sync::broadcast;
+use tokio::task::JoinHandle;
 use tracing::{debug, info};
 
 const DEFAULT_TRANSCRIPTION_BROADCAST_CAPACITY: usize = 256;
@@ -23,6 +24,32 @@ pub struct AgentVoiceClient {
     pub transcription_tx: broadcast::Sender<TranscriptionEvent>,
     voice_service: Arc<VoiceService>,
     agent_id: String,
+    /// Handle to the spawned STT-tap → transcription forwarding task.
+    /// Aborted on `Drop` so the task does not outlive the agent.
+    ///
+    /// Without this, every agent join/leave cycle leaked one tokio
+    /// task that:
+    ///
+    /// * held an `Arc<SttService>` (preventing it from dropping),
+    /// * consumed every STT tap frame (CPU + decode work for nothing),
+    /// * and called `stt.transcribe(...)` on frames matching the
+    ///   dead room name (every frame after the room was reaped no
+    ///   longer matched, but pre-reap frames did).
+    ///
+    /// The task was kept alive by the global
+    /// `VoiceService::stt_tap_tx` broadcast sender, which only drops
+    /// at server shutdown. `Drop` aborting the JoinHandle is the
+    /// minimal fix.
+    transcription_task: JoinHandle<()>,
+}
+
+impl Drop for AgentVoiceClient {
+    fn drop(&mut self) {
+        // tokio's abort is fire-and-forget; the task observes
+        // cancellation at its next `.await` point (the
+        // `tap_rx.recv().await` inside the loop body).
+        self.transcription_task.abort();
+    }
 }
 
 impl AgentVoiceClient {
@@ -56,7 +83,7 @@ impl AgentVoiceClient {
         let tx_clone = tx.clone();
         let room = room_name.to_string();
         let stt = Arc::clone(&stt_service);
-        tokio::spawn(async move {
+        let transcription_task = tokio::spawn(async move {
             while let Ok(frame) = tap_rx.recv().await {
                 if frame.channel_id != room {
                     continue;
@@ -83,6 +110,7 @@ impl AgentVoiceClient {
             transcription_tx: tx,
             voice_service,
             agent_id,
+            transcription_task,
         })
     }
 
@@ -132,5 +160,120 @@ impl AgentVoiceClient {
 
     pub fn subscribe_transcriptions(&self) -> broadcast::Receiver<TranscriptionEvent> {
         self.transcription_tx.subscribe()
+    }
+
+    /// Test-only accessor for the spawned transcription task's abort
+    /// handle. Used by the regression test that asserts `Drop` aborts
+    /// the task; call sites outside `#[cfg(test)]` do not need this.
+    #[cfg(test)]
+    pub(crate) fn transcription_abort_handle(&self) -> tokio::task::AbortHandle {
+        self.transcription_task.abort_handle()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::WebRtcConfig;
+    use std::time::Duration;
+
+    fn test_voice_service() -> Arc<VoiceService> {
+        Arc::new(VoiceService::new(WebRtcConfig {
+            url: String::new(),
+            api_key: String::new(),
+            api_secret: String::new(),
+            public_url: String::new(),
+            token_ttl_seconds: 3600,
+            ice_servers: vec![],
+        }))
+    }
+
+    fn test_stt_service() -> Arc<SttService> {
+        // SttService is a thin wrapper over two paths; constructing
+        // one with phony paths is fine for tests that never call
+        // `transcribe()`.
+        Arc::new(SttService::new(
+            "/tmp/nonexistent-model",
+            "/tmp/nonexistent-binary",
+        ))
+    }
+
+    #[tokio::test]
+    async fn drop_aborts_transcription_task() {
+        // Regression test for the spawn-and-forget transcription task
+        // leak: every agent join used to spawn a task that lived for
+        // the lifetime of the global `VoiceService::stt_tap_tx`
+        // sender (i.e. the entire server lifetime). The fix stores
+        // the JoinHandle on `AgentVoiceClient` and aborts it on Drop.
+        let voice_service = test_voice_service();
+        let stt = test_stt_service();
+        let token = voice_service
+            .generate_join_token("ch-abort-test", "agent-1", "agent-1")
+            .expect("generate_join_token should succeed");
+
+        let agent = AgentVoiceClient::connect(
+            "ws://test",
+            &token,
+            "ch-abort-test",
+            stt,
+            "test-key",
+            "test-secret",
+            voice_service,
+        )
+        .await
+        .expect("agent connect should succeed");
+
+        let abort_handle = agent.transcription_abort_handle();
+        assert!(
+            !abort_handle.is_finished(),
+            "task should be running before drop"
+        );
+
+        drop(agent);
+
+        // Give the task time to observe the abort. The actual
+        // observation happens at the next `.await` point inside the
+        // loop, which is `tap_rx.recv().await`; tokio reaps the task
+        // promptly after abort.
+        let mut iters = 0;
+        while !abort_handle.is_finished() && iters < 50 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            iters += 1;
+        }
+        assert!(
+            abort_handle.is_finished(),
+            "transcription task should be aborted within 500ms of agent drop"
+        );
+    }
+
+    #[tokio::test]
+    async fn drop_does_not_panic_when_task_already_finished() {
+        // Defensive test: if the task somehow exits naturally before
+        // Drop runs, the second `abort()` from Drop must be a no-op.
+        let voice_service = test_voice_service();
+        let stt = test_stt_service();
+        let token = voice_service
+            .generate_join_token("ch-drop-test", "agent-2", "agent-2")
+            .expect("generate_join_token should succeed");
+
+        let agent = AgentVoiceClient::connect(
+            "ws://test",
+            &token,
+            "ch-drop-test",
+            stt,
+            "test-key",
+            "test-secret",
+            voice_service,
+        )
+        .await
+        .expect("agent connect should succeed");
+
+        // Pre-abort the task, then drop the agent. Drop's abort()
+        // call must be a tokio-side no-op.
+        agent.transcription_abort_handle().abort();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        // Should not panic.
+        drop(agent);
     }
 }

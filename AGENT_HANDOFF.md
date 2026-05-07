@@ -11,6 +11,60 @@ ZK enforcement → ZK release artifact path → canonical hex → Merkle epoch/c
 
 ## Fixed in this session (claude/fix-annex-bugs-AT8va)
 
+### [F30] AgentVoiceClient transcription task leaked on agent disconnect (slow leak)
+`crates/annex-voice/src/agent.rs::AgentVoiceClient::connect` spawned a
+fire-and-forget `tokio::spawn` task that consumed STT tap frames from
+`VoiceService::stt_tap_tx` and forwarded transcriptions through
+`agent.transcription_tx`. The `JoinHandle` was discarded. The task's
+exit condition was `tap_rx.recv()` returning `Err(Closed)` — which
+fires only when the broadcast sender drops, i.e. when the global
+`VoiceService` drops, i.e. server shutdown.
+
+So every agent join/leave cycle permanently leaked one tokio task
+that:
+* held an `Arc<SttService>` (preventing the SttService from
+  dropping),
+* consumed every STT tap frame (decode + room-name compare CPU work
+  for nothing — once the agent's room was reaped by [F27], the
+  filter never matched, so the work was wasted but the task kept
+  running),
+* held a clone of the now-orphaned `transcription_tx`
+  (broadcast to no subscribers).
+
+The task count grew linearly with the number of agent
+connect/disconnect cycles since process start. On a long-running
+server with many short-lived agent sessions, this accumulates.
+
+Fix: store the `JoinHandle<()>` in a new `transcription_task` field
+on `AgentVoiceClient`, and add a `Drop` impl that calls
+`self.transcription_task.abort()`. tokio observes the abort at the
+task's next `.await` point (`tap_rx.recv().await`) and reaps it.
+Also added a `#[cfg(test)] pub(crate) fn
+transcription_abort_handle(&self)` accessor so the regression test
+can observe the task state independently of the agent's own lifetime.
+
+- files changed:
+  - `crates/annex-voice/src/agent.rs` —
+    * new `transcription_task: JoinHandle<()>` field on
+      `AgentVoiceClient` with full doc comment naming the leak.
+    * new `Drop` impl that aborts the task.
+    * `connect` captures the JoinHandle from `tokio::spawn` and
+      stores it on the constructed agent.
+    * new `#[cfg(test)] pub(crate) fn transcription_abort_handle`
+      method.
+    * 2 new tests:
+      - `drop_aborts_transcription_task` — exercises the full
+        connect → abort_handle clone → drop → poll-for-finish flow
+        with a 500ms timeout.
+      - `drop_does_not_panic_when_task_already_finished` — defensive
+        test for the case where the task exits before Drop runs
+        (double-abort must be a tokio-side no-op).
+- tests run: `cargo test -p annex-voice --lib` → 18 passed (2 new for
+  this fix).
+- result: PASS. Agent task lifetime is now bounded by the
+  AgentVoiceClient's lifetime; long-running servers no longer
+  accumulate dead transcription tasks.
+
 ### [F29] WebSocket typing-indicator had no per-connection rate limit (DOS)
 `IncomingMessage::Typing` is dispatched to every channel subscriber via
 `connection_manager.broadcast`. The HTTP rate-limit middleware does NOT
@@ -1150,11 +1204,13 @@ The fix mirrors the local cap.
   warnings` → clean.
 - `cargo clippy --workspace --exclude annex-desktop --all-targets --
   -D warnings` → clean.
-- `cargo test -p annex-voice --lib` → **16 passed** (4 new for [F27]:
+- `cargo test -p annex-voice --lib` → **18 passed** (4 new for [F27]:
   `create_room_then_remove_unknown_participant_does_not_reap_room`,
   `drop_peer_and_maybe_reap_returns_none_for_unknown_room`,
   `drop_peer_and_maybe_reap_returns_none_for_known_room_unknown_peer`,
-  `rooms_dashmap_remove_if_handles_concurrent_insert_race`).
+  `rooms_dashmap_remove_if_handles_concurrent_insert_race`; 2 new
+  for [F30]: `drop_aborts_transcription_task`,
+  `drop_does_not_panic_when_task_already_finished`).
 - `cargo test -p annex-server --lib ws::` → **11 passed** (8 new):
   - 6 in `ws::typing_throttle::tests` for [F29]
     (`first_typing_event_is_admitted`,
@@ -1430,13 +1486,21 @@ The fix mirrors the local cap.
   Future bandwidth-sensitive WS variants (presence pings, read
   receipts, etc.) should follow the same per-session, per-channel
   debouncer pattern. See [F29].
+- I-VOICE-AGENT-TASK-LIFETIME (new): Every `tokio::spawn` inside
+  `AgentVoiceClient::connect` MUST have its `JoinHandle` stored on
+  the agent and aborted by an explicit `Drop` impl. Future task
+  spawns under `agent.rs` MUST follow the same pattern — the global
+  `VoiceService::stt_tap_tx` broadcast sender is process-lifetime,
+  so any task subscribed to it that does not abort on agent drop
+  will leak for the lifetime of the server. See [F30].
 
 ## Context cutoff note (current session, claude/fix-annex-bugs-AT8va)
-Session [F27..F29] focused on long-lived production correctness — the
+Session [F27..F30] focused on long-lived production correctness — the
 two outstanding "Still broken" items from the previous session
-(rooms-leak + typing-DOS) plus a real lock-inversion deadlock in the
+(rooms-leak + typing-DOS), a real lock-inversion deadlock in the
 WebSocket connection manager that was hiding behind a misleading
-comment.
+comment, and one additional spawn-and-forget task leak found
+during the code survey.
 
 * [F27] `VoiceService::rooms` was insert-only — every distinct channel
   ID joined since process start stayed in the DashMap forever. New
@@ -1455,12 +1519,18 @@ comment.
   New `TypingThrottle` per-session debouncer admits at most one
   typing event per (channel, 800ms) pair. 6 unit tests including the
   flood shape (1000 events/s → ≤ 2 admitted).
+* [F30] `AgentVoiceClient::connect` spawned a fire-and-forget
+  transcription forwarding task whose only exit condition was
+  `VoiceService::stt_tap_tx` closing — i.e. server shutdown. Each
+  agent connect/disconnect cycle leaked one such task. New
+  `transcription_task: JoinHandle<()>` field + `Drop` impl that
+  aborts it; 2 unit tests (full-cycle abort + double-abort no-op).
 
-`fmt`, `clippy --all-targets -- -D warnings`, and the
-`annex-server` + `annex-voice` lib test suites are all green. New
-totals: `annex-voice --lib` → 16 passed (+4); `annex-server --lib`
-→ 130 passed (+8); `annex-server --tests` → all integration tests
-pass.
+`fmt`, `clippy --workspace --exclude annex-desktop --all-targets --
+-D warnings`, and the `annex-server` + `annex-voice` lib test suites
+are all green. New totals: `annex-voice --lib` → 18 passed (+6);
+`annex-server --lib` → 130 passed (+8); `annex-server --tests` →
+all integration tests pass.
 
 If a future agent picks up:
 1. Re-run baseline (fmt + clippy + `cargo test -p annex-server --lib
