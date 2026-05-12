@@ -257,6 +257,8 @@ ANNEX_HOST=0.0.0.0 ./target/release/annex-server
 
 Annex implements five architectural planes, each enforcing sovereignty at a different layer of the stack.
 
+> **Architecture diagrams.** For a visual companion — system topology, identity + ZK flow, agent join sequence, federation handshake, channel lifecycle, graph vs transport separation, and the crate responsibility map — see [`docs/architecture/mermaid-diagrams.md`](docs/architecture/mermaid-diagrams.md).
+
 ### Identity Plane — Full ZKP, No Shortcuts
 
 Every participant on the platform holds a **self-sovereign identity**. Keypairs are generated client-side and never leave the device. Server membership is proven via **Groth16 zero-knowledge proofs** over Poseidon(BN254) Merkle membership trees — the same circuit architecture used in Monolith Index's civic identity substrate.
