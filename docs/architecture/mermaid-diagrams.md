@@ -20,7 +20,7 @@ flowchart LR
     subgraph NODE["Annex node (sovereign boundary)"]
         SRV["annex-server (Axum)<br/>HTTP + WS + routes/*"]
         IDENT["annex-identity<br/>Merkle tree + Groth16 verify"]
-        VRP["annex-vrp<br/>EthicalRoot, anchor compare"]
+        VRP["annex-vrp<br/>ServerPolicyRoot + VrpAnchorSnapshot,<br/>compare_peer_anchor"]
         CHAN["annex-channels<br/>channels, members, messages"]
         GRAPH["annex-graph<br/>presence graph (nodes + edges)"]
         RTX["annex-rtx<br/>ReflectionSummaryBundle"]
@@ -54,9 +54,9 @@ flowchart LR
     IDENT -.->|loads at boot| VKEY
 
     AGENT <-->|VRP handshake + WS + RTX| SRV
-    SRV <-->|signed envelopes Ed25519, WebRTC P2P| PEER
-    SRV -.->|SDP/ICE rendezvous| SIGNAL
-    PEER -.->|SDP/ICE rendezvous| SIGNAL
+    SRV <-->|Ed25519-signed envelopes over HTTPS<br/>or WebRTC P2P data channel| PEER
+    SRV -.->|SDP/ICE rendezvous<br/>for P2P bootstrap only| SIGNAL
+    PEER -.->|SDP/ICE rendezvous<br/>for P2P bootstrap only| SIGNAL
 ```
 
 **Why this matters.** Each node is one process with one SQLite file and one ZK verification key. AI agents and federation peers come in through the *same* protocol surfaces as humans — there is no separate bot API, no central registry, and signaling is bootstrap only, never a steady-state choke point ([FOUNDATIONS.md §6](../../FOUNDATIONS.md), Transport Sovereignty).
@@ -73,10 +73,11 @@ flowchart TB
     ROLE["roleCode<br/>(HUMAN | AI_AGENT | …)"]
     NODE["nodeId"]
     COMMIT["commitment = Poseidon(sk, roleCode, nodeId)<br/><i>PUBLIC — leaf in Merkle tree</i>"]
-    TREE["annex-identity::MerkleTree<br/>depth 20 (Poseidon, BN254)<br/><i>STORED in identities + merkle_nodes</i>"]
-    PROOF["Groth16 proof of membership<br/>(client-side via membership.circom)<br/><i>PRIVATE → emitted as proof</i>"]
-    PUB["publicSignals = [root, commitment]<br/><i>PUBLIC</i>"]
-    VERIFY["annex-server::middleware::verify_zk_proof_payload<br/>vkey + state.merkle_tree.root_hex()<br/><i>VERIFIED on server</i>"]
+    TREE["annex-identity::MerkleTree<br/>depth 20 (Poseidon, BN254)<br/><i>STORED in vrp_identities, vrp_leaves,<br/>vrp_merkle_nodes, vrp_merkle_meta</i>"]
+    EPOCH["vrp_root_epochs<br/><i>STORED — active root + retired roots<br/>inside the grace window</i>"]
+    PROOF["Groth16 proof of membership<br/>(client-side, membership.circom v1<br/>or membership_v2.circom)<br/><i>PRIVATE → emitted as proof</i>"]
+    PUB["publicSignals<br/>v1: [root, commitment]<br/>v2: [root, commitment, nullifier, topicHash]<br/><i>PUBLIC</i>"]
+    VERIFY["annex-server::middleware::verify_zk_membership_header<br/>+ identity_service::verify_membership<br/>(is_root_acceptable, verify_proof)<br/><i>VERIFIED on server</i>"]
     NULL["nullifierHex (per topic)<br/>v1: sha256(commitment + topic)<br/>v2: Poseidon(sk, topicHash, DOMAIN)"]
     NULLDB["zk_nullifiers row<br/><i>STORED — single-use binding</i>"]
     PSEUDO["pseudonymId = sha256(topic + ':' + nullifierHex)<br/><i>PUBLIC handle on this server only</i>"]
@@ -86,18 +87,19 @@ flowchart TB
     ROLE --> COMMIT
     NODE --> COMMIT
     COMMIT --> TREE
+    TREE --> EPOCH
     SK --> PROOF
     TREE --> PROOF
     PROOF --> PUB
     PUB --> VERIFY
-    TREE -->|current root_hex| VERIFY
+    EPOCH -->|is_root_acceptable| VERIFY
     VERIFY -->|ok| NULL
     NULL --> NULLDB
     NULL --> PSEUDO
     PSEUDO --> JOIN
 ```
 
-**Why this matters.** The server never sees `sk` and never holds the user's identity in the legal sense — it holds a commitment and a per-topic pseudonym. Every join is a *fresh cryptographic check* against the current Merkle root (invariant I-ZK-1), and a nullifier collision on `(topic, nullifier_hex)` is the only enforced double-join boundary. This is what "Trust is cryptographic, not administrative" means in the actual code.
+**Why this matters.** The server never sees `sk` and never holds the user's identity in the legal sense — it holds a commitment and a per-topic pseudonym. Every join is a *fresh cryptographic check* against an acceptable epoch in `vrp_root_epochs` (invariant I-ZK-1 plus migration `034_merkle_nodes.sql`'s grace-window model), and a nullifier collision on `(topic, nullifier_hex)` is the only enforced double-join boundary. This is what "Trust is cryptographic, not administrative" means in the actual code.
 
 ---
 
@@ -110,7 +112,7 @@ sequenceDiagram
     autonumber
     participant A as AI agent runtime
     participant S as annex-server (Axum)
-    participant V as annex-vrp<br/>(EthicalRoot + alignment)
+    participant V as annex-vrp<br/>(anchor + alignment)
     participant I as annex-identity<br/>(Merkle + Groth16)
     participant C as annex-channels<br/>(ACL + members)
     participant R as annex-rtx<br/>(bundle delivery)
@@ -134,14 +136,14 @@ sequenceDiagram
 
         A->>A: build Groth16 proof via membership.circom
 
-        A->>S: POST /api/zk/verify-membership<br/>{root, commitment, proof, publicSignals}
-        S->>I: verify_proof(vkey, publicSignals)
-        I-->>S: ok + nullifier
-        S->>S: insert zk_nullifiers (single-use)
-        S-->>A: pseudonym activated
+        A->>S: POST /api/zk/verify-membership<br/>{root, commitment, proof, publicSignals,<br/> protocolVersion (v1 | v2)}
+        S->>I: is_root_acceptable + verify_proof
+        I-->>S: ok + canonical nullifier
+        S->>S: tx: insert zk_nullifiers,<br/>upsert platform_identities,<br/>upsert graph_nodes (AI_AGENT, active=1),<br/>emit PseudonymDerived + NodeAdded
+        S-->>A: pseudonym activated + HMAC session token
 
-        A->>S: GET /ws?pseudonym=…
-        S-->>A: WebSocket upgraded (auth-bound session token)
+        A->>S: GET /ws?pseudonym=…<br/>Authorization: Bearer &lt;session token&gt;
+        S-->>A: WebSocket upgraded
 
         A->>S: POST /api/channels/{id}/join
         S->>C: check agent_min_alignment + capability flags
@@ -156,9 +158,10 @@ sequenceDiagram
         S->>A: deliver
 
         opt RTX exchange (gated by transfer_scope)
-            A->>R: publish ReflectionSummaryBundle
-            R->>R: enforce_transfer_scope + check_redacted_topics
-            R-->>A: accepted or stripped
+            A->>S: POST /api/rtx/publish<br/>ReflectionSummaryBundle
+            S->>R: validate_bundle_structure,<br/>enforce_transfer_scope,<br/>check_redacted_topics
+            R-->>S: accepted or stripped (or rejected)
+            S-->>A: 200 OK or error
         end
     end
 ```
@@ -169,50 +172,55 @@ sequenceDiagram
 
 ### 4. Federation Handshake
 
-Two sovereign Annex instances negotiate a bilateral, revocable federation agreement. Federation is *not* automatic global replication — it is a per-peer VRP negotiation that produces a typed `VrpValidationReport` and a row in `federation_agreements`. Signature verification on every envelope is non-bypassable (invariant I-FED-1).
+Two sovereign Annex instances negotiate a bilateral, revocable federation agreement. Federation is *not* automatic global replication — it is a per-peer VRP negotiation that produces a typed `VrpValidationReport` and a row in `federation_agreements`. Signature verification on every envelope is non-bypassable (invariant I-FED-1). The handshake itself runs over HTTPS (`POST /api/federation/handshake`); SDP/ICE signaling is only used later if peers opt into WebRTC P2P data channels for steady-state message and RTX relay (`crates/annex-federation/src/transport.rs`).
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant L as Local Annex<br/>(annex-server + annex-federation)
-    participant LS as Local signing key<br/>(Ed25519, AppState.signing_key)
-    participant SIG as Stateless SDP/ICE<br/>signaling rendezvous
-    participant RS as Remote signing key
     participant R as Remote Annex<br/>(annex-server + annex-federation)
+    participant SIG as Stateless SDP/ICE<br/>signaling (bootstrap only,<br/>used later for WebRTC P2P)
 
-    L->>LS: sign VrpFederationHandshake envelope<br/>{protocol_version, identity_hash,<br/> ethical_root_hash, declared_transfer_scopes,<br/> declared_capabilities}
-    LS-->>L: signed envelope
+    Note over L,R: Stage 1 — Handshake over HTTPS (POST /api/federation/handshake)
 
-    L->>SIG: SDP offer (bootstrap only)
-    SIG->>R: deliver offer
-    R->>SIG: SDP answer
-    SIG->>L: deliver answer
-    Note over L,R: WebRTC P2P data channel established<br/>(or HTTPS for /api/federation/handshake)
+    L->>L: sign HandshakeRequest<br/>{base_url, signature,<br/>handshake: VrpFederationHandshake<br/>(anchor_snapshot, capability_contract)}<br/>with AppState.signing_key (Ed25519)
 
-    L->>R: signed handshake envelope
-    R->>RS: verify Ed25519 signature
-    RS-->>R: ok (or DROP + event log entry)
+    L->>R: HTTPS POST /api/federation/handshake
+    R->>R: verify Ed25519 signature against<br/>peer's known public key
+    Note right of R: invariant I-FED-1 —<br/>unverifiable envelope is dropped<br/>+ event-logged, never processed
 
-    R->>R: ServerPolicyRoot::from_policy(local_policy)
-    R->>R: validate_federation_handshake(<br/>  local_anchor, local_contract, handshake,<br/>  alignment_config, transfer_config)
-    R-->>R: VrpValidationReport<br/>{alignment_status, transfer_scope}
+    R->>R: ServerPolicyRoot::from_policy(local_policy)<br/>→ to_anchor_snapshot
+    R->>R: validate_federation_handshake(<br/>  local_anchor, local_contract,<br/>  handshake, alignment_config,<br/>  transfer_config)
+    R-->>R: VrpValidationReport<br/>{alignment_status, transfer_scope,<br/> alignment_score}
 
     alt alignment_status == Conflict
-        R-->>L: signed rejection<br/>(NO federation_agreements row written)
+        R-->>L: HandshakeError::AlignmentConflict<br/>(NO federation_agreements row written)
     else Aligned or Partial
         R->>R: create_agreement in federation_agreements<br/>(local_server_id, remote_instance_id,<br/> alignment, scope, agreement_json)
-        R-->>L: signed acceptance + counter-handshake
-        L->>L: persist mirror agreement
+        R-->>L: 200 OK + VrpValidationReport
+        L->>L: persist mirror agreement (separate POST<br/>from L's side, same flow in reverse)
 
-        loop steady state
-            L->>R: signed message / RTX envelope<br/>(carries sender's Merkle proof)
-            R->>RS: verify signature + freshness
-            R->>R: check active federation_agreements row<br/>+ re-attest if remote root changed
+        opt Stage 2 — Cross-server identity attestation (per pseudonym)
+            L->>R: HTTPS POST /api/federation/attest-membership<br/>{originating_server, topic, commitment,<br/>proof, participant_type, signature,<br/>protocolVersion (v1 | v2)}
+            R->>R: GET peer's /api/federation/vrp-root,<br/>verify_proof against that root,<br/>insert federated_identities row
+        end
+
+        opt Stage 3 — Steady-state message + RTX relay
+            L->>SIG: SDP offer (only when peers want<br/>WebRTC P2P data channels)
+            SIG->>R: deliver offer
+            R->>SIG: SDP answer
+            SIG->>L: deliver answer
+            Note over L,R: WebRTC P2P data channel established<br/>(also reachable via HTTPS<br/>/api/federation/messages and /api/federation/rtx)
+
+            loop signed envelopes (HTTP or P2P)
+                L->>R: FederatedMessageEnvelope or<br/>FederatedRtxEnvelope<br/>{..., attestation_ref, signature}
+                R->>R: verify Ed25519 signature,<br/>check active federation_agreements,<br/>resolve attestation_ref against<br/>federated_identities
+            end
         end
 
         opt policy change on either side
             L->>R: re-handshake with updated anchor
-            R-->>L: realigned (status may move Aligned ↔ Partial ↔ Conflict)
+            R-->>L: realigned (Aligned ↔ Partial ↔ Conflict)
         end
     end
 ```
@@ -227,38 +235,38 @@ The `channels` table ([`009_channels.sql`](../../crates/annex-db/src/migrations/
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Created : create_channel<br/>(annex-channels::create_channel)
+    [*] --> Active : create_channel<br/>(annex-channels::create_channel)
 
-    Created --> ProofRequired : vrp_topic_binding set<br/>AND enforce_zk_proofs = true
-    Created --> Open : no vrp_topic_binding<br/>OR enforce_zk_proofs = false
-
-    ProofRequired --> JoinRequested : POST /api/channels/{id}/join<br/>presents pseudonym + ZK proof
-    Open --> JoinRequested : POST /api/channels/{id}/join
-
-    JoinRequested --> Active : ACL pass<br/>(policy.rs + agent_min_alignment +<br/> required_capabilities_json)
-    JoinRequested --> ProofRequired : ACL reject<br/>(returns to gate)
+    Active --> Active : add_member / remove_member /<br/>send / edit / soft-delete message<br/>(no channel-state change)
 
     Active --> Federated : update_channel<br/>federation_scope = FEDERATED
     Federated --> Active : update_channel<br/>federation_scope = LOCAL
 
-    Active --> Closed : delete_channel<br/>(cascades members + messages)
+    Active --> Closed : delete_channel<br/>(row removed, cascades to<br/>channel_members + messages)
     Federated --> Closed : delete_channel
-    ProofRequired --> Closed : delete_channel
-    Open --> Closed : delete_channel
 
     Closed --> [*]
 
-    note right of ProofRequired
-        Gate is enforced in
-        annex-server::middleware
-        via the x-annex-zk-proof
-        header (invariant I-AUTH-1).
+    note right of Active
+        Per-join admission is governed by row
+        properties, not state:
+          - vrp_topic_binding (Some → ZK proof
+            required on this server when
+            enforce_zk_proofs = true; invariant
+            I-AUTH-1)
+          - agent_min_alignment
+          - required_capabilities_json
+        A failed ACL check returns 403 to the
+        caller and the channel row is unchanged.
     end note
 
     note right of Federated
-        Visible to federation peers
-        per active federation_agreements
-        and the channel's federation_scope.
+        federation_scope is a property of the
+        row, toggled via update_channel. It is
+        drawn as a separate state only to show
+        when a channel becomes visible to
+        federation peers (per active
+        federation_agreements).
     end note
 ```
 
@@ -287,9 +295,14 @@ flowchart LR
         WS["WebSocket frames<br/>(annex-server::api_ws)"]
         MSG["channels.messages<br/>(annex-channels)"]
         SFU["Native WebRTC SFU<br/>(annex-voice::service)"]
-        TTS["TTS / STT<br/>(annex-voice::tts / stt)"]
+        TTS["TTS<br/>(annex-voice::tts)<br/>text → PCM/Opus"]
+        STT["STT<br/>(annex-voice::stt)<br/>audio → text"]
         ENV["Federation envelopes<br/>(annex-federation::signal,<br/>Ed25519-signed)"]
-        SSE["SSE event stream<br/>(annex-observe + api_observe)"]
+    end
+
+    subgraph OBSERVE_PLANE["Observability (separate read-only stream)"]
+        OBS_LOG["public_event_log<br/>(annex-observe)<br/>IDENTITY · PRESENCE ·<br/>FEDERATION · AGENT · MODERATION"]
+        SSE["SSE streams<br/>(/events/stream + /events/presence)"]
     end
 
     PARTICIPANT -.->|appears as| GN
@@ -304,9 +317,13 @@ flowchart LR
     PARTICIPANT --> WS
     WS --> MSG
     PARTICIPANT --> SFU
-    SFU --> TTS
+    TTS --> SFU
+    SFU --> STT
     ENV --> MSG
-    MSG --> SSE
+    GN -.->|graph changes emit| OBS_LOG
+    VRP_P -.->|handshake outcomes emit| OBS_LOG
+    FED_P -.->|federation events emit| OBS_LOG
+    OBS_LOG --> SSE
 ```
 
 **Why this matters.** A subpoena, a leak, or a misconfigured query that touches the graph layer cannot also harvest the message bytes, and vice versa. The two planes share *only* the pseudonym as a join key — and pseudonyms are topic-scoped, so cross-context correlation requires an *opt-in* `link-pseudonyms` proof, never a database join.
@@ -326,7 +343,7 @@ flowchart TB
 
     subgraph TRUST["Identity + trust"]
         IDENT["annex-identity<br/>Poseidon(BN254) commitments,<br/>Merkle tree, Groth16 verify,<br/>nullifiers, registry"]
-        VRP["annex-vrp<br/>EthicalRoot, anchors,<br/>compare_peer_anchor,<br/>VrpCapabilitySharingContract,<br/>reputation"]
+        VRP["annex-vrp<br/>ServerPolicyRoot, VrpAnchorSnapshot,<br/>compare_peer_anchor,<br/>VrpCapabilitySharingContract,<br/>VrpValidationReport, reputation"]
     end
 
     subgraph COMM["Communication + presence"]
@@ -347,6 +364,7 @@ flowchart TB
     end
 
     DESK -->|reuses prepare_server / app| SRV
+    DESK --> VOICE
     SRV --> IDENT
     SRV --> VRP
     SRV --> CHAN
@@ -355,13 +373,17 @@ flowchart TB
     SRV --> FED
     SRV --> RTX
     SRV --> OBS
+    SRV --> DB
     IDENT --> DB
     CHAN --> DB
     GRAPH --> DB
     FED --> DB
     OBS --> DB
+    VRP --> DB
     FED --> VRP
+    FED --> RTX
     RTX --> VRP
+    DB --> TYPES
     CHAN --> TYPES
     VOICE --> TYPES
     GRAPH --> TYPES
@@ -380,7 +402,8 @@ flowchart TB
 
 A short, honest list of places where the repo did not pin down a single shape and the diagrams stay at conceptual level rather than invent detail:
 
-- **Channel lifecycle states are conceptual.** The `channels` table has no `status` column. Diagram 5 is a model of how the columns and runtime flags combine, not a stored state machine. If a future migration adds an explicit status column, update the diagram.
-- **Voice transport.** README.md and the AGENTS guide describe the platform's voice path; `crates/annex-voice/src/lib.rs` documents a "native WebRTC SFU" and the workspace pulls `webrtc = "0.11"`. [`docs/refactor/architecture-map.md`](../refactor/architecture-map.md) explicitly notes that LiveKit references in older docs are stale. `docker-compose.yml` still wires a LiveKit sidecar for legacy deployments; the diagrams above follow the in-tree code (`annex-voice` native SFU) rather than the legacy compose service.
-- **Membership v1 vs v2.** Diagram 2 captures both nullifier derivations because [`zk-merkle-production.md`](../refactor/zk-merkle-production.md) documents both protocol versions shipping side-by-side, with the server dispatching on an explicit `protocolVersion` field. There is no diagrammed "epoch model" yet — it is named as planned work in that doc, and is deliberately not drawn here.
-- **Federation transport.** `crates/annex-federation/src/signal.rs` posts to a `router.monolithannex.com` rendezvous, and [`README.md`](../../README.md) calls out WebRTC P2P data channels as the steady-state path. The diagrams show signaling as bootstrap-only because that is the stated invariant; the precise transport for any given envelope (HTTPS via `transport.rs` vs P2P data channel) depends on the federation feature in use.
+- **Channel lifecycle is conceptual.** The `channels` table has no `status` column ([`009_channels.sql`](../../crates/annex-db/src/migrations/009_channels.sql)). Diagram 5 collapses to one real state (`Active`) plus a federation-scope toggle, and calls out that join-time admission is governed by row *properties*, not state transitions. If a future migration adds an explicit status column, update the diagram.
+- **Voice transport.** `crates/annex-voice/src/lib.rs` documents a "Native WebRTC SFU" and the workspace pulls `webrtc = "0.11"`. [`docs/refactor/architecture-map.md`](../refactor/architecture-map.md) explicitly notes that LiveKit references in older docs are stale. [`docker-compose.yml`](../../docker-compose.yml) still launches a LiveKit sidecar and `docs/deployment.md` still describes it — those are legacy and contradict the in-tree code. The diagrams follow the in-tree code (`annex-voice` native SFU). Reconciling the docker-compose / deployment doc is out of scope for this diagram pass.
+- **Federation handshake envelope fields.** [`README.md`](../../README.md) line 302 lists handshake fields (`protocol_version`, `identity_hash`, `ethical_root_hash`, `declared_transfer_scopes`, `declared_capabilities`) that do **not** match the in-tree `annex_vrp::VrpFederationHandshake` struct, which carries only `anchor_snapshot` + `capability_contract` wrapped by `HandshakeRequest { base_url, signature, handshake }`. The diagram follows the code, not the README prose.
+- **Membership v1 vs v2.** Both ship side-by-side. The server selects a verifier per request from the `protocolVersion` field; the v1 vkey is always loaded and the v2 vkey is loaded only when `Config::security.enabled_zk_versions` includes `"v2"` ([`crates/annex-server/src/middleware.rs`](../../crates/annex-server/src/middleware.rs), `verify_zk_membership_header`).
+- **Federation transport.** `crates/annex-federation/src/signal.rs` uses `router.monolithannex.com` only as a stateless SDP/ICE rendezvous; `crates/annex-federation/src/transport.rs` opens the WebRTC P2P data channel from there. The `POST /api/federation/handshake`, `/attest-membership`, `/messages`, and `/rtx` endpoints are HTTPS and remain reachable independently. Steady-state envelopes can flow over either path.
