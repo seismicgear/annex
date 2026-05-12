@@ -11,6 +11,91 @@ ZK enforcement → ZK release artifact path → canonical hex → Merkle epoch/c
 
 ## Fixed in this session (claude/fix-annex-bugs-5yw2Y)
 
+### [F35] WS resume reported full count even when back-pressure dropped messages (silent recovery gap)
+`crates/annex-server/src/ws/commands/resume.rs::handle` is the
+`IncomingMessage::Resume` arm: a client that disconnected and
+reconnected sends a `Resume { channel_id, last_message_id }` and the
+server replays the next ≤ 200 messages, finishing with an
+`OutgoingMessage::Resumed { channel_id, missed_count }` ack. The
+client uses `missed_count` to know how many messages it just
+received and advances its last-seen pointer past that many.
+
+Pre-fix code:
+
+```rust
+let count = messages.len();
+for msg in messages {
+    let ws_payload: WsMessagePayload = msg.into();
+    let out = OutgoingMessage::Message(ws_payload);
+    if let Ok(json) = serde_json::to_string(&out) {
+        if tx_clone.try_send(json).is_err() {
+            break;  // ← outbound queue full / closed
+        }
+    }
+}
+let ack = OutgoingMessage::Resumed { channel_id, missed_count: count };
+```
+
+The 256-deep per-session mpsc queue can fill when a client is slow
+or wedged. On the first `try_send` Err the loop breaks — but
+`count` is still `messages.len()`. The ack says "200 messages
+missed" even though only K (K < 200) reached the outbound queue.
+The client advances its last-seen pointer past the full 200, and
+the K..200 tail is permanently lost. There is no second-chance
+signal because the resume protocol is a single round-trip
+acknowledged with the count.
+
+This is the "silent recovery gap" failure mode: the user reconnects
+expecting their backlog and gets a partial replay with no
+diagnostic that anything was lost.
+
+Fix: report the count of `try_send` *successes*, not attempts. The
+wire field stays `missedCount` for backwards compatibility — its
+meaning is now "messages we enqueued for delivery back to you",
+which is what every legitimate client should care about. A v2
+client implementing the resume protocol can detect partial
+recoveries (received < expected) and retry from a smaller
+last_message_id; a v1 client still works correctly because the
+count is now a TRUE lower bound on what arrived.
+
+Implementation: extract the message-enqueue loop into a free
+`forward_resumed_messages` function that returns
+`delivered_count: usize`. The free-function form makes the
+back-pressure counting unit-testable without spinning up an
+`AppState` + DB + membership fixture.
+
+- files changed:
+  - `crates/annex-server/src/ws/commands/resume.rs` —
+    * extracted the per-message enqueue loop into
+      `forward_resumed_messages(&mpsc::Sender, Vec<Message>) -> usize`.
+    * `handle` now uses the helper's return value as
+      `missed_count`, replacing `messages.len()`.
+    * added a doc comment naming the silent-recovery bug and the
+      invariant the new counter preserves.
+    * new `#[cfg(test)] mod tests` block with 4 tests:
+      - `forwards_every_message_when_outbound_queue_has_capacity`
+        (happy path; delivered = 5 of 5).
+      - `returns_actual_delivery_count_when_outbound_queue_fills`
+        (back-pressure; delivered = 2 when capacity = 2 and 5
+        messages presented). Verified failing under the pre-fix
+        loop by temporarily restoring the old shape: the
+        assertion `delivered == 2` would compare against
+        `delivered == 5` and fail.
+      - `returns_zero_when_outbound_channel_is_closed` (every
+        try_send is Err; delivered = 0).
+      - `returns_zero_for_empty_input` (defensive boundary).
+- tests run:
+  - `cargo test -p annex-server --lib ws::commands::resume` →
+    **4 passed** (all new).
+  - `cargo test --workspace --exclude annex-desktop` → **659
+    passed** (+4 vs the post-[F34] baseline of 655).
+  - `cargo fmt --all --check` + `cargo clippy --workspace
+    --exclude annex-desktop --all-targets -- -D warnings` →
+    clean.
+- result: PASS. Resumed acks now report the count of messages
+  actually delivered to the WS outbound queue. Slow consumers no
+  longer silently lose their replay tail.
+
 ### [F34] Protocol fixtures used `0x`-prefixed hex but the server rejects it (contract drift)
 The fixtures under `fixtures/api/{register.response,verify-membership.request}.json`
 pinned every field-element value with a leading `0x` prefix:
@@ -1864,10 +1949,11 @@ The fix mirrors the local cap.
   atomicity, not concurrent-writer races. See [F31].
 
 ## Context cutoff note (current session, claude/fix-annex-bugs-5yw2Y)
-Session [F32..F34] focused on the federation receive path, the
-federation outbox worker, and the protocol-contract fixtures.
+Session [F32..F35] focused on the federation receive path, the
+federation outbox worker, the protocol-contract fixtures, and the
+WS resume protocol.
 
-Three real bugs:
+Four real bugs:
 1. A durability bug that silently dropped federated messages under
    any transient SQLite error.
 2. A defence-in-depth SSRF gap where the outbox worker would
@@ -1880,6 +1966,12 @@ Three real bugs:
    from the fixtures would hit a 400 on the first
    verify-membership call. One `pathElements[2]` value was also
    silently `>= BN254 field modulus`.
+4. A silent-recovery gap in WS resume: a client with a full
+   per-session outbound queue (slow consumer) lost the
+   un-enqueued tail of its replay because the `Resumed` ack
+   reported `messages.len()` instead of the count actually
+   pushed onto the queue. The client then advanced its
+   last-seen pointer past messages it never received.
 
 * [F32] `receive_federated_message` ran the receipt INSERT and the
   message INSERT under separate autocommit transactions. A transient
@@ -1914,10 +2006,19 @@ Three real bugs:
   existing contract assertions, and added two new production-
   parser round-trip tests so any future fixture regression is
   caught at compile-test time rather than after a client integrates.
+* [F35] `ws/commands/resume.rs::handle` reported `messages.len()`
+  in the `Resumed` ack regardless of how many messages actually
+  reached the 256-deep per-session outbound mpsc. A slow consumer
+  silently lost the un-enqueued tail because the client advanced
+  past the full count. Extracted the per-message enqueue loop into
+  a testable free function that returns the count of successful
+  `try_send` calls; the surrounding handler now uses that as
+  `missed_count`. 4 unit tests including the back-pressure shape
+  (delivered = 2 when capacity = 2 and 5 messages presented).
 
 `fmt`, `clippy --workspace --exclude annex-desktop --all-targets --
 -D warnings`, and `cargo test --workspace --exclude annex-desktop`
-(655 tests total) are all green.
+(659 tests total) are all green.
 
 If a future agent picks up:
 1. Re-run baseline (fmt + clippy + `cargo test -p annex-server`).
