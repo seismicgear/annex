@@ -26,4 +26,5 @@ pub use db::{
 pub use handshake::{process_incoming_handshake, HandshakeError};
 pub use types::{
     AttestationRequest, FederatedMessageEnvelope, FederatedRtxEnvelope, FederationAgreement,
+    FEDERATED_MESSAGE_ENVELOPE_V1, FEDERATED_MESSAGE_ENVELOPE_V2,
 };

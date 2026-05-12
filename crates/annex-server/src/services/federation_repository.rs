@@ -45,8 +45,12 @@ pub(crate) struct RtxFederatedSubscriber {
 }
 
 /// One row used by `relay_message` to enumerate active federation peers.
+/// `id` is the `instances.id` primary key — the outbox keys on this
+/// rather than `base_url` so a peer whose URL changes still has a
+/// stable delivery target.
 #[derive(Debug, Clone)]
 pub(crate) struct ActiveFederationPeer {
+    pub id: i64,
     pub base_url: String,
     pub transfer_scope: String,
 }
@@ -329,7 +333,7 @@ pub(crate) fn list_active_peers(
     server_id: i64,
 ) -> Result<Vec<ActiveFederationPeer>, rusqlite::Error> {
     let mut stmt = conn.prepare(
-        "SELECT i.base_url, fa.transfer_scope
+        "SELECT i.id, i.base_url, fa.transfer_scope
          FROM federation_agreements fa
          JOIN instances i ON fa.remote_instance_id = i.id
          WHERE fa.local_server_id = ?1 AND fa.active = 1 AND i.status = 'ACTIVE'",
@@ -337,8 +341,9 @@ pub(crate) fn list_active_peers(
 
     let rows = stmt.query_map(params![server_id], |row| {
         Ok(ActiveFederationPeer {
-            base_url: row.get::<_, String>(0)?,
-            transfer_scope: row.get::<_, String>(1)?,
+            id: row.get::<_, i64>(0)?,
+            base_url: row.get::<_, String>(1)?,
+            transfer_scope: row.get::<_, String>(2)?,
         })
     })?;
 

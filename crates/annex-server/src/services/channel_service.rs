@@ -36,10 +36,23 @@ use std::sync::Arc;
 
 use annex_channels::{
     add_member, create_channel, create_message, delete_channel, delete_message, edit_message,
-    get_channel, get_edit_history, is_member, list_channels, list_messages, remove_member,
-    search_messages, Channel, ChannelError, CreateChannelParams, CreateMessageParams, Message,
-    MessageEdit,
+    get_channel, get_edit_history, get_message, is_member, list_channels, list_messages,
+    remove_member, search_messages, Channel, ChannelError, CreateChannelParams,
+    CreateMessageParams, Message, MessageEdit,
 };
+
+/// Outcome of `send_message`: tells the caller whether the persisted
+/// message is brand-new or a return of a previously-accepted
+/// `client_request_id`. Used by the WS arm to skip federated relay on
+/// replay (the peer already received the envelope on the first send).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendOutcome {
+    /// A new row was inserted for this send.
+    Inserted,
+    /// The `client_request_id` matched a previous send; the returned
+    /// `Message` is the original.
+    Replayed,
+}
 use annex_graph::{create_edge, delete_edge};
 use annex_identity::PlatformIdentity;
 use annex_types::{AlignmentStatus, ChannelType, EdgeKind, FederationScope, RoleCode};
@@ -755,36 +768,107 @@ impl ChannelService {
     /// Membership check + persistence + load of the federation flag for the
     /// channel. The caller (the `api_ws` arm) handles the websocket
     /// broadcast and the federated-relay spawn.
+    ///
+    /// The third tuple element (`bool`) is the federation flag. The fourth
+    /// (`SendOutcome`) tells the caller whether the persisted message is a
+    /// fresh insert or an idempotent replay of a previously-accepted
+    /// `client_request_id`. The caller still broadcasts in both cases (so
+    /// the original sender observes its own send even on retry) but skips
+    /// the federation relay on `Replayed` — the peer already received the
+    /// envelope the first time.
     pub async fn send_message(
         &self,
         sender_pseudonym: &str,
         channel_id: &str,
         content: String,
         reply_to: Option<String>,
-    ) -> Result<(Message, bool), ChannelServiceError> {
+        client_request_id: Option<String>,
+    ) -> Result<(Message, bool, SendOutcome), ChannelServiceError> {
         self.require_membership(sender_pseudonym, channel_id)
             .await?;
 
-        let message_id = uuid::Uuid::new_v4().to_string();
-        let params = CreateMessageParams {
-            channel_id: channel_id.to_string(),
-            message_id,
-            sender_pseudonym: sender_pseudonym.to_string(),
-            content,
-            reply_to_message_id: reply_to,
-        };
-
+        let server_id = self.state.server_id;
         let pool = self.state.pool.clone();
         let cid = channel_id.to_string();
-        tokio::task::spawn_blocking(move || -> Result<(Message, bool), ChannelServiceError> {
-            let conn = pool
-                .get()
-                .map_err(|e| ChannelServiceError::Internal(format!("pool: {e}")))?;
-            let msg = create_message(&conn, &params).map_err(map_channel_err)?;
-            let channel = get_channel(&conn, &cid).map_err(map_channel_err)?;
-            let is_federated = matches!(channel.federation_scope, FederationScope::Federated);
-            Ok((msg, is_federated))
-        })
+        let sender = sender_pseudonym.to_string();
+        let request_id = client_request_id;
+        tokio::task::spawn_blocking(
+            move || -> Result<(Message, bool, SendOutcome), ChannelServiceError> {
+                let mut conn = pool
+                    .get()
+                    .map_err(|e| ChannelServiceError::Internal(format!("pool: {e}")))?;
+
+                // Idempotency lookup: if the same sender repeats the same
+                // client_request_id, return the original message instead
+                // of inserting a duplicate. Scope is
+                // (server_id, sender_pseudonym, client_request_id) — see
+                // migration 035 for the rationale.
+                if let Some(ref rid) = request_id {
+                    let existing_message_id: Option<String> = conn
+                        .query_row(
+                            "SELECT message_id FROM message_request_ids \
+                             WHERE server_id = ?1 AND sender_pseudonym = ?2 \
+                               AND client_request_id = ?3",
+                            rusqlite::params![server_id, &sender, rid],
+                            |row| row.get(0),
+                        )
+                        .optional()
+                        .map_err(|e| ChannelServiceError::Internal(format!("idem lookup: {e}")))?;
+
+                    if let Some(mid) = existing_message_id {
+                        // Hydrate the original message and short-circuit.
+                        let msg = get_message(&conn, &mid).map_err(map_channel_err)?;
+                        let channel = get_channel(&conn, &cid).map_err(map_channel_err)?;
+                        let is_federated =
+                            matches!(channel.federation_scope, FederationScope::Federated);
+                        return Ok((msg, is_federated, SendOutcome::Replayed));
+                    }
+                }
+
+                // Fresh send: open a transaction so the message and its
+                // idempotency row are durable together. A concurrent racer
+                // with the same (sender, request_id) will lose on the
+                // UNIQUE constraint and fall back to the lookup branch on
+                // its next attempt.
+                let tx = conn
+                    .transaction()
+                    .map_err(|e| ChannelServiceError::Internal(format!("tx begin: {e}")))?;
+
+                let message_id = uuid::Uuid::new_v4().to_string();
+                let params = CreateMessageParams {
+                    channel_id: cid.clone(),
+                    message_id: message_id.clone(),
+                    sender_pseudonym: sender.clone(),
+                    content,
+                    reply_to_message_id: reply_to,
+                };
+                let msg = create_message(&tx, &params).map_err(map_channel_err)?;
+
+                if let Some(ref rid) = request_id {
+                    // Ignore UNIQUE conflicts: another in-flight request
+                    // raced us in. We keep our own message (the racer's
+                    // commit may have already inserted theirs as well —
+                    // both are valid messages, only the second mapping is
+                    // dropped). This degrades to two messages under a true
+                    // race; clients send a single message under a stable
+                    // request_id in practice.
+                    let _ = tx.execute(
+                        "INSERT OR IGNORE INTO message_request_ids \
+                         (server_id, channel_id, sender_pseudonym, client_request_id, message_id) \
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                        rusqlite::params![server_id, &cid, &sender, rid, &message_id],
+                    );
+                }
+
+                let channel = get_channel(&tx, &cid).map_err(map_channel_err)?;
+                let is_federated = matches!(channel.federation_scope, FederationScope::Federated);
+
+                tx.commit()
+                    .map_err(|e| ChannelServiceError::Internal(format!("tx commit: {e}")))?;
+
+                Ok((msg, is_federated, SendOutcome::Inserted))
+            },
+        )
         .await
         .map_err(|e| ChannelServiceError::Internal(format!("join: {e}")))?
     }

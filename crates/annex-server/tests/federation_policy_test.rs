@@ -111,6 +111,9 @@ async fn test_recalculate_federation_agreements() {
         enforce_zk_proofs: false,
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
+        federation_config: annex_server::config::FederationConfig::default(),
+        storage_config: annex_server::config::StorageConfig::default(),
+        storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
     });
 
     // 3. Verify Initial State (No change expected)

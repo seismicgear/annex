@@ -91,6 +91,9 @@ fn build_state(db_path: &str, initial_policy: ServerPolicy) -> (Arc<AppState>, a
         enforce_zk_proofs: false,
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
+        federation_config: annex_server::config::FederationConfig::default(),
+        storage_config: annex_server::config::StorageConfig::default(),
+        storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
     };
 
     (Arc::new(state), pool)
@@ -122,6 +125,7 @@ fn build_signed_envelope(
     let signature = signing_key.sign(signature_input.as_bytes());
 
     FederatedMessageEnvelope {
+        envelope_version: None,
         message_id: message_id.to_string(),
         channel_id: channel_id.to_string(),
         content: content.to_string(),

@@ -1,12 +1,14 @@
-# Annex full stack: server + LiveKit + voice models.
+# Annex sovereign-server deployment.
 #
 # Usage:
 #   docker compose up -d
 #
 # The Annex server is available locally at http://localhost:3000.
-# For public access, set ANNEX_PUBLIC_URL and run behind a reverse proxy,
+# Voice runs inside the Annex process via the native WebRTC SFU in
+# crates/annex-voice; no external SFU sidecar is required.
+#
+# For public access, set ANNEX_PUBLIC_URL and run behind a TLS reverse proxy,
 # or configure the Annex router sidecar for automatic endpoint provisioning.
-# LiveKit dev server at ws://localhost:7880
 
 services:
   annex:
@@ -17,10 +19,6 @@ services:
       - ANNEX_HOST=0.0.0.0
       - ANNEX_PORT=3000
       - ANNEX_DB_PATH=/app/data/annex.db
-      - ANNEX_LIVEKIT_URL=ws://livekit:7880
-      - ANNEX_LIVEKIT_PUBLIC_URL=ws://localhost:7880
-      - ANNEX_LIVEKIT_API_KEY=${ANNEX_LIVEKIT_API_KEY:-devkey}
-      - ANNEX_LIVEKIT_API_SECRET=${ANNEX_LIVEKIT_API_SECRET:-secret}
       - ANNEX_CORS_ORIGINS=*
       - ANNEX_LOG_LEVEL=info
       - ANNEX_LOG_JSON=true
@@ -29,21 +27,19 @@ services:
       - ANNEX_TTS_VOICES_DIR=/app/assets/voices
       - ANNEX_STT_BINARY_PATH=/app/assets/whisper/whisper
       - ANNEX_STT_MODEL_PATH=/app/assets/models/ggml-base.en.bin
+      # Storage health + maintenance (see docs/deployment.md)
+      - ANNEX_DB_MAINTENANCE_ENABLED=true
+      - ANNEX_DB_MAINTENANCE_INTERVAL_HOURS=24
+      - ANNEX_DB_MAINTENANCE_VACUUM=false
+      - ANNEX_STORAGE_WARN_FREE_BYTES=536870912
+      - ANNEX_STORAGE_BLOCK_FREE_BYTES=67108864
+      # Federation reliability defaults
+      - ANNEX_FEDERATION_FRESHNESS_SECONDS=300
+      - ANNEX_FEDERATION_FUTURE_SKEW_SECONDS=60
+      - ANNEX_FEDERATION_OUTBOX_MAX_ATTEMPTS=12
+      - ANNEX_FEDERATION_OUTBOX_INTERVAL_SECONDS=5
     volumes:
       - annex-data:/app/data
-    depends_on:
-      - livekit
-    restart: unless-stopped
-
-  livekit:
-    image: livekit/livekit-server:latest
-    command: --dev --bind 0.0.0.0
-    ports:
-      - "7880:7880"
-      - "7881:7881"
-      - "7882:7882/udp"
-    environment:
-      - "LIVEKIT_KEYS=${ANNEX_LIVEKIT_API_KEY:-devkey}: ${ANNEX_LIVEKIT_API_SECRET:-secret}"
     restart: unless-stopped
 
 volumes:

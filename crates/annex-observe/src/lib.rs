@@ -43,7 +43,9 @@ mod store;
 
 pub use error::ObserveError;
 pub use event::{EventDomain, EventPayload, ParseEventDomainError, PublicEvent};
-pub use store::{emit_event, next_seq, query_events, EventFilter};
+pub use store::{
+    compute_event_hash, emit_event, next_seq, query_events, verify_event_log_chain, EventFilter,
+};
 
 #[cfg(test)]
 mod tests;

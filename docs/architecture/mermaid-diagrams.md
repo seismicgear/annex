@@ -142,7 +142,9 @@ sequenceDiagram
         S->>S: tx: insert zk_nullifiers,<br/>upsert platform_identities,<br/>upsert graph_nodes (AI_AGENT, active=1),<br/>emit PseudonymDerived + NodeAdded
         S-->>A: pseudonym activated + HMAC session token
 
-        A->>S: GET /ws?pseudonym=…<br/>Authorization: Bearer &lt;session token&gt;
+        A->>S: POST /api/ws/token<br/>Authorization: Bearer &lt;session token&gt;
+        S-->>A: short-lived ws token (60s TTL)
+        A->>S: GET /ws?token=&lt;ws token&gt;<br/>(legacy /ws?pseudonym=… only when enforce_zk_proofs = false)
         S-->>A: WebSocket upgraded
 
         A->>S: POST /api/channels/{id}/join

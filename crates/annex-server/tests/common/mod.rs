@@ -85,5 +85,8 @@ pub fn build_app_state(pool: DbPool, tree: MerkleTree, policy: ServerPolicy) -> 
         enforce_zk_proofs: false,
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: Arc::new([0u8; 32]),
+        federation_config: annex_server::config::FederationConfig::default(),
+        storage_config: annex_server::config::StorageConfig::default(),
+        storage_health: Arc::new(annex_server::storage_health::StorageHealth::new()),
     }
 }
