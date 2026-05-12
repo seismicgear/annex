@@ -165,3 +165,86 @@ async fn redeem_rejects_unknown_code() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn redeem_rejects_past_expires_at() {
+    let (app, pool) = build_state();
+    {
+        let conn = pool.get().unwrap();
+        // Past expiration in the canonical write format.
+        conn.execute(
+            "INSERT INTO invite_codes \
+             (server_id, code, created_by, max_uses, use_count, expires_at) \
+             VALUES (1, 'PAST', 'tester', NULL, 0, '2020-01-01 00:00:00')",
+            [],
+        )
+        .unwrap();
+    }
+    let resp = app.clone().oneshot(redeem_request("PAST")).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "redeem must reject an invite whose expires_at is in the past"
+    );
+}
+
+#[tokio::test]
+async fn redeem_rejects_malformed_expires_at() {
+    // Pre-fix, the redeem handler used `if let Ok(exp_dt) = parse_from_str(..)`
+    // and silently *fell through* on parse failure — so any non-canonical
+    // value (operator-issued ISO 8601, manual repair, format drift in a
+    // future migration) would silently extend the invite's life forever.
+    // Defence in depth: malformed expires_at is rejected as expired.
+    let (app, pool) = build_state();
+    {
+        let conn = pool.get().unwrap();
+        // Five distinct shapes that all USED to bypass expiration
+        // because they don't match `%Y-%m-%d %H:%M:%S`. All should now
+        // be rejected.
+        for (code, exp) in [
+            ("ISO8601", "2030-01-01T00:00:00Z"),
+            ("DATE_ONLY", "2030-01-01"),
+            ("EMPTY", ""),
+            ("GARBAGE", "tomorrow"),
+            ("FRACTIONAL", "2030-01-01 00:00:00.123"),
+        ] {
+            conn.execute(
+                "INSERT INTO invite_codes \
+                 (server_id, code, created_by, max_uses, use_count, expires_at) \
+                 VALUES (1, ?1, 'tester', NULL, 0, ?2)",
+                rusqlite::params![code, exp],
+            )
+            .unwrap();
+        }
+    }
+    for code in ["ISO8601", "DATE_ONLY", "EMPTY", "GARBAGE", "FRACTIONAL"] {
+        let resp = app.clone().oneshot(redeem_request(code)).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "redeem must reject invite '{code}' with non-canonical expires_at"
+        );
+    }
+}
+
+#[tokio::test]
+async fn redeem_accepts_canonical_future_expires_at() {
+    let (app, pool) = build_state();
+    {
+        let conn = pool.get().unwrap();
+        // Canonical-format future expiration must redeem cleanly.
+        conn.execute(
+            "INSERT INTO invite_codes \
+             (server_id, code, created_by, max_uses, use_count, expires_at) \
+             VALUES (1, 'FUTURE', 'tester', NULL, 0, '2099-12-31 23:59:59')",
+            [],
+        )
+        .unwrap();
+    }
+    let resp = app.clone().oneshot(redeem_request("FUTURE")).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "redeem must accept an invite whose expires_at is well in the future"
+    );
+}

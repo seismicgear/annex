@@ -1,7 +1,7 @@
 # Agent Handoff
 
 ## Current branch
-`claude/fix-annex-bugs-5yw2Y` (current session; chain: `…itXFq` → `…PxyqS` → `…Las84` → `…AqBJk` → `…Fshec` → `…AT8va` → `…5yw2Y`)
+`claude/fix-annex-bugs-PmMSm` (current session; chain: `…itXFq` → `…PxyqS` → `…Las84` → `…AqBJk` → `…Fshec` → `…AT8va` → `…5yw2Y` → `…PmMSm`)
 
 ## Session goal
 Recursive production bug-fix campaign on Annex (Tauri desktop, Rust workspace,
@@ -9,7 +9,210 @@ Groth16/Circom ZKP, SQLite). Fix highest-impact real bugs in priority order:
 ZK enforcement → ZK release artifact path → canonical hex → Merkle epoch/concurrency
 → nullifier privacy → desktop release → security sweep.
 
-## Fixed in this session (claude/fix-annex-bugs-5yw2Y)
+## Fixed in this session (claude/fix-annex-bugs-PmMSm)
+
+### [F39] Desktop `start_local_webrtc` / `clear_webrtc_env` called `set_var` under the live Tauri runtime (UB on Linux)
+`crates/annex-desktop/src/webrtc.rs::start_local_webrtc` is a `#[tauri::command]`
+that, after spawning `webrtc-server` and waiting for it to become ready,
+wrote four env vars (`ANNEX_WEBRTC_URL`, `ANNEX_WEBRTC_PUBLIC_URL`,
+`ANNEX_WEBRTC_API_KEY`, `ANNEX_WEBRTC_API_SECRET`) so that
+`start_embedded_server` would pick them up via `config::load_config`'s env
+overrides. The block was wrapped in `unsafe { … }` with the comment:
+
+> SAFETY: Called before `start_embedded_server` spawns any server threads.
+
+The comment was load-bearing on a foundation that didn't exist. By the
+time *any* Tauri command runs, the Tauri tokio runtime already has worker
+threads alive. Rust 1.85 marked `set_var`/`remove_var` `unsafe`
+specifically because glibc's `setenv` is documented as undefined
+behaviour when another thread is calling `getenv` (or any function that
+internally consults the environment — TLS init via `rustls`, child
+spawning via `tokio::process::Command` for `PATH` lookup, etc.) at the
+same moment. The `--dev` Linux build was the exposed surface; on macOS
+the keychain crate doesn't spawn threads, on Windows the credential
+manager API is fully synchronous, but on Linux libsecret/zbus spins up
+a dbus worker that lives for the rest of the process. Once that thread
+exists, every subsequent `set_var` is technically UB.
+
+`clear_webrtc_env` had the same shape (four `set_var(…, "")` calls
+behind the same misleading SAFETY comment).
+
+The fix is structural: stop using env vars to plumb runtime WebRTC
+config from one Tauri command to another, and instead store the values
+as a plain Rust struct in `AppManagedState` that `start_embedded_server`
+applies to the loaded `annex_server::config::Config` directly before
+calling `prepare_server`.
+
+- files changed:
+  - `crates/annex-desktop/src/app_state.rs` — new
+    `WebRtcConfigOverride { url, public_url, api_key, api_secret }`
+    struct + new `webrtc_config_override: Mutex<Option<WebRtcConfigOverride>>`
+    field on `AppManagedState`. Doc comment explains the UB rationale
+    so the next person who tries to "simplify" by going back to env
+    vars sees the gravestones first.
+  - `crates/annex-desktop/src/main.rs` — initialise the new field
+    (`webrtc_config_override: Mutex::new(None)`).
+  - `crates/annex-desktop/src/webrtc.rs::start_local_webrtc` —
+    replaced the `unsafe { set_var x4 }` block with a single
+    `Mutex<Option<…>>` write. Imports updated.
+  - `crates/annex-desktop/src/webrtc.rs::clear_webrtc_env` — now
+    takes `state: tauri::State<'_, AppManagedState>` and sets the
+    override to `None`. Same effect on the embedded server; no
+    `set_var` call.
+  - `crates/annex-desktop/src/embedded_server.rs::start_embedded_server`
+    — after `config::load_config(...)` returns, applies the override
+    (if any) to `cfg.webrtc.{url,public_url,api_key,api_secret}`
+    before passing to `prepare_server`. The embedded server reads
+    its config from the struct it was given, not from the
+    environment.
+  - `client/src/lib/tauri.ts` — comment refresh on `clearWebRtcEnv`
+    (function signature is unchanged: `Promise<void>`; the wire
+    behaviour is now "rejects on Mutex poison" instead of "always
+    resolves", which matches `start_local_webrtc`'s existing shape).
+- tests run:
+  - `cargo fmt --all --check` → clean.
+  - Desktop crate cannot be exercised in this sandbox (GTK/WebKitGTK
+    packages absent — the documented pre-existing limitation; see
+    `CLAUDE.md`'s "Known Issues"). Server-side tests
+    (`cargo test -p annex-server`) continue to pass — the change
+    is desktop-only and does not touch the embedded server's
+    `Config` reader.
+- result: PASS structurally. The four `unsafe { set_var(…) }` calls
+  reachable from a Tauri command are gone. The remaining `set_var`
+  in `crates/annex-desktop/src/main.rs` runs *before* `tauri::Builder`
+  starts and is now correctly ordered with respect to the
+  `keyring::load_api_secret_from_keyring()` call that may spawn a dbus
+  worker on Linux — see [F38] below.
+
+### [F38] Desktop `main.rs` keyring lookup happened *inside* the `unsafe { set_var … }` block (UB on Linux)
+`crates/annex-desktop/src/main.rs` `main()` runs before
+`tauri::Builder::default()` and thus before any Tauri runtime threads
+exist. The block of `std::env::set_var` calls was wrapped in `unsafe`
+with the SAFETY claim "Called before any threads are spawned, so this is
+single-threaded." That was true for the first six `set_var` calls. The
+seventh — for `ANNEX_WEBRTC_API_SECRET` — was preceded by
+`keyring::load_api_secret_from_keyring()`, which on Linux uses libsecret
+over zbus and spins up an internal dbus worker thread on first call.
+After that thread is alive, the next `set_var` is no longer
+single-threaded; per glibc 2.34+ docs and Rust's
+"`set_var` is unsafe" justification, that's UB.
+
+Concretely the broken sequence was:
+
+```rust
+unsafe {
+    std::env::set_var("ANNEX_CLIENT_DIR", ...);   // single-threaded ✓
+    std::env::set_var("ANNEX_ZK_KEY_PATH", ...);  // single-threaded ✓
+    // ... four more set_vars ...
+    if std::env::var("ANNEX_WEBRTC_API_SECRET").is_err() {
+        match keyring::load_api_secret_from_keyring() {  // <-- spawns dbus thread
+            Ok(Some(secret)) => {
+                std::env::set_var("ANNEX_WEBRTC_API_SECRET", &secret); // <-- UB
+            }
+            ...
+        }
+    }
+}
+```
+
+Fix: pre-compute the keyring value (and any `std::env::var(...)` reads)
+*before* entering the `unsafe` block, then make every `set_var` happen
+in one definitively-single-threaded block. The keyring crate may still
+spawn a worker, but that worker's lifetime no longer overlaps with any
+`set_var` call.
+
+- files changed:
+  - `crates/annex-desktop/src/main.rs` — extracted the
+    `cors_already_set`, `webrtc_secret_already_set`, and
+    `webrtc_secret_from_keyring` reads to *before* the `unsafe` block;
+    the `unsafe` block now holds only `set_var` calls and a refreshed
+    SAFETY comment that names the contract ("every `getenv`-equivalent
+    and every potentially-thread-spawning call has already completed").
+- tests run: same as [F39].
+- result: PASS. The keyring read no longer races with `set_var`.
+
+### [F37] `invite_codes.expires_at` parse failure silently treated as "never expires" (security)
+`crates/annex-server/src/api_invite.rs::redeem_invite_handler` and
+`crates/annex-server/src/services/identity_service.rs::register_identity`
+both pre-validate the `expires_at` column on `invite_codes` with the
+same shape:
+
+```rust
+if let Some(ref exp) = expires_at {
+    if let Ok(exp_dt) = chrono::NaiveDateTime::parse_from_str(exp, "%Y-%m-%d %H:%M:%S") {
+        let now = chrono::Utc::now().naive_utc();
+        if exp_dt < now {
+            return Err(/* expired */);
+        }
+    }
+    // BUG: parse failure silently treated as "not expired"
+}
+```
+
+If the on-disk value couldn't be parsed in `%Y-%m-%d %H:%M:%S`, the
+guard fell through and the invite was treated as still-valid. The
+`create_invite_handler` write path uses the matching `format(...)` so
+the *common* case is fine, but any of the following turn the invite
+into a never-expiring grant:
+
+  * Operator-issued repair via `INSERT INTO invite_codes (..., expires_at)
+    VALUES (..., '2026-12-31T23:59:59Z')` (RFC 3339 with `T`/`Z`).
+  * Operator-issued shortcut `expires_at = '2026-12-31'` (date only).
+  * Future migration adding millisecond precision (`%Y-%m-%d %H:%M:%S%.f`)
+    → existing reads would silently bypass expiration on every legacy row.
+  * Manual repair after corruption that adds whitespace, a timezone
+    suffix, or trims a digit.
+
+For an `invite_only` server, this means a single corrupted /
+operator-issued row can become a permanent registration backdoor that
+silently survives every restart, every `expires_in_hours` check, and
+every UI that says "expired".
+
+Fix: extracted a single `pub(crate) fn invite_expires_at_is_past(s, now)
+-> bool` helper in `api_invite.rs` that strict-parses the canonical
+format, treats parse failure as past-due (with a `tracing::warn!` so
+operators can see corrupt rows in logs), and returns the boolean.
+Both call sites now share the helper.
+
+- files changed:
+  - `crates/annex-server/src/api_invite.rs` — new
+    `INVITE_EXPIRES_AT_FORMAT` constant + `invite_expires_at_is_past`
+    helper, doc comment explaining the rationale, 5 unit tests
+    (`invite_expires_at_in_the_future_is_not_past`,
+    `invite_expires_at_in_the_past_is_past`,
+    `invite_expires_at_at_now_is_not_past`,
+    `invite_expires_at_unparseable_is_treated_as_past`,
+    `invite_expires_at_format_is_what_create_handler_writes`),
+    `redeem_invite_handler` rewritten to use the helper, and
+    `create_invite_handler` now uses the same constant for the write
+    path so the round-trip is symmetric in code.
+  - `crates/annex-server/src/services/identity_service.rs` —
+    `register_identity` uses the same helper via
+    `crate::api_invite::invite_expires_at_is_past`.
+  - `crates/annex-server/tests/api_invites.rs` — three new
+    integration tests:
+      - `redeem_rejects_past_expires_at` (canonical past)
+      - `redeem_rejects_malformed_expires_at` (5 non-canonical
+        shapes that all USED to bypass: ISO 8601, date-only,
+        empty, garbage, fractional seconds)
+      - `redeem_accepts_canonical_future_expires_at` (positive control)
+- tests run:
+  - `cargo test -p annex-server --lib api_invite` →
+    **25 passed** (5 new helper tests; previously 20).
+  - `cargo test -p annex-server --test api_invites` →
+    **6 passed** (3 new integration tests; previously 3).
+  - `cargo test -p annex-server --test identity_service` →
+    **8 passed** (no regressions — identity service still rejects
+    expired invites; the malformed-expires_at path is reachable
+    via the same helper now).
+  - `cargo test -p annex-server --lib` → **152 passed**.
+  - `cargo fmt --all --check` → clean.
+  - `cargo clippy --workspace --exclude annex-desktop --all-targets
+     -- -D warnings` → clean (verified pre-fix).
+- result: PASS. The invite-only mode no longer accepts permanently-
+  valid invites built from a non-canonical `expires_at` value.
+
+## Fixed in earlier session (claude/fix-annex-bugs-5yw2Y)
 
 ### [F36] Broadcast `Lagged` permanently terminated four forwarder tasks (recovery gap)
 `tokio::sync::broadcast::Receiver::recv()` returns three variants:
@@ -2017,7 +2220,117 @@ The fix mirrors the local cap.
   tx is fine because it only worries about partial-failure
   atomicity, not concurrent-writer races. See [F31].
 
-## Context cutoff note (current session, claude/fix-annex-bugs-5yw2Y)
+## Context cutoff note (current session, claude/fix-annex-bugs-PmMSm)
+Session [F37..F39] focused on three pre-existing latent bugs found in
+the recursive audit of the previous session's "next files to inspect"
+list:
+
+1. **Silent invite-expiration bypass on non-canonical `expires_at`**
+   ([F37]). Both `redeem_invite_handler` and
+   `IdentityService::register_identity` did
+   `if let Ok(exp_dt) = parse_from_str(...)` and silently fell through
+   on parse failure — turning any operator-issued ISO 8601, date-only,
+   or fractional-precision `expires_at` into a permanent never-expiring
+   invite. For an `invite_only` server, that's a registration
+   backdoor. Fix: shared `invite_expires_at_is_past` helper that
+   strict-parses and treats parse failure as past-due.
+   8 new tests; total invite-related tests now 11.
+
+2. **Desktop `main.rs` `set_var` interleaved with keyring lookup**
+   ([F38]). The `unsafe { set_var … }` block claimed
+   "Called before any threads are spawned, so this is single-threaded."
+   That was true for the first six set_var calls but false for the
+   seventh — the call to `keyring::load_api_secret_from_keyring()`
+   happened inside the same block, and on Linux that crate uses
+   libsecret over zbus and spawns a dbus worker. After the worker
+   exists, the next `set_var` is UB. Fix: pre-compute every
+   `getenv`-equivalent and the keyring lookup *before* the unsafe
+   block, then run all `set_var` calls in one definitively
+   single-threaded block.
+
+3. **Desktop `start_local_webrtc` / `clear_webrtc_env` `set_var` under
+   the live Tauri runtime** ([F39]). Both Tauri commands wrote
+   `ANNEX_WEBRTC_*` env vars from inside the running tokio runtime
+   ("SAFETY: Called before `start_embedded_server` spawns any server
+   threads" — load-bearing on a foundation that didn't exist; Tauri
+   itself is multi-threaded by the time any command runs).
+   Structural fix: new `WebRtcConfigOverride` struct in `AppManagedState`,
+   written by `start_local_webrtc`, read by `start_embedded_server`
+   which applies it to the loaded `Config` struct directly before
+   calling `prepare_server`. No `set_var` reachable from a Tauri
+   command remains. Frontend wire shape unchanged.
+
+`fmt`, `clippy --workspace --exclude annex-desktop --all-targets --
+-D warnings`, and `cargo test -p annex-server` (152 lib + 6 invite
+integration + 8 identity-service integration) are all green. The
+desktop crate itself cannot be exercised in this sandbox because
+GTK/WebKitGTK packages are absent (the documented pre-existing
+limitation).
+
+If a future agent picks up:
+1. Re-run baseline (`cargo fmt --all --check`, `cargo clippy
+   --workspace --exclude annex-desktop --all-targets -- -D warnings`,
+   `cargo test -p annex-server`).
+2. Real Linux/Windows CI runners must execute the desktop build for
+   [F38] / [F39] to be functionally validated. Inspection of
+   `crates/annex-desktop/src/{main,webrtc,embedded_server,app_state}.rs`
+   confirms the new flow is structurally sound, but only a real
+   Tauri build can confirm the runtime UB is actually gone.
+3. The previous session's open items remain unaddressed:
+   - real multi-party ZK ceremony (still blocks tagged release;
+     `verify-artifacts.js` correctly refuses dev-fixture under
+     production profile).
+   - v1 nullifier privacy gap (release blocker for any deployment
+     claiming topic unlinkability; v2 is implemented + opt-in).
+   - PoT depth ceiling (only matters if circuit grows past ~16k
+     constraints).
+   - uploads-as-public-URL design question (release blocker for
+     private-channel mode).
+4. Areas already audited this session that look clean:
+   - `crates/annex-server/src/api_admin.rs` — `update_policy_handler`
+     correctly serialises across DB + in-memory state with a
+     non-poisonable `unwrap_or_else(into_inner)` on the policy
+     RwLock. `set_public_url_handler` rejects malformed scheme
+     prefixes; auth-checked under `can_moderate`.
+   - `crates/annex-server/src/api_link_preview.rs` — every URL
+     validated via `is_private_or_reserved` before fetch; DNS-pinned
+     redirect-following with per-hop revalidation; cache eviction
+     is O(N log N) per miss past capacity (acceptable for N=2000).
+     SVG explicitly rejected on the image proxy path.
+   - `crates/annex-voice/src/agent.rs::AgentVoiceClient` — the
+     transcription task is owned by a `JoinHandle` that's aborted on
+     `Drop` ([F30]); the broadcast loop differentiates Lagged from
+     Closed ([F36]). Both regression-tested.
+   - `crates/annex-server/src/ws/commands/{message,edit,delete}.rs`
+     — every membership check uses `check_ws_membership` and every
+     broadcast uses the *persisted* channel_id (never the
+     client-supplied one) to prevent cross-channel spoof.
+   - `crates/annex-server/src/services/federation_service.rs::check_freshness`
+     — correctly fails closed on unparseable RFC 3339 input.
+   - All production unwraps/expects audit: every remaining
+     `.unwrap()` / `.expect()` outside `#[cfg(test)]` / `mod tests`
+     is invariant-protected (test-only mod gates, or constants).
+5. Next concrete files to inspect for the *next* class of bugs (none
+   are bugs today, but they're the most likely places):
+   - `crates/annex-server/src/api_observe.rs::get_events_handler` —
+     `since` query param is passed straight to SQL as a string;
+     SQLite does string comparison against `occurred_at` which is
+     ISO 8601 today. If `occurred_at` ever stops being lex-ordered
+     (e.g., a future migration moves to numeric epoch), the `since`
+     filter silently becomes a no-op. Add validation when the
+     timestamp format changes.
+   - `crates/annex-server/src/api_invite.rs::create_invite_handler`
+     — separate INSERT + later SELECT; if create succeeds but the
+     SELECT for server label fails, the response is 500 but the
+     invite is durable. Cosmetic; consider a single tx if more
+     writes get added here.
+   - `crates/annex-channels/src/messages.rs::edit_message`/
+     `delete_message` — the time-window parser uses the same
+     `%Y-%m-%d %H:%M:%S` format that bit us in [F37]; it correctly
+     fails closed today (returns NotFound on parse error). Worth
+     keeping that behaviour invariant.
+
+## Context cutoff note (previous session, claude/fix-annex-bugs-5yw2Y)
 Session [F32..F36] focused on the federation receive path, the
 federation outbox worker, the protocol-contract fixtures, the WS
 resume protocol, and broadcast-recv recovery semantics across the

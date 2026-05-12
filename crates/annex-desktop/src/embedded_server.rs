@@ -28,8 +28,27 @@ pub(crate) async fn start_embedded_server(
     let config_path_str = state.config_path.to_string_lossy().to_string();
 
     // Load configuration.
-    let cfg =
+    let mut cfg =
         config::load_config(Some(&config_path_str)).map_err(|e| format!("config error: {e}"))?;
+
+    // Apply the runtime WebRTC override (if `start_local_webrtc` ran first).
+    // We deliberately do NOT plumb these via `std::env::set_var` because by
+    // the time we get here the Tauri runtime is multi-threaded — see
+    // `app_state::WebRtcConfigOverride` for the full rationale. Reading
+    // from a `Mutex<Option<…>>` and assigning into the loaded `Config`
+    // struct is the equivalent operation, minus the UB.
+    {
+        let guard = state
+            .webrtc_config_override
+            .lock()
+            .map_err(|e| e.to_string())?;
+        if let Some(ref ovr) = *guard {
+            cfg.webrtc.url = ovr.url.clone();
+            cfg.webrtc.public_url = ovr.public_url.clone();
+            cfg.webrtc.api_key = ovr.api_key.clone();
+            cfg.webrtc.api_secret = ovr.api_secret.clone();
+        }
+    }
 
     // Initialize tracing (ignore if already initialized).
     let _ = init_tracing(&cfg.logging);

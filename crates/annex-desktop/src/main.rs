@@ -140,8 +140,49 @@ fn main() {
     ];
     let voices_dir = voices_candidates.iter().find(|p| p.is_dir());
 
+    // Pre-compute every value that the env::set_var block needs *before*
+    // entering the unsafe block. In particular:
+    //
+    //   * `keyring::load_api_secret_from_keyring()` on Linux uses
+    //     libsecret over zbus, which spins up an internal dbus worker
+    //     thread on first call. After that thread is alive,
+    //     `std::env::set_var` is no longer single-threaded — Rust 1.85
+    //     made it `unsafe` precisely because glibc's `setenv` is
+    //     undefined behaviour when another thread is concurrently
+    //     calling `getenv`. The original code interleaved the keyring
+    //     read with the final `set_var`, breaking the "no threads
+    //     spawned yet" invariant claimed in the SAFETY comment.
+    //
+    //   * `std::env::var(name)` is a `getenv` call. We need to do every
+    //     such read up-front and stash the result, then write all the
+    //     set_var calls in one definitively-single-threaded block.
+    //
+    // Result: the only thread-spawn between this point and the
+    // `unsafe { … }` block below is the keyring crate's worker (Linux
+    // only), and it runs before any `set_var` happens.
+    let cors_already_set = std::env::var("ANNEX_CORS_ORIGINS").is_ok();
+    let webrtc_secret_already_set = std::env::var("ANNEX_WEBRTC_API_SECRET").is_ok();
+    let webrtc_secret_from_keyring: Option<String> = if webrtc_secret_already_set {
+        None
+    } else {
+        match keyring::load_api_secret_from_keyring() {
+            Ok(Some(secret)) => {
+                tracing::info!("loaded WebRTC API secret from OS keychain");
+                Some(secret)
+            }
+            Ok(None) => None, // No secret stored — voice may be disabled
+            Err(e) => {
+                tracing::warn!("failed to load WebRTC secret from keychain: {e}");
+                None
+            }
+        }
+    };
+
     // Set environment variables so the embedded server picks up the right paths.
-    // SAFETY: Called before any threads are spawned, so this is single-threaded.
+    // SAFETY: Every `getenv`-equivalent and every potentially-thread-spawning
+    // call (notably the keyring read above) has already completed. No code
+    // path between here and the closing `}` of this block spawns a thread or
+    // reads the environment, so concurrent access to `environ` is impossible.
     unsafe {
         std::env::set_var("ANNEX_CLIENT_DIR", &client_dir);
         if let Some(vkey_path) = zk_vkey {
@@ -169,26 +210,17 @@ fn main() {
         // when built with `debug_assertions` — see
         // `annex_server::is_dev_localhost_origin`. Release builds keep the
         // strict allowlist.
-        if std::env::var("ANNEX_CORS_ORIGINS").is_err() {
+        if !cors_already_set {
             std::env::set_var(
                 "ANNEX_CORS_ORIGINS",
                 "tauri://localhost,https://tauri.localhost,http://tauri.localhost",
             );
         }
 
-        // Load WebRTC API secret from OS keychain if not already in env.
-        // This injects the secret before any server thread reads the config.
-        if std::env::var("ANNEX_WEBRTC_API_SECRET").is_err() {
-            match keyring::load_api_secret_from_keyring() {
-                Ok(Some(secret)) => {
-                    std::env::set_var("ANNEX_WEBRTC_API_SECRET", &secret);
-                    tracing::info!("loaded WebRTC API secret from OS keychain");
-                }
-                Ok(None) => {} // No secret stored — voice may be disabled
-                Err(e) => {
-                    tracing::warn!("failed to load WebRTC secret from keychain: {e}");
-                }
-            }
+        // Inject the keyring-loaded WebRTC secret before any server thread
+        // reads the config. Loaded above, before this single-threaded block.
+        if let Some(ref secret) = webrtc_secret_from_keyring {
+            std::env::set_var("ANNEX_WEBRTC_API_SECRET", secret);
         }
     }
 
@@ -200,6 +232,7 @@ fn main() {
             server: Mutex::new(None),
             router_session: Mutex::new(None),
             webrtc: Mutex::new(None),
+            webrtc_config_override: Mutex::new(None),
             pending_invite: Mutex::new(None),
         })
         .setup(|app| {
