@@ -63,6 +63,9 @@ async fn setup_app() -> axum::Router {
         enforce_zk_proofs: false,
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
+        federation_config: annex_server::config::FederationConfig::default(),
+        storage_config: annex_server::config::StorageConfig::default(),
+        storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
     };
 
     app(state)
@@ -183,6 +186,9 @@ async fn test_attest_membership_invalid_signature() {
         enforce_zk_proofs: false,
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
+        federation_config: annex_server::config::FederationConfig::default(),
+        storage_config: annex_server::config::StorageConfig::default(),
+        storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
     };
 
     let app = app(state);
@@ -282,6 +288,9 @@ async fn test_attest_membership_valid_signature_fails_network() {
         enforce_zk_proofs: false,
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
+        federation_config: annex_server::config::FederationConfig::default(),
+        storage_config: annex_server::config::StorageConfig::default(),
+        storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
     };
 
     let app = app(state);
@@ -443,6 +452,9 @@ async fn setup_app_with_known_instance(
         enforce_zk_proofs: false,
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
+        federation_config: annex_server::config::FederationConfig::default(),
+        storage_config: annex_server::config::StorageConfig::default(),
+        storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
     };
 
     (app(state), signing_key)

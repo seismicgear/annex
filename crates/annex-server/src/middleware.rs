@@ -53,6 +53,9 @@ pub async fn auth_middleware(mut req: Request<Body>, next: Next) -> Result<Respo
         .get::<Arc<AppState>>()
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?
         .clone();
+    // Held separately so the storage-gate check below can run after
+    // `state` has been moved into the spawn_blocking closure.
+    let state_clone_for_gate = state.clone();
 
     // 1. Extract pseudonym from header.
     //
@@ -115,10 +118,35 @@ pub async fn auth_middleware(mut req: Request<Body>, next: Next) -> Result<Respo
         return Err(StatusCode::UNAUTHORIZED);
     }
 
-    // 5. Insert into extensions
+    // 5. Storage gate: reject mutating methods when the storage gate
+    //    is degraded. Reads still flow so operators can inspect
+    //    state through the same auth surface they always use.
+    if is_mutating_method(req.method()) && state_clone_for_gate.storage_health.writes_blocked() {
+        tracing::warn!(
+            method = %req.method(),
+            path = %req.uri().path(),
+            reason = %state_clone_for_gate.storage_health.reason(),
+            "storage gate is degraded — rejecting write request with 507"
+        );
+        return Err(StatusCode::INSUFFICIENT_STORAGE);
+    }
+
+    // 6. Insert into extensions
     req.extensions_mut().insert(IdentityContext(identity));
 
     Ok(next.run(req).await)
+}
+
+/// True if `method` would mutate persisted state. Used by the auth
+/// middleware to short-circuit when the storage gate is degraded.
+fn is_mutating_method(method: &axum::http::Method) -> bool {
+    matches!(
+        *method,
+        axum::http::Method::POST
+            | axum::http::Method::PUT
+            | axum::http::Method::PATCH
+            | axum::http::Method::DELETE
+    )
 }
 
 /// Rate limit endpoint category — each category has its own counter.

@@ -11,3 +11,5 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 rusqlite = { workspace = true }
+# Event-log hash chain (introduced in migration 038).
+sha2 = { workspace = true }

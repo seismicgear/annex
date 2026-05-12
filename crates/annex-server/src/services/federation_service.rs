@@ -54,6 +54,7 @@ use annex_rtx::{check_redacted_topics, enforce_transfer_scope, validate_bundle_s
 use annex_types::NodeType;
 use annex_vrp::{VrpTransferScope, VrpValidationReport};
 use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey as EdVerifyingKey};
+use rusqlite::OptionalExtension;
 use thiserror::Error;
 
 use crate::api::GetRootResponse;
@@ -225,20 +226,111 @@ pub(crate) fn verify_ed25519(
 }
 
 /// Canonical newline-delimited signing input for a federated message.
+///
+/// Version dispatch:
+///   * `envelope.envelope_version == None | Some("v1")` — legacy
+///     7-line input. Preserves wire-compatibility with peers that
+///     have not adopted v2.
+///   * `envelope.envelope_version == Some("v2")` — 8-line input,
+///     prepended with the literal version string so v1 ↔ v2
+///     downgrade / upgrade attacks change the signed bytes and
+///     therefore break the signature.
+///
 /// Newline delimiters prevent field-boundary ambiguity (e.g.
 /// `message_id="ab" + channel_id="c"` would collide with `"a" + "bc"`
 /// without delimiters). Used by both the relay and receive paths.
-pub(crate) fn message_signing_input(envelope: &FederatedMessageEnvelope) -> String {
-    format!(
-        "{}\n{}\n{}\n{}\n{}\n{}\n{}",
-        envelope.message_id,
-        envelope.channel_id,
-        envelope.content,
-        envelope.sender_pseudonym,
-        envelope.originating_server,
-        envelope.attestation_ref,
-        envelope.created_at
-    )
+pub fn message_signing_input(envelope: &FederatedMessageEnvelope) -> String {
+    let version = envelope
+        .envelope_version
+        .as_deref()
+        .unwrap_or(annex_federation::FEDERATED_MESSAGE_ENVELOPE_V1);
+    if version == annex_federation::FEDERATED_MESSAGE_ENVELOPE_V2 {
+        format!(
+            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+            annex_federation::FEDERATED_MESSAGE_ENVELOPE_V2,
+            envelope.message_id,
+            envelope.channel_id,
+            envelope.content,
+            envelope.sender_pseudonym,
+            envelope.originating_server,
+            envelope.attestation_ref,
+            envelope.created_at
+        )
+    } else {
+        format!(
+            "{}\n{}\n{}\n{}\n{}\n{}\n{}",
+            envelope.message_id,
+            envelope.channel_id,
+            envelope.content,
+            envelope.sender_pseudonym,
+            envelope.originating_server,
+            envelope.attestation_ref,
+            envelope.created_at
+        )
+    }
+}
+
+/// Canonical SHA-256 of the signing input. Used by the federation
+/// receipt ledger to detect "same message_id, different signed body"
+/// attacks (key compromise scenarios).
+pub fn message_envelope_hash(envelope: &FederatedMessageEnvelope) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(message_signing_input(envelope).as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+/// Errors specific to the freshness gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FreshnessRejection {
+    /// `created_at` could not be parsed as ISO 8601 / RFC 3339.
+    Unparseable,
+    /// `created_at` is too far in the past for live delivery.
+    TooOld,
+    /// `created_at` is far enough in the future to indicate clock
+    /// skew or deliberate forward-dating.
+    TooFarInFuture,
+}
+
+/// Federation envelope delivery mode. Live envelopes go through the
+/// strict freshness gate; catch-up envelopes are allowed to be older
+/// than the live window but still must be signature- and replay-valid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliveryMode {
+    Live,
+    Catchup,
+}
+
+impl DeliveryMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DeliveryMode::Live => "live",
+            DeliveryMode::Catchup => "catchup",
+        }
+    }
+}
+
+/// Decides whether an envelope's `created_at` is acceptable for the
+/// given delivery mode. The `now` parameter is injectable so tests
+/// can pin the clock; the production caller uses `chrono::Utc::now()`.
+pub fn check_freshness(
+    created_at: &str,
+    now: chrono::DateTime<chrono::Utc>,
+    freshness_window_seconds: i64,
+    future_skew_seconds: i64,
+    mode: DeliveryMode,
+) -> Result<(), FreshnessRejection> {
+    let parsed = chrono::DateTime::parse_from_rfc3339(created_at)
+        .map_err(|_| FreshnessRejection::Unparseable)?
+        .with_timezone(&chrono::Utc);
+    let age = now.signed_duration_since(parsed).num_seconds();
+    if age < -future_skew_seconds {
+        return Err(FreshnessRejection::TooFarInFuture);
+    }
+    if mode == DeliveryMode::Live && age > freshness_window_seconds {
+        return Err(FreshnessRejection::TooOld);
+    }
+    Ok(())
 }
 
 /// Parses an attestation reference string into `(commitment_hex, topic)`.
@@ -806,6 +898,45 @@ impl FederationService {
                     )));
                 }
 
+                // 1.4. Freshness gate (v2 envelopes only — v1 peers
+                //      never advertised support for this and would be
+                //      surprised by sudden rejection). v2 envelopes
+                //      delivered live must be within the configured
+                //      freshness window and not far-future-skewed.
+                let envelope_version = envelope
+                    .envelope_version
+                    .as_deref()
+                    .unwrap_or(annex_federation::FEDERATED_MESSAGE_ENVELOPE_V1);
+                if envelope_version == annex_federation::FEDERATED_MESSAGE_ENVELOPE_V2 {
+                    let fed_cfg = &state.federation_config;
+                    match check_freshness(
+                        &envelope.created_at,
+                        chrono::Utc::now(),
+                        fed_cfg.freshness_window_seconds,
+                        fed_cfg.future_skew_seconds,
+                        DeliveryMode::Live,
+                    ) {
+                        Ok(()) => {}
+                        Err(FreshnessRejection::Unparseable) => {
+                            return Err(FederationError::Forbidden(
+                                "envelope.created_at is not RFC 3339 / ISO 8601".to_string(),
+                            ));
+                        }
+                        Err(FreshnessRejection::TooOld) => {
+                            return Err(FederationError::Forbidden(format!(
+                                "envelope created_at {} is older than the live freshness window ({}s) — use the catch-up endpoint",
+                                envelope.created_at, fed_cfg.freshness_window_seconds
+                            )));
+                        }
+                        Err(FreshnessRejection::TooFarInFuture) => {
+                            return Err(FederationError::Forbidden(format!(
+                                "envelope created_at {} is more than {}s in the future",
+                                envelope.created_at, fed_cfg.future_skew_seconds
+                            )));
+                        }
+                    }
+                }
+
                 // 1.5. Verify Active Federation Agreement
                 if !repo::has_active_agreement(&conn, instance.id)
                     .map_err(FederationError::DbError)?
@@ -931,6 +1062,60 @@ impl FederationService {
                         identity.pseudonym_id, envelope.channel_id
                     )));
                 }
+
+                // 6.5. Federation receipt ledger.
+                //
+                //   * If we have NOT seen (remote_instance_id, message_id)
+                //     before, insert a receipt row and let the message
+                //     INSERT proceed.
+                //   * If we HAVE seen it and the envelope hash matches,
+                //     this is a benign replay (e.g. outbox retry against
+                //     a peer that ack'd late). Skip the insert+broadcast
+                //     so the receiver-side flow is idempotent.
+                //   * If we HAVE seen it and the envelope hash DIFFERS,
+                //     someone is presenting a forged or mutated
+                //     envelope under a captured message_id. Reject.
+                let env_hash = message_envelope_hash(&envelope);
+                let receipt_existing: Option<String> = conn
+                    .query_row(
+                        "SELECT envelope_hash FROM federation_message_receipts \
+                         WHERE remote_instance_id = ?1 AND message_id = ?2",
+                        rusqlite::params![instance.id, &envelope.message_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(FederationError::DbError)?;
+
+                if let Some(prior_hash) = receipt_existing {
+                    if prior_hash != env_hash {
+                        tracing::warn!(
+                            remote_instance_id = instance.id,
+                            message_id = %envelope.message_id,
+                            prior_hash = %prior_hash,
+                            new_hash = %env_hash,
+                            "federation receipt mismatch: same message_id, different envelope hash"
+                        );
+                        return Err(FederationError::Forbidden(
+                            "envelope hash does not match prior receipt for this message_id"
+                                .to_string(),
+                        ));
+                    }
+                    // Benign duplicate — no insert, no broadcast.
+                    return Ok(None);
+                }
+
+                conn.execute(
+                    "INSERT INTO federation_message_receipts \
+                     (remote_instance_id, message_id, envelope_hash, envelope_created_at, delivery_mode) \
+                     VALUES (?1, ?2, ?3, ?4, 'live')",
+                    rusqlite::params![
+                        instance.id,
+                        &envelope.message_id,
+                        &env_hash,
+                        &envelope.created_at,
+                    ],
+                )
+                .map_err(FederationError::DbError)?;
 
                 // 7. Insert Message (idempotent on UNIQUE message_id)
                 let params = CreateMessageParams {
@@ -1273,11 +1458,13 @@ impl FederationService {
     }
 }
 
-/// Background relay: post a freshly persisted local message to every
-/// active federation peer's `/api/federation/messages` endpoint. Spawned
-/// from `ws::commands::message::handle` for federated channels.
+/// Enqueue a freshly persisted local message into the federation
+/// outbox for every active peer. The actual HTTP POST happens later
+/// in `crate::background::start_federation_outbox_task`, which retries
+/// with bounded exponential backoff against the receiver-side replay
+/// ledger introduced in migration 036.
 ///
-/// Behaviour preserved verbatim from the previous inline implementation:
+/// Per-peer envelope shape is unchanged from the pre-hardening relay:
 ///   * Skip peers whose `transfer_scope == "NO_TRANSFER"`.
 ///   * Use the canonical newline-delimited signing input from
 ///     [`message_signing_input`].
@@ -1286,8 +1473,20 @@ impl FederationService {
 ///     and `attestation_ref = "<topic>:<commitment>"` resolved via
 ///     `find_commitment_for_pseudonym`. Pseudonyms with no commitment
 ///     fall back to `"annex:server:v1:unknown"` (preserved string).
-///   * Per-peer POST is fire-and-forget under `tokio::spawn`; non-success
-///     responses and network errors are logged but not retried.
+///
+/// Pre-outbox behaviour was to `tokio::spawn` a fire-and-forget HTTP
+/// POST per peer with no retry. The new path:
+///
+///   1. Build the canonical signed envelope exactly as before so the
+///      signature is committed to the durable envelope JSON.
+///   2. Insert one `federation_outbox` row per active peer with
+///      `status='pending'`. The unique `(peer_instance_id, message_id)`
+///      constraint makes duplicate enqueues a no-op.
+///   3. Return — the outbox worker handles delivery.
+///
+/// This preserves "best-effort" semantics for callers (they don't
+/// block on peer reachability) while making delivery itself durable
+/// across server restarts.
 pub async fn relay_message(
     state: Arc<AppState>,
     channel_id: String,
@@ -1336,9 +1535,21 @@ pub async fn relay_message(
         return;
     }
 
-    // Construct envelope with the canonical signing input.
+    // Construct envelope with the canonical signing input. The
+    // outbound envelope version is read from config so an operator
+    // can stay on v1 while peers catch up. Defaults to v1 for one
+    // release after the v2 verifier ships; flipping the default to
+    // v2 once a quorum of peers verify v2 is a one-line config
+    // change.
     let pub_url = state.get_public_url();
+    let envelope_version = Some(
+        state
+            .federation_config
+            .default_outbound_envelope_version
+            .clone(),
+    );
     let envelope_for_signing = FederatedMessageEnvelope {
+        envelope_version: envelope_version.clone(),
         message_id: message.message_id.clone(),
         channel_id: channel_id.clone(),
         content: message.content.clone(),
@@ -1358,66 +1569,81 @@ pub async fn relay_message(
         ..envelope_for_signing
     };
 
-    let client = match federation_http_client() {
-        Ok(c) => c,
+    // Serialise the envelope exactly once. Each outbox row gets the
+    // same bytes; the receiver verifies signature over those bytes.
+    let envelope_json = match serde_json::to_string(&envelope) {
+        Ok(s) => s,
         Err(e) => {
-            tracing::error!("failed to build federation HTTP client: {}", e);
+            tracing::error!("failed to serialise outbound federation envelope: {}", e);
             return;
         }
     };
+    let message_id_for_outbox = message.message_id.clone();
 
-    for peer in peers {
-        // Skip peers whose transfer scope does not permit message relay.
-        if peer.transfer_scope == "NO_TRANSFER" {
-            tracing::debug!(
-                peer = %peer.base_url,
-                "skipping message relay: transfer scope is NO_TRANSFER"
-            );
-            continue;
-        }
+    // Collect peer ids that should receive this envelope, applying
+    // the existing transfer-scope and SSRF filters (the outbox worker
+    // does NOT re-evaluate those — they are policy that lives on the
+    // sender side at enqueue time).
+    let peer_ids: Vec<i64> = peers
+        .into_iter()
+        .filter(|p| {
+            if p.transfer_scope == "NO_TRANSFER" {
+                tracing::debug!(peer = %p.base_url, "skipping outbox enqueue: NO_TRANSFER");
+                return false;
+            }
+            if crate::api_link_preview::is_url_private_or_reserved(&p.base_url) {
+                tracing::warn!(
+                    peer = %p.base_url,
+                    "skipping outbox enqueue: peer base_url resolves to a private or reserved host"
+                );
+                return false;
+            }
+            true
+        })
+        .map(|p| p.id)
+        .collect();
 
-        // SSRF defence-in-depth: skip peers whose base_url resolves to a
-        // private/loopback/link-local host. The instances table is
-        // operator-controlled but a misconfigured row would otherwise
-        // turn this background task into a continuous probe of internal
-        // services.
-        if crate::api_link_preview::is_url_private_or_reserved(&peer.base_url) {
-            tracing::warn!(
-                peer = %peer.base_url,
-                "skipping message relay: peer base_url resolves to a private or reserved host"
-            );
-            continue;
-        }
+    if peer_ids.is_empty() {
+        return;
+    }
 
-        let url = format!("{}/api/federation/messages", peer.base_url);
-        let envelope_clone = FederatedMessageEnvelope {
-            message_id: envelope.message_id.clone(),
-            channel_id: envelope.channel_id.clone(),
-            content: envelope.content.clone(),
-            sender_pseudonym: envelope.sender_pseudonym.clone(),
-            originating_server: envelope.originating_server.clone(),
-            attestation_ref: envelope.attestation_ref.clone(),
-            signature: envelope.signature.clone(),
-            created_at: envelope.created_at.clone(),
+    // Enqueue one row per peer. UNIQUE(peer_instance_id, message_id)
+    // makes a duplicate enqueue idempotent. We trip the storage gate
+    // on disk-full / I/O failure so the next request fails fast
+    // rather than retrying into the same error.
+    let pool = state.pool.clone();
+    let health = state.storage_health.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        let conn = match pool.get() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!("federation outbox enqueue: pool error: {}", e);
+                return;
+            }
         };
-
-        let client_clone = client.clone();
-        tokio::spawn(async move {
-            match client_clone.post(&url).json(&envelope_clone).send().await {
-                Ok(resp) if !resp.status().is_success() => {
-                    tracing::warn!(
-                        peer = %url,
-                        status = %resp.status(),
-                        "federation message relay received non-success response"
-                    );
-                }
+        for peer_id in peer_ids {
+            match conn.execute(
+                "INSERT OR IGNORE INTO federation_outbox \
+                 (peer_instance_id, message_id, envelope_json, status, attempts, next_retry_at) \
+                 VALUES (?1, ?2, ?3, 'pending', 0, datetime('now'))",
+                rusqlite::params![peer_id, &message_id_for_outbox, &envelope_json],
+            ) {
                 Ok(_) => {}
                 Err(e) => {
-                    tracing::warn!(peer = %url, "failed to relay message: {}", e);
+                    if crate::storage_health::interpret_sqlite_error(&health, &e) {
+                        tracing::error!(
+                            peer_instance_id = peer_id,
+                            "outbox enqueue tripped storage gate: {}",
+                            e
+                        );
+                        break;
+                    }
+                    tracing::warn!(peer_instance_id = peer_id, "outbox enqueue failed: {}", e);
                 }
             }
-        });
-    }
+        }
+    })
+    .await;
 }
 
 #[cfg(test)]

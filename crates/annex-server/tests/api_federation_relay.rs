@@ -122,6 +122,9 @@ async fn test_receive_federated_message() {
         enforce_zk_proofs: false,
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
+        federation_config: annex_server::config::FederationConfig::default(),
+        storage_config: annex_server::config::StorageConfig::default(),
+        storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
     };
 
     let app = app(state);
@@ -140,6 +143,7 @@ async fn test_receive_federated_message() {
     let signature_hex = hex::encode(signature.to_bytes());
 
     let envelope = FederatedMessageEnvelope {
+        envelope_version: None,
         message_id: message_id.to_string(),
         channel_id: channel_id.to_string(),
         content: content.to_string(),
@@ -301,6 +305,9 @@ async fn setup_relay_fixture(
         enforce_zk_proofs: false,
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
+        federation_config: annex_server::config::FederationConfig::default(),
+        storage_config: annex_server::config::StorageConfig::default(),
+        storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
     };
 
     let app = app(state);
@@ -342,6 +349,7 @@ async fn test_receive_federated_message_rejects_invalid_signature() {
     let signature = attacker_key.sign(signature_input.as_bytes());
 
     let envelope = FederatedMessageEnvelope {
+        envelope_version: None,
         message_id: message_id.to_string(),
         channel_id: channel_id.clone(),
         content: content.to_string(),
@@ -404,6 +412,7 @@ async fn test_receive_federated_message_rejects_inactive_agreement() {
     let signature = remote_signing_key.sign(signature_input.as_bytes());
 
     let envelope = FederatedMessageEnvelope {
+        envelope_version: None,
         message_id: message_id.to_string(),
         channel_id: channel_id.clone(),
         content: content.to_string(),

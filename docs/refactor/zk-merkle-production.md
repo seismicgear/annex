@@ -60,7 +60,7 @@ The reader is assumed to know that production-grade requires:
 
 ### Current limitations
 
-- **No epoch model.** The Merkle root is implicit and timeless. If the tree is ever rotated (re-key, mass deletion, bulk identity migration), in-flight proofs against the previous root would be silently rejected by the equality check in middleware. There is no negotiation, no notion of "valid in epoch N".
+- ~~**No epoch model.**~~ **IMPLEMENTED in migration `034_merkle_nodes.sql`.** `vrp_merkle_meta`, `vrp_merkle_nodes`, and `vrp_root_epochs` are now live; `annex_identity::merkle::is_root_acceptable` accepts the active root plus retired roots inside the grace window (`ROOT_EPOCH_GRACE_SECONDS`). Middleware and `verify_membership` both call `is_root_acceptable` instead of strict-equality comparison.
 - **Nullifier scoping is per-topic only.** There is no per-epoch or per-server-slug nullifier prefix. Two servers that happen to import the same identity registry would collide on nullifier rows.
 - **Root canonical form is implicit.** The middleware compares `current_root` (a hex string from `tree.root_hex()`) against `payload.root_hex` (a hex string from the client). Both happen to use lowercase no-prefix; a client serializing differently would silently fail. There is no normalisation layer.
 - **Trusted setup is not auditable.** Single-machine ceremony, ephemeral entropy, no public contribution log. Acceptable for staging; insufficient for a public release that claims production-grade ZK.

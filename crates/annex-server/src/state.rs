@@ -84,6 +84,16 @@ pub struct AppState {
     pub enforce_zk_proofs: bool,
     /// Base URL for generated invite links (e.g. "https://monolithannex.com/invite").
     pub invite_base_url: String,
+    /// Federation reliability + replay-defence knobs. Cloned from
+    /// `Config::federation` at boot; the worker and the receive
+    /// handler both read from here so policy can be tuned in one place.
+    pub federation_config: crate::config::FederationConfig,
+    /// Storage health thresholds + maintenance schedule.
+    pub storage_config: crate::config::StorageConfig,
+    /// Storage-health gate. Writes consult this; flipping to
+    /// `degraded` causes the auth middleware to reject mutating
+    /// requests with HTTP 507.
+    pub storage_health: std::sync::Arc<crate::storage_health::StorageHealth>,
 }
 
 impl AppState {

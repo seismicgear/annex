@@ -673,3 +673,60 @@ fn emit_event_on_missing_table_returns_database_error() {
         "should return database error when table is missing"
     );
 }
+
+// ── Hash chain (migration 038) ─────────────────────────────────────
+
+#[test]
+fn event_log_chain_verifies_after_multiple_emits() {
+    let conn = test_db();
+    let server_id = seed_server(&conn);
+    for i in 0..5 {
+        let payload = EventPayload::IdentityRegistered {
+            commitment_hex: format!("abcd{i:04}"),
+            role_code: 1,
+        };
+        emit_event(
+            &conn,
+            server_id,
+            EventDomain::Identity,
+            "identity.registered",
+            "identity",
+            &format!("c{i}"),
+            &payload,
+        )
+        .expect("emit");
+    }
+    let bad = crate::store::verify_event_log_chain(&conn, server_id).expect("verify");
+    assert!(bad.is_none(), "intact chain should report no inconsistency");
+}
+
+#[test]
+fn event_log_chain_detects_tampering() {
+    let conn = test_db();
+    let server_id = seed_server(&conn);
+    for i in 0..3 {
+        let payload = EventPayload::IdentityRegistered {
+            commitment_hex: format!("abcd{i:04}"),
+            role_code: 1,
+        };
+        emit_event(
+            &conn,
+            server_id,
+            EventDomain::Identity,
+            "identity.registered",
+            "identity",
+            &format!("c{i}"),
+            &payload,
+        )
+        .expect("emit");
+    }
+    // Simulate an operator-level edit: rewrite the payload of seq=2
+    // without recomputing the hash. The chain check must flag it.
+    conn.execute(
+        "UPDATE public_event_log SET payload_json = ?1 WHERE server_id = ?2 AND seq = 2",
+        rusqlite::params!["{\"forged\": true}", server_id],
+    )
+    .expect("tamper");
+    let bad = crate::store::verify_event_log_chain(&conn, server_id).expect("verify");
+    assert_eq!(bad, Some(2), "chain should flag the tampered row's seq");
+}

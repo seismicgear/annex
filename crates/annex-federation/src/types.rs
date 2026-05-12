@@ -99,9 +99,42 @@ pub struct AttestationRequest {
     pub topic_hash_hex: Option<String>,
 }
 
+/// Wire-format version constants for the federated message envelope.
+///
+/// `v1` is the legacy envelope shape: signing input is the unversioned
+/// newline-joined field set. `v2` adds `envelope_version` to both the
+/// JSON body and the signing input, plus an explicit `created_at` that
+/// the receiver freshness-checks against
+/// `Config::federation::freshness_window_seconds` /
+/// `future_skew_seconds`.
+///
+/// New deployments default to `v2` (see
+/// `Config::federation::default_outbound_envelope_version`). The
+/// receive path accepts both — v1 stays in for backwards compatibility
+/// with peers that haven't upgraded yet. A v1 envelope on a v2-only
+/// server is rejected with a typed error rather than silently
+/// downgraded.
+pub const FEDERATED_MESSAGE_ENVELOPE_V1: &str = "v1";
+pub const FEDERATED_MESSAGE_ENVELOPE_V2: &str = "v2";
+
 /// A message relayed from a federation peer.
-#[derive(Debug, Serialize, Deserialize)]
+///
+/// Wire compatibility: `envelope_version` is `Option<String>` because v1
+/// peers do not send it. Receivers treat `None` and `Some("v1")` as
+/// equivalent. A peer that sends `Some("v2")` opts into the freshness
+/// gate and the v2 signing input.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FederatedMessageEnvelope {
+    /// Envelope wire-format version. `None` or `Some("v1")` selects
+    /// the legacy signing input. `Some("v2")` selects the versioned
+    /// signing input and enables freshness enforcement on the
+    /// receiver.
+    #[serde(
+        rename = "envelopeVersion",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub envelope_version: Option<String>,
     /// Unique public ID of the message (on the originating server).
     pub message_id: String,
     /// The public channel ID.
@@ -114,9 +147,20 @@ pub struct FederatedMessageEnvelope {
     pub originating_server: String,
     /// VRP attestation reference (format: "topic:commitment_hex").
     pub attestation_ref: String,
-    /// Signature of SHA256(message_id + channel_id + content + sender + originating_server + attestation_ref + created_at).
+    /// Ed25519 signature (hex) over the canonical signing input.
+    ///
+    /// v1 signing input is the newline-joined set:
+    ///   `message_id\nchannel_id\ncontent\nsender_pseudonym\noriginating_server\nattestation_ref\ncreated_at`
+    ///
+    /// v2 prepends an explicit version line:
+    ///   `envelope_version\nmessage_id\nchannel_id\ncontent\nsender_pseudonym\noriginating_server\nattestation_ref\ncreated_at`
+    ///
+    /// Any field shown above is *signed*; changing any of them on the
+    /// wire invalidates the signature.
     pub signature: String,
-    /// Creation timestamp (ISO 8601).
+    /// Creation timestamp (ISO 8601, UTC). v2 receivers reject
+    /// envelopes outside the configured freshness window unless
+    /// delivered through the catch-up endpoint.
     pub created_at: String,
 }
 

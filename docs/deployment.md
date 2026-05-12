@@ -24,20 +24,31 @@ The server starts at `http://localhost:3000`. The web client is served from the 
 
 All configuration can be overridden via environment variables. Set them in `docker-compose.yml` under `annex.environment` or in a `.env` file.
 
+Authoritative env-var names live in `crates/annex-server/src/config.rs::load_config`. This table is a subset for deploy operators; consult the README for the full list.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ANNEX_SERVER_HOST` | `127.0.0.1` | Bind address |
-| `ANNEX_SERVER_PORT` | `3000` | HTTP port |
+| `ANNEX_HOST` | `127.0.0.1` | Bind address |
+| `ANNEX_PORT` | `3000` | HTTP port |
 | `ANNEX_DB_PATH` | `annex.db` | SQLite database file path |
 | `ANNEX_CONFIG_PATH` | `config.toml` | Config file path |
 | `ANNEX_ZK_KEY_PATH` | `zk/keys/membership_vkey.json` | Groth16 verification key |
-| `ANNEX_LIVEKIT_URL` | (none) | LiveKit server WebSocket URL |
-| `ANNEX_LIVEKIT_API_KEY` | (none) | LiveKit API key |
-| `ANNEX_LIVEKIT_API_SECRET` | (none) | LiveKit API secret |
-| `ANNEX_PUBLIC_URL` | (none) | Publicly-reachable server URL (for invites, federation) |
-| `ANNEX_LIVEKIT_PUBLIC_URL` | (none) | Public WebSocket URL for LiveKit (remote voice clients) |
+| `ANNEX_WEBRTC_URL` | (none) | Internal WebRTC media URL (dev sidecar only; native SFU does not require this) |
+| `ANNEX_WEBRTC_PUBLIC_URL` | (none) | Public WebRTC URL announced to remote clients |
+| `ANNEX_WEBRTC_API_KEY` | (none) | Dev-mode WebRTC API key |
+| `ANNEX_WEBRTC_API_SECRET` | (none) | Dev-mode WebRTC API secret |
+| `ANNEX_PUBLIC_URL` | (auto-derived) | Publicly-reachable server URL (for invites, federation) |
 | `ANNEX_LOG_LEVEL` | `info` | Log level (trace/debug/info/warn/error) |
 | `ANNEX_LOG_JSON` | `false` | JSON log output for log aggregation |
+| `ANNEX_DB_MAINTENANCE_ENABLED` | `false` | Run periodic SQLite maintenance (checkpoint/ANALYZE/optional VACUUM) |
+| `ANNEX_DB_MAINTENANCE_INTERVAL_HOURS` | `24` | Hours between maintenance sweeps |
+| `ANNEX_DB_MAINTENANCE_VACUUM` | `false` | Run `VACUUM` during the maintenance window (off by default; blocks writers) |
+| `ANNEX_STORAGE_WARN_FREE_BYTES` | `536870912` (512 MiB) | Free-disk threshold for warning |
+| `ANNEX_STORAGE_BLOCK_FREE_BYTES` | `67108864` (64 MiB) | Free-disk threshold below which writes are rejected with HTTP 507 |
+| `ANNEX_FEDERATION_FRESHNESS_SECONDS` | `300` | Max age (seconds) of a live federated envelope's `created_at` |
+| `ANNEX_FEDERATION_FUTURE_SKEW_SECONDS` | `60` | Max future skew (seconds) of a live federated envelope's `created_at` |
+| `ANNEX_FEDERATION_OUTBOX_MAX_ATTEMPTS` | `12` | Max delivery attempts before an outbox row is marked `failed` |
+| `ANNEX_FEDERATION_OUTBOX_INTERVAL_SECONDS` | `5` | Outbox worker tick interval |
 
 ### Config File
 
@@ -61,28 +72,24 @@ json = true
 ## Architecture
 
 ```
-                    ┌─────────────┐
-  Browser ──────────│ Annex Server │──── SQLite (WAL mode)
-  (React SPA)       │  (Rust/Axum) │
-                    └──────┬──────┘
-                           │
-                    ┌──────┴──────┐
-                    │   LiveKit   │──── WebRTC voice
-                    │   Server    │
-                    └─────────────┘
+                    ┌─────────────────────────────┐
+  Browser ──────────│ Annex Server (Rust/Axum)    │──── SQLite (WAL mode)
+  (React SPA)       │   embedded WebRTC SFU       │
+                    │   embedded TTS/STT bridge   │
+                    └─────────────────────────────┘
 ```
 
-- **Annex Server**: Handles HTTP API, WebSocket messaging, identity, federation, and observability
-- **LiveKit**: WebRTC SFU for voice channels (optional — text works without it)
-- **SQLite**: Single-file database with WAL mode for concurrent reads
+- **Annex Server**: HTTP API, WebSocket messaging, identity, federation, observability, and the native WebRTC SFU for voice rooms.
+- **SQLite**: Single-file database with WAL mode for concurrent reads.
+
+Older versions of this guide and `docker-compose.yml` ran a LiveKit sidecar for voice. The in-tree code in `crates/annex-voice` is a native WebRTC SFU and does not require LiveKit. The Docker Compose file is being updated accordingly; if you operate an older deployment with a LiveKit sidecar, treat that path as legacy and migrate when convenient.
 
 ## Voice Setup
 
-Voice requires LiveKit and voice model files:
+Voice runs inside the Annex process. Provide:
 
-1. LiveKit starts automatically via Docker Compose
-2. TTS model (Piper): Place `.onnx` voice model files in a mounted volume
-3. STT model (Whisper): Place `ggml-base.en.bin` in a mounted volume
+1. TTS model (Piper): place `.onnx` voice model files in `ANNEX_TTS_VOICES_DIR` (or mount a volume there).
+2. STT model (Whisper): place `ggml-base.en.bin` at `ANNEX_STT_MODEL_PATH`.
 
 Without voice models, text channels still work. Voice channels will be unavailable.
 

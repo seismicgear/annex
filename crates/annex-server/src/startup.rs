@@ -474,6 +474,7 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
 
     let ws_token_secret = api_ws::derive_ws_token_secret(&signing_key);
 
+    let storage_health = Arc::new(crate::storage_health::StorageHealth::new());
     let state = AppState {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
@@ -502,6 +503,9 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
         cors_origins: config.cors.allowed_origins.clone(),
         enforce_zk_proofs: config.security.enforce_zk_proofs,
         invite_base_url: config.server.invite_base_url.clone(),
+        federation_config: config.federation.clone(),
+        storage_config: config.storage.clone(),
+        storage_health,
     };
 
     // Start background pruning task
@@ -519,6 +523,20 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
     tokio::spawn(background::start_rate_limit_cleanup_task(
         state.rate_limiter.clone(),
     ));
+
+    // Start federation outbox worker (replaces the pre-hardening
+    // fire-and-forget `relay_message` spawn — see migration 037 and
+    // ADR-0007 / ADR-0008 for the durability rationale).
+    tokio::spawn(background::start_federation_outbox_task(Arc::new(
+        state.clone(),
+    )));
+
+    // Start SQLite maintenance worker if enabled. The worker is a no-op
+    // when `storage.maintenance_enabled = false`; we still spawn it so
+    // an operator can flip the flag without restarting.
+    tokio::spawn(background::start_db_maintenance_task(Arc::new(
+        state.clone(),
+    )));
 
     // Build application
     let router = routes::app(state);

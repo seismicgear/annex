@@ -90,14 +90,26 @@ pub(crate) async fn handle(
 
     let svc = crate::services::ChannelService::new(ctx.state.clone());
     match svc
-        .send_message(ctx.pseudonym, &channel_id, content, reply_to)
+        .send_message(
+            ctx.pseudonym,
+            &channel_id,
+            content,
+            reply_to,
+            client_request_id.clone(),
+        )
         .await
     {
-        Ok((message, is_federated)) => {
+        Ok((message, is_federated, outcome)) => {
+            use crate::services::channel_service::SendOutcome;
             // Broadcast via WebSocket (camelCase payload).
             // clientRequestId is included in the broadcast for the
             // sender's pending-send correlation. Other clients ignore
             // unrecognised IDs (random UUIDs, no information leak).
+            //
+            // Always broadcast — even on Replayed — so the sender's
+            // pending-send promise resolves on each WS retry. Receivers
+            // see the same persisted message_id, so duplicate broadcasts
+            // are harmless to UI dedupe logic that keys on message_id.
             let mut ws_payload: WsMessagePayload = message.clone().into();
             ws_payload.client_request_id = client_request_id.clone();
             let broadcast_channel_id = message.channel_id.clone();
@@ -117,8 +129,14 @@ pub(crate) async fn handle(
                 }
             }
 
-            // Relay if federated.
-            if is_federated {
+            // Relay only on the first insert. A Replayed outcome means
+            // the federation relay already happened on the original
+            // send (or was enqueued in the outbox); re-relaying would
+            // double-deliver to peers that have not yet seen the
+            // message_id (their UNIQUE constraint catches it, but the
+            // freshness ledger would also reject the duplicate envelope
+            // hash if the body somehow differs).
+            if is_federated && outcome == SendOutcome::Inserted {
                 tokio::spawn(relay_message(
                     ctx.state.clone(),
                     message.channel_id.clone(),

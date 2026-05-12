@@ -37,6 +37,7 @@ pub mod routes;
 pub mod services;
 pub mod startup;
 pub mod state;
+pub mod storage_health;
 pub mod ws;
 
 pub use routes::app;
