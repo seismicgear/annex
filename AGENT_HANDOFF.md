@@ -11,6 +11,102 @@ ZK enforcement → ZK release artifact path → canonical hex → Merkle epoch/c
 
 ## Fixed in this session (claude/fix-annex-bugs-5yw2Y)
 
+### [F34] Protocol fixtures used `0x`-prefixed hex but the server rejects it (contract drift)
+The fixtures under `fixtures/api/{register.response,verify-membership.request}.json`
+pinned every field-element value with a leading `0x` prefix:
+
+```json
+{
+  "rootHex": "0x2ab3a44d…",
+  "pathElements": [
+    "0x0000…",
+    "0x0a0b…",
+    "0xdead…"
+  ]
+}
+```
+
+Production code emits the same scalars via
+`annex_identity::zk::fr_to_canonical_hex` — canonical 64-char
+lowercase hex with no `0x` prefix. The matching parser
+`parse_fr_from_hex` calls `hex::decode` directly, which rejects any
+non-hex byte (`x` included) with `InvalidHexCharacter`. So the
+fixtures and the production wire format had drifted:
+
+* A new client that bootstrapped from `register.response.json`
+  (e.g. an integration test, an example, or a freshly-generated
+  client SDK that copied the fixture as a sample payload) would
+  send `0x`-prefixed strings on the next `POST /api/zk/verify-
+  membership` and get a hard 400.
+* `is_root_acceptable` normalises the *queried* root_hex to
+  lowercase but does not strip prefixes, so even the in-DB grace-
+  window check would reject the fixture value.
+* Additionally, `pathElements[2]` in `register.response.json` was
+  `0xdeadbeefcafef00d0badc0deabad1deafacefeedfeedfaceabad1ca5beef0f00`
+  — a value that, interpreted as a BN254 scalar, is `>= field
+  modulus`. Even without the `0x` prefix, `parse_fr_from_hex`
+  would (correctly) reject it because the strict round-trip check
+  `padded != roundtrip` would fire.
+
+Fix:
+1. Strip the `0x` prefix from every hex field in the two fixtures
+   so each is exactly the canonical 64-char lowercase string the
+   server actually emits / accepts.
+2. Replace the leading byte of `pathElements[2]` (`de` → `1e`)
+   so the value sits below the BN254 field modulus and round-
+   trips cleanly through `parse_fr_from_hex` →
+   `fr_to_canonical_hex`.
+3. Tighten the Rust contract test
+   (`contract_register_response_fixture_matches_struct` and
+   `contract_verify_membership_request_fixture_matches_struct`)
+   to assert every hex field is exactly 64 chars, lowercase, and
+   has no `0x` prefix — so the previous shape can't silently come
+   back.
+4. Add two new defence-in-depth contract tests that run each
+   fixture's hex through the *actual* production parser
+   (`parse_fr_from_hex`) and, for `register.response`, confirm
+   the canonical re-encoding round-trips. If a future agent
+   re-introduces the `0x` prefix or uppercases the hex in either
+   fixture, both of these tests fail with a precise diagnostic.
+
+The TypeScript side of the contract
+(`client/src/contract.test.ts`) only checks types, not literal
+values, so it kept passing through the broken shape — the new Rust
+tests are now the guard against this class of drift. Both
+`cargo test -p annex-server --test contract_fixtures` and
+`npm test -- contract.test.ts` are green against the new fixtures.
+
+- files changed:
+  - `fixtures/api/register.response.json` — stripped `0x` prefixes
+    from `rootHex` + 3 entries of `pathElements`; replaced
+    `pathElements[2]`'s leading `de` with `1e` so the value is
+    `< BN254 scalar field modulus`.
+  - `fixtures/api/verify-membership.request.json` — stripped `0x`
+    prefixes from `root`, `commitment`, and both entries of
+    `publicSignals`.
+  - `crates/annex-server/tests/contract_fixtures.rs` — replaced
+    the `0x`-prefixed literal assertions; added 64-char-lowercase-
+    no-prefix assertions on each hex field; added two new tests
+    (`contract_verify_membership_request_fixture_uses_server_acceptable_hex`
+    and `contract_register_response_fixture_uses_canonical_emitted_hex`)
+    that exercise the real production parser/encoder against each
+    fixture hex field.
+- tests run:
+  - `cargo test -p annex-server --test contract_fixtures` →
+    **18 passed** (2 new for [F34]; 16 pre-existing all green).
+  - `npm test -- src/contract.test.ts` → 16 passed (TS contract
+    side unchanged; the type-check-only assertions still hold).
+  - `cargo test --workspace --exclude annex-desktop` →
+    **655 passed** (+2 vs the post-[F33] baseline).
+  - `cargo fmt --all --check` + `cargo clippy --workspace
+    --exclude annex-desktop --all-targets -- -D warnings` →
+    clean.
+- result: PASS. The protocol fixtures now match the production
+  wire format. A future agent attempting to re-introduce
+  `0x`-prefixed hex (or uppercase, or values `>= field modulus`)
+  will trip the new round-trip tests with a precise error
+  message.
+
 ### [F33] Federation outbox worker had no dequeue-time SSRF gate (security defence-in-depth)
 `crates/annex-server/src/background.rs::drain_outbox_batch` resolves
 each pending row's peer `base_url` from the `instances` table and
@@ -1768,12 +1864,22 @@ The fix mirrors the local cap.
   atomicity, not concurrent-writer races. See [F31].
 
 ## Context cutoff note (current session, claude/fix-annex-bugs-5yw2Y)
-Session [F32..F33] focused on the federation receive + outbox paths.
-Two real bugs — one durability bug that silently dropped federated
-messages under any transient SQLite error, and one defence-in-depth
-SSRF gap where the outbox worker would happily POST signed
-federation envelopes to localhost if the peer's `instances.base_url`
-was edited to a private host after the row was enqueued.
+Session [F32..F34] focused on the federation receive path, the
+federation outbox worker, and the protocol-contract fixtures.
+
+Three real bugs:
+1. A durability bug that silently dropped federated messages under
+   any transient SQLite error.
+2. A defence-in-depth SSRF gap where the outbox worker would
+   happily POST signed federation envelopes to localhost if the
+   peer's `instances.base_url` was edited to a private host after
+   the row was enqueued.
+3. A contract drift in the shared fixtures under `fixtures/api/`:
+   every field-element value carried a `0x` prefix that the
+   server's actual hex parser rejects, so a client bootstrapped
+   from the fixtures would hit a 400 on the first
+   verify-membership call. One `pathElements[2]` value was also
+   silently `>= BN254 field modulus`.
 
 * [F32] `receive_federated_message` ran the receipt INSERT and the
   message INSERT under separate autocommit transactions. A transient
@@ -1798,10 +1904,20 @@ was edited to a private host after the row was enqueued.
   2 new integration tests (positive: row marked failed for private
   URL; negative: row stays pending for genuinely-unroutable public
   URL).
+* [F34] Protocol fixtures pinned every BN254 scalar value with a
+  `0x` prefix, but `parse_fr_from_hex` (the production parser)
+  uses `hex::decode` which rejects `x` bytes outright. A client
+  bootstrapped from the fixture would hit 400 on every
+  verify-membership call. `pathElements[2]` in
+  `register.response.json` was also `>= field modulus`. Stripped
+  the prefixes, fixed the modulus-overshoot byte, tightened the
+  existing contract assertions, and added two new production-
+  parser round-trip tests so any future fixture regression is
+  caught at compile-test time rather than after a client integrates.
 
 `fmt`, `clippy --workspace --exclude annex-desktop --all-targets --
 -D warnings`, and `cargo test --workspace --exclude annex-desktop`
-(653 tests total) are all green.
+(655 tests total) are all green.
 
 If a future agent picks up:
 1. Re-run baseline (fmt + clippy + `cargo test -p annex-server`).

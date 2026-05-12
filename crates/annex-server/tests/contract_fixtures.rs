@@ -68,11 +68,40 @@ fn contract_register_response_fixture_matches_struct() {
         .expect("register.response.json must deserialize into RegisterResponse");
     assert_eq!(resp.identity_id, 7);
     assert_eq!(resp.leaf_index, 6);
+    // Canonical 64-char lowercase hex, no `0x` prefix — matches what
+    // `fr_to_canonical_hex` emits across every Rust → JSON boundary,
+    // and (critically) what `parse_fr_from_hex` accepts on the round
+    // trip back. The pre-[F34] fixture used `0x`-prefixed strings that
+    // the server's tolerant hex parser actually rejects (`hex::decode`
+    // chokes on the `x` byte), so a client bootstrapped from this
+    // fixture would have hit a hard 400 on the very next request.
     assert_eq!(
         resp.root_hex,
-        "0x2ab3a44d96d63f10b5b6f1c7c0a9c4d3e2f1a0908070605040302010f0e0d0c0"
+        "2ab3a44d96d63f10b5b6f1c7c0a9c4d3e2f1a0908070605040302010f0e0d0c0"
+    );
+    assert_eq!(
+        resp.root_hex.len(),
+        64,
+        "rootHex must be canonical 64-char hex"
+    );
+    assert!(
+        resp.root_hex
+            .chars()
+            .all(|c| matches!(c, '0'..='9' | 'a'..='f')),
+        "rootHex must be lowercase canonical hex with no 0x prefix"
     );
     assert_eq!(resp.path_elements.len(), 3);
+    for (i, h) in resp.path_elements.iter().enumerate() {
+        assert_eq!(
+            h.len(),
+            64,
+            "pathElements[{i}] must be canonical 64-char hex"
+        );
+        assert!(
+            h.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')),
+            "pathElements[{i}] must be lowercase canonical hex with no 0x prefix"
+        );
+    }
     assert_eq!(resp.path_indices, vec![0u8, 1, 0]);
 
     // Round-trip through the wire shape so casing / renames stay stable.
@@ -85,16 +114,25 @@ fn contract_register_response_fixture_matches_struct() {
 fn contract_verify_membership_request_fixture_matches_struct() {
     let req: VerifyMembershipRequest = serde_json::from_str(FX_VERIFY_MEMBERSHIP_REQUEST)
         .expect("verify-membership.request.json must deserialize into VerifyMembershipRequest");
+    // Same canonical hex shape as the register.response fixture — see
+    // [F34] for the production wire-format alignment rationale.
     assert_eq!(
         req.root,
-        "0x2ab3a44d96d63f10b5b6f1c7c0a9c4d3e2f1a0908070605040302010f0e0d0c0"
+        "2ab3a44d96d63f10b5b6f1c7c0a9c4d3e2f1a0908070605040302010f0e0d0c0"
     );
     assert_eq!(
         req.commitment,
-        "0x0000000000000000000000000000000000000000000000000000000000000001"
+        "0000000000000000000000000000000000000000000000000000000000000001"
     );
     assert_eq!(req.topic, "annex:identity:v1");
     assert_eq!(req.public_signals.len(), 2);
+    for sig in &req.public_signals {
+        assert_eq!(sig.len(), 64, "publicSignals must be canonical 64-char hex");
+        assert!(
+            sig.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')),
+            "publicSignals must be lowercase canonical hex with no 0x prefix"
+        );
+    }
     // The fixture targets the v1 verifier, so these v2-only fields stay None.
     assert!(req.protocol_version.is_none());
     assert!(req.nullifier_hex.is_none());
@@ -324,4 +362,62 @@ fn contract_ws_webrtc_ice_candidate_fixture_matches_serialized_outgoing() {
     let serialized =
         serde_json::to_value(&frame).expect("OutgoingMessage::WebRtcIceCandidate serializes");
     assert_eq!(serialized, parse_value(FX_WS_WEBRTC_ICE));
+}
+
+/// [F34] Defence in depth on top of the per-fixture assertions above.
+/// This test confirms — directly against the production hex parser —
+/// that the fixture's hex shape is exactly what the server accepts on
+/// `POST /api/zk/verify-membership`. Pre-[F34] the fixtures had a
+/// `0x` prefix; `hex::decode("0x…")` rejects it as an invalid hex
+/// character, so a client bootstrapped from the fixture would have
+/// hit a hard 400 on every verify-membership call. The test reads
+/// the fixture, pulls out every hex field, and pushes each through
+/// `parse_fr_from_hex` (the server's actual deserialiser) — anything
+/// the server would reject fails the test.
+#[test]
+fn contract_verify_membership_request_fixture_uses_server_acceptable_hex() {
+    use annex_identity::zk::parse_fr_from_hex;
+
+    let req: VerifyMembershipRequest = serde_json::from_str(FX_VERIFY_MEMBERSHIP_REQUEST)
+        .expect("verify-membership.request.json must deserialize");
+
+    parse_fr_from_hex(&req.root)
+        .expect("fixture rootHex must be acceptable to the server's hex parser");
+    parse_fr_from_hex(&req.commitment)
+        .expect("fixture commitmentHex must be acceptable to the server's hex parser");
+    for (i, sig) in req.public_signals.iter().enumerate() {
+        parse_fr_from_hex(sig)
+            .unwrap_or_else(|e| panic!("fixture publicSignals[{i}] is malformed: {e}"));
+    }
+}
+
+/// Same defence applied to the register.response fixture. The server
+/// EMITS the values via `fr_to_canonical_hex`, so the round-trip
+/// `emit → parse` must round-trip without loss. This catches the case
+/// where an editor or generator accidentally re-introduces a `0x`
+/// prefix or uppercases the hex in the fixture file.
+#[test]
+fn contract_register_response_fixture_uses_canonical_emitted_hex() {
+    use annex_identity::zk::{fr_to_canonical_hex, parse_fr_from_hex};
+
+    let resp: RegisterResponse = serde_json::from_str(FX_REGISTER_RESPONSE)
+        .expect("register.response.json must deserialize");
+
+    let root_fr = parse_fr_from_hex(&resp.root_hex)
+        .expect("fixture rootHex must be acceptable to the server's hex parser");
+    assert_eq!(
+        fr_to_canonical_hex(root_fr),
+        resp.root_hex,
+        "fixture rootHex must equal its canonical re-encoding (no leading zeros stripped, no \
+         uppercase, no 0x prefix)",
+    );
+    for (i, h) in resp.path_elements.iter().enumerate() {
+        let fr = parse_fr_from_hex(h)
+            .unwrap_or_else(|e| panic!("fixture pathElements[{i}] is malformed: {e}"));
+        assert_eq!(
+            fr_to_canonical_hex(fr),
+            *h,
+            "fixture pathElements[{i}] must equal its canonical re-encoding",
+        );
+    }
 }
