@@ -83,8 +83,22 @@ impl AgentVoiceClient {
         let tx_clone = tx.clone();
         let room = room_name.to_string();
         let stt = Arc::clone(&stt_service);
+        // Differentiate `Lagged` from `Closed` so a brief burst of STT
+        // tap frames that overflows the 1024-deep broadcast window does
+        // NOT terminate this transcription task permanently. See [F36].
         let transcription_task = tokio::spawn(async move {
-            while let Ok(frame) = tap_rx.recv().await {
+            loop {
+                let frame = match tap_rx.recv().await {
+                    Ok(f) => f,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        debug!(
+                            skipped = n,
+                            "stt tap broadcast lagged; some frames skipped for agent transcription",
+                        );
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                };
                 if frame.channel_id != room {
                     continue;
                 }

@@ -11,6 +11,75 @@ ZK enforcement → ZK release artifact path → canonical hex → Merkle epoch/c
 
 ## Fixed in this session (claude/fix-annex-bugs-5yw2Y)
 
+### [F36] Broadcast `Lagged` permanently terminated four forwarder tasks (recovery gap)
+`tokio::sync::broadcast::Receiver::recv()` returns three variants:
+
+  * `Ok(T)`
+  * `Err(RecvError::Closed)` — the sender dropped (terminal)
+  * `Err(RecvError::Lagged(n))` — the receiver's window overflowed;
+    `n` events were skipped but the channel is **still open**
+
+Four spawned forwarder tasks in the tree used the `while let
+Ok(event) = rx.recv().await` pattern, which terminates on **both**
+Closed AND Lagged. So any momentary burst that exceeded the
+broadcast channel's window permanently disabled the forwarder for
+that session — silently, with no recovery short of reconnecting:
+
+1. `ws/session.rs::ice_task` — relays this peer's WebRTC ICE
+   candidates to the WS client. Broadcast capacity 1024. A lag
+   here breaks WebRTC connectivity for the affected session
+   until reconnect.
+2. `ws/commands/voice.rs` — forwards STT-derived
+   `Transcription` events from the agent voice client to the
+   user's WS. Broadcast capacity 256. A lag here permanently
+   silences transcription overlay for the session.
+3. `services/channel_service.rs::connect_agent_voice_client` —
+   same shape, same downstream effect as (2).
+4. `annex-voice/src/agent.rs::connect` — the
+   `AgentVoiceClient`'s internal STT-tap → transcribe loop.
+   Broadcast capacity 1024. A lag here permanently disables
+   transcription for *every* downstream consumer of that
+   client's `transcription_tx`, not just one session.
+
+Fix: replace each `while let Ok(_) = rx.recv().await` with an
+explicit `match` that handles `Lagged(n)` by logging the skipped
+count + `continue`, and only treats `Closed` as terminal. The four
+tasks now stay alive across momentary bursts and recover with the
+next available event.
+
+Severity rationale: case (4) is the worst — under sustained load
+the lagged loop terminates the global `transcription_task` for an
+agent, breaking transcription for every session connected through
+that agent. Cases (1)-(3) are per-session.
+
+- files changed:
+  - `crates/annex-server/src/ws/session.rs::ice_task` — explicit
+    Lagged/Closed match with `tracing::warn!` on Lagged including
+    the skipped count and the pseudonym.
+  - `crates/annex-server/src/ws/commands/voice.rs` — same pattern
+    around the transcription-forwarding `tokio::spawn`.
+  - `crates/annex-server/src/services/channel_service.rs` —
+    same pattern around the `connect_agent_voice_client`'s
+    transcription-forwarding task.
+  - `crates/annex-voice/src/agent.rs::connect` — same pattern
+    around the internal STT-tap consumer; warning logged at
+    debug level because this loop's burst behaviour is expected
+    under heavy voice traffic.
+- tests run:
+  - `cargo test --workspace --exclude annex-desktop` → **659
+    passed** (unchanged total; existing tests cover the happy
+    path, and the Lagged branch is reached only under burst load
+    that's hard to unit-test deterministically). The new
+    behaviour is structurally provable from the diff: the loop
+    no longer terminates on Lagged.
+  - `cargo fmt --all --check` + `cargo clippy --workspace
+    --exclude annex-desktop --all-targets -- -D warnings` →
+    clean.
+- result: PASS. ICE forwarding, transcription forwarding (×2),
+  and the agent's internal STT tap loop all stay alive across
+  broadcast lag. Voice/transcription continues working after the
+  receiver catches back up.
+
 ### [F35] WS resume reported full count even when back-pressure dropped messages (silent recovery gap)
 `crates/annex-server/src/ws/commands/resume.rs::handle` is the
 `IncomingMessage::Resume` arm: a client that disconnected and
@@ -1949,11 +2018,12 @@ The fix mirrors the local cap.
   atomicity, not concurrent-writer races. See [F31].
 
 ## Context cutoff note (current session, claude/fix-annex-bugs-5yw2Y)
-Session [F32..F35] focused on the federation receive path, the
-federation outbox worker, the protocol-contract fixtures, and the
-WS resume protocol.
+Session [F32..F36] focused on the federation receive path, the
+federation outbox worker, the protocol-contract fixtures, the WS
+resume protocol, and broadcast-recv recovery semantics across the
+voice / transcription / ICE forwarders.
 
-Four real bugs:
+Five real bugs:
 1. A durability bug that silently dropped federated messages under
    any transient SQLite error.
 2. A defence-in-depth SSRF gap where the outbox worker would
@@ -1972,6 +2042,13 @@ Four real bugs:
    reported `messages.len()` instead of the count actually
    pushed onto the queue. The client then advanced its
    last-seen pointer past messages it never received.
+5. Four `tokio::sync::broadcast::Receiver` consumers used the
+   `while let Ok(_) = rx.recv().await` pattern, which terminates
+   on both `Closed` AND `Lagged`. A momentary burst that
+   overflowed the broadcast window permanently disabled the
+   forwarder for that session — silently, with no recovery short
+   of reconnecting. Fixed all four to differentiate Lagged
+   (log + continue) from Closed (terminal).
 
 * [F32] `receive_federated_message` ran the receipt INSERT and the
   message INSERT under separate autocommit transactions. A transient
@@ -2015,6 +2092,17 @@ Four real bugs:
   `try_send` calls; the surrounding handler now uses that as
   `missed_count`. 4 unit tests including the back-pressure shape
   (delivered = 2 when capacity = 2 and 5 messages presented).
+* [F36] Four broadcast-receiver loops (ICE forwarding in
+  `ws/session.rs`, transcription forwarding in
+  `ws/commands/voice.rs`, transcription forwarding in
+  `services/channel_service.rs`, STT-tap → transcribe in
+  `annex-voice/src/agent.rs`) used `while let Ok(_) = rx.recv()`,
+  which terminates the loop on `Lagged` exactly as it does on
+  `Closed`. A momentary burst overflows the broadcast window,
+  `Lagged(n)` is returned, the loop ends, and the forwarder
+  silently stops for the rest of the session. Replaced each with
+  an explicit `match` that logs the skip count + `continue` on
+  Lagged and only breaks on Closed.
 
 `fmt`, `clippy --workspace --exclude annex-desktop --all-targets --
 -D warnings`, and `cargo test --workspace --exclude annex-desktop`

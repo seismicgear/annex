@@ -68,11 +68,39 @@ impl WsSession {
         });
 
         // Relay this peer's ICE candidates to the websocket.
+        //
+        // The receiver is on a `tokio::sync::broadcast` channel with
+        // capacity 1024. `recv()` returns three variants:
+        //   * `Ok(event)`      — normal delivery
+        //   * `Err(Lagged(n))` — the global broadcast queue overflowed
+        //                        the receiver's window; n events were
+        //                        skipped but the channel is still open.
+        //                        We log + continue so the per-session
+        //                        ICE forwarder STAYS ALIVE. Pre-[F36]
+        //                        a `while let Ok(_)` loop terminated on
+        //                        Lagged, permanently disabling ICE
+        //                        forwarding for this WS connection and
+        //                        making the peer's voice unreachable
+        //                        until they reconnected.
+        //   * `Err(Closed)`    — the global sender dropped (server
+        //                        shutdown); break and exit the task.
         let mut ice_rx = state.voice_service.subscribe_ice_candidates();
         let tx_for_ice = tx.clone();
         let pseudonym_for_ice = pseudonym.clone();
         let ice_task = tokio::spawn(async move {
-            while let Ok(event) = ice_rx.recv().await {
+            loop {
+                let event = match ice_rx.recv().await {
+                    Ok(e) => e,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(
+                            pseudonym = %pseudonym_for_ice,
+                            skipped = n,
+                            "ice candidate broadcast lagged; some candidates skipped for this session",
+                        );
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                };
                 if event.peer_id != pseudonym_for_ice {
                     continue;
                 }
