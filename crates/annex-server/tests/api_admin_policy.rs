@@ -93,6 +93,7 @@ async fn test_update_policy_and_recalculate() {
         pool: pool.clone(),
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: load_dummy_vkey(),
+        membership_vkey_v2: None,
         server_id: 1,
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,
@@ -117,6 +118,9 @@ async fn test_update_policy_and_recalculate() {
         enforce_zk_proofs: false,
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
+        federation_config: annex_server::config::FederationConfig::default(),
+        storage_config: annex_server::config::StorageConfig::default(),
+        storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
     };
     let app = app(state);
 

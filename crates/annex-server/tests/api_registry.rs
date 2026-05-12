@@ -26,6 +26,7 @@ async fn test_register_identity_success() {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: common::load_vkey_or_dummy(),
+        membership_vkey_v2: None,
         server_id: 1,
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,
@@ -50,6 +51,9 @@ async fn test_register_identity_success() {
         enforce_zk_proofs: false,
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
+        federation_config: annex_server::config::FederationConfig::default(),
+        storage_config: annex_server::config::StorageConfig::default(),
+        storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
     };
     let app = app(state);
 
@@ -87,7 +91,14 @@ async fn test_register_identity_success() {
 }
 
 #[tokio::test]
-async fn test_register_duplicate_failure() {
+async fn test_register_duplicate_returns_idempotent_path() {
+    // Re-registering the same commitment is idempotent: the server returns
+    // the existing leaf index + Merkle path with status 200, NOT 409. This
+    // matches the documented behaviour in `IdentityService::register_identity`
+    // — clients that lose their local state and retry registration must be
+    // able to recover their tree position rather than be locked out with a
+    // stale 409.
+    //
     // 1. Setup
     let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
     let conn = pool.get().unwrap();
@@ -99,6 +110,7 @@ async fn test_register_duplicate_failure() {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: common::load_vkey_or_dummy(),
+        membership_vkey_v2: None,
         server_id: 1,
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,
@@ -123,6 +135,9 @@ async fn test_register_duplicate_failure() {
         enforce_zk_proofs: false,
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
+        federation_config: annex_server::config::FederationConfig::default(),
+        storage_config: annex_server::config::StorageConfig::default(),
+        storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
     };
     let app = app(state);
 
@@ -144,12 +159,24 @@ async fn test_register_duplicate_failure() {
         .unwrap();
     request.extensions_mut().insert(ConnectInfo(addr));
 
-    // We need to clone the app service or rebuild it because oneshot consumes it?
-    // Axum Router implements Service and Clone.
     let response1 = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response1.status(), StatusCode::OK);
+    let body1 = axum::body::to_bytes(response1.into_body(), 64 * 1024)
+        .await
+        .expect("read body");
+    let json1: serde_json::Value =
+        serde_json::from_slice(&body1).expect("first register body must be JSON");
+    let leaf_index_1 = json1
+        .get("leafIndex")
+        .and_then(|v| v.as_u64())
+        .expect("first response carries leafIndex");
+    let root_hex_1 = json1
+        .get("rootHex")
+        .and_then(|v| v.as_str())
+        .expect("first response carries rootHex")
+        .to_string();
 
-    // 3. Register duplicate
+    // 3. Register duplicate — same commitmentHex.
     let mut request2 = Request::builder()
         .uri("/api/registry/register")
         .method("POST")
@@ -160,8 +187,27 @@ async fn test_register_duplicate_failure() {
 
     let response2 = app.oneshot(request2).await.unwrap();
 
-    // 4. Verify Conflict
-    assert_eq!(response2.status(), StatusCode::CONFLICT);
+    // 4. Verify the idempotent path: same leaf index + same root, status 200.
+    assert_eq!(
+        response2.status(),
+        StatusCode::OK,
+        "duplicate registration must be idempotent (existing leaf returned with 200)"
+    );
+    let body2 = axum::body::to_bytes(response2.into_body(), 64 * 1024)
+        .await
+        .expect("read body");
+    let json2: serde_json::Value =
+        serde_json::from_slice(&body2).expect("duplicate register body must be JSON");
+    assert_eq!(
+        json2.get("leafIndex").and_then(|v| v.as_u64()),
+        Some(leaf_index_1),
+        "idempotent re-registration must return the existing leafIndex"
+    );
+    assert_eq!(
+        json2.get("rootHex").and_then(|v| v.as_str()),
+        Some(root_hex_1.as_str()),
+        "idempotent re-registration must echo the existing rootHex (root must NOT advance)"
+    );
 }
 
 #[tokio::test]
@@ -173,6 +219,7 @@ async fn test_register_invalid_role_failure() {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: common::load_vkey_or_dummy(),
+        membership_vkey_v2: None,
         server_id: 1,
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,
@@ -197,6 +244,9 @@ async fn test_register_invalid_role_failure() {
         enforce_zk_proofs: false,
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
+        federation_config: annex_server::config::FederationConfig::default(),
+        storage_config: annex_server::config::StorageConfig::default(),
+        storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
     };
     let app = app(state);
 

@@ -39,6 +39,130 @@ pub struct Config {
     /// Security enforcement settings.
     #[serde(default)]
     pub security: SecurityConfig,
+
+    /// Federation reliability (freshness gate, outbox retry policy).
+    #[serde(default)]
+    pub federation: FederationConfig,
+
+    /// Storage health thresholds + SQLite maintenance schedule.
+    #[serde(default)]
+    pub storage: StorageConfig,
+}
+
+/// Federation reliability knobs.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct FederationConfig {
+    /// Maximum age (seconds) of a *live* federated envelope's
+    /// `created_at` before the receiver rejects it. Envelopes
+    /// delivered through `/api/federation/catch-up` are NOT bound by
+    /// this window — see `crates/annex-server/src/services/federation_service.rs`.
+    #[serde(default = "default_freshness_window_seconds")]
+    pub freshness_window_seconds: i64,
+
+    /// Maximum future skew (seconds) allowed on a federated envelope's
+    /// `created_at`. Anything more than this far in the future is
+    /// rejected as clock-skewed or deliberately forward-dated.
+    #[serde(default = "default_future_skew_seconds")]
+    pub future_skew_seconds: i64,
+
+    /// Outbox worker tick interval (seconds).
+    #[serde(default = "default_outbox_interval_seconds")]
+    pub outbox_interval_seconds: u64,
+
+    /// Max delivery attempts before an outbox row is marked `failed`.
+    /// Defaults to 12 → with the bounded-exponential backoff schedule
+    /// this is ~3 hours of retries before giving up.
+    #[serde(default = "default_outbox_max_attempts")]
+    pub outbox_max_attempts: u32,
+
+    /// Default envelope version produced on the outbound side. Stays at
+    /// `"v1"` for one release so peers can pick up the v2 verifier
+    /// before the sender flips to v2.
+    #[serde(default = "default_outbound_envelope_version")]
+    pub default_outbound_envelope_version: String,
+}
+
+impl Default for FederationConfig {
+    fn default() -> Self {
+        Self {
+            freshness_window_seconds: default_freshness_window_seconds(),
+            future_skew_seconds: default_future_skew_seconds(),
+            outbox_interval_seconds: default_outbox_interval_seconds(),
+            outbox_max_attempts: default_outbox_max_attempts(),
+            default_outbound_envelope_version: default_outbound_envelope_version(),
+        }
+    }
+}
+
+fn default_freshness_window_seconds() -> i64 {
+    300
+}
+fn default_future_skew_seconds() -> i64 {
+    60
+}
+fn default_outbox_interval_seconds() -> u64 {
+    5
+}
+fn default_outbox_max_attempts() -> u32 {
+    12
+}
+fn default_outbound_envelope_version() -> String {
+    annex_federation::FEDERATED_MESSAGE_ENVELOPE_V1.to_string()
+}
+
+/// Storage health + SQLite maintenance.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StorageConfig {
+    /// Free disk bytes at which the server logs a warning. Reads still
+    /// flow; writes still flow. Operational signal only.
+    #[serde(default = "default_storage_warn_free_bytes")]
+    pub warn_free_bytes: u64,
+
+    /// Free disk bytes at which the server refuses writes with HTTP
+    /// 507 / a WS storage-error frame. Reads continue to flow. The
+    /// retention sweep and maintenance VACUUM are still allowed to run
+    /// because they can reduce storage pressure.
+    #[serde(default = "default_storage_block_free_bytes")]
+    pub block_free_bytes: u64,
+
+    /// Enable periodic SQLite maintenance. Runs
+    /// `PRAGMA wal_checkpoint(TRUNCATE)`, `ANALYZE`, and optionally
+    /// `VACUUM`. Off by default — operators opt in via env.
+    #[serde(default)]
+    pub maintenance_enabled: bool,
+
+    /// Hours between maintenance sweeps.
+    #[serde(default = "default_maintenance_interval_hours")]
+    pub maintenance_interval_hours: u64,
+
+    /// Whether to run `VACUUM` (full-table rewrite, blocks writers)
+    /// during the maintenance window. Off by default; on means the
+    /// operator has accepted the blocking-write tradeoff during the
+    /// chosen window.
+    #[serde(default)]
+    pub maintenance_vacuum: bool,
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            warn_free_bytes: default_storage_warn_free_bytes(),
+            block_free_bytes: default_storage_block_free_bytes(),
+            maintenance_enabled: false,
+            maintenance_interval_hours: default_maintenance_interval_hours(),
+            maintenance_vacuum: false,
+        }
+    }
+}
+
+fn default_storage_warn_free_bytes() -> u64 {
+    536_870_912 // 512 MiB
+}
+fn default_storage_block_free_bytes() -> u64 {
+    67_108_864 // 64 MiB
+}
+fn default_maintenance_interval_hours() -> u64 {
+    24
 }
 
 /// Security enforcement configuration.
@@ -52,16 +176,35 @@ pub struct SecurityConfig {
     /// guarantees.
     #[serde(default = "default_enforce_zk_proofs")]
     pub enforce_zk_proofs: bool,
+
+    /// Membership-circuit versions accepted by this server. Default: `["v1"]`.
+    ///
+    /// Each enabled version requires its corresponding verification key to
+    /// be loadable at startup (when `enforce_zk_proofs` is true). The server
+    /// dispatches incoming proof payloads to the matching verifier by an
+    /// explicit `protocol_version` field — it does NOT silently mix v1 and
+    /// v2 semantics.
+    ///
+    /// Recognised values: `"v1"` (commitment-derived nullifier; legacy) and
+    /// `"v2"` (secret-derived nullifier; production target). Unknown values
+    /// surface as a startup error.
+    #[serde(default = "default_enabled_zk_versions")]
+    pub enabled_zk_versions: Vec<String>,
 }
 
 fn default_enforce_zk_proofs() -> bool {
     true
 }
 
+fn default_enabled_zk_versions() -> Vec<String> {
+    vec!["v1".to_string()]
+}
+
 impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
             enforce_zk_proofs: default_enforce_zk_proofs(),
+            enabled_zk_versions: default_enabled_zk_versions(),
         }
     }
 }
@@ -578,6 +721,36 @@ pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
     if let Some(enforce) = parse_env_bool("ANNEX_ENFORCE_ZK_PROOFS")? {
         config.security.enforce_zk_proofs = enforce;
     }
+    if let Some(v) = parse_env_var::<i64>("ANNEX_FEDERATION_FRESHNESS_SECONDS")? {
+        config.federation.freshness_window_seconds = v;
+    }
+    if let Some(v) = parse_env_var::<i64>("ANNEX_FEDERATION_FUTURE_SKEW_SECONDS")? {
+        config.federation.future_skew_seconds = v;
+    }
+    if let Some(v) = parse_env_var::<u64>("ANNEX_FEDERATION_OUTBOX_INTERVAL_SECONDS")? {
+        config.federation.outbox_interval_seconds = v;
+    }
+    if let Some(v) = parse_env_var::<u32>("ANNEX_FEDERATION_OUTBOX_MAX_ATTEMPTS")? {
+        config.federation.outbox_max_attempts = v;
+    }
+    if let Some(v) = parse_env_var::<String>("ANNEX_FEDERATION_DEFAULT_ENVELOPE_VERSION")? {
+        config.federation.default_outbound_envelope_version = v;
+    }
+    if let Some(v) = parse_env_var::<u64>("ANNEX_STORAGE_WARN_FREE_BYTES")? {
+        config.storage.warn_free_bytes = v;
+    }
+    if let Some(v) = parse_env_var::<u64>("ANNEX_STORAGE_BLOCK_FREE_BYTES")? {
+        config.storage.block_free_bytes = v;
+    }
+    if let Some(v) = parse_env_bool("ANNEX_DB_MAINTENANCE_ENABLED")? {
+        config.storage.maintenance_enabled = v;
+    }
+    if let Some(v) = parse_env_var::<u64>("ANNEX_DB_MAINTENANCE_INTERVAL_HOURS")? {
+        config.storage.maintenance_interval_hours = v;
+    }
+    if let Some(v) = parse_env_bool("ANNEX_DB_MAINTENANCE_VACUUM")? {
+        config.storage.maintenance_vacuum = v;
+    }
 
     validate_config(&config)?;
 
@@ -698,17 +871,36 @@ mod tests {
     }
 
     fn clear_env() {
-        std::env::remove_var("ANNEX_HOST");
-        std::env::remove_var("ANNEX_PORT");
-        std::env::remove_var("ANNEX_DB_PATH");
-        std::env::remove_var("ANNEX_DB_BUSY_TIMEOUT_MS");
-        std::env::remove_var("ANNEX_DB_POOL_MAX_SIZE");
-        std::env::remove_var("ANNEX_LOG_LEVEL");
-        std::env::remove_var("ANNEX_LOG_JSON");
-        std::env::remove_var("ANNEX_TTS_VOICES_DIR");
-        std::env::remove_var("ANNEX_TTS_BINARY_PATH");
-        std::env::remove_var("ANNEX_STT_MODEL_PATH");
-        std::env::remove_var("ANNEX_STT_BINARY_PATH");
+        // Mirror every ANNEX_* var that load_config reads. Missing any of these
+        // leaves cross-test residue that re-poisons env_lock for subsequent tests.
+        for name in [
+            "ANNEX_HOST",
+            "ANNEX_PORT",
+            "ANNEX_RETENTION_CHECK_INTERVAL_SECONDS",
+            "ANNEX_INACTIVITY_THRESHOLD_SECONDS",
+            "ANNEX_PUBLIC_URL",
+            "ANNEX_MERKLE_TREE_DEPTH",
+            "ANNEX_PRESENCE_BROADCAST_CAPACITY",
+            "ANNEX_INVITE_BASE_URL",
+            "ANNEX_DB_PATH",
+            "ANNEX_DB_BUSY_TIMEOUT_MS",
+            "ANNEX_DB_POOL_MAX_SIZE",
+            "ANNEX_LOG_LEVEL",
+            "ANNEX_LOG_JSON",
+            "ANNEX_WEBRTC_URL",
+            "ANNEX_WEBRTC_PUBLIC_URL",
+            "ANNEX_WEBRTC_API_KEY",
+            "ANNEX_WEBRTC_API_SECRET",
+            "ANNEX_TTS_VOICES_DIR",
+            "ANNEX_TTS_BINARY_PATH",
+            "ANNEX_STT_MODEL_PATH",
+            "ANNEX_STT_BINARY_PATH",
+            "ANNEX_BARK_BINARY_PATH",
+            "ANNEX_CORS_ORIGINS",
+            "ANNEX_ENFORCE_ZK_PROOFS",
+        ] {
+            std::env::remove_var(name);
+        }
     }
 
     fn write_temp_config(contents: &str) -> String {
@@ -1021,10 +1213,14 @@ retention_check_interval_seconds = 0
         let _guard = env_lock().lock().expect("env lock poisoned");
         clear_env();
 
+        // The fixture pins `server_slug` so the slug-autogen path in
+        // `load_config` does not rewrite the file; that lets us assert the
+        // narrow invariant this test owns: forward-slash paths trigger no I/O.
         let original = r#"
 [server]
 host = "127.0.0.1"
 port = 3000
+server_slug = "fixture00001"
 
 [database]
 path = "C:/Users/monty/AppData/Roaming/Annex/annex.db"
@@ -1062,8 +1258,10 @@ json = false
         let file_name = format!("annex-config-multi-{unique_suffix}.toml");
         let path = std::env::temp_dir().join(file_name);
 
-        // Config with multiple Windows paths
-        let raw = b"[database]\npath = \"D:\\Servers\\Annex\\data\\annex.db\"\nbusy_timeout_ms = 5000\npool_max_size = 8\n\n[voice]\ntts_voices_dir = \"D:\\Servers\\Annex\\voices\"\ntts_binary_path = \"D:\\Servers\\Annex\\piper\\piper.exe\"\nstt_model_path = \"D:\\Servers\\Annex\\models\\ggml-base.en.bin\"\nstt_binary_path = \"D:\\Servers\\Annex\\whisper\\whisper.exe\"\n\n[logging]\nlevel = \"info\"\njson = false\n";
+        // Config with multiple Windows paths. `server_slug` is pre-set so the
+        // only rewrite this test exercises is the backslash-fix path; the
+        // slug-autogen path is inert for fixture stability.
+        let raw = b"[server]\nserver_slug = \"fixture00002\"\n\n[database]\npath = \"D:\\Servers\\Annex\\data\\annex.db\"\nbusy_timeout_ms = 5000\npool_max_size = 8\n\n[voice]\ntts_voices_dir = \"D:\\Servers\\Annex\\voices\"\ntts_binary_path = \"D:\\Servers\\Annex\\piper\\piper.exe\"\nstt_model_path = \"D:\\Servers\\Annex\\models\\ggml-base.en.bin\"\nstt_binary_path = \"D:\\Servers\\Annex\\whisper\\whisper.exe\"\n\n[logging]\nlevel = \"info\"\njson = false\n";
         fs::write(&path, raw).expect("failed to write");
 
         let path_str = path.to_string_lossy().into_owned();

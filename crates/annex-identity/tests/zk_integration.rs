@@ -8,10 +8,13 @@ use serde_json::json;
 // To avoid that warnings/duplicate compilation, usually `tests/common/mod.rs` is preferred and NOT having `tests/common.rs`.
 // But for now this is fine.
 mod common;
-use common::{generate_proof, get_verification_key};
+use common::{generate_proof, get_verification_key, zk_toolchain_available};
 
 #[test]
 fn test_identity_commitment_proof_verification() {
+    if !zk_toolchain_available() {
+        return;
+    }
     let sk = "123456789";
     let role_code = "1";
     let node_id = "42";

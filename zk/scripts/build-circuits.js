@@ -54,7 +54,7 @@ if (!fs.existsSync(buildPath)) {
     fs.mkdirSync(buildPath);
 }
 
-const circuits = ['identity', 'membership'];
+const circuits = ['identity', 'membership', 'membership_v2'];
 
 circuits.forEach(circuit => {
     console.log(`Building ${circuit}...`);

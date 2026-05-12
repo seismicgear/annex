@@ -191,6 +191,150 @@ async function run() {
     }
 
     // ═══════════════════════════════════════════
+    // Membership v2 Circuit — secret-derived nullifier
+    // ═══════════════════════════════════════════
+    const memV2VKey = JSON.parse(
+        fs.readFileSync(path.join(keysPath, "membership_v2_vkey.json")),
+    );
+    const v2Wasm = path.join(buildPath, "membership_v2_js/membership_v2.wasm");
+    const v2Zkey = path.join(keysPath, "membership_v2_final.zkey");
+
+    // The verifier supplies topicHash. In the live protocol it would be
+    // Poseidon of the canonicalised topic string; for testing we just pick
+    // arbitrary field elements.
+    const topicHashA = 7777777777777777n;
+    const topicHashB = 8888888888888888n;
+    const DOMAIN_NULLIFIER_V2 = 1n;
+
+    function expectedNullifier(skVal, topicVal) {
+        return poseidon.F.toString(
+            poseidon([skVal, topicVal, DOMAIN_NULLIFIER_V2]),
+        );
+    }
+
+    console.log("\n=== Membership v2: Valid Proof ===");
+
+    const v2InputA = {
+        sk: sk.toString(),
+        roleCode: roleCode.toString(),
+        nodeId: nodeId.toString(),
+        leafIndex: "0",
+        pathElements: pathElements0,
+        pathIndexBits: pathIndexBits0,
+        topicHash: topicHashA.toString(),
+    };
+    const { proof: v2ProofA, publicSignals: v2SignalsA } =
+        await snarkjs.groth16.fullProve(v2InputA, v2Wasm, v2Zkey);
+
+    // Public signals layout: [root, commitment, nullifier, topicHash].
+    assert(v2SignalsA.length === 4, "v2 publicSignals.length === 4");
+    const v2VerifiedA = await snarkjs.groth16.verify(
+        memV2VKey,
+        v2SignalsA,
+        v2ProofA,
+    );
+    assert(v2VerifiedA, "valid v2 proof verifies");
+    assert(v2SignalsA[0] === expectedRoot0, "v2 root matches expected");
+    assert(
+        v2SignalsA[1] === expectedCommitment,
+        "v2 commitment matches expected",
+    );
+    assert(
+        v2SignalsA[2] === expectedNullifier(sk, topicHashA),
+        "v2 nullifier = Poseidon(sk, topicHash, DOMAIN_NULLIFIER_V2)",
+    );
+    assert(
+        v2SignalsA[3] === topicHashA.toString(),
+        "v2 publicSignals[3] echoes topicHash",
+    );
+
+    console.log("\n=== Membership v2: Tampered Nullifier ===");
+
+    const tamperedNullifierSignals = [...v2SignalsA];
+    tamperedNullifierSignals[2] = "12345"; // wrong nullifier
+    const tamperedNullifierVerified = await snarkjs.groth16.verify(
+        memV2VKey,
+        tamperedNullifierSignals,
+        v2ProofA,
+    );
+    assert(
+        !tamperedNullifierVerified,
+        "v2 proof with tampered nullifier is rejected",
+    );
+
+    console.log("\n=== Membership v2: Tampered topicHash ===");
+
+    const tamperedTopicSignals = [...v2SignalsA];
+    tamperedTopicSignals[3] = topicHashB.toString(); // claim a different topic
+    const tamperedTopicVerified = await snarkjs.groth16.verify(
+        memV2VKey,
+        tamperedTopicSignals,
+        v2ProofA,
+    );
+    assert(
+        !tamperedTopicVerified,
+        "v2 proof with tampered topicHash is rejected",
+    );
+
+    console.log("\n=== Membership v2: Mismatched leafIndex vs pathIndexBits ===");
+
+    try {
+        await snarkjs.groth16.fullProve(
+            {
+                ...v2InputA,
+                leafIndex: "0",
+                pathIndexBits: ["1", ...new Array(depth - 1).fill("0")],
+            },
+            v2Wasm,
+            v2Zkey,
+        );
+        assert(
+            false,
+            "v2 mismatched leafIndex/pathIndexBits should fail witness generation",
+        );
+    } catch (e) {
+        assert(
+            true,
+            "v2 mismatched leafIndex/pathIndexBits rejected at witness generation",
+        );
+    }
+
+    console.log("\n=== Membership v2: Same sk + same topic => same nullifier ===");
+
+    // Prove again with identical witness — nullifier MUST match exactly.
+    const { publicSignals: v2SignalsAReplay } = await snarkjs.groth16.fullProve(
+        v2InputA,
+        v2Wasm,
+        v2Zkey,
+    );
+    assert(
+        v2SignalsAReplay[2] === v2SignalsA[2],
+        "same sk + same topicHash produces the same nullifier (deterministic)",
+    );
+
+    console.log(
+        "\n=== Membership v2: Same sk + different topic => different nullifier ===",
+    );
+
+    const v2InputB = { ...v2InputA, topicHash: topicHashB.toString() };
+    const { proof: v2ProofB, publicSignals: v2SignalsB } =
+        await snarkjs.groth16.fullProve(v2InputB, v2Wasm, v2Zkey);
+    const v2VerifiedB = await snarkjs.groth16.verify(
+        memV2VKey,
+        v2SignalsB,
+        v2ProofB,
+    );
+    assert(v2VerifiedB, "v2 proof for different topic verifies");
+    assert(
+        v2SignalsB[2] !== v2SignalsA[2],
+        "same sk + different topicHash produces a different nullifier",
+    );
+    assert(
+        v2SignalsB[2] === expectedNullifier(sk, topicHashB),
+        "v2 nullifier for second topic matches Poseidon(sk, topicHashB, DOMAIN)",
+    );
+
+    // ═══════════════════════════════════════════
     // Summary
     // ═══════════════════════════════════════════
     console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);

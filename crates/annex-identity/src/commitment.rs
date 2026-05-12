@@ -1,4 +1,5 @@
 use crate::poseidon::hash_inputs;
+use crate::zk::fr_to_canonical_hex;
 use crate::IdentityError;
 use annex_types::RoleCode;
 use ark_bn254::Fr;
@@ -51,10 +52,10 @@ pub fn generate_commitment(
     // Hash inputs: [sk, role, nodeId]
     let commitment_fr = hash_inputs(&[sk_fr, role_fr, node_id_fr])?;
 
-    // Convert commitment (Fr) to 32-byte big-endian hex string.
-    // into_bigint returns BigInteger256 (little-endian usually in memory), but to_bytes_be produces big-endian bytes.
-    let commitment_bytes = commitment_fr.into_bigint().to_bytes_be();
-    Ok(hex::encode(commitment_bytes))
+    // Canonical 64-char lowercase hex (`fr_to_canonical_hex`) — same wire
+    // format used by the Merkle tree, the registry response, and the
+    // membership-proof public inputs.
+    Ok(fr_to_canonical_hex(commitment_fr))
 }
 
 #[cfg(test)]

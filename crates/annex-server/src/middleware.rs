@@ -53,6 +53,9 @@ pub async fn auth_middleware(mut req: Request<Body>, next: Next) -> Result<Respo
         .get::<Arc<AppState>>()
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?
         .clone();
+    // Held separately so the storage-gate check below can run after
+    // `state` has been moved into the spawn_blocking closure.
+    let state_clone_for_gate = state.clone();
 
     // 1. Extract pseudonym from header.
     //
@@ -115,10 +118,35 @@ pub async fn auth_middleware(mut req: Request<Body>, next: Next) -> Result<Respo
         return Err(StatusCode::UNAUTHORIZED);
     }
 
-    // 5. Insert into extensions
+    // 5. Storage gate: reject mutating methods when the storage gate
+    //    is degraded. Reads still flow so operators can inspect
+    //    state through the same auth surface they always use.
+    if is_mutating_method(req.method()) && state_clone_for_gate.storage_health.writes_blocked() {
+        tracing::warn!(
+            method = %req.method(),
+            path = %req.uri().path(),
+            reason = %state_clone_for_gate.storage_health.reason(),
+            "storage gate is degraded — rejecting write request with 507"
+        );
+        return Err(StatusCode::INSUFFICIENT_STORAGE);
+    }
+
+    // 6. Insert into extensions
     req.extensions_mut().insert(IdentityContext(identity));
 
     Ok(next.run(req).await)
+}
+
+/// True if `method` would mutate persisted state. Used by the auth
+/// middleware to short-circuit when the storage gate is degraded.
+fn is_mutating_method(method: &axum::http::Method) -> bool {
+    matches!(
+        *method,
+        axum::http::Method::POST
+            | axum::http::Method::PUT
+            | axum::http::Method::PATCH
+            | axum::http::Method::DELETE
+    )
 }
 
 /// Rate limit endpoint category — each category has its own counter.
@@ -491,6 +519,29 @@ pub struct ZkProofPayload {
     pub root_hex: String,
     /// Identity commitment hex.
     pub commitment_hex: String,
+    /// Membership-circuit version this proof was produced for.
+    ///
+    /// `None` or `Some("v1")` selects the legacy v1 verifier (commitment-derived
+    /// nullifier). `Some("v2")` selects the secret-derived nullifier verifier
+    /// and requires the v2 vkey to be loaded; otherwise the request is rejected.
+    /// The server NEVER silently downgrades or upgrades a proof's protocol
+    /// version.
+    #[serde(rename = "protocolVersion", default)]
+    pub protocol_version: Option<String>,
+    /// v2-only: the proof's public signals as decimal-encoded scalars in
+    /// `[root, commitment, nullifier, topicHash]` order. Required when
+    /// `protocol_version == Some("v2")`. Ignored on v1 since the server
+    /// reconstructs them from `root_hex` and `commitment_hex`.
+    #[serde(rename = "publicSignals", default)]
+    pub public_signals: Option<Vec<String>>,
+    /// v2-only: the topic the proof was bound to. Required when
+    /// `protocol_version == Some("v2")` so the server can recompute the
+    /// canonical topicHash and cross-check `publicSignals[3]` — same rule
+    /// as `/api/zk/verify-membership`. Without this binding a malicious
+    /// client could submit a v2 proof for topic A as proof of membership
+    /// for topic B.
+    #[serde(rename = "topic", default)]
+    pub topic: Option<String>,
 }
 
 /// Verifies a ZK membership proof from the `x-annex-zk-proof` header.
@@ -499,6 +550,12 @@ pub struct ZkProofPayload {
 /// is verified against the server's membership verifying key. If
 /// `expected_commitment_hex` is provided, the proof's commitment must match
 /// the authenticated identity's commitment (prevents proof replay across users).
+///
+/// Dispatches to the v1 or v2 verifier based on `payload.protocol_version`.
+/// v2 proofs additionally require `publicSignals` (length 4) and a `topic`
+/// for the canonical topicHash cross-check; without those the request is
+/// rejected exactly the way the local `/api/zk/verify-membership` endpoint
+/// rejects them.
 ///
 /// Returns:
 /// - `Ok(())` if enforcement is disabled, or the proof is valid and bound
@@ -544,34 +601,112 @@ pub fn verify_zk_membership_header(
         }
     }
 
+    // Resolve protocol version + matching vkey.
+    let protocol_version = payload.protocol_version.as_deref().unwrap_or("v1");
+    let (vkey_for_proof, expected_signals_len) = match protocol_version {
+        "v1" => (state.membership_vkey.clone(), 2usize),
+        "v2" => {
+            let v2_key = state.membership_vkey_v2.clone().ok_or_else(|| {
+                tracing::warn!(
+                    "v2 ZK proof header rejected: membership v2 not enabled on this server"
+                );
+                StatusCode::FORBIDDEN
+            })?;
+            (v2_key, 4usize)
+        }
+        other => {
+            tracing::warn!("ZK proof header has unsupported protocolVersion '{other}'");
+            return Err(StatusCode::FORBIDDEN);
+        }
+    };
+
     // Parse the proof
     let proof_json = serde_json::to_string(&payload.proof).map_err(|_| StatusCode::FORBIDDEN)?;
     let proof = parse_proof(&proof_json).map_err(|_| StatusCode::FORBIDDEN)?;
 
-    // Parse public inputs: [merkle_root, commitment]
+    // Build public-inputs vector (version-matched).
     let root_fr = parse_fr_from_hex(&payload.root_hex).map_err(|_| StatusCode::FORBIDDEN)?;
     let commitment_fr =
         parse_fr_from_hex(&payload.commitment_hex).map_err(|_| StatusCode::FORBIDDEN)?;
-    let public_inputs = vec![root_fr, commitment_fr];
 
-    // Verify the proof
-    let valid = verify_proof(&state.membership_vkey, &proof, &public_inputs)
-        .map_err(|_| StatusCode::FORBIDDEN)?;
+    let public_inputs = if protocol_version == "v2" {
+        let raw_public_signals = payload.public_signals.as_ref().ok_or_else(|| {
+            tracing::warn!("v2 ZK proof header missing publicSignals");
+            StatusCode::FORBIDDEN
+        })?;
+        if raw_public_signals.len() != expected_signals_len {
+            tracing::warn!(
+                "v2 ZK proof header publicSignals length is {} (expected {expected_signals_len})",
+                raw_public_signals.len()
+            );
+            return Err(StatusCode::FORBIDDEN);
+        }
+        let signals_json =
+            serde_json::to_string(raw_public_signals).map_err(|_| StatusCode::FORBIDDEN)?;
+        let signals = annex_identity::zk::parse_public_signals(&signals_json)
+            .map_err(|_| StatusCode::FORBIDDEN)?;
+
+        // Cross-check publicSignals[0] / [1] match the request's claimed
+        // root + commitment.
+        if signals[0] != root_fr || signals[1] != commitment_fr {
+            tracing::warn!("v2 ZK proof publicSignals[0..2] do not match claimed root+commitment");
+            return Err(StatusCode::FORBIDDEN);
+        }
+
+        // Topic-binding: require `topic` and check
+        // `publicSignals[3] == topic_hash_for_v2(topic)`. Without this the
+        // proof is bound to whatever topicHash the prover put in
+        // `publicSignals[3]`, so a malicious client could replay a proof
+        // produced for topic A as a "proof of membership" for topic B.
+        let topic = payload.topic.as_deref().ok_or_else(|| {
+            tracing::warn!("v2 ZK proof header missing required `topic` field");
+            StatusCode::FORBIDDEN
+        })?;
+        let expected_topic_hash =
+            annex_identity::zk::topic_hash_for_v2(topic).map_err(|_| StatusCode::FORBIDDEN)?;
+        if signals[3] != expected_topic_hash {
+            tracing::warn!(
+                "v2 ZK proof publicSignals[3] (topicHash) does not match canonical hash of topic"
+            );
+            return Err(StatusCode::FORBIDDEN);
+        }
+
+        signals
+    } else {
+        vec![root_fr, commitment_fr]
+    };
+
+    // Verify the proof against the version-matched vkey.
+    let valid =
+        verify_proof(&vkey_for_proof, &proof, &public_inputs).map_err(|_| StatusCode::FORBIDDEN)?;
 
     if !valid {
         return Err(StatusCode::FORBIDDEN);
     }
 
-    // Optionally verify that the merkle root matches the current tree root
-    let current_root = {
-        let tree = state
-            .merkle_tree
-            .lock()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        tree.root_hex()
-    };
-    if current_root != payload.root_hex {
-        tracing::warn!("ZK proof root does not match current Merkle root");
+    // Verify the merkle root is acceptable.
+    //
+    // The previous strict-equality check (`current_root == payload.root_hex`)
+    // rejected every proof not built against the LATEST root. Because the
+    // root rotates on each registration, that race-conditioned any
+    // in-flight prover: a client whose Groth16 proof was generated against
+    // root_N would be rejected the moment a different client registered and
+    // produced root_N+1.
+    //
+    // `is_root_acceptable` consults `vrp_root_epochs` so the active root
+    // PLUS recently-retired roots inside the grace window
+    // (`ROOT_EPOCH_GRACE_SECONDS`, default 5 minutes) both verify. The
+    // grace window covers proof-generation latency on slow devices without
+    // ever accepting a root that has been fully retired beyond
+    // `accepted_until`.
+    let conn = state
+        .pool
+        .get()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let acceptable = annex_identity::merkle::is_root_acceptable(&conn, &payload.root_hex)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if !acceptable {
+        tracing::warn!("ZK proof root is not currently acceptable");
         return Err(StatusCode::FORBIDDEN);
     }
 

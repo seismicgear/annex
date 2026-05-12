@@ -19,8 +19,10 @@ describe('AnnexWebSocket auth refresh', () => {
   beforeEach(() => {
     sockets.length = 0;
     class WebSocketCtor extends MockSocket {
-      constructor(_url: string) {
+      url: string;
+      constructor(url: string) {
         super();
+        this.url = url;
         sockets.push(this);
       }
     }
@@ -54,8 +56,10 @@ describe('AnnexWebSocket frame validation', () => {
   beforeEach(() => {
     sockets.length = 0;
     class WebSocketCtor extends MockSocket {
-      constructor(_url: string) {
+      url: string;
+      constructor(url: string) {
         super();
+        this.url = url;
         sockets.push(this);
       }
     }

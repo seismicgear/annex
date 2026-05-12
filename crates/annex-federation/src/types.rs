@@ -20,6 +20,16 @@ pub struct FederationAgreement {
 }
 
 /// Request payload for cross-server identity attestation.
+///
+/// Wire compatibility: `protocol_version`, `public_signals`, `nullifier_hex`
+/// and `topic_hash_hex` are all optional. A request that omits them is
+/// processed as v1 — the only mode v0.1 peers know how to send. v2 peers
+/// MUST send `protocol_version = "v2"` AND a `public_signals` array of
+/// length 4 (`[root, commitment, nullifier, topicHash]`); the receiving
+/// server cross-checks `public_signals[3]` against
+/// `topic_hash_for_v2(topic)` exactly the way the local
+/// `verify-membership` endpoint does, so a peer cannot smuggle a proof
+/// produced for a different topic.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AttestationRequest {
     /// The base URL of the server attesting the identity.
@@ -33,13 +43,98 @@ pub struct AttestationRequest {
     /// The type of participant (e.g., "HUMAN", "AI_AGENT").
     pub participant_type: String,
     /// The signature of the request (hex).
-    /// Signed message: SHA256(topic || commitment || participant_type).
+    /// Signed message: `topic\ncommitment\nparticipant_type` for v1 (legacy
+    /// wire format) or
+    /// `topic\ncommitment\nparticipant_type\nprotocol_version\nnullifier_hex\ntopic_hash_hex`
+    /// for v2 (each newline-separated field is the canonical lowercase
+    /// 64-char hex value or the literal protocol version).
     pub signature: String,
+
+    /// Membership-circuit version this attestation is for.
+    /// `None` or `Some("v1")` selects the legacy v1 verifier
+    /// (commitment-derived nullifier). `Some("v2")` selects the
+    /// secret-derived nullifier verifier and requires the receiving server
+    /// to have v2 enabled in its config; otherwise the attestation is
+    /// rejected. The server NEVER silently downgrades or upgrades a peer's
+    /// declared protocol version.
+    #[serde(
+        rename = "protocolVersion",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub protocol_version: Option<String>,
+
+    /// v2-only: the proof's public signals as decimal-encoded scalars in
+    /// the order `[root, commitment, nullifier, topicHash]`. Required when
+    /// `protocol_version == Some("v2")`. Ignored on v1.
+    #[serde(
+        rename = "publicSignals",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub public_signals: Option<Vec<String>>,
+
+    /// v2-only: the secret-derived nullifier (hex). When present and
+    /// `protocol_version == Some("v2")`, the server checks that this
+    /// matches `public_signals[2]` after canonicalisation. Required for v2
+    /// so the federated identity row can be inserted with the same
+    /// nullifier the originating server bound the proof to.
+    #[serde(
+        rename = "nullifierHex",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub nullifier_hex: Option<String>,
+
+    /// v2-only: the canonical topicHash (BN254 scalar in 64-char hex)
+    /// the proof was bound to. Optional — when present it is cross-checked
+    /// against both `public_signals[3]` and the server-recomputed
+    /// `topic_hash_for_v2(topic)` so a single field mismatch surfaces as
+    /// a deterministic 400 instead of a silent verifier failure.
+    #[serde(
+        rename = "topicHashHex",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub topic_hash_hex: Option<String>,
 }
 
+/// Wire-format version constants for the federated message envelope.
+///
+/// `v1` is the legacy envelope shape: signing input is the unversioned
+/// newline-joined field set. `v2` adds `envelope_version` to both the
+/// JSON body and the signing input, plus an explicit `created_at` that
+/// the receiver freshness-checks against
+/// `Config::federation::freshness_window_seconds` /
+/// `future_skew_seconds`.
+///
+/// New deployments default to `v2` (see
+/// `Config::federation::default_outbound_envelope_version`). The
+/// receive path accepts both — v1 stays in for backwards compatibility
+/// with peers that haven't upgraded yet. A v1 envelope on a v2-only
+/// server is rejected with a typed error rather than silently
+/// downgraded.
+pub const FEDERATED_MESSAGE_ENVELOPE_V1: &str = "v1";
+pub const FEDERATED_MESSAGE_ENVELOPE_V2: &str = "v2";
+
 /// A message relayed from a federation peer.
-#[derive(Debug, Serialize, Deserialize)]
+///
+/// Wire compatibility: `envelope_version` is `Option<String>` because v1
+/// peers do not send it. Receivers treat `None` and `Some("v1")` as
+/// equivalent. A peer that sends `Some("v2")` opts into the freshness
+/// gate and the v2 signing input.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FederatedMessageEnvelope {
+    /// Envelope wire-format version. `None` or `Some("v1")` selects
+    /// the legacy signing input. `Some("v2")` selects the versioned
+    /// signing input and enables freshness enforcement on the
+    /// receiver.
+    #[serde(
+        rename = "envelopeVersion",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub envelope_version: Option<String>,
     /// Unique public ID of the message (on the originating server).
     pub message_id: String,
     /// The public channel ID.
@@ -52,9 +147,20 @@ pub struct FederatedMessageEnvelope {
     pub originating_server: String,
     /// VRP attestation reference (format: "topic:commitment_hex").
     pub attestation_ref: String,
-    /// Signature of SHA256(message_id + channel_id + content + sender + originating_server + attestation_ref + created_at).
+    /// Ed25519 signature (hex) over the canonical signing input.
+    ///
+    /// v1 signing input is the newline-joined set:
+    ///   `message_id\nchannel_id\ncontent\nsender_pseudonym\noriginating_server\nattestation_ref\ncreated_at`
+    ///
+    /// v2 prepends an explicit version line:
+    ///   `envelope_version\nmessage_id\nchannel_id\ncontent\nsender_pseudonym\noriginating_server\nattestation_ref\ncreated_at`
+    ///
+    /// Any field shown above is *signed*; changing any of them on the
+    /// wire invalidates the signature.
     pub signature: String,
-    /// Creation timestamp (ISO 8601).
+    /// Creation timestamp (ISO 8601, UTC). v2 receivers reject
+    /// envelopes outside the configured freshness window unless
+    /// delivered through the catch-up endpoint.
     pub created_at: String,
 }
 

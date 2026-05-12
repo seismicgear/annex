@@ -1,0 +1,7 @@
+{
+  "commitmentHex": "0000000000000000000000000000000000000000000000000000000000000001",
+  "roleCode": 1,
+  "nodeId": 42,
+  "inviteCode": "INVITE-ABC123",
+  "serverPassword": "shared-secret"
+}

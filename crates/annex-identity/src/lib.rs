@@ -79,6 +79,11 @@ pub enum IdentityError {
     /// Merkle root mismatch between stored and computed values.
     #[error("merkle root mismatch: stored={stored}, computed={computed}")]
     MerkleRootMismatch { stored: String, computed: String },
+    /// Persisted Merkle tree depth differs from the depth requested at boot.
+    /// Refusing to silently re-shard a tree of identities into a tree of a
+    /// different size — that would invalidate every previously-issued proof.
+    #[error("merkle tree depth mismatch: persisted={stored}, configured={configured}")]
+    MerkleTreeDepthMismatch { stored: usize, configured: usize },
     /// Database error.
     #[error("database error: {0}")]
     DatabaseError(#[from] rusqlite::Error),
@@ -112,6 +117,16 @@ impl PartialEq for IdentityError {
                     computed: c2,
                 },
             ) => s1 == s2 && c1 == c2,
+            (
+                Self::MerkleTreeDepthMismatch {
+                    stored: s1,
+                    configured: c1,
+                },
+                Self::MerkleTreeDepthMismatch {
+                    stored: s2,
+                    configured: c2,
+                },
+            ) => s1 == s2 && c1 == c2,
             (Self::DatabaseError(a), Self::DatabaseError(b)) => a.to_string() == b.to_string(),
             _ => false,
         }
@@ -120,9 +135,30 @@ impl PartialEq for IdentityError {
 
 impl Eq for IdentityError {}
 
-/// Deterministically derives the nullifier hex for a commitment and topic.
+/// Deterministically derives the nullifier hex for a v1 commitment and topic.
 ///
 /// Formula: `nullifierHex = sha256(commitmentHex + ":" + topic)`
+///
+/// # PRIVACY LIMITATION (v1 only)
+///
+/// Because the inputs are the **public** commitment and the **public** topic,
+/// any external observer who has seen the commitment (it appears in
+/// `/api/registry/path`, federation handshakes, public agent listings, the
+/// observe stream, and channel listings) can compute the same nullifier for
+/// any topic. That means the nullifier — and therefore the topic-scoped
+/// pseudonym derived from it — does NOT hide the link between a
+/// commitment and the topic-specific identity, and a censor who knows your
+/// commitment can enumerate all of your topic pseudonyms across the network.
+///
+/// The v2 protocol path closes this gap: v2 binds the nullifier to a secret
+/// witnessed inside the membership circuit (see
+/// `zk/circuits/membership_v2.circom` + `annex_identity::zk::topic_hash_for_v2`),
+/// so external observers cannot recompute it. v2 is opt-in via
+/// `Config::security.enabled_zk_versions`. Servers that need the privacy
+/// property should enable v2 and migrate clients off the v1 path.
+///
+/// This function is the v1 derivation and intentionally preserves the
+/// public-derivable property for compatibility with v1 clients.
 ///
 /// # Errors
 ///
@@ -331,5 +367,65 @@ mod tests {
         let commitment = "0000000000000000000000000000000000000000000000000000000000abc123";
         let max_topic = "a".repeat(256);
         assert!(derive_nullifier_hex(commitment, &max_topic).is_ok());
+    }
+
+    #[test]
+    fn v1_nullifier_is_publicly_derivable_from_commitment() {
+        // **DOCUMENTATION TEST — INTENTIONAL PROPERTY OF v1.**
+        //
+        // The v1 nullifier is `sha256(commitment_hex + ":" + topic)`. Both
+        // inputs are public — the commitment is exposed by every API surface
+        // that returns a Merkle path / federated identity / observe event,
+        // and the topic is part of the request URI. So any external observer
+        // can recompute the nullifier (and therefore the topic-scoped
+        // pseudonym) for any (commitment, topic) pair they observe.
+        //
+        // Concretely: if Eve sees Alice's commitment, Eve can enumerate
+        // Alice's per-topic pseudonyms across the entire network and de-
+        // anonymise her cross-topic activity. v1 does NOT provide unlinkable
+        // topic identities.
+        //
+        // The v2 protocol (`zk/circuits/membership_v2.circom` +
+        // `annex_identity::zk::topic_hash_for_v2`) closes this gap by binding
+        // the nullifier to a SECRET inside the membership circuit; external
+        // observers can no longer recompute it. v2 is opt-in via
+        // `Config::security.enabled_zk_versions = ["v1", "v2"]` and is the
+        // recommended posture for any deployment that needs topic
+        // unlinkability.
+        //
+        // This test exists so a reader of the codebase finds the property
+        // documented in code, not just in docs/issue trackers. If a future
+        // refactor accidentally swaps in a secret-based v1 nullifier, this
+        // test will fail loudly and the engineer will need to choose
+        // explicitly between (a) introducing a wire break (delete this test
+        // and update the v1 spec) or (b) restoring the documented v1
+        // semantics.
+        let commitment = "1111111111111111111111111111111111111111111111111111111111111111";
+        let topic = "annex:server:v1";
+
+        // Property 1: deterministic. Same (commitment, topic) → same nullifier.
+        let n_first = derive_nullifier_hex(commitment, topic).unwrap();
+        let n_second = derive_nullifier_hex(commitment, topic).unwrap();
+        assert_eq!(
+            n_first, n_second,
+            "v1 nullifier derivation must be deterministic for replay-safety"
+        );
+
+        // Property 2: PUBLIC. Recomputing it requires only public inputs.
+        let recomputed = sha256_hex(&format!("{commitment}:{topic}"));
+        assert_eq!(
+            n_first, recomputed,
+            "v1 nullifier MUST equal sha256(commitment + ':' + topic) — \
+             this is the documented (and privacy-limiting) v1 property; \
+             switch to v2 for secret-derived nullifiers."
+        );
+
+        // Property 3: per-topic (so cross-topic linkability requires
+        // computing the formula per topic, not free).
+        let other = derive_nullifier_hex(commitment, "annex:channel:v1").unwrap();
+        assert_ne!(
+            n_first, other,
+            "v1 nullifier must vary across topics so per-topic pseudonyms differ"
+        );
     }
 }

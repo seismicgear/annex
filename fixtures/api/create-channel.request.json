@@ -1,0 +1,11 @@
+{
+  "channel_id": "general",
+  "name": "General",
+  "channel_type": "Text",
+  "topic": "Project-wide announcements",
+  "vrp_topic_binding": null,
+  "required_capabilities_json": null,
+  "agent_min_alignment": null,
+  "retention_days": null,
+  "federation_scope": "Local"
+}

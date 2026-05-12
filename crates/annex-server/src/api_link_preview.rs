@@ -94,6 +94,16 @@ impl PreviewCache {
 // Safety: block requests to private/internal IPs
 // ---------------------------------------------------------------------------
 
+/// Public re-export of [`is_private_or_reserved`] for SSRF defence in
+/// other crate modules (notably the federation service, which calls
+/// peer-supplied URLs for stale-attestation checks). Same semantics:
+/// returns `true` if the URL's host is a private/loopback/link-local
+/// address, an unparseable URL, a non-http(s) scheme, or a hostname like
+/// `localhost`/`*.local`/`*.internal` that is conventionally non-routable.
+pub(crate) fn is_url_private_or_reserved(url: &str) -> bool {
+    is_private_or_reserved(url)
+}
+
 /// Returns `true` if the URL's host resolves to a private/loopback/link-local address.
 /// This prevents SSRF attacks where a user could probe internal services.
 fn is_private_or_reserved(url: &str) -> bool {
@@ -609,6 +619,35 @@ pub async fn image_proxy_handler(
         return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
     }
 
+    // Reject SVG. Even when an SVG is consumed via `<img>` (where browsers
+    // don't run scripts), SVGs reach this proxy as same-origin documents on
+    // direct navigation, and SVGs can host inline `<script>` and event
+    // handlers that execute in the server's origin context. The sandbox
+    // CSP added in `build_image_response` is a second-line defence; this
+    // is the first. The cost is that SVG image previews from external
+    // servers won't proxy — link previews still resolve, just without an
+    // SVG thumbnail.
+    let lower_ct = content_type.to_ascii_lowercase();
+    if lower_ct.starts_with("image/svg") || lower_ct.contains("svg+xml") {
+        tracing::debug!(
+            url = %url, content_type = %content_type,
+            "image proxy: rejected SVG content (script-execution risk on direct navigation)"
+        );
+        return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+    if is_octet_stream_with_image_ext {
+        let path_lower = url::Url::parse(&url)
+            .map(|u| u.path().to_ascii_lowercase())
+            .unwrap_or_default();
+        if path_lower.ends_with(".svg") {
+            tracing::debug!(
+                url = %url,
+                "image proxy: rejected octet-stream with .svg extension"
+            );
+            return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        }
+    }
+
     // Use the actual content type if it's an image, otherwise infer from extension
     let content_type = if is_image_content {
         content_type
@@ -654,18 +693,24 @@ pub async fn image_proxy_handler(
 }
 
 /// Check if a URL's path ends with a known image file extension.
+///
+/// `.svg` is intentionally excluded — see `image_proxy_handler` for the
+/// rationale (SVG can host scripts that execute on direct navigation).
 fn url_has_image_extension(url: &str) -> bool {
     let path = url::Url::parse(url)
         .map(|u| u.path().to_lowercase())
         .unwrap_or_default();
     [
-        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".ico", ".bmp", ".avif",
+        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".ico", ".bmp", ".avif",
     ]
     .iter()
     .any(|ext| path.ends_with(ext))
 }
 
 /// Infer an image content-type from the URL file extension.
+///
+/// `.svg` is intentionally not handled — SVG is rejected upstream in the
+/// image proxy. Anything that reaches this helper is a non-SVG image.
 fn infer_image_content_type(url: &str) -> String {
     let path = url::Url::parse(url)
         .map(|u| u.path().to_lowercase())
@@ -676,8 +721,6 @@ fn infer_image_content_type(url: &str) -> String {
         "image/gif"
     } else if path.ends_with(".webp") {
         "image/webp"
-    } else if path.ends_with(".svg") {
-        "image/svg+xml"
     } else if path.ends_with(".ico") {
         "image/x-icon"
     } else if path.ends_with(".bmp") {
@@ -691,10 +734,32 @@ fn infer_image_content_type(url: &str) -> String {
 }
 
 fn build_image_response(content_type: &str, body: Vec<u8>) -> Response {
+    // Sandbox the response.
+    //
+    // The image proxy fetches arbitrary attacker-controllable URLs (any
+    // public OG/twitter image referenced from a chat link). Loading those
+    // bytes as `<img src=...>` is safe because browsers do not execute
+    // scripts in image documents. But the proxy URL is otherwise a
+    // same-origin endpoint, and a victim who right-clicks → "open image
+    // in new tab" (or pastes the URL) would land on a top-level document
+    // served from this server's origin. For SVG specifically — and for
+    // any future non-image MIME that slips through detection — that
+    // top-level navigation could execute attacker scripts in the proxy
+    // server's origin (full XSS, including cookie / sessionStorage
+    // access).
+    //
+    // `Content-Security-Policy: sandbox; default-src 'none'` neutralises
+    // script execution, plugins, forms, and frame ancestry without
+    // affecting `<img>` rendering at all. The pre-existing `nosniff`
+    // header handles MIME-confusion attacks.
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, content_type)
         .header(header::CACHE_CONTROL, "public, max-age=300")
+        .header(
+            header::CONTENT_SECURITY_POLICY,
+            "sandbox; default-src 'none'",
+        )
         .body(axum::body::Body::from(body))
         .unwrap_or_else(|_| {
             Response::builder()
@@ -905,6 +970,49 @@ mod tests {
         assert_eq!(
             infer_image_content_type("https://example.com/photo.jpg"),
             "image/jpeg"
+        );
+    }
+
+    #[test]
+    fn url_image_extension_detection_excludes_svg() {
+        // SVG files must NOT be treated as proxiable images: SVG can host
+        // inline scripts and event handlers that execute when the document
+        // is loaded as a top-level navigation. The proxy rejects SVG
+        // explicitly in `image_proxy_handler`; this test pins the
+        // extension allow-list as the second line of defence.
+        assert!(!url_has_image_extension("https://cdn.example.com/logo.svg"));
+        assert!(!url_has_image_extension("https://cdn.example.com/logo.SVG"));
+        // The non-SVG image types are still recognised.
+        assert!(url_has_image_extension("https://cdn.example.com/photo.jpg"));
+        assert!(url_has_image_extension("https://cdn.example.com/photo.png"));
+        assert!(url_has_image_extension("https://cdn.example.com/photo.gif"));
+        assert!(url_has_image_extension(
+            "https://cdn.example.com/photo.webp"
+        ));
+        assert!(url_has_image_extension(
+            "https://cdn.example.com/photo.avif"
+        ));
+    }
+
+    #[test]
+    fn build_image_response_sets_sandbox_csp() {
+        // Pin the sandbox CSP that neutralises script execution on direct
+        // navigation to the proxy URL (e.g., right-click -> Open Image in
+        // New Tab on an SVG slipping past content-type filtering).
+        let resp = build_image_response("image/png", b"\x89PNG".to_vec());
+        let csp = resp
+            .headers()
+            .get(header::CONTENT_SECURITY_POLICY)
+            .expect("image proxy responses must set Content-Security-Policy")
+            .to_str()
+            .unwrap();
+        assert!(
+            csp.contains("sandbox"),
+            "image proxy CSP must include the `sandbox` directive: got {csp}"
+        );
+        assert!(
+            csp.contains("default-src 'none'"),
+            "image proxy CSP must include `default-src 'none'`: got {csp}"
         );
     }
 }

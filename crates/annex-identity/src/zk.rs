@@ -48,6 +48,67 @@ pub fn parse_fr(s: &str) -> Result<Fr, ZkError> {
     Fr::from_str(s).map_err(|_| ZkError::FieldElementError)
 }
 
+/// Canonical hex serialisation for a BN254 scalar field element.
+///
+/// Always produces a fixed-width **64-character lowercase** hex string with
+/// no `0x` prefix and no leading-zero stripping. This is the single
+/// canonical wire and DB encoding for every `Fr` exposed to clients,
+/// stored in `vrp_leaves` / `vrp_roots`, returned in registry responses,
+/// or fed into the membership-proof public-input parser.
+///
+/// Implementation note: `BigInteger256::to_bytes_be` always emits exactly
+/// 32 bytes — the canonical 256-bit big-endian representation — so the
+/// debug assertion below is a tripwire for an arkworks behaviour change,
+/// not a runtime branch.
+pub fn fr_to_canonical_hex(fr: Fr) -> String {
+    let bytes = fr.into_bigint().to_bytes_be();
+    debug_assert_eq!(
+        bytes.len(),
+        32,
+        "BN254 Fr must serialise to exactly 32 bytes",
+    );
+    hex::encode(bytes)
+}
+
+/// Strict canonical-hex parser for a BN254 scalar field element.
+///
+/// Accepts **only** a 64-character lowercase hex string with no `0x`
+/// prefix, and only when the encoded value is `< BN254 scalar field
+/// modulus`. Rejects:
+///   - empty input
+///   - non-hex characters
+///   - any string of length other than 64
+///   - uppercase hex digits (`A-F`)
+///   - 64 chars whose value `>=` the field modulus (would be silently
+///     reduced by `from_be_bytes_mod_order`, breaking 1:1 hex ↔ Fr)
+///
+/// This is the parser to use on every NEW boundary that owns its own
+/// canonical encoding (writers, freshly-defined APIs, freshly-defined DB
+/// columns). Boundaries that must remain backward-compatible with
+/// pre-canonical hex (e.g. the membership middleware reading
+/// proof.public_signals from a third-party prover) should keep using
+/// [`parse_fr_from_hex`].
+pub fn parse_canonical_fr_hex(s: &str) -> Result<Fr, ZkError> {
+    if s.len() != 64 {
+        return Err(ZkError::FieldElementError);
+    }
+    for c in s.chars() {
+        match c {
+            '0'..='9' | 'a'..='f' => {}
+            _ => return Err(ZkError::FieldElementError),
+        }
+    }
+    parse_fr_from_hex(s)
+}
+
+/// Tolerant hex parser for a BN254 scalar field element.
+///
+/// Accepts any even-length hex up to 64 characters, lowercase or
+/// uppercase, decodes big-endian, and rejects values that would be
+/// silently reduced modulo the field order. Retained for boundaries that
+/// historically accepted variable-length / mixed-case hex from
+/// third-party provers and from rows persisted before the canonical
+/// helpers existed. New code should use [`parse_canonical_fr_hex`].
 pub fn parse_fr_from_hex(hex: &str) -> Result<Fr, ZkError> {
     let bytes = hex::decode(hex).map_err(|_| ZkError::FieldElementError)?;
     let fr = Fr::from_be_bytes_mod_order(&bytes);
@@ -189,6 +250,50 @@ pub fn verify_proof(
         .map_err(|e| ZkError::SnarkError(e.to_string()))
 }
 
+/// Domain-separator tag mixed into v2 topic-hash derivation.
+///
+/// Prevents pre-image collisions across hashing contexts that use the same
+/// SHA-256 primitive (signing-key derivation, nullifier hashing, message
+/// digests, etc.). Changing this constant invalidates every previously
+/// produced v2 topicHash and is therefore a hard wire-format break.
+pub const V2_TOPIC_HASH_DOMAIN: &str = "annex/v2/topicHash:";
+
+/// Canonical topic → BN254 field-element mapping for v2 membership proofs.
+///
+/// Returns `Fr::from_be_bytes_mod_order(SHA256("annex/v2/topicHash:" + topic))`.
+/// The byte input is the raw UTF-8 bytes of the topic string with no
+/// canonicalisation: callers must agree on byte equality. Empty topics are
+/// rejected because empty topics cannot identify a routing context and are
+/// invalid throughout the rest of the API surface (`derive_pseudonym_id`
+/// already rejects empty topics).
+///
+/// # Why this exists
+///
+/// The `topicHash` public input of `zk/circuits/membership_v2.circom` is
+/// supplied by the verifier — the prover binds the proof to whatever value
+/// they put there. Without a server-side rule that says "topicHash MUST
+/// equal `topic_hash_for_v2(payload.topic)`", a malicious prover can produce
+/// a v2 proof for topic A and submit it as a v2 proof for topic B, getting
+/// a nullifier-bound pseudonym in topic B without ever having proved
+/// membership for topic B. Closing that gap is what this function is for.
+///
+/// # Errors
+///
+/// Returns [`ZkError::FieldElementError`] when `topic` is empty.
+pub fn topic_hash_for_v2(topic: &str) -> Result<Fr, ZkError> {
+    use sha2::{Digest, Sha256};
+    if topic.is_empty() {
+        return Err(ZkError::FieldElementError);
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(V2_TOPIC_HASH_DOMAIN.as_bytes());
+    hasher.update(topic.as_bytes());
+    let digest = hasher.finalize();
+    // SHA-256 → 32 bytes; reduce big-endian into BN254 Fr. The mod-reduction
+    // is uniform-enough for cryptographic purposes (the bias is < 2^-253).
+    Ok(Fr::from_be_bytes_mod_order(&digest))
+}
+
 /// Generates a dummy verifying key for testing purposes.
 /// This key is mathematically valid (points on curve) but useless for verification.
 /// It corresponds to an empty circuit.
@@ -204,6 +309,95 @@ pub fn generate_dummy_vkey() -> VerifyingKey<Bn254> {
         delta_g2: g2,
         gamma_abc_g1: vec![g1; 2], // 2 public inputs
     }
+}
+
+/// Returns true if `vk` is byte-identical to [`generate_dummy_vkey`].
+///
+/// The dummy verifying key uses the BN254 generator points for every group
+/// element, which is what `generate_dummy_vkey` constructs in-memory for
+/// tests when the real key is missing. A genuine Groth16 vkey produced by
+/// a real ceremony has effectively zero probability of matching this
+/// pattern (each element is sampled from a 254-bit field with cryptographic
+/// entropy).
+///
+/// Used by startup code to harden the enforced-mode ZK gate: if `enforce_zk_proofs`
+/// is enabled and the file at `membership_vkey.json` happens to be a dummy
+/// (e.g. someone serialised the dummy by hand and committed it, or a build
+/// pipeline accidentally copied it), startup must refuse rather than silently
+/// accept any membership proof.
+pub fn is_dummy_vkey(vk: &VerifyingKey<Bn254>) -> bool {
+    let dummy = generate_dummy_vkey();
+    vk.alpha_g1 == dummy.alpha_g1
+        && vk.beta_g2 == dummy.beta_g2
+        && vk.gamma_g2 == dummy.gamma_g2
+        && vk.delta_g2 == dummy.delta_g2
+        && vk.gamma_abc_g1.len() == dummy.gamma_abc_g1.len()
+        && vk
+            .gamma_abc_g1
+            .iter()
+            .zip(dummy.gamma_abc_g1.iter())
+            .all(|(a, b)| a == b)
+}
+
+/// Render a `VerifyingKey<Bn254>` to the snarkjs JSON wire shape that
+/// [`parse_verification_key`] consumes.
+///
+/// Round-trip property: `parse_verification_key(&serialize_vkey_to_snarkjs_json(vk))`
+/// returns a key equal to `vk` (used by the unit tests below).
+///
+/// This is exposed primarily so tests can write a dummy vkey to disk in the
+/// same JSON shape the production loader expects, without committing a
+/// fixture file. Production code never serialises a vkey.
+#[doc(hidden)]
+pub fn serialize_vkey_to_snarkjs_json(vk: &VerifyingKey<Bn254>) -> String {
+    use std::fmt::Write;
+    fn fq_str(x: &Fq) -> String {
+        format!("{x}")
+    }
+    fn g1_array(p: &G1Affine) -> String {
+        if p.is_zero() {
+            // snarkjs uses the [0, 1, 0] encoding for the point at infinity.
+            "[\"0\",\"1\",\"0\"]".to_string()
+        } else {
+            let (x, y) = (p.x, p.y);
+            format!("[\"{}\",\"{}\",\"1\"]", fq_str(&x), fq_str(&y))
+        }
+    }
+    fn g2_array(p: &G2Affine) -> String {
+        if p.is_zero() {
+            "[[\"0\",\"0\"],[\"1\",\"0\"],[\"0\",\"0\"]]".to_string()
+        } else {
+            let (x, y) = (p.x, p.y);
+            format!(
+                "[[\"{}\",\"{}\"],[\"{}\",\"{}\"],[\"1\",\"0\"]]",
+                fq_str(&x.c0),
+                fq_str(&x.c1),
+                fq_str(&y.c0),
+                fq_str(&y.c1)
+            )
+        }
+    }
+    let mut out = String::new();
+    out.push_str("{\n");
+    out.push_str("  \"protocol\": \"groth16\",\n");
+    out.push_str("  \"curve\": \"bn128\",\n");
+    out.push_str(&format!(
+        "  \"nPublic\": {},\n",
+        vk.gamma_abc_g1.len().saturating_sub(1)
+    ));
+    out.push_str(&format!("  \"vk_alpha_1\": {},\n", g1_array(&vk.alpha_g1)));
+    out.push_str(&format!("  \"vk_beta_2\": {},\n", g2_array(&vk.beta_g2)));
+    out.push_str(&format!("  \"vk_gamma_2\": {},\n", g2_array(&vk.gamma_g2)));
+    out.push_str(&format!("  \"vk_delta_2\": {},\n", g2_array(&vk.delta_g2)));
+    out.push_str("  \"IC\": [");
+    for (i, p) in vk.gamma_abc_g1.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        let _ = write!(out, "{}", g1_array(p));
+    }
+    out.push_str("]\n}\n");
+    out
 }
 
 #[cfg(test)]
@@ -303,6 +497,218 @@ mod tests {
         assert!(
             parse_fr_from_hex(hex).is_err(),
             "inputs > 32 bytes should be rejected"
+        );
+    }
+
+    #[test]
+    fn fr_to_canonical_hex_one_is_64_chars_ending_01() {
+        let h = fr_to_canonical_hex(Fr::from(1u64));
+        assert_eq!(h.len(), 64, "canonical hex must always be 64 characters");
+        assert!(
+            h.ends_with("01"),
+            "Fr::from(1) canonical hex should end in '01': got {h}"
+        );
+        assert!(
+            h.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')),
+            "canonical hex must be lowercase: got {h}"
+        );
+    }
+
+    #[test]
+    fn fr_to_canonical_hex_zero_is_64_zeros() {
+        let h = fr_to_canonical_hex(Fr::from(0u64));
+        assert_eq!(h.len(), 64);
+        assert_eq!(h, "0".repeat(64));
+    }
+
+    #[test]
+    fn fr_to_canonical_hex_roundtrips_via_canonical_parser() {
+        for v in [0u64, 1, 7, 42, 0xdead_beef] {
+            let fr = Fr::from(v);
+            let h = fr_to_canonical_hex(fr);
+            let back = parse_canonical_fr_hex(&h).expect("canonical hex must parse");
+            assert_eq!(fr, back, "round-trip lost value {v}");
+        }
+    }
+
+    #[test]
+    fn parse_canonical_fr_hex_rejects_non_hex() {
+        let bad = "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz";
+        assert_eq!(bad.len(), 64);
+        assert!(
+            parse_canonical_fr_hex(bad).is_err(),
+            "non-hex input must be rejected"
+        );
+    }
+
+    #[test]
+    fn parse_canonical_fr_hex_rejects_too_short() {
+        let short = "abcd";
+        assert!(
+            parse_canonical_fr_hex(short).is_err(),
+            "shorter than 64 chars must be rejected"
+        );
+    }
+
+    #[test]
+    fn parse_canonical_fr_hex_rejects_oversized() {
+        let too_long = "0".repeat(65);
+        assert!(
+            parse_canonical_fr_hex(&too_long).is_err(),
+            "longer than 64 chars must be rejected"
+        );
+        let way_too_long = "0".repeat(128);
+        assert!(
+            parse_canonical_fr_hex(&way_too_long).is_err(),
+            "much-longer-than-64 must be rejected"
+        );
+    }
+
+    #[test]
+    fn parse_canonical_fr_hex_rejects_uppercase() {
+        // Same value, but with uppercase A-F. Strict canonical refuses these
+        // to keep DB / wire byte-comparisons unambiguous; callers that need
+        // to accept mixed case must lowercase up front.
+        let upper = "0000000000000000000000000000000000000000000000000000000000ABCDEF";
+        assert!(
+            parse_canonical_fr_hex(upper).is_err(),
+            "uppercase must be rejected by the strict canonical parser"
+        );
+        // The legacy tolerant parser still accepts it.
+        assert!(
+            parse_fr_from_hex(upper).is_ok(),
+            "legacy parser still accepts uppercase for backwards compat"
+        );
+    }
+
+    #[test]
+    fn parse_canonical_fr_hex_rejects_0x_prefix() {
+        let prefixed = "0x00000000000000000000000000000000000000000000000000000000000000ab";
+        assert_eq!(prefixed.len(), 66);
+        assert!(
+            parse_canonical_fr_hex(prefixed).is_err(),
+            "0x prefix must be rejected"
+        );
+    }
+
+    #[test]
+    fn parse_canonical_fr_hex_rejects_value_above_modulus() {
+        // 64 lowercase hex chars but the value >= BN254 scalar modulus.
+        let above = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+        assert!(
+            parse_canonical_fr_hex(above).is_err(),
+            "values >= field modulus must be rejected even when canonically encoded"
+        );
+    }
+
+    #[test]
+    fn parse_canonical_fr_hex_accepts_lowercase_64() {
+        let ok = "0000000000000000000000000000000000000000000000000000000000000001";
+        assert_eq!(ok.len(), 64);
+        let fr = parse_canonical_fr_hex(ok).expect("lowercase 64-char hex must parse");
+        assert_eq!(fr, Fr::from(1u64));
+    }
+
+    #[test]
+    fn topic_hash_for_v2_is_deterministic() {
+        let a = topic_hash_for_v2("annex:topic:test").expect("topic_hash should succeed");
+        let b = topic_hash_for_v2("annex:topic:test").expect("topic_hash should succeed");
+        assert_eq!(a, b, "same topic must produce the same hash");
+    }
+
+    #[test]
+    fn topic_hash_for_v2_different_topics_yield_different_hashes() {
+        let a = topic_hash_for_v2("annex:topic:alpha").expect("topic_hash should succeed");
+        let b = topic_hash_for_v2("annex:topic:beta").expect("topic_hash should succeed");
+        assert_ne!(
+            a, b,
+            "different topics must produce different hashes (privacy invariant)"
+        );
+    }
+
+    #[test]
+    fn topic_hash_for_v2_byte_sensitive() {
+        let lower = topic_hash_for_v2("foo").expect("topic_hash should succeed");
+        let upper = topic_hash_for_v2("FOO").expect("topic_hash should succeed");
+        assert_ne!(lower, upper, "topic_hash is byte-sensitive by design");
+    }
+
+    #[test]
+    fn topic_hash_for_v2_rejects_empty() {
+        assert!(
+            topic_hash_for_v2("").is_err(),
+            "empty topic must be rejected"
+        );
+    }
+
+    #[test]
+    fn topic_hash_for_v2_outputs_canonical_64_char_hex() {
+        let h = fr_to_canonical_hex(
+            topic_hash_for_v2("annex:topic:test").expect("topic_hash should succeed"),
+        );
+        assert_eq!(h.len(), 64, "topic hash hex must be 64 chars");
+        assert!(h
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
+    }
+
+    #[test]
+    fn topic_hash_for_v2_uses_domain_separator() {
+        // Domain separator means the topic literally "annex/v2/topicHash:foo"
+        // does NOT collide with topic "foo".
+        let plain = topic_hash_for_v2("foo").expect("topic_hash should succeed");
+        let prefix_collision =
+            topic_hash_for_v2("annex/v2/topicHash:foo").expect("topic_hash should succeed");
+        assert_ne!(
+            plain, prefix_collision,
+            "domain separator must not collide with a topic that happens to embed it"
+        );
+    }
+
+    #[test]
+    fn is_dummy_vkey_detects_in_memory_dummy() {
+        let vk = generate_dummy_vkey();
+        assert!(
+            is_dummy_vkey(&vk),
+            "is_dummy_vkey must return true for the in-memory dummy"
+        );
+    }
+
+    #[test]
+    fn is_dummy_vkey_rejects_non_dummy_alpha() {
+        // Tweak alpha_g1 to a different on-curve point — the predicate must
+        // no longer report the key as dummy.
+        let mut vk = generate_dummy_vkey();
+        // Double the generator: still valid G1, but ≠ generator.
+        use ark_ec::CurveGroup;
+        let two_g = (G1Affine::generator() + G1Affine::generator()).into_affine();
+        vk.alpha_g1 = two_g;
+        assert!(!is_dummy_vkey(&vk), "tweaked alpha must not match dummy");
+    }
+
+    #[test]
+    fn is_dummy_vkey_rejects_different_ic_length() {
+        // A real membership.circom vkey for [root, commitment] has 3 IC
+        // entries, not 2 — the in-memory dummy uses 2.
+        let mut vk = generate_dummy_vkey();
+        vk.gamma_abc_g1.push(G1Affine::generator());
+        assert!(
+            !is_dummy_vkey(&vk),
+            "vkey with extra IC entry must not match dummy"
+        );
+    }
+
+    #[test]
+    fn dummy_vkey_round_trips_through_snarkjs_json() {
+        // serialize_vkey_to_snarkjs_json(dummy) → parse_verification_key → is_dummy_vkey
+        // proves both halves agree on the dummy shape AND that the JSON
+        // emitter matches the snarkjs grammar parse_verification_key expects.
+        let vk = generate_dummy_vkey();
+        let json = serialize_vkey_to_snarkjs_json(&vk);
+        let round = parse_verification_key(&json).expect("dummy vkey JSON must parse");
+        assert!(
+            is_dummy_vkey(&round),
+            "round-tripped dummy vkey must still register as dummy"
         );
     }
 }

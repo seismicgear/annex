@@ -37,7 +37,8 @@ pub use error::RtxError;
 pub use types::{BundleProvenance, ReflectionSummaryBundle, RtxSubscription};
 pub use validation::{
     bundle_signing_payload, check_redacted_topics, enforce_transfer_scope,
-    validate_bundle_structure,
+    validate_bundle_structure, MAX_CAVEATS, MAX_CAVEAT_BYTES, MAX_DOMAIN_TAGS,
+    MAX_DOMAIN_TAG_BYTES, MAX_IDENTIFIER_BYTES, MAX_REASONING_CHAIN_BYTES, MAX_SUMMARY_BYTES,
 };
 
 #[cfg(test)]
@@ -263,6 +264,107 @@ mod tests {
         bundle.created_at = 0;
         let result = validate_bundle_structure(&bundle);
         assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Bundle size cap tests (DOS defence)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn oversized_summary_is_rejected() {
+        let mut bundle = make_test_bundle();
+        bundle.summary = "x".repeat(MAX_SUMMARY_BYTES + 1);
+        let err = validate_bundle_structure(&bundle).unwrap_err();
+        assert!(matches!(err, RtxError::InvalidBundle(ref m) if m.contains("summary")));
+    }
+
+    #[test]
+    fn summary_at_cap_is_accepted() {
+        let mut bundle = make_test_bundle();
+        bundle.summary = "x".repeat(MAX_SUMMARY_BYTES);
+        assert!(validate_bundle_structure(&bundle).is_ok());
+    }
+
+    #[test]
+    fn oversized_reasoning_chain_is_rejected() {
+        let mut bundle = make_test_bundle();
+        bundle.reasoning_chain = Some("x".repeat(MAX_REASONING_CHAIN_BYTES + 1));
+        let err = validate_bundle_structure(&bundle).unwrap_err();
+        assert!(matches!(err, RtxError::InvalidBundle(ref m) if m.contains("reasoning_chain")));
+    }
+
+    #[test]
+    fn reasoning_chain_at_cap_is_accepted() {
+        let mut bundle = make_test_bundle();
+        bundle.reasoning_chain = Some("x".repeat(MAX_REASONING_CHAIN_BYTES));
+        assert!(validate_bundle_structure(&bundle).is_ok());
+    }
+
+    #[test]
+    fn missing_reasoning_chain_is_accepted() {
+        let mut bundle = make_test_bundle();
+        bundle.reasoning_chain = None;
+        assert!(validate_bundle_structure(&bundle).is_ok());
+    }
+
+    #[test]
+    fn too_many_domain_tags_is_rejected() {
+        let mut bundle = make_test_bundle();
+        bundle.domain_tags = (0..(MAX_DOMAIN_TAGS + 1))
+            .map(|i| format!("tag{i}"))
+            .collect();
+        let err = validate_bundle_structure(&bundle).unwrap_err();
+        assert!(matches!(err, RtxError::InvalidBundle(ref m) if m.contains("domain_tags")));
+    }
+
+    #[test]
+    fn oversized_domain_tag_is_rejected() {
+        let mut bundle = make_test_bundle();
+        bundle.domain_tags = vec!["x".repeat(MAX_DOMAIN_TAG_BYTES + 1)];
+        let err = validate_bundle_structure(&bundle).unwrap_err();
+        assert!(matches!(err, RtxError::InvalidBundle(ref m) if m.contains("domain_tag")));
+    }
+
+    #[test]
+    fn too_many_caveats_is_rejected() {
+        let mut bundle = make_test_bundle();
+        bundle.caveats = (0..(MAX_CAVEATS + 1))
+            .map(|i| format!("caveat{i}"))
+            .collect();
+        let err = validate_bundle_structure(&bundle).unwrap_err();
+        assert!(matches!(err, RtxError::InvalidBundle(ref m) if m.contains("caveats")));
+    }
+
+    #[test]
+    fn oversized_caveat_is_rejected() {
+        let mut bundle = make_test_bundle();
+        bundle.caveats = vec!["x".repeat(MAX_CAVEAT_BYTES + 1)];
+        let err = validate_bundle_structure(&bundle).unwrap_err();
+        assert!(matches!(err, RtxError::InvalidBundle(ref m) if m.contains("caveat")));
+    }
+
+    #[test]
+    fn oversized_bundle_id_is_rejected() {
+        let mut bundle = make_test_bundle();
+        bundle.bundle_id = "x".repeat(MAX_IDENTIFIER_BYTES + 1);
+        let err = validate_bundle_structure(&bundle).unwrap_err();
+        assert!(matches!(err, RtxError::InvalidBundle(ref m) if m.contains("bundle_id")));
+    }
+
+    #[test]
+    fn oversized_source_pseudonym_is_rejected() {
+        let mut bundle = make_test_bundle();
+        bundle.source_pseudonym = "x".repeat(MAX_IDENTIFIER_BYTES + 1);
+        let err = validate_bundle_structure(&bundle).unwrap_err();
+        assert!(matches!(err, RtxError::InvalidBundle(ref m) if m.contains("source_pseudonym")));
+    }
+
+    #[test]
+    fn oversized_signature_is_rejected() {
+        let mut bundle = make_test_bundle();
+        bundle.signature = "x".repeat(MAX_IDENTIFIER_BYTES + 1);
+        let err = validate_bundle_structure(&bundle).unwrap_err();
+        assert!(matches!(err, RtxError::InvalidBundle(ref m) if m.contains("signature")));
     }
 
     // -----------------------------------------------------------------------

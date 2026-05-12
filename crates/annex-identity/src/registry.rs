@@ -3,6 +3,7 @@
 //! Handles high-level identity registration: inserting into `vrp_identities`
 //! and updating the Merkle tree atomically.
 
+use crate::zk::fr_to_canonical_hex;
 use crate::{IdentityError, MerkleTree, RoleCode};
 use ark_bn254::Fr;
 use ark_ff::{BigInteger, PrimeField};
@@ -113,8 +114,12 @@ pub fn register_identity(
         Err(e) => return Err(IdentityError::DatabaseError(e)),
     };
 
-    // 3. Persist Merkle Tree update (In Transaction)
-    tree.persist_leaf_and_root(&tx, leaf_index, leaf, new_root)?;
+    // 3. Persist Merkle Tree update (In Transaction). The `updates` slice
+    //    carries the (level, index) -> hash assignments along the leaf's
+    //    Merkle path so `persist_leaf_and_root` can write only the
+    //    touched nodes into `vrp_merkle_nodes` instead of reserialising
+    //    the whole tree.
+    tree.persist_leaf_and_root(&tx, leaf_index, leaf, new_root, &updates)?;
 
     // 4. Commit Transaction
     tx.commit().map_err(IdentityError::DatabaseError)?;
@@ -128,10 +133,10 @@ pub fn register_identity(
 
     let path_elements = path_elements_fr
         .into_iter()
-        .map(|fr| hex::encode(fr.into_bigint().to_bytes_be()))
+        .map(fr_to_canonical_hex)
         .collect();
 
-    let root_hex = hex::encode(new_root.into_bigint().to_bytes_be());
+    let root_hex = fr_to_canonical_hex(new_root);
 
     Ok(RegistrationResult {
         identity_id,
@@ -178,10 +183,10 @@ pub fn get_path_for_commitment(
 
     let path_elements = path_elements_fr
         .into_iter()
-        .map(|fr| hex::encode(fr.into_bigint().to_bytes_be()))
+        .map(fr_to_canonical_hex)
         .collect();
 
-    let root_hex = hex::encode(tree.root().into_bigint().to_bytes_be());
+    let root_hex = fr_to_canonical_hex(tree.root());
 
     Ok((leaf_index, root_hex, path_elements, path_indices))
 }
@@ -313,6 +318,49 @@ mod tests {
             exists,
             "commitment should be stored as lowercase in vrp_identities"
         );
+    }
+
+    #[test]
+    fn registration_response_uses_canonical_64char_hex() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        let mut tree = MerkleTree::new(20).unwrap();
+        let commitment = "0000000000000000000000000000000000000000000000000000000000000003";
+
+        let result = register_identity(&mut tree, &mut conn, commitment, RoleCode::Human, 7)
+            .expect("registration should succeed");
+
+        assert_eq!(
+            result.root_hex.len(),
+            64,
+            "registration root_hex must be canonical 64-char hex: got {}",
+            result.root_hex
+        );
+        assert!(
+            result
+                .root_hex
+                .chars()
+                .all(|c| matches!(c, '0'..='9' | 'a'..='f')),
+            "root_hex must be lowercase: {}",
+            result.root_hex
+        );
+        assert_eq!(
+            result.path_elements.len(),
+            20,
+            "depth-20 tree => 20 path elements"
+        );
+        for (i, h) in result.path_elements.iter().enumerate() {
+            assert_eq!(
+                h.len(),
+                64,
+                "path_elements[{i}] must be canonical 64-char hex: got {h}"
+            );
+            assert!(
+                h.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')),
+                "path_elements[{i}] must be lowercase: {h}"
+            );
+        }
     }
 
     #[test]

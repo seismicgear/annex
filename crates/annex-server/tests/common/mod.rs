@@ -62,6 +62,9 @@ pub fn build_app_state(pool: DbPool, tree: MerkleTree, policy: ServerPolicy) -> 
         pool: pool.clone(),
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: load_vkey_or_dummy(),
+        // Default test harness disables v2; tests that exercise v2 should
+        // construct an AppState with this field set explicitly.
+        membership_vkey_v2: None,
         server_id: 1,
         signing_key: Arc::new(ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng)),
         public_url: Arc::new(RwLock::new("http://localhost:3000".to_string())),
@@ -82,5 +85,8 @@ pub fn build_app_state(pool: DbPool, tree: MerkleTree, policy: ServerPolicy) -> 
         enforce_zk_proofs: false,
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: Arc::new([0u8; 32]),
+        federation_config: annex_server::config::FederationConfig::default(),
+        storage_config: annex_server::config::StorageConfig::default(),
+        storage_health: Arc::new(annex_server::storage_health::StorageHealth::new()),
     }
 }

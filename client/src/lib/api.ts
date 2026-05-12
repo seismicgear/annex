@@ -1,820 +1,103 @@
 /**
  * HTTP API client for the Annex server.
  *
- * All endpoints are accessed through this module. The Vite dev server
- * proxies /api/* and /events/* to the backend at port 3000.
+ * Compatibility re-export. The implementation now lives in `@/api/*`,
+ * split by domain (core, identity, channels, messages, voice, federation,
+ * rtx, admin, uploads, usernames). New code should import the specific
+ * domain module directly; this barrel keeps existing call sites working.
  */
 
-import type {
-  RegistrationResponse,
-  VerifyMembershipResponse,
-  IdentityInfo,
-  Channel,
-  Message,
-  MessageEdit,
-  ServerSummary,
-  ServerPolicy,
-  FederationPeer,
-  AgentInfo,
-  PublicEvent,
-} from '@/types';
-
-/** Base error class for API responses. */
-export class ApiError extends Error {
-  status: number;
-  constructor(status: number, message: string) {
-    super(message);
-    this.name = 'ApiError';
-    this.status = status;
-  }
-}
-
-/**
- * Active base URL for multi-server connections.
- * Empty string = current origin (relative paths). Otherwise, full URL prefix.
- */
-let _apiBaseUrl = '';
-
-/**
- * HMAC-signed session token for authenticated API calls.
- * Set after ZK verify-membership or loaded from IndexedDB on cold start.
- * Used as `Authorization: Bearer <token>` when enforce_zk_proofs is enabled.
- */
-let _sessionToken: string | null = null;
-
-/**
- * Cached ZK membership proof payload (JSON string of { proof, publicSignals }).
- * Set after successful registration/verification. Sent as `x-annex-zk-proof`
- * on routes that require `verify_zk_membership_header`.
- */
-let _zkProofPayload: string | null = null;
-
-/** Auto-refresh interval handle. */
-let _refreshInterval: ReturnType<typeof setInterval> | null = null;
-
-/** Set the API base URL for cross-server requests. Empty string for current origin. */
-export function setApiBaseUrl(baseUrl: string): void {
-  _apiBaseUrl = baseUrl.replace(/\/+$/, '');
-}
-
-/** Get the current API base URL. */
-export function getApiBaseUrl(): string {
-  return _apiBaseUrl;
-}
-
-/**
- * Resolve a relative path against the API base URL.
- *
- * When the app is loaded from a Tauri bundle (`tauri://localhost`), relative
- * paths like `/uploads/abc.png` would resolve against the Tauri origin and
- * fail. This helper ensures they resolve against the server instead.
- *
- * Absolute URLs (http/https) are returned unchanged.
- */
-export function resolveUrl(path: string): string {
-  if (!path || path.startsWith('http://') || path.startsWith('https://')) {
-    return path;
-  }
-  return _apiBaseUrl ? `${_apiBaseUrl}${path}` : path;
-}
-
-/**
- * Fetch with a bounded timeout using AbortController.
- * @param url - The request URL
- * @param init - Fetch init options
- * @param timeoutMs - Timeout in milliseconds (default: none)
- */
-export async function fetchWithTimeout(
-  url: string,
-  init?: RequestInit,
-  timeoutMs?: number,
-): Promise<Response> {
-  if (!timeoutMs) return fetch(url, init);
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...init, signal: controller.signal });
-  } catch (err) {
-    if (err instanceof DOMException && err.name === 'AbortError') {
-      throw new Error(`Request timed out after ${timeoutMs}ms`);
-    }
-    throw err;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const url = _apiBaseUrl ? `${_apiBaseUrl}${path}` : path;
-  const method = (options?.method ?? 'GET').toUpperCase();
-  const hasBody = options?.body !== undefined && options?.body !== null;
-  const shouldSetJsonContentType =
-    ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && hasBody;
-  const headers = new Headers(options?.headers);
-
-  if (shouldSetJsonContentType && !headers.has('Content-Type')) {
-    headers.set('Content-Type', 'application/json');
-  }
-
-  const res = await fetch(url, {
-    ...options,
-    headers,
-  });
-  if (!res.ok) {
-    // Enhance rate limit errors with Retry-After guidance
-    if (res.status === 429) {
-      const retryAfter = res.headers.get('Retry-After');
-      const waitMsg = retryAfter ? ` Try again in ${retryAfter} seconds.` : ' Please wait and try again.';
-      throw new ApiError(429, `Rate limit exceeded.${waitMsg}`);
-    }
-    const body = await res.text();
-    throw new ApiError(res.status, body);
-  }
-  return res.json() as Promise<T>;
-}
-
-/**
- * Fetch from a specific remote server (for federation hopping / discovery).
- * Does NOT use the global _apiBaseUrl — targets the given URL directly.
- */
-export async function requestRemote<T>(
-  baseUrl: string,
-  path: string,
-  options?: RequestInit,
-): Promise<T> {
-  const url = `${baseUrl.replace(/\/+$/, '')}${path}`;
-  const method = (options?.method ?? 'GET').toUpperCase();
-  const hasBody = options?.body !== undefined && options?.body !== null;
-  const shouldSetJsonContentType =
-    ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && hasBody;
-  const headers = new Headers(options?.headers);
-
-  if (shouldSetJsonContentType && !headers.has('Content-Type')) {
-    headers.set('Content-Type', 'application/json');
-  }
-
-  const res = await fetch(url, {
-    ...options,
-    headers,
-  });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new ApiError(res.status, body);
-  }
-  return res.json() as Promise<T>;
-}
-
-/** Set the session token (after verify-membership or token refresh). */
-export function setSessionToken(token: string | null): void {
-  _sessionToken = token;
-}
-
-/** Get the current session token. */
-export function getSessionToken(): string | null {
-  return _sessionToken;
-}
-
-/** Cache the latest ZK proof payload for use in protected API calls. */
-export function setZkProofPayload(payload: string | null): void {
-  _zkProofPayload = payload;
-}
-
-/** Get the cached ZK proof payload. */
-export function getZkProofPayload(): string | null {
-  return _zkProofPayload;
-}
-
-/**
- * Check whether an HMAC session token has expired.
- * Token format: base64(pseudonym|expires_unix_secs|hmac_signature)
- */
-export function isTokenExpired(token: string): boolean {
-  try {
-    const decoded = atob(token.replace(/-/g, '+').replace(/_/g, '/'));
-    const parts = decoded.split('|');
-    if (parts.length !== 3) return true;
-    const expires = parseInt(parts[1], 10);
-    if (isNaN(expires)) return true;
-    // Treat as expired 30 seconds early to avoid edge-case races
-    return Date.now() / 1000 >= expires - 30;
-  } catch {
-    return true;
-  }
-}
-
-/**
- * Refresh the session token using the current valid Bearer auth.
- * Calls POST /api/session/refresh which accepts expired-but-validly-signed tokens.
- */
-export async function refreshSessionToken(): Promise<string> {
-  if (!_sessionToken) {
-    throw new Error('No session token to refresh');
-  }
-  const url = _apiBaseUrl ? `${_apiBaseUrl}/api/session/refresh` : '/api/session/refresh';
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${_sessionToken}` },
-  });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new ApiError(res.status, body);
-  }
-  const data = await res.json() as { sessionToken: string };
-  _sessionToken = data.sessionToken;
-  return data.sessionToken;
-}
-
-/**
- * Start auto-refreshing the session token at 80% of the given TTL.
- * Call stopTokenRefresh() to cancel.
- */
-export function startTokenRefresh(
-  ttlSecs: number,
-  onRefreshed?: (newToken: string) => void,
-  onError?: (err: unknown) => void,
-): void {
-  stopTokenRefresh();
-  const intervalMs = ttlSecs * 0.8 * 1000;
-  _refreshInterval = setInterval(async () => {
-    try {
-      const newToken = await refreshSessionToken();
-      onRefreshed?.(newToken);
-    } catch (err) {
-      onError?.(err);
-    }
-  }, intervalMs);
-}
-
-/** Stop auto-refreshing the session token. */
-export function stopTokenRefresh(): void {
-  if (_refreshInterval !== null) {
-    clearInterval(_refreshInterval);
-    _refreshInterval = null;
-  }
-}
-
-function authHeaders(pseudonymId: string): Record<string, string> {
-  const headers: Record<string, string> = {};
-  if (_sessionToken) {
-    headers['Authorization'] = `Bearer ${_sessionToken}`;
-  } else {
-    headers['X-Annex-Pseudonym'] = pseudonymId;
-  }
-  if (_zkProofPayload) {
-    headers['x-annex-zk-proof'] = _zkProofPayload;
-  }
-  return headers;
-}
-
-// ── Identity & Registration ──
-
-export async function register(
-  commitmentHex: string,
-  roleCode: number,
-  nodeId: number,
-  inviteCode?: string,
-  serverPassword?: string,
-): Promise<RegistrationResponse> {
-  return request<RegistrationResponse>('/api/registry/register', {
-    method: 'POST',
-    body: JSON.stringify({ commitmentHex, roleCode, nodeId, inviteCode, serverPassword }),
-  });
-}
-
-export async function redeemInvite(
-  baseUrl: string,
-  code: string,
-): Promise<{ valid: boolean; serverName: string; serverSlug: string }> {
-  const resp = await fetch(`${baseUrl}/api/invites/redeem`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code }),
-  });
-  if (!resp.ok) {
-    const body = await resp.json().catch(() => ({}));
-    throw new Error(body.error || `Invite validation failed: ${resp.status}`);
-  }
-  return resp.json();
-}
-
-export async function verifyMembership(
-  root: string,
-  commitment: string,
-  topic: string,
-  proof: unknown,
-  publicSignals: string[],
-): Promise<VerifyMembershipResponse> {
-  return request<VerifyMembershipResponse>('/api/zk/verify-membership', {
-    method: 'POST',
-    body: JSON.stringify({ root, commitment, topic, proof, publicSignals }),
-  });
-}
-
-export async function getIdentityInfo(
-  pseudonymId: string,
-): Promise<IdentityInfo> {
-  return request<IdentityInfo>(`/api/identity/${pseudonymId}`, {
-    headers: authHeaders(pseudonymId),
-  });
-}
-
-// ── Channels ──
-
-export async function listChannels(pseudonymId: string): Promise<Channel[]> {
-  return request<Channel[]>('/api/channels', {
-    headers: authHeaders(pseudonymId),
-  });
-}
-
-export async function getChannel(
-  pseudonymId: string,
-  channelId: string,
-): Promise<Channel> {
-  return request<Channel>(`/api/channels/${channelId}`, {
-    headers: authHeaders(pseudonymId),
-  });
-}
-
-export async function createChannel(
-  pseudonymId: string,
-  name: string,
-  channelType: string,
-  topic?: string,
-  federated?: boolean,
-): Promise<Channel> {
-  // Generate a channel_id from the name (lowercase, alphanumeric + hyphens)
-  const channel_id = name
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '')
-    || `ch-${Date.now()}`;
-  return request<Channel>('/api/channels', {
-    method: 'POST',
-    headers: authHeaders(pseudonymId),
-    body: JSON.stringify({
-      channel_id,
-      name,
-      channel_type: channelType,
-      topic,
-      federation_scope: federated ? 'Federated' : 'Local',
-    }),
-  });
-}
-
-export async function joinChannel(
-  pseudonymId: string,
-  channelId: string,
-): Promise<void> {
-  await request<unknown>(`/api/channels/${channelId}/join`, {
-    method: 'POST',
-    headers: authHeaders(pseudonymId),
-  });
-}
-
-export async function leaveChannel(
-  pseudonymId: string,
-  channelId: string,
-): Promise<void> {
-  await request<unknown>(`/api/channels/${channelId}/leave`, {
-    method: 'POST',
-    headers: authHeaders(pseudonymId),
-  });
-}
-
-export async function getMessages(
-  pseudonymId: string,
-  channelId: string,
-  before?: string,
-  limit?: number,
-): Promise<Message[]> {
-  const params = new URLSearchParams();
-  if (before) params.set('before', before);
-  if (limit) params.set('limit', limit.toString());
-  const qs = params.toString();
-  return request<Message[]>(
-    `/api/channels/${channelId}/messages${qs ? '?' + qs : ''}`,
-    { headers: authHeaders(pseudonymId) },
-  );
-}
-
-// ── Message Search ──
-
-export async function searchMessages(
-  pseudonymId: string,
-  query: string,
-  channelId?: string,
-  limit?: number,
-): Promise<Message[]> {
-  const params = new URLSearchParams({ q: query });
-  if (channelId) params.set('channel_id', channelId);
-  if (limit) params.set('limit', limit.toString());
-  return request<Message[]>(
-    `/api/messages/search?${params}`,
-    { headers: authHeaders(pseudonymId) },
-  );
-}
-
-// ── Message Edit History ──
-
-export async function getMessageEdits(
-  pseudonymId: string,
-  channelId: string,
-  messageId: string,
-): Promise<MessageEdit[]> {
-  return request<MessageEdit[]>(
-    `/api/channels/${channelId}/messages/${messageId}/edits`,
-    { headers: authHeaders(pseudonymId) },
-  );
-}
-
-// ── Public APIs (no auth required) ──
-
-export async function getServerSummary(): Promise<ServerSummary> {
-  return request<ServerSummary>('/api/public/server/summary');
-}
-
-export async function getFederationPeers(): Promise<{ peers: FederationPeer[] }> {
-  return request<{ peers: FederationPeer[] }>('/api/public/federation/peers');
-}
-
-export async function getPublicAgents(): Promise<{ agents: AgentInfo[] }> {
-  return request<{ agents: AgentInfo[] }>('/api/public/agents');
-}
-
-export async function getPublicEvents(
-  domain?: string,
-  since?: number,
-  limit?: number,
-): Promise<PublicEvent[]> {
-  const params = new URLSearchParams();
-  if (domain) params.set('domain', domain);
-  if (since) params.set('since', since.toString());
-  if (limit) params.set('limit', limit.toString());
-  const qs = params.toString();
-  const resp = await request<{ events: PublicEvent[]; count: number }>(
-    `/api/public/events${qs ? '?' + qs : ''}`,
-  );
-  return resp.events;
-}
-
-// ── Admin ──
-
-export async function getPolicy(
-  pseudonymId: string,
-): Promise<ServerPolicy> {
-  return request<ServerPolicy>('/api/admin/policy', {
-    headers: authHeaders(pseudonymId),
-  });
-}
-
-export async function updatePolicy(
-  pseudonymId: string,
-  policy: ServerPolicy,
-): Promise<{ status: string; version_id: string }> {
-  return request<{ status: string; version_id: string }>('/api/admin/policy', {
-    method: 'PUT',
-    headers: authHeaders(pseudonymId),
-    body: JSON.stringify(policy),
-  });
-}
-
-export async function deleteChannel(
-  pseudonymId: string,
-  channelId: string,
-): Promise<void> {
-  await request<unknown>(`/api/channels/${channelId}`, {
-    method: 'DELETE',
-    headers: authHeaders(pseudonymId),
-  });
-}
-
-// ── Server Settings ──
-
-export async function getServer(
-  pseudonymId: string,
-): Promise<{ slug: string; label: string; public_url: string }> {
-  return request<{ slug: string; label: string; public_url: string }>('/api/admin/server', {
-    headers: authHeaders(pseudonymId),
-  });
-}
-
-export async function renameServer(
-  pseudonymId: string,
-  label: string,
-): Promise<{ status: string; label: string }> {
-  return request<{ status: string; label: string }>('/api/admin/server', {
-    method: 'PATCH',
-    headers: authHeaders(pseudonymId),
-    body: JSON.stringify({ label }),
-  });
-}
-
-export async function setPublicUrl(
-  pseudonymId: string,
-  publicUrl: string,
-): Promise<{ status: string; public_url: string }> {
-  return request<{ status: string; public_url: string }>('/api/admin/public-url', {
-    method: 'PUT',
-    headers: authHeaders(pseudonymId),
-    body: JSON.stringify({ public_url: publicUrl }),
-  });
-}
-
-export async function setWebrtcPublicUrl(
-  pseudonymId: string,
-  publicWebrtcUrl: string,
-): Promise<{ status: string; public_webrtc_url: string }> {
-  return request<{ status: string; public_webrtc_url: string }>('/api/admin/webrtc-public-url', {
-    method: 'PUT',
-    headers: authHeaders(pseudonymId),
-    body: JSON.stringify({ public_webrtc_url: publicWebrtcUrl }),
-  });
-}
-
-// ── Member Management ──
-
-export interface MemberInfo {
-  pseudonym_id: string;
-  participant_type: string;
-  can_voice: boolean;
-  can_moderate: boolean;
-  can_invite: boolean;
-  can_federate: boolean;
-  can_bridge: boolean;
-  active: boolean;
-  created_at: string;
-}
-
-export async function listMembers(
-  pseudonymId: string,
-): Promise<MemberInfo[]> {
-  const resp = await request<{ members: MemberInfo[] }>('/api/admin/members', {
-    headers: authHeaders(pseudonymId),
-  });
-  return resp.members;
-}
-
-export async function updateMemberCapabilities(
-  pseudonymId: string,
-  targetPseudonym: string,
-  caps: {
-    can_voice: boolean;
-    can_moderate: boolean;
-    can_invite: boolean;
-    can_federate: boolean;
-    can_bridge: boolean;
-  },
-): Promise<void> {
-  await request<unknown>(`/api/admin/members/${targetPseudonym}/capabilities`, {
-    method: 'PATCH',
-    headers: authHeaders(pseudonymId),
-    body: JSON.stringify(caps),
-  });
-}
-
-// ── Uploads (Images, Videos, Files) ──
-
-export interface UploadResponse {
-  status: string;
-  upload_id: string;
-  url: string;
-  filename?: string;
-  content_type?: string;
-  category?: 'image' | 'video' | 'file';
-  size?: number;
-  metadata_stripped_bytes?: number;
-}
-
-export async function uploadServerImage(
-  pseudonymId: string,
-  file: File,
-): Promise<UploadResponse> {
-  const formData = new FormData();
-  formData.append('file', file);
-
-  const url = _apiBaseUrl ? `${_apiBaseUrl}/api/admin/server/image` : '/api/admin/server/image';
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: authHeaders(pseudonymId),
-    body: formData,
-  });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new ApiError(res.status, body);
-  }
-  return res.json() as Promise<UploadResponse>;
-}
-
-export async function getServerImage(): Promise<{ image_url: string | null }> {
-  return request<{ image_url: string | null }>('/api/public/server/image');
-}
-
-export async function uploadChatImage(
-  pseudonymId: string,
-  channelId: string,
-  file: File,
-): Promise<UploadResponse> {
-  const formData = new FormData();
-  formData.append('file', file);
-
-  const url = _apiBaseUrl
-    ? `${_apiBaseUrl}/api/channels/${channelId}/upload`
-    : `/api/channels/${channelId}/upload`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: authHeaders(pseudonymId),
-    body: formData,
-  });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new ApiError(res.status, body);
-  }
-  return res.json() as Promise<UploadResponse>;
-}
-
-/** Generic chat upload (images, videos, files). Same endpoint, server detects type. */
-export async function uploadChatFile(
-  pseudonymId: string,
-  channelId: string,
-  file: File,
-): Promise<UploadResponse> {
-  return uploadChatImage(pseudonymId, channelId, file);
-}
-
-// ── Usernames ──
-
-export async function setUsername(
-  pseudonymId: string,
-  username: string,
-): Promise<{ status: string }> {
-  return request<{ status: string }>('/api/profile/username', {
-    method: 'PUT',
-    headers: authHeaders(pseudonymId),
-    body: JSON.stringify({ username }),
-  });
-}
-
-export async function deleteUsername(
-  pseudonymId: string,
-): Promise<{ status: string }> {
-  return request<{ status: string }>('/api/profile/username', {
-    method: 'DELETE',
-    headers: authHeaders(pseudonymId),
-  });
-}
-
-export async function grantUsername(
-  pseudonymId: string,
-  granteePseudonym: string,
-): Promise<{ status: string }> {
-  return request<{ status: string }>('/api/profile/username/grant', {
-    method: 'POST',
-    headers: authHeaders(pseudonymId),
-    body: JSON.stringify({ grantee_pseudonym: granteePseudonym }),
-  });
-}
-
-export async function revokeUsernameGrant(
-  pseudonymId: string,
-  granteePseudonym: string,
-): Promise<{ status: string }> {
-  return request<{ status: string }>(`/api/profile/username/grant/${granteePseudonym}`, {
-    method: 'DELETE',
-    headers: authHeaders(pseudonymId),
-  });
-}
-
-export async function listUsernameGrants(
-  pseudonymId: string,
-): Promise<{ grantees: string[] }> {
-  return request<{ grantees: string[] }>('/api/profile/username/grants', {
-    headers: authHeaders(pseudonymId),
-  });
-}
-
-export async function getVisibleUsernames(
-  pseudonymId: string,
-): Promise<{ usernames: Record<string, string> }> {
-  return request<{ usernames: Record<string, string> }>('/api/usernames/visible', {
-    headers: authHeaders(pseudonymId),
-  });
-}
-
-// ── Remote Server Discovery (federation hopping) ──
-
-export async function getRemoteServerSummary(
-  baseUrl: string,
-): Promise<ServerSummary> {
-  return requestRemote<ServerSummary>(baseUrl, '/api/public/server/summary');
-}
-
-export async function getRemoteFederationPeers(
-  baseUrl: string,
-): Promise<{ peers: FederationPeer[] }> {
-  return requestRemote<{ peers: FederationPeer[] }>(baseUrl, '/api/public/federation/peers');
-}
-
-// ── Invites ──
-
-export async function createInvite(
-  pseudonymId: string,
-  options?: { maxUses?: number; expiresInHours?: number },
-): Promise<{ code: string; url: string; expiresAt?: string }> {
-  return request<{ code: string; url: string; expiresAt?: string }>('/api/invites', {
-    method: 'POST',
-    headers: authHeaders(pseudonymId),
-    body: JSON.stringify({
-      maxUses: options?.maxUses,
-      expiresInHours: options?.expiresInHours,
-    }),
-  });
-}
-
-// ── Voice ──
-
-export interface IceServerConfig {
-  urls: string[];
-  username?: string;
-  credential?: string;
-}
-
-export interface JoinVoiceResponse {
-  token: string;
-  url: string;
-  ice_servers: IceServerConfig[];
-}
-
-/** Build the full URL for a voice endpoint, using _apiBaseUrl consistently. */
-function voiceUrl(channelId: string, action: 'join' | 'leave' | 'status'): string {
-  const path = `/api/channels/${channelId}/voice/${action}`;
-  return _apiBaseUrl ? `${_apiBaseUrl}${path}` : path;
-}
-
-export async function joinVoice(
-  pseudonymId: string,
-  channelId: string,
-  timeoutMs?: number,
-): Promise<JoinVoiceResponse> {
-  const url = voiceUrl(channelId, 'join');
-  const resp = await fetchWithTimeout(url, {
-    method: 'POST',
-    headers: new Headers({
-      ...authHeaders(pseudonymId),
-      'Content-Type': 'application/json',
-    }),
-  }, timeoutMs);
-  if (!resp.ok) {
-    const body = await resp.text();
-    throw new ApiError(resp.status, body);
-  }
-  return resp.json() as Promise<JoinVoiceResponse>;
-}
-
-export async function leaveVoice(
-  pseudonymId: string,
-  channelId: string,
-): Promise<void> {
-  const url = voiceUrl(channelId, 'leave');
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: new Headers(authHeaders(pseudonymId)),
-  });
-  if (!resp.ok) {
-    const body = await resp.text();
-    throw new ApiError(resp.status, body);
-  }
-}
-
-export async function getVoiceStatus(
-  pseudonymId: string,
-  channelId: string,
-): Promise<{ participants: number; active: boolean }> {
-  const url = voiceUrl(channelId, 'status');
-  const resp = await fetch(url, {
-    headers: new Headers(authHeaders(pseudonymId)),
-  });
-  if (!resp.ok) {
-    const body = await resp.text();
-    throw new ApiError(resp.status, body);
-  }
-  return resp.json() as Promise<{ participants: number; active: boolean }>;
-}
-
-// ── Voice configuration status ──
-
-export interface VoiceConfigStatus {
-  voice_enabled: boolean;
-  /** Whether voice is enabled in the server policy (admin toggle). */
-  policy_enabled: boolean;
-  /** Whether the WebRTC infrastructure is configured and reachable. */
-  infrastructure_ready: boolean;
-  has_public_url: boolean;
-  setup_hint: string;
-}
-
-/** Get the server's voice (WebRTC) configuration status (public, no auth). */
-export async function getVoiceConfigStatus(): Promise<VoiceConfigStatus> {
-  return request<VoiceConfigStatus>('/api/voice/config-status');
-}
+export {
+  ApiError,
+  authHeaders,
+  fetchWithTimeout,
+  getApiBaseUrl,
+  getSessionToken,
+  getZkProofPayload,
+  isTokenExpired,
+  refreshSessionToken,
+  request,
+  requestRemote,
+  resolveUrl,
+  setApiBaseUrl,
+  setSessionToken,
+  setZkProofPayload,
+  startTokenRefresh,
+  stopTokenRefresh,
+} from '@/api/core';
+
+export {
+  createInvite,
+  getIdentityInfo,
+  redeemInvite,
+  register,
+  verifyMembership,
+} from '@/api/identity';
+
+export {
+  createChannel,
+  deleteChannel,
+  getChannel,
+  joinChannel,
+  leaveChannel,
+  listChannels,
+} from '@/api/channels';
+
+export {
+  getMessageEdits,
+  getMessages,
+  searchMessages,
+} from '@/api/messages';
+
+export type {
+  IceServerConfig,
+  JoinVoiceResponse,
+  VoiceConfigStatus,
+} from '@/api/voice';
+export {
+  getVoiceConfigStatus,
+  getVoiceStatus,
+  joinVoice,
+  leaveVoice,
+} from '@/api/voice';
+
+export {
+  getFederationPeers,
+  getRemoteFederationPeers,
+  getRemoteServerSummary,
+  getServerSummary,
+} from '@/api/federation';
+
+export {
+  getPublicAgents,
+  getPublicEvents,
+} from '@/api/rtx';
+
+export type { MemberInfo } from '@/api/admin';
+export {
+  getPolicy,
+  getServer,
+  listMembers,
+  renameServer,
+  setPublicUrl,
+  setWebrtcPublicUrl,
+  updateMemberCapabilities,
+  updatePolicy,
+} from '@/api/admin';
+
+export type { UploadResponse } from '@/api/uploads';
+export {
+  getServerImage,
+  uploadChatFile,
+  uploadChatImage,
+  uploadServerImage,
+} from '@/api/uploads';
+
+export {
+  deleteUsername,
+  getVisibleUsernames,
+  grantUsername,
+  listUsernameGrants,
+  revokeUsernameGrant,
+  setUsername,
+} from '@/api/usernames';

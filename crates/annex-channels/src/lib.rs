@@ -6,878 +6,45 @@
 //! Channels are the primary communication primitive in Annex. They support
 //! multiple types (`Text`, `Voice`, `Hybrid`, `Agent`, `Broadcast`), each
 //! with distinct capability requirements and federation scoping.
-
-use annex_types::{AlignmentStatus, ChannelType, FederationScope, ServerPolicy};
-use rusqlite::{params, Connection, OptionalExtension, Row};
-use serde::{Deserialize, Serialize};
-use thiserror::Error;
-
-/// Errors that can occur during channel operations.
-#[derive(Debug, Error)]
-pub enum ChannelError {
-    #[error("database error: {0}")]
-    Database(#[from] rusqlite::Error),
-    #[error("channel not found: {0}")]
-    NotFound(String),
-    #[error("json serialization error: {0}")]
-    Json(#[from] serde_json::Error),
-}
-
-/// A communication channel.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Channel {
-    /// Internal database ID.
-    #[serde(skip_serializing, default)]
-    pub id: i64,
-    /// ID of the server this channel belongs to.
-    #[serde(skip_serializing, default)]
-    pub server_id: i64,
-    /// Unique public ID for the channel (e.g. UUID).
-    pub channel_id: String,
-    /// Display name of the channel.
-    pub name: String,
-    /// Type of the channel.
-    pub channel_type: ChannelType,
-    /// Optional topic/description.
-    pub topic: Option<String>,
-    /// Optional VRP topic binding (requires membership proof).
-    pub vrp_topic_binding: Option<String>,
-    /// JSON string of required capabilities.
-    pub required_capabilities_json: Option<String>,
-    /// Minimum alignment status for agents to join.
-    pub agent_min_alignment: Option<AlignmentStatus>,
-    /// Message retention in days (None = use server default).
-    pub retention_days: Option<u32>,
-    /// Federation scope (Local vs Federated).
-    pub federation_scope: FederationScope,
-    /// Creation timestamp (ISO 8601).
-    pub created_at: String,
-}
-
-/// Parameters for creating a new channel.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CreateChannelParams {
-    pub server_id: i64,
-    pub channel_id: String,
-    pub name: String,
-    pub channel_type: ChannelType,
-    pub topic: Option<String>,
-    pub vrp_topic_binding: Option<String>,
-    pub required_capabilities_json: Option<String>,
-    pub agent_min_alignment: Option<AlignmentStatus>,
-    pub retention_days: Option<u32>,
-    pub federation_scope: FederationScope,
-}
-
-/// Parameters for updating an existing channel.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct UpdateChannelParams {
-    pub name: Option<String>,
-    pub topic: Option<String>,
-    pub vrp_topic_binding: Option<String>,
-    pub required_capabilities_json: Option<String>,
-    pub agent_min_alignment: Option<AlignmentStatus>,
-    pub retention_days: Option<u32>,
-    pub federation_scope: Option<FederationScope>,
-}
-
-/// Creates a new channel.
-pub fn create_channel(conn: &Connection, params: &CreateChannelParams) -> Result<(), ChannelError> {
-    let channel_type_json = serde_json::to_string(&params.channel_type)?;
-    let federation_scope_json = serde_json::to_string(&params.federation_scope)?;
-    let alignment_json = params
-        .agent_min_alignment
-        .map(|a| serde_json::to_string(&a))
-        .transpose()?;
-
-    conn.execute(
-        "INSERT INTO channels (
-            server_id, channel_id, name, channel_type, topic,
-            vrp_topic_binding, required_capabilities_json, agent_min_alignment,
-            retention_days, federation_scope
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-        params![
-            params.server_id,
-            params.channel_id,
-            params.name,
-            channel_type_json,
-            params.topic,
-            params.vrp_topic_binding,
-            params.required_capabilities_json,
-            alignment_json,
-            params.retention_days,
-            federation_scope_json,
-        ],
-    )?;
-    Ok(())
-}
-
-/// Retrieves a channel by its public ID.
-pub fn get_channel(conn: &Connection, channel_id: &str) -> Result<Channel, ChannelError> {
-    conn.query_row(
-        "SELECT
-            id, server_id, channel_id, name, channel_type, topic,
-            vrp_topic_binding, required_capabilities_json, agent_min_alignment,
-            retention_days, federation_scope, created_at
-        FROM channels WHERE channel_id = ?1",
-        [channel_id],
-        map_row_to_channel,
-    )
-    .optional()?
-    .ok_or_else(|| ChannelError::NotFound(channel_id.to_string()))
-}
-
-/// Lists channels for a given server (capped at 1000).
-pub fn list_channels(conn: &Connection, server_id: i64) -> Result<Vec<Channel>, ChannelError> {
-    let mut stmt = conn.prepare(
-        "SELECT
-            id, server_id, channel_id, name, channel_type, topic,
-            vrp_topic_binding, required_capabilities_json, agent_min_alignment,
-            retention_days, federation_scope, created_at
-        FROM channels WHERE server_id = ?1 ORDER BY name ASC
-        LIMIT 1000",
-    )?;
-
-    let rows = stmt.query_map([server_id], map_row_to_channel)?;
-    let mut channels = Vec::new();
-    for row in rows {
-        channels.push(row?);
-    }
-    Ok(channels)
-}
-
-/// Lists all federated channels for a given server.
-pub fn list_federated_channels(
-    conn: &Connection,
-    server_id: i64,
-) -> Result<Vec<Channel>, ChannelError> {
-    let federated_json = serde_json::to_string(&FederationScope::Federated)?;
-
-    let mut stmt = conn.prepare(
-        "SELECT
-            id, server_id, channel_id, name, channel_type, topic,
-            vrp_topic_binding, required_capabilities_json, agent_min_alignment,
-            retention_days, federation_scope, created_at
-        FROM channels
-        WHERE server_id = ?1 AND federation_scope = ?2
-        ORDER BY name ASC",
-    )?;
-
-    let rows = stmt.query_map(params![server_id, federated_json], map_row_to_channel)?;
-    let mut channels = Vec::new();
-    for row in rows {
-        channels.push(row?);
-    }
-    Ok(channels)
-}
-
-/// Updates an existing channel using a single atomic UPDATE statement.
-///
-/// Only fields that are `Some` in `updates` are modified; `None` fields are
-/// left untouched. This avoids the read-modify-write race that would occur
-/// if we fetched the channel, mutated in memory, and wrote back.
-pub fn update_channel(
-    conn: &Connection,
-    channel_id: &str,
-    updates: &UpdateChannelParams,
-) -> Result<(), ChannelError> {
-    let mut set_parts: Vec<String> = Vec::new();
-    let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-    let mut idx = 1usize;
-
-    if let Some(name) = &updates.name {
-        set_parts.push(format!("name = ?{idx}"));
-        values.push(Box::new(name.clone()));
-        idx += 1;
-    }
-    if let Some(topic) = &updates.topic {
-        set_parts.push(format!("topic = ?{idx}"));
-        values.push(Box::new(topic.clone()));
-        idx += 1;
-    }
-    if let Some(binding) = &updates.vrp_topic_binding {
-        set_parts.push(format!("vrp_topic_binding = ?{idx}"));
-        values.push(Box::new(binding.clone()));
-        idx += 1;
-    }
-    if let Some(caps) = &updates.required_capabilities_json {
-        set_parts.push(format!("required_capabilities_json = ?{idx}"));
-        values.push(Box::new(caps.clone()));
-        idx += 1;
-    }
-    if let Some(align) = &updates.agent_min_alignment {
-        let json = serde_json::to_string(align)?;
-        set_parts.push(format!("agent_min_alignment = ?{idx}"));
-        values.push(Box::new(json));
-        idx += 1;
-    }
-    if let Some(days) = &updates.retention_days {
-        set_parts.push(format!("retention_days = ?{idx}"));
-        values.push(Box::new(*days));
-        idx += 1;
-    }
-    if let Some(scope) = &updates.federation_scope {
-        let json = serde_json::to_string(scope)?;
-        set_parts.push(format!("federation_scope = ?{idx}"));
-        values.push(Box::new(json));
-        idx += 1;
-    }
-
-    if set_parts.is_empty() {
-        // No fields to update; verify the channel exists for backward compat.
-        let _ = get_channel(conn, channel_id)?;
-        return Ok(());
-    }
-
-    let sql = format!(
-        "UPDATE channels SET {} WHERE channel_id = ?{}",
-        set_parts.join(", "),
-        idx
-    );
-    values.push(Box::new(channel_id.to_string()));
-
-    let params: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(|v| v.as_ref()).collect();
-    let count = conn.execute(&sql, params.as_slice())?;
-    if count == 0 {
-        return Err(ChannelError::NotFound(channel_id.to_string()));
-    }
-    Ok(())
-}
-
-/// Deletes a channel and all associated messages and members.
-///
-/// SQLite FK constraints on `messages.channel_id` and `channel_members.channel_id`
-/// lack ON DELETE CASCADE (cannot be added via ALTER TABLE). We explicitly
-/// delete child rows first within the same connection to ensure referential
-/// integrity. The caller is expected to manage transaction boundaries if
-/// atomicity with other operations is required.
-pub fn delete_channel(conn: &Connection, channel_id: &str) -> Result<(), ChannelError> {
-    // Wrap in a transaction so partial failures don't lose messages
-    // while leaving the channel intact.
-    let tx = conn.unchecked_transaction()?;
-
-    // Delete child rows first to satisfy FK constraints.
-    tx.execute("DELETE FROM messages WHERE channel_id = ?1", [channel_id])?;
-    tx.execute(
-        "DELETE FROM channel_members WHERE channel_id = ?1",
-        [channel_id],
-    )?;
-
-    let count = tx.execute("DELETE FROM channels WHERE channel_id = ?1", [channel_id])?;
-    if count == 0 {
-        // Rollback is automatic on drop
-        return Err(ChannelError::NotFound(channel_id.to_string()));
-    }
-
-    tx.commit()?;
-    Ok(())
-}
-
-fn map_row_to_channel(row: &Row) -> rusqlite::Result<Channel> {
-    let channel_type_str: String = row.get(4)?;
-    let channel_type: ChannelType = serde_json::from_str(&channel_type_str).map_err(|e| {
-        rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e))
-    })?;
-
-    let align_str: Option<String> = row.get(8)?;
-    let agent_min_alignment = match align_str {
-        Some(s) => Some(serde_json::from_str(&s).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(8, rusqlite::types::Type::Text, Box::new(e))
-        })?),
-        None => None,
-    };
-
-    let fed_scope_str: String = row.get(10)?;
-    let federation_scope: FederationScope = serde_json::from_str(&fed_scope_str).map_err(|e| {
-        rusqlite::Error::FromSqlConversionFailure(10, rusqlite::types::Type::Text, Box::new(e))
-    })?;
-
-    Ok(Channel {
-        id: row.get(0)?,
-        server_id: row.get(1)?,
-        channel_id: row.get(2)?,
-        name: row.get(3)?,
-        channel_type,
-        topic: row.get(5)?,
-        vrp_topic_binding: row.get(6)?,
-        required_capabilities_json: row.get(7)?,
-        agent_min_alignment,
-        retention_days: row.get(9)?,
-        federation_scope,
-        created_at: row.get(11)?,
-    })
-}
-
-/// A message in a channel.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Message {
-    /// Internal database ID.
-    #[serde(skip_serializing, default)]
-    pub id: i64,
-    /// ID of the server.
-    #[serde(skip_serializing, default)]
-    pub server_id: i64,
-    /// Public ID of the channel.
-    pub channel_id: String,
-    /// Unique public ID of the message.
-    pub message_id: String,
-    /// Pseudonym of the sender.
-    pub sender_pseudonym: String,
-    /// Message content (text).
-    pub content: String,
-    /// ID of the message being replied to, if any.
-    pub reply_to_message_id: Option<String>,
-    /// Creation timestamp (ISO 8601).
-    pub created_at: String,
-    /// Expiration timestamp (ISO 8601), if retention applies.
-    #[serde(skip_serializing, default)]
-    pub expires_at: Option<String>,
-    /// Timestamp of last edit (ISO 8601), if ever edited.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub edited_at: Option<String>,
-    /// Timestamp of soft deletion (ISO 8601), if deleted.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub deleted_at: Option<String>,
-}
-
-/// A historical edit of a message.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct MessageEdit {
-    pub id: i64,
-    pub message_id: String,
-    pub old_content: String,
-    pub edited_at: String,
-}
-
-/// A member of a channel.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ChannelMember {
-    /// Internal database ID.
-    pub id: i64,
-    /// ID of the server.
-    pub server_id: i64,
-    /// Public ID of the channel.
-    pub channel_id: String,
-    /// Pseudonym of the member.
-    pub pseudonym_id: String,
-    /// Role in the channel (e.g. "MEMBER").
-    pub role: String,
-    /// Join timestamp (ISO 8601).
-    pub joined_at: String,
-}
-
-/// Adds a member to a channel.
-///
-/// Idempotent: returns `Ok(())` if the member already exists (UNIQUE constraint
-/// on `(channel_id, pseudonym_id)`). Propagates all other constraint violations
-/// (e.g. FK violations) as errors instead of silently ignoring them.
-pub fn add_member(
-    conn: &Connection,
-    server_id: i64,
-    channel_id: &str,
-    pseudonym_id: &str,
-) -> Result<(), ChannelError> {
-    // Check if channel exists first to return proper error
-    let _ = get_channel(conn, channel_id)?;
-
-    let result = conn.execute(
-        "INSERT INTO channel_members (server_id, channel_id, pseudonym_id) VALUES (?1, ?2, ?3)",
-        params![server_id, channel_id, pseudonym_id],
-    );
-
-    match result {
-        Ok(_) => Ok(()),
-        Err(rusqlite::Error::SqliteFailure(err, msg)) => {
-            if err.code == rusqlite::ErrorCode::ConstraintViolation {
-                // UNIQUE(channel_id, pseudonym_id) conflict → already a member, idempotent OK.
-                // We distinguish this from FK violations by checking the extended code.
-                // SQLITE_CONSTRAINT_UNIQUE = 2067, SQLITE_CONSTRAINT_PRIMARYKEY = 1555.
-                let ext = err.extended_code;
-                if ext == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
-                    || ext == rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY
-                {
-                    return Ok(());
-                }
-            }
-            Err(ChannelError::Database(rusqlite::Error::SqliteFailure(
-                err, msg,
-            )))
-        }
-        Err(e) => Err(ChannelError::Database(e)),
-    }
-}
-
-/// Removes a member from a channel, scoped by server.
-pub fn remove_member(
-    conn: &Connection,
-    server_id: i64,
-    channel_id: &str,
-    pseudonym_id: &str,
-) -> Result<(), ChannelError> {
-    let count = conn.execute(
-        "DELETE FROM channel_members WHERE server_id = ?1 AND channel_id = ?2 AND pseudonym_id = ?3",
-        params![server_id, channel_id, pseudonym_id],
-    )?;
-    if count == 0 {
-        // Not considered an error if they weren't a member?
-        // Or should we return NotFound?
-        // Idempotency suggests OK, but for consistency with delete_channel, maybe verify membership first?
-        // Usually leave is idempotent.
-        return Ok(());
-    }
-    Ok(())
-}
-
-/// Checks if a pseudonym is a member of a channel, scoped by server.
-pub fn is_member(
-    conn: &Connection,
-    server_id: i64,
-    channel_id: &str,
-    pseudonym_id: &str,
-) -> Result<bool, ChannelError> {
-    let exists: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM channel_members WHERE server_id = ?1 AND channel_id = ?2 AND pseudonym_id = ?3)",
-        params![server_id, channel_id, pseudonym_id],
-        |row| row.get(0),
-    )?;
-    Ok(exists)
-}
-
-/// Lists members of a channel (capped at 10000).
-pub fn list_members(
-    conn: &Connection,
-    channel_id: &str,
-) -> Result<Vec<ChannelMember>, ChannelError> {
-    let mut stmt = conn.prepare(
-        "SELECT id, server_id, channel_id, pseudonym_id, role, joined_at
-         FROM channel_members WHERE channel_id = ?1 ORDER BY joined_at ASC
-         LIMIT 10000",
-    )?;
-
-    let rows = stmt.query_map([channel_id], map_row_to_member)?;
-    let mut members = Vec::new();
-    for row in rows {
-        members.push(row?);
-    }
-    Ok(members)
-}
-
-fn map_row_to_member(row: &Row) -> rusqlite::Result<ChannelMember> {
-    Ok(ChannelMember {
-        id: row.get(0)?,
-        server_id: row.get(1)?,
-        channel_id: row.get(2)?,
-        pseudonym_id: row.get(3)?,
-        role: row.get(4)?,
-        joined_at: row.get(5)?,
-    })
-}
-
-/// Parameters for creating a new message.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CreateMessageParams {
-    pub channel_id: String,
-    pub message_id: String,
-    pub sender_pseudonym: String,
-    pub content: String,
-    pub reply_to_message_id: Option<String>,
-}
-
-/// Creates a new message, enforcing retention policy.
-pub fn create_message(
-    conn: &Connection,
-    params: &CreateMessageParams,
-) -> Result<Message, ChannelError> {
-    // 1. Resolve retention days and server_id
-    let (server_id, retention_days) = resolve_retention_days(conn, &params.channel_id)?;
-
-    // 2. Insert message with computed expiration
-    // We use datetime('now', '+N days') if retention_days is set.
-    let expires_expr = if let Some(days) = retention_days {
-        format!("datetime('now', '+{days} days')")
-    } else {
-        "NULL".to_string()
-    };
-
-    // We can't easily bind the expression part for '+N days' safely with rusqlite params if we construct the string dynamically
-    // But since `days` is u32, it is safe to format into the string.
-
-    let sql = format!(
-        "INSERT INTO messages (
-            server_id, channel_id, message_id, sender_pseudonym, content,
-            reply_to_message_id, expires_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, {expires_expr})
-        RETURNING id, server_id, channel_id, message_id, sender_pseudonym, content, reply_to_message_id, created_at, expires_at, edited_at, deleted_at"
-    );
-
-    let message = conn.query_row(
-        &sql,
-        params![
-            server_id,
-            params.channel_id,
-            params.message_id,
-            params.sender_pseudonym,
-            params.content,
-            params.reply_to_message_id,
-        ],
-        map_row_to_message,
-    )?;
-
-    Ok(message)
-}
-
-/// Retrieves a message by its ID.
-pub fn get_message(conn: &Connection, message_id: &str) -> Result<Message, ChannelError> {
-    conn.query_row(
-        "SELECT
-            id, server_id, channel_id, message_id, sender_pseudonym, content,
-            reply_to_message_id, created_at, expires_at, edited_at, deleted_at
-        FROM messages WHERE message_id = ?1",
-        [message_id],
-        map_row_to_message,
-    )
-    .optional()?
-    .ok_or_else(|| ChannelError::NotFound(message_id.to_string()))
-}
-
-/// Lists messages in a channel, with pagination, scoped by server.
-///
-/// If `before` is provided (as a `message_id`), returns messages created
-/// before that message. The function resolves the `message_id` to its
-/// `created_at` timestamp and uses a tiebreaker on `id` to handle
-/// messages with identical timestamps correctly.
-/// `limit` defaults to 50 if not specified.
-pub fn list_messages(
-    conn: &Connection,
-    server_id: i64,
-    channel_id: &str,
-    before: Option<String>,
-    limit: Option<u32>,
-) -> Result<Vec<Message>, ChannelError> {
-    let limit = limit.unwrap_or(50).min(100);
-
-    // If `before` is a message_id, resolve it to (created_at, id) for cursor pagination.
-    let cursor = if let Some(ref before_id) = before {
-        let row: Option<(String, i64)> = conn
-            .query_row(
-                "SELECT created_at, id FROM messages WHERE message_id = ?1",
-                [before_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-        row
-    } else {
-        None
-    };
-
-    if let (Some(_), Some((before_ts, before_row_id))) = (&before, cursor) {
-        let sql = format!(
-            "SELECT
-                id, server_id, channel_id, message_id, sender_pseudonym, content,
-                reply_to_message_id, created_at, expires_at, edited_at, deleted_at
-            FROM messages
-            WHERE server_id = ?1 AND channel_id = ?2
-              AND (created_at < ?3 OR (created_at = ?3 AND id < ?4))
-            ORDER BY created_at DESC, id DESC
-            LIMIT {limit}"
-        );
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(
-            params![server_id, channel_id, before_ts, before_row_id],
-            map_row_to_message,
-        )?;
-        let mut messages = Vec::new();
-        for row in rows {
-            messages.push(row?);
-        }
-        Ok(messages)
-    } else {
-        let sql = format!(
-            "SELECT
-                id, server_id, channel_id, message_id, sender_pseudonym, content,
-                reply_to_message_id, created_at, expires_at, edited_at, deleted_at
-            FROM messages
-            WHERE server_id = ?1 AND channel_id = ?2
-            ORDER BY created_at DESC, id DESC
-            LIMIT {limit}"
-        );
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![server_id, channel_id], map_row_to_message)?;
-        let mut messages = Vec::new();
-        for row in rows {
-            messages.push(row?);
-        }
-        Ok(messages)
-    }
-}
-
-/// Searches messages by content substring, scoped by server and optionally by channel.
-///
-/// Results are ordered by relevance (most recent first), capped at `limit`.
-pub fn search_messages(
-    conn: &Connection,
-    server_id: i64,
-    channel_id: Option<&str>,
-    query: &str,
-    limit: u32,
-) -> Result<Vec<Message>, ChannelError> {
-    let limit = limit.min(50);
-    let pattern = format!("%{query}%");
-
-    if let Some(cid) = channel_id {
-        let mut stmt = conn.prepare(
-            "SELECT id, server_id, channel_id, message_id, sender_pseudonym, content,
-                    reply_to_message_id, created_at, expires_at, edited_at, deleted_at
-             FROM messages
-             WHERE server_id = ?1 AND channel_id = ?2 AND content LIKE ?3
-               AND deleted_at IS NULL
-             ORDER BY created_at DESC
-             LIMIT ?4",
-        )?;
-        let rows = stmt.query_map(params![server_id, cid, pattern, limit], map_row_to_message)?;
-        let mut messages = Vec::new();
-        for row in rows {
-            messages.push(row?);
-        }
-        Ok(messages)
-    } else {
-        let mut stmt = conn.prepare(
-            "SELECT id, server_id, channel_id, message_id, sender_pseudonym, content,
-                    reply_to_message_id, created_at, expires_at, edited_at, deleted_at
-             FROM messages
-             WHERE server_id = ?1 AND content LIKE ?2
-               AND deleted_at IS NULL
-             ORDER BY created_at DESC
-             LIMIT ?3",
-        )?;
-        let rows = stmt.query_map(params![server_id, pattern, limit], map_row_to_message)?;
-        let mut messages = Vec::new();
-        for row in rows {
-            messages.push(row?);
-        }
-        Ok(messages)
-    }
-}
-
-/// Maximum age (in seconds) for a message to be editable or deletable by its author.
-pub const EDIT_WINDOW_SECONDS: i64 = 60;
-
-/// Edits a message's content, enforcing ownership and the edit time window.
-///
-/// Saves the old content to the `message_edits` table before overwriting.
-/// Returns the updated message.
-pub fn edit_message(
-    conn: &Connection,
-    message_id: &str,
-    sender_pseudonym: &str,
-    new_content: &str,
-) -> Result<Message, ChannelError> {
-    // Use IMMEDIATE transaction to serialize concurrent edit/delete operations.
-    // Without this, two concurrent edits could both pass the ownership and
-    // time-window checks, losing an edit from the audit trail.
-    let tx = conn.unchecked_transaction()?;
-
-    let msg = get_message(&tx, message_id)?;
-
-    // Ownership check
-    if msg.sender_pseudonym != sender_pseudonym {
-        return Err(ChannelError::NotFound(format!(
-            "message {message_id} not owned by {sender_pseudonym}"
-        )));
-    }
-
-    // Already deleted
-    if msg.deleted_at.is_some() {
-        return Err(ChannelError::NotFound(format!(
-            "message {message_id} has been deleted"
-        )));
-    }
-
-    // Time window check
-    let created = chrono::NaiveDateTime::parse_from_str(&msg.created_at, "%Y-%m-%d %H:%M:%S")
-        .map_err(|_| ChannelError::NotFound("invalid created_at timestamp".to_string()))?;
-    let now = chrono::Utc::now().naive_utc();
-    if (now - created).num_seconds() > EDIT_WINDOW_SECONDS {
-        return Err(ChannelError::NotFound(
-            "edit window has expired".to_string(),
-        ));
-    }
-
-    // Save old content to edit history
-    tx.execute(
-        "INSERT INTO message_edits (message_id, old_content) VALUES (?1, ?2)",
-        params![message_id, msg.content],
-    )?;
-
-    // Update message content and set edited_at
-    tx.execute(
-        "UPDATE messages SET content = ?1, edited_at = datetime('now') WHERE message_id = ?2",
-        params![new_content, message_id],
-    )?;
-
-    tx.commit()?;
-    get_message(conn, message_id)
-}
-
-/// Soft-deletes a message, enforcing ownership and the edit time window.
-///
-/// Sets `deleted_at` and replaces content with an empty string.
-/// Returns the updated message.
-pub fn delete_message(
-    conn: &Connection,
-    message_id: &str,
-    sender_pseudonym: &str,
-) -> Result<Message, ChannelError> {
-    // Use IMMEDIATE transaction to serialize concurrent operations.
-    let tx = conn.unchecked_transaction()?;
-
-    let msg = get_message(&tx, message_id)?;
-
-    // Ownership check
-    if msg.sender_pseudonym != sender_pseudonym {
-        return Err(ChannelError::NotFound(format!(
-            "message {message_id} not owned by {sender_pseudonym}"
-        )));
-    }
-
-    // Already deleted
-    if msg.deleted_at.is_some() {
-        return Err(ChannelError::NotFound(format!(
-            "message {message_id} already deleted"
-        )));
-    }
-
-    // Time window check
-    let created = chrono::NaiveDateTime::parse_from_str(&msg.created_at, "%Y-%m-%d %H:%M:%S")
-        .map_err(|_| ChannelError::NotFound("invalid created_at timestamp".to_string()))?;
-    let now = chrono::Utc::now().naive_utc();
-    if (now - created).num_seconds() > EDIT_WINDOW_SECONDS {
-        return Err(ChannelError::NotFound(
-            "delete window has expired".to_string(),
-        ));
-    }
-
-    // Soft-delete: set deleted_at and clear content
-    tx.execute(
-        "UPDATE messages SET content = '', deleted_at = datetime('now') WHERE message_id = ?1",
-        params![message_id],
-    )?;
-
-    tx.commit()?;
-    get_message(conn, message_id)
-}
-
-/// Returns the edit history for a message (oldest first).
-pub fn get_edit_history(
-    conn: &Connection,
-    message_id: &str,
-) -> Result<Vec<MessageEdit>, ChannelError> {
-    let mut stmt = conn.prepare(
-        "SELECT id, message_id, old_content, edited_at
-         FROM message_edits
-         WHERE message_id = ?1
-         ORDER BY edited_at ASC",
-    )?;
-
-    let rows = stmt.query_map([message_id], |row| {
-        Ok(MessageEdit {
-            id: row.get(0)?,
-            message_id: row.get(1)?,
-            old_content: row.get(2)?,
-            edited_at: row.get(3)?,
-        })
-    })?;
-
-    let mut edits = Vec::new();
-    for row in rows {
-        edits.push(row?);
-    }
-    Ok(edits)
-}
-
-/// Maximum number of messages to delete in a single retention sweep.
-/// Prevents long-running write transactions from blocking readers.
-const RETENTION_BATCH_LIMIT: usize = 5_000;
-
-/// Deletes messages that have passed their expiration time, up to
-/// [`RETENTION_BATCH_LIMIT`] rows per call. Returns the number of rows deleted.
-///
-/// The caller should loop until the return value is less than the batch limit
-/// to ensure all expired messages are eventually removed.
-pub fn delete_expired_messages(conn: &Connection) -> Result<usize, ChannelError> {
-    let count = conn.execute(
-        "DELETE FROM messages WHERE rowid IN (\
-             SELECT rowid FROM messages \
-             WHERE expires_at IS NOT NULL AND expires_at < datetime('now') \
-             LIMIT ?1\
-         )",
-        [RETENTION_BATCH_LIMIT],
-    )?;
-    Ok(count)
-}
-
-/// Helper: Resolve server_id and retention days for a channel.
-fn resolve_retention_days(
-    conn: &Connection,
-    channel_id: &str,
-) -> Result<(i64, Option<u32>), ChannelError> {
-    // 1. Get channel info
-    let (server_id, retention_days): (i64, Option<u32>) = conn
-        .query_row(
-            "SELECT server_id, retention_days FROM channels WHERE channel_id = ?1",
-            [channel_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?
-        .ok_or_else(|| ChannelError::NotFound(channel_id.to_string()))?;
-
-    // 2. If retention_days is Some, return it.
-    if let Some(days) = retention_days {
-        return Ok((server_id, Some(days)));
-    }
-
-    // 3. If None, fetch server policy.
-    let policy_json: String = conn
-        .query_row(
-            "SELECT policy_json FROM servers WHERE id = ?1",
-            [server_id],
-            |row| row.get(0),
-        )
-        .map_err(ChannelError::Database)?;
-
-    let policy: ServerPolicy = match serde_json::from_str(&policy_json) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::warn!(
-                "failed to deserialize server policy, using default retention: {}",
-                e
-            );
-            ServerPolicy::default()
-        }
-    };
-    Ok((server_id, Some(policy.default_retention_days)))
-}
-
-fn map_row_to_message(row: &Row) -> rusqlite::Result<Message> {
-    Ok(Message {
-        id: row.get(0)?,
-        server_id: row.get(1)?,
-        channel_id: row.get(2)?,
-        message_id: row.get(3)?,
-        sender_pseudonym: row.get(4)?,
-        content: row.get(5)?,
-        reply_to_message_id: row.get(6)?,
-        created_at: row.get(7)?,
-        expires_at: row.get(8)?,
-        edited_at: row.get(9)?,
-        deleted_at: row.get(10)?,
-    })
-}
+//!
+//! Internal layout: domain types and row mappers live in [`types`]; channel
+//! CRUD in [`channels`]; channel membership in [`members`]; message
+//! lifecycle (create / read / list / edit / delete / history) plus the
+//! edit-window constant in [`messages`]; substring search in [`search`];
+//! retention sweep in [`retention`]. The error type lives in [`error`].
+//! All public items are re-exported here so external call sites continue
+//! to use `annex_channels::Foo` without referencing the new submodules.
+
+mod channels;
+mod error;
+mod members;
+mod messages;
+mod retention;
+mod search;
+mod types;
+
+pub use channels::{
+    create_channel, delete_channel, get_channel, list_channels, list_federated_channels,
+    update_channel,
+};
+pub use error::ChannelError;
+pub use members::{add_member, is_member, list_members, remove_member};
+pub use messages::{
+    create_message, delete_message, edit_message, get_edit_history, get_message, list_messages,
+    EDIT_WINDOW_SECONDS,
+};
+pub use retention::delete_expired_messages;
+pub use search::search_messages;
+pub use types::{
+    Channel, ChannelMember, CreateChannelParams, CreateMessageParams, Message, MessageEdit,
+    UpdateChannelParams,
+};
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use annex_db::run_migrations;
+    use annex_types::{AlignmentStatus, ChannelType, FederationScope, ServerPolicy};
     use rusqlite::Connection;
 
     fn setup_db() -> Connection {
@@ -1514,5 +681,166 @@ mod tests {
 
         let current = get_message(&conn, &msg.message_id).expect("get msg failed");
         assert_eq!(current.content, "Edit 3");
+    }
+
+    /// Regression test for [F31]: `edit_message` must use
+    /// `BEGIN IMMEDIATE`, not `BEGIN DEFERRED`.
+    ///
+    /// Setup: thread A holds an IMMEDIATE transaction on conn1 that
+    /// writes (but does not yet commit) a new content for the
+    /// message. Thread B then calls `edit_message` on conn2.
+    ///
+    /// Under IMMEDIATE (correct): thread B's `BEGIN IMMEDIATE`
+    /// blocks until conn1's tx commits (busy_timeout=5s). After
+    /// commit, B's BEGIN succeeds, B re-reads the LATEST content
+    /// ("from-conn1"), saves it to `message_edits`, and updates
+    /// content to "from-thread-B". `message_edits` ends up with one
+    /// row: "from-conn1" (the post-A pre-B state).
+    ///
+    /// Under DEFERRED (the bug being prevented): thread B's
+    /// `BEGIN DEFERRED` succeeds immediately. B reads the pre-A
+    /// snapshot inside its tx — content="Original". B waits at the
+    /// INSERT step for the RESERVED lock. After conn1 commits, B
+    /// retries, but SQLite under WAL detects the snapshot conflict
+    /// (B's snapshot read a row that conn1 wrote) and returns
+    /// `SQLITE_BUSY_SNAPSHOT`, which propagates as an error from
+    /// `edit_message`. The test then asserts `res_b.is_ok()` —
+    /// which fails under DEFERRED. (Even if SQLite were to silently
+    /// continue under DEFERRED, the audit trail would record
+    /// "Original" instead of "from-conn1", which the assertion at
+    /// the end of the test catches.)
+    #[test]
+    fn edit_message_uses_immediate_to_serialize_with_external_writer() {
+        use std::sync::mpsc;
+        use std::thread;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db_path = tmp.path().join("annex-imm-serialize-test.sqlite");
+
+        // Bootstrap.
+        {
+            let conn = Connection::open(&db_path).expect("open");
+            conn.execute_batch("PRAGMA journal_mode = WAL;")
+                .expect("enable WAL");
+            run_migrations(&conn).expect("migrations");
+
+            let policy_json = serde_json::to_string(&ServerPolicy::default()).expect("policy");
+            conn.execute(
+                "INSERT INTO servers (slug, label, policy_json) VALUES ('test', 'Test', ?1)",
+                [policy_json],
+            )
+            .expect("seed server");
+
+            let server_id: i64 = conn
+                .query_row("SELECT id FROM servers WHERE slug='test'", [], |r| r.get(0))
+                .expect("server id");
+
+            create_channel(
+                &conn,
+                &CreateChannelParams {
+                    server_id,
+                    channel_id: "chan-imm".to_string(),
+                    name: "Imm".to_string(),
+                    channel_type: ChannelType::Text,
+                    topic: None,
+                    vrp_topic_binding: None,
+                    required_capabilities_json: None,
+                    agent_min_alignment: None,
+                    retention_days: Some(7),
+                    federation_scope: FederationScope::Local,
+                },
+            )
+            .expect("create channel");
+
+            create_message(
+                &conn,
+                &CreateMessageParams {
+                    channel_id: "chan-imm".to_string(),
+                    message_id: "msg-imm".to_string(),
+                    sender_pseudonym: "user-x".to_string(),
+                    content: "Original".to_string(),
+                    reply_to_message_id: None,
+                },
+            )
+            .expect("create msg");
+        }
+
+        // conn1: external writer that holds an IMMEDIATE tx with a
+        // pending UPDATE to the message. A pre-flight write is what
+        // causes `BEGIN_DEFERRED` (the bug) on conn2 to read a stale
+        // snapshot — that snapshot conflict only manifests when conn1
+        // has actually written something B's snapshot would have
+        // read.
+        let conn1 = Connection::open(&db_path).expect("open conn1");
+        conn1
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .expect("conn1 busy_timeout");
+        conn1
+            .execute_batch("BEGIN IMMEDIATE")
+            .expect("conn1 BEGIN IMMEDIATE");
+        conn1
+            .execute(
+                "UPDATE messages SET content = ?1 WHERE message_id = ?2",
+                ["from-conn1", "msg-imm"],
+            )
+            .expect("conn1 UPDATE");
+        // (conn1 has NOT committed yet — its UPDATE is buffered in
+        // its tx.)
+
+        // Spawn thread B: try to edit_message on conn2. Under
+        // IMMEDIATE, B's BEGIN must wait. Use a channel so the test
+        // observes the wait.
+        let (tx, rx) = mpsc::channel::<Result<String, String>>();
+        let path_b = db_path.clone();
+        let h_b = thread::spawn(move || {
+            let conn = Connection::open(&path_b).expect("open conn b");
+            conn.busy_timeout(std::time::Duration::from_secs(5))
+                .expect("conn2 busy_timeout");
+            let result = edit_message(&conn, "msg-imm", "user-x", "from-thread-B")
+                .map(|m| m.content)
+                .map_err(|e| format!("{e:?}"));
+            tx.send(result).expect("send result");
+        });
+
+        // Confirm thread B is BLOCKED inside edit_message (i.e. it
+        // hasn't returned a result within 200ms). If B returned, it
+        // either failed with SQLITE_BUSY_SNAPSHOT (DEFERRED bug) or
+        // somehow bypassed conn1's lock (unlikely).
+        let early = rx.recv_timeout(std::time::Duration::from_millis(200));
+        assert!(
+            early.is_err(),
+            "thread B's edit_message should be blocked while conn1 holds IMMEDIATE; \
+             got early result {early:?}"
+        );
+
+        // Commit conn1's tx. This releases the RESERVED lock and
+        // makes "from-conn1" the visible content.
+        conn1.execute_batch("COMMIT").expect("conn1 COMMIT");
+
+        // Now thread B should unblock and complete.
+        let res_b = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("thread B should complete after conn1 commits")
+            .expect("thread B's edit_message must succeed under IMMEDIATE");
+        assert_eq!(res_b, "from-thread-B", "thread B's UPDATE was applied");
+
+        h_b.join().expect("thread B join");
+
+        // Verify the audit trail. Under IMMEDIATE, B's BEGIN waited,
+        // so when B's read finally ran it saw "from-conn1" — that's
+        // what B saved to message_edits. Under DEFERRED (the bug)
+        // B's read happened immediately and saw "Original", so
+        // message_edits would have "Original" (and the snapshot
+        // conflict at INSERT would either fail or — if the bug
+        // happened to slip through SQLite's snapshot check —
+        // produce "Original" in the history).
+        let final_conn = Connection::open(&db_path).expect("open final conn");
+        let history = get_edit_history(&final_conn, "msg-imm").expect("history");
+        assert_eq!(history.len(), 1, "expected exactly 1 edit history row");
+        assert_eq!(
+            history[0].old_content, "from-conn1",
+            "audit row must be the post-conn1 snapshot, not 'Original'; \
+             a value of 'Original' here indicates a DEFERRED-tx regression"
+        );
     }
 }

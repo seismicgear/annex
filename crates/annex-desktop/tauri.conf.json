@@ -54,9 +54,6 @@
       "infoPlist": "Info.plist",
       "minimumSystemVersion": "11.0"
     },
-    "iOS": {
-      "developmentTeam": ""
-    },
     "linux": {
       "deb": {
         "depends": [

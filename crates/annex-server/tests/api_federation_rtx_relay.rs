@@ -87,6 +87,7 @@ fn setup_test_env(transfer_scope: &str) -> TestEnv {
         pool: pool.clone(),
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: load_dummy_vkey(),
+        membership_vkey_v2: None,
         server_id: local_server_id,
         signing_key: local_signing_key.clone(),
         public_url: std::sync::Arc::new(std::sync::RwLock::new(
@@ -109,6 +110,9 @@ fn setup_test_env(transfer_scope: &str) -> TestEnv {
         enforce_zk_proofs: false,
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
+        federation_config: annex_server::config::FederationConfig::default(),
+        storage_config: annex_server::config::StorageConfig::default(),
+        storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
     };
 
     TestEnv {

@@ -33,17 +33,24 @@ async fn test_get_identity_endpoints() {
     } // Drop conn
 
     let tree = annex_identity::MerkleTree::new(20).unwrap();
-    // Use dummy vkey since app() requires it
+    // Load the real vkey if available, otherwise fall back to the dummy
+    // (matches the harness in tests/common/mod.rs::load_vkey_or_dummy).
+    // `enforce_zk_proofs = false` below makes the dummy acceptable, so this
+    // test runs cleanly in fresh sandboxes without `node zk/scripts/dev-setup-groth16.js`.
     let vkey_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../zk/keys/membership_vkey.json");
-
-    let vkey_json = std::fs::read_to_string(&vkey_path).expect("failed to read vkey");
-    let vk = annex_identity::zk::parse_verification_key(&vkey_json).expect("failed to parse vkey");
+    let vk = match std::fs::read_to_string(&vkey_path) {
+        Ok(json) => {
+            annex_identity::zk::parse_verification_key(&json).expect("failed to parse vkey")
+        }
+        Err(_) => annex_identity::zk::generate_dummy_vkey(),
+    };
 
     let state = AppState {
         pool: pool.clone(),
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: Arc::new(vk),
+        membership_vkey_v2: None,
         server_id: 1,
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,
@@ -68,6 +75,9 @@ async fn test_get_identity_endpoints() {
         enforce_zk_proofs: false,
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
+        federation_config: annex_server::config::FederationConfig::default(),
+        storage_config: annex_server::config::StorageConfig::default(),
+        storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
     };
     let app = app(state);
 

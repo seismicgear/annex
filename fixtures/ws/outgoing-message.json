@@ -1,0 +1,10 @@
+{
+  "type": "message",
+  "channelId": "general",
+  "messageId": "msg-018dSCao",
+  "senderPseudonym": "pseudo-7c0a9c4d3e2f1a09",
+  "content": "Hello, world!",
+  "replyToMessageId": null,
+  "createdAt": "2026-05-06T12:00:00Z",
+  "clientRequestId": "req-018dSCao"
+}
