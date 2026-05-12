@@ -152,7 +152,14 @@ pub async fn start_federation_outbox_task(state: Arc<AppState>) {
     }
 }
 
-async fn drain_outbox_batch(state: Arc<AppState>, batch_size: i64) -> Result<(), String> {
+/// Drains up to `batch_size` pending outbox rows.
+///
+/// Exposed as `pub` (not `pub(crate)`) so integration tests in
+/// `tests/` can exercise the dequeue-time SSRF gate (introduced in
+/// [F33]) end-to-end against a real SQLite-backed `AppState` without
+/// having to wait for the once-per-`outbox_interval_seconds` cadence
+/// of [`start_federation_outbox_task`].
+pub async fn drain_outbox_batch(state: Arc<AppState>, batch_size: i64) -> Result<(), String> {
     // 1. Pull a batch of pending rows whose retry time has passed.
     let pool = state.pool.clone();
     let rows =
@@ -223,8 +230,8 @@ async fn drain_outbox_batch(state: Arc<AppState>, batch_size: i64) -> Result<(),
 
     let mut handles = Vec::new();
     for (id, peer_id, envelope_json, attempts) in rows {
-        let url = match peer_urls.get(&peer_id).cloned() {
-            Some(u) => format!("{u}/api/federation/messages"),
+        let peer_base = match peer_urls.get(&peer_id).cloned() {
+            Some(u) => u,
             None => {
                 let pool = state.pool.clone();
                 tokio::task::spawn_blocking(move || {
@@ -242,6 +249,43 @@ async fn drain_outbox_batch(state: Arc<AppState>, batch_size: i64) -> Result<(),
                 continue;
             }
         };
+
+        // Defence-in-depth SSRF gate at dequeue time.
+        //
+        // `relay_message` already applies `is_url_private_or_reserved`
+        // at ENQUEUE time, so a row should never be written for a
+        // private/loopback/link-local peer. But the outbox is durable
+        // across restarts and the `instances` table is admin-editable,
+        // so an enqueued row may be paired with a peer whose base_url
+        // has since been changed to a private host (operator error or
+        // compromised admin account). Re-check here so the worker
+        // can never POST a signed federation envelope to an internal
+        // service. We mark the row as terminally failed — re-enqueue
+        // requires a new message_id, which itself goes through the
+        // enqueue-time SSRF gate.
+        if crate::api_link_preview::is_url_private_or_reserved(&peer_base) {
+            tracing::warn!(
+                outbox_id = id,
+                peer = %peer_base,
+                "dropping outbox row: peer base_url resolves to a private/reserved host (peer URL likely changed after enqueue)"
+            );
+            let pool = state.pool.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                if let Ok(conn) = pool.get() {
+                    let _ = conn.execute(
+                        "UPDATE federation_outbox SET status = 'failed', \
+                         attempts = attempts + 1, \
+                         last_error = 'peer base_url is private/reserved (dequeue-time SSRF gate)', \
+                         updated_at = datetime('now') WHERE id = ?1",
+                        rusqlite::params![id],
+                    );
+                }
+            })
+            .await;
+            continue;
+        }
+
+        let url = format!("{peer_base}/api/federation/messages");
 
         let client = client.clone();
         let state = state.clone();

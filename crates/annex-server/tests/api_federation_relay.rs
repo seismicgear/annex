@@ -452,3 +452,166 @@ async fn test_receive_federated_message_rejects_inactive_agreement() {
         "rejected envelope must not result in a persisted message"
     );
 }
+
+/// `POST /api/federation/messages` must commit the
+/// `federation_message_receipts` row and the `messages` row
+/// atomically. Before [F32], the receipt INSERT ran under autocommit
+/// and the message INSERT ran as a separate implicit transaction; a
+/// transient failure between them (SQLITE_BUSY, FK violation, IO
+/// error) left a receipt with no message — and a peer's retry of the
+/// same envelope was silently dropped by the receipt-ledger check.
+///
+/// This regression test exercises the cooperative path: send the
+/// same envelope twice, observe a single receipt + single message,
+/// and then tamper the stored envelope_hash and confirm the receipt
+/// integrity gate rejects the third send without modifying the
+/// receipt or duplicating the message. If the receipt + message
+/// insert were not in one transaction, a future refactor that broke
+/// the atomicity would still pass the existing happy-path tests but
+/// fail this regression on the row counts.
+#[tokio::test]
+async fn test_receive_federated_message_receipt_and_message_are_atomic() {
+    let (app, pool, _, remote_signing_key, remote_origin, channel_id, topic, commitment, _) =
+        setup_relay_fixture(true).await;
+
+    let message_id = "msg-atomic-1";
+    let content = "atomicity test";
+    let sender_pseudonym = "user-remote-pseudo";
+    let attestation_ref = format!("{topic}:{commitment}");
+    let created_at = "2023-01-01T00:00:00Z";
+
+    let signature_input = format!(
+        "{message_id}\n{channel_id}\n{content}\n{sender_pseudonym}\n{remote_origin}\n{attestation_ref}\n{created_at}"
+    );
+    let signature_hex = hex::encode(
+        remote_signing_key
+            .sign(signature_input.as_bytes())
+            .to_bytes(),
+    );
+
+    let envelope = FederatedMessageEnvelope {
+        envelope_version: None,
+        message_id: message_id.to_string(),
+        channel_id: channel_id.clone(),
+        content: content.to_string(),
+        sender_pseudonym: sender_pseudonym.to_string(),
+        originating_server: remote_origin.clone(),
+        attestation_ref: attestation_ref.clone(),
+        signature: signature_hex,
+        created_at: created_at.to_string(),
+    };
+    let body_json = serde_json::to_string(&envelope).unwrap();
+
+    let post = |json: String| {
+        let mut req = Request::builder()
+            .uri("/api/federation/messages")
+            .method("POST")
+            .header("content-type", "application/json")
+            .body(Body::from(json))
+            .unwrap();
+        let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+        req.extensions_mut().insert(ConnectInfo(addr));
+        req
+    };
+
+    // First send: receipt + message both committed in one tx.
+    let response = app.clone().oneshot(post(body_json.clone())).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "first send must succeed");
+
+    let conn = pool.get().unwrap();
+    let (receipts, messages): (i64, i64) = (
+        conn.query_row(
+            "SELECT COUNT(*) FROM federation_message_receipts WHERE message_id = ?1",
+            rusqlite::params![message_id],
+            |row| row.get(0),
+        )
+        .unwrap(),
+        conn.query_row(
+            "SELECT COUNT(*) FROM messages WHERE message_id = ?1",
+            rusqlite::params![message_id],
+            |row| row.get(0),
+        )
+        .unwrap(),
+    );
+    assert_eq!(receipts, 1, "first send must persist exactly one receipt");
+    assert_eq!(messages, 1, "first send must persist exactly one message");
+    drop(conn);
+
+    // Second send (same envelope): receipt hash matches → benign
+    // duplicate → no second insert. The transaction is acquired and
+    // dropped without committing, preserving exactly one row each.
+    let response = app.clone().oneshot(post(body_json.clone())).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "second send of identical envelope must be idempotent",
+    );
+
+    let conn = pool.get().unwrap();
+    let (receipts, messages): (i64, i64) = (
+        conn.query_row(
+            "SELECT COUNT(*) FROM federation_message_receipts WHERE message_id = ?1",
+            rusqlite::params![message_id],
+            |row| row.get(0),
+        )
+        .unwrap(),
+        conn.query_row(
+            "SELECT COUNT(*) FROM messages WHERE message_id = ?1",
+            rusqlite::params![message_id],
+            |row| row.get(0),
+        )
+        .unwrap(),
+    );
+    assert_eq!(
+        receipts, 1,
+        "second send must not insert a duplicate receipt"
+    );
+    assert_eq!(
+        messages, 1,
+        "second send must not insert a duplicate message"
+    );
+
+    // Tamper the stored receipt hash to simulate a captured-ID forgery
+    // attempt: peer presents the same message_id but a different signed
+    // body. The receipt-ledger gate must reject the request AND must
+    // not insert / modify any rows.
+    conn.execute(
+        "UPDATE federation_message_receipts \
+         SET envelope_hash = 'deadbeef' \
+         WHERE message_id = ?1",
+        rusqlite::params![message_id],
+    )
+    .unwrap();
+    drop(conn);
+
+    let response = app.clone().oneshot(post(body_json)).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "captured-ID forgery (hash mismatch) must be rejected with 403",
+    );
+
+    let conn = pool.get().unwrap();
+    let receipts: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM federation_message_receipts WHERE message_id = ?1",
+            rusqlite::params![message_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let still_tampered: String = conn
+        .query_row(
+            "SELECT envelope_hash FROM federation_message_receipts WHERE message_id = ?1",
+            rusqlite::params![message_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        receipts, 1,
+        "hash mismatch path must not insert a second receipt"
+    );
+    assert_eq!(
+        still_tampered, "deadbeef",
+        "hash mismatch path must not overwrite the stored receipt — it is the forensic record"
+    );
+}

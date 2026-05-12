@@ -1,7 +1,7 @@
 # Agent Handoff
 
 ## Current branch
-`claude/fix-annex-bugs-AT8va` (current session; chain: `…itXFq` → `…PxyqS` → `…Las84` → `…AqBJk` → `…Fshec` → `…AT8va`)
+`claude/fix-annex-bugs-5yw2Y` (current session; chain: `…itXFq` → `…PxyqS` → `…Las84` → `…AqBJk` → `…Fshec` → `…AT8va` → `…5yw2Y`)
 
 ## Session goal
 Recursive production bug-fix campaign on Annex (Tauri desktop, Rust workspace,
@@ -9,7 +9,180 @@ Groth16/Circom ZKP, SQLite). Fix highest-impact real bugs in priority order:
 ZK enforcement → ZK release artifact path → canonical hex → Merkle epoch/concurrency
 → nullifier privacy → desktop release → security sweep.
 
-## Fixed in this session (claude/fix-annex-bugs-AT8va)
+## Fixed in this session (claude/fix-annex-bugs-5yw2Y)
+
+### [F33] Federation outbox worker had no dequeue-time SSRF gate (security defence-in-depth)
+`crates/annex-server/src/background.rs::drain_outbox_batch` resolves
+each pending row's peer `base_url` from the `instances` table and
+POSTs the signed federation envelope to
+`{base_url}/api/federation/messages`. Pre-fix there was an
+enqueue-time SSRF gate inside
+`services::federation_service::relay_message` (added in [F12] and
+mirrored across the other federation outbound paths in [F20], [F25],
+[F33] precedent), but the outbox is durable across server restarts
+and the `instances` row's `base_url` is admin-editable. So this
+sequence was reachable in practice:
+
+1. Admin registers peer `https://legitpeer.com` — passes
+   enqueue-time SSRF gate.
+2. `relay_message` enqueues an outbox row pointing at peer id `N`.
+3. Admin (or an attacker who compromised admin auth) edits the
+   `instances` row to `base_url='http://127.0.0.1:9999'` —
+   admin endpoint is its own access-controlled surface, but
+   misconfiguration is a much wider failure mode than
+   compromise. There is no rejection of private base_urls inside
+   the admin update path because instance rows are added/updated
+   out of band (no production INSERT INTO instances writer exists
+   in the tree).
+4. Outbox worker picks up the row, resolves peer id `N` →
+   `http://127.0.0.1:9999`, POSTs the signed envelope to
+   localhost.
+
+Fix: re-check `is_url_private_or_reserved(&peer_base)` at dequeue
+time, BEFORE building the URL or constructing the reqwest call. On
+match: log a `tracing::warn!` (so the operator sees the dequeue-time
+divergence), mark the row `status='failed'` with `last_error` naming
+the SSRF gate, bump `attempts`, and `continue` past the row. No
+retry, no POST. The row is now terminally failed; the peer would
+need to update its instance entry back to a public URL AND have a
+fresh message_id queued to recover. Re-enqueue itself goes through
+the existing enqueue-time SSRF gate, so this is the closed loop.
+
+Defence-in-depth posture: this gate is the second of two — the
+enqueue gate stops malicious instance entries from ever reaching the
+outbox, and the dequeue gate stops mutations after enqueue from ever
+reaching reqwest. Both must independently fail for a private POST to
+escape.
+
+- files changed:
+  - `crates/annex-server/src/background.rs::drain_outbox_batch` —
+    new `if is_url_private_or_reserved(&peer_base) { … continue }`
+    block immediately after peer resolution, before URL construction.
+    Marks row terminally failed with a row-update spawn_blocking task
+    that matches the shape of the other state-update tasks already in
+    this function.
+  - Also added a doc comment on `drain_outbox_batch` documenting
+    that the function is `pub` specifically so integration tests can
+    exercise the dequeue-time gate end-to-end (instead of waiting on
+    the once-per-`outbox_interval_seconds` cadence of the background
+    task).
+  - `crates/annex-server/tests/federation_outbox_ssrf.rs` — new
+    integration test file with two tests:
+    - `outbox_worker_refuses_to_post_to_private_peer_url` — inserts a
+      peer with `base_url='http://127.0.0.1:9999'` and an outbox row
+      due now, calls `drain_outbox_batch`, asserts the row is
+      `status='failed'` and `last_error` contains
+      `'private/reserved'`. Verified failing under the pre-fix code
+      (post would have been attempted and the row would have been
+      marked pending with an HTTP error or pending with success
+      depending on whether something listened on port 9999) — under
+      the fix the row is deterministically marked failed BEFORE any
+      HTTP attempt.
+    - `outbox_worker_does_not_drop_public_peer_url` — negative
+      control. Points the peer at the RFC 5737 documentation IP
+      (`203.0.113.1`) which is guaranteed not to resolve, runs
+      `drain_outbox_batch`, asserts the row STAYS `status='pending'`
+      (transient HTTP error, retry later) and `last_error` does NOT
+      contain the SSRF gate's signature. This guards against an
+      over-eager gate that fails every row.
+- tests run:
+  - `cargo test -p annex-server --test federation_outbox_ssrf` →
+    **2 passed** (both new).
+  - `cargo test -p annex-server --test api_federation_relay` →
+    4 passed (no regression).
+  - `cargo clippy --workspace --exclude annex-desktop --all-targets
+    -- -D warnings` → clean.
+  - `cargo fmt --all --check` → clean.
+- result: PASS. Every federation outbound HTTP path in the tree now
+  hits `is_url_private_or_reserved`, including the durable outbox
+  worker that survives across server restarts. The only way to POST
+  a signed federation envelope to a private host is to defeat both
+  the enqueue-time and the dequeue-time gates simultaneously.
+
+### [F32] Federation receive: receipt + message insert were not atomic (silent message loss)
+`crates/annex-server/src/services/federation_service.rs::receive_federated_message`
+ran two separate writes under SQLite's autocommit:
+
+1. `INSERT INTO federation_message_receipts (…)` — durable receipt
+   keyed on `UNIQUE(remote_instance_id, message_id)` so subsequent
+   replays of the same envelope are short-circuited (see migration
+   036).
+2. `create_message(&conn, &params)` — the actual message row.
+
+The intended semantics are: a peer that retries an envelope after a
+transient failure on our side gets to deliver the message, because
+neither row was committed. The actual semantics under autocommit
+were: a transient `create_message` failure (any non-UNIQUE
+`rusqlite::Error::SqliteFailure` — `SQLITE_BUSY`, `SQLITE_IOERR`,
+FK violation from a channel deleted mid-flight, etc.) left a
+committed receipt AND no committed message. On the peer's next retry
+of the SAME envelope, the receipt-ledger check at step (1) found a
+prior receipt with a matching `envelope_hash` and returned
+`Ok(None)` — short-circuiting the message insert.
+
+Net effect: a transient SQLite error during a federated message
+receive became permanent message loss for that envelope. Peer's
+outbox marks the delivery successful (we returned 200 on the eventual
+retry). We have a receipt. No `messages` row exists. No WS broadcast.
+Message is silently dropped, with no operator-visible signal except
+maybe an `error!` log line on the original transient failure.
+
+Fix: wrap the receipt-existence query + receipt INSERT +
+`create_message` call in a single `BEGIN IMMEDIATE` transaction via
+`Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)`.
+SQLite's writer lock is acquired at transaction start (IMMEDIATE), so
+two concurrent receivers of the same envelope serialise at BEGIN
+rather than at the receipt INSERT (where the second would otherwise
+hit the UNIQUE constraint as a noisy 500). On the happy path: both
+rows commit together. On a transient `create_message` failure: the
+whole transaction rolls back, the receipt is NOT persisted, and the
+peer's retry of the same envelope succeeds the next time around.
+
+The benign-duplicate path (`receipt_existing` Some with matching
+hash) drops the transaction without committing — releasing the writer
+lock immediately so it doesn't block concurrent legit traffic during
+high-replay periods (e.g. peer outbox catch-up after our server
+restart).
+
+The constraint-violation path on `create_message` is preserved for
+defence in depth: it should be unreachable under the receipt ledger
+(the receipt check rejects duplicates earlier), but a stale
+`messages.message_id` row from a pre-receipt-ledger migration window
+would still get the Ok(None) treatment and the receipt still
+commits — which is the right behaviour for "already delivered".
+
+- files changed:
+  - `crates/annex-server/src/services/federation_service.rs` —
+    * new `use rusqlite::{OptionalExtension, Transaction,
+      TransactionBehavior};` import.
+    * the `tokio::task::spawn_blocking` closure inside
+      `receive_federated_message` now opens a single IMMEDIATE
+      transaction around the receipt check / receipt insert /
+      `create_message` triplet, replacing the prior pair of
+      autocommit `conn.execute` calls.
+    * doc comment on the section rewritten to name the silent-loss
+      bug + atomicity requirement so a future agent doesn't
+      accidentally split the writes again.
+  - `crates/annex-server/tests/api_federation_relay.rs` — new test
+    `test_receive_federated_message_receipt_and_message_are_atomic`
+    that exercises the cooperative path end-to-end:
+    1. Send envelope → asserts exactly one receipt + one message
+       persisted.
+    2. Send identical envelope again → asserts STILL exactly one
+       of each, and the second response is 200 (idempotent).
+    3. Tamper the receipt's envelope_hash to simulate a captured-ID
+       forgery, send identical envelope → asserts 403 + receipt
+       unchanged + no second message.
+- tests run:
+  - `cargo test -p annex-server --test api_federation_relay` →
+    **4 passed** (1 new for [F32], 3 pre-existing).
+  - `cargo clippy -p annex-server --all-targets -- -D warnings` →
+    clean.
+- result: PASS. The receipt ledger now atomically commits with the
+  message row. Transient SQLite errors during federated receive no
+  longer create permanent message-loss conditions.
+
+## Fixed in earlier session (claude/fix-annex-bugs-AT8va)
 
 ### [F31] `edit_message` / `delete_message` used DEFERRED tx but comment claimed IMMEDIATE (lost-update bug)
 `crates/annex-channels/src/messages.rs::edit_message` and
@@ -1594,7 +1767,83 @@ The fix mirrors the local cap.
   tx is fine because it only worries about partial-failure
   atomicity, not concurrent-writer races. See [F31].
 
-## Context cutoff note (current session, claude/fix-annex-bugs-AT8va)
+## Context cutoff note (current session, claude/fix-annex-bugs-5yw2Y)
+Session [F32..F33] focused on the federation receive + outbox paths.
+Two real bugs — one durability bug that silently dropped federated
+messages under any transient SQLite error, and one defence-in-depth
+SSRF gap where the outbox worker would happily POST signed
+federation envelopes to localhost if the peer's `instances.base_url`
+was edited to a private host after the row was enqueued.
+
+* [F32] `receive_federated_message` ran the receipt INSERT and the
+  message INSERT under separate autocommit transactions. A transient
+  failure on the message INSERT (`SQLITE_BUSY`, FK violation,
+  IO error) left a committed receipt with no message — and the
+  peer's outbox retry of the same envelope was short-circuited by
+  the receipt-ledger check. Silent permanent message loss. Wrapped
+  the receipt-existence query + receipt INSERT + `create_message`
+  call in one `BEGIN IMMEDIATE` transaction so either both commit
+  or neither does. 1 new integration test for receipt + message
+  atomicity, idempotency, and the captured-ID forgery rejection path.
+* [F33] The federation outbox worker resolved peers via
+  `instances WHERE status='ACTIVE'` and POSTed the signed envelope
+  to `{base_url}/api/federation/messages` without re-checking
+  `is_url_private_or_reserved` at dequeue time. Enqueue-time gate
+  (added in [F12]) is sufficient under steady state, but the
+  outbox is durable across restarts and `instances.base_url` is
+  admin-editable — a misconfiguration or compromise after enqueue
+  could route the next batch through localhost. Added the
+  dequeue-time gate that marks the row terminally failed with a
+  `private/reserved` `last_error` instead of attempting the POST.
+  2 new integration tests (positive: row marked failed for private
+  URL; negative: row stays pending for genuinely-unroutable public
+  URL).
+
+`fmt`, `clippy --workspace --exclude annex-desktop --all-targets --
+-D warnings`, and `cargo test --workspace --exclude annex-desktop`
+(653 tests total) are all green.
+
+If a future agent picks up:
+1. Re-run baseline (fmt + clippy + `cargo test -p annex-server`).
+2. Open items from previous sessions remain (see "Still broken /
+   suspected" below):
+   - real multi-party ZK ceremony (still blocks tagged release).
+   - v1 nullifier privacy gap (release blocker for any deployment
+     claiming topic unlinkability; v2 is implemented + opt-in).
+   - PoT depth ceiling (only matters if circuit grows past ~16k
+     constraints).
+   - uploads-as-public-URL design question (release blocker for
+     private-channel mode).
+   - desktop build smoke test in real Linux/Windows CI.
+3. Areas already audited this session that look clean:
+   - Receive paths for federated messages and RTX bundles: receipt
+     ledger now atomic in both directions (RTX already had a tx).
+   - Federation outbound HTTP paths: every callsite hits
+     `is_url_private_or_reserved` (enqueue + dequeue + relay +
+     handshake + freshness + policy + rtx).
+   - WS dispatch path: membership re-checked on every command;
+     persisted channel_id used for broadcast (no spoof window).
+   - Token auth: HMAC verified constant-time, pseudonym format
+     validated in unenforced mode, enforced mode rejects
+     `X-Annex-Pseudonym` header.
+   - SQL builders in `channels.rs::update_channel` and
+     `messages.rs::list_messages`: parameterised correctly.
+4. Next concrete files to inspect for the *next* class of bugs:
+   - `crates/annex-server/src/api_admin.rs` instance management —
+     no production code path inserts/updates `instances` rows
+     today. If/when a peer-registration endpoint lands, it must
+     apply `is_url_private_or_reserved` at write time so the
+     enqueue-time SSRF gate has something to enforce.
+   - `crates/annex-server/src/api_observe.rs::get_event_stream_handler`
+     — documented as public-by-design but worth re-confirming
+     when the user model changes.
+   - `crates/annex-server/src/api_invite.rs::create_invite_handler`
+     — separate INSERT + later SELECT path; if create succeeds but
+     the SELECT for server label fails, the response is a 500 but
+     the invite is durable. Mostly cosmetic; consider a tx if a
+     future change adds more writes here.
+
+## Context cutoff note (previous session, claude/fix-annex-bugs-AT8va)
 Session [F27..F31] focused on long-lived production correctness — the
 two outstanding "Still broken" items from the previous session
 (rooms-leak + typing-DOS), a real lock-inversion deadlock in the

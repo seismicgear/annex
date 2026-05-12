@@ -54,7 +54,7 @@ use annex_rtx::{check_redacted_topics, enforce_transfer_scope, validate_bundle_s
 use annex_types::NodeType;
 use annex_vrp::{VrpTransferScope, VrpValidationReport};
 use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey as EdVerifyingKey};
-use rusqlite::OptionalExtension;
+use rusqlite::{OptionalExtension, Transaction, TransactionBehavior};
 use thiserror::Error;
 
 use crate::api::GetRootResponse;
@@ -1063,7 +1063,7 @@ impl FederationService {
                     )));
                 }
 
-                // 6.5. Federation receipt ledger.
+                // 6.5. Federation receipt ledger + message insert.
                 //
                 //   * If we have NOT seen (remote_instance_id, message_id)
                 //     before, insert a receipt row and let the message
@@ -1075,8 +1075,25 @@ impl FederationService {
                 //   * If we HAVE seen it and the envelope hash DIFFERS,
                 //     someone is presenting a forged or mutated
                 //     envelope under a captured message_id. Reject.
+                //
+                // Receipt insert + message insert MUST commit atomically.
+                // Prior to this transaction, the receipt INSERT ran under
+                // autocommit, then `create_message` ran as a separate
+                // implicit transaction. If `create_message` failed for a
+                // transient reason (SQLITE_BUSY, disk full, FK violation
+                // because the channel was deleted between membership check
+                // and message insert), the receipt was still committed —
+                // the next outbox retry from the peer would find the
+                // receipt with a matching hash, return Ok(None), and the
+                // message would be SILENTLY DROPPED forever. Wrapping
+                // both inserts in IMMEDIATE forces the SQLite writer lock
+                // up front and ensures either both rows land or neither
+                // does, so the peer's retry has a chance to succeed.
                 let env_hash = message_envelope_hash(&envelope);
-                let receipt_existing: Option<String> = conn
+                let tx = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)
+                    .map_err(FederationError::DbError)?;
+
+                let receipt_existing: Option<String> = tx
                     .query_row(
                         "SELECT envelope_hash FROM federation_message_receipts \
                          WHERE remote_instance_id = ?1 AND message_id = ?2",
@@ -1100,11 +1117,12 @@ impl FederationService {
                                 .to_string(),
                         ));
                     }
-                    // Benign duplicate — no insert, no broadcast.
+                    // Benign duplicate — no insert, no broadcast. The tx
+                    // drops without commit, releasing the writer lock.
                     return Ok(None);
                 }
 
-                conn.execute(
+                tx.execute(
                     "INSERT INTO federation_message_receipts \
                      (remote_instance_id, message_id, envelope_hash, envelope_created_at, delivery_mode) \
                      VALUES (?1, ?2, ?3, ?4, 'live')",
@@ -1117,7 +1135,13 @@ impl FederationService {
                 )
                 .map_err(FederationError::DbError)?;
 
-                // 7. Insert Message (idempotent on UNIQUE message_id)
+                // 7. Insert Message (idempotent on UNIQUE message_id).
+                // The UNIQUE constraint on messages.message_id is the
+                // legacy idempotency path; under the receipt-ledger
+                // changes above it should be unreachable in practice
+                // (the receipt check rejects duplicates earlier), but
+                // we keep the constraint-violation arm for defence in
+                // depth against direct DB writes or schema oddities.
                 let params = CreateMessageParams {
                     channel_id: envelope.channel_id.clone(),
                     message_id: envelope.message_id.clone(),
@@ -1126,13 +1150,16 @@ impl FederationService {
                     reply_to_message_id: None,
                 };
 
-                match create_message(&conn, &params) {
-                    Ok(msg) => Ok(Some(msg)),
+                let inserted = match create_message(&tx, &params) {
+                    Ok(msg) => Some(msg),
                     Err(annex_channels::ChannelError::Database(
                         rusqlite::Error::SqliteFailure(code, _),
-                    )) if code.code == rusqlite::ErrorCode::ConstraintViolation => Ok(None),
-                    Err(e) => Err(FederationError::Channel(e)),
-                }
+                    )) if code.code == rusqlite::ErrorCode::ConstraintViolation => None,
+                    Err(e) => return Err(FederationError::Channel(e)),
+                };
+
+                tx.commit().map_err(FederationError::DbError)?;
+                Ok(inserted)
             }
         })
         .await
