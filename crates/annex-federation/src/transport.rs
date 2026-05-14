@@ -38,6 +38,13 @@ pub enum TransportError {
 #[derive(Clone)]
 pub struct FederationTransport {
     local_server_slug: String,
+    /// Local Ed25519 public key, hex-encoded (64 chars). Stamped onto
+    /// every outbound `SignalingPayload` so the relay can verify the
+    /// `vrp_signature` against this key under a production profile
+    /// (see `api/signal.js`). The receiving server independently checks
+    /// that the slug↔pubkey binding matches what it knows about the
+    /// sender via the `signal_verifier` callback.
+    local_public_key_hex: String,
     signal: SignalClient,
     peers: Arc<RwLock<HashMap<String, Arc<RTCPeerConnection>>>>,
     channels: Arc<RwLock<HashMap<String, Arc<RTCDataChannel>>>>,
@@ -50,6 +57,7 @@ pub struct FederationTransport {
 impl FederationTransport {
     pub fn new(
         local_server_slug: impl Into<String>,
+        local_public_key_hex: impl Into<String>,
         signal: SignalClient,
         inbound_handler: InboundHandler,
         signal_signer: SignalSigner,
@@ -57,6 +65,7 @@ impl FederationTransport {
     ) -> Self {
         Self {
             local_server_slug: local_server_slug.into(),
+            local_public_key_hex: local_public_key_hex.into(),
             signal,
             peers: Arc::new(RwLock::new(HashMap::new())),
             channels: Arc::new(RwLock::new(HashMap::new())),
@@ -126,6 +135,7 @@ impl FederationTransport {
             sdp_type: "offer".to_string(),
             sdp: offer.sdp,
             sent_at_ms: chrono::Utc::now().timestamp_millis(),
+            from_pubkey_hex: self.local_public_key_hex.clone(),
             vrp_signature: String::new(),
         };
         offer_payload.vrp_signature =
@@ -239,6 +249,7 @@ impl FederationTransport {
             sdp_type: "answer".to_string(),
             sdp: answer.sdp,
             sent_at_ms: chrono::Utc::now().timestamp_millis(),
+            from_pubkey_hex: self.local_public_key_hex.clone(),
             vrp_signature: String::new(),
         };
         answer_payload.vrp_signature =

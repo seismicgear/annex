@@ -16,7 +16,20 @@ pub struct SignalingPayload {
     pub sdp: String,
     /// Unix timestamp in milliseconds when this signal was created.
     pub sent_at_ms: i64,
-    /// Ed25519 signature over the canonical signaling payload.
+    /// Sender's Ed25519 public key, 32 raw bytes hex-encoded (64 hex chars).
+    ///
+    /// Production deployments of `api/signal.js` REJECT payloads whose
+    /// `vrp_signature` does not verify against this key. The receiving
+    /// server still owns the slug→pubkey binding check (via its
+    /// `SignalVerifier` callback) — the relay's job is only to refuse
+    /// unsigned traffic. `#[serde(default)]` keeps the field optional
+    /// on the wire so older clients can be parsed; the relay-level
+    /// production gate is what enforces presence.
+    #[serde(default)]
+    pub from_pubkey_hex: String,
+    /// Ed25519 signature over the canonical signaling payload
+    ///   `from_server_slug|to_server_slug|session_id|sdp_type|sdp|sent_at_ms|from_pubkey_hex`
+    /// base64-encoded.
     pub vrp_signature: String,
 }
 

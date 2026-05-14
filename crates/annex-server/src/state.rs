@@ -77,6 +77,10 @@ pub struct AppState {
     /// HMAC secret for signing WebSocket session tokens. Derived at startup
     /// from the server's Ed25519 key to avoid managing a separate secret.
     pub ws_token_secret: Arc<[u8; 32]>,
+    /// HMAC secret for signing voice-join tokens. Domain-separated from
+    /// `ws_token_secret` (different prefix in the derivation) so a WS
+    /// token cannot be substituted for a voice token and vice versa.
+    pub voice_token_secret: Arc<[u8; 32]>,
     /// Configured CORS allowed origins (empty = same-origin only, ["*"] = permissive).
     pub cors_origins: Vec<String>,
     /// When true, channel access endpoints require ZK membership proof via

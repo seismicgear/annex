@@ -233,6 +233,20 @@ pub fn app(state: AppState) -> Router {
             "/events/presence",
             get(api_sse::get_presence_stream_handler),
         )
+        // Layer order matters. Tower applies layers in reverse: the LAST
+        // `.layer()` call wraps the OUTERMOST layer, which executes FIRST
+        // on the inbound request. We want auth to run first (so it can
+        // attach IdentityContext to extensions), then rate_limit (so it
+        // can key off the pseudonym), then the handler. That means in
+        // code we write rate_limit FIRST and auth LAST.
+        //
+        // Without this ordering the pseudonym branch in rate_limit_middleware
+        // is dead code: the global rate-limit layer (see http/layers.rs) runs
+        // BEFORE per-route auth, so IdentityContext is never present and
+        // every protected request gets keyed by IP. This block restores the
+        // per-pseudonym budget for authenticated users while still letting
+        // the global IP layer act as a cheap upstream cap.
+        .layer(axum::middleware::from_fn(middleware::rate_limit_middleware))
         .layer(axum::middleware::from_fn(middleware::auth_middleware));
 
     // Upload routes need a larger body limit for media uploads.
@@ -247,9 +261,16 @@ pub fn app(state: AppState) -> Router {
             post(api_upload::upload_chat_handler),
         )
         .layer(DefaultBodyLimit::max(50 * 1024 * 1024))
+        // Same layer ordering as protected_routes: auth first, then
+        // pseudonym-aware rate limit, then the upload handler.
+        .layer(axum::middleware::from_fn(middleware::rate_limit_middleware))
         .layer(axum::middleware::from_fn(middleware::auth_middleware));
 
-    let router = Router::new()
+    // Public routes — no auth_middleware. They still need a rate-limit
+    // pass; with no `IdentityContext` available, `rate_limit_middleware`
+    // falls back to IP keying, which is the correct upstream cap for
+    // anonymous traffic.
+    let public_routes = Router::new()
         .route("/health", get(health))
         .route("/api/registry/register", post(api::register_handler))
         .route(
@@ -338,9 +359,20 @@ pub fn app(state: AppState) -> Router {
             "/api/link-preview/image",
             get(api_link_preview::image_proxy_handler),
         )
+        // Rate-limit the public routes by IP (no auth runs, so the
+        // middleware's IdentityContext branch is never taken).
+        .layer(axum::middleware::from_fn(middleware::rate_limit_middleware));
+
+    // WebSocket route is mounted separately: the upgrade handshake
+    // authenticates via a one-shot WS token (issued by
+    // `/api/ws/token`), so it does not go through `auth_middleware`.
+    // Per-message limits live inside `api_ws`.
+    let ws_routes = Router::new().route("/ws", get(api_ws::ws_handler));
+
+    let router = public_routes
         .merge(protected_routes)
         .merge(upload_routes)
-        .route("/ws", get(api_ws::ws_handler));
+        .merge(ws_routes);
 
     // Static-file mounts: /uploads/* (when the dir exists) and the SPA
     // fallback (when ANNEX_CLIENT_DIR/index.html exists).

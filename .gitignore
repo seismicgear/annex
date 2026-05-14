@@ -15,9 +15,14 @@ zk/build/*
 zk/keys/*
 !zk/keys/.gitkeep
 
-# Piper TTS binary and voice model files (downloaded at deploy time)
-assets/piper/
-assets/voices/
+# Piper TTS binary and voice model files (downloaded at deploy time).
+# `.gitkeep` stubs are committed so `crates/annex-desktop/tauri.conf.json`'s
+# `bundle.resources` validation finds the directories on a fresh clone —
+# the actual binary/model files still live outside git.
+assets/piper/*
+!assets/piper/.gitkeep
+assets/voices/*
+!assets/voices/.gitkeep
 assets/models/
 assets/whisper/
 

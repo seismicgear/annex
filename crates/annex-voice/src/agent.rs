@@ -53,10 +53,24 @@ impl Drop for AgentVoiceClient {
 }
 
 impl AgentVoiceClient {
+    /// Connect to the in-process SFU room as a voice agent.
+    ///
+    /// `token` MUST be an HMAC-signed voice-join token (see
+    /// [`crate::token`]). Verification happens here before any room is
+    /// created: an expired token, a tampered token, or a token issued
+    /// for a different room is rejected. The token MUST be bound to
+    /// `room_name`. `voice_token_secret` is the HMAC key returned by
+    /// [`crate::token::derive_voice_token_secret`].
+    ///
+    /// This is the defensive gate that prevents a process holding only
+    /// an old base64 blob from joining the SFU after the membership
+    /// check has been bypassed.
+    #[allow(clippy::too_many_arguments)] // signal-carrying call site; refactoring to a builder hides the binding contract
     pub async fn connect(
         _url: &str,
         token: &str,
         room_name: &str,
+        voice_token_secret: &[u8; 32],
         stt_service: Arc<SttService>,
         _api_key: &str,
         _api_secret: &str,
@@ -64,18 +78,10 @@ impl AgentVoiceClient {
     ) -> Result<Self, VoiceError> {
         let (tx, _) = broadcast::channel(DEFAULT_TRANSCRIPTION_BROADCAST_CAPACITY);
 
-        // Token payload is URL-safe base64 JSON from VoiceService::generate_join_token.
-        use base64::Engine;
-        let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(token)
-            .map_err(|e| VoiceError::RoomService(format!("invalid join token: {e}")))?;
-        let claims: serde_json::Value = serde_json::from_slice(&decoded)
-            .map_err(|e| VoiceError::RoomService(format!("invalid join token JSON: {e}")))?;
-        let agent_id = claims
-            .get("sub")
-            .and_then(|s| s.as_str())
-            .unwrap_or("agent")
-            .to_string();
+        let claims =
+            crate::token::verify_join_token(token, voice_token_secret, Some(room_name), None)
+                .map_err(|e| VoiceError::RoomService(format!("invalid voice join token: {e}")))?;
+        let agent_id = claims.sub;
 
         voice_service.create_room(room_name).await?;
 
@@ -221,14 +227,16 @@ mod tests {
         // the JoinHandle on `AgentVoiceClient` and aborts it on Drop.
         let voice_service = test_voice_service();
         let stt = test_stt_service();
+        let secret = [0xABu8; 32];
         let token = voice_service
-            .generate_join_token("ch-abort-test", "agent-1", "agent-1")
+            .generate_join_token("ch-abort-test", "agent-1", "agent-1", &secret, 60)
             .expect("generate_join_token should succeed");
 
         let agent = AgentVoiceClient::connect(
             "ws://test",
             &token,
             "ch-abort-test",
+            &secret,
             stt,
             "test-key",
             "test-secret",
@@ -261,19 +269,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connect_rejects_token_for_wrong_room() {
+        // Defence in depth: an attacker who somehow obtains a valid
+        // token for channel A must NOT be able to use it to enter
+        // channel B even if the membership check upstream is bypassed.
+        let voice_service = test_voice_service();
+        let stt = test_stt_service();
+        let secret = [0xEFu8; 32];
+        let token = voice_service
+            .generate_join_token("ch-allowed", "agent-3", "agent-3", &secret, 60)
+            .expect("token should sign cleanly");
+
+        let err = AgentVoiceClient::connect(
+            "ws://test",
+            &token,
+            "ch-different",
+            &secret,
+            stt,
+            "test-key",
+            "test-secret",
+            voice_service,
+        )
+        .await
+        .expect_err("token bound to a different room must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("WrongRoom") || msg.contains("does not match expected"),
+            "expected wrong-room error, got {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_rejects_unsigned_legacy_blob() {
+        // The pre-token format was a base64 JSON blob. Verify that a
+        // process holding only that legacy blob cannot connect.
+        let voice_service = test_voice_service();
+        let stt = test_stt_service();
+        let secret = [0x77u8; 32];
+
+        use base64::Engine;
+        let legacy_blob = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(br#"{"room":"ch-legacy","sub":"agent-x"}"#);
+
+        let err = AgentVoiceClient::connect(
+            "ws://test",
+            &legacy_blob,
+            "ch-legacy",
+            &secret,
+            stt,
+            "test-key",
+            "test-secret",
+            voice_service,
+        )
+        .await
+        .expect_err("legacy unsigned token must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("invalid voice join token") || msg.contains("Tampered"),
+            "expected tampered/malformed error, got {msg:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn drop_does_not_panic_when_task_already_finished() {
         // Defensive test: if the task somehow exits naturally before
         // Drop runs, the second `abort()` from Drop must be a no-op.
         let voice_service = test_voice_service();
         let stt = test_stt_service();
+        let secret = [0xCDu8; 32];
         let token = voice_service
-            .generate_join_token("ch-drop-test", "agent-2", "agent-2")
+            .generate_join_token("ch-drop-test", "agent-2", "agent-2", &secret, 60)
             .expect("generate_join_token should succeed");
 
         let agent = AgentVoiceClient::connect(
             "ws://test",
             &token,
             "ch-drop-test",
+            &secret,
             stt,
             "test-key",
             "test-secret",

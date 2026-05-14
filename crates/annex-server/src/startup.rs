@@ -473,6 +473,7 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
     }
 
     let ws_token_secret = api_ws::derive_ws_token_secret(&signing_key);
+    let voice_token_secret = annex_voice::derive_voice_token_secret(&signing_key);
 
     let storage_health = Arc::new(crate::storage_health::StorageHealth::new());
     let state = AppState {
@@ -500,6 +501,7 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
         upload_dir,
         preview_cache: api_link_preview::PreviewCache::new(),
         ws_token_secret: Arc::new(ws_token_secret),
+        voice_token_secret: Arc::new(voice_token_secret),
         cors_origins: config.cors.allowed_origins.clone(),
         enforce_zk_proofs: config.security.enforce_zk_proofs,
         invite_base_url: config.server.invite_base_url.clone(),

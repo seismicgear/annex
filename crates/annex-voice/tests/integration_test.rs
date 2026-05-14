@@ -10,12 +10,23 @@ async fn test_generate_join_token() {
     let config = WebRtcConfig::new(DEFAULT_URL, DEFAULT_KEY, DEFAULT_SECRET);
     let service = VoiceService::new(config);
 
+    let secret = [0xA5u8; 32];
     let token = service
-        .generate_join_token("test-room", "user-123", "Test User")
+        .generate_join_token("test-room", "user-123", "Test User", &secret, 60)
         .expect("Failed to generate token");
 
     assert!(!token.is_empty());
     println!("Generated token: {token}");
+
+    // Verify the token round-trips through verify_join_token bound to the
+    // same room + secret. This guards against future regressions where
+    // the sign/verify halves drift apart.
+    let claims =
+        annex_voice::verify_join_token(&token, &secret, Some("test-room"), Some("user-123"))
+            .expect("token should verify");
+    assert_eq!(claims.room, "test-room");
+    assert_eq!(claims.sub, "user-123");
+    assert!(claims.exp > 0);
 }
 
 #[tokio::test]
@@ -55,23 +66,30 @@ async fn test_create_room() {
 
 #[tokio::test]
 async fn test_token_permissions() {
-    use base64::Engine;
-
+    // Tokens are now HMAC-signed, not legacy base64-JSON. Verify the
+    // claim binding by decoding via the public verifier instead of
+    // parsing the raw payload.
     let config = WebRtcConfig::new(DEFAULT_URL, DEFAULT_KEY, DEFAULT_SECRET);
     let service = VoiceService::new(config);
 
+    let secret = [0x33u8; 32];
     let token = service
-        .generate_join_token("perm-room", "user-perm", "Perm User")
+        .generate_join_token("perm-room", "user-perm", "Perm User", &secret, 60)
         .expect("Failed to generate token");
 
-    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(token)
-        .expect("decode token");
-    let claims: serde_json::Value = serde_json::from_slice(&decoded).expect("parse token JSON");
+    let claims =
+        annex_voice::verify_join_token(&token, &secret, Some("perm-room"), Some("user-perm"))
+            .expect("token should verify");
+    assert_eq!(claims.room, "perm-room");
+    assert_eq!(claims.sub, "user-perm");
 
-    assert_eq!(claims["room"], "perm-room");
-    assert_eq!(claims["sub"], "user-perm");
-    assert_eq!(claims["name"], "Perm User");
+    // Cross-room reuse must fail.
+    let err = annex_voice::verify_join_token(&token, &secret, Some("other-room"), None)
+        .expect_err("token bound to another room must be rejected");
+    assert!(matches!(
+        err,
+        annex_voice::VoiceTokenError::WrongRoom { .. }
+    ));
 }
 
 #[test]

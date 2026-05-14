@@ -36,16 +36,22 @@ fn is_valid_pseudonym_format(p: &str) -> bool {
             .all(|&b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-/// Middleware to authenticate requests via `X-Annex-Pseudonym` or `Authorization: Bearer`.
+/// Middleware to authenticate requests via `Authorization: Bearer` (or, in
+/// development only, `X-Annex-Pseudonym`).
 ///
-/// # Security Note
+/// # Security model
 ///
-/// In this phase (Phase 2), authentication relies on the pseudonym acting as a bearer token.
-/// There is currently no cryptographic signature verification for individual requests.
-/// This is a known limitation of the current roadmap state. Future phases (Client/Hardening)
-/// will likely introduce signed requests or session tokens.
+/// When `state.enforce_zk_proofs` is true (the production default), the
+/// Bearer token MUST be an HMAC-signed WS session token (same format as
+/// `api_ws::create_ws_token_handler` produces); raw pseudonyms in either
+/// the `Authorization` or `X-Annex-Pseudonym` header are rejected. The
+/// HMAC binds the token to a pseudonym and an expiration, so a stolen
+/// token cannot outlive its TTL or be replayed for a different identity.
 ///
-/// For now, the "Bearer" token IS the pseudonym.
+/// When `enforce_zk_proofs` is false (development), the Bearer token may
+/// be a raw pseudonym string; this exists for local dev iteration without
+/// going through the WS-token mint path. Production deployments must run
+/// with `enforce_zk_proofs = true` (the default).
 pub async fn auth_middleware(mut req: Request<Body>, next: Next) -> Result<Response, StatusCode> {
     // 0. Get AppState early — needed for token verification
     let state = req
@@ -337,6 +343,22 @@ pub async fn security_headers_middleware(req: Request<Body>, next: Next) -> Resp
 }
 
 /// Rate limiting middleware.
+///
+/// Keys off `IdentityContext` (set by `auth_middleware`) when present;
+/// otherwise falls back to the client IP. Composed twice into the router:
+///
+/// 1. As a GLOBAL layer (see `crate::http::layers::apply_global_layers`),
+///    where it runs before `auth_middleware` and therefore always keys by
+///    IP. This is the upstream cap that protects unauthenticated routes
+///    (registration, identity lookup, federation handshake, …) and acts
+///    as a cheap DoS gate on aggregate per-IP traffic.
+///
+/// 2. As a PER-ROUTE layer on `protected_routes` and `upload_routes`
+///    (see `crate::routes::app`), composed AFTER `auth_middleware` in
+///    execution order. By that point `IdentityContext` is populated, so
+///    the pseudonym branch is reached and authenticated traffic is
+///    bucketed by identity rather than by source address. Two pseudonyms
+///    behind the same NAT/IP no longer share a quota.
 ///
 /// Also performs one-time auto-detection of the server's public URL when no
 /// explicit `ANNEX_PUBLIC_URL` is configured. Uses `X-Forwarded-Host` /
