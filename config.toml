@@ -20,14 +20,22 @@ json = false
 # Set to ["*"] for permissive mode (development/Docker).
 # Or list specific origins: ["https://app.example.com", "https://admin.example.com"]
 # Override with env var: ANNEX_CORS_ORIGINS (comma-separated)
+#
+# Production gate: when ANNEX_BUILD_PROFILE=production (or "release") is set,
+# the server refuses to start if `allowed_origins` is empty or contains "*".
+# Production deployments must declare their real allowed origins.
 [cors]
 # allowed_origins = []
 
-# LiveKit WebRTC configuration.
-# Uncomment and configure to enable voice/video channels.
-# Override with env vars: ANNEX_LIVEKIT_URL, ANNEX_LIVEKIT_API_KEY, ANNEX_LIVEKIT_API_SECRET
-# [livekit]
+# WebRTC voice/video configuration.
+# Uncomment and configure to enable voice channels. The implementation is
+# the native SFU in `crates/annex-voice` — no external LiveKit-style sidecar
+# is required.
+# Override with env vars: ANNEX_WEBRTC_URL, ANNEX_WEBRTC_PUBLIC_URL,
+# ANNEX_WEBRTC_API_KEY, ANNEX_WEBRTC_API_SECRET.
+# [webrtc]
 # url = "ws://localhost:7880"
+# public_url = "wss://webrtc.example.com"
 # api_key = "devkey"
 # api_secret = "secret"
 # token_ttl_seconds = 3600
@@ -36,14 +44,23 @@ json = false
 # Default: Google STUN servers (sufficient for home/mobile networks).
 # Add TURN servers for restrictive corporate firewalls that block UDP.
 #
-# [[livekit.ice_servers]]
+# [[webrtc.ice_servers]]
 # urls = ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]
 #
-# [[livekit.ice_servers]]
+# [[webrtc.ice_servers]]
 # urls = ["turn:turn.example.com:3478"]
 # username = "user"
 # credential = "pass"
 
+# Voice pipeline file paths.
+#
+# These are the *default* paths the server will look for. Setting a path
+# here does NOT install the binary or model — operators must provide the
+# files themselves. The Docker image ships Piper TTS + a default voice
+# model, and the whisper.cpp STT binary, but does NOT ship a GGML model
+# (see Dockerfile). STT stays inert and `/api/voice/config-status` will
+# report `stt_ready: false` until a model is supplied and
+# ANNEX_STT_MODEL_PATH is set.
 [voice]
 tts_voices_dir = "assets/voices"
 tts_binary_path = "assets/piper/piper"

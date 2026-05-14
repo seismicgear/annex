@@ -1,5 +1,5 @@
 use crate::error::VoiceError;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
@@ -22,6 +22,28 @@ impl SttService {
             model_path: model_path.into(),
             binary_path: binary_path.into(),
         }
+    }
+
+    /// Path to the configured GGML model. Used by health/status endpoints
+    /// that need to distinguish "STT not configured" from "STT configured
+    /// but model missing on disk".
+    pub fn model_path(&self) -> &Path {
+        &self.model_path
+    }
+
+    /// Path to the configured whisper.cpp binary.
+    pub fn binary_path(&self) -> &Path {
+        &self.binary_path
+    }
+
+    /// Returns `true` when both the model file and the whisper binary are
+    /// present on disk. Reported on `/api/voice/config-status` so the
+    /// client (and operators) can tell the difference between
+    /// "STT configured and ready" and "STT path set but the file is
+    /// missing" — the latter used to silently pretend to be ready and
+    /// 500 at request time.
+    pub fn is_ready(&self) -> bool {
+        self.model_path.is_file() && self.binary_path.is_file()
     }
 
     pub async fn transcribe(&self, audio_data: &[u8]) -> Result<String, VoiceError> {

@@ -510,6 +510,60 @@ fn validate_config(config: &Config) -> Result<(), ConfigError> {
         });
     }
 
+    validate_cors_for_build_profile(&config.cors)?;
+
+    Ok(())
+}
+
+/// Refuse to start a production build when the resolved CORS policy is
+/// wildcard or empty.
+///
+/// Background: the Docker image used to ship `ANNEX_CORS_ORIGINS=*` baked
+/// into the production layer, and there was no runtime guard. Operators
+/// who never touched env vars ended up running an internet-facing server
+/// that accepted requests from any origin. The Dockerfile no longer sets
+/// the wildcard, and this check is the belt to that suspenders: if
+/// `ANNEX_BUILD_PROFILE=production` (or `release`) is set, an empty list
+/// or any `*` entry is a startup error. Dev profiles (the default) keep
+/// their current permissive behaviour so `cargo run -p annex-server` and
+/// `docker compose up` still work without per-origin configuration.
+///
+/// Reads `ANNEX_BUILD_PROFILE` directly because nothing else in the
+/// server runtime needs to know the build profile — wiring it into
+/// `Config` would force every test fixture to plumb a new field.
+fn validate_cors_for_build_profile(cors: &CorsConfig) -> Result<(), ConfigError> {
+    let raw_profile = match std::env::var("ANNEX_BUILD_PROFILE") {
+        Ok(v) => v,
+        Err(_) => return Ok(()),
+    };
+    let profile = raw_profile.trim().to_ascii_lowercase();
+    if profile != "production" && profile != "release" {
+        return Ok(());
+    }
+
+    let has_wildcard = cors.allowed_origins.iter().any(|o| o.trim() == "*");
+    if has_wildcard {
+        return Err(ConfigError::InvalidValue {
+            field: "cors.allowed_origins",
+            reason: format!(
+                "wildcard CORS origin (\"*\") is forbidden under ANNEX_BUILD_PROFILE={raw_profile}. \
+                 Set ANNEX_CORS_ORIGINS to an explicit comma-separated list of allowed origins \
+                 (e.g. https://app.example.com), or run a dev profile."
+            ),
+        });
+    }
+    if cors.allowed_origins.is_empty() {
+        return Err(ConfigError::InvalidValue {
+            field: "cors.allowed_origins",
+            reason: format!(
+                "no CORS allowed origins configured under ANNEX_BUILD_PROFILE={raw_profile}. \
+                 Set ANNEX_CORS_ORIGINS to an explicit comma-separated list (e.g. \
+                 https://app.example.com) or cors.allowed_origins in config.toml. \
+                 Refusing to start with an unconfigured cross-origin policy under production."
+            ),
+        });
+    }
+
     Ok(())
 }
 
@@ -898,6 +952,7 @@ mod tests {
             "ANNEX_BARK_BINARY_PATH",
             "ANNEX_CORS_ORIGINS",
             "ANNEX_ENFORCE_ZK_PROOFS",
+            "ANNEX_BUILD_PROFILE",
         ] {
             std::env::remove_var(name);
         }
@@ -1307,5 +1362,107 @@ port = 3000
         assert!(persisted.contains(&cfg.server.server_slug));
 
         fs::remove_file(path).expect("failed to remove temp config");
+    }
+
+    // ── Production CORS gate ────────────────────────────────────────────
+    //
+    // These tests exercise the validate_cors_for_build_profile branch
+    // (called from validate_config). The gate is keyed on the runtime
+    // ANNEX_BUILD_PROFILE env var, so each test sets it explicitly and
+    // relies on clear_env() to wipe it afterwards via the next call.
+
+    #[test]
+    fn production_profile_rejects_wildcard_cors() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+        std::env::set_var("ANNEX_BUILD_PROFILE", "production");
+        std::env::set_var("ANNEX_CORS_ORIGINS", "*");
+
+        let err = load_config(None).expect_err("production + wildcard CORS must fail validation");
+        match err {
+            ConfigError::InvalidValue { field, reason } => {
+                assert_eq!(field, "cors.allowed_origins");
+                assert!(
+                    reason.contains("wildcard"),
+                    "unexpected reason text: {reason}"
+                );
+            }
+            other => panic!("expected InvalidValue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn production_profile_rejects_empty_cors() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+        std::env::set_var("ANNEX_BUILD_PROFILE", "production");
+        // No ANNEX_CORS_ORIGINS, no [cors] section → empty list.
+
+        let err = load_config(None).expect_err("production + empty CORS must fail validation");
+        match err {
+            ConfigError::InvalidValue { field, reason } => {
+                assert_eq!(field, "cors.allowed_origins");
+                assert!(
+                    reason.contains("no CORS allowed origins"),
+                    "unexpected reason text: {reason}"
+                );
+            }
+            other => panic!("expected InvalidValue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn production_profile_accepts_explicit_origins() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+        std::env::set_var("ANNEX_BUILD_PROFILE", "production");
+        std::env::set_var(
+            "ANNEX_CORS_ORIGINS",
+            "https://app.example.com,https://admin.example.com",
+        );
+
+        let cfg = load_config(None).expect("explicit origins must validate under production");
+        assert_eq!(
+            cfg.cors.allowed_origins,
+            vec![
+                "https://app.example.com".to_string(),
+                "https://admin.example.com".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn release_profile_alias_also_gated() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+        std::env::set_var("ANNEX_BUILD_PROFILE", "release");
+        std::env::set_var("ANNEX_CORS_ORIGINS", "*");
+
+        let err = load_config(None).expect_err("release alias must reject wildcard CORS");
+        assert!(matches!(err, ConfigError::InvalidValue { .. }));
+    }
+
+    #[test]
+    fn dev_profile_allows_wildcard_cors() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+        std::env::set_var("ANNEX_BUILD_PROFILE", "dev");
+        std::env::set_var("ANNEX_CORS_ORIGINS", "*");
+
+        let cfg = load_config(None).expect("dev profile must allow wildcard CORS");
+        assert_eq!(cfg.cors.allowed_origins, vec!["*".to_string()]);
+    }
+
+    #[test]
+    fn unset_profile_allows_wildcard_cors() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+        // ANNEX_BUILD_PROFILE intentionally unset — current behaviour for
+        // cargo run, plain tests, etc. The gate must stay out of the way.
+        std::env::set_var("ANNEX_CORS_ORIGINS", "*");
+
+        let cfg = load_config(None)
+            .expect("absent ANNEX_BUILD_PROFILE must not trip the production CORS gate");
+        assert_eq!(cfg.cors.allowed_origins, vec!["*".to_string()]);
     }
 }

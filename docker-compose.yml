@@ -7,26 +7,59 @@
 # Voice runs inside the Annex process via the native WebRTC SFU in
 # crates/annex-voice; no external SFU sidecar is required.
 #
+# ─────────────────────────────────────────────────────────────────────────
+#  ⚠️  DEV / LOCAL ONLY  ⚠️
+#  This compose file is for local iteration on a developer laptop. It:
+#    * uses ANNEX_BUILD_PROFILE=dev so the image generates random-entropy
+#      Groth16 keys instead of consuming pinned ceremony artifacts;
+#    * uses ANNEX_CORS_ORIGINS=* (any origin) so localhost browsers and
+#      `cargo tauri dev` can talk to the server without per-origin
+#      configuration.
+#  Neither of those is safe for a public deployment. For production,
+#  build the image with `--build-arg ANNEX_BUILD_PROFILE=production`
+#  (the Dockerfile default) AND set ANNEX_CORS_ORIGINS to your real
+#  allowed origins (e.g. https://app.example.com). The server refuses
+#  to start when ANNEX_BUILD_PROFILE=production and CORS is wildcard
+#  or empty.
+# ─────────────────────────────────────────────────────────────────────────
+#
 # For public access, set ANNEX_PUBLIC_URL and run behind a TLS reverse proxy,
 # or configure the Annex router sidecar for automatic endpoint provisioning.
 
 services:
   annex:
-    build: .
+    build:
+      context: .
+      args:
+        # Dev profile so this compose file actually builds without real
+        # ceremony artifacts in the build context. A production build is
+        # `docker build .` (default ANNEX_BUILD_PROFILE=production) and
+        # not this file.
+        ANNEX_BUILD_PROFILE: dev
     ports:
       - "3000:3000"
     environment:
       - ANNEX_HOST=0.0.0.0
       - ANNEX_PORT=3000
       - ANNEX_DB_PATH=/app/data/annex.db
+      # DEV/LOCAL ONLY — see banner above. Production deployments MUST set
+      # this to an explicit list and run with ANNEX_BUILD_PROFILE=production.
       - ANNEX_CORS_ORIGINS=*
+      # Propagated to the running server so the production CORS gate
+      # knows this is a dev/local container and stays out of the way.
+      - ANNEX_BUILD_PROFILE=dev
       - ANNEX_LOG_LEVEL=info
       - ANNEX_LOG_JSON=true
       - ANNEX_OPEN_BROWSER=false
       - ANNEX_TTS_BINARY_PATH=/app/assets/piper/piper
       - ANNEX_TTS_VOICES_DIR=/app/assets/voices
       - ANNEX_STT_BINARY_PATH=/app/assets/whisper/whisper
-      - ANNEX_STT_MODEL_PATH=/app/assets/models/ggml-base.en.bin
+      # ANNEX_STT_MODEL_PATH is intentionally omitted. The image does not
+      # bundle a whisper GGML model; setting the path here would make the
+      # voice/config-status endpoint claim STT is ready while every
+      # transcription attempt would fail at request time. To enable STT,
+      # mount a GGML model into the container and set
+      # ANNEX_STT_MODEL_PATH=/path/to/your-model.bin here.
       # Storage health + maintenance (see docs/deployment.md)
       - ANNEX_DB_MAINTENANCE_ENABLED=true
       - ANNEX_DB_MAINTENANCE_INTERVAL_HOURS=24

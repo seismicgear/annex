@@ -79,6 +79,13 @@ jobs:
       # Production builds REQUIRE pinned ZK artifacts that match the manifest
       # SHA-256 hashes. We do NOT regenerate keys here — the manifest +
       # tracked-in-git artifacts are the source of truth.
+      #
+      # While the pinned manifest still says ceremony.type="dev-fixture",
+      # this step exits non-zero (code 3) by design — the production gate
+      # refuses to certify random-entropy keys for release. Don't bypass
+      # it with ANNEX_ALLOW_DEV_CEREMONY=1 for a public tag. See
+      # scripts/verify-production-rejects-dev-fixtures.sh for a standalone
+      # proof of that behaviour.
       - name: Verify pinned ZK artifacts
         run: node scripts/verify-artifacts.js
         working-directory: zk

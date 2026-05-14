@@ -53,6 +53,13 @@ async fn health(Extension(state): Extension<Arc<AppState>>) -> Json<Value> {
 /// Reports both the server policy voice setting and whether the WebRTC
 /// infrastructure is configured, so the client can distinguish between
 /// "voice disabled by admin" and "voice enabled but needs WebRTC setup".
+///
+/// Also reports `stt_ready` — whether the whisper.cpp binary and GGML
+/// model file are both present on disk. Previously the response implied
+/// voice (and transcription) was ready as long as WebRTC was configured,
+/// even though the Docker image set `ANNEX_STT_MODEL_PATH` to a model it
+/// never copied in, so the first transcription attempt would 500. The
+/// `stt_ready` field surfaces that mismatch up to the client.
 async fn voice_config_status(Extension(state): Extension<Arc<AppState>>) -> Json<Value> {
     let infrastructure_ready = state.voice_service.is_enabled();
     // get_public_url() now returns "" for loopback-only URLs, so
@@ -65,6 +72,7 @@ async fn voice_config_status(Extension(state): Extension<Arc<AppState>>) -> Json
         .read()
         .unwrap_or_else(|p| p.into_inner())
         .voice_enabled;
+    let stt_ready = state.stt_service.is_ready();
 
     let setup_hint = if !policy_enabled {
         "Voice is disabled in the server policy. An admin can enable it in Server Policy settings."
@@ -74,6 +82,8 @@ async fn voice_config_status(Extension(state): Extension<Arc<AppState>>) -> Json
         "WebRTC is configured with a loopback-only URL. Voice works for the host but remote users who join via invite will not be able to connect to calls. Set webrtc.public_url in config.toml to a publicly reachable WebSocket address, or set ANNEX_WEBRTC_PUBLIC_URL."
     } else if !has_public_url {
         "WebRTC URL is configured but no public URL is set. Clients may not be able to connect."
+    } else if !stt_ready {
+        "WebRTC is ready, but STT is not: the whisper.cpp binary or GGML model file is missing. Transcription will fail. Provide a model and set ANNEX_STT_MODEL_PATH, or leave STT disabled."
     } else {
         "Voice is configured and ready."
     };
@@ -84,6 +94,7 @@ async fn voice_config_status(Extension(state): Extension<Arc<AppState>>) -> Json
         "infrastructure_ready": infrastructure_ready,
         "has_public_url": has_public_url,
         "has_local_url": has_local_url,
+        "stt_ready": stt_ready,
         "setup_hint": setup_hint
     }))
 }
