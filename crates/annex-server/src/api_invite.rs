@@ -137,6 +137,46 @@ impl InvitePayload {
     }
 }
 
+/// Storage format used by both `create_invite_handler` (writes) and
+/// SQLite's `datetime('now')` (which the schema also uses for CURRENT_TIMESTAMP
+/// columns). Pinned here so all readers and writers agree on a single shape.
+pub(crate) const INVITE_EXPIRES_AT_FORMAT: &str = "%Y-%m-%d %H:%M:%S";
+
+/// Returns `true` when an `invite_codes.expires_at` value should be treated
+/// as past-due, including the "malformed value" case.
+///
+/// Pre-fix, both [`redeem_invite_handler`] and
+/// `IdentityService::register_identity` did:
+///
+/// ```ignore
+/// if let Some(ref exp) = expires_at {
+///     if let Ok(exp_dt) = NaiveDateTime::parse_from_str(exp, "%Y-%m-%d %H:%M:%S") {
+///         if exp_dt < now { /* reject */ }
+///     }
+///     // BUG: parse failure silently treated as "not expired"
+/// }
+/// ```
+///
+/// That meant any row whose `expires_at` was written in a different format
+/// (operator-issued `INSERT ... VALUES (..., '2026-12-31T23:59:59Z')`,
+/// chrono format drift in a future migration, or simple manual repair after
+/// corruption) silently became a never-expiring invite. The honest behaviour
+/// is "I can't tell when this expired, so reject it" — same wire-shape as a
+/// genuinely-expired invite ("Invalid or expired invite code").
+pub(crate) fn invite_expires_at_is_past(expires_at: &str, now: chrono::NaiveDateTime) -> bool {
+    match chrono::NaiveDateTime::parse_from_str(expires_at, INVITE_EXPIRES_AT_FORMAT) {
+        Ok(exp_dt) => exp_dt < now,
+        Err(_) => {
+            tracing::warn!(
+                expires_at = %expires_at,
+                "invite_codes.expires_at is not parseable as `{INVITE_EXPIRES_AT_FORMAT}`; \
+                 treating row as expired (defence in depth)"
+            );
+            true
+        }
+    }
+}
+
 /// Parsed invite from an `annex://` protocol handler URL.
 #[derive(Debug, Clone)]
 pub struct ProtocolInvite {
@@ -245,7 +285,7 @@ pub async fn create_invite_handler(
     let expires_at = payload.expires_in_hours.map(|hours| {
         let now = chrono::Utc::now();
         let expires = now + chrono::Duration::hours(hours);
-        expires.format("%Y-%m-%d %H:%M:%S").to_string()
+        expires.format(INVITE_EXPIRES_AT_FORMAT).to_string()
     });
 
     let code_clone = code.clone();
@@ -487,17 +527,14 @@ pub async fn redeem_invite_handler(
             _ => ApiError::InternalServerError(format!("failed to query invite: {e}")),
         })?;
 
-        // Check expiration
+        // Check expiration. A malformed `expires_at` is rejected as expired
+        // — see `invite_expires_at_is_past` for the rationale.
         if let Some(ref exp) = expires_at {
-            if let Ok(exp_dt) =
-                chrono::NaiveDateTime::parse_from_str(exp, "%Y-%m-%d %H:%M:%S")
-            {
-                let now = chrono::Utc::now().naive_utc();
-                if exp_dt < now {
-                    return Err(ApiError::BadRequest(
-                        "Invalid or expired invite code".to_string(),
-                    ));
-                }
+            let now = chrono::Utc::now().naive_utc();
+            if invite_expires_at_is_past(exp, now) {
+                return Err(ApiError::BadRequest(
+                    "Invalid or expired invite code".to_string(),
+                ));
             }
         }
 
@@ -814,6 +851,85 @@ mod tests {
     fn parse_protocol_invite_wrong_scheme() {
         let url = "https://invite?server=https%3A%2F%2Fannex.example.com&code=abc123";
         assert!(parse_protocol_invite(url).is_none());
+    }
+
+    #[test]
+    fn invite_expires_at_in_the_future_is_not_past() {
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 5, 12)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        assert!(!invite_expires_at_is_past("2026-05-12 12:00:01", now));
+        assert!(!invite_expires_at_is_past("2030-01-01 00:00:00", now));
+    }
+
+    #[test]
+    fn invite_expires_at_in_the_past_is_past() {
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 5, 12)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        assert!(invite_expires_at_is_past("2026-05-12 11:59:59", now));
+        assert!(invite_expires_at_is_past("2020-01-01 00:00:00", now));
+    }
+
+    #[test]
+    fn invite_expires_at_at_now_is_not_past() {
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 5, 12)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        // exp_dt < now is the production condition; equality is not "past".
+        assert!(!invite_expires_at_is_past("2026-05-12 12:00:00", now));
+    }
+
+    #[test]
+    fn invite_expires_at_unparseable_is_treated_as_past() {
+        // The pre-fix code silently treated parse failures as
+        // "not expired", which let any operator-issued non-canonical
+        // expires_at value silently produce a never-expiring invite.
+        // Defence in depth: malformed expires_at is rejected.
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 5, 12)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        // RFC3339-like value (operator-pasted ISO 8601 with `T` and `Z`)
+        assert!(invite_expires_at_is_past("2030-01-01T00:00:00Z", now));
+        // Date-only (operator typo)
+        assert!(invite_expires_at_is_past("2030-01-01", now));
+        // Empty
+        assert!(invite_expires_at_is_past("", now));
+        // Garbage
+        assert!(invite_expires_at_is_past("not-a-date", now));
+        // Trailing fractional seconds — chrono's strict parse rejects this
+        // for the `%Y-%m-%d %H:%M:%S` format.
+        assert!(invite_expires_at_is_past("2030-01-01 00:00:00.123", now));
+    }
+
+    #[test]
+    fn invite_expires_at_format_is_what_create_handler_writes() {
+        // Round-trip: format a chrono::DateTime<Utc> the same way
+        // create_invite_handler does, and confirm the helper accepts it.
+        let written = chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(
+            chrono::NaiveDate::from_ymd_opt(2030, 1, 1)
+                .unwrap()
+                .and_hms_opt(12, 34, 56)
+                .unwrap(),
+            chrono::Utc,
+        )
+        .format(INVITE_EXPIRES_AT_FORMAT)
+        .to_string();
+        assert_eq!(written, "2030-01-01 12:34:56");
+        let now_before = chrono::NaiveDate::from_ymd_opt(2026, 5, 12)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        assert!(!invite_expires_at_is_past(&written, now_before));
+        let now_after = chrono::NaiveDate::from_ymd_opt(2030, 1, 2)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        assert!(invite_expires_at_is_past(&written, now_after));
     }
 
     #[test]
