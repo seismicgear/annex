@@ -126,6 +126,7 @@ async fn test_receive_federated_message() {
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
+        trusted_proxy_depth: 0,
     };
 
     let app = app(state);
@@ -310,6 +311,7 @@ async fn setup_relay_fixture(
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
+        trusted_proxy_depth: 0,
     };
 
     let app = app(state);

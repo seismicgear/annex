@@ -278,6 +278,78 @@ impl Default for RateLimiter {
     }
 }
 
+/// Pick the real client IP out of an `X-Forwarded-For` header, given a
+/// trusted-proxy depth declared by the operator. Returns `socket_fallback`
+/// when XFF is missing or shorter than expected, so a mid-rollout proxy
+/// chain doesn't accidentally key every user to whatever IP a malicious
+/// caller wrote into the leftmost slot.
+///
+/// XFF semantics: each proxy appends the immediate-source IP, so the
+/// rightmost entry is the upstream that contacted *us*, and we trust the
+/// rightmost `depth` entries. The real client sits at
+/// `len - depth - 1`; clamped to `0` when the list is too short.
+pub fn resolve_client_ip_from_xff(
+    headers: &axum::http::HeaderMap,
+    depth: u8,
+    socket_fallback: Option<IpAddr>,
+) -> Option<IpAddr> {
+    // depth == 0 means "no trusted proxies in front of us" — XFF, even
+    // if present, is attacker-controlled. The middleware never calls
+    // this function in that mode; defensive guard here mirrors the
+    // contract so callers (and tests) can rely on it.
+    if depth == 0 {
+        return socket_fallback;
+    }
+
+    let xff_value = headers
+        .get(axum::http::header::FORWARDED.as_str())
+        .or_else(|| headers.get(axum::http::HeaderName::from_static("x-forwarded-for")));
+    let Some(xff_value) = xff_value else {
+        return socket_fallback;
+    };
+    let Ok(xff_str) = xff_value.to_str() else {
+        return socket_fallback;
+    };
+    let entries: Vec<&str> = xff_str
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if entries.is_empty() {
+        return socket_fallback;
+    }
+    // Require enough hops for the declared trust depth. If the proxy
+    // chain produced fewer entries than expected, the operator's depth
+    // is misconfigured; refuse to honour XFF and fall back to the
+    // socket peer.
+    if entries.len() < usize::from(depth) {
+        return socket_fallback;
+    }
+    // `len - depth - 1` clamped to 0. When `len == depth`, the only
+    // entries in XFF are proxies, so the "client" we'd extract would be
+    // the first proxy itself — that's not useful. Fall back instead.
+    if entries.len() == usize::from(depth) {
+        return socket_fallback;
+    }
+    let idx = entries.len() - usize::from(depth) - 1;
+    entries
+        .get(idx)
+        .and_then(|raw| {
+            // XFF entries can be bare IPs or `ip:port`. Take the IP portion.
+            let host = raw.split('%').next().unwrap_or(raw);
+            // Strip IPv6 brackets if present.
+            let trimmed = host.trim_start_matches('[').trim_end_matches(']');
+            // Strip ":port" for IPv4 only (IPv6 has colons inside brackets, already stripped).
+            let candidate = if trimmed.matches(':').count() == 1 {
+                trimmed.split(':').next().unwrap_or(trimmed)
+            } else {
+                trimmed
+            };
+            candidate.parse::<IpAddr>().ok()
+        })
+        .or(socket_fallback)
+}
+
 /// Security headers middleware.
 ///
 /// Sets standard security response headers on every response to prevent
@@ -509,13 +581,41 @@ pub async fn rate_limit_middleware(req: Request<Body>, next: Next) -> Result<Res
 
     // 3. Identify Key (IP or pseudonym) combined with endpoint category
     // so that e.g. static file requests don't consume the registration budget.
+    //
+    // For the IP fallback, honour `deployment.trusted_proxy_depth`:
+    //   * depth == 0 (default): use the raw socket peer. `X-Forwarded-For`
+    //     is NEVER trusted here — a client adding the header to a directly-
+    //     exposed server cannot move its rate-limit bucket.
+    //   * depth >= 1: the operator has declared N trusted proxies in front
+    //     of us. The trusted proxies append the immediate source to XFF on
+    //     the way in, so the real client IP is at `len - depth - 1` from
+    //     the left (with the leftmost entry being the original client and
+    //     each subsequent entry being one hop closer to us). When XFF is
+    //     shorter than expected (proxy chain mid-rollout), fall back to
+    //     `ConnectInfo` so we never key a flood of distinct users to a
+    //     single attacker-supplied IP.
     let key = if let Some(identity) = req.extensions().get::<IdentityContext>() {
         RateLimitKey::Pseudonym(identity.0.pseudonym_id.clone(), category)
-    } else if let Some(ConnectInfo(addr)) = req.extensions().get::<ConnectInfo<SocketAddr>>() {
-        RateLimitKey::Ip(addr.ip(), category)
     } else {
-        tracing::error!("rate_limit_middleware: request has neither IdentityContext nor ConnectInfo<SocketAddr>");
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        let socket_ip = req
+            .extensions()
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|ConnectInfo(addr)| addr.ip());
+        let trust_depth = state.trusted_proxy_depth;
+        let resolved_ip = if trust_depth >= 1 {
+            resolve_client_ip_from_xff(req.headers(), trust_depth, socket_ip)
+        } else {
+            socket_ip
+        };
+        match resolved_ip {
+            Some(ip) => RateLimitKey::Ip(ip, category),
+            None => {
+                tracing::error!(
+                    "rate_limit_middleware: no source IP available (no ConnectInfo, no trusted XFF)"
+                );
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
     };
 
     // 4. Check Limit

@@ -50,6 +50,7 @@ fn build_state(pool: annex_db::DbPool, local_server_id: i64) -> AppState {
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: Arc::new(annex_server::storage_health::StorageHealth::new()),
+        trusted_proxy_depth: 0,
     }
 }
 

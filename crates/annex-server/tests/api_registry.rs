@@ -55,6 +55,7 @@ async fn test_register_identity_success() {
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
+        trusted_proxy_depth: 0,
     };
     let app = app(state);
 
@@ -140,6 +141,7 @@ async fn test_register_duplicate_returns_idempotent_path() {
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
+        trusted_proxy_depth: 0,
     };
     let app = app(state);
 
@@ -250,6 +252,7 @@ async fn test_register_invalid_role_failure() {
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
+        trusted_proxy_depth: 0,
     };
     let app = app(state);
 

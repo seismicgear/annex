@@ -1,3 +1,39 @@
+//! ## ⚠️ Experimental — not wired into the production server
+//!
+//! `FederationTransport` defines the WebRTC peer-to-peer transport for
+//! federation traffic, gated by an Ed25519-signed signaling envelope
+//! through `api/signal.js`. The struct is fully typed and the
+//! cryptographic verifier callback is part of the constructor, BUT
+//! **no caller in the workspace currently instantiates it**.
+//!
+//! Until a caller is wired in, the production server does NOT use this
+//! transport — federation traffic continues to flow over the existing
+//! HTTP federation routes (`/api/federation/*`), which have their own
+//! authentication path. Treat this module as the staging ground for the
+//! future relay-based transport.
+//!
+//! Anyone adding the first caller MUST also:
+//!
+//! 1. Configure `ANNEX_SIGNAL_TRUSTED_PEERS` on the relay
+//!    (`api/signal.js`) so the slug↔pubkey binding is enforced before
+//!    a signed envelope reaches us.
+//! 2. Provide a `signal_verifier` closure that consults the
+//!    `instances` table (slug → public_key) and the active
+//!    `federation_agreements` to authorise the sender — not just check
+//!    that the signature matches some pubkey.
+//! 3. Add an integration test exercising send/receive end-to-end with
+//!    the real relay surface.
+//!
+//! Until those land, do not flip a feature flag to "enable the
+//! transport" in production. The relay accepts signed envelopes
+//! addressed at trusted slugs but the receiving server has no
+//! verifier wired up, so an authorised peer could still inject SDP
+//! into a session this server never initiated. The defence-in-depth
+//! check at the receiver is the missing piece.
+//!
+//! See `crates/annex-federation/src/signal.rs::SignalingPayload` for
+//! the wire format and `api/signal.js` for the relay-side gates.
+
 use crate::signal::{SignalClient, SignalError, SignalingPayload};
 use futures_util::Future;
 use std::collections::HashMap;

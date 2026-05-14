@@ -154,12 +154,54 @@ must either install those system packages or continue to use
 `--exclude annex-desktop` until packaging assets are part of the build
 context.
 
+## Desktop CI matrix
+
+The `check-desktop-linux` job in `.github/workflows/ci.yml` is the
+canonical validation lane for `annex-desktop`. It installs the GTK /
+WebKit / Soup / PipeWire dev libraries and runs, in order:
+
+1. `cargo check -p annex-desktop` — fast Rust-level gate.
+2. `cargo clippy -p annex-desktop --all-targets -- -D warnings`.
+3. `cargo tauri build --debug` — the full bundle wiring (build-desktop.js,
+   frontend, resource validation).
+
+`cargo test -p annex-desktop` is deliberately **NOT** run on PR CI. The
+test build links every Tauri Linux dep (gtk, wry, webkit2gtk) twice
+(lib + test binary), which routinely exhausts the standard GitHub runner
+disk during the link phase. The release workflow's production tauri
+build is the strongest desktop-correctness signal we ship; PR CI's
+debug build is the day-to-day gate.
+
+The `.gitkeep` stubs in `assets/piper/` and `assets/voices/` are
+committed so the Tauri resource validator passes on a fresh checkout
+without requiring operators to pre-download Piper.
+
+## snarkjs vulnerability containment
+
+The remaining `npm audit` highs in both `client/` and `zk/` come from
+the same chain — `snarkjs@0.7.6 → bfj → jsonpath → underscore`. A
+build-time scan of `client/dist/assets/*.js` shows **none** of these
+package names appear in the production browser bundle: Vite tree-shakes
+them out because the proof worker only calls `groth16.fullProve` (a
+WASM-backed code path) which doesn't reach bfj's streaming JSON parser.
+
+The chain IS reachable from Node-side tooling (`zk/scripts/test-proofs.js`,
+`snarkjs` CLI usage during proof artifact generation) and from any
+client code that imports `snarkjs` outside the worker — those are
+build-time / dev-time surfaces, not runtime traffic.
+
+Replacement path: a follow-up pass should either move to a newer
+snarkjs (when upstream drops bfj), or port the proof-generation worker
+to a tighter WASM-only entry point that doesn't import the vulnerable
+chain transitively. Until then, the chain is documented and
+contained, not silently shipped.
+
 ## Known Issues
 
 - `annex-desktop`: included in workspace checks when the GTK / WebKit / soup /
   pipewire dev libraries are present AND the gitignored `assets/piper/`,
-  `assets/voices/` directories exist. Environments without those (most CI
-  jobs and ad-hoc dev containers) still need `--exclude annex-desktop` for
+  `assets/voices/` directories exist (`.gitkeep` stubs are tracked).
+  Environments without those still need `--exclude annex-desktop` for
   cargo workspace commands.
 - `voice_integration::test_voice_config_status_enabled` has a pre-existing failure
 - `identity.test.ts` has a mock setup issue causing 1 failure

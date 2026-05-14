@@ -127,9 +127,35 @@ jobs:
           node scripts/setup-groth16.js
         working-directory: zk
 
+      # First-class lightweight gates. `cargo check` + `cargo clippy`
+      # on annex-desktop are the fast Rust-only validations: they don't
+      # need Piper, the frontend, or the bundler — only the system libs
+      # installed above + the gitignored `assets/piper/` and
+      # `assets/voices/` directories (the `.gitkeep` stubs ship those).
+      # Putting them BEFORE the heavy `cargo tauri build` step means a
+      # Rust regression fails CI in under a minute rather than after a
+      # full bundle attempt.
+      - name: Ensure asset stub dirs exist
+        run: mkdir -p assets/piper assets/voices
+
+      - name: cargo check (annex-desktop)
+        run: cargo check -p annex-desktop
+
+      - name: cargo clippy (annex-desktop)
+        run: cargo clippy -p annex-desktop --all-targets -- -D warnings
+
       # `cargo tauri build` runs build-desktop.js as beforeBuildCommand,
       # which copies client/public/zk/* into the frontend dist and Tauri
       # then bundles membership_vkey.json + assets/ as resources.
+      #
+      # `cargo test -p annex-desktop` is intentionally NOT run on PR CI:
+      # the test build links every Linux Tauri dep (gtk, wry, webkit2gtk)
+      # twice (lib + test binary), which on the standard GitHub runner
+      # consumes >30 GiB of disk and routinely fails with
+      # `final link failed: No space left on device`. The release
+      # workflow (`release-desktop.yml`) runs the full Tauri build for
+      # the bundle stage, which is the strongest signal we have for
+      # desktop correctness.
       - name: Install Tauri CLI
         run: cargo install tauri-cli@2 --locked
 

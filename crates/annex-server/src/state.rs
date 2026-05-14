@@ -98,6 +98,13 @@ pub struct AppState {
     /// `degraded` causes the auth middleware to reject mutating
     /// requests with HTTP 507.
     pub storage_health: std::sync::Arc<crate::storage_health::StorageHealth>,
+    /// Number of trusted reverse-proxy hops in front of this process.
+    /// Drives `rate_limit_middleware`'s IP extraction:
+    /// `0` → trust only the raw socket peer; `N >= 1` → take the real
+    /// client from `X-Forwarded-For` once the operator has declared the
+    /// proxy depth via `ANNEX_TRUSTED_PROXY_DEPTH`. See
+    /// `crate::config::DeploymentConfig`.
+    pub trusted_proxy_depth: u8,
 }
 
 impl AppState {

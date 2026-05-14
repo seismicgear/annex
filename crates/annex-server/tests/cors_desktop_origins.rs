@@ -61,6 +61,7 @@ fn build_test_state(cors_origins: Vec<String>) -> AppState {
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
+        trusted_proxy_depth: 0,
     }
 }
 

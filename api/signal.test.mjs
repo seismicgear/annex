@@ -95,10 +95,13 @@ function signedPayload(signer, base = basePayload()) {
   return p;
 }
 
-// Snapshot + restore ANNEX_BUILD_PROFILE around each test.
-function withProfile(profile, fn) {
+// Snapshot + restore ANNEX_BUILD_PROFILE and ANNEX_SIGNAL_TRUSTED_PEERS
+// around each test. Tests that don't pass `trustMap` clear the trust map
+// env var entirely, which mirrors a freshly-deployed relay.
+async function withProfile(profile, fn, { trustMap } = {}) {
   const prev = process.env.ANNEX_BUILD_PROFILE;
   const prevNodeEnv = process.env.NODE_ENV;
+  const prevPeers = process.env.ANNEX_SIGNAL_TRUSTED_PEERS;
   if (profile === null) {
     delete process.env.ANNEX_BUILD_PROFILE;
     delete process.env.NODE_ENV;
@@ -106,14 +109,38 @@ function withProfile(profile, fn) {
     process.env.ANNEX_BUILD_PROFILE = profile;
     delete process.env.NODE_ENV;
   }
+  if (trustMap === undefined) delete process.env.ANNEX_SIGNAL_TRUSTED_PEERS;
+  else process.env.ANNEX_SIGNAL_TRUSTED_PEERS = trustMap;
+  // `await fn()` — not bare `return fn()` — is load-bearing. The body
+  // is async and reads `process.env.*` from inside the handler across
+  // multiple `await`s; without awaiting here, `finally` would tear the
+  // env vars down before the handler ran its second pass and a
+  // production test would silently see `isProd = false`.
   try {
-    return fn();
+    return await fn();
   } finally {
     if (prev === undefined) delete process.env.ANNEX_BUILD_PROFILE;
     else process.env.ANNEX_BUILD_PROFILE = prev;
     if (prevNodeEnv === undefined) delete process.env.NODE_ENV;
     else process.env.NODE_ENV = prevNodeEnv;
+    if (prevPeers === undefined) delete process.env.ANNEX_SIGNAL_TRUSTED_PEERS;
+    else process.env.ANNEX_SIGNAL_TRUSTED_PEERS = prevPeers;
   }
+}
+
+// Build a trust-map JSON string for the given slug→pubkey pairs.
+function trustMapJson(entries) {
+  return JSON.stringify(entries);
+}
+
+// Sign a GET-drain header set with `signer` for `slug` at `ts`.
+function signDrainHeaders(signer, slug, ts = Date.now()) {
+  const canonical = `drain|${slug.toLowerCase()}|${ts}`;
+  return {
+    'x-annex-drain-slug': slug,
+    'x-annex-drain-timestamp': String(ts),
+    'x-annex-drain-signature': signer.sign(canonical),
+  };
 }
 
 // ─── Structural validation ────────────────────────────────────────────────
@@ -260,25 +287,44 @@ test('production POST rejects bad from_pubkey_hex format', async () => {
 
 test('production POST accepts valid signed envelope and queues it', async () => {
   __test.resetState();
-  const signer = freshSigner();
-  await withProfile('production', async () => {
-    const payload = signedPayload(signer);
-    const res = mockRes();
-    await handler(mockReq({ body: payload, ip: '198.51.100.23' }), res);
-    assert.equal(res.statusCode, 202);
-    assert.deepEqual(res.body, { ok: true });
+  const sender = freshSigner();
+  const receiver = freshSigner();
+  await withProfile(
+    'production',
+    async () => {
+      const payload = signedPayload(sender);
+      const res = mockRes();
+      await handler(mockReq({ body: payload, ip: '198.51.100.23' }), res);
+      assert.equal(res.statusCode, 202, `expected 202; got ${res.statusCode} body=${JSON.stringify(res.body)}`);
+      assert.deepEqual(res.body, { ok: true });
 
-    // GET drain with the right slug returns the queued payload.
-    const drainRes = mockRes();
-    await handler(
-      mockReq({ method: 'GET', query: { slug: VALID_TO, wait: 1 }, ip: '198.51.100.24' }),
-      drainRes,
-    );
-    assert.equal(drainRes.statusCode, 200);
-    assert.equal(drainRes.body.from_server_slug, VALID_FROM);
-    assert.equal(drainRes.body.session_id, 'sess-123');
-    assert.equal(drainRes.body.from_pubkey_hex, signer.rawPubHex);
-  });
+      // GET drain by the receiver (who owns VALID_TO) returns the payload.
+      const drainRes = mockRes();
+      await handler(
+        mockReq({
+          method: 'GET',
+          query: { slug: VALID_TO, wait: 0 },
+          ip: '198.51.100.24',
+          headers: signDrainHeaders(receiver, VALID_TO),
+        }),
+        drainRes,
+      );
+      assert.equal(
+        drainRes.statusCode,
+        200,
+        `expected 200; got ${drainRes.statusCode} body=${JSON.stringify(drainRes.body)}`,
+      );
+      assert.equal(drainRes.body.from_server_slug, VALID_FROM);
+      assert.equal(drainRes.body.session_id, 'sess-123');
+      assert.equal(drainRes.body.from_pubkey_hex, sender.rawPubHex);
+    },
+    {
+      trustMap: trustMapJson({
+        [VALID_FROM]: sender.rawPubHex,
+        [VALID_TO]: receiver.rawPubHex,
+      }),
+    },
+  );
 });
 
 test('dev POST accepts unsigned envelope (legacy path)', async () => {
@@ -361,23 +407,31 @@ test('PUT is rejected with 405', async () => {
 test('POST rate limit caps an aggressive sender per IP', async () => {
   __test.resetState();
   const signer = freshSigner();
-  await withProfile('production', async () => {
-    // POST_LIMIT_PER_MIN is high (60). Burst until we cross it.
-    const ip = '198.51.100.50';
-    let lastStatus = 0;
-    for (let i = 0; i < __test.POST_LIMIT_PER_MIN + 5; i++) {
-      const res = mockRes();
-      await handler(mockReq({ body: signedPayload(signer), ip }), res);
-      lastStatus = res.statusCode;
-      if (res.statusCode === 429) break;
-    }
-    assert.equal(lastStatus, 429, 'eventual 429 expected after burst exceeds POST_LIMIT_PER_MIN');
+  await withProfile(
+    'production',
+    async () => {
+      // POST_LIMIT_PER_MIN is high (60). Burst until we cross it. Each
+      // payload uses a fresh session_id so the replay defence doesn't
+      // mask the rate-limit cap.
+      const ip = '198.51.100.50';
+      let lastStatus = 0;
+      for (let i = 0; i < __test.POST_LIMIT_PER_MIN + 5; i++) {
+        const base = { ...basePayload(), session_id: `sess-burst-${i}` };
+        const res = mockRes();
+        await handler(mockReq({ body: signedPayload(signer, base), ip }), res);
+        lastStatus = res.statusCode;
+        if (res.statusCode === 429) break;
+      }
+      assert.equal(lastStatus, 429, 'eventual 429 expected after burst exceeds POST_LIMIT_PER_MIN');
 
-    // A different IP must still be unaffected.
-    const freshRes = mockRes();
-    await handler(mockReq({ body: signedPayload(signer), ip: '198.51.100.51' }), freshRes);
-    assert.equal(freshRes.statusCode, 202);
-  });
+      // A different IP must still be unaffected.
+      const freshRes = mockRes();
+      const freshBase = { ...basePayload(), session_id: 'sess-fresh-ip' };
+      await handler(mockReq({ body: signedPayload(signer, freshBase), ip: '198.51.100.51' }), freshRes);
+      assert.equal(freshRes.statusCode, 202);
+    },
+    { trustMap: trustMapJson({ [VALID_FROM]: signer.rawPubHex }) },
+  );
 });
 
 test('GET rate limit caps an aggressive drainer per IP', async () => {
@@ -405,34 +459,56 @@ test('GET rate limit caps an aggressive drainer per IP', async () => {
 
 test('GET drain cannot fetch a payload addressed to a different slug', async () => {
   __test.resetState();
-  const signer = freshSigner();
-  await withProfile('production', async () => {
-    // Enqueue addressed to VALID_TO.
-    const postRes = mockRes();
-    await handler(mockReq({ body: signedPayload(signer), ip: '198.51.100.70' }), postRes);
-    assert.equal(postRes.statusCode, 202);
+  const sender = freshSigner();
+  const receiver = freshSigner();
+  const otherOwner = freshSigner();
+  const otherSlug = 'ffffffffffff';
+  await withProfile(
+    'production',
+    async () => {
+      // Enqueue addressed to VALID_TO.
+      const postRes = mockRes();
+      await handler(mockReq({ body: signedPayload(sender), ip: '198.51.100.70' }), postRes);
+      assert.equal(postRes.statusCode, 202);
 
-    // Drain with a DIFFERENT slug → must return 204 (empty queue for that
-    // slug). The relay does NOT cross slugs, so an attacker who knows
-    // their own slug cannot poll for someone else's signals.
-    const otherSlug = 'ffffffffffff';
-    const drainRes = mockRes();
-    await handler(
-      mockReq({ method: 'GET', query: { slug: otherSlug, wait: 1 }, ip: '198.51.100.71' }),
-      drainRes,
-    );
-    assert.equal(drainRes.statusCode, 204);
+      // Drain with a DIFFERENT slug (owned by otherOwner), correctly
+      // authenticated. The queue for that slug is empty so the
+      // response must be 204 — the relay does not cross slugs.
+      const drainRes = mockRes();
+      await handler(
+        mockReq({
+          method: 'GET',
+          query: { slug: otherSlug, wait: 0 },
+          ip: '198.51.100.71',
+          headers: signDrainHeaders(otherOwner, otherSlug),
+        }),
+        drainRes,
+      );
+      assert.equal(drainRes.statusCode, 204);
 
-    // And the original queue still has the message — confirmed by
-    // draining with the correct slug.
-    const correctDrain = mockRes();
-    await handler(
-      mockReq({ method: 'GET', query: { slug: VALID_TO, wait: 1 }, ip: '198.51.100.72' }),
-      correctDrain,
-    );
-    assert.equal(correctDrain.statusCode, 200);
-    assert.equal(correctDrain.body.session_id, 'sess-123');
-  });
+      // And the original queue still has the message — confirmed by
+      // draining with the correct slug under the correct key.
+      const correctDrain = mockRes();
+      await handler(
+        mockReq({
+          method: 'GET',
+          query: { slug: VALID_TO, wait: 0 },
+          ip: '198.51.100.72',
+          headers: signDrainHeaders(receiver, VALID_TO),
+        }),
+        correctDrain,
+      );
+      assert.equal(correctDrain.statusCode, 200);
+      assert.equal(correctDrain.body.session_id, 'sess-123');
+    },
+    {
+      trustMap: trustMapJson({
+        [VALID_FROM]: sender.rawPubHex,
+        [VALID_TO]: receiver.rawPubHex,
+        [otherSlug]: otherOwner.rawPubHex,
+      }),
+    },
+  );
 });
 
 // ─── Profile detection ──────────────────────────────────────────────────
@@ -465,4 +541,382 @@ test('isProductionProfile falls back to NODE_ENV=production', () => {
     if (prevNodeEnv === undefined) delete process.env.NODE_ENV;
     else process.env.NODE_ENV = prevNodeEnv;
   }
+});
+
+// ─── Authorization: trust map (POST) ─────────────────────────────────────
+
+test('production POST without trust map config returns 503', async () => {
+  __test.resetState();
+  const signer = freshSigner();
+  // No trustMap → empty under production.
+  await withProfile('production', async () => {
+    const res = mockRes();
+    await handler(mockReq({ body: signedPayload(signer), ip: '198.51.100.80' }), res);
+    assert.equal(res.statusCode, 503);
+    assert.match(res.body?.error || '', /ANNEX_SIGNAL_TRUSTED_PEERS is empty/i);
+  });
+});
+
+test('production POST rejects valid signature from unknown key', async () => {
+  __test.resetState();
+  const signer = freshSigner();
+  const unrelated = freshSigner();
+  await withProfile(
+    'production',
+    async () => {
+      const res = mockRes();
+      // Trust map registers `unrelated` for VALID_FROM; payload signed
+      // by `signer` (a different key) must be rejected even though the
+      // signature itself verifies.
+      await handler(mockReq({ body: signedPayload(signer), ip: '198.51.100.81' }), res);
+      assert.equal(res.statusCode, 401);
+      assert.match(res.body?.error || '', /does not match the trusted key/i);
+    },
+    { trustMap: trustMapJson({ [VALID_FROM]: unrelated.rawPubHex }) },
+  );
+});
+
+test('production POST rejects signature for slug not in trust map', async () => {
+  __test.resetState();
+  const signer = freshSigner();
+  await withProfile(
+    'production',
+    async () => {
+      const res = mockRes();
+      // Trust map registers `signer` for a DIFFERENT slug only. The
+      // payload claims VALID_FROM, which is not in the map → 401.
+      await handler(mockReq({ body: signedPayload(signer), ip: '198.51.100.82' }), res);
+      assert.equal(res.statusCode, 401);
+      assert.match(res.body?.error || '', /not in the trusted peer list/i);
+    },
+    { trustMap: trustMapJson({ '000000000000': signer.rawPubHex }) },
+  );
+});
+
+test('production POST rejects key authorised for a different slug', async () => {
+  __test.resetState();
+  const signer = freshSigner();
+  const decoy = 'aaaaaaaaaaaa';
+  await withProfile(
+    'production',
+    async () => {
+      // Trust map: `signer` is authorised for `decoy`, NOT for VALID_FROM.
+      // Even though the payload's signature verifies against signer's
+      // pubkey, the slug binding rejects it.
+      const res = mockRes();
+      await handler(mockReq({ body: signedPayload(signer), ip: '198.51.100.83' }), res);
+      assert.equal(res.statusCode, 401);
+      assert.match(
+        res.body?.error || '',
+        /not in the trusted peer list|does not match the trusted key/i,
+      );
+    },
+    { trustMap: trustMapJson({ [decoy]: signer.rawPubHex }) },
+  );
+});
+
+test('production POST canonical-field mismatch is rejected', async () => {
+  __test.resetState();
+  const signer = freshSigner();
+  await withProfile(
+    'production',
+    async () => {
+      // Sign a payload, then mutate the outer `to_server_slug` while
+      // leaving the signature in place. The signature now no longer
+      // matches the outer fields → rejected as invalid.
+      const payload = signedPayload(signer);
+      payload.to_server_slug = '000000000000';
+      const res = mockRes();
+      await handler(mockReq({ body: payload, ip: '198.51.100.84' }), res);
+      assert.equal(res.statusCode, 401);
+      assert.match(res.body?.error || '', /invalid signaling signature/i);
+    },
+    { trustMap: trustMapJson({ [VALID_FROM]: signer.rawPubHex }) },
+  );
+});
+
+test('production POST rejects replayed signed envelope', async () => {
+  __test.resetState();
+  const signer = freshSigner();
+  await withProfile(
+    'production',
+    async () => {
+      const payload = signedPayload(signer);
+      // First send succeeds.
+      const firstRes = mockRes();
+      await handler(mockReq({ body: payload, ip: '198.51.100.85' }), firstRes);
+      assert.equal(firstRes.statusCode, 202);
+      // Same exact bytes replayed → 409 Conflict (replay).
+      const replayRes = mockRes();
+      await handler(mockReq({ body: payload, ip: '198.51.100.86' }), replayRes);
+      assert.equal(replayRes.statusCode, 409);
+      assert.match(replayRes.body?.error || '', /replayed signaling envelope/i);
+    },
+    { trustMap: trustMapJson({ [VALID_FROM]: signer.rawPubHex }) },
+  );
+});
+
+test('production POST returns 503 on malformed trust map', async () => {
+  __test.resetState();
+  const signer = freshSigner();
+  await withProfile(
+    'production',
+    async () => {
+      const res = mockRes();
+      await handler(mockReq({ body: signedPayload(signer), ip: '198.51.100.87' }), res);
+      assert.equal(res.statusCode, 503);
+      assert.match(res.body?.error || '', /relay misconfigured/i);
+    },
+    // Bad pubkey length (32 chars instead of 64) — must surface as 503.
+    { trustMap: `${VALID_FROM}:deadbeefdeadbeefdeadbeefdeadbeef` },
+  );
+});
+
+test('parseTrustedPeers parses both JSON and CSV forms', () => {
+  const csv = __test.parseTrustedPeers(
+    `${VALID_FROM}:${'a'.repeat(64)},${VALID_TO}:${'b'.repeat(64)}`,
+  );
+  assert.equal(csv.size, 2);
+  assert.equal(csv.get(VALID_FROM), 'a'.repeat(64));
+  assert.equal(csv.get(VALID_TO), 'b'.repeat(64));
+
+  const json = __test.parseTrustedPeers(
+    JSON.stringify({ [VALID_FROM]: 'a'.repeat(64), [VALID_TO]: 'b'.repeat(64) }),
+  );
+  assert.equal(json.size, 2);
+  assert.equal(json.get(VALID_FROM), 'a'.repeat(64));
+
+  assert.throws(
+    () => __test.parseTrustedPeers(`badslug:${'a'.repeat(64)}`),
+    /invalid slug/i,
+  );
+  assert.throws(
+    () => __test.parseTrustedPeers(`${VALID_FROM}:nothex`),
+    /invalid pubkey/i,
+  );
+  // CSV duplicates DO throw (we walk every comma-separated entry).
+  assert.throws(
+    () => __test.parseTrustedPeers(
+      `${VALID_FROM}:${'a'.repeat(64)},${VALID_FROM}:${'b'.repeat(64)}`,
+    ),
+    /duplicate slug/i,
+  );
+  // JSON dedupes itself before our walk (last value wins per ECMA-262),
+  // so the parser sees one entry and must NOT throw.
+  const dedup = __test.parseTrustedPeers(
+    `{"${VALID_FROM}": "${'a'.repeat(64)}", "${VALID_FROM}": "${'b'.repeat(64)}"}`,
+  );
+  assert.equal(dedup.size, 1);
+  assert.equal(dedup.get(VALID_FROM), 'b'.repeat(64));
+});
+
+test('dev profile: unsigned POST accepted regardless of trust map', async () => {
+  __test.resetState();
+  // Dev with NO trust map: unsigned accepted.
+  await withProfile('dev', async () => {
+    const res = mockRes();
+    await handler(mockReq({ body: basePayload(), ip: '198.51.100.88' }), res);
+    assert.equal(res.statusCode, 202);
+  });
+  // Dev with a populated trust map: unsigned STILL accepted (dev does
+  // not enforce authz). The map is only relevant under production.
+  __test.resetState();
+  await withProfile(
+    'dev',
+    async () => {
+      const res = mockRes();
+      await handler(mockReq({ body: basePayload(), ip: '198.51.100.89' }), res);
+      assert.equal(res.statusCode, 202);
+    },
+    { trustMap: trustMapJson({ [VALID_FROM]: 'a'.repeat(64) }) },
+  );
+});
+
+// ─── Authorization: GET drain ───────────────────────────────────────────
+
+test('production GET without auth headers returns 401', async () => {
+  __test.resetState();
+  const receiver = freshSigner();
+  await withProfile(
+    'production',
+    async () => {
+      const res = mockRes();
+      await handler(
+        mockReq({ method: 'GET', query: { slug: VALID_TO, wait: 0 }, ip: '198.51.100.90' }),
+        res,
+      );
+      assert.equal(res.statusCode, 401);
+      assert.match(res.body?.error || '', /drain requires x-annex-drain/i);
+    },
+    { trustMap: trustMapJson({ [VALID_TO]: receiver.rawPubHex }) },
+  );
+});
+
+test('production GET with mismatched slug header returns 401', async () => {
+  __test.resetState();
+  const receiver = freshSigner();
+  await withProfile(
+    'production',
+    async () => {
+      // Drain headers are signed for VALID_TO but query asks for a
+      // different slug → mismatch → 401.
+      const res = mockRes();
+      await handler(
+        mockReq({
+          method: 'GET',
+          query: { slug: '000000000000', wait: 0 },
+          ip: '198.51.100.91',
+          headers: {
+            ...signDrainHeaders(receiver, VALID_TO),
+            'x-annex-drain-slug': '000000000000',
+          },
+        }),
+        res,
+      );
+      assert.equal(res.statusCode, 401);
+    },
+    {
+      trustMap: trustMapJson({
+        [VALID_TO]: receiver.rawPubHex,
+        '000000000000': receiver.rawPubHex,
+      }),
+    },
+  );
+});
+
+test('production GET with wrong key for slug returns 401', async () => {
+  __test.resetState();
+  const realOwner = freshSigner();
+  const attacker = freshSigner();
+  await withProfile(
+    'production',
+    async () => {
+      // Headers signed by `attacker`, but trust map says the slug
+      // belongs to `realOwner` → signature does not verify → 401.
+      const res = mockRes();
+      await handler(
+        mockReq({
+          method: 'GET',
+          query: { slug: VALID_TO, wait: 0 },
+          ip: '198.51.100.92',
+          headers: signDrainHeaders(attacker, VALID_TO),
+        }),
+        res,
+      );
+      assert.equal(res.statusCode, 401);
+      assert.match(res.body?.error || '', /signature failed verification/i);
+    },
+    { trustMap: trustMapJson({ [VALID_TO]: realOwner.rawPubHex }) },
+  );
+});
+
+test('production GET for slug not in trust map returns 401', async () => {
+  __test.resetState();
+  const stranger = freshSigner();
+  await withProfile(
+    'production',
+    async () => {
+      const res = mockRes();
+      await handler(
+        mockReq({
+          method: 'GET',
+          query: { slug: '111111111111', wait: 0 },
+          ip: '198.51.100.93',
+          headers: signDrainHeaders(stranger, '111111111111'),
+        }),
+        res,
+      );
+      assert.equal(res.statusCode, 401);
+      assert.match(res.body?.error || '', /not in the trusted peer list/i);
+    },
+    { trustMap: trustMapJson({ [VALID_TO]: stranger.rawPubHex }) },
+  );
+});
+
+test('production GET with correct signature accepted (returns 204 when empty)', async () => {
+  __test.resetState();
+  const receiver = freshSigner();
+  await withProfile(
+    'production',
+    async () => {
+      const res = mockRes();
+      await handler(
+        mockReq({
+          method: 'GET',
+          query: { slug: VALID_TO, wait: 0 },
+          ip: '198.51.100.94',
+          headers: signDrainHeaders(receiver, VALID_TO),
+        }),
+        res,
+      );
+      // No payload queued → 204. Status 401 here would mean auth failed.
+      assert.equal(res.statusCode, 204);
+    },
+    { trustMap: trustMapJson({ [VALID_TO]: receiver.rawPubHex }) },
+  );
+});
+
+test('production GET with stale timestamp returns 401', async () => {
+  __test.resetState();
+  const receiver = freshSigner();
+  const ancientTs = Date.now() - 5 * 60_000;
+  await withProfile(
+    'production',
+    async () => {
+      const res = mockRes();
+      await handler(
+        mockReq({
+          method: 'GET',
+          query: { slug: VALID_TO, wait: 0 },
+          ip: '198.51.100.95',
+          headers: signDrainHeaders(receiver, VALID_TO, ancientTs),
+        }),
+        res,
+      );
+      assert.equal(res.statusCode, 401);
+      assert.match(res.body?.error || '', /timestamp outside freshness window/i);
+    },
+    { trustMap: trustMapJson({ [VALID_TO]: receiver.rawPubHex }) },
+  );
+});
+
+test('production GET drain rejects replayed signature', async () => {
+  __test.resetState();
+  const receiver = freshSigner();
+  const ts = Date.now();
+  const headers = signDrainHeaders(receiver, VALID_TO, ts);
+  await withProfile(
+    'production',
+    async () => {
+      // First drain accepted (204 — empty queue).
+      const first = mockRes();
+      await handler(
+        mockReq({ method: 'GET', query: { slug: VALID_TO, wait: 0 }, ip: '198.51.100.96', headers }),
+        first,
+      );
+      assert.equal(first.statusCode, 204);
+      // Same headers replayed → 409.
+      const second = mockRes();
+      await handler(
+        mockReq({ method: 'GET', query: { slug: VALID_TO, wait: 0 }, ip: '198.51.100.97', headers }),
+        second,
+      );
+      assert.equal(second.statusCode, 409);
+      assert.match(second.body?.error || '', /replayed GET drain/i);
+    },
+    { trustMap: trustMapJson({ [VALID_TO]: receiver.rawPubHex }) },
+  );
+});
+
+test('dev GET drain remains permissive (no headers required)', async () => {
+  __test.resetState();
+  await withProfile('dev', async () => {
+    const res = mockRes();
+    await handler(
+      mockReq({ method: 'GET', query: { slug: VALID_TO, wait: 0 }, ip: '198.51.100.98' }),
+      res,
+    );
+    // No payload queued, no headers required in dev → 204 (empty).
+    assert.equal(res.statusCode, 204);
+  });
 });
