@@ -189,8 +189,24 @@ pub(crate) async fn handle(ctx: &CommandContext<'_>, channel_id: String, text: S
                                         let cm = ctx.state.connection_manager.clone();
                                         let p_clone = ctx.pseudonym.to_string();
 
+                                        // Differentiate `Lagged` from `Closed` so a brief
+                                        // burst of transcription events that overflows the
+                                        // 256-deep broadcast window does NOT terminate this
+                                        // forwarder permanently. See [F36] for the analysis.
                                         tokio::spawn(async move {
-                                            while let Ok(event) = rx.recv().await {
+                                            loop {
+                                                let event = match rx.recv().await {
+                                                    Ok(e) => e,
+                                                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                                        tracing::warn!(
+                                                            pseudonym = %p_clone,
+                                                            skipped = n,
+                                                            "transcription broadcast lagged; some events skipped",
+                                                        );
+                                                        continue;
+                                                    }
+                                                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                                                };
                                                 let msg = OutgoingMessage::Transcription {
                                                     channel_id: event.channel_id,
                                                     speaker_pseudonym: event.speaker_pseudonym,

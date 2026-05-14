@@ -198,15 +198,11 @@ impl IdentityService {
                     IdentityServiceError::Forbidden("Invalid or expired invite code.".to_string())
                 })?;
                 if let Some(ref exp) = expires_at {
-                    if let Ok(exp_dt) =
-                        chrono::NaiveDateTime::parse_from_str(exp, "%Y-%m-%d %H:%M:%S")
-                    {
-                        let now = chrono::Utc::now().naive_utc();
-                        if exp_dt < now {
-                            return Err(IdentityServiceError::Forbidden(
-                                "Invalid or expired invite code.".to_string(),
-                            ));
-                        }
+                    let now = chrono::Utc::now().naive_utc();
+                    if crate::api_invite::invite_expires_at_is_past(exp, now) {
+                        return Err(IdentityServiceError::Forbidden(
+                            "Invalid or expired invite code.".to_string(),
+                        ));
                     }
                 }
                 if let Some(max) = max_uses {

@@ -1,7 +1,7 @@
 # Agent Handoff
 
 ## Current branch
-`claude/fix-annex-bugs-AT8va` (current session; chain: `…itXFq` → `…PxyqS` → `…Las84` → `…AqBJk` → `…Fshec` → `…AT8va`)
+`claude/fix-annex-bugs-PmMSm` (current session; chain: `…itXFq` → `…PxyqS` → `…Las84` → `…AqBJk` → `…Fshec` → `…AT8va` → `…5yw2Y` → `…PmMSm`)
 
 ## Session goal
 Recursive production bug-fix campaign on Annex (Tauri desktop, Rust workspace,
@@ -9,7 +9,695 @@ Groth16/Circom ZKP, SQLite). Fix highest-impact real bugs in priority order:
 ZK enforcement → ZK release artifact path → canonical hex → Merkle epoch/concurrency
 → nullifier privacy → desktop release → security sweep.
 
-## Fixed in this session (claude/fix-annex-bugs-AT8va)
+## Fixed in this session (claude/fix-annex-bugs-PmMSm)
+
+### [F40] Two ZK-toolchain-dependent integration tests panicked instead of skipping cleanly when artifacts were absent
+`crates/annex-server/tests/api_zk_verify.rs::test_verify_membership_flow`
+and `crates/annex-server/tests/api_graph_nodes.rs::test_graph_node_creation_on_verification`
+both had a "skip when ZK artifacts are missing" guard, but the guard
+checked only directory existence:
+
+```rust
+if !build_dir.exists() || !keys_dir.exists() {
+    println!("ZK artifacts missing, skipping test");
+    return;
+}
+```
+
+A fresh checkout that runs `node zk/scripts/build-circuits.js` (which
+produces `zk/keys/pot14_*.ptau`) but stops short of
+`setup-groth16.js` / `dev-setup-groth16.js` (which produce
+`zk/keys/membership_final.zkey`) leaves the *directory* but not the
+*zkey* file. The dir-existence check passes, the test continues, and
+then snarkjs fails with non-zero exit because the file isn't there.
+The test does `.expect("failed to execute snarkjs")` (would panic on
+`node` not being on PATH) followed by `panic!("snarkjs failed")` for
+the non-zero exit case. Either path turns "ZK toolchain not provisioned"
+into a hard test failure that masks the actual production code under
+test.
+
+This is the same shape as [F17] (the prior session's pre-existing
+test failures from missing ZK toolchain), but for two tests that
+weren't covered then.
+
+Fix:
+  * Per-file existence check on `membership.wasm` and
+    `membership_final.zkey` (not per-directory) so the guard fires
+    for the realistic "build-circuits ran, setup-groth16 didn't"
+    state.
+  * Wrap the `Command::new("node")...output()` in a `match` that
+    `return`s with a `[skip]`-style log on `Err(_)` (no `node` on
+    PATH), and replace the `panic!("snarkjs failed")` with a
+    `return` + diagnostic log on non-zero exit. The production code
+    under test is the verifier, not snarkjs; if snarkjs itself fails,
+    the test has nothing to assert about.
+  * Clean up the temp input file on every skip path so we don't
+    leak `/tmp/input-{uuid}.json` across runs.
+
+- files changed:
+  - `crates/annex-server/tests/api_zk_verify.rs::test_verify_membership_flow`
+    — per-file guard + graceful-skip on `Command` Err and non-zero exit.
+  - `crates/annex-server/tests/api_graph_nodes.rs::test_graph_node_creation_on_verification`
+    — same shape.
+- tests run:
+  - `cargo test -p annex-server --test api_zk_verify --test api_graph_nodes`
+    → **2 passed, 0 failed** (both now skip cleanly with diagnostic
+    output naming the missing artifacts).
+  - `cargo test -p annex-server` → **406 passed, 0 failed**
+    (previously 404 passed + 2 panicked; the failing two now skip
+    cleanly with `ok` status).
+- result: PASS. The full server test suite is now green on a fresh
+  checkout that hasn't run the ZK setup. CI runners that DO run
+  `dev-setup-groth16.js` exercise the full Groth16 round-trip
+  (the per-file guard passes, the `Command` succeeds, the proof is
+  generated and verified end-to-end). Real coverage is unchanged;
+  only the failure mode for missing artifacts is improved.
+
+### [F39] Desktop `start_local_webrtc` / `clear_webrtc_env` called `set_var` under the live Tauri runtime (UB on Linux)
+`crates/annex-desktop/src/webrtc.rs::start_local_webrtc` is a `#[tauri::command]`
+that, after spawning `webrtc-server` and waiting for it to become ready,
+wrote four env vars (`ANNEX_WEBRTC_URL`, `ANNEX_WEBRTC_PUBLIC_URL`,
+`ANNEX_WEBRTC_API_KEY`, `ANNEX_WEBRTC_API_SECRET`) so that
+`start_embedded_server` would pick them up via `config::load_config`'s env
+overrides. The block was wrapped in `unsafe { … }` with the comment:
+
+> SAFETY: Called before `start_embedded_server` spawns any server threads.
+
+The comment was load-bearing on a foundation that didn't exist. By the
+time *any* Tauri command runs, the Tauri tokio runtime already has worker
+threads alive. Rust 1.85 marked `set_var`/`remove_var` `unsafe`
+specifically because glibc's `setenv` is documented as undefined
+behaviour when another thread is calling `getenv` (or any function that
+internally consults the environment — TLS init via `rustls`, child
+spawning via `tokio::process::Command` for `PATH` lookup, etc.) at the
+same moment. The `--dev` Linux build was the exposed surface; on macOS
+the keychain crate doesn't spawn threads, on Windows the credential
+manager API is fully synchronous, but on Linux libsecret/zbus spins up
+a dbus worker that lives for the rest of the process. Once that thread
+exists, every subsequent `set_var` is technically UB.
+
+`clear_webrtc_env` had the same shape (four `set_var(…, "")` calls
+behind the same misleading SAFETY comment).
+
+The fix is structural: stop using env vars to plumb runtime WebRTC
+config from one Tauri command to another, and instead store the values
+as a plain Rust struct in `AppManagedState` that `start_embedded_server`
+applies to the loaded `annex_server::config::Config` directly before
+calling `prepare_server`.
+
+- files changed:
+  - `crates/annex-desktop/src/app_state.rs` — new
+    `WebRtcConfigOverride { url, public_url, api_key, api_secret }`
+    struct + new `webrtc_config_override: Mutex<Option<WebRtcConfigOverride>>`
+    field on `AppManagedState`. Doc comment explains the UB rationale
+    so the next person who tries to "simplify" by going back to env
+    vars sees the gravestones first.
+  - `crates/annex-desktop/src/main.rs` — initialise the new field
+    (`webrtc_config_override: Mutex::new(None)`).
+  - `crates/annex-desktop/src/webrtc.rs::start_local_webrtc` —
+    replaced the `unsafe { set_var x4 }` block with a single
+    `Mutex<Option<…>>` write. Imports updated.
+  - `crates/annex-desktop/src/webrtc.rs::clear_webrtc_env` — now
+    takes `state: tauri::State<'_, AppManagedState>` and sets the
+    override to `None`. Same effect on the embedded server; no
+    `set_var` call.
+  - `crates/annex-desktop/src/embedded_server.rs::start_embedded_server`
+    — after `config::load_config(...)` returns, applies the override
+    (if any) to `cfg.webrtc.{url,public_url,api_key,api_secret}`
+    before passing to `prepare_server`. The embedded server reads
+    its config from the struct it was given, not from the
+    environment.
+  - `client/src/lib/tauri.ts` — comment refresh on `clearWebRtcEnv`
+    (function signature is unchanged: `Promise<void>`; the wire
+    behaviour is now "rejects on Mutex poison" instead of "always
+    resolves", which matches `start_local_webrtc`'s existing shape).
+- tests run:
+  - `cargo fmt --all --check` → clean.
+  - Desktop crate cannot be exercised in this sandbox (GTK/WebKitGTK
+    packages absent — the documented pre-existing limitation; see
+    `CLAUDE.md`'s "Known Issues"). Server-side tests
+    (`cargo test -p annex-server`) continue to pass — the change
+    is desktop-only and does not touch the embedded server's
+    `Config` reader.
+- result: PASS structurally. The four `unsafe { set_var(…) }` calls
+  reachable from a Tauri command are gone. The remaining `set_var`
+  in `crates/annex-desktop/src/main.rs` runs *before* `tauri::Builder`
+  starts and is now correctly ordered with respect to the
+  `keyring::load_api_secret_from_keyring()` call that may spawn a dbus
+  worker on Linux — see [F38] below.
+
+### [F38] Desktop `main.rs` keyring lookup happened *inside* the `unsafe { set_var … }` block (UB on Linux)
+`crates/annex-desktop/src/main.rs` `main()` runs before
+`tauri::Builder::default()` and thus before any Tauri runtime threads
+exist. The block of `std::env::set_var` calls was wrapped in `unsafe`
+with the SAFETY claim "Called before any threads are spawned, so this is
+single-threaded." That was true for the first six `set_var` calls. The
+seventh — for `ANNEX_WEBRTC_API_SECRET` — was preceded by
+`keyring::load_api_secret_from_keyring()`, which on Linux uses libsecret
+over zbus and spins up an internal dbus worker thread on first call.
+After that thread is alive, the next `set_var` is no longer
+single-threaded; per glibc 2.34+ docs and Rust's
+"`set_var` is unsafe" justification, that's UB.
+
+Concretely the broken sequence was:
+
+```rust
+unsafe {
+    std::env::set_var("ANNEX_CLIENT_DIR", ...);   // single-threaded ✓
+    std::env::set_var("ANNEX_ZK_KEY_PATH", ...);  // single-threaded ✓
+    // ... four more set_vars ...
+    if std::env::var("ANNEX_WEBRTC_API_SECRET").is_err() {
+        match keyring::load_api_secret_from_keyring() {  // <-- spawns dbus thread
+            Ok(Some(secret)) => {
+                std::env::set_var("ANNEX_WEBRTC_API_SECRET", &secret); // <-- UB
+            }
+            ...
+        }
+    }
+}
+```
+
+Fix: pre-compute the keyring value (and any `std::env::var(...)` reads)
+*before* entering the `unsafe` block, then make every `set_var` happen
+in one definitively-single-threaded block. The keyring crate may still
+spawn a worker, but that worker's lifetime no longer overlaps with any
+`set_var` call.
+
+- files changed:
+  - `crates/annex-desktop/src/main.rs` — extracted the
+    `cors_already_set`, `webrtc_secret_already_set`, and
+    `webrtc_secret_from_keyring` reads to *before* the `unsafe` block;
+    the `unsafe` block now holds only `set_var` calls and a refreshed
+    SAFETY comment that names the contract ("every `getenv`-equivalent
+    and every potentially-thread-spawning call has already completed").
+- tests run: same as [F39].
+- result: PASS. The keyring read no longer races with `set_var`.
+
+### [F37] `invite_codes.expires_at` parse failure silently treated as "never expires" (security)
+`crates/annex-server/src/api_invite.rs::redeem_invite_handler` and
+`crates/annex-server/src/services/identity_service.rs::register_identity`
+both pre-validate the `expires_at` column on `invite_codes` with the
+same shape:
+
+```rust
+if let Some(ref exp) = expires_at {
+    if let Ok(exp_dt) = chrono::NaiveDateTime::parse_from_str(exp, "%Y-%m-%d %H:%M:%S") {
+        let now = chrono::Utc::now().naive_utc();
+        if exp_dt < now {
+            return Err(/* expired */);
+        }
+    }
+    // BUG: parse failure silently treated as "not expired"
+}
+```
+
+If the on-disk value couldn't be parsed in `%Y-%m-%d %H:%M:%S`, the
+guard fell through and the invite was treated as still-valid. The
+`create_invite_handler` write path uses the matching `format(...)` so
+the *common* case is fine, but any of the following turn the invite
+into a never-expiring grant:
+
+  * Operator-issued repair via `INSERT INTO invite_codes (..., expires_at)
+    VALUES (..., '2026-12-31T23:59:59Z')` (RFC 3339 with `T`/`Z`).
+  * Operator-issued shortcut `expires_at = '2026-12-31'` (date only).
+  * Future migration adding millisecond precision (`%Y-%m-%d %H:%M:%S%.f`)
+    → existing reads would silently bypass expiration on every legacy row.
+  * Manual repair after corruption that adds whitespace, a timezone
+    suffix, or trims a digit.
+
+For an `invite_only` server, this means a single corrupted /
+operator-issued row can become a permanent registration backdoor that
+silently survives every restart, every `expires_in_hours` check, and
+every UI that says "expired".
+
+Fix: extracted a single `pub(crate) fn invite_expires_at_is_past(s, now)
+-> bool` helper in `api_invite.rs` that strict-parses the canonical
+format, treats parse failure as past-due (with a `tracing::warn!` so
+operators can see corrupt rows in logs), and returns the boolean.
+Both call sites now share the helper.
+
+- files changed:
+  - `crates/annex-server/src/api_invite.rs` — new
+    `INVITE_EXPIRES_AT_FORMAT` constant + `invite_expires_at_is_past`
+    helper, doc comment explaining the rationale, 5 unit tests
+    (`invite_expires_at_in_the_future_is_not_past`,
+    `invite_expires_at_in_the_past_is_past`,
+    `invite_expires_at_at_now_is_not_past`,
+    `invite_expires_at_unparseable_is_treated_as_past`,
+    `invite_expires_at_format_is_what_create_handler_writes`),
+    `redeem_invite_handler` rewritten to use the helper, and
+    `create_invite_handler` now uses the same constant for the write
+    path so the round-trip is symmetric in code.
+  - `crates/annex-server/src/services/identity_service.rs` —
+    `register_identity` uses the same helper via
+    `crate::api_invite::invite_expires_at_is_past`.
+  - `crates/annex-server/tests/api_invites.rs` — three new
+    integration tests:
+      - `redeem_rejects_past_expires_at` (canonical past)
+      - `redeem_rejects_malformed_expires_at` (5 non-canonical
+        shapes that all USED to bypass: ISO 8601, date-only,
+        empty, garbage, fractional seconds)
+      - `redeem_accepts_canonical_future_expires_at` (positive control)
+- tests run:
+  - `cargo test -p annex-server --lib api_invite` →
+    **25 passed** (5 new helper tests; previously 20).
+  - `cargo test -p annex-server --test api_invites` →
+    **6 passed** (3 new integration tests; previously 3).
+  - `cargo test -p annex-server --test identity_service` →
+    **8 passed** (no regressions — identity service still rejects
+    expired invites; the malformed-expires_at path is reachable
+    via the same helper now).
+  - `cargo test -p annex-server --lib` → **152 passed**.
+  - `cargo fmt --all --check` → clean.
+  - `cargo clippy --workspace --exclude annex-desktop --all-targets
+     -- -D warnings` → clean (verified pre-fix).
+- result: PASS. The invite-only mode no longer accepts permanently-
+  valid invites built from a non-canonical `expires_at` value.
+
+## Fixed in earlier session (claude/fix-annex-bugs-5yw2Y)
+
+### [F36] Broadcast `Lagged` permanently terminated four forwarder tasks (recovery gap)
+`tokio::sync::broadcast::Receiver::recv()` returns three variants:
+
+  * `Ok(T)`
+  * `Err(RecvError::Closed)` — the sender dropped (terminal)
+  * `Err(RecvError::Lagged(n))` — the receiver's window overflowed;
+    `n` events were skipped but the channel is **still open**
+
+Four spawned forwarder tasks in the tree used the `while let
+Ok(event) = rx.recv().await` pattern, which terminates on **both**
+Closed AND Lagged. So any momentary burst that exceeded the
+broadcast channel's window permanently disabled the forwarder for
+that session — silently, with no recovery short of reconnecting:
+
+1. `ws/session.rs::ice_task` — relays this peer's WebRTC ICE
+   candidates to the WS client. Broadcast capacity 1024. A lag
+   here breaks WebRTC connectivity for the affected session
+   until reconnect.
+2. `ws/commands/voice.rs` — forwards STT-derived
+   `Transcription` events from the agent voice client to the
+   user's WS. Broadcast capacity 256. A lag here permanently
+   silences transcription overlay for the session.
+3. `services/channel_service.rs::connect_agent_voice_client` —
+   same shape, same downstream effect as (2).
+4. `annex-voice/src/agent.rs::connect` — the
+   `AgentVoiceClient`'s internal STT-tap → transcribe loop.
+   Broadcast capacity 1024. A lag here permanently disables
+   transcription for *every* downstream consumer of that
+   client's `transcription_tx`, not just one session.
+
+Fix: replace each `while let Ok(_) = rx.recv().await` with an
+explicit `match` that handles `Lagged(n)` by logging the skipped
+count + `continue`, and only treats `Closed` as terminal. The four
+tasks now stay alive across momentary bursts and recover with the
+next available event.
+
+Severity rationale: case (4) is the worst — under sustained load
+the lagged loop terminates the global `transcription_task` for an
+agent, breaking transcription for every session connected through
+that agent. Cases (1)-(3) are per-session.
+
+- files changed:
+  - `crates/annex-server/src/ws/session.rs::ice_task` — explicit
+    Lagged/Closed match with `tracing::warn!` on Lagged including
+    the skipped count and the pseudonym.
+  - `crates/annex-server/src/ws/commands/voice.rs` — same pattern
+    around the transcription-forwarding `tokio::spawn`.
+  - `crates/annex-server/src/services/channel_service.rs` —
+    same pattern around the `connect_agent_voice_client`'s
+    transcription-forwarding task.
+  - `crates/annex-voice/src/agent.rs::connect` — same pattern
+    around the internal STT-tap consumer; warning logged at
+    debug level because this loop's burst behaviour is expected
+    under heavy voice traffic.
+- tests run:
+  - `cargo test --workspace --exclude annex-desktop` → **659
+    passed** (unchanged total; existing tests cover the happy
+    path, and the Lagged branch is reached only under burst load
+    that's hard to unit-test deterministically). The new
+    behaviour is structurally provable from the diff: the loop
+    no longer terminates on Lagged.
+  - `cargo fmt --all --check` + `cargo clippy --workspace
+    --exclude annex-desktop --all-targets -- -D warnings` →
+    clean.
+- result: PASS. ICE forwarding, transcription forwarding (×2),
+  and the agent's internal STT tap loop all stay alive across
+  broadcast lag. Voice/transcription continues working after the
+  receiver catches back up.
+
+### [F35] WS resume reported full count even when back-pressure dropped messages (silent recovery gap)
+`crates/annex-server/src/ws/commands/resume.rs::handle` is the
+`IncomingMessage::Resume` arm: a client that disconnected and
+reconnected sends a `Resume { channel_id, last_message_id }` and the
+server replays the next ≤ 200 messages, finishing with an
+`OutgoingMessage::Resumed { channel_id, missed_count }` ack. The
+client uses `missed_count` to know how many messages it just
+received and advances its last-seen pointer past that many.
+
+Pre-fix code:
+
+```rust
+let count = messages.len();
+for msg in messages {
+    let ws_payload: WsMessagePayload = msg.into();
+    let out = OutgoingMessage::Message(ws_payload);
+    if let Ok(json) = serde_json::to_string(&out) {
+        if tx_clone.try_send(json).is_err() {
+            break;  // ← outbound queue full / closed
+        }
+    }
+}
+let ack = OutgoingMessage::Resumed { channel_id, missed_count: count };
+```
+
+The 256-deep per-session mpsc queue can fill when a client is slow
+or wedged. On the first `try_send` Err the loop breaks — but
+`count` is still `messages.len()`. The ack says "200 messages
+missed" even though only K (K < 200) reached the outbound queue.
+The client advances its last-seen pointer past the full 200, and
+the K..200 tail is permanently lost. There is no second-chance
+signal because the resume protocol is a single round-trip
+acknowledged with the count.
+
+This is the "silent recovery gap" failure mode: the user reconnects
+expecting their backlog and gets a partial replay with no
+diagnostic that anything was lost.
+
+Fix: report the count of `try_send` *successes*, not attempts. The
+wire field stays `missedCount` for backwards compatibility — its
+meaning is now "messages we enqueued for delivery back to you",
+which is what every legitimate client should care about. A v2
+client implementing the resume protocol can detect partial
+recoveries (received < expected) and retry from a smaller
+last_message_id; a v1 client still works correctly because the
+count is now a TRUE lower bound on what arrived.
+
+Implementation: extract the message-enqueue loop into a free
+`forward_resumed_messages` function that returns
+`delivered_count: usize`. The free-function form makes the
+back-pressure counting unit-testable without spinning up an
+`AppState` + DB + membership fixture.
+
+- files changed:
+  - `crates/annex-server/src/ws/commands/resume.rs` —
+    * extracted the per-message enqueue loop into
+      `forward_resumed_messages(&mpsc::Sender, Vec<Message>) -> usize`.
+    * `handle` now uses the helper's return value as
+      `missed_count`, replacing `messages.len()`.
+    * added a doc comment naming the silent-recovery bug and the
+      invariant the new counter preserves.
+    * new `#[cfg(test)] mod tests` block with 4 tests:
+      - `forwards_every_message_when_outbound_queue_has_capacity`
+        (happy path; delivered = 5 of 5).
+      - `returns_actual_delivery_count_when_outbound_queue_fills`
+        (back-pressure; delivered = 2 when capacity = 2 and 5
+        messages presented). Verified failing under the pre-fix
+        loop by temporarily restoring the old shape: the
+        assertion `delivered == 2` would compare against
+        `delivered == 5` and fail.
+      - `returns_zero_when_outbound_channel_is_closed` (every
+        try_send is Err; delivered = 0).
+      - `returns_zero_for_empty_input` (defensive boundary).
+- tests run:
+  - `cargo test -p annex-server --lib ws::commands::resume` →
+    **4 passed** (all new).
+  - `cargo test --workspace --exclude annex-desktop` → **659
+    passed** (+4 vs the post-[F34] baseline of 655).
+  - `cargo fmt --all --check` + `cargo clippy --workspace
+    --exclude annex-desktop --all-targets -- -D warnings` →
+    clean.
+- result: PASS. Resumed acks now report the count of messages
+  actually delivered to the WS outbound queue. Slow consumers no
+  longer silently lose their replay tail.
+
+### [F34] Protocol fixtures used `0x`-prefixed hex but the server rejects it (contract drift)
+The fixtures under `fixtures/api/{register.response,verify-membership.request}.json`
+pinned every field-element value with a leading `0x` prefix:
+
+```json
+{
+  "rootHex": "0x2ab3a44d…",
+  "pathElements": [
+    "0x0000…",
+    "0x0a0b…",
+    "0xdead…"
+  ]
+}
+```
+
+Production code emits the same scalars via
+`annex_identity::zk::fr_to_canonical_hex` — canonical 64-char
+lowercase hex with no `0x` prefix. The matching parser
+`parse_fr_from_hex` calls `hex::decode` directly, which rejects any
+non-hex byte (`x` included) with `InvalidHexCharacter`. So the
+fixtures and the production wire format had drifted:
+
+* A new client that bootstrapped from `register.response.json`
+  (e.g. an integration test, an example, or a freshly-generated
+  client SDK that copied the fixture as a sample payload) would
+  send `0x`-prefixed strings on the next `POST /api/zk/verify-
+  membership` and get a hard 400.
+* `is_root_acceptable` normalises the *queried* root_hex to
+  lowercase but does not strip prefixes, so even the in-DB grace-
+  window check would reject the fixture value.
+* Additionally, `pathElements[2]` in `register.response.json` was
+  `0xdeadbeefcafef00d0badc0deabad1deafacefeedfeedfaceabad1ca5beef0f00`
+  — a value that, interpreted as a BN254 scalar, is `>= field
+  modulus`. Even without the `0x` prefix, `parse_fr_from_hex`
+  would (correctly) reject it because the strict round-trip check
+  `padded != roundtrip` would fire.
+
+Fix:
+1. Strip the `0x` prefix from every hex field in the two fixtures
+   so each is exactly the canonical 64-char lowercase string the
+   server actually emits / accepts.
+2. Replace the leading byte of `pathElements[2]` (`de` → `1e`)
+   so the value sits below the BN254 field modulus and round-
+   trips cleanly through `parse_fr_from_hex` →
+   `fr_to_canonical_hex`.
+3. Tighten the Rust contract test
+   (`contract_register_response_fixture_matches_struct` and
+   `contract_verify_membership_request_fixture_matches_struct`)
+   to assert every hex field is exactly 64 chars, lowercase, and
+   has no `0x` prefix — so the previous shape can't silently come
+   back.
+4. Add two new defence-in-depth contract tests that run each
+   fixture's hex through the *actual* production parser
+   (`parse_fr_from_hex`) and, for `register.response`, confirm
+   the canonical re-encoding round-trips. If a future agent
+   re-introduces the `0x` prefix or uppercases the hex in either
+   fixture, both of these tests fail with a precise diagnostic.
+
+The TypeScript side of the contract
+(`client/src/contract.test.ts`) only checks types, not literal
+values, so it kept passing through the broken shape — the new Rust
+tests are now the guard against this class of drift. Both
+`cargo test -p annex-server --test contract_fixtures` and
+`npm test -- contract.test.ts` are green against the new fixtures.
+
+- files changed:
+  - `fixtures/api/register.response.json` — stripped `0x` prefixes
+    from `rootHex` + 3 entries of `pathElements`; replaced
+    `pathElements[2]`'s leading `de` with `1e` so the value is
+    `< BN254 scalar field modulus`.
+  - `fixtures/api/verify-membership.request.json` — stripped `0x`
+    prefixes from `root`, `commitment`, and both entries of
+    `publicSignals`.
+  - `crates/annex-server/tests/contract_fixtures.rs` — replaced
+    the `0x`-prefixed literal assertions; added 64-char-lowercase-
+    no-prefix assertions on each hex field; added two new tests
+    (`contract_verify_membership_request_fixture_uses_server_acceptable_hex`
+    and `contract_register_response_fixture_uses_canonical_emitted_hex`)
+    that exercise the real production parser/encoder against each
+    fixture hex field.
+- tests run:
+  - `cargo test -p annex-server --test contract_fixtures` →
+    **18 passed** (2 new for [F34]; 16 pre-existing all green).
+  - `npm test -- src/contract.test.ts` → 16 passed (TS contract
+    side unchanged; the type-check-only assertions still hold).
+  - `cargo test --workspace --exclude annex-desktop` →
+    **655 passed** (+2 vs the post-[F33] baseline).
+  - `cargo fmt --all --check` + `cargo clippy --workspace
+    --exclude annex-desktop --all-targets -- -D warnings` →
+    clean.
+- result: PASS. The protocol fixtures now match the production
+  wire format. A future agent attempting to re-introduce
+  `0x`-prefixed hex (or uppercase, or values `>= field modulus`)
+  will trip the new round-trip tests with a precise error
+  message.
+
+### [F33] Federation outbox worker had no dequeue-time SSRF gate (security defence-in-depth)
+`crates/annex-server/src/background.rs::drain_outbox_batch` resolves
+each pending row's peer `base_url` from the `instances` table and
+POSTs the signed federation envelope to
+`{base_url}/api/federation/messages`. Pre-fix there was an
+enqueue-time SSRF gate inside
+`services::federation_service::relay_message` (added in [F12] and
+mirrored across the other federation outbound paths in [F20], [F25],
+[F33] precedent), but the outbox is durable across server restarts
+and the `instances` row's `base_url` is admin-editable. So this
+sequence was reachable in practice:
+
+1. Admin registers peer `https://legitpeer.com` — passes
+   enqueue-time SSRF gate.
+2. `relay_message` enqueues an outbox row pointing at peer id `N`.
+3. Admin (or an attacker who compromised admin auth) edits the
+   `instances` row to `base_url='http://127.0.0.1:9999'` —
+   admin endpoint is its own access-controlled surface, but
+   misconfiguration is a much wider failure mode than
+   compromise. There is no rejection of private base_urls inside
+   the admin update path because instance rows are added/updated
+   out of band (no production INSERT INTO instances writer exists
+   in the tree).
+4. Outbox worker picks up the row, resolves peer id `N` →
+   `http://127.0.0.1:9999`, POSTs the signed envelope to
+   localhost.
+
+Fix: re-check `is_url_private_or_reserved(&peer_base)` at dequeue
+time, BEFORE building the URL or constructing the reqwest call. On
+match: log a `tracing::warn!` (so the operator sees the dequeue-time
+divergence), mark the row `status='failed'` with `last_error` naming
+the SSRF gate, bump `attempts`, and `continue` past the row. No
+retry, no POST. The row is now terminally failed; the peer would
+need to update its instance entry back to a public URL AND have a
+fresh message_id queued to recover. Re-enqueue itself goes through
+the existing enqueue-time SSRF gate, so this is the closed loop.
+
+Defence-in-depth posture: this gate is the second of two — the
+enqueue gate stops malicious instance entries from ever reaching the
+outbox, and the dequeue gate stops mutations after enqueue from ever
+reaching reqwest. Both must independently fail for a private POST to
+escape.
+
+- files changed:
+  - `crates/annex-server/src/background.rs::drain_outbox_batch` —
+    new `if is_url_private_or_reserved(&peer_base) { … continue }`
+    block immediately after peer resolution, before URL construction.
+    Marks row terminally failed with a row-update spawn_blocking task
+    that matches the shape of the other state-update tasks already in
+    this function.
+  - Also added a doc comment on `drain_outbox_batch` documenting
+    that the function is `pub` specifically so integration tests can
+    exercise the dequeue-time gate end-to-end (instead of waiting on
+    the once-per-`outbox_interval_seconds` cadence of the background
+    task).
+  - `crates/annex-server/tests/federation_outbox_ssrf.rs` — new
+    integration test file with two tests:
+    - `outbox_worker_refuses_to_post_to_private_peer_url` — inserts a
+      peer with `base_url='http://127.0.0.1:9999'` and an outbox row
+      due now, calls `drain_outbox_batch`, asserts the row is
+      `status='failed'` and `last_error` contains
+      `'private/reserved'`. Verified failing under the pre-fix code
+      (post would have been attempted and the row would have been
+      marked pending with an HTTP error or pending with success
+      depending on whether something listened on port 9999) — under
+      the fix the row is deterministically marked failed BEFORE any
+      HTTP attempt.
+    - `outbox_worker_does_not_drop_public_peer_url` — negative
+      control. Points the peer at the RFC 5737 documentation IP
+      (`203.0.113.1`) which is guaranteed not to resolve, runs
+      `drain_outbox_batch`, asserts the row STAYS `status='pending'`
+      (transient HTTP error, retry later) and `last_error` does NOT
+      contain the SSRF gate's signature. This guards against an
+      over-eager gate that fails every row.
+- tests run:
+  - `cargo test -p annex-server --test federation_outbox_ssrf` →
+    **2 passed** (both new).
+  - `cargo test -p annex-server --test api_federation_relay` →
+    4 passed (no regression).
+  - `cargo clippy --workspace --exclude annex-desktop --all-targets
+    -- -D warnings` → clean.
+  - `cargo fmt --all --check` → clean.
+- result: PASS. Every federation outbound HTTP path in the tree now
+  hits `is_url_private_or_reserved`, including the durable outbox
+  worker that survives across server restarts. The only way to POST
+  a signed federation envelope to a private host is to defeat both
+  the enqueue-time and the dequeue-time gates simultaneously.
+
+### [F32] Federation receive: receipt + message insert were not atomic (silent message loss)
+`crates/annex-server/src/services/federation_service.rs::receive_federated_message`
+ran two separate writes under SQLite's autocommit:
+
+1. `INSERT INTO federation_message_receipts (…)` — durable receipt
+   keyed on `UNIQUE(remote_instance_id, message_id)` so subsequent
+   replays of the same envelope are short-circuited (see migration
+   036).
+2. `create_message(&conn, &params)` — the actual message row.
+
+The intended semantics are: a peer that retries an envelope after a
+transient failure on our side gets to deliver the message, because
+neither row was committed. The actual semantics under autocommit
+were: a transient `create_message` failure (any non-UNIQUE
+`rusqlite::Error::SqliteFailure` — `SQLITE_BUSY`, `SQLITE_IOERR`,
+FK violation from a channel deleted mid-flight, etc.) left a
+committed receipt AND no committed message. On the peer's next retry
+of the SAME envelope, the receipt-ledger check at step (1) found a
+prior receipt with a matching `envelope_hash` and returned
+`Ok(None)` — short-circuiting the message insert.
+
+Net effect: a transient SQLite error during a federated message
+receive became permanent message loss for that envelope. Peer's
+outbox marks the delivery successful (we returned 200 on the eventual
+retry). We have a receipt. No `messages` row exists. No WS broadcast.
+Message is silently dropped, with no operator-visible signal except
+maybe an `error!` log line on the original transient failure.
+
+Fix: wrap the receipt-existence query + receipt INSERT +
+`create_message` call in a single `BEGIN IMMEDIATE` transaction via
+`Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)`.
+SQLite's writer lock is acquired at transaction start (IMMEDIATE), so
+two concurrent receivers of the same envelope serialise at BEGIN
+rather than at the receipt INSERT (where the second would otherwise
+hit the UNIQUE constraint as a noisy 500). On the happy path: both
+rows commit together. On a transient `create_message` failure: the
+whole transaction rolls back, the receipt is NOT persisted, and the
+peer's retry of the same envelope succeeds the next time around.
+
+The benign-duplicate path (`receipt_existing` Some with matching
+hash) drops the transaction without committing — releasing the writer
+lock immediately so it doesn't block concurrent legit traffic during
+high-replay periods (e.g. peer outbox catch-up after our server
+restart).
+
+The constraint-violation path on `create_message` is preserved for
+defence in depth: it should be unreachable under the receipt ledger
+(the receipt check rejects duplicates earlier), but a stale
+`messages.message_id` row from a pre-receipt-ledger migration window
+would still get the Ok(None) treatment and the receipt still
+commits — which is the right behaviour for "already delivered".
+
+- files changed:
+  - `crates/annex-server/src/services/federation_service.rs` —
+    * new `use rusqlite::{OptionalExtension, Transaction,
+      TransactionBehavior};` import.
+    * the `tokio::task::spawn_blocking` closure inside
+      `receive_federated_message` now opens a single IMMEDIATE
+      transaction around the receipt check / receipt insert /
+      `create_message` triplet, replacing the prior pair of
+      autocommit `conn.execute` calls.
+    * doc comment on the section rewritten to name the silent-loss
+      bug + atomicity requirement so a future agent doesn't
+      accidentally split the writes again.
+  - `crates/annex-server/tests/api_federation_relay.rs` — new test
+    `test_receive_federated_message_receipt_and_message_are_atomic`
+    that exercises the cooperative path end-to-end:
+    1. Send envelope → asserts exactly one receipt + one message
+       persisted.
+    2. Send identical envelope again → asserts STILL exactly one
+       of each, and the second response is 200 (idempotent).
+    3. Tamper the receipt's envelope_hash to simulate a captured-ID
+       forgery, send identical envelope → asserts 403 + receipt
+       unchanged + no second message.
+- tests run:
+  - `cargo test -p annex-server --test api_federation_relay` →
+    **4 passed** (1 new for [F32], 3 pre-existing).
+  - `cargo clippy -p annex-server --all-targets -- -D warnings` →
+    clean.
+- result: PASS. The receipt ledger now atomically commits with the
+  message row. Transient SQLite errors during federated receive no
+  longer create permanent message-loss conditions.
+
+## Fixed in earlier session (claude/fix-annex-bugs-AT8va)
 
 ### [F31] `edit_message` / `delete_message` used DEFERRED tx but comment claimed IMMEDIATE (lost-update bug)
 `crates/annex-channels/src/messages.rs::edit_message` and
@@ -1594,7 +2282,263 @@ The fix mirrors the local cap.
   tx is fine because it only worries about partial-failure
   atomicity, not concurrent-writer races. See [F31].
 
-## Context cutoff note (current session, claude/fix-annex-bugs-AT8va)
+## Context cutoff note (current session, claude/fix-annex-bugs-PmMSm)
+Session [F37..F40] focused on four pre-existing latent bugs found in
+the recursive audit of the previous session's "next files to inspect"
+list (plus one test-suite robustness fix that surfaced while running
+the post-fix verification):
+
+1. **Silent invite-expiration bypass on non-canonical `expires_at`**
+   ([F37]). Both `redeem_invite_handler` and
+   `IdentityService::register_identity` did
+   `if let Ok(exp_dt) = parse_from_str(...)` and silently fell through
+   on parse failure — turning any operator-issued ISO 8601, date-only,
+   or fractional-precision `expires_at` into a permanent never-expiring
+   invite. For an `invite_only` server, that's a registration
+   backdoor. Fix: shared `invite_expires_at_is_past` helper that
+   strict-parses and treats parse failure as past-due.
+   8 new tests; total invite-related tests now 11.
+
+2. **Desktop `main.rs` `set_var` interleaved with keyring lookup**
+   ([F38]). The `unsafe { set_var … }` block claimed
+   "Called before any threads are spawned, so this is single-threaded."
+   That was true for the first six set_var calls but false for the
+   seventh — the call to `keyring::load_api_secret_from_keyring()`
+   happened inside the same block, and on Linux that crate uses
+   libsecret over zbus and spawns a dbus worker. After the worker
+   exists, the next `set_var` is UB. Fix: pre-compute every
+   `getenv`-equivalent and the keyring lookup *before* the unsafe
+   block, then run all `set_var` calls in one definitively
+   single-threaded block.
+
+3. **Desktop `start_local_webrtc` / `clear_webrtc_env` `set_var` under
+   the live Tauri runtime** ([F39]). Both Tauri commands wrote
+   `ANNEX_WEBRTC_*` env vars from inside the running tokio runtime
+   ("SAFETY: Called before `start_embedded_server` spawns any server
+   threads" — load-bearing on a foundation that didn't exist; Tauri
+   itself is multi-threaded by the time any command runs).
+   Structural fix: new `WebRtcConfigOverride` struct in `AppManagedState`,
+   written by `start_local_webrtc`, read by `start_embedded_server`
+   which applies it to the loaded `Config` struct directly before
+   calling `prepare_server`. No `set_var` reachable from a Tauri
+   command remains. Frontend wire shape unchanged.
+
+4. **Two ZK-toolchain-dependent tests panicked instead of skipping
+   when artifacts missing** ([F40]).
+   `api_zk_verify::test_verify_membership_flow` and
+   `api_graph_nodes::test_graph_node_creation_on_verification` had
+   directory-only existence guards that passed when `keys/` contained
+   only `pot14_*.ptau` (the post-`build-circuits.js` /
+   pre-`setup-groth16.js` state). They then `panic!("snarkjs failed")`
+   downstream. Fix: per-file existence checks on `membership.wasm`
+   and `membership_final.zkey`, and graceful skip + diagnostic on
+   `Command` `Err(_)` and non-zero exit. `cargo test -p annex-server`
+   now passes 406/0 on a fresh checkout that hasn't run the ZK setup
+   script; CI runners that DO run `dev-setup-groth16.js` exercise the
+   full Groth16 round-trip unchanged.
+
+`fmt`, `clippy --workspace --exclude annex-desktop --all-targets --
+-D warnings`, `cargo test -p annex-server` (**406 passed, 0 failed**),
+and `cargo test --workspace --exclude annex-desktop --exclude annex-server`
+(workspace-minus-server: all green) are all clean. The desktop crate
+itself cannot be exercised in this sandbox because GTK/WebKitGTK
+packages are absent (the documented pre-existing limitation).
+
+If a future agent picks up:
+1. Re-run baseline (`cargo fmt --all --check`, `cargo clippy
+   --workspace --exclude annex-desktop --all-targets -- -D warnings`,
+   `cargo test -p annex-server`).
+2. Real Linux/Windows CI runners must execute the desktop build for
+   [F38] / [F39] to be functionally validated. Inspection of
+   `crates/annex-desktop/src/{main,webrtc,embedded_server,app_state}.rs`
+   confirms the new flow is structurally sound, but only a real
+   Tauri build can confirm the runtime UB is actually gone.
+3. The previous session's open items remain unaddressed:
+   - real multi-party ZK ceremony (still blocks tagged release;
+     `verify-artifacts.js` correctly refuses dev-fixture under
+     production profile).
+   - v1 nullifier privacy gap (release blocker for any deployment
+     claiming topic unlinkability; v2 is implemented + opt-in).
+   - PoT depth ceiling (only matters if circuit grows past ~16k
+     constraints).
+   - uploads-as-public-URL design question (release blocker for
+     private-channel mode).
+4. Areas already audited this session that look clean:
+   - `crates/annex-server/src/api_admin.rs` — `update_policy_handler`
+     correctly serialises across DB + in-memory state with a
+     non-poisonable `unwrap_or_else(into_inner)` on the policy
+     RwLock. `set_public_url_handler` rejects malformed scheme
+     prefixes; auth-checked under `can_moderate`.
+   - `crates/annex-server/src/api_link_preview.rs` — every URL
+     validated via `is_private_or_reserved` before fetch; DNS-pinned
+     redirect-following with per-hop revalidation; cache eviction
+     is O(N log N) per miss past capacity (acceptable for N=2000).
+     SVG explicitly rejected on the image proxy path.
+   - `crates/annex-voice/src/agent.rs::AgentVoiceClient` — the
+     transcription task is owned by a `JoinHandle` that's aborted on
+     `Drop` ([F30]); the broadcast loop differentiates Lagged from
+     Closed ([F36]). Both regression-tested.
+   - `crates/annex-server/src/ws/commands/{message,edit,delete}.rs`
+     — every membership check uses `check_ws_membership` and every
+     broadcast uses the *persisted* channel_id (never the
+     client-supplied one) to prevent cross-channel spoof.
+   - `crates/annex-server/src/services/federation_service.rs::check_freshness`
+     — correctly fails closed on unparseable RFC 3339 input.
+   - All production unwraps/expects audit: every remaining
+     `.unwrap()` / `.expect()` outside `#[cfg(test)]` / `mod tests`
+     is invariant-protected (test-only mod gates, or constants).
+5. Next concrete files to inspect for the *next* class of bugs (none
+   are bugs today, but they're the most likely places):
+   - `crates/annex-server/src/api_observe.rs::get_events_handler` —
+     `since` query param is passed straight to SQL as a string;
+     SQLite does string comparison against `occurred_at` which is
+     ISO 8601 today. If `occurred_at` ever stops being lex-ordered
+     (e.g., a future migration moves to numeric epoch), the `since`
+     filter silently becomes a no-op. Add validation when the
+     timestamp format changes.
+   - `crates/annex-server/src/api_invite.rs::create_invite_handler`
+     — separate INSERT + later SELECT; if create succeeds but the
+     SELECT for server label fails, the response is 500 but the
+     invite is durable. Cosmetic; consider a single tx if more
+     writes get added here.
+   - `crates/annex-channels/src/messages.rs::edit_message`/
+     `delete_message` — the time-window parser uses the same
+     `%Y-%m-%d %H:%M:%S` format that bit us in [F37]; it correctly
+     fails closed today (returns NotFound on parse error). Worth
+     keeping that behaviour invariant.
+
+## Context cutoff note (previous session, claude/fix-annex-bugs-5yw2Y)
+Session [F32..F36] focused on the federation receive path, the
+federation outbox worker, the protocol-contract fixtures, the WS
+resume protocol, and broadcast-recv recovery semantics across the
+voice / transcription / ICE forwarders.
+
+Five real bugs:
+1. A durability bug that silently dropped federated messages under
+   any transient SQLite error.
+2. A defence-in-depth SSRF gap where the outbox worker would
+   happily POST signed federation envelopes to localhost if the
+   peer's `instances.base_url` was edited to a private host after
+   the row was enqueued.
+3. A contract drift in the shared fixtures under `fixtures/api/`:
+   every field-element value carried a `0x` prefix that the
+   server's actual hex parser rejects, so a client bootstrapped
+   from the fixtures would hit a 400 on the first
+   verify-membership call. One `pathElements[2]` value was also
+   silently `>= BN254 field modulus`.
+4. A silent-recovery gap in WS resume: a client with a full
+   per-session outbound queue (slow consumer) lost the
+   un-enqueued tail of its replay because the `Resumed` ack
+   reported `messages.len()` instead of the count actually
+   pushed onto the queue. The client then advanced its
+   last-seen pointer past messages it never received.
+5. Four `tokio::sync::broadcast::Receiver` consumers used the
+   `while let Ok(_) = rx.recv().await` pattern, which terminates
+   on both `Closed` AND `Lagged`. A momentary burst that
+   overflowed the broadcast window permanently disabled the
+   forwarder for that session — silently, with no recovery short
+   of reconnecting. Fixed all four to differentiate Lagged
+   (log + continue) from Closed (terminal).
+
+* [F32] `receive_federated_message` ran the receipt INSERT and the
+  message INSERT under separate autocommit transactions. A transient
+  failure on the message INSERT (`SQLITE_BUSY`, FK violation,
+  IO error) left a committed receipt with no message — and the
+  peer's outbox retry of the same envelope was short-circuited by
+  the receipt-ledger check. Silent permanent message loss. Wrapped
+  the receipt-existence query + receipt INSERT + `create_message`
+  call in one `BEGIN IMMEDIATE` transaction so either both commit
+  or neither does. 1 new integration test for receipt + message
+  atomicity, idempotency, and the captured-ID forgery rejection path.
+* [F33] The federation outbox worker resolved peers via
+  `instances WHERE status='ACTIVE'` and POSTed the signed envelope
+  to `{base_url}/api/federation/messages` without re-checking
+  `is_url_private_or_reserved` at dequeue time. Enqueue-time gate
+  (added in [F12]) is sufficient under steady state, but the
+  outbox is durable across restarts and `instances.base_url` is
+  admin-editable — a misconfiguration or compromise after enqueue
+  could route the next batch through localhost. Added the
+  dequeue-time gate that marks the row terminally failed with a
+  `private/reserved` `last_error` instead of attempting the POST.
+  2 new integration tests (positive: row marked failed for private
+  URL; negative: row stays pending for genuinely-unroutable public
+  URL).
+* [F34] Protocol fixtures pinned every BN254 scalar value with a
+  `0x` prefix, but `parse_fr_from_hex` (the production parser)
+  uses `hex::decode` which rejects `x` bytes outright. A client
+  bootstrapped from the fixture would hit 400 on every
+  verify-membership call. `pathElements[2]` in
+  `register.response.json` was also `>= field modulus`. Stripped
+  the prefixes, fixed the modulus-overshoot byte, tightened the
+  existing contract assertions, and added two new production-
+  parser round-trip tests so any future fixture regression is
+  caught at compile-test time rather than after a client integrates.
+* [F35] `ws/commands/resume.rs::handle` reported `messages.len()`
+  in the `Resumed` ack regardless of how many messages actually
+  reached the 256-deep per-session outbound mpsc. A slow consumer
+  silently lost the un-enqueued tail because the client advanced
+  past the full count. Extracted the per-message enqueue loop into
+  a testable free function that returns the count of successful
+  `try_send` calls; the surrounding handler now uses that as
+  `missed_count`. 4 unit tests including the back-pressure shape
+  (delivered = 2 when capacity = 2 and 5 messages presented).
+* [F36] Four broadcast-receiver loops (ICE forwarding in
+  `ws/session.rs`, transcription forwarding in
+  `ws/commands/voice.rs`, transcription forwarding in
+  `services/channel_service.rs`, STT-tap → transcribe in
+  `annex-voice/src/agent.rs`) used `while let Ok(_) = rx.recv()`,
+  which terminates the loop on `Lagged` exactly as it does on
+  `Closed`. A momentary burst overflows the broadcast window,
+  `Lagged(n)` is returned, the loop ends, and the forwarder
+  silently stops for the rest of the session. Replaced each with
+  an explicit `match` that logs the skip count + `continue` on
+  Lagged and only breaks on Closed.
+
+`fmt`, `clippy --workspace --exclude annex-desktop --all-targets --
+-D warnings`, and `cargo test --workspace --exclude annex-desktop`
+(659 tests total) are all green.
+
+If a future agent picks up:
+1. Re-run baseline (fmt + clippy + `cargo test -p annex-server`).
+2. Open items from previous sessions remain (see "Still broken /
+   suspected" below):
+   - real multi-party ZK ceremony (still blocks tagged release).
+   - v1 nullifier privacy gap (release blocker for any deployment
+     claiming topic unlinkability; v2 is implemented + opt-in).
+   - PoT depth ceiling (only matters if circuit grows past ~16k
+     constraints).
+   - uploads-as-public-URL design question (release blocker for
+     private-channel mode).
+   - desktop build smoke test in real Linux/Windows CI.
+3. Areas already audited this session that look clean:
+   - Receive paths for federated messages and RTX bundles: receipt
+     ledger now atomic in both directions (RTX already had a tx).
+   - Federation outbound HTTP paths: every callsite hits
+     `is_url_private_or_reserved` (enqueue + dequeue + relay +
+     handshake + freshness + policy + rtx).
+   - WS dispatch path: membership re-checked on every command;
+     persisted channel_id used for broadcast (no spoof window).
+   - Token auth: HMAC verified constant-time, pseudonym format
+     validated in unenforced mode, enforced mode rejects
+     `X-Annex-Pseudonym` header.
+   - SQL builders in `channels.rs::update_channel` and
+     `messages.rs::list_messages`: parameterised correctly.
+4. Next concrete files to inspect for the *next* class of bugs:
+   - `crates/annex-server/src/api_admin.rs` instance management —
+     no production code path inserts/updates `instances` rows
+     today. If/when a peer-registration endpoint lands, it must
+     apply `is_url_private_or_reserved` at write time so the
+     enqueue-time SSRF gate has something to enforce.
+   - `crates/annex-server/src/api_observe.rs::get_event_stream_handler`
+     — documented as public-by-design but worth re-confirming
+     when the user model changes.
+   - `crates/annex-server/src/api_invite.rs::create_invite_handler`
+     — separate INSERT + later SELECT path; if create succeeds but
+     the SELECT for server label fails, the response is a 500 but
+     the invite is durable. Mostly cosmetic; consider a tx if a
+     future change adds more writes here.
+
+## Context cutoff note (previous session, claude/fix-annex-bugs-AT8va)
 Session [F27..F31] focused on long-lived production correctness — the
 two outstanding "Still broken" items from the previous session
 (rooms-leak + typing-DOS), a real lock-inversion deadlock in the

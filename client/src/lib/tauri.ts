@@ -125,9 +125,10 @@ export async function startLocalWebRtc(): Promise<{ url: string }> {
 }
 
 /**
- * Clear WebRTC environment variables so the embedded server does not
- * pick up the dev fallback URL when WebRTC actually failed to start.
- * Must be called BEFORE startEmbeddedServer().
+ * Clear the in-process WebRTC config override so the embedded server falls
+ * back to whatever's in `config.toml` (typically empty for desktop installs)
+ * when WebRTC actually failed to start. Must be called BEFORE
+ * `startEmbeddedServer()`.
  */
 export async function clearWebRtcEnv(): Promise<void> {
   return invoke<void>('clear_webrtc_env');

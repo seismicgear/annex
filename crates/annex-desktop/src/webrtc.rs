@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use annex_server::config;
 
-use crate::app_state::{AppManagedState, WebRTCProcessState};
+use crate::app_state::{AppManagedState, WebRTCProcessState, WebRtcConfigOverride};
 use crate::keyring::{
     delete_api_secret_from_keyring, load_api_secret_from_keyring, store_api_secret_in_keyring,
 };
@@ -507,27 +507,31 @@ pub(crate) async fn start_local_webrtc(
         .map_err(|_| "webrtc-server startup timed out after 15 seconds".to_string())?
         .map_err(|_| "webrtc readiness channel dropped".to_string())??;
 
-    // Set env vars so the embedded server picks up WebRTC config.
-    // SAFETY: Called before `start_embedded_server` spawns any server threads.
+    // Stash the WebRTC config in `AppManagedState`. `start_embedded_server`
+    // applies it to the `annex_server::config::Config` struct directly when
+    // building the server, eliminating the previous `std::env::set_var`
+    // approach (which was UB on Linux because the Tauri tokio runtime was
+    // already multi-threaded by the time this command runs — Rust 1.85
+    // marked `set_var` `unsafe` precisely to flag this hazard). See
+    // `app_state::WebRtcConfigOverride` for the full rationale.
     //
     // ANNEX_WEBRTC_URL is the internal bind address used for server-side API
     // calls (token generation, room management). ANNEX_WEBRTC_PUBLIC_URL is
     // the browser-facing WebSocket URL sent to clients in join responses.
-    //
-    // For local-only use, both point at loopback. When a public endpoint
-    // is later acquired (acquire_public_endpoint), the router may return a
-    // public WebRTC URL. If it does, the frontend should set
-    // ANNEX_WEBRTC_PUBLIC_URL via the server API. Local clients connecting
-    // to http://127.0.0.1 will still get the loopback URL, which works for
-    // same-machine access.
-    unsafe {
-        std::env::set_var("ANNEX_WEBRTC_URL", &lk_url);
-        // Public URL defaults to the loopback URL — sufficient for local
-        // hosting. When a public endpoint is acquired via the Annex router,
-        // the frontend sets a proper public URL via the server API.
-        std::env::set_var("ANNEX_WEBRTC_PUBLIC_URL", &lk_url);
-        std::env::set_var("ANNEX_WEBRTC_API_KEY", &api_key);
-        std::env::set_var("ANNEX_WEBRTC_API_SECRET", &api_secret);
+    // For local-only use both point at loopback. When a public endpoint is
+    // later acquired (acquire_public_endpoint), the frontend pushes a
+    // proper public URL via the server's admin API.
+    {
+        let mut guard = state
+            .webrtc_config_override
+            .lock()
+            .map_err(|e| e.to_string())?;
+        *guard = Some(WebRtcConfigOverride {
+            url: lk_url.clone(),
+            public_url: lk_url.clone(),
+            api_key: api_key.clone(),
+            api_secret: api_secret.clone(),
+        });
     }
 
     tracing::info!(%lk_url, "local webrtc-server ready");
@@ -543,20 +547,23 @@ pub(crate) async fn start_local_webrtc(
     Ok(serde_json::json!({ "url": lk_url, "port": port }))
 }
 
-/// Clear WebRTC env vars so the embedded server does not pick up the dev
-/// fallback URL when WebRTC actually failed to start. Must be called BEFORE
-/// `start_embedded_server`.
+/// Clear the in-memory WebRTC override so the embedded server falls back
+/// to whatever's in `config.toml` (typically empty for desktop installs).
+/// Must be called BEFORE `start_embedded_server` to take effect.
+///
+/// The previous implementation wrote four `std::env::set_var("ANNEX_WEBRTC_*", "")`
+/// calls. That was UB under the live Tauri runtime — see
+/// `app_state::WebRtcConfigOverride` for the full rationale. Clearing the
+/// `Mutex<Option<…>>` is the equivalent operation, minus the UB.
 #[tauri::command]
-pub(crate) fn clear_webrtc_env() {
-    // SAFETY: Called before the embedded server is started, so no concurrent
-    // reads of these env vars are happening.
-    unsafe {
-        std::env::set_var("ANNEX_WEBRTC_URL", "");
-        std::env::set_var("ANNEX_WEBRTC_PUBLIC_URL", "");
-        std::env::set_var("ANNEX_WEBRTC_API_KEY", "");
-        std::env::set_var("ANNEX_WEBRTC_API_SECRET", "");
-    }
-    tracing::info!("cleared webrtc env vars (voice startup failed)");
+pub(crate) fn clear_webrtc_env(state: tauri::State<'_, AppManagedState>) -> Result<(), String> {
+    let mut guard = state
+        .webrtc_config_override
+        .lock()
+        .map_err(|e| e.to_string())?;
+    *guard = None;
+    tracing::info!("cleared webrtc config override (voice startup failed)");
+    Ok(())
 }
 
 /// Stop the local WebRTC server if running.

@@ -95,19 +95,10 @@ pub(crate) async fn handle(ctx: &CommandContext<'_>, channel_id: String, last_me
 
     match res {
         Ok(Ok(messages)) => {
-            let count = messages.len();
-            for msg in messages {
-                let ws_payload: WsMessagePayload = msg.into();
-                let out = OutgoingMessage::Message(ws_payload);
-                if let Ok(json) = serde_json::to_string(&out) {
-                    if tx_clone.try_send(json).is_err() {
-                        break;
-                    }
-                }
-            }
+            let delivered_count = forward_resumed_messages(&tx_clone, messages);
             let ack = OutgoingMessage::Resumed {
                 channel_id: channel_id_for_ack,
-                missed_count: count,
+                missed_count: delivered_count,
             };
             if let Ok(json) = serde_json::to_string(&ack) {
                 let _ = tx_clone.try_send(json);
@@ -121,5 +112,131 @@ pub(crate) async fn handle(ctx: &CommandContext<'_>, channel_id: String, last_me
             tracing::error!(pseudonym = %pseudonym_for_log, "resume task failed: {}", e);
             send_ws_error(ctx.tx, "Resume failed: internal error".to_string());
         }
+    }
+}
+
+/// Enqueues each resumed message onto the outbound mpsc and returns
+/// the number of messages **actually delivered**. This is NOT
+/// `messages.len()`: a slow consumer can fill the 256-deep
+/// per-session queue, and from there `try_send` returns Err and we
+/// stop forwarding. Reporting `delivered`, not `attempted`, in the
+/// surrounding `Resumed` ack lets the client tell partial recovery
+/// from a complete one and decide whether to retry from a smaller
+/// last_message_id rather than advancing its pointer past the gap.
+///
+/// Extracted as a free function so the partial-delivery counting
+/// can be exercised by a deterministic unit test without spinning up
+/// an AppState / DB / membership fixture.
+fn forward_resumed_messages(
+    tx: &mpsc::Sender<String>,
+    messages: Vec<annex_channels::Message>,
+) -> usize {
+    let mut delivered_count = 0usize;
+    for msg in messages {
+        let ws_payload: WsMessagePayload = msg.into();
+        let out = OutgoingMessage::Message(ws_payload);
+        let json = match serde_json::to_string(&out) {
+            Ok(j) => j,
+            Err(e) => {
+                tracing::error!("failed to serialize resumed message: {}", e);
+                continue;
+            }
+        };
+        if tx.try_send(json).is_err() {
+            break;
+        }
+        delivered_count += 1;
+    }
+    delivered_count
+}
+
+#[cfg(test)]
+mod tests {
+    use super::forward_resumed_messages;
+    use annex_channels::Message;
+
+    fn synth_message(id: i64, message_id: &str) -> Message {
+        Message {
+            id,
+            server_id: 1,
+            channel_id: "chan-1".to_string(),
+            message_id: message_id.to_string(),
+            sender_pseudonym: "psn-1".to_string(),
+            content: format!("hello-{id}"),
+            reply_to_message_id: None,
+            created_at: format!("2026-05-12T00:00:0{id}Z"),
+            expires_at: None,
+            edited_at: None,
+            deleted_at: None,
+        }
+    }
+
+    /// Happy path: the outbound mpsc has capacity for every message,
+    /// so `delivered == messages.len()`.
+    #[tokio::test]
+    async fn forwards_every_message_when_outbound_queue_has_capacity() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(10);
+        let messages = (0..5)
+            .map(|i| synth_message(i, &format!("m-{i}")))
+            .collect();
+
+        let delivered = forward_resumed_messages(&tx, messages);
+        assert_eq!(delivered, 5);
+
+        // Drain the queue to confirm every payload landed.
+        let mut received = 0;
+        while rx.try_recv().is_ok() {
+            received += 1;
+        }
+        assert_eq!(received, 5);
+    }
+
+    /// Back-pressure path: the outbound mpsc has capacity 2; we hand
+    /// the function 5 messages. The fix tracks ACTUAL enqueues, so
+    /// `delivered == 2` (NOT 5). Pre-fix the surrounding code reported
+    /// `messages.len() == 5` in the ack, which would tell the client
+    /// to advance its last-seen pointer past 5 messages even though
+    /// only 2 reached the outbound queue.
+    #[tokio::test]
+    async fn returns_actual_delivery_count_when_outbound_queue_fills() {
+        // Capacity 2 means the queue fills after 2 successful sends.
+        // The test deliberately doesn't drain — that simulates a slow
+        // consumer that hasn't yet processed any frames.
+        let (tx, _rx) = tokio::sync::mpsc::channel::<String>(2);
+        let messages = (0..5)
+            .map(|i| synth_message(i, &format!("m-{i}")))
+            .collect();
+
+        let delivered = forward_resumed_messages(&tx, messages);
+        // Pre-fix this was 5 (the loop incremented even on Err); the
+        // fix returns the count of *successful* try_send calls.
+        assert_eq!(
+            delivered, 2,
+            "delivered_count must equal the outbound queue capacity, not messages.len()"
+        );
+    }
+
+    /// Closed-channel path: the receiver dropped before we started
+    /// forwarding. Every try_send returns Err immediately, so
+    /// `delivered == 0`.
+    #[tokio::test]
+    async fn returns_zero_when_outbound_channel_is_closed() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<String>(10);
+        drop(rx); // Receiver gone — every try_send is Err(Closed).
+        let messages = (0..3)
+            .map(|i| synth_message(i, &format!("m-{i}")))
+            .collect();
+
+        let delivered = forward_resumed_messages(&tx, messages);
+        assert_eq!(delivered, 0);
+    }
+
+    /// Empty input is the trivial zero-delivery case — confirms the
+    /// loop doesn't underflow / panic on `messages.len() == 0`.
+    #[tokio::test]
+    async fn returns_zero_for_empty_input() {
+        let (tx, _rx) = tokio::sync::mpsc::channel::<String>(10);
+        let delivered = forward_resumed_messages(&tx, vec![]);
+        assert_eq!(delivered, 0);
     }
 }
