@@ -95,6 +95,27 @@ pub enum StartupError {
          (recognised values: \"v1\", \"v2\")"
     )]
     UnknownZkVersion { version: String },
+    /// Production refused to fall back to an ephemeral signing key after
+    /// failing to persist a freshly-generated one to disk. An ephemeral
+    /// key would silently invalidate every token this server has ever
+    /// issued (WS sessions, voice-join tokens, federation signatures) on
+    /// the next restart; under production we hard-fail instead.
+    #[error(
+        "ANNEX_BUILD_PROFILE=production but the signing key at '{path}' could not be \
+         persisted: {reason}. Refusing to run with an ephemeral key. Either ensure the \
+         data directory is writable, set ANNEX_SIGNING_KEY explicitly, or run a dev profile."
+    )]
+    EphemeralSigningKeyInProduction { path: String, reason: String },
+    /// Production rejected an obviously-weak signing key (all-zero, all-`0xff`,
+    /// or any single-byte fill). These patterns show up in test fixtures and
+    /// in mis-pasted env vars; accepting one in production would compromise
+    /// every voice-join HMAC and federation signature this server emits.
+    #[error(
+        "ANNEX_BUILD_PROFILE=production but the signing key from {origin} is a weak \
+         placeholder (all-zero / all-0xff / single-byte fill). Refusing to run. Replace \
+         it with a real 32-byte secret."
+    )]
+    WeakSigningKey { origin: String },
 }
 
 /// Native WebRTC is embedded in-process; no external sidecar startup is required.
@@ -133,8 +154,24 @@ pub fn init_tracing(logging: &config::LoggingConfig) -> Result<(), StartupError>
 /// 2. Persistent key file at `{data_dir}/signing.key`
 /// 3. Generate a new key and write it to `{data_dir}/signing.key`
 ///
-/// Falls back to an ephemeral key (with warning) only if the file cannot be written.
+/// Under a production profile (`ANNEX_BUILD_PROFILE=production|release`) the
+/// key MUST come from one of those three paths AND be persistent: if the
+/// generate-and-write step fails to flush a key to disk, this function
+/// returns `StartupError::EphemeralSigningKeyInProduction`. Ephemeral keys
+/// rotate on every restart, which silently invalidates every WS token,
+/// voice-join token, and federation signature this server has ever issued;
+/// production never wants that surprise. Dev profiles still tolerate the
+/// fallback with a loud warning, matching previous behaviour.
 fn resolve_signing_key(db_path: &str) -> Result<SigningKey, StartupError> {
+    let is_production = matches!(
+        std::env::var("ANNEX_BUILD_PROFILE")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "production" | "release"
+    );
+
     // 1. Check environment variable
     if let Ok(hex_key) = std::env::var("ANNEX_SIGNING_KEY") {
         let bytes = hex::decode(&hex_key)
@@ -142,6 +179,12 @@ fn resolve_signing_key(db_path: &str) -> Result<SigningKey, StartupError> {
         let byte_array: [u8; 32] = bytes.try_into().map_err(|v: Vec<u8>| {
             StartupError::InvalidSigningKey(format!("expected 32 bytes, got {}", v.len()))
         })?;
+        // Under production, refuse all-zero / obviously-weak keys.
+        if is_production && is_weak_signing_key_bytes(&byte_array) {
+            return Err(StartupError::WeakSigningKey {
+                origin: "ANNEX_SIGNING_KEY environment variable".to_string(),
+            });
+        }
         tracing::info!("loaded signing key from ANNEX_SIGNING_KEY environment variable");
         return Ok(SigningKey::from_bytes(&byte_array));
     }
@@ -164,6 +207,11 @@ fn resolve_signing_key(db_path: &str) -> Result<SigningKey, StartupError> {
                                 v.len()
                             ))
                         })?;
+                        if is_production && is_weak_signing_key_bytes(&byte_array) {
+                            return Err(StartupError::WeakSigningKey {
+                                origin: format!("signing key file {}", key_file.display()),
+                            });
+                        }
                         tracing::info!(path = %key_file.display(), "loaded signing key from persistent file");
                         return Ok(SigningKey::from_bytes(&byte_array));
                     }
@@ -189,6 +237,12 @@ fn resolve_signing_key(db_path: &str) -> Result<SigningKey, StartupError> {
             error = %e,
             "could not create data directory for signing key"
         );
+        if is_production {
+            return Err(StartupError::EphemeralSigningKeyInProduction {
+                path: key_file.display().to_string(),
+                reason: format!("could not create data directory: {e}"),
+            });
+        }
     }
 
     match std::fs::write(&key_file, &hex_key) {
@@ -202,6 +256,12 @@ fn resolve_signing_key(db_path: &str) -> Result<SigningKey, StartupError> {
             tracing::info!(path = %key_file.display(), "generated and persisted new signing key");
         }
         Err(e) => {
+            if is_production {
+                return Err(StartupError::EphemeralSigningKeyInProduction {
+                    path: key_file.display().to_string(),
+                    reason: e.to_string(),
+                });
+            }
             tracing::warn!(
                 path = %key_file.display(),
                 error = %e,
@@ -211,6 +271,23 @@ fn resolve_signing_key(db_path: &str) -> Result<SigningKey, StartupError> {
     }
 
     Ok(key)
+}
+
+/// Identify obviously-weak signing keys that must not be accepted in
+/// production. The all-zero key has no entropy at all; the all-`0xff` key
+/// is the canonical "I forgot to randomise" sentinel. Returns `true` if
+/// the bytes look like a placeholder rather than a real key.
+fn is_weak_signing_key_bytes(bytes: &[u8; 32]) -> bool {
+    let first = bytes[0];
+    if bytes.iter().all(|&b| b == 0) {
+        return true;
+    }
+    if bytes.iter().all(|&b| b == 0xff) {
+        return true;
+    }
+    // All-same-byte (e.g. test fixtures full of 0xab) — at most 256 entropy
+    // bits but no kept-secret randomness; reject in production.
+    bytes.iter().all(|&b| b == first)
 }
 
 /// Returns a bound [`TcpListener`] and a fully-configured [`Router`]. The
@@ -473,6 +550,7 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
     }
 
     let ws_token_secret = api_ws::derive_ws_token_secret(&signing_key);
+    let voice_token_secret = annex_voice::derive_voice_token_secret(&signing_key);
 
     let storage_health = Arc::new(crate::storage_health::StorageHealth::new());
     let state = AppState {
@@ -500,12 +578,14 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
         upload_dir,
         preview_cache: api_link_preview::PreviewCache::new(),
         ws_token_secret: Arc::new(ws_token_secret),
+        voice_token_secret: Arc::new(voice_token_secret),
         cors_origins: config.cors.allowed_origins.clone(),
         enforce_zk_proofs: config.security.enforce_zk_proofs,
         invite_base_url: config.server.invite_base_url.clone(),
         federation_config: config.federation.clone(),
         storage_config: config.storage.clone(),
         storage_health,
+        trusted_proxy_depth: config.deployment.trusted_proxy_depth,
     };
 
     // Start background pruning task

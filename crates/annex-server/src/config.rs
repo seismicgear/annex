@@ -47,6 +47,10 @@ pub struct Config {
     /// Storage health thresholds + SQLite maintenance schedule.
     #[serde(default)]
     pub storage: StorageConfig,
+
+    /// Deployment topology + rate-limit backend.
+    #[serde(default)]
+    pub deployment: DeploymentConfig,
 }
 
 /// Federation reliability knobs.
@@ -219,6 +223,90 @@ pub struct CorsConfig {
     /// List of allowed origins. Empty = same-origin only. `["*"]` = allow all.
     #[serde(default)]
     pub allowed_origins: Vec<String>,
+}
+
+/// Deployment topology — what the operator promises about the network
+/// shape around this process, plus the backend used for rate limiting.
+///
+/// The fields here are read by the rate-limit middleware to decide which
+/// client IP to key on, and by config validation to refuse impossible
+/// production setups (e.g. clustered deployment with an in-memory rate
+/// limiter that would silently let each replica grant the full per-IP
+/// budget).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DeploymentConfig {
+    /// Number of trusted reverse-proxy hops in front of this server.
+    ///
+    /// * `0` (default) — direct exposure; the `ConnectInfo` socket address
+    ///   is the client. `X-Forwarded-For` is NEVER trusted for rate-limit
+    ///   keying; a malicious client cannot evade per-IP limits by adding
+    ///   that header.
+    /// * `N >= 1` — the operator has N proxies in front. Each proxy
+    ///   appends the immediate-source IP, so the real client is the
+    ///   left-most entry beyond the `N` trusted hops. The middleware
+    ///   takes `X-Forwarded-For[len - N - 1]` (clamped to the leftmost
+    ///   entry when the list is shorter). Misconfiguring N higher than
+    ///   the actual hop count exposes the rate limiter to spoofing; this
+    ///   is an operator decision, never auto-detected.
+    #[serde(default = "default_trusted_proxy_depth")]
+    pub trusted_proxy_depth: u8,
+
+    /// Deployment mode: `"single"` (default) or `"clustered"`.
+    ///
+    /// Under `clustered`, the rate-limit backend MUST be a shared store
+    /// — an in-memory backend would only enforce its budget on the
+    /// replica that handled the request, multiplying the effective
+    /// limit by the replica count. Production refuses to start in this
+    /// mismatched configuration.
+    #[serde(default = "default_deployment_mode")]
+    pub mode: String,
+
+    /// Rate-limit backend identifier. `"memory"` (default) uses the
+    /// in-process `RateLimiter` in `middleware.rs`. Any other value
+    /// indicates an externally-provisioned shared store (e.g.
+    /// `"redis"`); the server doesn't ship a remote backend itself
+    /// yet — operators wire one through a future
+    /// `RateLimitBackend` trait. Setting a non-`memory` value while
+    /// the trait is unimplemented surfaces as a startup error rather
+    /// than a silent fallback.
+    #[serde(default = "default_rate_limit_backend")]
+    pub rate_limit_backend: String,
+
+    /// Opt-in to the experimental relay-based federation transport
+    /// (`crates/annex-federation/src/transport.rs`). Defaults to
+    /// `false` and SHOULD stay that way in production until the
+    /// `signal_verifier` callback has a real slug↔pubkey binding
+    /// implementation (see the module banner there). Setting this to
+    /// `true` under a production profile is rejected at startup
+    /// unless `ANNEX_SIGNAL_TRUSTED_PEERS` is also configured — a
+    /// belt-and-suspenders check that catches half-wired operator
+    /// configs before the server accepts any federated SDP.
+    #[serde(default = "default_relay_transport_enabled")]
+    pub experimental_relay_transport_enabled: bool,
+}
+
+impl Default for DeploymentConfig {
+    fn default() -> Self {
+        Self {
+            trusted_proxy_depth: default_trusted_proxy_depth(),
+            mode: default_deployment_mode(),
+            rate_limit_backend: default_rate_limit_backend(),
+            experimental_relay_transport_enabled: default_relay_transport_enabled(),
+        }
+    }
+}
+
+fn default_trusted_proxy_depth() -> u8 {
+    0
+}
+fn default_deployment_mode() -> String {
+    "single".to_string()
+}
+fn default_rate_limit_backend() -> String {
+    "memory".to_string()
+}
+fn default_relay_transport_enabled() -> bool {
+    false
 }
 
 /// File-system paths for the TTS and STT voice pipelines.
@@ -510,6 +598,169 @@ fn validate_config(config: &Config) -> Result<(), ConfigError> {
         });
     }
 
+    validate_cors_for_build_profile(&config.cors)?;
+    validate_deployment_for_build_profile(&config.deployment)?;
+
+    Ok(())
+}
+
+/// Refuse impossible deployment shapes under a production profile.
+///
+/// Two gates:
+///
+/// * Mode `"clustered"` MUST pair with a non-memory rate-limit backend.
+///   An in-memory limiter on a clustered deployment gives each replica
+///   its own bucket — the effective limit becomes `backend_limit * N`,
+///   silently letting an authenticated user (or one IP) do N× the
+///   intended traffic. Operators who want shared rate limiting must
+///   wire an external backend; until then, clustered production is
+///   rejected at startup rather than silently broken.
+///
+/// * `trusted_proxy_depth` is capped at 16. Each hop trusts the next-
+///   upstream's `X-Forwarded-For` blindly, so a misconfigured-high
+///   depth is a footgun: it would believe an arbitrary leftmost entry
+///   the client itself wrote. 16 hops is far above any real CDN+LB
+///   stack and stops typos from `8` becoming `888`.
+fn validate_deployment_for_build_profile(deployment: &DeploymentConfig) -> Result<(), ConfigError> {
+    let mode = deployment.mode.trim().to_ascii_lowercase();
+    if mode != "single" && mode != "clustered" {
+        return Err(ConfigError::InvalidValue {
+            field: "deployment.mode",
+            reason: format!(
+                "must be \"single\" or \"clustered\", got {:?}",
+                deployment.mode
+            ),
+        });
+    }
+
+    if deployment.trusted_proxy_depth > 16 {
+        return Err(ConfigError::InvalidValue {
+            field: "deployment.trusted_proxy_depth",
+            reason: format!(
+                "must be 0..=16, got {}. A depth above any plausible \
+                 reverse-proxy chain is almost always a typo and lets a \
+                 spoofed X-Forwarded-For evade the rate limiter.",
+                deployment.trusted_proxy_depth
+            ),
+        });
+    }
+
+    let raw_profile = match std::env::var("ANNEX_BUILD_PROFILE") {
+        Ok(v) => v,
+        Err(_) => return Ok(()),
+    };
+    let profile = raw_profile.trim().to_ascii_lowercase();
+    if profile != "production" && profile != "release" {
+        return Ok(());
+    }
+
+    if mode == "clustered"
+        && deployment
+            .rate_limit_backend
+            .trim()
+            .eq_ignore_ascii_case("memory")
+    {
+        return Err(ConfigError::InvalidValue {
+            field: "deployment.rate_limit_backend",
+            reason: format!(
+                "ANNEX_DEPLOYMENT_MODE=clustered under ANNEX_BUILD_PROFILE={raw_profile} \
+                 requires a shared rate-limit backend. The in-memory backend gives each \
+                 replica its own bucket, multiplying the effective limit by the replica \
+                 count. Set ANNEX_RATE_LIMIT_BACKEND to a shared store, or run single-mode."
+            ),
+        });
+    }
+
+    // No remote backends are implemented yet; anything other than
+    // `memory` would silently no-op. Surface that mismatch loudly
+    // instead of pretending we enforced a remote limit.
+    let backend = deployment.rate_limit_backend.trim().to_ascii_lowercase();
+    if backend != "memory" {
+        return Err(ConfigError::InvalidValue {
+            field: "deployment.rate_limit_backend",
+            reason: format!(
+                "rate_limit_backend={backend:?} requires a `RateLimitBackend` \
+                 implementation that this build does not ship. Either implement the \
+                 adapter and remove this gate, or use \"memory\" under single-mode."
+            ),
+        });
+    }
+
+    // Experimental relay transport. Flipping this to true under a
+    // production profile is allowed only if the operator has ALSO
+    // configured the relay's trust map (`ANNEX_SIGNAL_TRUSTED_PEERS`).
+    // Without that, the relay would accept signed envelopes from any
+    // keypair, defeating the gate.
+    if deployment.experimental_relay_transport_enabled {
+        let trust = std::env::var("ANNEX_SIGNAL_TRUSTED_PEERS")
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if trust.is_empty() {
+            return Err(ConfigError::InvalidValue {
+                field: "deployment.experimental_relay_transport_enabled",
+                reason: format!(
+                    "ANNEX_FEDERATION_RELAY_TRANSPORT_ENABLED=true under ANNEX_BUILD_PROFILE={raw_profile} \
+                     requires ANNEX_SIGNAL_TRUSTED_PEERS to be configured. The relay is the only \
+                     authorization gate for federation SDP; without it, any holder of an Ed25519 \
+                     keypair could inject sessions."
+                ),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+/// Refuse to start a production build when the resolved CORS policy is
+/// wildcard or empty.
+///
+/// Background: the Docker image used to ship `ANNEX_CORS_ORIGINS=*` baked
+/// into the production layer, and there was no runtime guard. Operators
+/// who never touched env vars ended up running an internet-facing server
+/// that accepted requests from any origin. The Dockerfile no longer sets
+/// the wildcard, and this check is the belt to that suspenders: if
+/// `ANNEX_BUILD_PROFILE=production` (or `release`) is set, an empty list
+/// or any `*` entry is a startup error. Dev profiles (the default) keep
+/// their current permissive behaviour so `cargo run -p annex-server` and
+/// `docker compose up` still work without per-origin configuration.
+///
+/// Reads `ANNEX_BUILD_PROFILE` directly because nothing else in the
+/// server runtime needs to know the build profile — wiring it into
+/// `Config` would force every test fixture to plumb a new field.
+fn validate_cors_for_build_profile(cors: &CorsConfig) -> Result<(), ConfigError> {
+    let raw_profile = match std::env::var("ANNEX_BUILD_PROFILE") {
+        Ok(v) => v,
+        Err(_) => return Ok(()),
+    };
+    let profile = raw_profile.trim().to_ascii_lowercase();
+    if profile != "production" && profile != "release" {
+        return Ok(());
+    }
+
+    let has_wildcard = cors.allowed_origins.iter().any(|o| o.trim() == "*");
+    if has_wildcard {
+        return Err(ConfigError::InvalidValue {
+            field: "cors.allowed_origins",
+            reason: format!(
+                "wildcard CORS origin (\"*\") is forbidden under ANNEX_BUILD_PROFILE={raw_profile}. \
+                 Set ANNEX_CORS_ORIGINS to an explicit comma-separated list of allowed origins \
+                 (e.g. https://app.example.com), or run a dev profile."
+            ),
+        });
+    }
+    if cors.allowed_origins.is_empty() {
+        return Err(ConfigError::InvalidValue {
+            field: "cors.allowed_origins",
+            reason: format!(
+                "no CORS allowed origins configured under ANNEX_BUILD_PROFILE={raw_profile}. \
+                 Set ANNEX_CORS_ORIGINS to an explicit comma-separated list (e.g. \
+                 https://app.example.com) or cors.allowed_origins in config.toml. \
+                 Refusing to start with an unconfigured cross-origin policy under production."
+            ),
+        });
+    }
+
     Ok(())
 }
 
@@ -751,6 +1002,18 @@ pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
     if let Some(v) = parse_env_bool("ANNEX_DB_MAINTENANCE_VACUUM")? {
         config.storage.maintenance_vacuum = v;
     }
+    if let Some(v) = parse_env_var::<u8>("ANNEX_TRUSTED_PROXY_DEPTH")? {
+        config.deployment.trusted_proxy_depth = v;
+    }
+    if let Some(v) = parse_env_var::<String>("ANNEX_DEPLOYMENT_MODE")? {
+        config.deployment.mode = v;
+    }
+    if let Some(v) = parse_env_var::<String>("ANNEX_RATE_LIMIT_BACKEND")? {
+        config.deployment.rate_limit_backend = v;
+    }
+    if let Some(v) = parse_env_bool("ANNEX_FEDERATION_RELAY_TRANSPORT_ENABLED")? {
+        config.deployment.experimental_relay_transport_enabled = v;
+    }
 
     validate_config(&config)?;
 
@@ -898,6 +1161,13 @@ mod tests {
             "ANNEX_BARK_BINARY_PATH",
             "ANNEX_CORS_ORIGINS",
             "ANNEX_ENFORCE_ZK_PROOFS",
+            "ANNEX_BUILD_PROFILE",
+            "ANNEX_TRUSTED_PROXY_DEPTH",
+            "ANNEX_DEPLOYMENT_MODE",
+            "ANNEX_RATE_LIMIT_BACKEND",
+            "ANNEX_FEDERATION_RELAY_TRANSPORT_ENABLED",
+            "ANNEX_SIGNAL_TRUSTED_PEERS",
+            "ANNEX_SIGNING_KEY",
         ] {
             std::env::remove_var(name);
         }
@@ -1307,5 +1577,234 @@ port = 3000
         assert!(persisted.contains(&cfg.server.server_slug));
 
         fs::remove_file(path).expect("failed to remove temp config");
+    }
+
+    // ── Production CORS gate ────────────────────────────────────────────
+    //
+    // These tests exercise the validate_cors_for_build_profile branch
+    // (called from validate_config). The gate is keyed on the runtime
+    // ANNEX_BUILD_PROFILE env var, so each test sets it explicitly and
+    // relies on clear_env() to wipe it afterwards via the next call.
+
+    #[test]
+    fn production_profile_rejects_wildcard_cors() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+        std::env::set_var("ANNEX_BUILD_PROFILE", "production");
+        std::env::set_var("ANNEX_CORS_ORIGINS", "*");
+
+        let err = load_config(None).expect_err("production + wildcard CORS must fail validation");
+        match err {
+            ConfigError::InvalidValue { field, reason } => {
+                assert_eq!(field, "cors.allowed_origins");
+                assert!(
+                    reason.contains("wildcard"),
+                    "unexpected reason text: {reason}"
+                );
+            }
+            other => panic!("expected InvalidValue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn production_profile_rejects_empty_cors() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+        std::env::set_var("ANNEX_BUILD_PROFILE", "production");
+        // No ANNEX_CORS_ORIGINS, no [cors] section → empty list.
+
+        let err = load_config(None).expect_err("production + empty CORS must fail validation");
+        match err {
+            ConfigError::InvalidValue { field, reason } => {
+                assert_eq!(field, "cors.allowed_origins");
+                assert!(
+                    reason.contains("no CORS allowed origins"),
+                    "unexpected reason text: {reason}"
+                );
+            }
+            other => panic!("expected InvalidValue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn production_profile_accepts_explicit_origins() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+        std::env::set_var("ANNEX_BUILD_PROFILE", "production");
+        std::env::set_var(
+            "ANNEX_CORS_ORIGINS",
+            "https://app.example.com,https://admin.example.com",
+        );
+
+        let cfg = load_config(None).expect("explicit origins must validate under production");
+        assert_eq!(
+            cfg.cors.allowed_origins,
+            vec![
+                "https://app.example.com".to_string(),
+                "https://admin.example.com".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn release_profile_alias_also_gated() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+        std::env::set_var("ANNEX_BUILD_PROFILE", "release");
+        std::env::set_var("ANNEX_CORS_ORIGINS", "*");
+
+        let err = load_config(None).expect_err("release alias must reject wildcard CORS");
+        assert!(matches!(err, ConfigError::InvalidValue { .. }));
+    }
+
+    #[test]
+    fn dev_profile_allows_wildcard_cors() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+        std::env::set_var("ANNEX_BUILD_PROFILE", "dev");
+        std::env::set_var("ANNEX_CORS_ORIGINS", "*");
+
+        let cfg = load_config(None).expect("dev profile must allow wildcard CORS");
+        assert_eq!(cfg.cors.allowed_origins, vec!["*".to_string()]);
+    }
+
+    #[test]
+    fn unset_profile_allows_wildcard_cors() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+        // ANNEX_BUILD_PROFILE intentionally unset — current behaviour for
+        // cargo run, plain tests, etc. The gate must stay out of the way.
+        std::env::set_var("ANNEX_CORS_ORIGINS", "*");
+
+        let cfg = load_config(None)
+            .expect("absent ANNEX_BUILD_PROFILE must not trip the production CORS gate");
+        assert_eq!(cfg.cors.allowed_origins, vec!["*".to_string()]);
+    }
+
+    // ── Deployment topology gates ────────────────────────────────────────
+
+    #[test]
+    fn production_clustered_with_memory_backend_is_rejected() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+        std::env::set_var("ANNEX_BUILD_PROFILE", "production");
+        std::env::set_var("ANNEX_CORS_ORIGINS", "https://app.example.com");
+        std::env::set_var("ANNEX_DEPLOYMENT_MODE", "clustered");
+        // Memory is the default; setting it explicitly here documents intent.
+        std::env::set_var("ANNEX_RATE_LIMIT_BACKEND", "memory");
+
+        let err = load_config(None).expect_err("production+clustered+memory must fail at startup");
+        match err {
+            ConfigError::InvalidValue { field, reason } => {
+                assert_eq!(field, "deployment.rate_limit_backend");
+                assert!(reason.contains("clustered"), "unexpected reason: {reason}");
+            }
+            other => panic!("expected InvalidValue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dev_clustered_with_memory_is_allowed() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+        std::env::set_var("ANNEX_BUILD_PROFILE", "dev");
+        std::env::set_var("ANNEX_DEPLOYMENT_MODE", "clustered");
+        std::env::set_var("ANNEX_RATE_LIMIT_BACKEND", "memory");
+
+        // Dev tolerates the in-memory mismatch with a warning at runtime.
+        let cfg = load_config(None).expect("dev must allow clustered+memory");
+        assert_eq!(cfg.deployment.mode, "clustered");
+    }
+
+    #[test]
+    fn production_rejects_unimplemented_rate_limit_backend() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+        std::env::set_var("ANNEX_BUILD_PROFILE", "production");
+        std::env::set_var("ANNEX_CORS_ORIGINS", "https://app.example.com");
+        std::env::set_var("ANNEX_DEPLOYMENT_MODE", "single");
+        std::env::set_var("ANNEX_RATE_LIMIT_BACKEND", "redis");
+
+        let err = load_config(None).expect_err("unimplemented backend must fail");
+        assert!(matches!(err, ConfigError::InvalidValue { .. }));
+    }
+
+    #[test]
+    fn unknown_deployment_mode_is_rejected() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+        std::env::set_var("ANNEX_DEPLOYMENT_MODE", "highly-available");
+
+        let err = load_config(None).expect_err("unknown mode must fail");
+        match err {
+            ConfigError::InvalidValue { field, .. } => {
+                assert_eq!(field, "deployment.mode");
+            }
+            other => panic!("expected InvalidValue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn trusted_proxy_depth_capped_at_16() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+        std::env::set_var("ANNEX_TRUSTED_PROXY_DEPTH", "99");
+
+        let err = load_config(None).expect_err("over-cap depth must fail");
+        match err {
+            ConfigError::InvalidValue { field, .. } => {
+                assert_eq!(field, "deployment.trusted_proxy_depth");
+            }
+            other => panic!("expected InvalidValue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn production_relay_transport_requires_trust_map() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+        std::env::set_var("ANNEX_BUILD_PROFILE", "production");
+        std::env::set_var("ANNEX_CORS_ORIGINS", "https://app.example.com");
+        std::env::set_var("ANNEX_FEDERATION_RELAY_TRANSPORT_ENABLED", "true");
+        // No ANNEX_SIGNAL_TRUSTED_PEERS → reject.
+
+        let err = load_config(None).expect_err("relay transport without trust map must fail");
+        match err {
+            ConfigError::InvalidValue { field, reason } => {
+                assert_eq!(field, "deployment.experimental_relay_transport_enabled");
+                assert!(
+                    reason.contains("ANNEX_SIGNAL_TRUSTED_PEERS"),
+                    "unexpected reason: {reason}"
+                );
+            }
+            other => panic!("expected InvalidValue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn production_relay_transport_with_trust_map_accepted() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+        std::env::set_var("ANNEX_BUILD_PROFILE", "production");
+        std::env::set_var("ANNEX_CORS_ORIGINS", "https://app.example.com");
+        std::env::set_var("ANNEX_FEDERATION_RELAY_TRANSPORT_ENABLED", "true");
+        std::env::set_var(
+            "ANNEX_SIGNAL_TRUSTED_PEERS",
+            "abcdef012345:cafef00dcafef00dcafef00dcafef00dcafef00dcafef00dcafef00dcafef00d",
+        );
+
+        let cfg = load_config(None).expect("trust map present → accept");
+        assert!(cfg.deployment.experimental_relay_transport_enabled);
+    }
+
+    #[test]
+    fn dev_relay_transport_allowed_without_trust_map() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+        std::env::set_var("ANNEX_BUILD_PROFILE", "dev");
+        std::env::set_var("ANNEX_FEDERATION_RELAY_TRANSPORT_ENABLED", "true");
+
+        let cfg = load_config(None).expect("dev allows relay transport without trust map");
+        assert!(cfg.deployment.experimental_relay_transport_enabled);
     }
 }

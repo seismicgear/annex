@@ -29,6 +29,16 @@ export interface VoiceConfigStatus {
   /** Whether the WebRTC infrastructure is configured and reachable. */
   infrastructure_ready: boolean;
   has_public_url: boolean;
+  /** Whether a (possibly loopback-only) URL exists for local clients. */
+  has_local_url?: boolean;
+  /**
+   * Whether the whisper.cpp binary AND GGML model file are both present
+   * on disk. The Docker image ships the binary but does NOT bundle a
+   * model — operators must mount one and set ANNEX_STT_MODEL_PATH.
+   * Older servers may not include this field; treat undefined as
+   * "unknown" rather than "ready".
+   */
+  stt_ready?: boolean;
   setup_hint: string;
 }
 

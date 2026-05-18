@@ -6,12 +6,17 @@
 //! 1. `Extension(Arc<AppState>)` — handlers can extract shared state.
 //! 2. CORS — applied before our middleware so preflight (`OPTIONS`) responses
 //!    are answered with CORS headers without auth/rate-limit interference.
-//! 3. Rate-limit middleware.
-//! 4. Security-headers middleware.
-//! 5. Body-size limit (`MAX_REQUEST_BODY_BYTES`).
+//! 3. Security-headers middleware.
+//! 4. Body-size limit (`MAX_REQUEST_BODY_BYTES`).
 //!
-//! Rate-limit and security-headers run after CORS so they only see real,
-//! same-origin / approved cross-origin requests.
+//! Rate limiting is NOT in the global chain — it lives per-route group so
+//! it can run AFTER per-route auth and key by pseudonym for authenticated
+//! requests. See `crate::routes::app` for the per-route composition. Doing
+//! it globally would force IP-only keying for everyone, because the global
+//! layer is upstream of any per-route auth middleware.
+//!
+//! Security-headers runs after CORS so it only sees real, same-origin /
+//! approved cross-origin requests.
 
 use std::sync::Arc;
 
@@ -25,8 +30,10 @@ use crate::state::AppState;
 pub(crate) const MAX_REQUEST_BODY_BYTES: usize = 2 * 1024 * 1024;
 
 /// Wraps the router with the global layer chain (body limit, security
-/// headers, rate limit, CORS, shared state extension). Order is preserved
-/// exactly from the previous inline implementation.
+/// headers, CORS, shared state extension). Rate limiting is intentionally
+/// applied per-route group (see `crate::routes::app`) so it can sit
+/// downstream of authentication and key by pseudonym for protected
+/// routes.
 pub(crate) fn apply_global_layers(
     router: Router,
     shared_state: Arc<AppState>,
@@ -37,7 +44,6 @@ pub(crate) fn apply_global_layers(
         .layer(axum::middleware::from_fn(
             middleware::security_headers_middleware,
         ))
-        .layer(axum::middleware::from_fn(middleware::rate_limit_middleware))
         .layer(cors_layer)
         .layer(Extension(shared_state))
 }

@@ -16,6 +16,10 @@ dashmap = "6"
 bytes = "1"
 base64 = "0.22"
 opus-rs = "0.1.12"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+hex = "0.4"
+hmac = "0.12"
+sha2 = { workspace = true }
 
 [dev-dependencies]
 jsonwebtoken = "9.3"
@@ -23,3 +27,4 @@ tokio = { workspace = true, features = ["full"] }
 tempfile = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
+rand = "0.8"

@@ -982,9 +982,15 @@ impl ChannelService {
         let token = self
             .state
             .voice_service
-            .generate_join_token(channel_id, &identity.pseudonym_id, &identity.pseudonym_id)
+            .generate_join_token(
+                channel_id,
+                &identity.pseudonym_id,
+                &identity.pseudonym_id,
+                &self.state.voice_token_secret,
+                annex_voice::VOICE_TOKEN_DEFAULT_TTL_SECS,
+            )
             .map_err(|e| {
-                tracing::error!("failed to generate WebRTC token: {}", e);
+                tracing::error!("failed to generate voice join token: {}", e);
                 ChannelServiceError::Internal(format!("token: {e}"))
             })?;
 
@@ -1186,7 +1192,13 @@ impl ChannelService {
         let token = self
             .state
             .voice_service
-            .generate_join_token(channel_id, pseudonym_id, pseudonym_id)
+            .generate_join_token(
+                channel_id,
+                pseudonym_id,
+                pseudonym_id,
+                &self.state.voice_token_secret,
+                annex_voice::VOICE_TOKEN_DEFAULT_TTL_SECS,
+            )
             .map_err(|e| ChannelServiceError::Internal(format!("token: {e}")))?;
         let url = self.state.voice_service.get_url();
 
@@ -1194,6 +1206,7 @@ impl ChannelService {
             url,
             &token,
             channel_id,
+            &self.state.voice_token_secret,
             self.state.stt_service.clone(),
             self.state.voice_service.api_key(),
             self.state.voice_service.api_secret(),

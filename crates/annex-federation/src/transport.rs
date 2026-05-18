@@ -1,3 +1,39 @@
+//! ## ⚠️ Experimental — not wired into the production server
+//!
+//! `FederationTransport` defines the WebRTC peer-to-peer transport for
+//! federation traffic, gated by an Ed25519-signed signaling envelope
+//! through `api/signal.js`. The struct is fully typed and the
+//! cryptographic verifier callback is part of the constructor, BUT
+//! **no caller in the workspace currently instantiates it**.
+//!
+//! Until a caller is wired in, the production server does NOT use this
+//! transport — federation traffic continues to flow over the existing
+//! HTTP federation routes (`/api/federation/*`), which have their own
+//! authentication path. Treat this module as the staging ground for the
+//! future relay-based transport.
+//!
+//! Anyone adding the first caller MUST also:
+//!
+//! 1. Configure `ANNEX_SIGNAL_TRUSTED_PEERS` on the relay
+//!    (`api/signal.js`) so the slug↔pubkey binding is enforced before
+//!    a signed envelope reaches us.
+//! 2. Provide a `signal_verifier` closure that consults the
+//!    `instances` table (slug → public_key) and the active
+//!    `federation_agreements` to authorise the sender — not just check
+//!    that the signature matches some pubkey.
+//! 3. Add an integration test exercising send/receive end-to-end with
+//!    the real relay surface.
+//!
+//! Until those land, do not flip a feature flag to "enable the
+//! transport" in production. The relay accepts signed envelopes
+//! addressed at trusted slugs but the receiving server has no
+//! verifier wired up, so an authorised peer could still inject SDP
+//! into a session this server never initiated. The defence-in-depth
+//! check at the receiver is the missing piece.
+//!
+//! See `crates/annex-federation/src/signal.rs::SignalingPayload` for
+//! the wire format and `api/signal.js` for the relay-side gates.
+
 use crate::signal::{SignalClient, SignalError, SignalingPayload};
 use futures_util::Future;
 use std::collections::HashMap;
@@ -38,6 +74,13 @@ pub enum TransportError {
 #[derive(Clone)]
 pub struct FederationTransport {
     local_server_slug: String,
+    /// Local Ed25519 public key, hex-encoded (64 chars). Stamped onto
+    /// every outbound `SignalingPayload` so the relay can verify the
+    /// `vrp_signature` against this key under a production profile
+    /// (see `api/signal.js`). The receiving server independently checks
+    /// that the slug↔pubkey binding matches what it knows about the
+    /// sender via the `signal_verifier` callback.
+    local_public_key_hex: String,
     signal: SignalClient,
     peers: Arc<RwLock<HashMap<String, Arc<RTCPeerConnection>>>>,
     channels: Arc<RwLock<HashMap<String, Arc<RTCDataChannel>>>>,
@@ -50,6 +93,7 @@ pub struct FederationTransport {
 impl FederationTransport {
     pub fn new(
         local_server_slug: impl Into<String>,
+        local_public_key_hex: impl Into<String>,
         signal: SignalClient,
         inbound_handler: InboundHandler,
         signal_signer: SignalSigner,
@@ -57,6 +101,7 @@ impl FederationTransport {
     ) -> Self {
         Self {
             local_server_slug: local_server_slug.into(),
+            local_public_key_hex: local_public_key_hex.into(),
             signal,
             peers: Arc::new(RwLock::new(HashMap::new())),
             channels: Arc::new(RwLock::new(HashMap::new())),
@@ -126,6 +171,7 @@ impl FederationTransport {
             sdp_type: "offer".to_string(),
             sdp: offer.sdp,
             sent_at_ms: chrono::Utc::now().timestamp_millis(),
+            from_pubkey_hex: self.local_public_key_hex.clone(),
             vrp_signature: String::new(),
         };
         offer_payload.vrp_signature =
@@ -239,6 +285,7 @@ impl FederationTransport {
             sdp_type: "answer".to_string(),
             sdp: answer.sdp,
             sent_at_ms: chrono::Utc::now().timestamp_millis(),
+            from_pubkey_hex: self.local_public_key_hex.clone(),
             vrp_signature: String::new(),
         };
         answer_payload.vrp_signature =

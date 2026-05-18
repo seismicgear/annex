@@ -5,6 +5,7 @@ pub mod config;
 pub mod error;
 pub mod service;
 pub mod stt;
+pub mod token;
 pub mod tts;
 
 pub use agent::{AgentVoiceClient, TranscriptionEvent};
@@ -14,5 +15,9 @@ pub use config::{
 pub use error::VoiceError;
 pub use service::{IceCandidateEvent, RoomInfo, SttTapFrame, VoiceService};
 pub use stt::SttService;
+pub use token::{
+    derive_voice_token_secret, generate_join_token, verify_join_token, VoiceClaims,
+    VoiceTokenError, VOICE_TOKEN_DEFAULT_TTL_SECS,
+};
 pub use tts::TtsService;
 pub use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;

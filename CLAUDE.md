@@ -7,7 +7,7 @@ Tauri 2.x desktop app: Rust backend (Axum) + React/TypeScript frontend + ZK circ
 - **Backend**: 12 Cargo workspace crates in `crates/`
 - **Frontend**: React 19 + Vite + Zustand in `client/`
 - **ZK**: Circom circuits + snarkjs in `zk/`
-- **Desktop**: Tauri shell in `crates/annex-desktop/` (has pre-existing compile errors, exclude from tests)
+- **Desktop**: Tauri 2 shell in `crates/annex-desktop/`. Compiles cleanly when (a) the GTK / WebKit / libsoup / pipewire dev packages from `scripts/claude-setup.sh` are installed and (b) the gitignored `assets/piper/` and `assets/voices/` directories exist (the Tauri bundler validates bundle.resources at build time). The crate is excluded from default cargo checks for environments that don't have those system deps; once they are installed, `cargo check -p annex-desktop` succeeds. See "Desktop crate build" below.
 
 ## Environment Setup
 
@@ -123,8 +123,85 @@ cd zk && npm ci && node scripts/build-circuits.js && node scripts/setup-groth16.
 Tests fall back to `generate_dummy_vkey()` when keys are missing, but some ZK-specific
 tests require real keys.
 
+## Desktop crate build
+
+The previously-documented "Tauri API version mismatch" was inaccurate. The
+crate is correctly written against Tauri 2.10.x (matching its declared
+dependency in `crates/annex-desktop/Cargo.toml`). Two real blockers prevent
+a default cargo workspace build from including it:
+
+1. **System libraries** — Tauri 2 on Linux pulls in `gdk-sys`, `gtk-sys`,
+   `webkit2gtk-sys`, `soup-sys`, and `pipewire-sys`, each of which expects
+   pkg-config dev packages on the build host. `scripts/claude-setup.sh`
+   installs the right set (`libgtk-3-dev`, `libwebkit2gtk-4.1-dev`,
+   `libsoup-3.0-dev`, `libpipewire-0.3-dev`, `libjavascriptcoregtk-4.1-dev`,
+   `libappindicator3-dev`, `librsvg2-dev`, `patchelf`). Without these,
+   `cargo check -p annex-desktop` fails in the `gdk-sys` build script with
+   "The system library `gdk-3.0` required by crate `gdk-sys` was not found".
+
+2. **Bundle resources** — `crates/annex-desktop/tauri.conf.json` declares
+   `bundle.resources = ["../../zk/keys/membership_vkey.json",
+   "../../assets/piper", "../../assets/voices"]`. The Tauri build script
+   validates these paths at build time. `assets/piper/` and `assets/voices/`
+   are gitignored (Piper TTS is downloaded at deploy time), so a fresh
+   checkout has no `assets/piper` and the build fails with
+   "resource path `../../assets/piper` doesn't exist".
+
+After both fixes (deps installed + `mkdir -p assets/piper assets/voices`)
+the crate builds, `cargo clippy -p annex-desktop --all-targets -- -D warnings`
+passes clean, and tests compile. CI and full-workspace check commands
+must either install those system packages or continue to use
+`--exclude annex-desktop` until packaging assets are part of the build
+context.
+
+## Desktop CI matrix
+
+The `check-desktop-linux` job in `.github/workflows/ci.yml` is the
+canonical validation lane for `annex-desktop`. It installs the GTK /
+WebKit / Soup / PipeWire dev libraries and runs, in order:
+
+1. `cargo check -p annex-desktop` — fast Rust-level gate.
+2. `cargo clippy -p annex-desktop --all-targets -- -D warnings`.
+3. `cargo tauri build --debug` — the full bundle wiring (build-desktop.js,
+   frontend, resource validation).
+
+`cargo test -p annex-desktop` is deliberately **NOT** run on PR CI. The
+test build links every Tauri Linux dep (gtk, wry, webkit2gtk) twice
+(lib + test binary), which routinely exhausts the standard GitHub runner
+disk during the link phase. The release workflow's production tauri
+build is the strongest desktop-correctness signal we ship; PR CI's
+debug build is the day-to-day gate.
+
+The `.gitkeep` stubs in `assets/piper/` and `assets/voices/` are
+committed so the Tauri resource validator passes on a fresh checkout
+without requiring operators to pre-download Piper.
+
+## snarkjs vulnerability containment
+
+The remaining `npm audit` highs in both `client/` and `zk/` come from
+the same chain — `snarkjs@0.7.6 → bfj → jsonpath → underscore`. A
+build-time scan of `client/dist/assets/*.js` shows **none** of these
+package names appear in the production browser bundle: Vite tree-shakes
+them out because the proof worker only calls `groth16.fullProve` (a
+WASM-backed code path) which doesn't reach bfj's streaming JSON parser.
+
+The chain IS reachable from Node-side tooling (`zk/scripts/test-proofs.js`,
+`snarkjs` CLI usage during proof artifact generation) and from any
+client code that imports `snarkjs` outside the worker — those are
+build-time / dev-time surfaces, not runtime traffic.
+
+Replacement path: a follow-up pass should either move to a newer
+snarkjs (when upstream drops bfj), or port the proof-generation worker
+to a tighter WASM-only entry point that doesn't import the vulnerable
+chain transitively. Until then, the chain is documented and
+contained, not silently shipped.
+
 ## Known Issues
 
-- `annex-desktop` has pre-existing compile errors (Tauri API version mismatch) — always exclude with `--exclude annex-desktop`
+- `annex-desktop`: included in workspace checks when the GTK / WebKit / soup /
+  pipewire dev libraries are present AND the gitignored `assets/piper/`,
+  `assets/voices/` directories exist (`.gitkeep` stubs are tracked).
+  Environments without those still need `--exclude annex-desktop` for
+  cargo workspace commands.
 - `voice_integration::test_voice_config_status_enabled` has a pre-existing failure
 - `identity.test.ts` has a mock setup issue causing 1 failure

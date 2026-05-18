@@ -46,9 +46,11 @@ fn build_state(pool: annex_db::DbPool, local_server_id: i64) -> AppState {
         enforce_zk_proofs: false,
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: Arc::new([0u8; 32]),
+        voice_token_secret: Arc::new([0u8; 32]),
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: Arc::new(annex_server::storage_health::StorageHealth::new()),
+        trusted_proxy_depth: 0,
     }
 }
 

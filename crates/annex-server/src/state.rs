@@ -77,6 +77,10 @@ pub struct AppState {
     /// HMAC secret for signing WebSocket session tokens. Derived at startup
     /// from the server's Ed25519 key to avoid managing a separate secret.
     pub ws_token_secret: Arc<[u8; 32]>,
+    /// HMAC secret for signing voice-join tokens. Domain-separated from
+    /// `ws_token_secret` (different prefix in the derivation) so a WS
+    /// token cannot be substituted for a voice token and vice versa.
+    pub voice_token_secret: Arc<[u8; 32]>,
     /// Configured CORS allowed origins (empty = same-origin only, ["*"] = permissive).
     pub cors_origins: Vec<String>,
     /// When true, channel access endpoints require ZK membership proof via
@@ -94,6 +98,13 @@ pub struct AppState {
     /// `degraded` causes the auth middleware to reject mutating
     /// requests with HTTP 507.
     pub storage_health: std::sync::Arc<crate::storage_health::StorageHealth>,
+    /// Number of trusted reverse-proxy hops in front of this process.
+    /// Drives `rate_limit_middleware`'s IP extraction:
+    /// `0` → trust only the raw socket peer; `N >= 1` → take the real
+    /// client from `X-Forwarded-For` once the operator has declared the
+    /// proxy depth via `ANNEX_TRUSTED_PROXY_DEPTH`. See
+    /// `crate::config::DeploymentConfig`.
+    pub trusted_proxy_depth: u8,
 }
 
 impl AppState {

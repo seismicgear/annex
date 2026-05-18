@@ -193,21 +193,32 @@ impl VoiceService {
         })
     }
 
+    /// Produce a signed, expiring voice-join token bound to
+    /// `(room_name, participant_identity)`.
+    ///
+    /// Replaces the previous unsigned base64 JSON blob. The new format
+    /// is an HMAC-SHA256-signed pipe-delimited token (see
+    /// `crate::token` for the wire format); callers verify it with
+    /// [`crate::token::verify_join_token`]. The `_participant_name`
+    /// argument is preserved for source compatibility but no longer
+    /// participates in the signed claim — the binding that matters is
+    /// `(room, sub, exp)`.
+    ///
+    /// Returns [`VoiceError::Config`] if `room_name` or
+    /// `participant_identity` contains a `|`, since that would corrupt
+    /// the pipe-delimited token format. Real channel ids (UUIDs) and
+    /// pseudonyms (hex) never contain `|`, so this is purely a
+    /// defensive guard.
     pub fn generate_join_token(
         &self,
         room_name: &str,
         participant_identity: &str,
-        participant_name: &str,
+        _participant_name: &str,
+        secret: &[u8; 32],
+        ttl_secs: u64,
     ) -> Result<String, VoiceError> {
-        let payload = serde_json::json!({
-            "room": room_name,
-            "sub": participant_identity,
-            "name": participant_name,
-            "iss": "annex-native-sfu",
-        });
-
-        use base64::Engine;
-        Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload.to_string()))
+        crate::token::generate_join_token(room_name, participant_identity, secret, ttl_secs)
+            .map_err(|e| VoiceError::Config(format!("voice token: {e}")))
     }
 
     pub async fn participant_count(&self, room_name: &str) -> Result<u32, VoiceError> {

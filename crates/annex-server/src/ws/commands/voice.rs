@@ -148,6 +148,8 @@ pub(crate) async fn handle(ctx: &CommandContext<'_>, channel_id: String, text: S
                     &room_name,
                     ctx.pseudonym,
                     ctx.pseudonym,
+                    &ctx.state.voice_token_secret,
+                    annex_voice::VOICE_TOKEN_DEFAULT_TTL_SECS,
                 ) {
                     Ok(t) => t,
                     Err(e) => {
@@ -167,6 +169,7 @@ pub(crate) async fn handle(ctx: &CommandContext<'_>, channel_id: String, text: S
                     url,
                     &token,
                     &room_name,
+                    &ctx.state.voice_token_secret,
                     ctx.state.stt_service.clone(),
                     ctx.state.voice_service.api_key(),
                     ctx.state.voice_service.api_secret(),
