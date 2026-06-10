@@ -38,8 +38,8 @@ use annex_channels::{
     add_member, create_message, list_federated_channels, Channel, CreateMessageParams,
 };
 use annex_federation::{
-    process_incoming_handshake, AttestationRequest, FederatedMessageEnvelope,
-    FederatedRedactionEnvelope, FederatedRtxEnvelope, HandshakeError,
+    process_incoming_handshake, AttestationRequest, FederatedEditEnvelope,
+    FederatedMessageEnvelope, FederatedRedactionEnvelope, FederatedRtxEnvelope, HandshakeError,
 };
 use annex_graph::{ensure_graph_node, GraphError};
 use annex_identity::{
@@ -325,6 +325,40 @@ pub fn redaction_envelope_hash(envelope: &FederatedRedactionEnvelope) -> String 
 /// outbox row. The prefix contains a `:` and message ids are UUIDs, so
 /// no legitimate message id can collide with a prefixed key.
 pub const REDACTION_LEDGER_PREFIX: &str = "redaction:";
+
+/// Canonical signing input for a federated edit envelope. Same
+/// construction rules as [`redaction_signing_input`]; the
+/// [`annex_federation::EDIT_SIGNING_DOMAIN_V1`] first line keeps the
+/// three envelope families (message / redaction / edit) mutually
+/// non-verifiable.
+pub fn edit_signing_input(envelope: &FederatedEditEnvelope) -> String {
+    format!(
+        "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+        annex_federation::EDIT_SIGNING_DOMAIN_V1,
+        envelope.edit_id,
+        envelope.message_id,
+        envelope.channel_id,
+        envelope.content,
+        envelope.originating_server,
+        envelope.edited_by,
+        envelope.attestation_ref,
+        envelope.created_at
+    )
+}
+
+/// Canonical SHA-256 of the edit signing input. Stored in the receipt
+/// ledger under the `edit:`-prefixed edit_id.
+pub fn edit_envelope_hash(envelope: &FederatedEditEnvelope) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(edit_signing_input(envelope).as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+/// Receipt-ledger / outbox key prefix for edit envelopes. Keyed on the
+/// per-event `edit_id` (NOT the message_id) because one message can be
+/// edited many times — each edit event is its own delivery.
+pub const EDIT_LEDGER_PREFIX: &str = "edit:";
 
 /// Errors specific to the freshness gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1494,6 +1528,293 @@ impl FederationService {
         Ok(None)
     }
 
+    /// `POST /api/federation/edits` orchestration: applies a signed
+    /// federated edit to the local copy of a previously delivered
+    /// message.
+    ///
+    /// Shares the verification chain of
+    /// [`Self::receive_federated_redaction`] (instance + agreement,
+    /// freshness, signature, origin-receipt authority) with these
+    /// edit-specific rules:
+    ///
+    /// * **Editor authority**: `edited_by` must equal the stored row's
+    ///   `sender_pseudonym`. There is no moderation-edit concept —
+    ///   moderators delete, they don't rewrite.
+    /// * **Origin enforces its own edit window**: the receiver does not
+    ///   re-check the edit window; the origin already enforced
+    ///   ownership + window before signing (sovereignty model, same as
+    ///   moderation redactions).
+    /// * **Ordering**: the edit is applied only when the local row's
+    ///   `edited_at` is NULL or not newer than the envelope's
+    ///   `created_at`. Both timestamps are minted by the origin server,
+    ///   so the comparison is skew-free; an out-of-order older edit is
+    ///   receipt-recorded but does not regress newer content.
+    /// * **Tombstone wins**: an edit for a locally deleted (redacted)
+    ///   message is receipt-recorded but never resurrects content.
+    /// * **Audit parity**: an applied edit saves the prior content to
+    ///   `message_edits`, exactly like a local edit.
+    ///
+    /// Idempotency is keyed on the per-event `edit:<edit_id>` receipt
+    /// (one message may be edited many times). Returns the channel id
+    /// when applied, `None` for replays / stale edits / deleted or
+    /// missing rows.
+    #[allow(clippy::too_many_lines)]
+    pub async fn receive_federated_edit(
+        &self,
+        envelope: FederatedEditEnvelope,
+    ) -> Result<Option<String>, FederationError> {
+        // 1. Envelope shape — cheap rejects before any DB I/O.
+        if envelope.envelope_kind != annex_federation::FEDERATED_ENVELOPE_KIND_EDIT {
+            return Err(FederationError::Forbidden(format!(
+                "unexpected envelopeKind '{}' (expected '{}')",
+                envelope.envelope_kind,
+                annex_federation::FEDERATED_ENVELOPE_KIND_EDIT
+            )));
+        }
+        if envelope.envelope_version != annex_federation::FEDERATED_EDIT_ENVELOPE_V1 {
+            return Err(FederationError::Forbidden(format!(
+                "unsupported edit envelope version '{}'",
+                envelope.envelope_version
+            )));
+        }
+        if envelope.edit_id.trim().is_empty() {
+            return Err(FederationError::Forbidden(
+                "edit_id must not be empty".to_string(),
+            ));
+        }
+        if envelope.content.trim().is_empty() {
+            return Err(FederationError::Forbidden(
+                "edited content must not be empty".to_string(),
+            ));
+        }
+        if envelope.content.len() > FEDERATION_MAX_MESSAGE_CONTENT_LEN {
+            return Err(FederationError::Forbidden(format!(
+                "Federated edit content exceeds maximum length of {FEDERATION_MAX_MESSAGE_CONTENT_LEN} bytes"
+            )));
+        }
+
+        let state = self.state.clone();
+        let applied_channel = tokio::task::spawn_blocking({
+            let state = state.clone();
+            move || {
+                let conn = state.pool.get().map_err(pool_err)?;
+
+                // 2. Resolve + gate the originating instance.
+                let instance = repo::find_instance_by_base_url(&conn, &envelope.originating_server)
+                    .map_err(FederationError::DbError)?
+                    .ok_or_else(|| {
+                        FederationError::UnknownRemote(envelope.originating_server.clone())
+                    })?;
+                if instance.status != "ACTIVE" {
+                    return Err(FederationError::Forbidden(format!(
+                        "Instance {} is not active",
+                        envelope.originating_server
+                    )));
+                }
+                if !repo::has_active_agreement(&conn, state.server_id, instance.id)
+                    .map_err(FederationError::DbError)?
+                {
+                    return Err(FederationError::Forbidden(format!(
+                        "No active federation agreement with {}",
+                        envelope.originating_server
+                    )));
+                }
+
+                // 3. Freshness gate.
+                let fed_cfg = &state.federation_config;
+                match check_freshness(
+                    &envelope.created_at,
+                    chrono::Utc::now(),
+                    fed_cfg.freshness_window_seconds,
+                    fed_cfg.future_skew_seconds,
+                    DeliveryMode::Live,
+                ) {
+                    Ok(()) => {}
+                    Err(FreshnessRejection::Unparseable) => {
+                        return Err(FederationError::Forbidden(
+                            "envelope.created_at is not RFC 3339 / ISO 8601".to_string(),
+                        ));
+                    }
+                    Err(FreshnessRejection::TooOld) => {
+                        return Err(FederationError::Forbidden(format!(
+                            "edit created_at {} is older than the live freshness window ({}s)",
+                            envelope.created_at, fed_cfg.freshness_window_seconds
+                        )));
+                    }
+                    Err(FreshnessRejection::TooFarInFuture) => {
+                        return Err(FederationError::Forbidden(format!(
+                            "edit created_at {} is more than {}s in the future",
+                            envelope.created_at, fed_cfg.future_skew_seconds
+                        )));
+                    }
+                }
+
+                // 4. Signature.
+                verify_ed25519(
+                    &instance.public_key_hex,
+                    &envelope.signature,
+                    edit_signing_input(&envelope).as_bytes(),
+                )?;
+
+                // 5. Origin authority: receipt for the ORIGINAL message
+                //    from this same peer must exist.
+                let original_receipt: Option<String> = conn
+                    .query_row(
+                        "SELECT envelope_hash FROM federation_message_receipts \
+                         WHERE remote_instance_id = ?1 AND message_id = ?2",
+                        rusqlite::params![instance.id, &envelope.message_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(FederationError::DbError)?;
+                if original_receipt.is_none() {
+                    return Err(FederationError::Forbidden(format!(
+                        "no receipt for message {} from {} — only the delivering peer may edit",
+                        envelope.message_id, envelope.originating_server
+                    )));
+                }
+
+                // 6. Local row + editor authority.
+                let local_row: Option<(String, String, Option<String>, String)> = conn
+                    .query_row(
+                        "SELECT channel_id, sender_pseudonym, deleted_at, content \
+                         FROM messages WHERE message_id = ?1",
+                        rusqlite::params![&envelope.message_id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                    )
+                    .optional()
+                    .map_err(FederationError::DbError)?;
+
+                if let Some((_, ref sender, _, _)) = local_row {
+                    if &envelope.edited_by != sender {
+                        return Err(FederationError::Forbidden(format!(
+                            "editor {} is not the sender of message {}",
+                            envelope.edited_by, envelope.message_id
+                        )));
+                    }
+                }
+
+                // 7. Receipt + audit + conditional UPDATE, atomically.
+                let env_hash = edit_envelope_hash(&envelope);
+                let ledger_key = format!("{EDIT_LEDGER_PREFIX}{}", envelope.edit_id);
+                let tx = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)
+                    .map_err(FederationError::DbError)?;
+
+                let prior: Option<String> = tx
+                    .query_row(
+                        "SELECT envelope_hash FROM federation_message_receipts \
+                         WHERE remote_instance_id = ?1 AND message_id = ?2",
+                        rusqlite::params![instance.id, &ledger_key],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(FederationError::DbError)?;
+                if let Some(prior_hash) = prior {
+                    if prior_hash != env_hash {
+                        tracing::warn!(
+                            remote_instance_id = instance.id,
+                            edit_id = %envelope.edit_id,
+                            "edit receipt mismatch: same edit_id, different signed body"
+                        );
+                        return Err(FederationError::Forbidden(
+                            "envelope hash does not match prior receipt for this edit".to_string(),
+                        ));
+                    }
+                    // Benign replay. Drop the tx without commit.
+                    return Ok(None);
+                }
+
+                tx.execute(
+                    "INSERT INTO federation_message_receipts \
+                     (remote_instance_id, message_id, envelope_hash, envelope_created_at, delivery_mode) \
+                     VALUES (?1, ?2, ?3, ?4, 'live')",
+                    rusqlite::params![instance.id, &ledger_key, &env_hash, &envelope.created_at],
+                )
+                .map_err(FederationError::DbError)?;
+
+                let applied = match local_row {
+                    Some((channel_id, _, None, prior_content)) => {
+                        // Conditional on ordering: do not regress a
+                        // newer edit with an out-of-order older one.
+                        // Both timestamps were minted by the origin;
+                        // datetime() normalizes the two storage formats
+                        // ('YYYY-MM-DD HH:MM:SS' vs RFC 3339).
+                        let updated_rows = tx
+                            .execute(
+                                "UPDATE messages SET content = ?1, edited_at = datetime(?2) \
+                                 WHERE message_id = ?3 \
+                                   AND (edited_at IS NULL OR datetime(edited_at) <= datetime(?2))",
+                                rusqlite::params![
+                                    &envelope.content,
+                                    &envelope.created_at,
+                                    &envelope.message_id
+                                ],
+                            )
+                            .map_err(FederationError::DbError)?;
+                        if updated_rows > 0 {
+                            // Audit parity with local edits.
+                            tx.execute(
+                                "INSERT INTO message_edits (message_id, old_content) VALUES (?1, ?2)",
+                                rusqlite::params![&envelope.message_id, &prior_content],
+                            )
+                            .map_err(FederationError::DbError)?;
+                            let updated = annex_channels::get_message(&tx, &envelope.message_id)
+                                .map_err(FederationError::Channel)?;
+                            Some((channel_id, updated))
+                        } else {
+                            tracing::debug!(
+                                message_id = %envelope.message_id,
+                                edit_id = %envelope.edit_id,
+                                "federated edit is older than the local row's edited_at — skipped"
+                            );
+                            None
+                        }
+                    }
+                    Some((_, _, Some(_), _)) => {
+                        // Tombstone wins: never resurrect deleted content.
+                        tracing::debug!(
+                            message_id = %envelope.message_id,
+                            "federated edit for a deleted message — skipped"
+                        );
+                        None
+                    }
+                    None => {
+                        tracing::debug!(
+                            message_id = %envelope.message_id,
+                            "federated edit for a message already removed by retention"
+                        );
+                        None
+                    }
+                };
+
+                tx.commit().map_err(FederationError::DbError)?;
+                Ok(applied)
+            }
+        })
+        .await
+        .map_err(pool_err)??;
+
+        // Broadcast the edit to local subscribers, mirroring the
+        // local-edit flow (`OutgoingMessage::MessageEdited`).
+        if let Some((channel_id, updated)) = applied_channel {
+            let out = OutgoingMessage::MessageEdited(updated.into());
+            match serde_json::to_string(&out) {
+                Ok(json) => {
+                    state.connection_manager.broadcast(&channel_id, json).await;
+                }
+                Err(e) => {
+                    tracing::error!(
+                        channel_id = %channel_id,
+                        "failed to serialize federated edit broadcast: {}", e
+                    );
+                }
+            }
+            return Ok(Some(channel_id));
+        }
+
+        Ok(None)
+    }
+
     /// `POST /api/federation/rtx` orchestration. Returns
     /// `(bundle_id, delivered_count)`.
     #[allow(clippy::too_many_lines)]
@@ -2117,6 +2438,147 @@ pub async fn relay_redaction(
                     tracing::warn!(
                         peer_instance_id = peer_id,
                         "redaction outbox enqueue failed: {}",
+                        e
+                    );
+                }
+            }
+        }
+    })
+    .await;
+}
+
+/// Enqueue a signed edit envelope into the federation outbox for every
+/// active peer, after a local edit on a federated channel succeeded.
+///
+/// Mirrors [`relay_redaction`]; the outbox key is
+/// `edit:<edit_id>` (per edit EVENT, not per message — one message can
+/// be edited many times and each edit is its own delivery).
+pub async fn relay_edit(
+    state: Arc<AppState>,
+    channel_id: String,
+    message_id: String,
+    edited_by: String,
+    content: String,
+) {
+    let peers_result = tokio::task::spawn_blocking({
+        let state = state.clone();
+        let editor = edited_by.clone();
+        move || {
+            let conn = state.pool.get().map_err(|e| e.to_string())?;
+            let peers =
+                repo::list_active_peers(&conn, state.server_id).map_err(|e| e.to_string())?;
+
+            let mut attestation_ref = "annex:server:v1:unknown".to_string();
+            match repo::find_commitment_for_pseudonym(&conn, &editor) {
+                Ok(Some((commitment, topic))) => {
+                    attestation_ref = format!("{topic}:{commitment}");
+                }
+                Ok(None) => {
+                    tracing::debug!(editor = %editor, "no commitment found for editor, using unknown attestation ref");
+                }
+                Err(e) => {
+                    tracing::warn!(editor = %editor, "failed to look up commitment for editor: {}", e);
+                }
+            }
+            Ok::<_, String>((peers, attestation_ref))
+        }
+    })
+    .await
+    .unwrap_or_else(|e| Err(e.to_string()));
+
+    let (peers, attestation_ref) = match peers_result {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!("Failed to fetch federation peers for edit relay: {}", e);
+            return;
+        }
+    };
+    if peers.is_empty() {
+        return;
+    }
+
+    let edit_id = uuid::Uuid::new_v4().to_string();
+    let envelope_for_signing = FederatedEditEnvelope {
+        envelope_kind: annex_federation::FEDERATED_ENVELOPE_KIND_EDIT.to_string(),
+        envelope_version: annex_federation::FEDERATED_EDIT_ENVELOPE_V1.to_string(),
+        edit_id: edit_id.clone(),
+        message_id,
+        channel_id,
+        content,
+        originating_server: state.get_public_url(),
+        edited_by,
+        attestation_ref,
+        signature: String::new(), // placeholder for signing input only
+        created_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+    };
+    let signature = state
+        .signing_key
+        .sign(edit_signing_input(&envelope_for_signing).as_bytes());
+    let envelope = FederatedEditEnvelope {
+        signature: hex::encode(signature.to_bytes()),
+        ..envelope_for_signing
+    };
+
+    let envelope_json = match serde_json::to_string(&envelope) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("failed to serialise outbound edit envelope: {}", e);
+            return;
+        }
+    };
+    let outbox_key = format!("{EDIT_LEDGER_PREFIX}{edit_id}");
+
+    let peer_ids: Vec<i64> = peers
+        .into_iter()
+        .filter(|p| {
+            if p.transfer_scope == "NO_TRANSFER" {
+                return false;
+            }
+            if crate::api_link_preview::is_url_private_or_reserved(&p.base_url) {
+                tracing::warn!(
+                    peer = %p.base_url,
+                    "skipping edit enqueue: peer base_url resolves to a private or reserved host"
+                );
+                return false;
+            }
+            true
+        })
+        .map(|p| p.id)
+        .collect();
+    if peer_ids.is_empty() {
+        return;
+    }
+
+    let pool = state.pool.clone();
+    let health = state.storage_health.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        let conn = match pool.get() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!("edit outbox enqueue: pool error: {}", e);
+                return;
+            }
+        };
+        for peer_id in peer_ids {
+            match conn.execute(
+                "INSERT OR IGNORE INTO federation_outbox \
+                 (peer_instance_id, message_id, envelope_json, status, attempts, next_retry_at) \
+                 VALUES (?1, ?2, ?3, 'pending', 0, datetime('now'))",
+                rusqlite::params![peer_id, &outbox_key, &envelope_json],
+            ) {
+                Ok(_) => {}
+                Err(e) => {
+                    if crate::storage_health::interpret_sqlite_error(&health, &e) {
+                        tracing::error!(
+                            peer_instance_id = peer_id,
+                            "edit outbox enqueue tripped storage gate: {}",
+                            e
+                        );
+                        break;
+                    }
+                    tracing::warn!(
+                        peer_instance_id = peer_id,
+                        "edit outbox enqueue failed: {}",
                         e
                     );
                 }

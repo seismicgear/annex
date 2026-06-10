@@ -348,6 +348,10 @@ pub fn app(state: AppState) -> Router {
             post(api_federation::receive_federated_redaction_handler),
         )
         .route(
+            "/api/federation/edits",
+            post(api_federation::receive_federated_edit_handler),
+        )
+        .route(
             "/api/federation/rtx",
             post(api_federation::receive_federated_rtx_handler),
         )

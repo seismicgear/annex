@@ -19,6 +19,10 @@
 //!      spoofing.
 //!   5. On service error surface `Edit failed: <e>` via
 //!      `send_ws_error`.
+//!   6. If the channel is `FEDERATED`-scoped, spawn `relay_edit(...)`
+//!      so a signed edit envelope is enqueued in the federation outbox
+//!      for every active peer (ADR-0011 amendment; same shape as the
+//!      delete path's redaction tombstone).
 
 use crate::ws::context::CommandContext;
 use crate::ws::dispatch::{check_ws_membership, MembershipResult, MAX_WS_MESSAGE_CONTENT_LEN};
@@ -76,11 +80,13 @@ pub(crate) async fn handle(
         .edit_message(ctx.pseudonym, &channel_id, &message_id, &content)
         .await
     {
-        Ok(updated) => {
+        Ok((updated, is_federated)) => {
             // Use the persisted channel_id from DB, not the
             // client-supplied one, to prevent cross-channel broadcast
             // spoofing.
             let persisted_channel_id = updated.channel_id.clone();
+            let persisted_message_id = updated.message_id.clone();
+            let persisted_content = updated.content.clone();
             let ws_payload: WsMessagePayload = updated.into();
             let out = OutgoingMessage::MessageEdited(ws_payload);
             match serde_json::to_string(&out) {
@@ -93,6 +99,20 @@ pub(crate) async fn handle(
                 Err(e) => {
                     tracing::error!("failed to serialize edit broadcast: {}", e);
                 }
+            }
+
+            // Propagate the edit to federation peers as a signed edit
+            // envelope, durably via the federation outbox — mirroring
+            // the delete path's redaction tombstone (ADR-0011
+            // amendment).
+            if is_federated {
+                tokio::spawn(crate::api_federation::relay_edit(
+                    ctx.state.clone(),
+                    persisted_channel_id,
+                    persisted_message_id,
+                    ctx.pseudonym.to_string(),
+                    persisted_content,
+                ));
             }
         }
         Err(e) => {

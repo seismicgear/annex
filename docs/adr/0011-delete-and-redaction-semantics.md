@@ -69,3 +69,13 @@ Option B landed, following the sketch above with these concretions:
 - **Retention interplay**: a tombstone for a message already hard-deleted by retention records the receipt and reports `applied: false` — nothing to blank, replays stay idempotent.
 
 Tests: `crates/annex-server/tests/api_federation_redaction.rs` (8 integration tests) plus outbox-routing unit tests in `background.rs`.
+
+### Edit propagation (same amendment)
+
+The same gap existed for message **edits**: a local edit on a federated channel left peers holding the original content forever. The fix follows the tombstone shape with three edit-specific rules:
+
+- **Per-event keys**: one message can be edited many times, so outbox rows and receipts are keyed `edit:<edit_id>` (a UUID minted per edit event), not per message.
+- **Ordering**: the receiver applies an edit only when the local row's `edited_at` is not newer than the envelope's `created_at`. Both timestamps are minted by the origin server, so the comparison is skew-free; an out-of-order older edit is receipt-recorded (idempotency preserved) but never regresses newer content. Tombstones always win — an edit can never resurrect deleted content.
+- **Editor authority**: `edited_by` must equal the stored `sender_pseudonym`; there is no moderation-edit concept (moderators delete, they don't rewrite). The origin enforces its own ownership + edit-window before signing; the receiver does not re-check the window (sovereignty model, as with moderation redactions).
+
+Applied edits write the prior content to `message_edits` (audit parity with local edits) and broadcast `MessageEdited` to local subscribers. Receiver endpoint: `POST /api/federation/edits`; sender hook: the WS edit handler relays via `relay_edit` when the channel is FEDERATED-scoped. Tests: `crates/annex-server/tests/api_federation_edit.rs` (9 integration tests).

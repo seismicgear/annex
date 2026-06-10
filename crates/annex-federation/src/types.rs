@@ -239,6 +239,76 @@ pub struct FederatedRedactionEnvelope {
     pub created_at: String,
 }
 
+/// Wire-format version constant for the federated edit envelope.
+pub const FEDERATED_EDIT_ENVELOPE_V1: &str = "v1";
+
+/// Domain-separation literal prepended to the edit signing input.
+/// Distinct from both the message and redaction signing inputs so the
+/// three envelope families can never cross-verify.
+pub const EDIT_SIGNING_DOMAIN_V1: &str = "annex-edit-v1";
+
+/// Envelope-kind discriminator for edit envelopes (see
+/// [`FEDERATED_ENVELOPE_KIND_REDACTION`] for the routing rationale).
+pub const FEDERATED_ENVELOPE_KIND_EDIT: &str = "edit";
+
+/// A signed edit propagating a message content change to federation
+/// peers.
+///
+/// Sent by the *originating* server of a message after a local edit on
+/// a federated channel succeeded (ownership + edit-window already
+/// enforced by the origin). The receiver verifies the signature
+/// against the originating server's published key, checks that it
+/// received the original message from that same peer, validates that
+/// the editor is the message's sender, then applies the new content —
+/// but only when the edit is not older than the content it already
+/// holds, so out-of-order delivery cannot regress a newer edit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederatedEditEnvelope {
+    /// Always [`FEDERATED_ENVELOPE_KIND_EDIT`].
+    #[serde(rename = "envelopeKind")]
+    pub envelope_kind: String,
+    /// Wire-format version. Currently always
+    /// [`FEDERATED_EDIT_ENVELOPE_V1`].
+    #[serde(rename = "envelopeVersion")]
+    pub envelope_version: String,
+    /// Unique id of THIS edit event (UUID). A message can be edited
+    /// many times; each edit gets its own envelope, outbox row, and
+    /// receipt — keyed `edit:<edit_id>` — so the per-message ledger
+    /// uniqueness used by messages/redactions still holds.
+    pub edit_id: String,
+    /// The public ID of the message being edited (as originally
+    /// relayed).
+    pub message_id: String,
+    /// The public channel ID of the original message.
+    pub channel_id: String,
+    /// The full replacement content.
+    pub content: String,
+    /// Base URL of the originating server (must match the peer that
+    /// delivered the original message).
+    pub originating_server: String,
+    /// Pseudonym of the editor. Must equal the original message's
+    /// `sender_pseudonym` — there is no moderation-edit concept
+    /// (moderators delete, they don't rewrite).
+    pub edited_by: String,
+    /// VRP attestation reference of the editor
+    /// (format: `"topic:commitment_hex"`).
+    pub attestation_ref: String,
+    /// Ed25519 signature (hex) over the canonical signing input:
+    ///
+    /// ```text
+    /// annex-edit-v1\nedit_id\nmessage_id\nchannel_id\ncontent\n
+    /// originating_server\nedited_by\nattestation_ref\ncreated_at
+    /// ```
+    ///
+    /// (single newline-joined string; shown wrapped here).
+    pub signature: String,
+    /// Creation timestamp of the edit (ISO 8601, UTC). Doubles as the
+    /// ordering key: receivers apply an edit only when it is not older
+    /// than the row's current `edited_at`. Both timestamps originate
+    /// on the same origin server, so the comparison is skew-free.
+    pub created_at: String,
+}
+
 /// An RTX bundle relayed from a federation peer.
 ///
 /// When a bundle is published on one server and relayed to a federated peer,

@@ -184,6 +184,9 @@ fn outbox_envelope_endpoint_path(envelope_json: &str) -> &'static str {
         }) if kind == annex_federation::FEDERATED_ENVELOPE_KIND_REDACTION => {
             "/api/federation/redactions"
         }
+        Ok(KindPeek {
+            envelope_kind: Some(kind),
+        }) if kind == annex_federation::FEDERATED_ENVELOPE_KIND_EDIT => "/api/federation/edits",
         _ => "/api/federation/messages",
     }
 }
@@ -516,6 +519,13 @@ mod outbox_routing_tests {
             outbox_envelope_endpoint_path(json),
             "/api/federation/messages"
         );
+    }
+
+    #[test]
+    fn edit_envelopes_route_to_edits_endpoint() {
+        let json =
+            r#"{"envelopeKind":"edit","envelopeVersion":"v1","edit_id":"e","message_id":"m"}"#;
+        assert_eq!(outbox_envelope_endpoint_path(json), "/api/federation/edits");
     }
 
     #[test]

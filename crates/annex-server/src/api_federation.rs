@@ -29,7 +29,8 @@ use std::sync::Arc;
 
 use annex_channels::Channel;
 use annex_federation::{
-    AttestationRequest, FederatedMessageEnvelope, FederatedRedactionEnvelope, FederatedRtxEnvelope,
+    AttestationRequest, FederatedEditEnvelope, FederatedMessageEnvelope,
+    FederatedRedactionEnvelope, FederatedRtxEnvelope,
 };
 use annex_vrp::VrpValidationReport;
 use axum::{
@@ -48,8 +49,8 @@ use crate::AppState;
 // and other intra-crate consumers still see it via the legacy path.
 pub(crate) use crate::services::federation_repository::find_commitment_for_pseudonym;
 pub use crate::services::federation_service::{
-    federation_http_client, relay_message, relay_redaction, FederationError, HandshakeRequest,
-    JoinFederatedChannelRequest,
+    federation_http_client, relay_edit, relay_message, relay_redaction, FederationError,
+    HandshakeRequest, JoinFederatedChannelRequest,
 };
 
 /// Handler for `POST /api/federation/handshake`.
@@ -128,6 +129,24 @@ pub async fn receive_federated_redaction_handler(
 ) -> Result<Json<serde_json::Value>, FederationError> {
     let svc = FederationService::new(state);
     let applied_channel = svc.receive_federated_redaction(envelope).await?;
+    Ok(Json(serde_json::json!({
+        "status": "received",
+        "applied": applied_channel.is_some(),
+    })))
+}
+
+/// Handler for `POST /api/federation/edits`.
+///
+/// Applies a signed federated edit from the peer that originally
+/// delivered the message. Idempotent on the per-event receipt ledger;
+/// out-of-order older edits and edits for deleted messages return
+/// `applied: false` without error so outbox retries are safe.
+pub async fn receive_federated_edit_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(envelope): Json<FederatedEditEnvelope>,
+) -> Result<Json<serde_json::Value>, FederationError> {
+    let svc = FederationService::new(state);
+    let applied_channel = svc.receive_federated_edit(envelope).await?;
     Ok(Json(serde_json::json!({
         "status": "received",
         "applied": applied_channel.is_some(),
