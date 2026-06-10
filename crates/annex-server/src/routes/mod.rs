@@ -187,6 +187,22 @@ pub fn app(state: AppState) -> Router {
             "/api/admin/federation/{id}",
             delete(api_admin::revoke_federation_handler),
         )
+        .route(
+            "/api/admin/federation/outbox",
+            get(api_admin::list_federation_outbox_handler),
+        )
+        .route(
+            "/api/admin/federation/outbox/{id}/retry",
+            post(api_admin::retry_federation_outbox_handler),
+        )
+        .route(
+            "/api/admin/storage",
+            get(api_admin::get_storage_health_handler),
+        )
+        .route(
+            "/api/admin/storage/clear",
+            post(api_admin::clear_storage_gate_handler),
+        )
         .route("/api/admin/members", get(api_admin::list_members_handler))
         .route(
             "/api/admin/members/{pseudonymId}/capabilities",

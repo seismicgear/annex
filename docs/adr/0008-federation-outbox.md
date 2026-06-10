@@ -1,6 +1,6 @@
 # ADR 0008 — Durable federation outbox
 
-Status: Accepted (2026-05-12)
+Status: Accepted (2026-05-12); amended 2026-06-10 (admin inspect/retry endpoints landed)
 Context tag: `hardening-pass`
 
 ## Context
@@ -15,7 +15,7 @@ Add a durable per-(peer, message) outbox.
 2. **Enqueue path** — `relay_message` builds the signed envelope exactly as before, serialises it once, then `INSERT OR IGNORE`s one row per active peer. The function returns immediately. UNIQUE makes duplicate enqueue idempotent.
 3. **Worker** — `crate::background::start_federation_outbox_task` runs every `Config::federation::outbox_interval_seconds` (default 5s). Each tick pulls up to 32 pending rows whose `next_retry_at <= now`, POSTs each envelope, updates the row on the result.
 4. **Backoff** — bounded exponential: `min(60 * 2^attempts, 3600)` seconds. The default `outbox_max_attempts = 12` gives roughly a 3-hour total retry window.
-5. **Terminal states** — `delivered` on first 2xx; `failed` after `attempts >= max_attempts`. The worker does NOT delete `failed` rows; an operator can inspect them and (via a future admin endpoint) mark them `pending` for retry.
+5. **Terminal states** — `delivered` on first 2xx; `failed` after `attempts >= max_attempts`. The worker does NOT delete `failed` rows; an operator can inspect them via `GET /api/admin/federation/outbox` and return them to the rotation via `POST /api/admin/federation/outbox/{id}/retry` (see amendment below).
 6. **Storage gate interaction** — the enqueue path catches `SQLITE_FULL`/`SQLITE_IOERR` and trips the storage gate (see ADR-0009). The worker checkpoints WAL only via the maintenance task; it does not VACUUM under degraded storage.
 
 ## Consequences
@@ -27,5 +27,13 @@ Add a durable per-(peer, message) outbox.
 
 ## Out of scope (deferred)
 
-- **Admin endpoint to inspect/retry the outbox.** A future change adds `GET /api/admin/federation/outbox` and `POST /api/admin/federation/outbox/:id/retry`. For now, operators query SQLite directly.
 - **Per-peer rate limiting.** Currently each tick fans out to all pending rows. A misbehaving peer that consistently fails would burn HTTP requests against itself. A per-peer token bucket is the right shape; deferred.
+
+## Amendment (2026-06-10) — admin inspect/retry endpoints
+
+The originally-deferred admin surface landed:
+
+- `GET /api/admin/federation/outbox` — lists outbox rows (most recent first) with an optional `status` filter (`pending` / `delivered` / `failed` / `paused`), `limit`/`offset` pagination, the peer's `base_url`/`label` joined in, and aggregate per-status counts for queue-depth triage. The envelope body is omitted (its byte size is reported as `envelope_bytes`).
+- `POST /api/admin/federation/outbox/{id}/retry` — returns a `failed` or `paused` row to the retry rotation: `status='pending'`, `attempts=0` (fresh backoff budget), `next_retry_at=now`, `last_error=NULL`. Rows that are `pending` or `delivered` are rejected with 409. A retried row still passes the dequeue-time SSRF gate in the worker, so retrying a row whose peer URL points at a private host re-fails it terminally.
+
+Both endpoints require `can_moderate` and emit a `MODERATION_ACTION` audit event on mutation. Tests: `crates/annex-server/tests/api_admin_storage_outbox.rs`.

@@ -161,6 +161,32 @@ docker compose logs -f annex
 
 With `ANNEX_LOG_JSON=true`, logs are structured JSON suitable for ingestion by Elasticsearch, Loki, or similar.
 
+### Storage gate
+
+When SQLite reports disk exhaustion (`SQLITE_FULL` / `SQLITE_IOERR`), or the DB file grows past the configured cap, the server closes its storage gate: mutating HTTP requests are rejected with `507 Insufficient Storage` while reads continue. The gate does not auto-recover (auto-recovery would flap under transient I/O errors). After freeing disk, an operator clears it explicitly — both endpoints require a moderator identity:
+
+```bash
+# Inspect the gate (state: healthy | warn | degraded, plus the trip reason)
+curl -H "Authorization: Bearer $MOD_TOKEN" http://localhost:3000/api/admin/storage
+
+# Clear it after verifying disk space is available again
+curl -X POST -H "Authorization: Bearer $MOD_TOKEN" http://localhost:3000/api/admin/storage/clear
+```
+
+The clear endpoint stays reachable while the gate is closed; if the disk is still full, the next failing write simply re-trips the gate.
+
+### Federation outbox
+
+Outbound federated messages are delivered through a durable outbox with bounded retry (see ADR-0008). Rows that exhaust their retry budget are kept with `status=failed` for triage:
+
+```bash
+# Queue depth and stuck deliveries (filter: ?status=failed, paginate: ?limit=&offset=)
+curl -H "Authorization: Bearer $MOD_TOKEN" http://localhost:3000/api/admin/federation/outbox
+
+# After fixing the peer, return a failed row to the retry rotation
+curl -X POST -H "Authorization: Bearer $MOD_TOKEN" http://localhost:3000/api/admin/federation/outbox/42/retry
+```
+
 ## Public Access
 
 For production deployments, Annex needs to be reachable from the internet for invite links and federation to work.

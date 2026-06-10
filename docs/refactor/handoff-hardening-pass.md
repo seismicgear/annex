@@ -154,8 +154,8 @@ These were either out of scope for this pass or have a concrete prerequisite tha
 | --- | --- | --- | --- |
 | **Federation catch-up endpoint** | Deferred (ADR-0014) | Needs envelope `v3` with per-origin sequence number + receipt ledger schema extension | Land v3 envelope; add `channel_id` + `origin_seq` to `federation_message_receipts`; build endpoint |
 | **Federated redaction tombstones** | Documented (ADR-0011) | Same shape as message envelope work; doing both in one pass risks correlated bugs | Build `FederatedRedactionEnvelope` + verifier following the sketch in ADR-0011 |
-| **Admin endpoint to clear storage gate** | Deferred (ADR-0009) | Belongs in a broader admin-surface ADR | `POST /api/admin/storage/clear` + auth check |
-| **Admin endpoint to inspect/retry outbox** | Deferred (ADR-0008) | Same — admin surface | `GET /api/admin/federation/outbox` + `POST .../:id/retry` |
+| **Admin endpoint to clear storage gate** | **Landed 2026-06-10** (ADR-0009 amendment) | — | `GET /api/admin/storage` + `POST /api/admin/storage/clear` (exempt from the degraded-gate 507; `can_moderate`-gated) |
+| **Admin endpoint to inspect/retry outbox** | **Landed 2026-06-10** (ADR-0008 amendment) | — | `GET /api/admin/federation/outbox` (filter/pagination/counts) + `POST .../{id}/retry` (resets backoff budget; 409 on `pending`/`delivered`) |
 | **Per-event Ed25519 signature** | Schema column present, writer/verifier not wired (ADR-0013) | Needs careful canonical-signing-input definition like ADR-0007 did for envelopes | Sign in `emit_event`; verify in `verify_event_log_chain` |
 | **Idempotency TTL** | Deferred (ADR-0010) | `message_request_ids` grows alongside `messages`; no time-based eviction yet | Add `expires_at` column + sweep alongside retention |
 | **Outbox per-peer rate limiting** | Deferred (ADR-0008) | Misbehaving peer can dominate retry budget | Token bucket per `peer_instance_id` |

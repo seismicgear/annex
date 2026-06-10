@@ -1,6 +1,6 @@
 # ADR 0009 — Storage degradation + SQLite maintenance
 
-Status: Accepted (2026-05-12)
+Status: Accepted (2026-05-12); amended 2026-06-10 (admin clear endpoint landed)
 Context tag: `hardening-pass`
 
 ## Context
@@ -31,6 +31,14 @@ The portable signal we already have is the DB file size (`std::fs::metadata`) pl
 
 ## Out of scope (deferred)
 
-- **Admin endpoint to clear the gate** (`POST /api/admin/storage/clear`). For now, an operator restarts the process after freeing disk. This is enough for the hardening pass; the admin endpoint is queued behind the broader admin-surface ADR.
 - **Free-disk preflight via syscall.** Not adding `libc`/`windows_sys` in this pass; the reactive trip path is enough for the operator scenarios we have evidence for.
 - **Per-write storage gate inside `tokio::task::spawn_blocking` bodies.** Currently the gate is consulted at the HTTP/WS boundary. Internal writes (e.g. the retention sweep) call `interpret_sqlite_error` on their own errors, but do not pre-check the gate. This is intentional: maintenance work should still attempt to run when storage is degraded because it can free space.
+
+## Amendment (2026-06-10) — admin clear endpoint
+
+The originally-deferred recovery surface landed:
+
+- `GET /api/admin/storage` — reports the gate's state (`healthy` / `warn` / `degraded`), the recorded reason, and whether writes are blocked.
+- `POST /api/admin/storage/clear` — returns the gate to `healthy` after the operator has verified the underlying condition. Recovery no longer requires a process restart.
+
+The clear route is exempt from the middleware's degraded-gate 507 short-circuit — it must stay reachable while the gate is closed, which is the only time it is needed. The exemption is safe because the handler mutates only the in-memory gate (an atomic store); its audit event is best-effort and a still-full disk simply re-trips the gate on the next failing write. Both endpoints require `can_moderate`. Tests: `crates/annex-server/tests/api_admin_storage_outbox.rs`.
