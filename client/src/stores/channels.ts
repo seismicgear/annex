@@ -516,6 +516,10 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       const oldest = messages.find((m) => !m.pending && !m.failed);
       if (!oldest) { set({ loadingOlder: false }); return; }
       const older = await api.getMessages(pseudonymId, activeChannelId, oldest.message_id, PAGE_SIZE);
+      // The user may have switched channels while the request was in
+      // flight — merging would splice another channel's history into the
+      // current view, so drop the stale response instead.
+      if (get().activeChannelId !== activeChannelId) return;
       set((state) => ({
         messages: [...older.reverse(), ...state.messages],
         hasMoreMessages: older.length >= PAGE_SIZE,
@@ -523,8 +527,11 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     } catch (err) {
       console.warn('[channels] loadOlderMessages failed:', err);
       // Stop trying to load more if the request failed to prevent
-      // infinite retry loops on scroll.
-      set({ hasMoreMessages: false });
+      // infinite retry loops on scroll — but only for the channel this
+      // request was issued for.
+      if (get().activeChannelId === activeChannelId) {
+        set({ hasMoreMessages: false });
+      }
     } finally {
       set({ loadingOlder: false });
     }
@@ -669,7 +676,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     set((state) => ({
       messages: state.messages.filter((m) => m.clientRequestId !== clientRequestId),
       composerError: null,
-  wsAuthRefreshing: false,
+      wsAuthRefreshing: false,
     }));
     get().sendMessage(failedMsg.content, pseudonymId, failedMsg.reply_to_message_id);
   },

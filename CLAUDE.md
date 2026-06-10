@@ -203,5 +203,3 @@ contained, not silently shipped.
   `assets/voices/` directories exist (`.gitkeep` stubs are tracked).
   Environments without those still need `--exclude annex-desktop` for
   cargo workspace commands.
-- `voice_integration::test_voice_config_status_enabled` has a pre-existing failure
-- `identity.test.ts` has a mock setup issue causing 1 failure
