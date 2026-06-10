@@ -730,3 +730,93 @@ fn event_log_chain_detects_tampering() {
     let bad = crate::store::verify_event_log_chain(&conn, server_id).expect("verify");
     assert_eq!(bad, Some(2), "chain should flag the tampered row's seq");
 }
+
+#[test]
+fn backfill_repairs_chain_for_db_upgraded_across_migration_038() {
+    let conn = test_db();
+    let server_id = seed_server(&conn);
+
+    // Simulate rows that predate migration 038: the ALTER TABLE added
+    // prev_hash/event_hash with DEFAULT '', so legacy rows carry empty
+    // hashes. Insert three such rows directly (bypassing emit_event).
+    for i in 1..=3i64 {
+        conn.execute(
+            "INSERT INTO public_event_log \
+                (server_id, domain, event_type, entity_type, entity_id, seq, \
+                 payload_json, occurred_at, prev_hash, event_hash, event_signature) \
+             VALUES (?1, 'IDENTITY', 'identity.registered', 'identity', ?2, ?3, \
+                     ?4, '2026-01-01 00:00:00', '', '', NULL)",
+            rusqlite::params![
+                server_id,
+                format!("c{i}"),
+                i,
+                format!("{{\"commitment_hex\":\"leg{i}\",\"role_code\":1}}"),
+            ],
+        )
+        .expect("insert legacy row");
+    }
+
+    // A fresh emit after the upgrade links to the last legacy row's empty
+    // hash, so the live chain is broken too.
+    emit_event(
+        &conn,
+        server_id,
+        EventDomain::Identity,
+        "identity.registered",
+        "identity",
+        "c4",
+        &EventPayload::IdentityRegistered {
+            commitment_hex: "new4".to_string(),
+            role_code: 1,
+        },
+    )
+    .expect("emit");
+
+    // Pre-backfill: the chain is broken from the very first legacy row.
+    assert_eq!(
+        crate::store::verify_event_log_chain(&conn, server_id).expect("verify"),
+        Some(1),
+        "upgraded DB should report a broken chain at the first legacy row"
+    );
+
+    // Backfill rebuilds the chain from GENESIS.
+    let repaired = crate::store::backfill_event_log_chain(&conn).expect("backfill");
+    assert_eq!(repaired, 1, "exactly one server's chain should be rebuilt");
+
+    // Post-backfill: chain verifies end-to-end.
+    assert!(
+        crate::store::verify_event_log_chain(&conn, server_id)
+            .expect("verify")
+            .is_none(),
+        "chain should be intact after backfill"
+    );
+
+    // The live chain recovers: a subsequent emit links to the repaired
+    // hash and the chain still verifies.
+    emit_event(
+        &conn,
+        server_id,
+        EventDomain::Identity,
+        "identity.registered",
+        "identity",
+        "c5",
+        &EventPayload::IdentityRegistered {
+            commitment_hex: "new5".to_string(),
+            role_code: 1,
+        },
+    )
+    .expect("emit");
+    assert!(
+        crate::store::verify_event_log_chain(&conn, server_id)
+            .expect("verify")
+            .is_none(),
+        "chain should remain intact after a post-backfill emit"
+    );
+
+    // Idempotent: a second backfill is a no-op on the now-healthy chain.
+    assert_eq!(
+        crate::store::backfill_event_log_chain(&conn).expect("backfill"),
+        0,
+        "second backfill should repair nothing"
+    );
+}

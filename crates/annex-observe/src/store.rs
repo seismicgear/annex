@@ -220,6 +220,97 @@ pub fn verify_event_log_chain(
     Ok(None)
 }
 
+/// Repairs the event-log hash chain for every server whose chain is not
+/// intact from GENESIS, recomputing `prev_hash` and `event_hash` over the
+/// rows in `seq` order. Returns the number of servers whose chain was
+/// rewritten.
+///
+/// This exists because migration 038 added the hash-chain columns with
+/// `DEFAULT ''`: any rows that predate the migration were left with empty
+/// `event_hash`/`prev_hash`, which (a) makes [`verify_event_log_chain`]
+/// report the chain as broken from the first legacy row, and (b) causes
+/// the next [`emit_event`] to read an empty `event_hash` as the previous
+/// link, so the live chain never recovers on its own. Running this once at
+/// startup (after migrations) rebuilds the chain so the "everything is
+/// auditable" guarantee holds for databases upgraded across 038, not only
+/// for databases created fresh afterwards.
+///
+/// Idempotent: a server whose chain already verifies is skipped, so this
+/// is safe to call on every boot. The rewrite is wrapped in a transaction
+/// per server so a crash mid-repair cannot leave a half-rebuilt chain.
+///
+/// # Errors
+///
+/// Returns `ObserveError::Database` on SQL failure.
+pub fn backfill_event_log_chain(conn: &Connection) -> Result<usize, ObserveError> {
+    // Distinct servers that have any events.
+    let server_ids: Vec<i64> = {
+        let mut stmt =
+            conn.prepare("SELECT DISTINCT server_id FROM public_event_log ORDER BY server_id")?;
+        let rows = stmt.query_map([], |row| row.get::<_, i64>(0))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+
+    let mut repaired = 0usize;
+    for server_id in server_ids {
+        // Skip servers whose chain is already intact — keeps this a no-op
+        // on healthy (fresh-from-038) databases.
+        if verify_event_log_chain(conn, server_id)?.is_none() {
+            continue;
+        }
+
+        // Read the full chain in seq order, recompute, and UPDATE each row
+        // atomically. The canonical fields are exactly those hashed by
+        // `compute_event_hash`, so the rebuilt chain matches what a
+        // fresh-from-GENESIS emit sequence would have produced.
+        let rows: Vec<(i64, String, String, String, String, String, String)> = {
+            let mut stmt = conn.prepare(
+                "SELECT seq, domain, event_type, entity_type, entity_id, \
+                        payload_json, occurred_at \
+                 FROM public_event_log WHERE server_id = ?1 ORDER BY seq ASC",
+            )?;
+            let mapped = stmt.query_map(params![server_id], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            })?;
+            mapped.collect::<Result<Vec<_>, _>>()?
+        };
+
+        let tx = conn.unchecked_transaction()?;
+        let mut prev_hash = "GENESIS".to_string();
+        for (seq, domain, event_type, entity_type, entity_id, payload_json, occurred_at) in &rows {
+            let event_hash = compute_event_hash(
+                server_id,
+                *seq,
+                domain,
+                event_type,
+                entity_type,
+                entity_id,
+                payload_json,
+                occurred_at,
+                &prev_hash,
+            );
+            tx.execute(
+                "UPDATE public_event_log SET prev_hash = ?1, event_hash = ?2 \
+                 WHERE server_id = ?3 AND seq = ?4",
+                params![prev_hash, event_hash, server_id, seq],
+            )?;
+            prev_hash = event_hash;
+        }
+        tx.commit()?;
+        repaired += 1;
+    }
+
+    Ok(repaired)
+}
+
 /// Returns the next sequence number for the given server.
 ///
 /// Sequence numbers are monotonically increasing per server and are used

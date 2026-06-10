@@ -310,6 +310,20 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
         if applied > 0 {
             tracing::info!(count = applied, "applied database migrations");
         }
+
+        // Repair the event-log hash chain for databases upgraded across
+        // migration 038 (which added the chain columns with empty
+        // defaults for pre-existing rows). Idempotent and a no-op on
+        // healthy databases; runs before the server accepts traffic so no
+        // new events are emitted against a broken chain.
+        match annex_observe::backfill_event_log_chain(&conn) {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(
+                servers = n,
+                "rebuilt event-log hash chain for upgraded databases"
+            ),
+            Err(e) => tracing::error!("event-log hash-chain backfill failed: {}", e),
+        }
     }
 
     // Start background retention task

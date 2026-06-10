@@ -18,12 +18,28 @@ use serde::{Deserialize, Serialize};
 /// - `FullKnowledgeBundle`: all fields are delivered intact.
 /// - `NoTransfer`: bundle is not delivered at all.
 ///
-/// # Cryptographic integrity
+/// # Trust model
 ///
-/// Every bundle carries an Ed25519 signature from the source agent's key.
-/// The signed payload is:
+/// The `signature` field carries an Ed25519 signature from the source
+/// agent's key for downstream consumers that wish to verify it, but the
+/// server's acceptance of a bundle does **not** rest on that per-agent
+/// signature (agents do not register signing keys with the server). Authenticity
+/// is instead bound at two enforced boundaries:
+///
+/// - **Local publish** (`POST /api/rtx/publish`): the handler rejects any
+///   bundle whose `source_pseudonym` does not match the authenticated
+///   caller's pseudonym, and requires an active agent registration with a
+///   transfer scope that permits publishing. An agent therefore cannot
+///   publish under another agent's identity.
+/// - **Cross-server relay** (`POST /api/federation/rtx`): the receiving
+///   server verifies the relaying server's Ed25519 signature over the
+///   relay envelope against that instance's known public key, and requires
+///   an active federation agreement with the origin server before
+///   accepting the bundle. The relaying server vouches for the bundle it
+///   accepted locally under the rule above.
+///
+/// The signed payload, when present, is:
 /// `SHA256(bundle_id + source_pseudonym + source_server + summary + created_at)`.
-/// Receiving agents and servers verify this signature before accepting the bundle.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReflectionSummaryBundle {
     /// Unique identifier for this bundle (UUID v4).
