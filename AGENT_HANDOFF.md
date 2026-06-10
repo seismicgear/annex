@@ -1908,14 +1908,14 @@ The fix mirrors the local cap.
   property is now documented in code (doc comment + regression test in
   `derive_nullifier_hex`) so a future agent finds it without spelunking.
 
-- [ ] **CORS in debug builds bypasses configured origins on `localhost`**.
-  `http/cors.rs::is_dev_localhost_origin` is gated on `cfg!(debug_assertions)`
-  so release binaries are unaffected, but a misconfigured release build
-  would silently accept any localhost origin. Worth a config flag rather
-  than a cfg gate. Low priority given the gate is correct for normal usage.
-  Verified previous session: `cfg!(debug_assertions)` is `false` under
-  `--release` so the original concern is partially overstated, but a
-  config flag would still be cleaner than the cfg gate.
+- [x] **CORS in debug builds bypasses configured origins on `localhost`** —
+  closed 2026-06-10. The relaxation is now resolved by
+  `http/cors.rs::dev_localhost_enabled` with precedence: production
+  profile (`ANNEX_BUILD_PROFILE=production|release` → hard off, even in
+  a debug binary) → explicit `ANNEX_CORS_ALLOW_DEV_LOCALHOST=true|false`
+  override → `cfg!(debug_assertions)` (the original default). A debug
+  build deployed under the production env contract now stays strict.
+  Precedence table unit-tested as a pure function.
 
 - [ ] **PoT depth ceiling**. Current `pot14_*.ptau` is depth 14. The v1
   membership circuit fits in ~5k constraints, but if the circuit grows past
