@@ -161,20 +161,37 @@ pub async fn start_federation_outbox_task(state: Arc<AppState>) {
 /// of [`start_federation_outbox_task`].
 pub async fn drain_outbox_batch(state: Arc<AppState>, batch_size: i64) -> Result<(), String> {
     // 1. Pull a batch of pending rows whose retry time has passed.
+    //
+    //    Fairness gate (ADR-0008 amendment): the inner window function
+    //    ranks each peer's due rows by retry time and the outer filter
+    //    keeps at most `outbox_per_peer_batch` per peer. Without this,
+    //    one unreachable peer with a deep backlog of due rows fills the
+    //    whole batch every tick (the global ORDER BY next_retry_at
+    //    favours its oldest rows), starving healthy peers and burning
+    //    the tick's entire HTTP fan-out against a host that is down.
+    //    The per-row exponential backoff bounds each row's retry rate;
+    //    this bounds each PEER's share of a tick.
     let pool = state.pool.clone();
+    let per_peer_cap = i64::from(state.federation_config.outbox_per_peer_batch.max(1));
     let rows =
         tokio::task::spawn_blocking(move || -> Result<Vec<(i64, i64, String, u32)>, String> {
             let conn = pool.get().map_err(|e| format!("pool: {e}"))?;
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, peer_instance_id, envelope_json, attempts \
-                 FROM federation_outbox \
-                 WHERE status = 'pending' AND next_retry_at <= datetime('now') \
-                 ORDER BY next_retry_at ASC LIMIT ?1",
+                    "SELECT id, peer_instance_id, envelope_json, attempts FROM (\
+                         SELECT id, peer_instance_id, envelope_json, attempts, next_retry_at, \
+                                ROW_NUMBER() OVER (\
+                                    PARTITION BY peer_instance_id \
+                                    ORDER BY next_retry_at ASC, id ASC\
+                                ) AS peer_rank \
+                         FROM federation_outbox \
+                         WHERE status = 'pending' AND next_retry_at <= datetime('now')\
+                     ) WHERE peer_rank <= ?1 \
+                     ORDER BY next_retry_at ASC LIMIT ?2",
                 )
                 .map_err(|e| format!("prepare: {e}"))?;
             let it = stmt
-                .query_map(rusqlite::params![batch_size], |row| {
+                .query_map(rusqlite::params![per_peer_cap, batch_size], |row| {
                     Ok((
                         row.get::<_, i64>(0)?,
                         row.get::<_, i64>(1)?,

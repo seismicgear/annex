@@ -79,6 +79,14 @@ pub struct FederationConfig {
     #[serde(default = "default_outbox_max_attempts")]
     pub outbox_max_attempts: u32,
 
+    /// Max outbox rows drained per peer per worker tick. Caps how much
+    /// of the batch a single (possibly misbehaving) peer can occupy, so
+    /// one unreachable peer with a deep backlog cannot starve delivery
+    /// to healthy peers or burn the whole tick's HTTP budget against
+    /// itself. Values below 1 are treated as 1. Defaults to 8.
+    #[serde(default = "default_outbox_per_peer_batch")]
+    pub outbox_per_peer_batch: u32,
+
     /// Default envelope version produced on the outbound side. Stays at
     /// `"v1"` for one release so peers can pick up the v2 verifier
     /// before the sender flips to v2.
@@ -93,6 +101,7 @@ impl Default for FederationConfig {
             future_skew_seconds: default_future_skew_seconds(),
             outbox_interval_seconds: default_outbox_interval_seconds(),
             outbox_max_attempts: default_outbox_max_attempts(),
+            outbox_per_peer_batch: default_outbox_per_peer_batch(),
             default_outbound_envelope_version: default_outbound_envelope_version(),
         }
     }
@@ -109,6 +118,9 @@ fn default_outbox_interval_seconds() -> u64 {
 }
 fn default_outbox_max_attempts() -> u32 {
     12
+}
+fn default_outbox_per_peer_batch() -> u32 {
+    8
 }
 fn default_outbound_envelope_version() -> String {
     annex_federation::FEDERATED_MESSAGE_ENVELOPE_V1.to_string()
@@ -1019,6 +1031,9 @@ pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
     if let Some(v) = parse_env_var::<u32>("ANNEX_FEDERATION_OUTBOX_MAX_ATTEMPTS")? {
         config.federation.outbox_max_attempts = v;
     }
+    if let Some(v) = parse_env_var::<u32>("ANNEX_FEDERATION_OUTBOX_PER_PEER_BATCH")? {
+        config.federation.outbox_per_peer_batch = v;
+    }
     if let Some(v) = parse_env_var::<String>("ANNEX_FEDERATION_DEFAULT_ENVELOPE_VERSION")? {
         config.federation.default_outbound_envelope_version = v;
     }
@@ -1176,6 +1191,7 @@ mod tests {
             "ANNEX_PORT",
             "ANNEX_RETENTION_CHECK_INTERVAL_SECONDS",
             "ANNEX_IDEMPOTENCY_TTL_SECONDS",
+            "ANNEX_FEDERATION_OUTBOX_PER_PEER_BATCH",
             "ANNEX_INACTIVITY_THRESHOLD_SECONDS",
             "ANNEX_PUBLIC_URL",
             "ANNEX_MERKLE_TREE_DEPTH",

@@ -27,7 +27,11 @@ Add a durable per-(peer, message) outbox.
 
 ## Out of scope (deferred)
 
-- **Per-peer rate limiting.** Currently each tick fans out to all pending rows. A misbehaving peer that consistently fails would burn HTTP requests against itself. A per-peer token bucket is the right shape; deferred.
+- **Per-peer rate limiting.** ~~Currently each tick fans out to all pending rows. A misbehaving peer that consistently fails would burn HTTP requests against itself. A per-peer token bucket is the right shape; deferred.~~ *Landed 2026-06-10 as a per-peer batch cap* — see the fairness amendment below. A full token bucket remains unnecessary: the per-row exponential backoff already bounds each row's retry rate, and the batch cap bounds each peer's share of a tick.
+
+## Amendment (2026-06-10) — per-peer fairness cap
+
+The drain query now ranks each peer's due rows with a window function and keeps at most `Config::federation::outbox_per_peer_batch` (default 8, env `ANNEX_FEDERATION_OUTBOX_PER_PEER_BATCH`, floor 1) per peer per tick. Without the cap, one unreachable peer with a deep backlog of due rows filled the whole 32-row batch every tick (the global `ORDER BY next_retry_at` favours its oldest rows), starving healthy peers and burning the tick's entire HTTP fan-out against a host that is down. Test: `crates/annex-server/tests/federation_outbox_fairness.rs`.
 
 ## Amendment (2026-06-10) — admin inspect/retry endpoints
 
