@@ -60,7 +60,7 @@ Every PR must pass all of the following before merge:
 6. **No `todo!()` or `unimplemented!()` in merged code** — if a code path isn't implemented yet, return a structured error. `todo!()` is a panic. Panics in production are bugs.
 7. **No hardcoded secrets, keys, or credentials** — not even in tests. Use environment variables or config files. Test fixtures use deterministic but clearly synthetic values.
 8. **All public functions and types have doc comments** — `///` with a description of what it does, what it returns, and what errors it can produce.
-9. **All database migrations are reversible** — every `up` has a `down`. Schema changes that can't be reversed are redesigned until they can be.
+9. **All database migrations are forward-only, immutable, and integrity-checked** — migrations are append-only SQL files embedded in the binary; once applied they are never edited, enforced at boot by the SHA-256 checksum ledger (migration 039, invariant I-DB-1). Rollback is operational, not schema-level: restore from the documented SQLite backup procedure. A migration that cannot be applied forward safely (e.g., destructive without a data-preserving path) is redesigned until it can be. *(Amended 2026-06-10: previously required reversible up/down pairs, which contradicted the immutability ledger shipped in 039 — see changelog.)*
 10. **All network-facing endpoints have input validation** — no trusting client input. Ever. Validate types, ranges, lengths, and formats before processing.
 
 ### Error Handling
@@ -1171,6 +1171,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-06-10 | Code Standards Quality Gate #9 corrected per update rule 5: "all migrations are reversible (every up has a down)" replaced with "all migrations are forward-only, immutable, and integrity-checked." The original criterion contradicted the shipped design — migrations are append-only and protected by the SHA-256 checksum ledger (migration 039, invariant I-DB-1), and no down-migrations have ever existed. Rollback is operational (SQLite backup/restore per the deployment guide), not schema-level. |
 | 2026-02-18 | Phase 12 `COMPLETE`. All phases finished. ZKP circuit audit with 16 invalid-witness tests and ADR 0006. VRP adversarial reputation tests (oscillation, sustained conflict, per-pseudonym isolation). Federation transfer scope enforcement fix in message relay. Merkle performance benchmarks (7.33ms insert+proof, target <50ms). Documentation final pass with stale status corrections. Deployment packaging: multi-stage Dockerfile, Docker Compose with LiveKit, comprehensive deployment guide. |
 | 2026-02-18 | Phase 11 `COMPLETE`. React+TypeScript+Vite web client with: ZK identity management (snarkjs proof generation, IndexedDB key storage, Poseidon commitment), channel UI (WebSocket messaging, history pagination), voice UI (LiveKit components-react), presence/agent inspection, federation peer display. ADR 0005 for framework selection. |
 | 2026-02-18 | Phase 10 `COMPLETE`. All observability criteria met: public event log, 13 event types emitted, SSE real-time stream, public summary APIs. |

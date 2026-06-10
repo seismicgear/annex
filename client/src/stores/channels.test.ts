@@ -369,6 +369,67 @@ describe('channels store', () => {
     expect(ws.unsubscribe).toHaveBeenCalledWith('A');
   });
 
+  it('loadOlderMessages drops stale response after channel switch', async () => {
+    const apiModule = await import('@/lib/api');
+    let resolveOlder!: (value: unknown) => void;
+    vi.mocked(apiModule.getMessages).mockImplementationOnce(
+      () => new Promise((res) => { resolveOlder = res; }) as ReturnType<typeof apiModule.getMessages>,
+    );
+
+    const { useChannelsStore } = await import('./channels');
+    useChannelsStore.setState({
+      activeChannelId: 'A',
+      messages: [{ message_id: 'a2', channel_id: 'A', sender_pseudonym: 'p2', content: 'a', reply_to_message_id: null, created_at: '' }],
+      hasMoreMessages: true,
+    });
+
+    const loading = useChannelsStore.getState().loadOlderMessages('p1');
+
+    // User switches channels while the request is in flight.
+    useChannelsStore.setState({
+      activeChannelId: 'B',
+      messages: [{ message_id: 'b1', channel_id: 'B', sender_pseudonym: 'p2', content: 'b', reply_to_message_id: null, created_at: '' }],
+      hasMoreMessages: true,
+    });
+
+    resolveOlder([{ message_id: 'a1', channel_id: 'A', sender_pseudonym: 'p2', content: 'stale', reply_to_message_id: null, created_at: '' }]);
+    await loading;
+
+    const state = useChannelsStore.getState();
+    expect(state.messages.map((m) => m.channel_id)).toEqual(['B']);
+    expect(state.hasMoreMessages).toBe(true);
+    expect(state.loadingOlder).toBe(false);
+  });
+
+  it('loadOlderMessages failure after channel switch does not clobber new channel pagination', async () => {
+    const apiModule = await import('@/lib/api');
+    let rejectOlder!: (err: Error) => void;
+    vi.mocked(apiModule.getMessages).mockImplementationOnce(
+      () => new Promise((_res, rej) => { rejectOlder = rej; }) as ReturnType<typeof apiModule.getMessages>,
+    );
+
+    const { useChannelsStore } = await import('./channels');
+    useChannelsStore.setState({
+      activeChannelId: 'A',
+      messages: [{ message_id: 'a2', channel_id: 'A', sender_pseudonym: 'p2', content: 'a', reply_to_message_id: null, created_at: '' }],
+      hasMoreMessages: true,
+    });
+
+    const loading = useChannelsStore.getState().loadOlderMessages('p1');
+
+    useChannelsStore.setState({
+      activeChannelId: 'B',
+      messages: [{ message_id: 'b1', channel_id: 'B', sender_pseudonym: 'p2', content: 'b', reply_to_message_id: null, created_at: '' }],
+      hasMoreMessages: true,
+    });
+
+    rejectOlder(new Error('network'));
+    await loading;
+
+    expect(useChannelsStore.getState().hasMoreMessages).toBe(true);
+    expect(useChannelsStore.getState().loadingOlder).toBe(false);
+  });
+
   it('connectWs subscribes to joined channels and counts unread for background messages', async () => {
     const { AnnexWebSocket } = await import('@/lib/ws');
     const onStatusHandlers: Array<(connected: boolean) => void> = [];

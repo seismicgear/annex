@@ -190,6 +190,14 @@ The chain IS reachable from Node-side tooling (`zk/scripts/test-proofs.js`,
 client code that imports `snarkjs` outside the worker — those are
 build-time / dev-time surfaces, not runtime traffic.
 
+The same containment applies to the `circomlibjs → ethers → elliptic`
+and `circomlibjs → ws` audit findings: a scan of `client/dist/assets/*.js`
+shows no `elliptic`, `ethersproject`, or `secp256k1` traces in the
+production bundle. Only the poseidon/blake hashing portions of
+circomlibjs are bundled (`client/src/lib/zk.ts` imports just
+`buildPoseidon`); the EVM-oriented code paths that pull in ethers are
+tree-shaken out.
+
 Replacement path: a follow-up pass should either move to a newer
 snarkjs (when upstream drops bfj), or port the proof-generation worker
 to a tighter WASM-only entry point that doesn't import the vulnerable
@@ -203,5 +211,3 @@ contained, not silently shipped.
   `assets/voices/` directories exist (`.gitkeep` stubs are tracked).
   Environments without those still need `--exclude annex-desktop` for
   cargo workspace commands.
-- `voice_integration::test_voice_config_status_enabled` has a pre-existing failure
-- `identity.test.ts` has a mock setup issue causing 1 failure

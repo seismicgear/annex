@@ -822,7 +822,9 @@ impl FederationService {
             }
 
             // 1.5. Verify Active Federation Agreement
-            if !repo::has_active_agreement(&conn, instance.id).map_err(FederationError::DbError)? {
+            if !repo::has_active_agreement(&conn, state.server_id, instance.id)
+                .map_err(FederationError::DbError)?
+            {
                 return Err(FederationError::Forbidden(format!(
                     "No active federation agreement with {}",
                     payload.originating_server
@@ -938,7 +940,7 @@ impl FederationService {
                 }
 
                 // 1.5. Verify Active Federation Agreement
-                if !repo::has_active_agreement(&conn, instance.id)
+                if !repo::has_active_agreement(&conn, state.server_id, instance.id)
                     .map_err(FederationError::DbError)?
                 {
                     return Err(FederationError::Forbidden(format!(
@@ -1246,7 +1248,7 @@ impl FederationService {
 
                 // 2. Verify active federation agreement and check transfer scope
                 let transfer_scope_str =
-                    repo::active_agreement_transfer_scope(&conn, instance.id)
+                    repo::active_agreement_transfer_scope(&conn, state.server_id, instance.id)
                         .map_err(FederationError::DbError)?
                         .ok_or_else(|| {
                             FederationError::Forbidden(format!(
@@ -1287,7 +1289,7 @@ impl FederationService {
                 })?;
 
                 // 4b. Enforce redacted topics from the federation agreement
-                let redacted_topics = repo::active_agreement_redacted_topics(&conn, instance.id);
+                let redacted_topics = repo::active_agreement_redacted_topics(&conn, state.server_id, instance.id);
                 if !redacted_topics.is_empty() {
                     check_redacted_topics(&envelope.bundle, &redacted_topics).map_err(|e| {
                         FederationError::Forbidden(format!("redacted topic violation: {e}"))

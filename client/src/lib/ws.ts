@@ -73,20 +73,32 @@ export class AnnexWebSocket {
 
     console.info('[ws] connecting to', url.replace(/token=[^&]+/, 'token=***'));
 
-    this.ws = new WebSocket(url);
+    // Tear down any still-live socket before replacing it, so an old
+    // connection can't keep dispatching frames alongside the new one.
+    if (this.ws && this.ws.readyState !== WebSocket.CLOSED) {
+      try { this.ws.close(); } catch { /* already closing */ }
+    }
 
-    this.ws.onopen = () => {
+    const socket = new WebSocket(url);
+    this.ws = socket;
+
+    // Every handler ignores events from sockets that have been replaced:
+    // close events from a superseded socket arrive asynchronously and
+    // must not trigger reconnects (which would create duplicate
+    // connections) or status flaps for the current socket.
+    socket.onopen = () => {
+      if (this.ws !== socket) return;
       console.info('[ws] connected');
       this.reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
       // Re-subscribe to all tracked channels on (re)connect
       for (const channelId of this.subscribedChannels) {
-        this.ws!.send(JSON.stringify({ type: 'subscribe', channelId }));
+        socket.send(JSON.stringify({ type: 'subscribe', channelId }));
       }
       // Resume: replay missed messages on reconnect
       if (this.hasConnectedBefore) {
         for (const [channelId, lastMessageId] of this.lastMessageIds) {
           if (this.subscribedChannels.has(channelId)) {
-            this.ws!.send(JSON.stringify({ type: 'resume', channelId, lastMessageId }));
+            socket.send(JSON.stringify({ type: 'resume', channelId, lastMessageId }));
           }
         }
       }
@@ -94,7 +106,8 @@ export class AnnexWebSocket {
       this.notifyStatus(true);
     };
 
-    this.ws.onclose = (event) => {
+    socket.onclose = (event) => {
+      if (this.ws !== socket) return;
       console.warn('[ws] closed', { code: event.code, reason: event.reason, wasClean: event.wasClean });
       this.notifyStatus(false);
       if (!this.intentionalClose) {
@@ -102,12 +115,13 @@ export class AnnexWebSocket {
       }
     };
 
-    this.ws.onerror = (event) => {
+    socket.onerror = (event) => {
       console.error('[ws] error', event);
       // onclose will fire after onerror
     };
 
-    this.ws.onmessage = (event) => {
+    socket.onmessage = (event) => {
+      if (this.ws !== socket) return;
       const rawPayload = String(event.data ?? '');
       let frame: WsReceiveFrame;
       try {
@@ -210,5 +224,11 @@ export class AnnexWebSocket {
   }
   get connected(): boolean { return this.ws?.readyState === WebSocket.OPEN; }
   private notifyStatus(connected: boolean): void { this.statusHandlers.forEach((h) => h(connected)); }
-  private scheduleReconnect(): void { this.reconnectTimer = setTimeout(() => { this.connect(); }, this.reconnectDelay); this.reconnectDelay = Math.min(this.reconnectDelay * 2, MAX_RECONNECT_DELAY_MS); }
+  private scheduleReconnect(): void {
+    // Replace (don't stack) any pending reconnect so overlapping close
+    // events can't fan out into multiple parallel connections.
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = setTimeout(() => { this.reconnectTimer = null; this.connect(); }, this.reconnectDelay);
+    this.reconnectDelay = Math.min(this.reconnectDelay * 2, MAX_RECONNECT_DELAY_MS);
+  }
 }

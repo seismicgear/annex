@@ -17,6 +17,7 @@ use std::sync::Arc;
 use annex_identity::PlatformIdentity;
 use tokio::sync::mpsc;
 
+use crate::ws::command_rate_limit::CommandRateLimiter;
 use crate::ws::typing_throttle::TypingThrottle;
 use crate::AppState;
 
@@ -40,4 +41,9 @@ pub struct CommandContext<'a> {
     /// of the connection; borrowed here so the typing handler can
     /// suppress floods without touching shared global state.
     pub typing_throttle: &'a TypingThrottle,
+    /// Per-session token bucket for state-mutating commands (message,
+    /// edit, delete, voice intent, resume). Owned by the session task;
+    /// borrowed here so the dispatcher can clamp WS command floods that
+    /// the HTTP rate-limit middleware never sees.
+    pub command_rate_limiter: &'a CommandRateLimiter,
 }

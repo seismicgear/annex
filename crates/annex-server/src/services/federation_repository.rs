@@ -97,47 +97,55 @@ pub(crate) fn instance_known(conn: &Connection, base_url: &str) -> Result<bool, 
     )
 }
 
-/// Returns true iff there is an active federation_agreements row pointing at
-/// `remote_instance_id`.
+/// Returns true iff there is an active federation_agreements row between
+/// `local_server_id` and `remote_instance_id`.
+///
+/// `instances` rows are deployment-global, but agreements are per local
+/// server — every lookup must scope on `local_server_id` or a co-hosted
+/// server's agreement with the same remote would leak across tenants.
 pub(crate) fn has_active_agreement(
     conn: &Connection,
+    local_server_id: i64,
     remote_instance_id: i64,
 ) -> Result<bool, rusqlite::Error> {
     conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM federation_agreements WHERE remote_instance_id = ?1 AND active = 1)",
-        params![remote_instance_id],
+        "SELECT EXISTS(SELECT 1 FROM federation_agreements WHERE local_server_id = ?1 AND remote_instance_id = ?2 AND active = 1)",
+        params![local_server_id, remote_instance_id],
         |row| row.get(0),
     )
 }
 
-/// Returns the `transfer_scope` string of the active agreement with
-/// `remote_instance_id`, or `None` when there is no active agreement.
+/// Returns the `transfer_scope` string of the active agreement between
+/// `local_server_id` and `remote_instance_id`, or `None` when there is no
+/// active agreement.
 pub(crate) fn active_agreement_transfer_scope(
     conn: &Connection,
+    local_server_id: i64,
     remote_instance_id: i64,
 ) -> Result<Option<String>, rusqlite::Error> {
     conn.query_row(
         "SELECT transfer_scope FROM federation_agreements
-         WHERE remote_instance_id = ?1 AND active = 1",
-        params![remote_instance_id],
+         WHERE local_server_id = ?1 AND remote_instance_id = ?2 AND active = 1",
+        params![local_server_id, remote_instance_id],
         |row| row.get(0),
     )
     .optional()
 }
 
 /// Returns the redacted_topics list declared in the remote peer's
-/// capability_contract for the active agreement with `remote_instance_id`.
-/// On any read / parse failure returns an empty vector — matching the
-/// existing inline behaviour where corrupt or missing handshake JSON is
-/// treated as "no redactions to enforce".
+/// capability_contract for the active agreement between `local_server_id`
+/// and `remote_instance_id`. On any read / parse failure returns an empty
+/// vector — matching the existing inline behaviour where corrupt or
+/// missing handshake JSON is treated as "no redactions to enforce".
 pub(crate) fn active_agreement_redacted_topics(
     conn: &Connection,
+    local_server_id: i64,
     remote_instance_id: i64,
 ) -> Vec<String> {
     conn.query_row(
         "SELECT remote_handshake_json FROM federation_agreements
-         WHERE remote_instance_id = ?1 AND active = 1",
-        params![remote_instance_id],
+         WHERE local_server_id = ?1 AND remote_instance_id = ?2 AND active = 1",
+        params![local_server_id, remote_instance_id],
         |row| row.get::<_, Option<String>>(0),
     )
     .ok()
@@ -534,6 +542,61 @@ mod tests {
             topic, "annex:server:v1",
             "topic must match the row used by the relay's attestation_ref"
         );
+    }
+
+    /// Agreements are scoped per local server even though `instances`
+    /// rows are deployment-global. Two co-hosted servers federating with
+    /// the same remote must each see only their own agreement: scope,
+    /// redactions, and existence checks must never leak across tenants.
+    #[test]
+    fn agreement_lookups_are_scoped_to_the_local_server() {
+        let conn = setup_db();
+
+        // Second local server sharing the database.
+        let policy_json = serde_json::to_string(&ServerPolicy::default()).expect("policy json");
+        conn.execute(
+            "INSERT INTO servers (slug, label, policy_json) VALUES ('other', 'Other', ?1)",
+            [policy_json],
+        )
+        .expect("seed second server");
+
+        // One shared remote instance.
+        conn.execute(
+            "INSERT INTO instances (base_url, public_key, label) VALUES ('https://remote.example', 'aa', 'Remote')",
+            [],
+        )
+        .expect("seed instance");
+        let instance_id = conn.last_insert_rowid();
+
+        // Server 1 has an active FullKnowledge agreement; server 2 has none.
+        conn.execute(
+            "INSERT INTO federation_agreements (
+                local_server_id, remote_instance_id, alignment_status,
+                transfer_scope, agreement_json, active
+            ) VALUES (1, ?1, 'ALIGNED', 'FullKnowledge', '{}', 1)",
+            params![instance_id],
+        )
+        .expect("seed agreement");
+
+        assert!(has_active_agreement(&conn, 1, instance_id).expect("lookup"));
+        assert!(
+            !has_active_agreement(&conn, 2, instance_id).expect("lookup"),
+            "server 2 must not inherit server 1's agreement"
+        );
+
+        assert_eq!(
+            active_agreement_transfer_scope(&conn, 1, instance_id)
+                .expect("lookup")
+                .as_deref(),
+            Some("FullKnowledge")
+        );
+        assert_eq!(
+            active_agreement_transfer_scope(&conn, 2, instance_id).expect("lookup"),
+            None,
+            "server 2 must not see server 1's transfer scope"
+        );
+
+        assert!(active_agreement_redacted_topics(&conn, 2, instance_id).is_empty());
     }
 
     /// Pseudonyms with no nullifier row resolve to `None`. The relay path
