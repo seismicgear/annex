@@ -175,6 +175,10 @@ const MIGRATIONS: &[Migration] = &[
         name: "039_migration_checksums",
         sql: include_str!("migrations/039_migration_checksums.sql"),
     },
+    Migration {
+        name: "040_message_request_ids_created_idx",
+        sql: include_str!("migrations/040_message_request_ids_created_idx.sql"),
+    },
 ];
 
 /// Errors that can occur during migration execution.

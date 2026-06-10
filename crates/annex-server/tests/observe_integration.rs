@@ -138,6 +138,66 @@ async fn register_handler_emits_identity_registered_event() {
 }
 
 #[tokio::test]
+async fn handler_emitted_events_carry_verifiable_signatures() {
+    let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
+    {
+        let conn = pool.get().unwrap();
+        annex_db::run_migrations(&conn).unwrap();
+    }
+
+    let state = make_state(pool.clone());
+    // Clone the Arc so we can verify against the same key the handlers
+    // sign with (ADR-0013).
+    let signing_key = state.signing_key.clone();
+    let application = app(state);
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+    let body_json = serde_json::json!({
+        "commitmentHex": "0000000000000000000000000000000000000000000000000000000000000001",
+        "roleCode": 1,
+        "nodeId": 100
+    });
+    let mut request = Request::builder()
+        .uri("/api/registry/register")
+        .method("POST")
+        .header("content-type", "application/json")
+        .body(Body::from(body_json.to_string()))
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
+    let response = application.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let conn = pool.get().unwrap();
+
+    // Every emitted row carries a signature (no NULLs on the live path).
+    let unsigned: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM public_event_log WHERE event_signature IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        unsigned, 0,
+        "handler-emitted events must be signed (ADR-0013)"
+    );
+
+    // And the signatures verify against the server's key.
+    assert!(
+        annex_observe::verify_event_log_signatures(&conn, 1, &signing_key.verifying_key())
+            .expect("verify")
+            .is_none(),
+        "handler-emitted event signatures must verify against the server key"
+    );
+    assert!(
+        annex_observe::verify_event_log_chain(&conn, 1)
+            .expect("verify")
+            .is_none(),
+        "hash chain must remain intact"
+    );
+}
+
+#[tokio::test]
 async fn register_handler_assigns_sequential_seq_numbers() {
     let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
     {
@@ -438,6 +498,135 @@ async fn get_events_returns_empty_when_no_events() {
     let resp: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
     assert_eq!(resp["count"], 0);
     assert!(resp["events"].as_array().unwrap().is_empty());
+}
+
+// ── GET /api/public/events/chain ────────────────────────────────────
+
+/// Plays the role of an external auditor: fetch the chain export and
+/// verify the hash chain AND the per-event signatures using only the
+/// response data (rows + verifying key + signing domain) — no access
+/// to server internals.
+#[tokio::test]
+async fn chain_export_supports_full_offline_verification() {
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+
+    let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
+    {
+        let conn = pool.get().unwrap();
+        annex_db::run_migrations(&conn).unwrap();
+    }
+
+    let state = make_state(pool.clone());
+    let application = app(state);
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+
+    // Create three events through the real handler path.
+    for i in 1..=3u64 {
+        let body_json = serde_json::json!({
+            "commitmentHex": format!("{i:064x}"),
+            "roleCode": 1,
+            "nodeId": i
+        });
+        let mut request = Request::builder()
+            .uri("/api/registry/register")
+            .method("POST")
+            .header("content-type", "application/json")
+            .body(Body::from(body_json.to_string()))
+            .unwrap();
+        request.extensions_mut().insert(ConnectInfo(addr));
+        let response = application.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    let mut request = Request::builder()
+        .uri("/api/public/events/chain")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
+    let response = application.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let resp: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    assert_eq!(resp["count"], 3);
+    assert_eq!(resp["signing_domain"], "annex-event-v1");
+    assert!(resp["next_from_seq"].is_null());
+
+    // Offline verification using only response data.
+    let key_bytes: [u8; 32] = hex::decode(resp["server_verifying_key"].as_str().unwrap())
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let verifying_key = VerifyingKey::from_bytes(&key_bytes).unwrap();
+    let signing_domain = resp["signing_domain"].as_str().unwrap();
+
+    let mut expected_prev = "GENESIS".to_string();
+    for row in resp["rows"].as_array().unwrap() {
+        // 1. Chain linkage + canonical hash.
+        assert_eq!(row["prev_hash"].as_str().unwrap(), expected_prev);
+        let recomputed = annex_observe::compute_event_hash(
+            1,
+            row["seq"].as_i64().unwrap(),
+            row["domain"].as_str().unwrap(),
+            row["event_type"].as_str().unwrap(),
+            row["entity_type"].as_str().unwrap(),
+            row["entity_id"].as_str().unwrap(),
+            row["payload_json"].as_str().unwrap(),
+            row["occurred_at"].as_str().unwrap(),
+            row["prev_hash"].as_str().unwrap(),
+        );
+        assert_eq!(row["event_hash"].as_str().unwrap(), recomputed);
+
+        // 2. Signature over the documented signing input.
+        let sig_bytes: [u8; 64] = hex::decode(row["event_signature"].as_str().unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let signature = Signature::from_bytes(&sig_bytes);
+        verifying_key
+            .verify(
+                format!("{signing_domain}\n{recomputed}").as_bytes(),
+                &signature,
+            )
+            .expect("exported signature must verify under the exported key");
+
+        expected_prev = recomputed;
+    }
+
+    // Pagination: limit=2 returns 2 rows + next_from_seq=3.
+    let mut request = Request::builder()
+        .uri("/api/public/events/chain?limit=2")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
+    let response = application.clone().oneshot(request).await.unwrap();
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let resp: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(resp["count"], 2);
+    assert_eq!(resp["next_from_seq"], 3);
+
+    // Second page picks up where the first left off.
+    let mut request = Request::builder()
+        .uri("/api/public/events/chain?from_seq=3&limit=2")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
+    let response = application.oneshot(request).await.unwrap();
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let resp: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(resp["count"], 1);
+    assert_eq!(resp["rows"][0]["seq"], 3);
+    assert!(resp["next_from_seq"].is_null());
 }
 
 // ── GET /events/stream (SSE) ────────────────────────────────────────

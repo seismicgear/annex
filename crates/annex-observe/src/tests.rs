@@ -820,3 +820,264 @@ fn backfill_repairs_chain_for_db_upgraded_across_migration_038() {
         "second backfill should repair nothing"
     );
 }
+
+// ── Per-event Ed25519 signatures (ADR-0013 follow-up) ──────────────
+
+fn test_signing_key() -> ed25519_dalek::SigningKey {
+    ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng)
+}
+
+fn emit_signed_n(conn: &Connection, server_id: i64, key: &ed25519_dalek::SigningKey, n: usize) {
+    for i in 0..n {
+        let payload = EventPayload::IdentityRegistered {
+            commitment_hex: format!("abcd{i:04}"),
+            role_code: 1,
+        };
+        crate::store::emit_event_signed(
+            conn,
+            server_id,
+            EventDomain::Identity,
+            "identity.registered",
+            "identity",
+            &format!("c{i}"),
+            &payload,
+            key,
+        )
+        .expect("signed emit");
+    }
+}
+
+#[test]
+fn emit_event_signed_produces_verifiable_signatures() {
+    let conn = test_db();
+    let server_id = seed_server(&conn);
+    let key = test_signing_key();
+    emit_signed_n(&conn, server_id, &key, 3);
+
+    // Every row carries a 128-char hex signature.
+    let unsigned: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM public_event_log \
+             WHERE server_id = ?1 AND (event_signature IS NULL OR LENGTH(event_signature) != 128)",
+            rusqlite::params![server_id],
+            |row| row.get(0),
+        )
+        .expect("count");
+    assert_eq!(
+        unsigned, 0,
+        "every signed emit must store a 128-hex signature"
+    );
+
+    assert!(
+        crate::store::verify_event_log_signatures(&conn, server_id, &key.verifying_key())
+            .expect("verify")
+            .is_none(),
+        "signatures from the emitting key must verify"
+    );
+    assert!(
+        crate::store::verify_event_log_chain(&conn, server_id)
+            .expect("verify")
+            .is_none(),
+        "hash chain must remain intact alongside signatures"
+    );
+}
+
+#[test]
+fn signature_verify_detects_full_chain_rewrite_without_key() {
+    let conn = test_db();
+    let server_id = seed_server(&conn);
+    let key = test_signing_key();
+    emit_signed_n(&conn, server_id, &key, 3);
+
+    // The attack the hash chain alone cannot detect: an attacker with
+    // file access edits a payload AND recomputes every hash in the
+    // chain so verify_event_log_chain passes. They cannot re-sign
+    // because the signing key never touches the disk file.
+    conn.execute(
+        "UPDATE public_event_log SET payload_json = ?1 WHERE server_id = ?2 AND seq = 2",
+        rusqlite::params!["{\"forged\": true}", server_id],
+    )
+    .expect("tamper");
+
+    // Attacker-side chain recompute (no key).
+    let rows: Vec<(i64, String, String, String, String, String, String)> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT seq, domain, event_type, entity_type, entity_id, \
+                        payload_json, occurred_at \
+                 FROM public_event_log WHERE server_id = ?1 ORDER BY seq ASC",
+            )
+            .expect("prepare");
+        let mapped = stmt
+            .query_map(rusqlite::params![server_id], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            })
+            .expect("query");
+        mapped.collect::<Result<Vec<_>, _>>().expect("rows")
+    };
+    let mut prev = "GENESIS".to_string();
+    for (seq, domain, event_type, entity_type, entity_id, payload_json, occurred_at) in &rows {
+        let h = crate::store::compute_event_hash(
+            server_id,
+            *seq,
+            domain,
+            event_type,
+            entity_type,
+            entity_id,
+            payload_json,
+            occurred_at,
+            &prev,
+        );
+        conn.execute(
+            "UPDATE public_event_log SET prev_hash = ?1, event_hash = ?2 \
+             WHERE server_id = ?3 AND seq = ?4",
+            rusqlite::params![prev, h, server_id, seq],
+        )
+        .expect("rewrite");
+        prev = h;
+    }
+
+    assert!(
+        crate::store::verify_event_log_chain(&conn, server_id)
+            .expect("verify")
+            .is_none(),
+        "hash chain alone is blind to a full rewrite — that is the gap signatures close"
+    );
+    assert_eq!(
+        crate::store::verify_event_log_signatures(&conn, server_id, &key.verifying_key())
+            .expect("verify"),
+        Some(2),
+        "signature verification must flag the first rewritten row"
+    );
+}
+
+#[test]
+fn signature_verify_skips_unsigned_legacy_rows() {
+    let conn = test_db();
+    let server_id = seed_server(&conn);
+    let key = test_signing_key();
+
+    // One unsigned (legacy) row followed by one signed row.
+    let payload = EventPayload::IdentityRegistered {
+        commitment_hex: "legacy".to_string(),
+        role_code: 1,
+    };
+    emit_event(
+        &conn,
+        server_id,
+        EventDomain::Identity,
+        "identity.registered",
+        "identity",
+        "legacy",
+        &payload,
+    )
+    .expect("unsigned emit");
+    emit_signed_n(&conn, server_id, &key, 1);
+
+    assert!(
+        crate::store::verify_event_log_signatures(&conn, server_id, &key.verifying_key())
+            .expect("verify")
+            .is_none(),
+        "NULL-signature legacy rows are skipped, signed rows verify"
+    );
+}
+
+#[test]
+fn signature_verify_rejects_wrong_key() {
+    let conn = test_db();
+    let server_id = seed_server(&conn);
+    let key = test_signing_key();
+    emit_signed_n(&conn, server_id, &key, 2);
+
+    let other = test_signing_key();
+    assert_eq!(
+        crate::store::verify_event_log_signatures(&conn, server_id, &other.verifying_key())
+            .expect("verify"),
+        Some(1),
+        "signatures must not verify under a different server key"
+    );
+}
+
+#[test]
+fn backfill_clears_signatures_on_rewritten_rows() {
+    let conn = test_db();
+    let server_id = seed_server(&conn);
+    let key = test_signing_key();
+    emit_signed_n(&conn, server_id, &key, 3);
+
+    // Break the chain so backfill rewrites this server's rows.
+    conn.execute(
+        "UPDATE public_event_log SET event_hash = '' WHERE server_id = ?1 AND seq = 1",
+        rusqlite::params![server_id],
+    )
+    .expect("corrupt");
+
+    assert_eq!(
+        crate::store::backfill_event_log_chain(&conn).expect("backfill"),
+        1,
+        "backfill should repair the corrupted chain"
+    );
+    assert!(
+        crate::store::verify_event_log_chain(&conn, server_id)
+            .expect("verify")
+            .is_none(),
+        "chain must verify after backfill"
+    );
+
+    // Rewritten rows must NOT carry re-attested signatures.
+    let signed: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM public_event_log \
+             WHERE server_id = ?1 AND event_signature IS NOT NULL",
+            rusqlite::params![server_id],
+            |row| row.get(0),
+        )
+        .expect("count");
+    assert_eq!(
+        signed, 0,
+        "backfill must clear signatures it cannot honestly re-attest"
+    );
+    assert!(
+        crate::store::verify_event_log_signatures(&conn, server_id, &key.verifying_key())
+            .expect("verify")
+            .is_none(),
+        "all-unsigned log passes signature verification (rows are skipped)"
+    );
+}
+
+#[test]
+fn unsigned_emit_leaves_signature_null() {
+    let conn = test_db();
+    let server_id = seed_server(&conn);
+    let payload = EventPayload::IdentityRegistered {
+        commitment_hex: "x".to_string(),
+        role_code: 1,
+    };
+    emit_event(
+        &conn,
+        server_id,
+        EventDomain::Identity,
+        "identity.registered",
+        "identity",
+        "x",
+        &payload,
+    )
+    .expect("emit");
+
+    let sig: Option<String> = conn
+        .query_row(
+            "SELECT event_signature FROM public_event_log WHERE server_id = ?1",
+            rusqlite::params![server_id],
+            |row| row.get(0),
+        )
+        .expect("read");
+    assert_eq!(sig, None, "unsigned emit must store NULL signature");
+}

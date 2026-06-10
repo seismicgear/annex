@@ -33,7 +33,7 @@ pub use messages::{
     create_message, delete_message, edit_message, get_edit_history, get_message, list_messages,
     EDIT_WINDOW_SECONDS,
 };
-pub use retention::delete_expired_messages;
+pub use retention::{delete_expired_messages, prune_expired_request_ids};
 pub use search::search_messages;
 pub use types::{
     Channel, ChannelMember, CreateChannelParams, CreateMessageParams, Message, MessageEdit,
@@ -523,6 +523,60 @@ mod tests {
             )
             .expect("count failed");
         assert_eq!(remaining, 1, "non-expired message should remain");
+    }
+
+    #[test]
+    fn test_prune_expired_request_ids_respects_ttl() {
+        let conn = setup_db();
+
+        // Three ledger rows older than the TTL...
+        for i in 0..3 {
+            conn.execute(
+                "INSERT INTO message_request_ids
+                     (server_id, channel_id, sender_pseudonym, client_request_id, message_id, created_at)
+                 VALUES (1, 'chan-1', 'user-1', ?1, ?2, datetime('now', '-8 days'))",
+                [format!("stale-req-{i}"), format!("stale-msg-{i}")],
+            )
+            .expect("insert stale ledger row failed");
+        }
+
+        // ...and one fresh row inside the TTL window.
+        conn.execute(
+            "INSERT INTO message_request_ids
+                 (server_id, channel_id, sender_pseudonym, client_request_id, message_id, created_at)
+             VALUES (1, 'chan-1', 'user-1', 'fresh-req', 'fresh-msg', datetime('now', '-1 hour'))",
+            [],
+        )
+        .expect("insert fresh ledger row failed");
+
+        // TTL = 7 days.
+        let pruned = prune_expired_request_ids(&conn, 7 * 24 * 3600).expect("prune failed");
+        assert_eq!(pruned, 3, "should prune only rows older than the TTL");
+
+        let remaining: String = conn
+            .query_row(
+                "SELECT client_request_id FROM message_request_ids",
+                [],
+                |row| row.get(0),
+            )
+            .expect("exactly one row should remain");
+        assert_eq!(remaining, "fresh-req");
+    }
+
+    #[test]
+    fn test_prune_expired_request_ids_noop_when_all_fresh() {
+        let conn = setup_db();
+
+        conn.execute(
+            "INSERT INTO message_request_ids
+                 (server_id, channel_id, sender_pseudonym, client_request_id, message_id)
+             VALUES (1, 'chan-1', 'user-1', 'req-1', 'msg-1')",
+            [],
+        )
+        .expect("insert ledger row failed");
+
+        let pruned = prune_expired_request_ids(&conn, 7 * 24 * 3600).expect("prune failed");
+        assert_eq!(pruned, 0, "fresh rows must survive the sweep");
     }
 
     /// Helper: create a channel and message for edit/delete tests.

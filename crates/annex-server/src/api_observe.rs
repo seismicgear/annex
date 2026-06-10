@@ -115,6 +115,143 @@ pub async fn get_events_handler(
     Ok(Json(EventsResponse { events, count }))
 }
 
+/// Query parameters for `GET /api/public/events/chain`.
+#[derive(Debug, Deserialize)]
+pub struct ChainQuery {
+    /// First sequence number to include (default: 1).
+    pub from_seq: Option<i64>,
+    /// Maximum number of rows to return (default: 100, max: 1000).
+    pub limit: Option<i64>,
+}
+
+/// One exported row of the tamper-evident event chain. Unlike
+/// [`PublicEvent`], this includes the integrity columns so an auditor
+/// can verify the chain offline.
+#[derive(Debug, Serialize)]
+pub struct ChainRow {
+    pub seq: i64,
+    pub domain: String,
+    pub event_type: String,
+    pub entity_type: String,
+    pub entity_id: String,
+    pub payload_json: String,
+    pub occurred_at: String,
+    /// `event_hash` of the previous row on this server, or `"GENESIS"`.
+    pub prev_hash: String,
+    /// Canonical SHA-256 over the row's fields (ADR-0013).
+    pub event_hash: String,
+    /// Hex Ed25519 signature over `annex-event-v1\n<event_hash>`, or
+    /// null for rows that predate signing / were chain-backfilled.
+    pub event_signature: Option<String>,
+}
+
+/// Response shape for `GET /api/public/events/chain`.
+#[derive(Debug, Serialize)]
+pub struct ChainResponse {
+    /// Hex-encoded Ed25519 verifying key the signatures verify under.
+    pub server_verifying_key: String,
+    /// Domain-separation prefix for the signing input
+    /// (`annex-event-v1`); the signed message is
+    /// `{signing_domain}\n{event_hash}`.
+    pub signing_domain: String,
+    /// Rows in ascending `seq` order starting at `from_seq`.
+    pub rows: Vec<ChainRow>,
+    /// Number of rows returned.
+    pub count: usize,
+    /// `from_seq` to pass for the next page, when more rows exist.
+    pub next_from_seq: Option<i64>,
+}
+
+/// Handler for `GET /api/public/events/chain`.
+///
+/// Exports the event log with its integrity columns (`prev_hash`,
+/// `event_hash`, `event_signature`) plus the server's verifying key so
+/// an external auditor can verify the hash chain and the per-event
+/// signatures offline (ADR-0013):
+///
+/// 1. Recompute each row's canonical hash and compare with
+///    `event_hash`; check `prev_hash` linkage from `"GENESIS"`.
+/// 2. Verify `event_signature` over `{signing_domain}\n{event_hash}`
+///    with `server_verifying_key`.
+///
+/// This is an unauthenticated endpoint — the event log is public by
+/// design, and the verifying key is already public via federation
+/// handshakes.
+pub async fn get_events_chain_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Query(params): Query<ChainQuery>,
+) -> Result<Json<ChainResponse>, Response> {
+    let pool = state.pool.clone();
+    let server_id = state.server_id;
+    let from_seq = params.from_seq.unwrap_or(1).max(1);
+    let limit = params.limit.unwrap_or(100).clamp(1, 1000);
+
+    let mut rows = tokio::task::spawn_blocking(move || -> Result<Vec<ChainRow>, String> {
+        let conn = pool.get().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT seq, domain, event_type, entity_type, entity_id, \
+                        payload_json, occurred_at, prev_hash, event_hash, event_signature \
+                 FROM public_event_log \
+                 WHERE server_id = ?1 AND seq >= ?2 \
+                 ORDER BY seq ASC LIMIT ?3",
+            )
+            .map_err(|e| e.to_string())?;
+        // Fetch one extra row to detect whether another page exists.
+        let mapped = stmt
+            .query_map(params![server_id, from_seq, limit + 1], |row| {
+                Ok(ChainRow {
+                    seq: row.get(0)?,
+                    domain: row.get(1)?,
+                    event_type: row.get(2)?,
+                    entity_type: row.get(3)?,
+                    entity_id: row.get(4)?,
+                    payload_json: row.get(5)?,
+                    occurred_at: row.get(6)?,
+                    prev_hash: row.get(7)?,
+                    event_hash: row.get(8)?,
+                    event_signature: row.get(9)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        mapped
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| {
+        tracing::error!("task join error in events chain handler: {}", e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": "internal server error" })),
+        )
+            .into_response()
+    })?
+    .map_err(|e| {
+        tracing::error!("database error in events chain handler: {}", e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": "internal server error" })),
+        )
+            .into_response()
+    })?;
+
+    let next_from_seq = if rows.len() as i64 > limit {
+        rows.pop().map(|r| r.seq)
+    } else {
+        None
+    };
+    let count = rows.len();
+
+    Ok(Json(ChainResponse {
+        server_verifying_key: hex::encode(state.signing_key.verifying_key().as_bytes()),
+        signing_domain: annex_observe::EVENT_SIGNING_DOMAIN.to_string(),
+        rows,
+        count,
+        next_from_seq,
+    }))
+}
+
 /// Query parameters for `GET /events/stream`.
 #[derive(Debug, Deserialize)]
 pub struct StreamQuery {

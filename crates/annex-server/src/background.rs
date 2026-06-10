@@ -39,6 +39,7 @@ pub async fn start_pruning_task(state: Arc<AppState>, threshold_seconds: u64) {
         let server_id = state.server_id;
         let tx = state.presence_tx.clone();
         let observe_tx = state.observe_tx.clone();
+        let signing_key = state.signing_key.clone();
 
         let res = tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| e.to_string())?;
@@ -56,6 +57,7 @@ pub async fn start_pruning_task(state: Arc<AppState>, threshold_seconds: u64) {
                     pseudonym_id,
                     &observe_payload,
                     &observe_tx,
+                    &signing_key,
                 );
             }
 
@@ -159,22 +161,69 @@ pub async fn start_federation_outbox_task(state: Arc<AppState>) {
 /// [F33]) end-to-end against a real SQLite-backed `AppState` without
 /// having to wait for the once-per-`outbox_interval_seconds` cadence
 /// of [`start_federation_outbox_task`].
+/// Resolves the receiver endpoint path for one serialized outbox
+/// envelope.
+///
+/// The federation outbox stores both message envelopes and redaction
+/// tombstones (ADR-0011) in the same table. Redaction envelopes carry
+/// an `envelopeKind: "redaction"` discriminator in their JSON; message
+/// envelopes have no such field. A cheap targeted deserialization of
+/// just that field routes the row without parsing the full envelope.
+/// Unparseable JSON falls through to the messages endpoint, where the
+/// receiver's full deserialization produces the proper error and the
+/// row ages out through the normal retry/backoff path.
+fn outbox_envelope_endpoint_path(envelope_json: &str) -> &'static str {
+    #[derive(serde::Deserialize)]
+    struct KindPeek {
+        #[serde(rename = "envelopeKind")]
+        envelope_kind: Option<String>,
+    }
+    match serde_json::from_str::<KindPeek>(envelope_json) {
+        Ok(KindPeek {
+            envelope_kind: Some(kind),
+        }) if kind == annex_federation::FEDERATED_ENVELOPE_KIND_REDACTION => {
+            "/api/federation/redactions"
+        }
+        Ok(KindPeek {
+            envelope_kind: Some(kind),
+        }) if kind == annex_federation::FEDERATED_ENVELOPE_KIND_EDIT => "/api/federation/edits",
+        _ => "/api/federation/messages",
+    }
+}
+
 pub async fn drain_outbox_batch(state: Arc<AppState>, batch_size: i64) -> Result<(), String> {
     // 1. Pull a batch of pending rows whose retry time has passed.
+    //
+    //    Fairness gate (ADR-0008 amendment): the inner window function
+    //    ranks each peer's due rows by retry time and the outer filter
+    //    keeps at most `outbox_per_peer_batch` per peer. Without this,
+    //    one unreachable peer with a deep backlog of due rows fills the
+    //    whole batch every tick (the global ORDER BY next_retry_at
+    //    favours its oldest rows), starving healthy peers and burning
+    //    the tick's entire HTTP fan-out against a host that is down.
+    //    The per-row exponential backoff bounds each row's retry rate;
+    //    this bounds each PEER's share of a tick.
     let pool = state.pool.clone();
+    let per_peer_cap = i64::from(state.federation_config.outbox_per_peer_batch.max(1));
     let rows =
         tokio::task::spawn_blocking(move || -> Result<Vec<(i64, i64, String, u32)>, String> {
             let conn = pool.get().map_err(|e| format!("pool: {e}"))?;
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, peer_instance_id, envelope_json, attempts \
-                 FROM federation_outbox \
-                 WHERE status = 'pending' AND next_retry_at <= datetime('now') \
-                 ORDER BY next_retry_at ASC LIMIT ?1",
+                    "SELECT id, peer_instance_id, envelope_json, attempts FROM (\
+                         SELECT id, peer_instance_id, envelope_json, attempts, next_retry_at, \
+                                ROW_NUMBER() OVER (\
+                                    PARTITION BY peer_instance_id \
+                                    ORDER BY next_retry_at ASC, id ASC\
+                                ) AS peer_rank \
+                         FROM federation_outbox \
+                         WHERE status = 'pending' AND next_retry_at <= datetime('now')\
+                     ) WHERE peer_rank <= ?1 \
+                     ORDER BY next_retry_at ASC LIMIT ?2",
                 )
                 .map_err(|e| format!("prepare: {e}"))?;
             let it = stmt
-                .query_map(rusqlite::params![batch_size], |row| {
+                .query_map(rusqlite::params![per_peer_cap, batch_size], |row| {
                     Ok((
                         row.get::<_, i64>(0)?,
                         row.get::<_, i64>(1)?,
@@ -285,7 +334,10 @@ pub async fn drain_outbox_batch(state: Arc<AppState>, batch_size: i64) -> Result
             continue;
         }
 
-        let url = format!("{peer_base}/api/federation/messages");
+        let url = format!(
+            "{peer_base}{}",
+            outbox_envelope_endpoint_path(&envelope_json)
+        );
 
         let client = client.clone();
         let state = state.clone();
@@ -444,6 +496,49 @@ fn backoff_seconds(next_attempt: u32) -> u64 {
     let cap: u64 = 3600;
     let shift = next_attempt.saturating_sub(1).min(8);
     (base.saturating_mul(1u64 << shift)).min(cap)
+}
+
+#[cfg(test)]
+mod outbox_routing_tests {
+    use super::outbox_envelope_endpoint_path;
+
+    #[test]
+    fn redaction_envelopes_route_to_redactions_endpoint() {
+        let json = r#"{"envelopeKind":"redaction","envelopeVersion":"v1","message_id":"m"}"#;
+        assert_eq!(
+            outbox_envelope_endpoint_path(json),
+            "/api/federation/redactions"
+        );
+    }
+
+    #[test]
+    fn message_envelopes_route_to_messages_endpoint() {
+        // Message envelopes carry no envelopeKind field.
+        let json = r#"{"envelopeVersion":"v2","message_id":"m","content":"hi"}"#;
+        assert_eq!(
+            outbox_envelope_endpoint_path(json),
+            "/api/federation/messages"
+        );
+    }
+
+    #[test]
+    fn edit_envelopes_route_to_edits_endpoint() {
+        let json =
+            r#"{"envelopeKind":"edit","envelopeVersion":"v1","edit_id":"e","message_id":"m"}"#;
+        assert_eq!(outbox_envelope_endpoint_path(json), "/api/federation/edits");
+    }
+
+    #[test]
+    fn unknown_kind_and_garbage_fall_back_to_messages_endpoint() {
+        assert_eq!(
+            outbox_envelope_endpoint_path(r#"{"envelopeKind":"mystery"}"#),
+            "/api/federation/messages"
+        );
+        assert_eq!(
+            outbox_envelope_endpoint_path("not json at all"),
+            "/api/federation/messages"
+        );
+    }
 }
 
 #[cfg(test)]

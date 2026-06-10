@@ -1,6 +1,6 @@
 # ADR 0010 — WebSocket command idempotency via `clientRequestId`
 
-Status: Accepted (2026-05-12)
+Status: Accepted (2026-05-12); amended 2026-06-10 (TTL eviction landed)
 Context tag: `hardening-pass`
 
 ## Context
@@ -28,4 +28,4 @@ Persist `clientRequestId` on first accept; on repeat, return the original messag
 ## Out of scope (deferred)
 
 - **Generalised idempotency for non-message commands** (edit, delete, channel join). The same shape applies: scope by `(server_id, sender, request_id)`, persist the result identifier. Edit and delete already operate on a fixed `message_id`, so replaying them is more naturally idempotent against the underlying message state; a future ADR can cover the channel-join replay surface if needed.
-- **Time-bound idempotency window.** Currently the table grows forever (modulo the existing retention sweep on parent messages — see `crates/annex-server/src/retention.rs`). A future task adds a TTL on `message_request_ids` so a stale request_id from a year ago does not silently collide with a fresh one.
+- **Time-bound idempotency window.** ~~Currently the table grows forever (modulo the existing retention sweep on parent messages — see `crates/annex-server/src/retention.rs`). A future task adds a TTL on `message_request_ids` so a stale request_id from a year ago does not silently collide with a fresh one.~~ *Landed 2026-06-10:* the retention task now prunes `message_request_ids` rows older than `server.idempotency_ttl_seconds` (default 604800 = 7 days, floor 60, env override `ANNEX_IDEMPOTENCY_TTL_SECONDS`) in the same batched-DELETE shape as the message sweep (`annex_channels::prune_expired_request_ids`, index added in migration 040). After eviction a replayed `clientRequestId` is treated as a new send — the TTL exceeds any realistic client retry window by orders of magnitude, and a stale request id from months ago no longer collides with a fresh one.

@@ -127,7 +127,20 @@ pub async fn auth_middleware(mut req: Request<Body>, next: Next) -> Result<Respo
     // 5. Storage gate: reject mutating methods when the storage gate
     //    is degraded. Reads still flow so operators can inspect
     //    state through the same auth surface they always use.
-    if is_mutating_method(req.method()) && state_clone_for_gate.storage_health.writes_blocked() {
+    //
+    //    The storage-clear admin endpoint is exempt: it exists
+    //    precisely to recover FROM the degraded state, so it must stay
+    //    reachable while the gate is closed. That is safe because the
+    //    handler mutates only the in-memory gate (an atomic store) and
+    //    performs no SQLite writes on its critical path — the audit
+    //    event it emits is best-effort. The `can_moderate` check lives
+    //    in the handler like every other admin route. Without this
+    //    carve-out the gate could only be cleared by a process
+    //    restart, defeating the endpoint's purpose (ADR-0009).
+    if is_mutating_method(req.method())
+        && req.uri().path() != STORAGE_GATE_CLEAR_PATH
+        && state_clone_for_gate.storage_health.writes_blocked()
+    {
         tracing::warn!(
             method = %req.method(),
             path = %req.uri().path(),
@@ -142,6 +155,11 @@ pub async fn auth_middleware(mut req: Request<Body>, next: Next) -> Result<Respo
 
     Ok(next.run(req).await)
 }
+
+/// The one mutating route allowed through a degraded storage gate.
+/// Must match the route registered in `crate::routes` for
+/// `api_admin::clear_storage_gate_handler`.
+const STORAGE_GATE_CLEAR_PATH: &str = "/api/admin/storage/clear";
 
 /// True if `method` would mutate persisted state. Used by the auth
 /// middleware to short-circuit when the storage gate is degraded.

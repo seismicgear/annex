@@ -187,6 +187,22 @@ pub fn app(state: AppState) -> Router {
             "/api/admin/federation/{id}",
             delete(api_admin::revoke_federation_handler),
         )
+        .route(
+            "/api/admin/federation/outbox",
+            get(api_admin::list_federation_outbox_handler),
+        )
+        .route(
+            "/api/admin/federation/outbox/{id}/retry",
+            post(api_admin::retry_federation_outbox_handler),
+        )
+        .route(
+            "/api/admin/storage",
+            get(api_admin::get_storage_health_handler),
+        )
+        .route(
+            "/api/admin/storage/clear",
+            post(api_admin::clear_storage_gate_handler),
+        )
         .route("/api/admin/members", get(api_admin::list_members_handler))
         .route(
             "/api/admin/members/{pseudonymId}/capabilities",
@@ -328,11 +344,23 @@ pub fn app(state: AppState) -> Router {
             post(api_federation::receive_federated_message_handler),
         )
         .route(
+            "/api/federation/redactions",
+            post(api_federation::receive_federated_redaction_handler),
+        )
+        .route(
+            "/api/federation/edits",
+            post(api_federation::receive_federated_edit_handler),
+        )
+        .route(
             "/api/federation/rtx",
             post(api_federation::receive_federated_rtx_handler),
         )
         .route("/api/graph/degrees", get(api_graph::get_degrees_handler))
         .route("/api/public/events", get(api_observe::get_events_handler))
+        .route(
+            "/api/public/events/chain",
+            get(api_observe::get_events_chain_handler),
+        )
         .route("/events/stream", get(api_observe::get_event_stream_handler))
         .route(
             "/api/public/server/summary",

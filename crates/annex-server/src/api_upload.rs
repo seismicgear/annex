@@ -432,6 +432,7 @@ pub async fn upload_server_image_handler(
             &moderator,
             &observe_payload,
             &state_clone.observe_tx,
+            &state_clone.signing_key,
         );
 
         Ok::<(), ApiError>(())

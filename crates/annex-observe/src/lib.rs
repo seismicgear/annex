@@ -44,8 +44,9 @@ mod store;
 pub use error::ObserveError;
 pub use event::{EventDomain, EventPayload, ParseEventDomainError, PublicEvent};
 pub use store::{
-    backfill_event_log_chain, compute_event_hash, emit_event, next_seq, query_events,
-    verify_event_log_chain, EventFilter,
+    backfill_event_log_chain, compute_event_hash, emit_event, emit_event_signed,
+    event_signing_input, next_seq, query_events, verify_event_log_chain,
+    verify_event_log_signatures, EventFilter, EVENT_SIGNING_DOMAIN,
 };
 
 #[cfg(test)]
