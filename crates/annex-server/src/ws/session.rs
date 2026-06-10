@@ -24,6 +24,7 @@ use axum::extract::ws::{Message as AxumMessage, WebSocket};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 
+use crate::ws::command_rate_limit::CommandRateLimiter;
 use crate::ws::context::CommandContext;
 use crate::ws::dispatch::dispatch;
 use crate::ws::error::send_ws_error;
@@ -129,6 +130,10 @@ impl WsSession {
         // single WS connection out to N subscribers per channel at any
         // rate the OS will deliver frames.
         let typing_throttle = TypingThrottle::new();
+        // Per-session token bucket for state-mutating commands. Typing has
+        // its own debouncer; this covers message/edit/delete/voice/resume,
+        // which the HTTP rate-limit middleware never sees.
+        let command_rate_limiter = CommandRateLimiter::new();
 
         while let Some(Ok(msg)) = receiver.next().await {
             if last_activity.elapsed() >= ACTIVITY_DEBOUNCE {
@@ -146,6 +151,7 @@ impl WsSession {
                                 pseudonym: &pseudonym,
                                 tx: &tx,
                                 typing_throttle: &typing_throttle,
+                                command_rate_limiter: &command_rate_limiter,
                             };
                             dispatch(&ctx, incoming).await;
                         }

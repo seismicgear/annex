@@ -28,6 +28,10 @@ pub(crate) const MAX_WS_MESSAGE_CONTENT_LEN: usize = 65_536;
 /// resource abuse from oversized text payloads.
 pub(crate) const MAX_VOICE_INTENT_TEXT_LEN: usize = 2_048;
 
+/// Error surfaced when a session exceeds its per-connection command
+/// budget (see [`crate::ws::command_rate_limit`]).
+const RATE_LIMIT_MESSAGE: &str = "Rate limit exceeded: slow down and retry";
+
 /// Result of a WebSocket membership check.
 pub(crate) enum MembershipResult {
     /// The user is a confirmed member.
@@ -85,6 +89,17 @@ pub(crate) async fn dispatch(ctx: &CommandContext<'_>, msg: IncomingMessage) {
             reply_to,
             client_request_id,
         } => {
+            // Per-session flood control. The error echoes clientRequestId
+            // so the sender's pending-send promise resolves as a failure
+            // rather than hanging.
+            if !ctx.command_rate_limiter.try_admit().await {
+                crate::ws::error::send_ws_error_with_id(
+                    ctx.tx,
+                    RATE_LIMIT_MESSAGE.to_string(),
+                    client_request_id,
+                );
+                return;
+            }
             message::handle(ctx, channel_id, content, reply_to, client_request_id).await;
         }
         IncomingMessage::EditMessage {
@@ -92,15 +107,27 @@ pub(crate) async fn dispatch(ctx: &CommandContext<'_>, msg: IncomingMessage) {
             message_id,
             content,
         } => {
+            if !ctx.command_rate_limiter.try_admit().await {
+                send_ws_error(ctx.tx, RATE_LIMIT_MESSAGE.to_string());
+                return;
+            }
             edit::handle(ctx, channel_id, message_id, content).await;
         }
         IncomingMessage::DeleteMessage {
             channel_id,
             message_id,
         } => {
+            if !ctx.command_rate_limiter.try_admit().await {
+                send_ws_error(ctx.tx, RATE_LIMIT_MESSAGE.to_string());
+                return;
+            }
             delete::handle(ctx, channel_id, message_id).await;
         }
         IncomingMessage::VoiceIntent { channel_id, text } => {
+            if !ctx.command_rate_limiter.try_admit().await {
+                send_ws_error(ctx.tx, RATE_LIMIT_MESSAGE.to_string());
+                return;
+            }
             voice::handle(ctx, channel_id, text).await;
         }
         IncomingMessage::WebRtcOffer { channel_id, sdp } => {
@@ -130,6 +157,12 @@ pub(crate) async fn dispatch(ctx: &CommandContext<'_>, msg: IncomingMessage) {
             channel_id,
             last_message_id,
         } => {
+            // Resume runs an indexed range scan per call — rate-limit it
+            // alongside the write commands.
+            if !ctx.command_rate_limiter.try_admit().await {
+                send_ws_error(ctx.tx, RATE_LIMIT_MESSAGE.to_string());
+                return;
+            }
             resume::handle(ctx, channel_id, last_message_id).await;
         }
     }

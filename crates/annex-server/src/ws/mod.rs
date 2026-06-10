@@ -29,6 +29,7 @@
 //! `OutgoingMessage`, `generate_session_token`, etc. keep their existing
 //! paths.
 
+pub mod command_rate_limit;
 pub mod commands;
 pub mod connection_manager;
 pub mod context;
