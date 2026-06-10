@@ -149,6 +149,14 @@ curl http://localhost:3000/health
 curl -N http://localhost:3000/events/stream
 ```
 
+### Audit-log integrity export
+
+The public event log is hash-chained and Ed25519-signed (ADR-0013). External auditors can export it page by page and verify offline — recompute each row's canonical hash, check the `prev_hash` linkage from `GENESIS`, and verify each `event_signature` over `<signing_domain>\n<event_hash>` using the returned `server_verifying_key`:
+
+```bash
+curl "http://localhost:3000/api/public/events/chain?from_seq=1&limit=500"
+```
+
 ### Server Summary
 
 ```bash

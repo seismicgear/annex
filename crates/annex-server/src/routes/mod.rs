@@ -349,6 +349,10 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/api/graph/degrees", get(api_graph::get_degrees_handler))
         .route("/api/public/events", get(api_observe::get_events_handler))
+        .route(
+            "/api/public/events/chain",
+            get(api_observe::get_events_chain_handler),
+        )
         .route("/events/stream", get(api_observe::get_event_stream_handler))
         .route(
             "/api/public/server/summary",

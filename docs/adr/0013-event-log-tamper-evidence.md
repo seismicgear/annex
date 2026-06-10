@@ -24,7 +24,18 @@ That is acceptable under Annex's sovereignty model — the operator owns their s
 
 ## Out of scope (deferred)
 
-- **Chain export endpoint.** An auditor would benefit from `GET /api/public/events/chain?from_seq=N` that returns events + hashes + signatures so they can verify offline. Deferred.
+- **Chain export endpoint.** ~~An auditor would benefit from `GET /api/public/events/chain?from_seq=N` that returns events + hashes + signatures so they can verify offline. Deferred.~~ *Landed 2026-06-10* — see the chain-export amendment below.
+
+## Amendment (2026-06-10) — chain export endpoint
+
+`GET /api/public/events/chain?from_seq=N&limit=M` (unauthenticated, like the rest of the public observe surface) returns:
+
+- `rows` — events in ascending `seq` order including the integrity columns (`prev_hash`, `event_hash`, `event_signature`),
+- `server_verifying_key` — hex Ed25519 verifying key (already public via federation handshakes),
+- `signing_domain` — the `annex-event-v1` prefix,
+- `next_from_seq` — cursor for the next page (limit defaults to 100, max 1000).
+
+The offline audit recipe: walk rows from `"GENESIS"`, recompute each canonical hash and check `prev_hash` linkage, then verify each `event_signature` over `{signing_domain}\n{event_hash}` under `server_verifying_key`. The integration test `observe_integration.rs::chain_export_supports_full_offline_verification` performs exactly this using only response data.
 
 ## Amendment (2026-06-10) — per-event Ed25519 signatures
 
