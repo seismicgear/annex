@@ -38,8 +38,8 @@ use annex_channels::{
     add_member, create_message, list_federated_channels, Channel, CreateMessageParams,
 };
 use annex_federation::{
-    process_incoming_handshake, AttestationRequest, FederatedMessageEnvelope, FederatedRtxEnvelope,
-    HandshakeError,
+    process_incoming_handshake, AttestationRequest, FederatedMessageEnvelope,
+    FederatedRedactionEnvelope, FederatedRtxEnvelope, HandshakeError,
 };
 use annex_graph::{ensure_graph_node, GraphError};
 use annex_identity::{
@@ -279,6 +279,52 @@ pub fn message_envelope_hash(envelope: &FederatedMessageEnvelope) -> String {
     hasher.update(message_signing_input(envelope).as_bytes());
     hex::encode(hasher.finalize())
 }
+
+/// Canonical signing input for a federated redaction envelope
+/// (ADR-0011 tombstone protocol).
+///
+/// The first line is the [`annex_federation::REDACTION_SIGNING_DOMAIN_V1`]
+/// literal — a domain-separation prefix distinct from both message
+/// signing-input shapes, so a redaction signature can never verify as a
+/// message envelope (or vice versa) regardless of field contents.
+/// Newline delimiters prevent field-boundary ambiguity, exactly as in
+/// [`message_signing_input`]. The `signature` field itself is not part
+/// of the input.
+pub fn redaction_signing_input(envelope: &FederatedRedactionEnvelope) -> String {
+    format!(
+        "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+        annex_federation::REDACTION_SIGNING_DOMAIN_V1,
+        envelope.message_id,
+        envelope.channel_id,
+        envelope.originating_server,
+        envelope.redacted_by,
+        envelope.redaction_reason,
+        envelope.attestation_ref,
+        envelope.created_at
+    )
+}
+
+/// Canonical SHA-256 of the redaction signing input. Stored in the
+/// receipt ledger (under the `redaction:`-prefixed message_id) to make
+/// re-delivery idempotent and to detect a different signed body being
+/// replayed under a captured redaction id.
+pub fn redaction_envelope_hash(envelope: &FederatedRedactionEnvelope) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(redaction_signing_input(envelope).as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+/// Receipt-ledger key prefix for redaction envelopes.
+///
+/// Redactions share `federation_message_receipts` (and the federation
+/// outbox) with message envelopes. Both tables key on
+/// `(instance, message_id)`, and a redaction necessarily reuses the
+/// original message's id — so redaction rows are namespaced with this
+/// prefix to avoid colliding with the original message's receipt /
+/// outbox row. The prefix contains a `:` and message ids are UUIDs, so
+/// no legitimate message id can collide with a prefixed key.
+pub const REDACTION_LEDGER_PREFIX: &str = "redaction:";
 
 /// Errors specific to the freshness gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1190,6 +1236,264 @@ impl FederationService {
         Ok(())
     }
 
+    /// `POST /api/federation/redactions` orchestration (ADR-0011
+    /// tombstone protocol).
+    ///
+    /// Verification chain, mirroring [`Self::receive_federated_message`]
+    /// where the concerns overlap:
+    ///
+    /// 1. Envelope shape: kind/version/reason validated against the
+    ///    constants in `annex_federation`.
+    /// 2. Originating instance is known + ACTIVE, with an active
+    ///    federation agreement.
+    /// 3. Freshness gate — always enforced (the redaction protocol is
+    ///    new, so there are no legacy peers to grandfather).
+    /// 4. Ed25519 signature over [`redaction_signing_input`] verifies
+    ///    against the originating server's published key.
+    /// 5. **Origin authority**: a receipt for the ORIGINAL message must
+    ///    exist from the SAME peer instance. Only the server that
+    ///    delivered a message may redact it — a peer can never redact
+    ///    locally-authored messages or messages delivered by a
+    ///    different peer.
+    /// 6. **Redactor authority**: for `reason != "moderation"`,
+    ///    `redacted_by` must equal the stored row's `sender_pseudonym`.
+    ///    `moderation` redactions are accepted on the originating
+    ///    server's signature alone — the channel lives on that server
+    ///    and its moderators govern it (sovereignty model).
+    /// 7. Idempotency: a redaction receipt (keyed
+    ///    `redaction:<message_id>`) with a matching envelope hash is a
+    ///    benign replay; a hash mismatch is rejected.
+    ///
+    /// Effect: `content` is blanked and `deleted_at` set on the local
+    /// row; `message_id`, `created_at`, and `sender_pseudonym` are kept
+    /// for audit (same shape as a local soft delete). The receipt and
+    /// the UPDATE commit atomically (IMMEDIATE transaction — same
+    /// rationale as the [F32] fix on the message path).
+    ///
+    /// Returns the channel id when the redaction was applied, `None`
+    /// for benign replays and for messages already hard-deleted by
+    /// retention.
+    #[allow(clippy::too_many_lines)]
+    pub async fn receive_federated_redaction(
+        &self,
+        envelope: FederatedRedactionEnvelope,
+    ) -> Result<Option<String>, FederationError> {
+        // 1. Envelope shape — cheap rejects before any DB I/O.
+        if envelope.envelope_kind != annex_federation::FEDERATED_ENVELOPE_KIND_REDACTION {
+            return Err(FederationError::Forbidden(format!(
+                "unexpected envelopeKind '{}' (expected '{}')",
+                envelope.envelope_kind,
+                annex_federation::FEDERATED_ENVELOPE_KIND_REDACTION
+            )));
+        }
+        if envelope.envelope_version != annex_federation::FEDERATED_REDACTION_ENVELOPE_V1 {
+            return Err(FederationError::Forbidden(format!(
+                "unsupported redaction envelope version '{}'",
+                envelope.envelope_version
+            )));
+        }
+        if !annex_federation::REDACTION_REASONS.contains(&envelope.redaction_reason.as_str()) {
+            return Err(FederationError::Forbidden(format!(
+                "invalid redaction_reason '{}' (expected one of: {})",
+                envelope.redaction_reason,
+                annex_federation::REDACTION_REASONS.join(", ")
+            )));
+        }
+
+        let state = self.state.clone();
+        let applied_channel = tokio::task::spawn_blocking({
+            let state = state.clone();
+            move || {
+                let conn = state.pool.get().map_err(pool_err)?;
+
+                // 2. Resolve + gate the originating instance.
+                let instance = repo::find_instance_by_base_url(&conn, &envelope.originating_server)
+                    .map_err(FederationError::DbError)?
+                    .ok_or_else(|| {
+                        FederationError::UnknownRemote(envelope.originating_server.clone())
+                    })?;
+                if instance.status != "ACTIVE" {
+                    return Err(FederationError::Forbidden(format!(
+                        "Instance {} is not active",
+                        envelope.originating_server
+                    )));
+                }
+                if !repo::has_active_agreement(&conn, state.server_id, instance.id)
+                    .map_err(FederationError::DbError)?
+                {
+                    return Err(FederationError::Forbidden(format!(
+                        "No active federation agreement with {}",
+                        envelope.originating_server
+                    )));
+                }
+
+                // 3. Freshness gate.
+                let fed_cfg = &state.federation_config;
+                match check_freshness(
+                    &envelope.created_at,
+                    chrono::Utc::now(),
+                    fed_cfg.freshness_window_seconds,
+                    fed_cfg.future_skew_seconds,
+                    DeliveryMode::Live,
+                ) {
+                    Ok(()) => {}
+                    Err(FreshnessRejection::Unparseable) => {
+                        return Err(FederationError::Forbidden(
+                            "envelope.created_at is not RFC 3339 / ISO 8601".to_string(),
+                        ));
+                    }
+                    Err(FreshnessRejection::TooOld) => {
+                        return Err(FederationError::Forbidden(format!(
+                            "redaction created_at {} is older than the live freshness window ({}s)",
+                            envelope.created_at, fed_cfg.freshness_window_seconds
+                        )));
+                    }
+                    Err(FreshnessRejection::TooFarInFuture) => {
+                        return Err(FederationError::Forbidden(format!(
+                            "redaction created_at {} is more than {}s in the future",
+                            envelope.created_at, fed_cfg.future_skew_seconds
+                        )));
+                    }
+                }
+
+                // 4. Signature.
+                verify_ed25519(
+                    &instance.public_key_hex,
+                    &envelope.signature,
+                    redaction_signing_input(&envelope).as_bytes(),
+                )?;
+
+                // 5. Origin authority: we must hold a receipt for the
+                //    ORIGINAL message from this same peer.
+                let original_receipt: Option<String> = conn
+                    .query_row(
+                        "SELECT envelope_hash FROM federation_message_receipts \
+                         WHERE remote_instance_id = ?1 AND message_id = ?2",
+                        rusqlite::params![instance.id, &envelope.message_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(FederationError::DbError)?;
+                if original_receipt.is_none() {
+                    return Err(FederationError::Forbidden(format!(
+                        "no receipt for message {} from {} — only the delivering peer may redact",
+                        envelope.message_id, envelope.originating_server
+                    )));
+                }
+
+                // 6. Local row + redactor authority. A missing row means
+                //    retention already hard-deleted it — record the
+                //    receipt (idempotency) and report "nothing to do".
+                let local_row: Option<(String, String, Option<String>)> = conn
+                    .query_row(
+                        "SELECT channel_id, sender_pseudonym, deleted_at \
+                         FROM messages WHERE message_id = ?1",
+                        rusqlite::params![&envelope.message_id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .optional()
+                    .map_err(FederationError::DbError)?;
+
+                if let Some((_, ref sender, _)) = local_row {
+                    if envelope.redaction_reason != "moderation" && &envelope.redacted_by != sender
+                    {
+                        return Err(FederationError::Forbidden(format!(
+                            "redactor {} is not the sender of message {}",
+                            envelope.redacted_by, envelope.message_id
+                        )));
+                    }
+                }
+
+                // 7. Receipt + UPDATE, atomically.
+                let env_hash = redaction_envelope_hash(&envelope);
+                let ledger_key = format!("{REDACTION_LEDGER_PREFIX}{}", envelope.message_id);
+                let tx = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)
+                    .map_err(FederationError::DbError)?;
+
+                let prior: Option<String> = tx
+                    .query_row(
+                        "SELECT envelope_hash FROM federation_message_receipts \
+                         WHERE remote_instance_id = ?1 AND message_id = ?2",
+                        rusqlite::params![instance.id, &ledger_key],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(FederationError::DbError)?;
+                if let Some(prior_hash) = prior {
+                    if prior_hash != env_hash {
+                        tracing::warn!(
+                            remote_instance_id = instance.id,
+                            message_id = %envelope.message_id,
+                            "redaction receipt mismatch: same id, different signed body"
+                        );
+                        return Err(FederationError::Forbidden(
+                            "envelope hash does not match prior receipt for this redaction"
+                                .to_string(),
+                        ));
+                    }
+                    // Benign replay. Drop the tx without commit.
+                    return Ok(None);
+                }
+
+                tx.execute(
+                    "INSERT INTO federation_message_receipts \
+                     (remote_instance_id, message_id, envelope_hash, envelope_created_at, delivery_mode) \
+                     VALUES (?1, ?2, ?3, ?4, 'live')",
+                    rusqlite::params![instance.id, &ledger_key, &env_hash, &envelope.created_at],
+                )
+                .map_err(FederationError::DbError)?;
+
+                let applied = if let Some((channel_id, _, deleted_at)) = local_row {
+                    if deleted_at.is_none() {
+                        tx.execute(
+                            "UPDATE messages SET content = '', deleted_at = datetime('now') \
+                             WHERE message_id = ?1",
+                            rusqlite::params![&envelope.message_id],
+                        )
+                        .map_err(FederationError::DbError)?;
+                    }
+                    // Re-read the (now blanked) row so the broadcast
+                    // payload matches what the local-delete flow sends.
+                    let updated = annex_channels::get_message(&tx, &envelope.message_id)
+                        .map_err(FederationError::Channel)?;
+                    Some((channel_id, updated))
+                } else {
+                    tracing::debug!(
+                        message_id = %envelope.message_id,
+                        "federated redaction for a message already removed by retention"
+                    );
+                    None
+                };
+
+                tx.commit().map_err(FederationError::DbError)?;
+                Ok(applied)
+            }
+        })
+        .await
+        .map_err(pool_err)??;
+
+        // Broadcast the deletion to local subscribers so open clients
+        // blank the message in place, mirroring the local-delete flow
+        // (`OutgoingMessage::MessageDeleted`).
+        if let Some((channel_id, updated)) = applied_channel {
+            let out = OutgoingMessage::MessageDeleted(updated.into());
+            match serde_json::to_string(&out) {
+                Ok(json) => {
+                    state.connection_manager.broadcast(&channel_id, json).await;
+                }
+                Err(e) => {
+                    tracing::error!(
+                        channel_id = %channel_id,
+                        "failed to serialize federated redaction broadcast: {}", e
+                    );
+                }
+            }
+            return Ok(Some(channel_id));
+        }
+
+        Ok(None)
+    }
+
     /// `POST /api/federation/rtx` orchestration. Returns
     /// `(bundle_id, delivered_count)`.
     #[allow(clippy::too_many_lines)]
@@ -1669,6 +1973,152 @@ pub async fn relay_message(
                         break;
                     }
                     tracing::warn!(peer_instance_id = peer_id, "outbox enqueue failed: {}", e);
+                }
+            }
+        }
+    })
+    .await;
+}
+
+/// Enqueue a signed redaction tombstone (ADR-0011) into the federation
+/// outbox for every active peer, after a local soft delete on a
+/// federated channel succeeded.
+///
+/// Mirrors [`relay_message`]'s structure: peer listing, attestation-ref
+/// resolution for the redactor, enqueue-time transfer-scope + SSRF
+/// filters, one durable outbox row per peer, storage-gate trip on
+/// enqueue failure. The outbox worker routes redaction rows to
+/// `POST /api/federation/redactions` by the `envelopeKind`
+/// discriminator in the serialized JSON; the row's `message_id` is
+/// namespaced with [`REDACTION_LEDGER_PREFIX`] so it cannot collide
+/// with the original message's outbox row under
+/// `UNIQUE(peer_instance_id, message_id)`.
+pub async fn relay_redaction(
+    state: Arc<AppState>,
+    channel_id: String,
+    message_id: String,
+    redacted_by: String,
+    redaction_reason: &'static str,
+) {
+    let peers_result = tokio::task::spawn_blocking({
+        let state = state.clone();
+        let redactor = redacted_by.clone();
+        move || {
+            let conn = state.pool.get().map_err(|e| e.to_string())?;
+            let peers =
+                repo::list_active_peers(&conn, state.server_id).map_err(|e| e.to_string())?;
+
+            let mut attestation_ref = "annex:server:v1:unknown".to_string();
+            match repo::find_commitment_for_pseudonym(&conn, &redactor) {
+                Ok(Some((commitment, topic))) => {
+                    attestation_ref = format!("{topic}:{commitment}");
+                }
+                Ok(None) => {
+                    tracing::debug!(redactor = %redactor, "no commitment found for redactor, using unknown attestation ref");
+                }
+                Err(e) => {
+                    tracing::warn!(redactor = %redactor, "failed to look up commitment for redactor: {}", e);
+                }
+            }
+            Ok::<_, String>((peers, attestation_ref))
+        }
+    })
+    .await
+    .unwrap_or_else(|e| Err(e.to_string()));
+
+    let (peers, attestation_ref) = match peers_result {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!("Failed to fetch federation peers for redaction: {}", e);
+            return;
+        }
+    };
+    if peers.is_empty() {
+        return;
+    }
+
+    let envelope_for_signing = FederatedRedactionEnvelope {
+        envelope_kind: annex_federation::FEDERATED_ENVELOPE_KIND_REDACTION.to_string(),
+        envelope_version: annex_federation::FEDERATED_REDACTION_ENVELOPE_V1.to_string(),
+        message_id: message_id.clone(),
+        channel_id,
+        originating_server: state.get_public_url(),
+        redacted_by,
+        redaction_reason: redaction_reason.to_string(),
+        attestation_ref,
+        signature: String::new(), // placeholder for signing input only
+        created_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+    };
+    let signature = state
+        .signing_key
+        .sign(redaction_signing_input(&envelope_for_signing).as_bytes());
+    let envelope = FederatedRedactionEnvelope {
+        signature: hex::encode(signature.to_bytes()),
+        ..envelope_for_signing
+    };
+
+    let envelope_json = match serde_json::to_string(&envelope) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("failed to serialise outbound redaction envelope: {}", e);
+            return;
+        }
+    };
+    let outbox_key = format!("{REDACTION_LEDGER_PREFIX}{message_id}");
+
+    let peer_ids: Vec<i64> = peers
+        .into_iter()
+        .filter(|p| {
+            if p.transfer_scope == "NO_TRANSFER" {
+                return false;
+            }
+            if crate::api_link_preview::is_url_private_or_reserved(&p.base_url) {
+                tracing::warn!(
+                    peer = %p.base_url,
+                    "skipping redaction enqueue: peer base_url resolves to a private or reserved host"
+                );
+                return false;
+            }
+            true
+        })
+        .map(|p| p.id)
+        .collect();
+    if peer_ids.is_empty() {
+        return;
+    }
+
+    let pool = state.pool.clone();
+    let health = state.storage_health.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        let conn = match pool.get() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!("redaction outbox enqueue: pool error: {}", e);
+                return;
+            }
+        };
+        for peer_id in peer_ids {
+            match conn.execute(
+                "INSERT OR IGNORE INTO federation_outbox \
+                 (peer_instance_id, message_id, envelope_json, status, attempts, next_retry_at) \
+                 VALUES (?1, ?2, ?3, 'pending', 0, datetime('now'))",
+                rusqlite::params![peer_id, &outbox_key, &envelope_json],
+            ) {
+                Ok(_) => {}
+                Err(e) => {
+                    if crate::storage_health::interpret_sqlite_error(&health, &e) {
+                        tracing::error!(
+                            peer_instance_id = peer_id,
+                            "redaction outbox enqueue tripped storage gate: {}",
+                            e
+                        );
+                        break;
+                    }
+                    tracing::warn!(
+                        peer_instance_id = peer_id,
+                        "redaction outbox enqueue failed: {}",
+                        e
+                    );
                 }
             }
         }

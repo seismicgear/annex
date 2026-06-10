@@ -28,7 +28,9 @@
 use std::sync::Arc;
 
 use annex_channels::Channel;
-use annex_federation::{AttestationRequest, FederatedMessageEnvelope, FederatedRtxEnvelope};
+use annex_federation::{
+    AttestationRequest, FederatedMessageEnvelope, FederatedRedactionEnvelope, FederatedRtxEnvelope,
+};
 use annex_vrp::VrpValidationReport;
 use axum::{
     extract::{Extension, Path},
@@ -46,7 +48,7 @@ use crate::AppState;
 // and other intra-crate consumers still see it via the legacy path.
 pub(crate) use crate::services::federation_repository::find_commitment_for_pseudonym;
 pub use crate::services::federation_service::{
-    federation_http_client, relay_message, FederationError, HandshakeRequest,
+    federation_http_client, relay_message, relay_redaction, FederationError, HandshakeRequest,
     JoinFederatedChannelRequest,
 };
 
@@ -110,6 +112,26 @@ pub async fn receive_federated_message_handler(
     let svc = FederationService::new(state);
     svc.receive_federated_message(envelope).await?;
     Ok(Json(serde_json::json!({ "status": "received" })))
+}
+
+/// Handler for `POST /api/federation/redactions` (ADR-0011 tombstones).
+///
+/// Applies a signed redaction tombstone from a federation peer: the
+/// local copy of the message is blanked (`content = ''`,
+/// `deleted_at = now`) after the full verification chain in
+/// `FederationService::receive_federated_redaction` passes. Idempotent
+/// on the receipt ledger — re-delivery of the same envelope returns
+/// `applied: false` without error so outbox retries are safe.
+pub async fn receive_federated_redaction_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(envelope): Json<FederatedRedactionEnvelope>,
+) -> Result<Json<serde_json::Value>, FederationError> {
+    let svc = FederationService::new(state);
+    let applied_channel = svc.receive_federated_redaction(envelope).await?;
+    Ok(Json(serde_json::json!({
+        "status": "received",
+        "applied": applied_channel.is_some(),
+    })))
 }
 
 /// Receive a federated message that arrived over a WebRTC data

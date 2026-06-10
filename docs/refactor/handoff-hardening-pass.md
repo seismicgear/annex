@@ -153,7 +153,7 @@ These were either out of scope for this pass or have a concrete prerequisite tha
 | Gap | Status | Why deferred | Next step |
 | --- | --- | --- | --- |
 | **Federation catch-up endpoint** | Deferred (ADR-0014) | Needs envelope `v3` with per-origin sequence number + receipt ledger schema extension | Land v3 envelope; add `channel_id` + `origin_seq` to `federation_message_receipts`; build endpoint |
-| **Federated redaction tombstones** | Documented (ADR-0011) | Same shape as message envelope work; doing both in one pass risks correlated bugs | Build `FederatedRedactionEnvelope` + verifier following the sketch in ADR-0011 |
+| **Federated redaction tombstones** | **Landed 2026-06-10** (ADR-0011 amendment) | — | `FederatedRedactionEnvelope` + `POST /api/federation/redactions`; WS delete on FEDERATED channels enqueues signed tombstones via the outbox; origin-receipt + sender/moderation authority checks; receipt-ledger idempotent |
 | **Admin endpoint to clear storage gate** | **Landed 2026-06-10** (ADR-0009 amendment) | — | `GET /api/admin/storage` + `POST /api/admin/storage/clear` (exempt from the degraded-gate 507; `can_moderate`-gated) |
 | **Admin endpoint to inspect/retry outbox** | **Landed 2026-06-10** (ADR-0008 amendment) | — | `GET /api/admin/federation/outbox` (filter/pagination/counts) + `POST .../{id}/retry` (resets backoff budget; 409 on `pending`/`delivered`) |
 | **Per-event Ed25519 signature** | **Landed 2026-06-10** (ADR-0013 amendment) | — | `emit_event_signed` signs `"annex-event-v1\n" + event_hash`; `verify_event_log_signatures` verifies against the recomputed hash; backfill clears signatures it cannot re-attest |

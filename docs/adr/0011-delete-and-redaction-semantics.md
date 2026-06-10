@@ -1,6 +1,6 @@
 # ADR 0011 — Delete + redaction semantics (federation-aware)
 
-Status: Accepted — current behaviour documented; tombstone protocol deferred (2026-05-12)
+Status: Accepted (2026-05-12); amended 2026-06-10 — option B (tombstone protocol) implemented
 Context tag: `hardening-pass`
 
 ## Context
@@ -11,7 +11,7 @@ This contradicts the natural reader expectation that "delete a message" means "t
 
 ## Decision
 
-This pass implements **option A** (clear documentation). Option B is deferred with a concrete protocol sketch.
+This pass implements **option A** (clear documentation). Option B is deferred with a concrete protocol sketch. *(Option B has since been implemented — see the 2026-06-10 amendment at the bottom.)*
 
 ### Current behaviour (documented, enforced by code)
 
@@ -57,3 +57,15 @@ Receiver behaviour:
 - Operators and reviewers now have a clear statement of what `delete` does and does not do, instead of inferring it from code.
 - A future change can implement tombstones without requiring a wire-format break — the protocol shape is fixed in this ADR.
 - The existing `redacted_topics` field in the VRP capability contract continues to govern RTX *topic* filtering; it is unrelated to message redaction and is not renamed.
+
+## Amendment (2026-06-10) — tombstone protocol implemented
+
+Option B landed, following the sketch above with these concretions:
+
+- **Envelope**: `FederatedRedactionEnvelope` in `annex-federation` with an `envelopeKind: "redaction"` discriminator (message envelopes have no such field) and `envelopeVersion: "v1"`. The Ed25519 signing input is newline-joined and prefixed with the domain-separation literal `annex-redaction-v1`, so a redaction signature can never verify as a message envelope or vice versa (`federation_service::redaction_signing_input`).
+- **Sender path**: a WS `delete_message` on a `FEDERATED`-scoped channel enqueues one signed tombstone per active peer into the existing federation outbox (`relay_redaction`, mirroring `relay_message` including the enqueue-time transfer-scope and SSRF filters). Outbox rows are keyed `redaction:<message_id>` so they cannot collide with the original message's row under `UNIQUE(peer_instance_id, message_id)`. The outbox worker routes rows to `POST /api/federation/redactions` by peeking at `envelopeKind`.
+- **Receiver path** (`POST /api/federation/redactions` → `receive_federated_redaction`): instance + agreement gates, always-on freshness window, signature verification, then two authority checks: (1) *origin authority* — a receipt for the original message from the same peer must exist, so only the delivering server can redact, never for locally-authored or third-party-delivered messages; (2) *redactor authority* — `redacted_by` must equal the stored `sender_pseudonym`, except `reason: "moderation"` which is accepted on the origin's signature alone (the channel lives on the originating server; its moderators govern it).
+- **Effect + idempotency**: `content` blanked and `deleted_at` set (audit fields kept), committed atomically with a receipt row keyed `redaction:<message_id>` (IMMEDIATE transaction, same rationale as the message-path atomicity fix). Replays with a matching envelope hash are benign no-ops; hash mismatches are rejected. A `MessageDeleted` frame is broadcast to local subscribers, mirroring the local-delete flow.
+- **Retention interplay**: a tombstone for a message already hard-deleted by retention records the receipt and reports `applied: false` — nothing to blank, replays stay idempotent.
+
+Tests: `crates/annex-server/tests/api_federation_redaction.rs` (8 integration tests) plus outbox-routing unit tests in `background.rs`.

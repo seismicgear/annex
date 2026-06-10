@@ -161,6 +161,33 @@ pub async fn start_federation_outbox_task(state: Arc<AppState>) {
 /// [F33]) end-to-end against a real SQLite-backed `AppState` without
 /// having to wait for the once-per-`outbox_interval_seconds` cadence
 /// of [`start_federation_outbox_task`].
+/// Resolves the receiver endpoint path for one serialized outbox
+/// envelope.
+///
+/// The federation outbox stores both message envelopes and redaction
+/// tombstones (ADR-0011) in the same table. Redaction envelopes carry
+/// an `envelopeKind: "redaction"` discriminator in their JSON; message
+/// envelopes have no such field. A cheap targeted deserialization of
+/// just that field routes the row without parsing the full envelope.
+/// Unparseable JSON falls through to the messages endpoint, where the
+/// receiver's full deserialization produces the proper error and the
+/// row ages out through the normal retry/backoff path.
+fn outbox_envelope_endpoint_path(envelope_json: &str) -> &'static str {
+    #[derive(serde::Deserialize)]
+    struct KindPeek {
+        #[serde(rename = "envelopeKind")]
+        envelope_kind: Option<String>,
+    }
+    match serde_json::from_str::<KindPeek>(envelope_json) {
+        Ok(KindPeek {
+            envelope_kind: Some(kind),
+        }) if kind == annex_federation::FEDERATED_ENVELOPE_KIND_REDACTION => {
+            "/api/federation/redactions"
+        }
+        _ => "/api/federation/messages",
+    }
+}
+
 pub async fn drain_outbox_batch(state: Arc<AppState>, batch_size: i64) -> Result<(), String> {
     // 1. Pull a batch of pending rows whose retry time has passed.
     //
@@ -304,7 +331,10 @@ pub async fn drain_outbox_batch(state: Arc<AppState>, batch_size: i64) -> Result
             continue;
         }
 
-        let url = format!("{peer_base}/api/federation/messages");
+        let url = format!(
+            "{peer_base}{}",
+            outbox_envelope_endpoint_path(&envelope_json)
+        );
 
         let client = client.clone();
         let state = state.clone();
@@ -463,6 +493,42 @@ fn backoff_seconds(next_attempt: u32) -> u64 {
     let cap: u64 = 3600;
     let shift = next_attempt.saturating_sub(1).min(8);
     (base.saturating_mul(1u64 << shift)).min(cap)
+}
+
+#[cfg(test)]
+mod outbox_routing_tests {
+    use super::outbox_envelope_endpoint_path;
+
+    #[test]
+    fn redaction_envelopes_route_to_redactions_endpoint() {
+        let json = r#"{"envelopeKind":"redaction","envelopeVersion":"v1","message_id":"m"}"#;
+        assert_eq!(
+            outbox_envelope_endpoint_path(json),
+            "/api/federation/redactions"
+        );
+    }
+
+    #[test]
+    fn message_envelopes_route_to_messages_endpoint() {
+        // Message envelopes carry no envelopeKind field.
+        let json = r#"{"envelopeVersion":"v2","message_id":"m","content":"hi"}"#;
+        assert_eq!(
+            outbox_envelope_endpoint_path(json),
+            "/api/federation/messages"
+        );
+    }
+
+    #[test]
+    fn unknown_kind_and_garbage_fall_back_to_messages_endpoint() {
+        assert_eq!(
+            outbox_envelope_endpoint_path(r#"{"envelopeKind":"mystery"}"#),
+            "/api/federation/messages"
+        );
+        assert_eq!(
+            outbox_envelope_endpoint_path("not json at all"),
+            "/api/federation/messages"
+        );
+    }
 }
 
 #[cfg(test)]

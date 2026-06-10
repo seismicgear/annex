@@ -1884,6 +1884,15 @@ The fix mirrors the local cap.
 
 ## Still broken / suspected
 
+- [ ] **Federated message EDITS are not propagated to peers** (noted
+  2026-06-10 while implementing the ADR-0011 delete tombstones). A WS
+  `edit_message` on a FEDERATED channel updates only the local row;
+  peers keep the original content. Same class of gap as deletes were
+  before the tombstone protocol — the fix is the same shape: a signed
+  `FederatedEditEnvelope` (domain-separated signing input, outbox
+  delivery, receipt-ledger idempotency, sender-authority check). The
+  redaction implementation in `federation_service.rs` is the template.
+
 - [ ] **Trusted-setup ceremony is single-machine, dev-fixture entropy**.
   `manifest.json` for membership pins SHA-256 hashes of artifacts produced
   by `dev-setup-groth16.js`, marked `ceremony.type: dev-fixture`.

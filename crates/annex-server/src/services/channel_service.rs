@@ -903,23 +903,32 @@ impl ChannelService {
     /// `IncomingMessage::DeleteMessage` orchestration. Membership check +
     /// `annex_channels::delete_message` (ownership + window enforced).
     /// Caller owns the broadcast.
+    ///
+    /// Returns the updated (blanked) message plus whether the channel is
+    /// `FEDERATED`-scoped, so the caller can enqueue a redaction
+    /// tombstone for federation peers (ADR-0011) — same shape as
+    /// [`Self::send_message`]'s federation flag.
     pub async fn delete_message(
         &self,
         sender_pseudonym: &str,
         channel_id: &str,
         message_id: &str,
-    ) -> Result<Message, ChannelServiceError> {
+    ) -> Result<(Message, bool), ChannelServiceError> {
         self.require_membership(sender_pseudonym, channel_id)
             .await?;
 
         let pool = self.state.pool.clone();
         let mid = message_id.to_string();
+        let cid = channel_id.to_string();
         let pseudo = sender_pseudonym.to_string();
-        tokio::task::spawn_blocking(move || -> Result<Message, ChannelServiceError> {
+        tokio::task::spawn_blocking(move || -> Result<(Message, bool), ChannelServiceError> {
             let conn = pool
                 .get()
                 .map_err(|e| ChannelServiceError::Internal(format!("pool: {e}")))?;
-            delete_message(&conn, &mid, &pseudo).map_err(map_channel_err)
+            let msg = delete_message(&conn, &mid, &pseudo).map_err(map_channel_err)?;
+            let channel = get_channel(&conn, &cid).map_err(map_channel_err)?;
+            let is_federated = matches!(channel.federation_scope, FederationScope::Federated);
+            Ok((msg, is_federated))
         })
         .await
         .map_err(|e| ChannelServiceError::Internal(format!("join: {e}")))?

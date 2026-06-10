@@ -13,8 +13,11 @@
 //!      to subscribers of the *persisted* channel id (not the
 //!      client-supplied one) to prevent cross-channel broadcast
 //!      spoofing.
-//!   4. On service error surface `Delete failed: <e>` via
-//!      `send_ws_error`.
+//!   4. On error surface `Delete failed: <e>` via `send_ws_error`.
+//!   5. If the channel is `FEDERATED`-scoped, spawn
+//!      `relay_redaction(...)` so a signed tombstone (ADR-0011) is
+//!      enqueued in the federation outbox for every active peer —
+//!      mirroring how `message.rs` relays the original send.
 
 use crate::ws::context::CommandContext;
 use crate::ws::dispatch::{check_ws_membership, MembershipResult};
@@ -55,11 +58,12 @@ pub(crate) async fn handle(ctx: &CommandContext<'_>, channel_id: String, message
         .delete_message(ctx.pseudonym, &channel_id, &message_id)
         .await
     {
-        Ok(updated) => {
+        Ok((updated, is_federated)) => {
             // Use the persisted channel_id from DB, not the
             // client-supplied one, to prevent cross-channel broadcast
             // spoofing.
             let persisted_channel_id = updated.channel_id.clone();
+            let persisted_message_id = updated.message_id.clone();
             let ws_payload: WsMessagePayload = updated.into();
             let out = OutgoingMessage::MessageDeleted(ws_payload);
             match serde_json::to_string(&out) {
@@ -72,6 +76,21 @@ pub(crate) async fn handle(ctx: &CommandContext<'_>, channel_id: String, message
                 Err(e) => {
                     tracing::error!("failed to serialize delete broadcast: {}", e);
                 }
+            }
+
+            // Propagate the deletion to federation peers as a signed
+            // redaction tombstone (ADR-0011). Durable + asynchronous:
+            // the envelope lands in the federation outbox and the
+            // background worker delivers with retry, exactly like the
+            // original message relay.
+            if is_federated {
+                tokio::spawn(crate::api_federation::relay_redaction(
+                    ctx.state.clone(),
+                    persisted_channel_id,
+                    persisted_message_id,
+                    ctx.pseudonym.to_string(),
+                    "deleted",
+                ));
             }
         }
         Err(e) => {
