@@ -50,6 +50,88 @@ describe('AnnexWebSocket auth refresh', () => {
 });
 
 
+describe('AnnexWebSocket stale socket handling', () => {
+  const sockets: MockSocket[] = [];
+
+  beforeEach(() => {
+    sockets.length = 0;
+    class WebSocketCtor extends MockSocket {
+      url: string;
+      constructor(url: string) {
+        super();
+        this.url = url;
+        sockets.push(this);
+      }
+    }
+    const ctorSpy = vi.fn(WebSocketCtor);
+    vi.stubGlobal('WebSocket', ctorSpy as unknown as typeof WebSocket);
+    vi.stubGlobal('window', { location: { protocol: 'http:', host: 'localhost:5173' } });
+  });
+
+  it('stale close after auth refresh does not spawn a duplicate connection', () => {
+    vi.useFakeTimers();
+    try {
+      const ws = new AnnexWebSocket('p1', '', 'old');
+      const statusHandler = vi.fn();
+      ws.onStatus(statusHandler);
+      ws.connect();
+      sockets[0].onopen?.();
+
+      ws.reconnectForAuthRefresh('new-token');
+      expect(sockets.length).toBe(2);
+      sockets[1].onopen?.();
+      statusHandler.mockClear();
+
+      // The old socket's close event arrives asynchronously, after the
+      // replacement is already live. It must not flap status or schedule
+      // a reconnect (which would open a third, duplicate connection).
+      sockets[0].onclose?.({ code: 4001, reason: 'auth_refresh', wasClean: true });
+      expect(statusHandler).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(60_000);
+      expect(sockets.length).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('frames from a superseded socket are not dispatched', () => {
+    const ws = new AnnexWebSocket('p1', '', 'old');
+    const handler = vi.fn();
+    ws.onMessage(handler);
+    ws.connect();
+    sockets[0].onopen?.();
+
+    ws.reconnectForAuthRefresh('new-token');
+    sockets[1].onopen?.();
+
+    sockets[0].onmessage?.({ data: JSON.stringify({ type: 'message', channelId: 'c1', content: 'stale' }) });
+    expect(handler).not.toHaveBeenCalled();
+
+    sockets[1].onmessage?.({ data: JSON.stringify({ type: 'message', channelId: 'c1', content: 'fresh' }) });
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it('overlapping reconnect schedules collapse into a single pending timer', () => {
+    vi.useFakeTimers();
+    try {
+      const ws = new AnnexWebSocket('p1');
+      ws.connect();
+      sockets[0].onopen?.();
+
+      // Two close events from the live socket (close + error-close race).
+      sockets[0].onclose?.({ code: 1006, reason: '', wasClean: false });
+      sockets[0].onclose?.({ code: 1006, reason: '', wasClean: false });
+
+      vi.advanceTimersByTime(60_000);
+      // One reconnect attempt, not two: original socket + a single retry.
+      expect(sockets.length).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('AnnexWebSocket frame validation', () => {
   const sockets: MockSocket[] = [];
 
