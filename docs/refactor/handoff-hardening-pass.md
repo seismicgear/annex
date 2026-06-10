@@ -157,7 +157,7 @@ These were either out of scope for this pass or have a concrete prerequisite tha
 | **Admin endpoint to clear storage gate** | **Landed 2026-06-10** (ADR-0009 amendment) | — | `GET /api/admin/storage` + `POST /api/admin/storage/clear` (exempt from the degraded-gate 507; `can_moderate`-gated) |
 | **Admin endpoint to inspect/retry outbox** | **Landed 2026-06-10** (ADR-0008 amendment) | — | `GET /api/admin/federation/outbox` (filter/pagination/counts) + `POST .../{id}/retry` (resets backoff budget; 409 on `pending`/`delivered`) |
 | **Per-event Ed25519 signature** | Schema column present, writer/verifier not wired (ADR-0013) | Needs careful canonical-signing-input definition like ADR-0007 did for envelopes | Sign in `emit_event`; verify in `verify_event_log_chain` |
-| **Idempotency TTL** | Deferred (ADR-0010) | `message_request_ids` grows alongside `messages`; no time-based eviction yet | Add `expires_at` column + sweep alongside retention |
+| **Idempotency TTL** | **Landed 2026-06-10** (ADR-0010 amendment) | — | Retention task prunes `message_request_ids` rows older than `server.idempotency_ttl_seconds` (default 7 days); index in migration 040; no new column needed (`created_at` already existed) |
 | **Outbox per-peer rate limiting** | Deferred (ADR-0008) | Misbehaving peer can dominate retry budget | Token bucket per `peer_instance_id` |
 | **Free-disk syscalls** | Skipped per brief | `libc`/`windows_sys` would add deps for a signal we already get reactively from `SQLITE_FULL` | Only revisit if reactive trip proves insufficient in practice |
 

@@ -1,10 +1,12 @@
-//! Background task for enforcing message retention policies.
+//! Background task for enforcing message retention policies and the
+//! WS-idempotency ledger TTL (ADR-0010).
 
 use annex_db::DbPool;
 use std::time::Duration;
 use tokio::time::sleep;
 
-/// Starts a background task that periodically deletes expired messages.
+/// Starts a background task that periodically deletes expired messages
+/// and prunes idempotency-ledger rows older than the configured TTL.
 ///
 /// This task runs indefinitely.
 ///
@@ -12,10 +14,19 @@ use tokio::time::sleep;
 ///
 /// * `pool` - Database connection pool.
 /// * `interval_seconds` - Time in seconds to wait between retention checks.
-pub async fn start_retention_task(pool: DbPool, interval_seconds: u64) {
+/// * `idempotency_ttl_seconds` - Age in seconds past which
+///   `message_request_ids` rows are evicted. After eviction a replayed
+///   `clientRequestId` is treated as a new send, so this must comfortably
+///   exceed any client retry window (default: 7 days).
+pub async fn start_retention_task(
+    pool: DbPool,
+    interval_seconds: u64,
+    idempotency_ttl_seconds: u64,
+) {
     let interval = Duration::from_secs(interval_seconds);
     tracing::info!(
         interval_seconds,
+        idempotency_ttl_seconds,
         "starting message retention enforcement task"
     );
 
@@ -25,8 +36,8 @@ pub async fn start_retention_task(pool: DbPool, interval_seconds: u64) {
         sleep(interval).await;
 
         // Run blocking DB operation in a separate thread.
-        // delete_expired_messages is batched, so we loop until fewer rows are
-        // deleted than the batch limit, indicating all expired messages have
+        // Both sweeps are batched, so we loop until fewer rows are
+        // deleted than the batch limit, indicating all expired rows have
         // been removed.
         let pool_clone = pool.clone();
         let result = tokio::task::spawn_blocking(move || {
@@ -46,16 +57,31 @@ pub async fn start_retention_task(pool: DbPool, interval_seconds: u64) {
                     break;
                 }
             }
-            Ok::<usize, annex_channels::ChannelError>(total)
+            let mut ledger_total: usize = 0;
+            loop {
+                let pruned =
+                    annex_channels::prune_expired_request_ids(&conn, idempotency_ttl_seconds)?;
+                ledger_total += pruned;
+                if pruned < 5_000 {
+                    break;
+                }
+            }
+            Ok::<(usize, usize), annex_channels::ChannelError>((total, ledger_total))
         })
         .await;
 
         match result {
-            Ok(Ok(count)) => {
+            Ok(Ok((count, ledger_count))) => {
                 if count > 0 {
                     tracing::info!(count, "deleted expired messages");
                 } else {
                     tracing::debug!("no expired messages to delete");
+                }
+                if ledger_count > 0 {
+                    tracing::info!(
+                        count = ledger_count,
+                        "pruned expired idempotency-ledger rows"
+                    );
                 }
             }
             Ok(Err(e)) => {

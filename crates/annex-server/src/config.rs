@@ -380,6 +380,14 @@ pub struct ServerConfig {
     #[serde(default = "default_retention_check_interval_seconds")]
     pub retention_check_interval_seconds: u64,
 
+    /// Age in seconds past which WS-idempotency ledger rows
+    /// (`message_request_ids`, ADR-0010) are evicted by the retention
+    /// task. After eviction a replayed `clientRequestId` is treated as
+    /// a new send, so this must comfortably exceed any client retry
+    /// window. Default: 604800 (7 days).
+    #[serde(default = "default_idempotency_ttl_seconds")]
+    pub idempotency_ttl_seconds: u64,
+
     /// Inactivity threshold in seconds for graph node pruning.
     #[serde(default = "default_inactivity_threshold_seconds")]
     pub inactivity_threshold_seconds: u64,
@@ -449,6 +457,14 @@ fn default_retention_check_interval_seconds() -> u64 {
     3600
 }
 
+fn default_idempotency_ttl_seconds() -> u64 {
+    // 7 days. The ledger only needs to outlive the client retry
+    // horizon (seconds to minutes); a week of slack keeps replay
+    // protection across long client outages while bounding table
+    // growth on busy servers.
+    604_800
+}
+
 fn default_inactivity_threshold_seconds() -> u64 {
     300
 }
@@ -491,6 +507,7 @@ impl Default for ServerConfig {
             host: default_host(),
             port: default_port(),
             retention_check_interval_seconds: default_retention_check_interval_seconds(),
+            idempotency_ttl_seconds: default_idempotency_ttl_seconds(),
             inactivity_threshold_seconds: default_inactivity_threshold_seconds(),
             public_url: default_public_url(),
             merkle_tree_depth: default_merkle_tree_depth(),
@@ -545,6 +562,11 @@ const MAX_DB_BUSY_TIMEOUT_MS: u64 = 60_000;
 const MIN_DB_POOL_MAX_SIZE: u32 = 1;
 const MAX_DB_POOL_MAX_SIZE: u32 = 64;
 const MIN_RETENTION_CHECK_INTERVAL_SECONDS: u64 = 1;
+/// A tiny idempotency TTL would evict ledger rows while a client is
+/// still inside its retry window, silently re-opening the replay
+/// surface ADR-0010 closed. One minute is the floor; the default is
+/// 7 days.
+const MIN_IDEMPOTENCY_TTL_SECONDS: u64 = 60;
 
 fn validate_config(config: &Config) -> Result<(), ConfigError> {
     if !(MIN_DB_BUSY_TIMEOUT_MS..=MAX_DB_BUSY_TIMEOUT_MS).contains(&config.database.busy_timeout_ms)
@@ -574,6 +596,16 @@ fn validate_config(config: &Config) -> Result<(), ConfigError> {
             reason: format!(
                 "must be >= {MIN_RETENTION_CHECK_INTERVAL_SECONDS}, got {}",
                 config.server.retention_check_interval_seconds
+            ),
+        });
+    }
+
+    if config.server.idempotency_ttl_seconds < MIN_IDEMPOTENCY_TTL_SECONDS {
+        return Err(ConfigError::InvalidValue {
+            field: "server.idempotency_ttl_seconds",
+            reason: format!(
+                "must be >= {MIN_IDEMPOTENCY_TTL_SECONDS}, got {}",
+                config.server.idempotency_ttl_seconds
             ),
         });
     }
@@ -905,6 +937,9 @@ pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
     if let Some(interval) = parse_env_var("ANNEX_RETENTION_CHECK_INTERVAL_SECONDS")? {
         config.server.retention_check_interval_seconds = interval;
     }
+    if let Some(ttl) = parse_env_var("ANNEX_IDEMPOTENCY_TTL_SECONDS")? {
+        config.server.idempotency_ttl_seconds = ttl;
+    }
     if let Some(threshold) = parse_env_var("ANNEX_INACTIVITY_THRESHOLD_SECONDS")? {
         config.server.inactivity_threshold_seconds = threshold;
     }
@@ -1140,6 +1175,7 @@ mod tests {
             "ANNEX_HOST",
             "ANNEX_PORT",
             "ANNEX_RETENTION_CHECK_INTERVAL_SECONDS",
+            "ANNEX_IDEMPOTENCY_TTL_SECONDS",
             "ANNEX_INACTIVITY_THRESHOLD_SECONDS",
             "ANNEX_PUBLIC_URL",
             "ANNEX_MERKLE_TREE_DEPTH",
@@ -1430,6 +1466,62 @@ retention_check_interval_seconds = 0
         }
 
         fs::remove_file(path).expect("failed to remove temp config");
+        clear_env();
+    }
+
+    #[test]
+    fn tiny_idempotency_ttl_returns_error() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+
+        let path = write_temp_config(
+            r#"
+[server]
+idempotency_ttl_seconds = 5
+"#,
+        );
+
+        let err = load_config(Some(path.as_str()))
+            .expect_err("load should fail for sub-minimum idempotency TTL");
+        match err {
+            ConfigError::InvalidValue { field, .. } => {
+                assert_eq!(field, "server.idempotency_ttl_seconds")
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+
+        fs::remove_file(path).expect("failed to remove temp config");
+        clear_env();
+    }
+
+    #[test]
+    fn idempotency_ttl_env_overrides_config_file() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+
+        let path = write_temp_config(
+            r#"
+[server]
+idempotency_ttl_seconds = 86400
+"#,
+        );
+
+        std::env::set_var("ANNEX_IDEMPOTENCY_TTL_SECONDS", "172800");
+        let cfg = load_config(Some(path.as_str())).expect("load should succeed");
+        assert_eq!(cfg.server.idempotency_ttl_seconds, 172_800);
+
+        fs::remove_file(path).expect("failed to remove temp config");
+        clear_env();
+    }
+
+    #[test]
+    fn idempotency_ttl_defaults_to_seven_days() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+
+        let cfg = load_config(None).expect("load should succeed");
+        assert_eq!(cfg.server.idempotency_ttl_seconds, 604_800);
+
         clear_env();
     }
 

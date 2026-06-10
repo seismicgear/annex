@@ -330,6 +330,7 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
     let retention_handle = tokio::spawn(retention::start_retention_task(
         pool.clone(),
         config.server.retention_check_interval_seconds,
+        config.server.idempotency_ttl_seconds,
     ));
     tokio::spawn(async move {
         if let Err(e) = retention_handle.await {

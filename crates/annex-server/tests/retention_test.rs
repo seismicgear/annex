@@ -64,13 +64,30 @@ async fn test_retention_task_deletes_expired_messages() {
             [],
         )
         .expect("failed to expire message manually");
+
+        // Seed the WS-idempotency ledger with one stale row (older than
+        // the TTL passed to the task below) and one fresh row.
+        conn.execute(
+            "INSERT INTO message_request_ids
+                 (server_id, channel_id, sender_pseudonym, client_request_id, message_id, created_at)
+             VALUES (1, 'chan-retention', 'user1', 'stale-req', 'stale-msg', datetime('now', '-8 days'))",
+            [],
+        )
+        .expect("failed to seed stale ledger row");
+        conn.execute(
+            "INSERT INTO message_request_ids
+                 (server_id, channel_id, sender_pseudonym, client_request_id, message_id)
+             VALUES (1, 'chan-retention', 'user1', 'fresh-req', 'fresh-msg')",
+            [],
+        )
+        .expect("failed to seed fresh ledger row");
     }
 
     // 2. Start retention task in background
-    // Interval 1 second
+    // Interval 1 second; idempotency TTL 7 days.
     let pool_clone = pool.clone();
     tokio::spawn(async move {
-        start_retention_task(pool_clone, 1).await;
+        start_retention_task(pool_clone, 1, 7 * 24 * 3600).await;
     });
 
     // 3. Wait for task to run (at least 1 second + buffer)
@@ -91,4 +108,22 @@ async fn test_retention_task_deletes_expired_messages() {
             panic!("unexpected error: {e}");
         }
     }
+
+    // 5. Verify the stale ledger row was pruned and the fresh one kept
+    let surviving: Vec<String> = {
+        let mut stmt = conn
+            .prepare("SELECT client_request_id FROM message_request_ids ORDER BY id")
+            .expect("prepare failed");
+        let rows = stmt
+            .query_map([], |row| row.get(0))
+            .expect("query failed")
+            .collect::<Result<Vec<String>, _>>()
+            .expect("row error");
+        rows
+    };
+    assert_eq!(
+        surviving,
+        vec!["fresh-req".to_string()],
+        "retention task must prune only ledger rows older than the TTL"
+    );
 }

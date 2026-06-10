@@ -43,6 +43,7 @@ Authoritative env-var names live in `crates/annex-server/src/config.rs::load_con
 | `ANNEX_DB_MAINTENANCE_ENABLED` | `false` | Run periodic SQLite maintenance (checkpoint/ANALYZE/optional VACUUM) |
 | `ANNEX_DB_MAINTENANCE_INTERVAL_HOURS` | `24` | Hours between maintenance sweeps |
 | `ANNEX_DB_MAINTENANCE_VACUUM` | `false` | Run `VACUUM` during the maintenance window (off by default; blocks writers) |
+| `ANNEX_IDEMPOTENCY_TTL_SECONDS` | `604800` (7 days) | Age past which WS-idempotency ledger rows (`clientRequestId` dedupe) are evicted |
 | `ANNEX_STORAGE_WARN_FREE_BYTES` | `536870912` (512 MiB) | Free-disk threshold for warning |
 | `ANNEX_STORAGE_BLOCK_FREE_BYTES` | `67108864` (64 MiB) | Free-disk threshold below which writes are rejected with HTTP 507 |
 | `ANNEX_FEDERATION_FRESHNESS_SECONDS` | `300` | Max age (seconds) of a live federated envelope's `created_at` |
