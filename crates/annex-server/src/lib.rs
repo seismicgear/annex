@@ -48,19 +48,22 @@ use tokio::sync::broadcast;
 
 /// Emits an observe event to the database and broadcasts it to the SSE stream.
 ///
-/// This is a convenience wrapper that calls [`annex_observe::emit_event`] and,
-/// on success, sends the resulting [`annex_observe::PublicEvent`] through the
-/// broadcast channel. Failures are logged as warnings but never block the
-/// caller.
+/// This is a convenience wrapper that calls
+/// [`annex_observe::emit_event_signed`] — every production event row
+/// carries an Ed25519 signature from the server's signing key
+/// (ADR-0013) — and, on success, sends the resulting
+/// [`annex_observe::PublicEvent`] through the broadcast channel.
+/// Failures are logged as warnings but never block the caller.
 pub fn emit_and_broadcast(
     conn: &rusqlite::Connection,
     server_id: i64,
     entity_id: &str,
     payload: &annex_observe::EventPayload,
     observe_tx: &broadcast::Sender<annex_observe::PublicEvent>,
+    signing_key: &ed25519_dalek::SigningKey,
 ) {
     let domain = payload.domain();
-    match annex_observe::emit_event(
+    match annex_observe::emit_event_signed(
         conn,
         server_id,
         domain,
@@ -68,6 +71,7 @@ pub fn emit_and_broadcast(
         payload.entity_type(),
         entity_id,
         payload,
+        signing_key,
     ) {
         Ok(event) => {
             if let Err(e) = observe_tx.send(event) {

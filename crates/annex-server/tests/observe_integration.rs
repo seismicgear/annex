@@ -138,6 +138,66 @@ async fn register_handler_emits_identity_registered_event() {
 }
 
 #[tokio::test]
+async fn handler_emitted_events_carry_verifiable_signatures() {
+    let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
+    {
+        let conn = pool.get().unwrap();
+        annex_db::run_migrations(&conn).unwrap();
+    }
+
+    let state = make_state(pool.clone());
+    // Clone the Arc so we can verify against the same key the handlers
+    // sign with (ADR-0013).
+    let signing_key = state.signing_key.clone();
+    let application = app(state);
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+    let body_json = serde_json::json!({
+        "commitmentHex": "0000000000000000000000000000000000000000000000000000000000000001",
+        "roleCode": 1,
+        "nodeId": 100
+    });
+    let mut request = Request::builder()
+        .uri("/api/registry/register")
+        .method("POST")
+        .header("content-type", "application/json")
+        .body(Body::from(body_json.to_string()))
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
+    let response = application.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let conn = pool.get().unwrap();
+
+    // Every emitted row carries a signature (no NULLs on the live path).
+    let unsigned: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM public_event_log WHERE event_signature IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        unsigned, 0,
+        "handler-emitted events must be signed (ADR-0013)"
+    );
+
+    // And the signatures verify against the server's key.
+    assert!(
+        annex_observe::verify_event_log_signatures(&conn, 1, &signing_key.verifying_key())
+            .expect("verify")
+            .is_none(),
+        "handler-emitted event signatures must verify against the server key"
+    );
+    assert!(
+        annex_observe::verify_event_log_chain(&conn, 1)
+            .expect("verify")
+            .is_none(),
+        "hash chain must remain intact"
+    );
+}
+
+#[tokio::test]
 async fn register_handler_assigns_sequential_seq_numbers() {
     let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
     {

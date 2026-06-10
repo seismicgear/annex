@@ -425,6 +425,7 @@ impl FederationService {
                 &payload.base_url,
                 &observe_payload,
                 &state.observe_tx,
+                &state.signing_key,
             );
 
             Ok::<_, FederationError>(report)

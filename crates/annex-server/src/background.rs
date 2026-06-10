@@ -39,6 +39,7 @@ pub async fn start_pruning_task(state: Arc<AppState>, threshold_seconds: u64) {
         let server_id = state.server_id;
         let tx = state.presence_tx.clone();
         let observe_tx = state.observe_tx.clone();
+        let signing_key = state.signing_key.clone();
 
         let res = tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| e.to_string())?;
@@ -56,6 +57,7 @@ pub async fn start_pruning_task(state: Arc<AppState>, threshold_seconds: u64) {
                     pseudonym_id,
                     &observe_payload,
                     &observe_tx,
+                    &signing_key,
                 );
             }
 

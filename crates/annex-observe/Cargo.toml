@@ -13,3 +13,9 @@ tracing = { workspace = true }
 rusqlite = { workspace = true }
 # Event-log hash chain (introduced in migration 038).
 sha2 = { workspace = true }
+# Per-event Ed25519 signatures over the hash chain (ADR-0013 follow-up).
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+hex = "0.4"
+
+[dev-dependencies]
+rand = "0.8"

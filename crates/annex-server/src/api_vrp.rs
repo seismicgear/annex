@@ -242,6 +242,7 @@ pub async fn agent_handshake_handler(
                         &payload.pseudonym_id,
                         &observe_payload,
                         &state.observe_tx,
+                        &state.signing_key,
                     );
                 }
                 Ok(false) => {
@@ -312,6 +313,7 @@ pub async fn agent_handshake_handler(
                 &payload.pseudonym_id,
                 &observe_payload,
                 &state.observe_tx,
+                &state.signing_key,
             );
         } else if report.alignment_status == VrpAlignmentStatus::Conflict {
             // If an existing agent re-handshakes and gets Conflict, update their
@@ -348,6 +350,7 @@ pub async fn agent_handshake_handler(
                     &payload.pseudonym_id,
                     &observe_payload,
                     &state.observe_tx,
+                    &state.signing_key,
                 );
             }
         } else {

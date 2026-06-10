@@ -316,6 +316,7 @@ impl IdentityService {
                 &payload.commitment_hex,
                 &observe_payload,
                 &state.observe_tx,
+                &state.signing_key,
             );
 
             Ok(registration_result)
@@ -584,6 +585,7 @@ impl IdentityService {
                 &payload.commitment,
                 &observe_payload,
                 &state.observe_tx,
+                &state.signing_key,
             );
 
             // 4. Resolve canonical nullifier_hex per protocol version.
@@ -698,6 +700,7 @@ impl IdentityService {
                 &pseudonym_id,
                 &observe_payload,
                 &state.observe_tx,
+                &state.signing_key,
             );
 
             create_platform_identity(&tx, server_id, &pseudonym_id, role_code).map_err(|e| {
@@ -718,6 +721,7 @@ impl IdentityService {
                 &pseudonym_id,
                 &observe_payload,
                 &state.observe_tx,
+                &state.signing_key,
             );
 
             tx.commit().map_err(|e| {

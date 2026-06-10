@@ -7,16 +7,48 @@
 //! Reads go through [`query_events`], which supports filtering by domain,
 //! event type, entity, and time range with cursor-based pagination.
 
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rusqlite::{params, Connection};
 
 use crate::error::ObserveError;
 use crate::event::{EventDomain, EventPayload, PublicEvent};
 
-/// Writes a single event to the public event log.
+/// Domain-separation prefix for per-event Ed25519 signatures.
+///
+/// The server's signing key also signs federation envelopes (ADR-0007),
+/// so the event-signature input is prefixed with this literal to make
+/// the two signature domains non-interchangeable: a signature captured
+/// from one context can never verify in the other.
+pub const EVENT_SIGNING_DOMAIN: &str = "annex-event-v1";
+
+/// Canonical signing input for a per-event signature (ADR-0013).
+///
+/// The input is the domain-separation prefix and the event's canonical
+/// SHA-256 hash (see [`compute_event_hash`]), newline-delimited:
+///
+/// ```text
+/// annex-event-v1\n<event_hash_hex>
+/// ```
+///
+/// Signing the hash rather than the raw fields keeps the input
+/// fixed-length and inherits the hash's canonical field ordering —
+/// including `prev_hash`, so the signature also binds the event's
+/// position in the chain. Edge cases (empty payload, very long payload,
+/// non-ASCII content) are all absorbed by the hash computation, which
+/// operates on the exact bytes stored in the row.
+pub fn event_signing_input(event_hash: &str) -> String {
+    format!("{EVENT_SIGNING_DOMAIN}\n{event_hash}")
+}
+
+/// Writes a single event to the public event log without a signature.
 ///
 /// The caller supplies the domain, event type, entity type, entity ID,
 /// and a structured payload. A monotonically increasing sequence number
 /// is assigned automatically via [`next_seq`].
+///
+/// Production callers should prefer [`emit_event_signed`] so the row
+/// carries a per-event Ed25519 signature (ADR-0013); this unsigned
+/// variant exists for tooling and tests that have no signing key.
 ///
 /// # Errors
 ///
@@ -30,6 +62,67 @@ pub fn emit_event(
     entity_type: &str,
     entity_id: &str,
     payload: &EventPayload,
+) -> Result<PublicEvent, ObserveError> {
+    emit_event_inner(
+        conn,
+        server_id,
+        domain,
+        event_type,
+        entity_type,
+        entity_id,
+        payload,
+        None,
+    )
+}
+
+/// Writes a single event to the public event log, signed with the
+/// server's Ed25519 key (ADR-0013).
+///
+/// The stored `event_signature` is the hex-encoded signature over
+/// [`event_signing_input`] of the row's `event_hash`. Because the hash
+/// covers every canonical field plus `prev_hash`, the signature attests
+/// both the event's content and its position in the chain — a full
+/// chain rewrite by an attacker with file access now requires the
+/// server's signing key, which closes the gap the hash chain alone
+/// leaves open.
+///
+/// # Errors
+///
+/// Returns `ObserveError::Database` on SQL failure or
+/// `ObserveError::Serialization` if the payload cannot be serialised.
+#[allow(clippy::too_many_arguments)]
+pub fn emit_event_signed(
+    conn: &Connection,
+    server_id: i64,
+    domain: EventDomain,
+    event_type: &str,
+    entity_type: &str,
+    entity_id: &str,
+    payload: &EventPayload,
+    signing_key: &SigningKey,
+) -> Result<PublicEvent, ObserveError> {
+    emit_event_inner(
+        conn,
+        server_id,
+        domain,
+        event_type,
+        entity_type,
+        entity_id,
+        payload,
+        Some(signing_key),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_event_inner(
+    conn: &Connection,
+    server_id: i64,
+    domain: EventDomain,
+    event_type: &str,
+    entity_type: &str,
+    entity_id: &str,
+    payload: &EventPayload,
+    signing_key: Option<&SigningKey>,
 ) -> Result<PublicEvent, ObserveError> {
     let payload_json = serde_json::to_string(payload)?;
 
@@ -78,11 +171,16 @@ pub fn emit_event(
         &prev_hash,
     );
 
+    let event_signature: Option<String> = signing_key.map(|key| {
+        let sig = key.sign(event_signing_input(&event_hash).as_bytes());
+        hex::encode(sig.to_bytes())
+    });
+
     let id: i64 = conn.query_row(
         "INSERT INTO public_event_log
             (server_id, domain, event_type, entity_type, entity_id, seq,
              payload_json, occurred_at, prev_hash, event_hash, event_signature)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
          RETURNING id",
         params![
             server_id,
@@ -95,6 +193,7 @@ pub fn emit_event(
             occurred_at,
             prev_hash,
             event_hash,
+            event_signature,
         ],
         |row| row.get::<_, i64>(0),
     )?;
@@ -220,6 +319,82 @@ pub fn verify_event_log_chain(
     Ok(None)
 }
 
+/// Verify the per-event Ed25519 signatures for one server's event log
+/// (ADR-0013). Returns the seq of the first row whose signature is
+/// present but invalid — either unparseable or failing verification
+/// over [`event_signing_input`] of the row's recomputed canonical hash
+/// — or `None` if every signed row verifies.
+///
+/// Rows with a NULL `event_signature` are skipped: they predate the
+/// signing writer (or were rewritten by [`backfill_event_log_chain`],
+/// which deliberately clears signatures it cannot re-attest). A caller
+/// that requires full coverage should combine this with a
+/// `event_signature IS NULL` count.
+///
+/// The signature is checked against the RECOMPUTED hash, not the stored
+/// one, so a single pass catches both "fields edited, hash left stale"
+/// and "fields + hash rewritten without the key". Run alongside
+/// [`verify_event_log_chain`], which additionally validates the
+/// prev-hash linkage.
+pub fn verify_event_log_signatures(
+    conn: &Connection,
+    server_id: i64,
+    verifying_key: &VerifyingKey,
+) -> Result<Option<i64>, ObserveError> {
+    let mut stmt = conn.prepare(
+        "SELECT seq, domain, event_type, entity_type, entity_id, \
+                payload_json, occurred_at, prev_hash, event_signature \
+         FROM public_event_log \
+         WHERE server_id = ?1 \
+         ORDER BY seq ASC",
+    )?;
+    let mut rows = stmt.query(params![server_id])?;
+    while let Some(row) = rows.next()? {
+        let seq: i64 = row.get(0)?;
+        let signature_hex: Option<String> = row.get(8)?;
+        let Some(signature_hex) = signature_hex else {
+            // Pre-signing row (or backfill-rewritten row) — see doc comment.
+            continue;
+        };
+
+        let domain: String = row.get(1)?;
+        let event_type: String = row.get(2)?;
+        let entity_type: String = row.get(3)?;
+        let entity_id: String = row.get(4)?;
+        let payload_json: String = row.get(5)?;
+        let occurred_at: String = row.get(6)?;
+        let prev_hash: String = row.get(7)?;
+
+        let recomputed_hash = compute_event_hash(
+            server_id,
+            seq,
+            &domain,
+            &event_type,
+            &entity_type,
+            &entity_id,
+            &payload_json,
+            &occurred_at,
+            &prev_hash,
+        );
+
+        let Ok(sig_bytes) = hex::decode(&signature_hex) else {
+            return Ok(Some(seq));
+        };
+        let Ok(sig_array) = <[u8; 64]>::try_from(sig_bytes.as_slice()) else {
+            return Ok(Some(seq));
+        };
+        let signature = Signature::from_bytes(&sig_array);
+
+        if verifying_key
+            .verify(event_signing_input(&recomputed_hash).as_bytes(), &signature)
+            .is_err()
+        {
+            return Ok(Some(seq));
+        }
+    }
+    Ok(None)
+}
+
 /// Repairs the event-log hash chain for every server whose chain is not
 /// intact from GENESIS, recomputing `prev_hash` and `event_hash` over the
 /// rows in `seq` order. Returns the number of servers whose chain was
@@ -238,6 +413,13 @@ pub fn verify_event_log_chain(
 /// Idempotent: a server whose chain already verifies is skipped, so this
 /// is safe to call on every boot. The rewrite is wrapped in a transaction
 /// per server so a crash mid-repair cannot leave a half-rebuilt chain.
+///
+/// Rewritten rows have their `event_signature` cleared: the backfill
+/// recomputes hashes, which invalidates any signature made over the old
+/// hash, and re-signing rewritten history with the current key would
+/// let a repair pass *attest* content it cannot vouch for (masking the
+/// very tampering the signatures exist to expose). An auditor sees
+/// backfilled rows as unsigned, which is the honest state.
 ///
 /// # Errors
 ///
@@ -298,7 +480,8 @@ pub fn backfill_event_log_chain(conn: &Connection) -> Result<usize, ObserveError
                 &prev_hash,
             );
             tx.execute(
-                "UPDATE public_event_log SET prev_hash = ?1, event_hash = ?2 \
+                "UPDATE public_event_log SET prev_hash = ?1, event_hash = ?2, \
+                 event_signature = NULL \
                  WHERE server_id = ?3 AND seq = ?4",
                 params![prev_hash, event_hash, server_id, seq],
             )?;

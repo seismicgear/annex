@@ -177,6 +177,7 @@ pub async fn recalculate_agent_alignments(state: Arc<AppState>) -> Result<(), Ap
                     &pseudonym,
                     &observe_payload,
                     &state_clone.observe_tx,
+                    &state_clone.signing_key,
                 );
             } else {
                 let observe_payload = EventPayload::AgentDisconnected {
@@ -189,6 +190,7 @@ pub async fn recalculate_agent_alignments(state: Arc<AppState>) -> Result<(), Ap
                     &pseudonym,
                     &observe_payload,
                     &state_clone.observe_tx,
+                    &state_clone.signing_key,
                 );
             }
         }
@@ -380,6 +382,7 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
                     &base_url,
                     &observe_payload,
                     &state_clone.observe_tx,
+                    &state_clone.signing_key,
                 );
             } else {
                 tracing::info!(
@@ -412,6 +415,7 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
                     &base_url,
                     &observe_payload,
                     &state_clone.observe_tx,
+                    &state_clone.signing_key,
                 );
             }
 

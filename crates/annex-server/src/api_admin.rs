@@ -110,6 +110,7 @@ pub async fn update_policy_handler(
             &moderator_pseudonym,
             &observe_payload,
             &state_clone.observe_tx,
+            &state_clone.signing_key,
         );
 
         tx.commit().map_err(|e| {
@@ -204,6 +205,7 @@ pub async fn revoke_federation_handler(
                 &moderator,
                 &observe_payload,
                 &state_clone.observe_tx,
+                &state_clone.signing_key,
             );
         }
 
@@ -318,6 +320,7 @@ pub async fn rename_server_handler(
             &moderator,
             &observe_payload,
             &state_clone.observe_tx,
+            &state_clone.signing_key,
         );
 
         Ok::<(), ApiError>(())
@@ -612,6 +615,7 @@ pub async fn update_member_capabilities_handler(
             &moderator,
             &observe_payload,
             &state_clone.observe_tx,
+            &state_clone.signing_key,
         );
 
         Ok::<(), ApiError>(())
@@ -721,6 +725,7 @@ pub async fn clear_storage_gate_handler(
                 &moderator,
                 &observe_payload,
                 &state_clone.observe_tx,
+                &state_clone.signing_key,
             );
         }
     })
@@ -988,6 +993,7 @@ pub async fn retry_federation_outbox_handler(
             &moderator,
             &observe_payload,
             &state_clone.observe_tx,
+            &state_clone.signing_key,
         );
 
         Ok::<String, ApiError>(message_id)
