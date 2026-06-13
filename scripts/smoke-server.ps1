@@ -40,6 +40,7 @@ $Url = "http://${ServerHost}:${Port}"
 $DataDir = $null
 $ServerProcess = $null
 $LogFile = $null
+$ErrLog = $null
 
 function Write-Step {
     param([string]$Message)
@@ -66,8 +67,13 @@ function Stop-Server {
 
 function Show-LogTail {
     if ($LogFile -and (Test-Path $LogFile)) {
-        Write-Host '[smoke-server] -- server log (last 80 lines) --'
+        Write-Host '[smoke-server] -- server stdout (last 80 lines) --'
         Get-Content -Path $LogFile -Tail 80 | ForEach-Object { Write-Host $_ }
+        Write-Host '[smoke-server] --------------------------------'
+    }
+    if ($ErrLog -and (Test-Path $ErrLog) -and (Get-Item $ErrLog).Length -gt 0) {
+        Write-Host '[smoke-server] -- server stderr (last 80 lines) --'
+        Get-Content -Path $ErrLog -Tail 80 | ForEach-Object { Write-Host $_ }
         Write-Host '[smoke-server] --------------------------------'
     }
 }
@@ -114,6 +120,10 @@ try {
     $DataDir = Join-Path ([System.IO.Path]::GetTempPath()) ("annex-smoke-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
     New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
     $LogFile = Join-Path $DataDir 'server.log'
+    # Start-Process refuses to point -RedirectStandardOutput and
+    # -RedirectStandardError at the SAME file ("...are same. Give different
+    # inputs..."), so stderr gets its own file and Show-LogTail prints both.
+    $ErrLog = Join-Path $DataDir 'server.err.log'
     Write-Step "data dir: $DataDir"
 
     # -- 4. Start server with enforce_zk_proofs=true ----------------------
@@ -132,7 +142,7 @@ try {
         -ArgumentList @('NUL') `
         -NoNewWindow -PassThru `
         -RedirectStandardOutput $LogFile `
-        -RedirectStandardError $LogFile
+        -RedirectStandardError $ErrLog
 
     # -- 5. Wait for /health ---------------------------------------------
     Write-Step 'waiting for /health'

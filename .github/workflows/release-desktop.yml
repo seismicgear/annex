@@ -91,7 +91,7 @@ jobs:
         working-directory: zk
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli@2 --locked
+        run: cargo install tauri-cli@2.11.2 --locked
 
       - name: Build Tauri app (Linux)
         working-directory: crates/annex-desktop
@@ -134,7 +134,7 @@ jobs:
 
       - name: Verify Visual Studio C++ workload
         run: |
-          "$env:ProgramFiles(x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * `
+          & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * `
             -requires Microsoft.VisualStudio.Workload.NativeDesktop `
             -property installationPath
         shell: pwsh
@@ -145,7 +145,7 @@ jobs:
         working-directory: zk
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli@2 --locked
+        run: cargo install tauri-cli@2.11.2 --locked
 
       - name: Build Tauri app (Windows)
         working-directory: crates/annex-desktop
@@ -208,7 +208,7 @@ jobs:
         working-directory: zk
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli@2 --locked
+        run: cargo install tauri-cli@2.11.2 --locked
 
       - name: Build Tauri app (macOS)
         working-directory: crates/annex-desktop
