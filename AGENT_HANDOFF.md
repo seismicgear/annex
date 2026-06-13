@@ -95,7 +95,29 @@ make build-circuits resolve a runnable circom per host`).
   (live: a real server B verifies a remote peer's Ed25519-signed envelope over
   HTTP, persists under the attested pseudonym, idempotent, tamper→401).
 
-### KNOWN GAP — real-time video/screen-share transport (audio-only SFU)
+### FIXED — real-time camera video transport through the SFU
+
+Previously the call negotiated audio-only (camera captured/previewed but never
+sent). Now FIXED + proven end-to-end:
+- Client (`webrtc.ts`) pre-creates a sendrecv video transceiver in `connect()`
+  so the initial offer carries `m=video`; `setCameraEnabled` uses `replaceTrack`
+  (no renegotiation).
+- SFU (`annex-voice/service.rs`) gives each peer a VP8 `video_outbound_track`
+  and `fan_out_rtp` routes RTP by `track.kind()` (audio→audio track,
+  video→video track), so video never corrupts the audio stream; the Opus/STT
+  tap runs for audio only.
+Evidence: `media-quality.mjs` → SDP has m=audio + m=video, outbound VP8
+(320x240@20fps ~200kbps). `voice-video.mjs` (two-party) → **each peer decodes
+the other's camera** (inbound VP8, 118 frames decoded, ~145KB). `voice-multi.mjs`
+two-party audio still green (no regression).
+
+Remaining video follow-ups (smaller): (1) client `ontrack` surfaces audio only,
+so remote video isn't RENDERED in the grid yet (it IS received/decoded — proven
+via getStats); wire a remoteVideoTracks list + tiles. (2) simultaneous
+screen-share as a 2nd video m-line (currently one video slot = camera).
+(3) optionally raise the camera request toward 720p.
+
+### KNOWN GAP — screen-share transport (capture works; transport is the camera slot)
 
 Proven by `client/e2e-puppeteer/media-quality.mjs` (headful under Xvfb, reads
 live `RTCPeerConnection.getStats()`): a call's negotiated SDP has **only an
