@@ -113,6 +113,7 @@ vi.mock('@/lib/api', () => ({
   getApiBaseUrl: vi.fn(() => 'http://localhost:3000'),
   setApiBaseUrl: vi.fn(),
   setSessionToken: vi.fn(),
+  setZkProofPayload: vi.fn(),
   getSessionToken: vi.fn(() => null),
   isTokenExpired: vi.fn(() => false),
   startTokenRefresh: vi.fn(),

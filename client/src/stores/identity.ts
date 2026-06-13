@@ -103,6 +103,9 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
       // Set whatever token we have (even expired), or clear if absent.
       // The App.tsx effect will call /api/session/refresh if it's expired.
       api.setSessionToken(ready.sessionToken ?? null);
+      // Restore the cached proof so protected calls (channel join/send) work
+      // after a cold start without re-running the proof. Null if absent.
+      api.setZkProofPayload(ready.zkProofPayload ?? null);
       set({ storedIdentities: identities, identity: ready, phase: 'ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
       return;
     }
@@ -110,10 +113,12 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
     const withKeys = sorted.find((i) => !!i.sk);
     if (withKeys) {
       api.setSessionToken(null);
+      api.setZkProofPayload(null);
       set({ storedIdentities: identities, identity: withKeys, phase: 'keys_ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
       return;
     }
     api.setSessionToken(null);
+    api.setZkProofPayload(null);
     set({ storedIdentities: identities, identity: null, phase: 'uninitialized', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
   },
 
@@ -237,16 +242,17 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
       // `commitment_hex` are required (for v1 the server reconstructs the
       // public signals from root+commitment). Omitting root_hex/commitment_hex
       // made every ZK-enforced channel join/send fail with 403 ("Not a
-      // member of channel").
-      api.setZkProofPayload(
-        JSON.stringify({
-          proof,
-          root_hex: reg.rootHex,
-          commitment_hex: identity.commitmentHex,
-          protocolVersion: 'v1',
-          publicSignals,
-        }),
-      );
+      // member of channel"). We persist it on the identity too so a cold
+      // start / identity switch can restore it without re-proving.
+      const zkProofPayload = JSON.stringify({
+        proof,
+        root_hex: reg.rootHex,
+        commitment_hex: identity.commitmentHex,
+        protocolVersion: 'v1',
+        publicSignals,
+      });
+      api.setZkProofPayload(zkProofPayload);
+      identity.zkProofPayload = zkProofPayload;
       await db.saveIdentity(identity);
 
       const identities = await db.listIdentities();
@@ -289,9 +295,11 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
     // capability flags are never reused across contexts.
     if (identity.pseudonymId) {
       api.setSessionToken(identity.sessionToken ?? null);
+      api.setZkProofPayload(identity.zkProofPayload ?? null);
       set({ identity, phase: 'ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle', permissions: null, permissionsStatus: 'idle', permissionsPseudonymId: null });
     } else if (identity.sk) {
       api.setSessionToken(null);
+      api.setZkProofPayload(null);
       set({ identity, phase: 'keys_ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle', permissions: null, permissionsStatus: 'idle', permissionsPseudonymId: null });
     }
     // Update lastUsedAt
@@ -309,12 +317,15 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
     const identities = await db.listIdentities();
     if (identity.pseudonymId) {
       api.setSessionToken(identity.sessionToken ?? null);
+      api.setZkProofPayload(identity.zkProofPayload ?? null);
       set({ storedIdentities: identities, identity, phase: 'ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
     } else if (identity.sk) {
       api.setSessionToken(null);
+      api.setZkProofPayload(null);
       set({ storedIdentities: identities, identity, phase: 'keys_ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
     } else {
       api.setSessionToken(null);
+      api.setZkProofPayload(null);
       set({ storedIdentities: identities });
     }
   },
@@ -343,6 +354,7 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
     voiceStore.forceReset();
 
     api.setSessionToken(null);
+    api.setZkProofPayload(null);
     set({ identity: null, phase: 'uninitialized', error: null, errorDetails: null, permissions: null, permissionsStatus: 'idle', permissionsPseudonymId: null, proofInFlight: false, provingStatus: 'idle' });
   },
 }));

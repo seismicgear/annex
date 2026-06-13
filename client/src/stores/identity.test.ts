@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockSetSessionToken = vi.fn();
+const mockSetZkProofPayload = vi.fn();
 const mockListIdentities = vi.fn(async () => []);
 const mockGetIdentity = vi.fn(async () => null);
 const mockImportIdentity = vi.fn(async (json: string) => JSON.parse(json));
@@ -17,6 +18,7 @@ class MockApiError extends Error {
 
 vi.mock('@/lib/api', () => ({
   setSessionToken: (...args: unknown[]) => mockSetSessionToken(...args),
+  setZkProofPayload: (...args: unknown[]) => mockSetZkProofPayload(...args),
   register: vi.fn(async () => ({ leafIndex: 0, pathElements: [], pathIndexBits: [] })),
   verifyMembership: vi.fn(async () => ({ pseudonymId: 'p1', sessionToken: 'tok1' })),
   getIdentityInfo: vi.fn(async () => ({})),

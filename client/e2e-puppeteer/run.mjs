@@ -317,7 +317,63 @@ async function main() {
       log('#General not visible within 10s — skipping message step (main UI still reached)');
     }
 
-    log('OK — Puppeteer drove the full identity → proof → chat flow');
+    // ── 6. Cold start: reload and prove the persisted ZK proof restores ───
+    // After a reload the app restores the identity from IndexedDB straight to
+    // the main UI WITHOUT re-running the (30–60s) proof. If the cached proof
+    // isn't persisted + re-attached, channel join/send 403s again. This step
+    // catches that regression.
+    if (sawGeneral) {
+      log('cold-start check: reloading the page');
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 60_000 });
+
+      // The server-selection step (StartupModeSelector) reappears because
+      // serverReady is per-load React state; click Continue if present.
+      if (await waitForButtonByText(page, 'Continue', 15_000)) {
+        await clickButtonByText(page, 'Continue', 10_000);
+      }
+      if (!(await waitForButtonByText(page, 'Chat', 60_000))) {
+        await shot(page, 'cold-start-main-ui-MISSING');
+        fail('main UI did not restore after reload');
+      }
+      await new Promise((r) => setTimeout(r, 1000));
+
+      // Select #General (already a member from before) and send again.
+      const selectGeneral = async () => {
+        const handle = await page.evaluateHandle(() => {
+          const rows = [...document.querySelectorAll('.channel-item')];
+          const g = rows.find((r) => (r.textContent || '').includes('General'));
+          return g ? g.querySelector('.channel-select') : null;
+        });
+        const el = handle.asElement();
+        if (el) await el.click();
+      };
+      await selectGeneral();
+
+      const composer2 = await page
+        .waitForSelector('textarea[placeholder="Type a message..."]', { timeout: 20_000 })
+        .catch(() => null);
+      if (!composer2) fail('composer did not render after reload');
+
+      const msg2 = `Cold-start Puppeteer E2E ${Date.now()}`;
+      await composer2.type(msg2);
+      if (!(await clickButtonByText(page, 'Send', 5_000))) fail('Send not found after reload');
+      await waitForText(page, msg2, 15_000);
+      await shot(page, 'cold-start-message-sent');
+
+      const coldFailed = await page.evaluate(() => {
+        const txt = document.body?.innerText || '';
+        return (
+          txt.includes('Not a member of channel') ||
+          (/\bfailed\b/i.test(txt) && /\bretry\b/i.test(txt))
+        );
+      });
+      if (coldFailed) {
+        fail('after reload, send failed / "Not a member" — persisted ZK proof did not restore');
+      }
+      log('cold-start confirmed: persisted proof restored, post succeeded after reload');
+    }
+
+    log('OK — Puppeteer drove the full identity → proof → chat flow (incl. cold start)');
   } finally {
     await browser.close();
   }
