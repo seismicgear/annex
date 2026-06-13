@@ -23,8 +23,36 @@ fn resolve_config_path() -> (Option<String>, &'static str) {
     (None, "default")
 }
 
-#[tokio::main]
-async fn main() -> Result<(), StartupError> {
+fn main() -> Result<(), StartupError> {
+    // Windows' default main-thread stack is 1 MiB; the unoptimized debug
+    // startup future (the axum Router + tower layer stack is a very large
+    // nested type) overflows it — the Windows server smoke surfaced
+    // `thread 'main' has overflowed its stack` (STATUS_STACK_OVERFLOW,
+    // exit code 0xC00000FD) right after DB migrations, while Linux's 8 MiB
+    // default hid it. Run the whole Tokio runtime on a thread with a
+    // generous, platform-independent stack.
+    std::thread::Builder::new()
+        .name("annex-server-main".to_string())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(run)
+        .expect("failed to spawn annex-server main worker thread")
+        .join()
+        .expect("annex-server main worker thread panicked")
+}
+
+fn run() -> Result<(), StartupError> {
+    // Match `#[tokio::main]` (multi-thread + all features) but also enlarge
+    // the worker/blocking thread stacks so deep async handlers and the
+    // spawn_blocking Groth16 verification don't overflow on Windows either.
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(16 * 1024 * 1024)
+        .build()
+        .map_err(StartupError::IoError)?
+        .block_on(run_server())
+}
+
+async fn run_server() -> Result<(), StartupError> {
     let (resolved_config_path, config_source) = resolve_config_path();
     let selected_config_path = resolved_config_path.as_deref().or(Some("config.toml"));
 
