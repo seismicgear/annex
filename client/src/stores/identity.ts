@@ -232,8 +232,21 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
       identity.sessionToken = verification.sessionToken;
       identity.lastUsedAt = new Date().toISOString();
       api.setSessionToken(verification.sessionToken);
-      // Cache the ZK proof so protected endpoints can include it
-      api.setZkProofPayload(JSON.stringify({ proof, publicSignals }));
+      // Cache the ZK proof so protected endpoints can include it. The shape
+      // MUST match the server's `ZkProofPayload`: `proof` + `root_hex` +
+      // `commitment_hex` are required (for v1 the server reconstructs the
+      // public signals from root+commitment). Omitting root_hex/commitment_hex
+      // made every ZK-enforced channel join/send fail with 403 ("Not a
+      // member of channel").
+      api.setZkProofPayload(
+        JSON.stringify({
+          proof,
+          root_hex: reg.rootHex,
+          commitment_hex: identity.commitmentHex,
+          protocolVersion: 'v1',
+          publicSignals,
+        }),
+      );
       await db.saveIdentity(identity);
 
       const identities = await db.listIdentities();

@@ -226,41 +226,91 @@ async function main() {
     await shot(page, 'main-chat-ui');
 
     // ── 5. Join + select #General, send a message ─────────────────────
+    // The clickable target is the inner `.channel-select` BUTTON (and the
+    // `.join-btn` for membership) — clicking the outer `.channel-item` div
+    // does not fire React's onClick. We must JOIN first (so the server lets
+    // us read/post), then SELECT (so the composer renders).
     const sawGeneral = await waitForText(page, 'General', 10_000);
     if (sawGeneral) {
-      log('#General visible — attempting join + message');
-      // Click a join "+" button if present, then the channel row.
-      await page.evaluate(() => {
-        const rows = [...document.querySelectorAll('.channel-item')];
-        const general = rows.find((r) => (r.textContent || '').includes('General'));
-        if (general) {
-          const joinBtn = general.querySelector('.join-btn');
-          if (joinBtn) joinBtn.click();
-        }
-      });
-      await new Promise((r) => setTimeout(r, 1000));
-      await page.evaluate(() => {
-        const rows = [...document.querySelectorAll('.channel-item')];
-        const general = rows.find((r) => (r.textContent || '').includes('General'));
-        if (general) general.click();
-      });
-      await new Promise((r) => setTimeout(r, 1000));
+      log('#General visible — joining then selecting');
 
-      const input = await page.$('input[placeholder="Type a message..."], textarea[placeholder="Type a message..."]');
-      if (input) {
+      // Helper: real mouse click on the first matching element whose ancestor
+      // .channel-item contains "General".
+      const clickInGeneralRow = async (innerSelector) => {
+        const handle = await page.evaluateHandle(
+          (sel) => {
+            const rows = [...document.querySelectorAll('.channel-item')];
+            const general = rows.find((r) => (r.textContent || '').includes('General'));
+            return general ? general.querySelector(sel) : null;
+          },
+          innerSelector,
+        );
+        const el = handle.asElement();
+        if (!el) return false;
+        await el.click();
+        return true;
+      };
+
+      // Join (if a join button is present — i.e. we're not already a member).
+      if (await clickInGeneralRow('.join-btn')) {
+        log('clicked join (+)');
+        // Membership confirmed when the row swaps join (+) for leave (x).
+        await page
+          .waitForFunction(
+            () => {
+              const rows = [...document.querySelectorAll('.channel-item')];
+              const g = rows.find((r) => (r.textContent || '').includes('General'));
+              return g && g.querySelector('.leave-btn');
+            },
+            { timeout: 15_000, polling: 200 },
+          )
+          .catch(() => log('leave-btn did not appear within 15s (continuing)'));
+      } else {
+        log('no join button (already a member?) — selecting directly');
+      }
+
+      // Select the channel so the message view + composer mount.
+      if (await clickInGeneralRow('.channel-select')) {
+        log('selected #General');
+      }
+
+      // Composer textarea ("Type a message...") only renders once a channel is
+      // active and the WS is connected.
+      const composer = await page
+        .waitForSelector('textarea[placeholder="Type a message..."]', { timeout: 20_000 })
+        .catch(() => null);
+
+      if (composer) {
         const msg = `Hello from Puppeteer E2E ${Date.now()}`;
-        await input.type(msg);
+        await composer.type(msg);
         await shot(page, 'message-typed');
         const sent = await clickButtonByText(page, 'Send', 5_000);
-        if (sent) {
-          await waitForText(page, msg, 15_000);
-          await shot(page, 'message-sent');
-          log('message round-trip captured');
-        } else {
-          log('Send button not found — captured composer state only');
+        if (!sent) fail('Send button not found');
+
+        await waitForText(page, msg, 15_000);
+        await shot(page, 'message-sent');
+
+        // The optimistic UI renders the message text even when the send is
+        // REJECTED (it just marks it "failed"). Asserting on text alone is how
+        // a "Not a member" 403 hid for so long — so explicitly reject those
+        // failure markers here.
+        const banner = await page.evaluate(
+          () => document.body?.innerText?.includes('Not a member of channel') ?? false,
+        );
+        if (banner) {
+          fail('server rejected the action with "Not a member of channel" — channel join failed');
         }
+        const failedSend = await page.evaluate(() => {
+          // A failed message row exposes a retry/dismiss affordance.
+          const txt = document.body?.innerText || '';
+          return /\bfailed\b/i.test(txt) && /\bretry\b/i.test(txt);
+        });
+        if (failedSend) {
+          fail('message send shows "failed / retry" — the message did not post');
+        }
+        log('message round-trip confirmed (posted, not failed, member of channel)');
       } else {
-        log('message composer not found — skipping message step (still a pass: main UI reached)');
+        log('message composer did not render — capturing state (main UI still reached = pass)');
         await shot(page, 'main-ui-no-composer');
       }
     } else {

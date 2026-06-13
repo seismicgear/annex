@@ -244,11 +244,25 @@ export function stopTokenRefresh(): void {
   }
 }
 
+/** UTF-8-safe base64 (btoa only handles Latin-1). */
+function toBase64Utf8(s: string): string {
+  const bytes = new TextEncoder().encode(s);
+  let bin = '';
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+
 /**
  * Build the standard auth header set for an authenticated request.
  * Prefers the HMAC session token; falls back to the pseudonym header for
  * unauthenticated/legacy paths. Always includes the cached ZK proof when
  * available so routes that require `verify_zk_membership_header` succeed.
+ *
+ * The server's `verify_zk_membership_header` base64-decodes the
+ * `x-annex-zk-proof` header and deserializes it as a full `ZkProofPayload`
+ * (proof + root_hex + commitment_hex [+ protocolVersion/publicSignals]), so
+ * the cached payload MUST be base64-encoded here — sending raw JSON makes the
+ * base64 decode fail and the server rejects every join/send with 403.
  */
 export function authHeaders(pseudonymId: string): Record<string, string> {
   const headers: Record<string, string> = {};
@@ -258,7 +272,7 @@ export function authHeaders(pseudonymId: string): Record<string, string> {
     headers['X-Annex-Pseudonym'] = pseudonymId;
   }
   if (_zkProofPayload) {
-    headers['x-annex-zk-proof'] = _zkProofPayload;
+    headers['x-annex-zk-proof'] = toBase64Utf8(_zkProofPayload);
   }
   return headers;
 }
