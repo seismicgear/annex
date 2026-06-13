@@ -44,6 +44,12 @@ export interface RemoteAudioTrack {
   stream: MediaStream;
 }
 
+export interface RemoteVideoTrack {
+  id: string;
+  track: MediaStreamTrack;
+  stream: MediaStream;
+}
+
 // ── Signaling callbacks injected by the consumer ──
 
 export interface SignalingCallbacks {
@@ -69,6 +75,8 @@ export class WebRtcSession {
 
   connectionState: NativeConnectionState = ConnectionState.Disconnected;
   remoteAudioTracks: RemoteAudioTrack[] = [];
+  /** Remote camera/video tracks forwarded by the SFU (one per remote sender). */
+  remoteVideoTracks: RemoteVideoTrack[] = [];
   isSpeaking = false;
 
   // ── Callbacks ──
@@ -233,6 +241,21 @@ export class WebRtcSession {
           this.remoteAudioTracks = this.remoteAudioTracks.filter((t) => t.id !== track.id);
           this.onRemoteTracksChanged?.();
         };
+      } else if (track.kind === 'video') {
+        // Remote camera forwarded by the SFU — surface it so the grid renders
+        // the real video tile (not a "?" avatar). A muted track id (the SFU
+        // sends a placeholder until a peer publishes) still creates the slot;
+        // the <video> simply shows nothing until frames arrive.
+        const remoteVideo: RemoteVideoTrack = { id: track.id, track, stream };
+        this.remoteVideoTracks = [...this.remoteVideoTracks, remoteVideo];
+        this.onRemoteTracksChanged?.();
+
+        track.onended = () => {
+          this.remoteVideoTracks = this.remoteVideoTracks.filter((t) => t.id !== track.id);
+          this.onRemoteTracksChanged?.();
+        };
+        track.onmute = () => this.onRemoteTracksChanged?.();
+        track.onunmute = () => this.onRemoteTracksChanged?.();
       }
     };
 
@@ -323,6 +346,7 @@ export class WebRtcSession {
     }
 
     this.remoteAudioTracks = [];
+    this.remoteVideoTracks = [];
     this.remoteDescriptionSet = false;
     this.pendingCandidates = [];
     this.setConnectionState(ConnectionState.Disconnected);
