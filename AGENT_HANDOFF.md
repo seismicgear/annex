@@ -95,6 +95,39 @@ make build-circuits resolve a runnable circom per host`).
   (live: a real server B verifies a remote peer's Ed25519-signed envelope over
   HTTP, persists under the attested pseudonym, idempotent, tamper→401).
 
+### KNOWN GAP — real-time video/screen-share transport (audio-only SFU)
+
+Proven by `client/e2e-puppeteer/media-quality.mjs` (headful under Xvfb, reads
+live `RTCPeerConnection.getStats()`): a call's negotiated SDP has **only an
+`m=audio` line**. Audio transports correctly (Opus, RTT ~1ms, packets flowing,
+two-party fan-out works). Camera + screen are captured + previewed locally (two
+live video senders, visible in `screenshots-voice/`), but **video is never
+sent** — there is no `m=video` line at all.
+
+Root cause (two coordinated halves):
+1. **Client** (`client/src/lib/webrtc.ts`): `connect()` offers only the audio
+   track; `setCameraEnabled`/`setScreenShareEnabled` call `pc.addTrack` (which
+   needs renegotiation) but nothing fires `onnegotiationneeded` / re-offers, so
+   video m-lines never reach the SFU.
+2. **SFU** (`crates/annex-voice/src/service.rs`): `handle_sdp_offer` wires only
+   an `audio/opus` outbound track per peer; `fan_out_rtp` writes any inbound
+   RTP to that single audio track. It is also not renegotiation-safe (each
+   offer builds a fresh pc).
+
+Fix plan (do NOT half-do it — it can corrupt the working audio path):
+- Client: add sendrecv **video transceiver(s) up-front** in `connect()` and set
+  `cameraSender`/`screenSender` to those transceivers' senders, so
+  `setCameraEnabled`/`setScreenShareEnabled` use `replaceTrack` (no
+  renegotiation). This puts `m=video` lines in the initial offer.
+- SFU: give `PeerSession` a per-peer **video outbound track** (VP8), add it in
+  the SAME kind-order the client offers, and make `fan_out_rtp` route RTP by
+  the inbound track's kind (audio→audio track, video→video track) so video
+  never lands on an audio track. `register_default_codecs()` already provides
+  VP8/VP9/H264, so codecs are not the blocker.
+- Verify with the existing `media-quality.mjs` (outbound video appears) and a
+  two-party variant (Alice sees Bob's video via `ontrack`).
+Also consider raising the client camera request from 640x480@24 toward 720p.
+
 Then proved production grade locally:
 - `bash scripts/test-all.sh` → **PASS** (fmt, clippy `-D warnings`, full
   `cargo test --workspace --exclude annex-desktop`, frontend 170 tests).

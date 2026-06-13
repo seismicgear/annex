@@ -70,3 +70,4 @@ client/public/zk/
 # OS files
 Thumbs.db
 client/e2e-puppeteer/screenshots-voice/
+client/e2e-puppeteer/screenshots-edge/
