@@ -68,6 +68,33 @@ design. `main` had been red on every recent run; the branch is now fully green.
 Validate by dispatching `ci.yml` on the branch (`workflow_dispatch`) — pushing
 the branch alone does not trigger CI (it runs on push-to-main / PRs-to-main).
 
+**All-platform CI incl. macOS is GREEN** (run #635, commit `8eab8bf`,
+`include_macos=true`): Build Desktop Linux ✅, Windows ✅, **macOS ✅**, both
+server smokes ✅. The macOS lane was failing because `zk/bin/circom` is a
+linux-amd64 ELF and `build-circuits.js` only downloaded a per-platform circom
+when the file was *absent* — on macOS the tracked Linux binary was present and
+got exec'd (exit 126). Fixed: probe `circom --version` and download a
+platform-tagged binary to a distinct path if it can't run (commit `fix(zk):
+make build-circuits resolve a runnable circom per host`).
+
+**Feature evidence (live + real-execution, this session):**
+- Chat/messaging, edit, delete, reply, multi-user WS delivery, channel-create:
+  Playwright (`client/e2e/`) + Puppeteer (`client/e2e-puppeteer/run.mjs`),
+  screenshots; multi-user proves A→B over the WS broadcast (two contexts).
+- **Voice + video**: `client/e2e-puppeteer/voice.mjs` — real RTCPeerConnection
+  to the in-process SFU reaches `connected`, camera track published.
+  `voice-multi.mjs` — **two-party fan-out**: Alice receives Bob's forwarded
+  audio (`ontrack`). Screenshare = headless limitation (no display source;
+  plumbing identical to camera).
+- **Agent + RTX**: `cargo test` agent_flow_test, api_agent_restrictions,
+  api_channels_agent, api_rtx_publish (15), api_rtx_subscribe (14) — real
+  handler execution (registration, alignment gates, channel join, knowledge
+  exchange + transfer-scope enforcement).
+- **Federation / multi-server**: `federation_lifecycle_test` (in-process two
+  instances: handshake→attest→relay→downgrade) **+** `scripts/smoke-federation.sh`
+  (live: a real server B verifies a remote peer's Ed25519-signed envelope over
+  HTTP, persists under the attested pseudonym, idempotent, tamper→401).
+
 Then proved production grade locally:
 - `bash scripts/test-all.sh` → **PASS** (fmt, clippy `-D warnings`, full
   `cargo test --workspace --exclude annex-desktop`, frontend 170 tests).
