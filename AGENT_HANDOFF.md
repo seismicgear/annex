@@ -47,6 +47,27 @@ Known follow-up: a persisted proof can age out if the Merkle root rotates past
 the grace window — the robust fix is a lazy re-prove on 403 (same staleness
 the in-memory cache always had; no regression).
 
+**Windows startup stack overflow** (commits `fix(server): … 16 MiB stack` +
+`fix(desktop): … 16 MiB worker stack`): the first full branch CI run got the
+desktop builds + Linux smoke green but the Windows server-smoke crashed at
+startup with `thread 'main' has overflowed its stack` (STATUS_STACK_OVERFLOW,
+0xC00000FD) right after migrations — only visible because the `.ps1` stderr fix
+now captures it. Windows' 1 MiB main-thread stack can't hold the unoptimized
+debug startup future (the axum Router + tower layer stack is a huge nested
+type); Linux's 8 MiB hid it. Fixed by running the server's Tokio runtime on a
+16 MiB `std::thread` (replacing `#[tokio::main]`) with 16 MiB worker/blocking
+stacks, and — same class — installing a 16 MiB-stack runtime in the desktop via
+`tauri::async_runtime::set` before Tauri's lazy default (the desktop runs
+`prepare_server`/`axum::serve` on Tauri's ~2 MiB workers; CI build-checks it on
+both OSes but can't run the Windows app).
+
+**Result: the full branch CI matrix is GREEN on real runners** (run #633,
+commit `9578505`): Check(Server), Frontend, Build Desktop Linux, Build Desktop
+Windows, Smoke(Server) Linux, Smoke(Server) Windows all ✅; macOS skipped by
+design. `main` had been red on every recent run; the branch is now fully green.
+Validate by dispatching `ci.yml` on the branch (`workflow_dispatch`) — pushing
+the branch alone does not trigger CI (it runs on push-to-main / PRs-to-main).
+
 Then proved production grade locally:
 - `bash scripts/test-all.sh` → **PASS** (fmt, clippy `-D warnings`, full
   `cargo test --workspace --exclude annex-desktop`, frontend 170 tests).
