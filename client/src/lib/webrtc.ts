@@ -251,6 +251,19 @@ export class WebRtcSession {
       pc.addTransceiver('audio', { direction: 'recvonly' });
     }
 
+    // Pre-create a sendrecv video transceiver so the INITIAL offer already
+    // carries an m=video line. Without this the SFU negotiated audio-only and
+    // camera video was never sent (captured + previewed locally, but not
+    // transported). Pre-creating it means setCameraEnabled() just calls
+    // replaceTrack() on this sender (no renegotiation), and the SFU forwards
+    // this peer's camera to the other participants.
+    try {
+      const videoTransceiver = pc.addTransceiver('video', { direction: 'sendrecv' });
+      this.cameraSender = videoTransceiver.sender;
+    } catch (err) {
+      console.warn('[webrtc] could not pre-create video transceiver:', err);
+    }
+
     // Create and send offer
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
