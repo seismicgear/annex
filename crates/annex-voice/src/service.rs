@@ -597,7 +597,8 @@ impl VoiceService {
                 last_pli = std::time::Instant::now();
             }
 
-            self.fan_out_rtp(&channel_id, &publisher_id, kind, &rtp).await;
+            self.fan_out_rtp(&channel_id, &publisher_id, kind, &rtp)
+                .await;
             if let Some(decoder) = decoder.as_mut() {
                 self.tap_for_stt(&channel_id, &publisher_id, &rtp, decoder)
                     .await;
