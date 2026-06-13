@@ -28,6 +28,7 @@ export {
 
 export {
   createInvite,
+  getCurrentRoot,
   getIdentityInfo,
   redeemInvite,
   register,

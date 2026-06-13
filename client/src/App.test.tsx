@@ -114,6 +114,7 @@ vi.mock('@/lib/api', () => ({
   setApiBaseUrl: vi.fn(),
   setSessionToken: vi.fn(),
   setZkProofPayload: vi.fn(),
+  getCurrentRoot: vi.fn(async () => ({ rootHex: 'ROOT', leafCount: 1 })),
   getSessionToken: vi.fn(() => null),
   isTokenExpired: vi.fn(() => false),
   startTokenRefresh: vi.fn(),
@@ -207,6 +208,7 @@ const FAKE_IDENTITY: StoredIdentity = {
   sessionToken: 'test-session-token',
   serverSlug: 'default',
   leafIndex: 0,
+  zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }),
   createdAt: '2025-01-01T00:00:00Z',
 };
 
