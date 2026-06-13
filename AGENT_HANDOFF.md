@@ -1,5 +1,80 @@
 # Agent Handoff
 
+## Session — `claude/admiring-sagan-12dbz5` (production-grade / green-CI pass)
+
+Goal: get CI green on all platforms and produce end-to-end proof the app
+works (server flow, desktop bundle, browser e2e with screenshots).
+
+`main` had been **red on every recent CI run**. Root-caused and fixed the
+four independent failures (commit "fix(ci): repair the four red CI lanes"):
+
+1. **`cargo install tauri-cli@2 --locked` no longer parses.** Current cargo
+   rejects the bare `@2` ("unexpected end of input while parsing major
+   version number"). Broke all desktop build lanes in *both* workflows
+   (6 call sites). Pinned the exact, Rust-1.88-verified CLI: `tauri-cli@2.11.2`.
+2. **Windows "Verify Visual Studio C++ workload" was broken PowerShell.** A
+   statement starting with a quoted command path needs the `&` call operator
+   (otherwise pwsh errors "Unexpected token '-latest'"). Also fixed the env
+   reference: `$env:ProgramFiles(x86)` doesn't resolve the (x86) variant —
+   the correct form is `${env:ProgramFiles(x86)}`. (ci.yml + release-desktop.yml.)
+3. **Linux server-smoke ran to the 6-hour job timeout.** The flow *succeeds*,
+   but `scripts/smoke-server-flow.mjs` never exited: snarkjs's
+   `groth16.fullProve` leaves the global BN128 worker-thread pool alive,
+   pinning Node's event loop. Added an explicit `process.exit(0)` on success.
+   Verified locally — smoke now exits 0 promptly.
+4. **Windows server-smoke failed at `Start-Process`.** PowerShell forbids
+   `-RedirectStandardOutput` and `-RedirectStandardError` pointing at the same
+   file. Gave stderr its own file (`server.err.log`) + tail both.
+
+**Critical product bug found via the Puppeteer lane** (commit chain
+"fix(client): … x-annex-zk-proof …" + "… persist + restore the ZK proof …"):
+With `enforce_zk_proofs=true` (the default), every authenticated channel
+operation goes through `verify_zk_membership_header`, which base64-decodes the
+`x-annex-zk-proof` header and deserializes a full `ZkProofPayload`
+(proof + root_hex + commitment_hex [+ protocolVersion/publicSignals]). The
+client violated that contract twice: it cached only `{proof, publicSignals}`
+(missing the required root_hex/commitment_hex) and sent it as RAW JSON (the
+server base64-decodes first). Result: a fresh identity reached the main UI but
+could NOT chat — join #General 403'd ("Not a member of channel"), which made
+every message-send fail. It hid because both e2e suites assert on the
+optimistically-rendered message text, which shows even when the send is
+rejected. Fixed by caching the full payload and base64-encoding it; also
+persisted it on the StoredIdentity and restored it on every cold-start path
+(reload / selectIdentity / importBackup) so chat works after a relaunch
+without re-proving. Added a unit regression (api.test.ts) and hardened the
+Puppeteer lane to fail on "Not a member" / "failed" and to exercise a reload.
+Known follow-up: a persisted proof can age out if the Merkle root rotates past
+the grace window — the robust fix is a lazy re-prove on 403 (same staleness
+the in-memory cache always had; no regression).
+
+Then proved production grade locally:
+- `bash scripts/test-all.sh` → **PASS** (fmt, clippy `-D warnings`, full
+  `cargo test --workspace --exclude annex-desktop`, frontend 170 tests).
+- `bash scripts/smoke-server.sh` → **PASS** (register → Merkle path → Groth16
+  proof → verify-membership → founder promotion → authenticated channel
+  create, against `enforce_zk_proofs=true`).
+- E2E: Playwright **7/7**, plus a new **Puppeteer** screenshot harness
+  (`client/e2e-puppeteer/`, `npm run test:e2e:puppeteer`, `scripts/e2e-all.sh`)
+  that drives identity → in-browser Groth16 proof → main Chat UI and writes a
+  PNG at each milestone.
+- Linux desktop bundle: `cargo tauri build --debug --bundles deb` produces an
+  installable `.deb` (the Linux installer/uninstaller surface). Windows NSIS
+  installer/uninstaller config (`installMode: both`, `nsis/hooks.nsi` data
+  cleanup) verified; the build itself runs only on the Windows CI lane.
+
+Container note: the dev-profile target dir balloons past the ~38 GiB effective
+disk when tests + smoke + e2e + a Tauri build all share it; `cargo clean`
+before a desktop build. Disk, not code, is the constraint there.
+
+Still intentionally NOT done (design gates, not bugs — do not fake):
+- Real multi-party ZK ceremony. `verify-artifacts.js` correctly refuses the
+  dev-fixture manifest under `ANNEX_BUILD_PROFILE=production`; a public tag
+  needs a genuine ceremony, which can't be manufactured in a sandbox.
+- v1 nullifier topic-unlinkability gap (v2 path implemented + opt-in).
+- uploads-as-public-URL design question for private-channel mode.
+
+---
+
 ## Current branch
 `claude/fix-annex-bugs-PmMSm` (current session; chain: `…itXFq` → `…PxyqS` → `…Las84` → `…AqBJk` → `…Fshec` → `…AT8va` → `…5yw2Y` → `…PmMSm`)
 

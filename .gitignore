@@ -44,6 +44,9 @@ node_modules/
 client/e2e-results/
 client/e2e-report/
 
+# Puppeteer E2E screenshots (regenerated each run)
+client/e2e-puppeteer/screenshots/
+
 # Server signing keys (auto-generated)
 signing.key
 
