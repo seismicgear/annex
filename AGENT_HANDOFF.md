@@ -1,5 +1,183 @@
 # Agent Handoff
 
+## Session — `claude/admiring-sagan-12dbz5` (production-grade / green-CI pass)
+
+Goal: get CI green on all platforms and produce end-to-end proof the app
+works (server flow, desktop bundle, browser e2e with screenshots).
+
+`main` had been **red on every recent CI run**. Root-caused and fixed the
+four independent failures (commit "fix(ci): repair the four red CI lanes"):
+
+1. **`cargo install tauri-cli@2 --locked` no longer parses.** Current cargo
+   rejects the bare `@2` ("unexpected end of input while parsing major
+   version number"). Broke all desktop build lanes in *both* workflows
+   (6 call sites). Pinned the exact, Rust-1.88-verified CLI: `tauri-cli@2.11.2`.
+2. **Windows "Verify Visual Studio C++ workload" was broken PowerShell.** A
+   statement starting with a quoted command path needs the `&` call operator
+   (otherwise pwsh errors "Unexpected token '-latest'"). Also fixed the env
+   reference: `$env:ProgramFiles(x86)` doesn't resolve the (x86) variant —
+   the correct form is `${env:ProgramFiles(x86)}`. (ci.yml + release-desktop.yml.)
+3. **Linux server-smoke ran to the 6-hour job timeout.** The flow *succeeds*,
+   but `scripts/smoke-server-flow.mjs` never exited: snarkjs's
+   `groth16.fullProve` leaves the global BN128 worker-thread pool alive,
+   pinning Node's event loop. Added an explicit `process.exit(0)` on success.
+   Verified locally — smoke now exits 0 promptly.
+4. **Windows server-smoke failed at `Start-Process`.** PowerShell forbids
+   `-RedirectStandardOutput` and `-RedirectStandardError` pointing at the same
+   file. Gave stderr its own file (`server.err.log`) + tail both.
+
+**Critical product bug found via the Puppeteer lane** (commit chain
+"fix(client): … x-annex-zk-proof …" + "… persist + restore the ZK proof …"):
+With `enforce_zk_proofs=true` (the default), every authenticated channel
+operation goes through `verify_zk_membership_header`, which base64-decodes the
+`x-annex-zk-proof` header and deserializes a full `ZkProofPayload`
+(proof + root_hex + commitment_hex [+ protocolVersion/publicSignals]). The
+client violated that contract twice: it cached only `{proof, publicSignals}`
+(missing the required root_hex/commitment_hex) and sent it as RAW JSON (the
+server base64-decodes first). Result: a fresh identity reached the main UI but
+could NOT chat — join #General 403'd ("Not a member of channel"), which made
+every message-send fail. It hid because both e2e suites assert on the
+optimistically-rendered message text, which shows even when the send is
+rejected. Fixed by caching the full payload and base64-encoding it; also
+persisted it on the StoredIdentity and restored it on every cold-start path
+(reload / selectIdentity / importBackup) so chat works after a relaunch
+without re-proving. Added a unit regression (api.test.ts) and hardened the
+Puppeteer lane to fail on "Not a member" / "failed" and to exercise a reload.
+Known follow-up: a persisted proof can age out if the Merkle root rotates past
+the grace window — the robust fix is a lazy re-prove on 403 (same staleness
+the in-memory cache always had; no regression).
+
+**Windows startup stack overflow** (commits `fix(server): … 16 MiB stack` +
+`fix(desktop): … 16 MiB worker stack`): the first full branch CI run got the
+desktop builds + Linux smoke green but the Windows server-smoke crashed at
+startup with `thread 'main' has overflowed its stack` (STATUS_STACK_OVERFLOW,
+0xC00000FD) right after migrations — only visible because the `.ps1` stderr fix
+now captures it. Windows' 1 MiB main-thread stack can't hold the unoptimized
+debug startup future (the axum Router + tower layer stack is a huge nested
+type); Linux's 8 MiB hid it. Fixed by running the server's Tokio runtime on a
+16 MiB `std::thread` (replacing `#[tokio::main]`) with 16 MiB worker/blocking
+stacks, and — same class — installing a 16 MiB-stack runtime in the desktop via
+`tauri::async_runtime::set` before Tauri's lazy default (the desktop runs
+`prepare_server`/`axum::serve` on Tauri's ~2 MiB workers; CI build-checks it on
+both OSes but can't run the Windows app).
+
+**Result: the full branch CI matrix is GREEN on real runners** (run #633,
+commit `9578505`): Check(Server), Frontend, Build Desktop Linux, Build Desktop
+Windows, Smoke(Server) Linux, Smoke(Server) Windows all ✅; macOS skipped by
+design. `main` had been red on every recent run; the branch is now fully green.
+Validate by dispatching `ci.yml` on the branch (`workflow_dispatch`) — pushing
+the branch alone does not trigger CI (it runs on push-to-main / PRs-to-main).
+
+**All-platform CI incl. macOS is GREEN** (run #635, commit `8eab8bf`,
+`include_macos=true`): Build Desktop Linux ✅, Windows ✅, **macOS ✅**, both
+server smokes ✅. The macOS lane was failing because `zk/bin/circom` is a
+linux-amd64 ELF and `build-circuits.js` only downloaded a per-platform circom
+when the file was *absent* — on macOS the tracked Linux binary was present and
+got exec'd (exit 126). Fixed: probe `circom --version` and download a
+platform-tagged binary to a distinct path if it can't run (commit `fix(zk):
+make build-circuits resolve a runnable circom per host`).
+
+**Feature evidence (live + real-execution, this session):**
+- Chat/messaging, edit, delete, reply, multi-user WS delivery, channel-create:
+  Playwright (`client/e2e/`) + Puppeteer (`client/e2e-puppeteer/run.mjs`),
+  screenshots; multi-user proves A→B over the WS broadcast (two contexts).
+- **Voice + video**: `client/e2e-puppeteer/voice.mjs` — real RTCPeerConnection
+  to the in-process SFU reaches `connected`, camera track published.
+  `voice-multi.mjs` — **two-party fan-out**: Alice receives Bob's forwarded
+  audio (`ontrack`). Screenshare = headless limitation (no display source;
+  plumbing identical to camera).
+- **Agent + RTX**: `cargo test` agent_flow_test, api_agent_restrictions,
+  api_channels_agent, api_rtx_publish (15), api_rtx_subscribe (14) — real
+  handler execution (registration, alignment gates, channel join, knowledge
+  exchange + transfer-scope enforcement).
+- **Federation / multi-server**: `federation_lifecycle_test` (in-process two
+  instances: handshake→attest→relay→downgrade) **+** `scripts/smoke-federation.sh`
+  (live: a real server B verifies a remote peer's Ed25519-signed envelope over
+  HTTP, persists under the attested pseudonym, idempotent, tamper→401).
+
+### FIXED — real-time camera video transport through the SFU
+
+Previously the call negotiated audio-only (camera captured/previewed but never
+sent). Now FIXED + proven end-to-end:
+- Client (`webrtc.ts`) pre-creates a sendrecv video transceiver in `connect()`
+  so the initial offer carries `m=video`; `setCameraEnabled` uses `replaceTrack`
+  (no renegotiation).
+- SFU (`annex-voice/service.rs`) gives each peer a VP8 `video_outbound_track`
+  and `fan_out_rtp` routes RTP by `track.kind()` (audio→audio track,
+  video→video track), so video never corrupts the audio stream; the Opus/STT
+  tap runs for audio only.
+Evidence: `media-quality.mjs` → SDP has m=audio + m=video, outbound VP8
+(320x240@20fps ~200kbps). `voice-video.mjs` (two-party) → **each peer decodes
+the other's camera** (inbound VP8, 118 frames decoded, ~145KB). `voice-multi.mjs`
+two-party audio still green (no regression).
+
+Remaining video follow-ups (smaller): (1) client `ontrack` surfaces audio only,
+so remote video isn't RENDERED in the grid yet (it IS received/decoded — proven
+via getStats); wire a remoteVideoTracks list + tiles. (2) simultaneous
+screen-share as a 2nd video m-line (currently one video slot = camera).
+(3) optionally raise the camera request toward 720p.
+
+### KNOWN GAP — screen-share transport (capture works; transport is the camera slot)
+
+Proven by `client/e2e-puppeteer/media-quality.mjs` (headful under Xvfb, reads
+live `RTCPeerConnection.getStats()`): a call's negotiated SDP has **only an
+`m=audio` line**. Audio transports correctly (Opus, RTT ~1ms, packets flowing,
+two-party fan-out works). Camera + screen are captured + previewed locally (two
+live video senders, visible in `screenshots-voice/`), but **video is never
+sent** — there is no `m=video` line at all.
+
+Root cause (two coordinated halves):
+1. **Client** (`client/src/lib/webrtc.ts`): `connect()` offers only the audio
+   track; `setCameraEnabled`/`setScreenShareEnabled` call `pc.addTrack` (which
+   needs renegotiation) but nothing fires `onnegotiationneeded` / re-offers, so
+   video m-lines never reach the SFU.
+2. **SFU** (`crates/annex-voice/src/service.rs`): `handle_sdp_offer` wires only
+   an `audio/opus` outbound track per peer; `fan_out_rtp` writes any inbound
+   RTP to that single audio track. It is also not renegotiation-safe (each
+   offer builds a fresh pc).
+
+Fix plan (do NOT half-do it — it can corrupt the working audio path):
+- Client: add sendrecv **video transceiver(s) up-front** in `connect()` and set
+  `cameraSender`/`screenSender` to those transceivers' senders, so
+  `setCameraEnabled`/`setScreenShareEnabled` use `replaceTrack` (no
+  renegotiation). This puts `m=video` lines in the initial offer.
+- SFU: give `PeerSession` a per-peer **video outbound track** (VP8), add it in
+  the SAME kind-order the client offers, and make `fan_out_rtp` route RTP by
+  the inbound track's kind (audio→audio track, video→video track) so video
+  never lands on an audio track. `register_default_codecs()` already provides
+  VP8/VP9/H264, so codecs are not the blocker.
+- Verify with the existing `media-quality.mjs` (outbound video appears) and a
+  two-party variant (Alice sees Bob's video via `ontrack`).
+Also consider raising the client camera request from 640x480@24 toward 720p.
+
+Then proved production grade locally:
+- `bash scripts/test-all.sh` → **PASS** (fmt, clippy `-D warnings`, full
+  `cargo test --workspace --exclude annex-desktop`, frontend 170 tests).
+- `bash scripts/smoke-server.sh` → **PASS** (register → Merkle path → Groth16
+  proof → verify-membership → founder promotion → authenticated channel
+  create, against `enforce_zk_proofs=true`).
+- E2E: Playwright **7/7**, plus a new **Puppeteer** screenshot harness
+  (`client/e2e-puppeteer/`, `npm run test:e2e:puppeteer`, `scripts/e2e-all.sh`)
+  that drives identity → in-browser Groth16 proof → main Chat UI and writes a
+  PNG at each milestone.
+- Linux desktop bundle: `cargo tauri build --debug --bundles deb` produces an
+  installable `.deb` (the Linux installer/uninstaller surface). Windows NSIS
+  installer/uninstaller config (`installMode: both`, `nsis/hooks.nsi` data
+  cleanup) verified; the build itself runs only on the Windows CI lane.
+
+Container note: the dev-profile target dir balloons past the ~38 GiB effective
+disk when tests + smoke + e2e + a Tauri build all share it; `cargo clean`
+before a desktop build. Disk, not code, is the constraint there.
+
+Still intentionally NOT done (design gates, not bugs — do not fake):
+- Real multi-party ZK ceremony. `verify-artifacts.js` correctly refuses the
+  dev-fixture manifest under `ANNEX_BUILD_PROFILE=production`; a public tag
+  needs a genuine ceremony, which can't be manufactured in a sandbox.
+- v1 nullifier topic-unlinkability gap (v2 path implemented + opt-in).
+- uploads-as-public-URL design question for private-channel mode.
+
+---
+
 ## Current branch
 `claude/fix-annex-bugs-PmMSm` (current session; chain: `…itXFq` → `…PxyqS` → `…Las84` → `…AqBJk` → `…Fshec` → `…AT8va` → `…5yw2Y` → `…PmMSm`)
 

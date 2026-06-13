@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { getServerSummary, register, setApiBaseUrl, verifyMembership, joinVoice, leaveVoice, getVoiceStatus, setSessionToken } from '@/lib/api';
+import { getServerSummary, register, setApiBaseUrl, verifyMembership, joinVoice, leaveVoice, getVoiceStatus, setSessionToken, setZkProofPayload, joinChannel } from '@/lib/api';
 
 function okJsonResponse(body: unknown): Response {
   return {
@@ -73,6 +73,50 @@ describe('request header behavior', () => {
 
     expect(registerHeaders.get('Content-Type')).toBe('application/json');
     expect(verifyHeaders.get('Content-Type')).toBe('application/json');
+  });
+});
+
+describe('x-annex-zk-proof header (server contract)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setApiBaseUrl('');
+    global.fetch = vi.fn();
+  });
+
+  afterEach(() => {
+    setSessionToken(null);
+    setZkProofPayload(null);
+    setApiBaseUrl('');
+  });
+
+  it('joinChannel sends a base64-encoded full ZkProofPayload the server can decode', async () => {
+    setSessionToken('sess-token');
+    // Shape MUST match the server's ZkProofPayload (proof + root_hex +
+    // commitment_hex required). This is what verify_zk_membership_header
+    // base64-decodes and deserializes.
+    const payload = JSON.stringify({
+      proof: { pi_a: ['1', '2', '3'] },
+      root_hex: '0xroot',
+      commitment_hex: '0xcommit',
+      protocolVersion: 'v1',
+      publicSignals: ['1', '2'],
+    });
+    setZkProofPayload(payload);
+
+    vi.mocked(global.fetch).mockResolvedValue(okJsonResponse({ status: 'joined' }));
+    await joinChannel('pseudo-1', 'chan-1');
+
+    const init = vi.mocked(global.fetch).mock.calls[0][1];
+    const headers = init?.headers as Headers;
+    const headerVal = headers.get('x-annex-zk-proof');
+    expect(headerVal).toBeTruthy();
+    // Regression: the header must be base64, NOT raw JSON (raw starts with '{').
+    expect(headerVal!.startsWith('{')).toBe(false);
+    // Base64-decoding must yield the full payload with the required fields.
+    const decoded = JSON.parse(atob(headerVal!)) as Record<string, unknown>;
+    expect(decoded.root_hex).toBe('0xroot');
+    expect(decoded.commitment_hex).toBe('0xcommit');
+    expect(decoded.proof).toBeTruthy();
   });
 });
 

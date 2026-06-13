@@ -313,4 +313,12 @@ async function main() {
   step('OK — full identity flow succeeded against enforce_zk_proofs=true server');
 }
 
-main().catch((err) => fail('unexpected error', err));
+// snarkjs's `groth16.fullProve` spins up a global BN128 curve worker-thread
+// pool (`globalThis.curve_bn128`) that it never tears down. Those threads keep
+// Node's event loop alive indefinitely, so after `main()` resolves the process
+// would otherwise hang forever instead of exiting — which is exactly what made
+// the Linux server-smoke CI job run until the 6-hour job timeout. Exit
+// explicitly on success; `fail()` already exits non-zero on every error path.
+main()
+  .then(() => process.exit(0))
+  .catch((err) => fail('unexpected error', err));

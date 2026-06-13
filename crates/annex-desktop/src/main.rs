@@ -33,6 +33,23 @@ use tauri_plugin_deep_link::DeepLinkExt;
 use crate::app_state::AppManagedState;
 
 fn main() {
+    // Tauri's async runtime drives `start_embedded_server` (which calls
+    // `prepare_server` + builds the axum Router) and the spawned `axum::serve`
+    // task. On Windows the default worker-thread stack (~2 MiB) risks the same
+    // startup stack overflow the standalone server hit on its 1 MiB main thread
+    // — the axum Router + tower layer future is a very large nested type.
+    // Install a runtime with a 16 MiB worker/blocking stack BEFORE Tauri
+    // lazily creates its default one, and keep it alive for the whole process.
+    {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_stack_size(16 * 1024 * 1024)
+            .build()
+            .expect("failed to build the desktop Tokio runtime");
+        tauri::async_runtime::set(rt.handle().clone());
+        std::mem::forget(rt);
+    }
+
     let data_dir = config::resolve_data_dir();
     std::fs::create_dir_all(&data_dir).expect("failed to create Annex data directory");
 

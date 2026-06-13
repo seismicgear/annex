@@ -33,6 +33,15 @@ export interface StoredIdentity {
   serverSlug: string;
   /** Merkle leaf index assigned during registration. */
   leafIndex: number | null;
+  /**
+   * Cached `x-annex-zk-proof` payload (JSON of the server's ZkProofPayload:
+   * proof + root_hex + commitment_hex + protocolVersion + publicSignals).
+   * Persisted so that on a cold start / identity switch we can re-attach it to
+   * protected requests without re-running the (30–60s) proof. Not secret — a
+   * ZK membership proof is publicly verifiable and reveals nothing about `sk`,
+   * which is itself already stored here.
+   */
+  zkProofPayload?: string | null;
   /** Timestamp of creation. */
   createdAt: string;
   /** Timestamp of last use (selected, registered, or imported). */

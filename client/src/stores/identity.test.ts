@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockSetSessionToken = vi.fn();
+const mockSetZkProofPayload = vi.fn();
+const mockGetCurrentRoot = vi.fn(async () => ({ rootHex: 'ROOT', leafCount: 1 }));
 const mockListIdentities = vi.fn(async () => []);
 const mockGetIdentity = vi.fn(async () => null);
 const mockImportIdentity = vi.fn(async (json: string) => JSON.parse(json));
@@ -17,6 +19,8 @@ class MockApiError extends Error {
 
 vi.mock('@/lib/api', () => ({
   setSessionToken: (...args: unknown[]) => mockSetSessionToken(...args),
+  setZkProofPayload: (...args: unknown[]) => mockSetZkProofPayload(...args),
+  getCurrentRoot: (...args: unknown[]) => mockGetCurrentRoot(...args),
   register: vi.fn(async () => ({ leafIndex: 0, pathElements: [], pathIndexBits: [] })),
   verifyMembership: vi.fn(async () => ({ pseudonymId: 'p1', sessionToken: 'tok1' })),
   getIdentityInfo: vi.fn(async () => ({})),
@@ -65,7 +69,7 @@ describe('identity store — API auth state sync', () => {
 
   it('loadIdentities sets token when ready identity has a sessionToken', async () => {
     mockListIdentities.mockResolvedValueOnce([
-      { id: '1', sk: 'abc', pseudonymId: 'p1', sessionToken: 'tok1', commitmentHex: 'c1', roleCode: 0, nodeId: 'n1', serverSlug: 's1', leafIndex: 0, createdAt: '' },
+      { id: '1', sk: 'abc', pseudonymId: 'p1', sessionToken: 'tok1', commitmentHex: 'c1', roleCode: 0, nodeId: 'n1', serverSlug: 's1', leafIndex: 0, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '' },
     ]);
 
     const { useIdentityStore } = await import('./identity');
@@ -80,7 +84,7 @@ describe('identity store — API auth state sync', () => {
     mockSetSessionToken.mockClear();
 
     mockListIdentities.mockResolvedValueOnce([
-      { id: '1', sk: 'abc', pseudonymId: 'p1', sessionToken: null, commitmentHex: 'c1', roleCode: 0, nodeId: 'n1', serverSlug: 's1', leafIndex: 0, createdAt: '' },
+      { id: '1', sk: 'abc', pseudonymId: 'p1', sessionToken: null, commitmentHex: 'c1', roleCode: 0, nodeId: 'n1', serverSlug: 's1', leafIndex: 0, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '' },
     ]);
 
     const { useIdentityStore } = await import('./identity');
@@ -95,7 +99,7 @@ describe('identity store — API auth state sync', () => {
     mockSetSessionToken.mockClear();
 
     mockListIdentities.mockResolvedValueOnce([
-      { id: '2', sk: 'def', pseudonymId: null, sessionToken: null, commitmentHex: 'c2', roleCode: 0, nodeId: 'n2', serverSlug: '', leafIndex: null, createdAt: '' },
+      { id: '2', sk: 'def', pseudonymId: null, sessionToken: null, commitmentHex: 'c2', roleCode: 0, nodeId: 'n2', serverSlug: '', leafIndex: null, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '' },
     ]);
 
     const { useIdentityStore } = await import('./identity');
@@ -122,7 +126,7 @@ describe('identity store — API auth state sync', () => {
     vi.resetModules();
     mockSetSessionToken.mockClear();
 
-    const identity = { id: '1', sk: 'abc', pseudonymId: 'p1', sessionToken: 'tok1', commitmentHex: 'c1', roleCode: 0, nodeId: 'n1', serverSlug: 's1', leafIndex: 0, createdAt: '' };
+    const identity = { id: '1', sk: 'abc', pseudonymId: 'p1', sessionToken: 'tok1', commitmentHex: 'c1', roleCode: 0, nodeId: 'n1', serverSlug: 's1', leafIndex: 0, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '' };
     mockGetIdentity.mockResolvedValueOnce(identity);
 
     const { useIdentityStore } = await import('./identity');
@@ -136,7 +140,7 @@ describe('identity store — API auth state sync', () => {
     vi.resetModules();
     mockSetSessionToken.mockClear();
 
-    const identity = { id: '1', sk: 'abc', pseudonymId: 'p1', sessionToken: null, commitmentHex: 'c1', roleCode: 0, nodeId: 'n1', serverSlug: 's1', leafIndex: 0, createdAt: '' };
+    const identity = { id: '1', sk: 'abc', pseudonymId: 'p1', sessionToken: null, commitmentHex: 'c1', roleCode: 0, nodeId: 'n1', serverSlug: 's1', leafIndex: 0, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '' };
     mockGetIdentity.mockResolvedValueOnce(identity);
 
     const { useIdentityStore } = await import('./identity');
@@ -150,7 +154,7 @@ describe('identity store — API auth state sync', () => {
     vi.resetModules();
     mockSetSessionToken.mockClear();
 
-    const identity = { id: '2', sk: 'def', pseudonymId: null, sessionToken: null, commitmentHex: 'c2', roleCode: 0, nodeId: 'n2', serverSlug: '', leafIndex: null, createdAt: '' };
+    const identity = { id: '2', sk: 'def', pseudonymId: null, sessionToken: null, commitmentHex: 'c2', roleCode: 0, nodeId: 'n2', serverSlug: '', leafIndex: null, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '' };
     mockGetIdentity.mockResolvedValueOnce(identity);
 
     const { useIdentityStore } = await import('./identity');
@@ -181,7 +185,7 @@ describe('identity store — API auth state sync', () => {
 
     // Set up an identity with a pseudonymId (simulating an active session)
     useIdentityStore.setState({
-      identity: { id: '1', sk: 'abc', pseudonymId: 'p1', sessionToken: 'tok1', commitmentHex: 'c1', roleCode: 0, nodeId: 'n1', serverSlug: 's1', leafIndex: 0, createdAt: '' } as Record<string, unknown>,
+      identity: { id: '1', sk: 'abc', pseudonymId: 'p1', sessionToken: 'tok1', commitmentHex: 'c1', roleCode: 0, nodeId: 'n1', serverSlug: 's1', leafIndex: 0, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '' } as Record<string, unknown>,
       phase: 'ready',
     });
 
@@ -199,7 +203,7 @@ describe('identity store — API auth state sync', () => {
     mockSetSessionToken.mockClear();
     mockListIdentities.mockResolvedValueOnce([]);
 
-    const imported = { id: '3', sk: 'ghi', pseudonymId: 'p3', sessionToken: 'tok3', commitmentHex: 'c3', roleCode: 0, nodeId: 'n3', serverSlug: 's3', leafIndex: 0, createdAt: '' };
+    const imported = { id: '3', sk: 'ghi', pseudonymId: 'p3', sessionToken: 'tok3', commitmentHex: 'c3', roleCode: 0, nodeId: 'n3', serverSlug: 's3', leafIndex: 0, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '' };
     mockImportIdentity.mockResolvedValueOnce(imported);
 
     const { useIdentityStore } = await import('./identity');
@@ -213,7 +217,7 @@ describe('identity store — API auth state sync', () => {
     mockSetSessionToken.mockClear();
     mockListIdentities.mockResolvedValueOnce([]);
 
-    const imported = { id: '4', sk: 'jkl', pseudonymId: null, sessionToken: null, commitmentHex: 'c4', roleCode: 0, nodeId: 'n4', serverSlug: '', leafIndex: null, createdAt: '' };
+    const imported = { id: '4', sk: 'jkl', pseudonymId: null, sessionToken: null, commitmentHex: 'c4', roleCode: 0, nodeId: 'n4', serverSlug: '', leafIndex: null, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '' };
     mockImportIdentity.mockResolvedValueOnce(imported);
 
     const { useIdentityStore } = await import('./identity');
@@ -227,8 +231,8 @@ describe('identity store — API auth state sync', () => {
     mockSetSessionToken.mockClear();
 
     mockListIdentities.mockResolvedValueOnce([
-      { id: '1', sk: 'a', pseudonymId: 'p1', sessionToken: 'tok1', commitmentHex: 'c1', roleCode: 0, nodeId: 'n1', serverSlug: 's1', leafIndex: 0, createdAt: '2024-01-01', lastUsedAt: '2024-01-01' },
-      { id: '2', sk: 'b', pseudonymId: 'p2', sessionToken: 'tok2', commitmentHex: 'c2', roleCode: 0, nodeId: 'n2', serverSlug: 's2', leafIndex: 0, createdAt: '2024-01-02', lastUsedAt: '2024-06-01' },
+      { id: '1', sk: 'a', pseudonymId: 'p1', sessionToken: 'tok1', commitmentHex: 'c1', roleCode: 0, nodeId: 'n1', serverSlug: 's1', leafIndex: 0, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '2024-01-01', lastUsedAt: '2024-01-01' },
+      { id: '2', sk: 'b', pseudonymId: 'p2', sessionToken: 'tok2', commitmentHex: 'c2', roleCode: 0, nodeId: 'n2', serverSlug: 's2', leafIndex: 0, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '2024-01-02', lastUsedAt: '2024-06-01' },
     ]);
 
     const { useIdentityStore } = await import('./identity');
@@ -243,7 +247,7 @@ describe('identity store — API auth state sync', () => {
     vi.resetModules();
     mockSetSessionToken.mockClear();
 
-    const identity = { id: '1', sk: 'abc', pseudonymId: 'p1', sessionToken: 'tok1', commitmentHex: 'c1', roleCode: 0, nodeId: 'n1', serverSlug: 's1', leafIndex: 0, createdAt: '' };
+    const identity = { id: '1', sk: 'abc', pseudonymId: 'p1', sessionToken: 'tok1', commitmentHex: 'c1', roleCode: 0, nodeId: 'n1', serverSlug: 's1', leafIndex: 0, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '' };
     mockGetIdentity.mockResolvedValueOnce(identity);
 
     const { useIdentityStore } = await import('./identity');
@@ -272,7 +276,7 @@ describe('identity store — API auth state sync', () => {
 
     // Simulate: permissions from server A (pseudonym 'p-old'), now on server B (pseudonym 'p-new')
     useIdentityStore.setState({
-      identity: { id: '1', sk: 'abc', pseudonymId: 'p-new', sessionToken: 'tok', commitmentHex: 'c1', roleCode: 0, nodeId: 'n1', serverSlug: 's2', leafIndex: 0, createdAt: '' } as Record<string, unknown>,
+      identity: { id: '1', sk: 'abc', pseudonymId: 'p-new', sessionToken: 'tok', commitmentHex: 'c1', roleCode: 0, nodeId: 'n1', serverSlug: 's2', leafIndex: 0, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '' } as Record<string, unknown>,
       permissions: { pseudonymId: 'p-old', capabilities: { can_voice: true, can_moderate: true } } as Record<string, unknown>,
       permissionsStatus: 'ready',
       permissionsPseudonymId: 'p-old',

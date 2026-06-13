@@ -20,6 +20,7 @@ use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndicat
 use webrtc::rtcp::transport_feedbacks::transport_layer_nack::{NackPair, TransportLayerNack};
 use webrtc::rtp::packet::Packet as RtpPacket;
 use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
+use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 use webrtc::track::track_local::TrackLocal;
@@ -46,7 +47,12 @@ pub struct IceCandidateEvent {
 
 struct PeerSession {
     pc: Arc<RTCPeerConnection>,
-    outbound_track: Arc<TrackLocalStaticRTP>,
+    /// Per-peer outbound track the SFU writes OTHER peers' audio into.
+    audio_outbound_track: Arc<TrackLocalStaticRTP>,
+    /// Per-peer outbound track the SFU writes OTHER peers' video into
+    /// (camera). Routed separately so video RTP never lands on the audio
+    /// track (which would corrupt the audio stream).
+    video_outbound_track: Arc<TrackLocalStaticRTP>,
 }
 
 struct Room {
@@ -307,7 +313,7 @@ impl VoiceService {
                 .map_err(|e| VoiceError::WebRtc(e.to_string()))?,
         );
 
-        let outbound_track = Arc::new(TrackLocalStaticRTP::new(
+        let audio_outbound_track = Arc::new(TrackLocalStaticRTP::new(
             RTCRtpCodecCapability {
                 mime_type: "audio/opus".to_string(),
                 clock_rate: 48_000,
@@ -318,8 +324,28 @@ impl VoiceService {
             format!("audio-{peer_id}"),
             channel_id.to_string(),
         ));
+        // Per-peer VP8 outbound track so the SFU can forward other peers'
+        // camera video. VP8 is registered by `register_default_codecs()`.
+        let video_outbound_track = Arc::new(TrackLocalStaticRTP::new(
+            RTCRtpCodecCapability {
+                mime_type: "video/VP8".to_string(),
+                clock_rate: 90_000,
+                channels: 0,
+                sdp_fmtp_line: String::new(),
+                rtcp_feedback: vec![],
+            },
+            format!("video-{peer_id}"),
+            channel_id.to_string(),
+        ));
 
-        pc.add_track(outbound_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
+        // Order matters: the client offers m=audio then m=video, so add the
+        // audio outbound track first, then the video one, so webrtc-rs maps
+        // them to the matching m-lines. The agent (TTS) audio track is added
+        // last, as before.
+        pc.add_track(audio_outbound_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
+            .await
+            .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
+        pc.add_track(video_outbound_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
             .await
             .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
         pc.add_track(room.agent_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
@@ -411,7 +437,11 @@ impl VoiceService {
 
         room.peers.insert(
             peer_id.to_string(),
-            Arc::new(PeerSession { pc, outbound_track }),
+            Arc::new(PeerSession {
+                pc,
+                audio_outbound_track,
+                video_outbound_track,
+            }),
         );
 
         Ok(answer)
@@ -514,10 +544,17 @@ impl VoiceService {
         pc: Arc<RTCPeerConnection>,
         track: Arc<webrtc::track::track_remote::TrackRemote>,
     ) -> Result<(), VoiceError> {
+        let kind = track.kind();
+        let is_video = kind == RTPCodecType::Video;
         let mut last_seq: Option<u16> = None;
         let mut last_pli = std::time::Instant::now();
-        let mut decoder =
-            OpusDecoder::new(48_000, 1).map_err(|e| VoiceError::Codec(e.to_string()))?;
+        // The Opus decoder + STT tap only apply to audio. Video RTP must never
+        // be fed to the Opus decoder (garbage) — it is relayed as opaque RTP.
+        let mut decoder = if is_video {
+            None
+        } else {
+            Some(OpusDecoder::new(48_000, 1).map_err(|e| VoiceError::Codec(e.to_string()))?)
+        };
 
         loop {
             let (rtp, _) = track
@@ -560,19 +597,37 @@ impl VoiceService {
                 last_pli = std::time::Instant::now();
             }
 
-            self.fan_out_rtp(&channel_id, &publisher_id, &rtp).await;
-            self.tap_for_stt(&channel_id, &publisher_id, &rtp, &mut decoder)
+            self.fan_out_rtp(&channel_id, &publisher_id, kind, &rtp)
                 .await;
+            if let Some(decoder) = decoder.as_mut() {
+                self.tap_for_stt(&channel_id, &publisher_id, &rtp, decoder)
+                    .await;
+            }
         }
     }
 
-    async fn fan_out_rtp(&self, channel_id: &str, publisher_id: &str, rtp: &RtpPacket) {
+    async fn fan_out_rtp(
+        &self,
+        channel_id: &str,
+        publisher_id: &str,
+        kind: RTPCodecType,
+        rtp: &RtpPacket,
+    ) {
         if let Some(room) = self.rooms.get(channel_id) {
+            let want_video = kind == RTPCodecType::Video;
             let outbound: Vec<(String, Arc<TrackLocalStaticRTP>)> = room
                 .peers
                 .iter()
                 .filter(|peer| peer.key().as_str() != publisher_id)
-                .map(|peer| (peer.key().clone(), peer.value().outbound_track.clone()))
+                .map(|peer| {
+                    let session = peer.value();
+                    let track = if want_video {
+                        session.video_outbound_track.clone()
+                    } else {
+                        session.audio_outbound_track.clone()
+                    };
+                    (peer.key().clone(), track)
+                })
                 .collect();
 
             for (peer_id, track) in outbound {

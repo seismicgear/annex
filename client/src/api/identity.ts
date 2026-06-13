@@ -51,6 +51,11 @@ export async function verifyMembership(
   });
 }
 
+/** The server's currently-active Merkle root (for proof-freshness checks). */
+export async function getCurrentRoot(): Promise<{ rootHex: string; leafCount: number }> {
+  return request<{ rootHex: string; leafCount: number }>('/api/registry/current-root');
+}
+
 export async function getIdentityInfo(
   pseudonymId: string,
 ): Promise<IdentityInfo> {

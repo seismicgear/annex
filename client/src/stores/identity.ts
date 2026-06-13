@@ -17,6 +17,30 @@ import * as zk from '@/lib/zk';
 import * as api from '@/lib/api';
 import { useVoiceStore } from './voice';
 
+/**
+ * Whether a restored/imported identity can enter `ready` directly. Requires a
+ * live session token AND a cached ZK proof whose Merkle root is still the
+ * server's current root. The cached `x-annex-zk-proof` is bound to the root
+ * that was active at proof time; once the tree grows and the grace window
+ * passes, the server rejects it (`is_root_acceptable`), so a stale/missing
+ * proof must be regenerated via the normal register flow rather than entering
+ * `ready` with credentials that will 403. Best-effort: if the server is
+ * unreachable we trust the cached proof (nothing works offline anyway).
+ */
+async function cachedProofIsUsable(identity: StoredIdentity): Promise<boolean> {
+  // The session token is refreshed separately (App.tsx /api/session/refresh);
+  // the proof is the credential that goes stale/missing, so gate on it.
+  if (!identity.zkProofPayload) return false;
+  try {
+    const payload = JSON.parse(identity.zkProofPayload) as { root_hex?: string };
+    if (!payload.root_hex) return false;
+    const current = await api.getCurrentRoot();
+    return current.rootHex.toLowerCase() === payload.root_hex.toLowerCase();
+  } catch {
+    return true;
+  }
+}
+
 export type IdentityPhase =
   | 'uninitialized'
   | 'generating'
@@ -100,20 +124,33 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
     // Prefer a fully registered identity (has pseudonymId), most recently used first.
     const ready = sorted.find((i) => i.pseudonymId !== null);
     if (ready) {
-      // Set whatever token we have (even expired), or clear if absent.
-      // The App.tsx effect will call /api/session/refresh if it's expired.
-      api.setSessionToken(ready.sessionToken ?? null);
-      set({ storedIdentities: identities, identity: ready, phase: 'ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
+      if (await cachedProofIsUsable(ready)) {
+        // Set whatever token we have (even expired), or clear if absent.
+        // The App.tsx effect will call /api/session/refresh if it's expired.
+        api.setSessionToken(ready.sessionToken ?? null);
+        // Restore the cached proof so protected calls (channel join/send) work
+        // after a cold start without re-running the proof.
+        api.setZkProofPayload(ready.zkProofPayload ?? null);
+        set({ storedIdentities: identities, identity: ready, phase: 'ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
+      } else {
+        // Missing or stale-root proof — re-prove via the normal register flow
+        // rather than entering `ready` with credentials the server will 403.
+        api.setSessionToken(null);
+        api.setZkProofPayload(null);
+        set({ storedIdentities: identities, identity: ready, phase: 'keys_ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
+      }
       return;
     }
     // Otherwise select one that has keys but isn't registered yet.
     const withKeys = sorted.find((i) => !!i.sk);
     if (withKeys) {
       api.setSessionToken(null);
+      api.setZkProofPayload(null);
       set({ storedIdentities: identities, identity: withKeys, phase: 'keys_ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
       return;
     }
     api.setSessionToken(null);
+    api.setZkProofPayload(null);
     set({ storedIdentities: identities, identity: null, phase: 'uninitialized', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
   },
 
@@ -232,8 +269,22 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
       identity.sessionToken = verification.sessionToken;
       identity.lastUsedAt = new Date().toISOString();
       api.setSessionToken(verification.sessionToken);
-      // Cache the ZK proof so protected endpoints can include it
-      api.setZkProofPayload(JSON.stringify({ proof, publicSignals }));
+      // Cache the ZK proof so protected endpoints can include it. The shape
+      // MUST match the server's `ZkProofPayload`: `proof` + `root_hex` +
+      // `commitment_hex` are required (for v1 the server reconstructs the
+      // public signals from root+commitment). Omitting root_hex/commitment_hex
+      // made every ZK-enforced channel join/send fail with 403 ("Not a
+      // member of channel"). We persist it on the identity too so a cold
+      // start / identity switch can restore it without re-proving.
+      const zkProofPayload = JSON.stringify({
+        proof,
+        root_hex: reg.rootHex,
+        commitment_hex: identity.commitmentHex,
+        protocolVersion: 'v1',
+        publicSignals,
+      });
+      api.setZkProofPayload(zkProofPayload);
+      identity.zkProofPayload = zkProofPayload;
       await db.saveIdentity(identity);
 
       const identities = await db.listIdentities();
@@ -274,11 +325,15 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
     if (!identity) return;
     // Clear permissions from the previous identity/server so stale
     // capability flags are never reused across contexts.
-    if (identity.pseudonymId) {
+    if (identity.pseudonymId && (await cachedProofIsUsable(identity))) {
       api.setSessionToken(identity.sessionToken ?? null);
+      api.setZkProofPayload(identity.zkProofPayload ?? null);
       set({ identity, phase: 'ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle', permissions: null, permissionsStatus: 'idle', permissionsPseudonymId: null });
     } else if (identity.sk) {
+      // Either keys-only, or registered but with a missing/stale-root proof —
+      // re-prove via the normal register flow.
       api.setSessionToken(null);
+      api.setZkProofPayload(null);
       set({ identity, phase: 'keys_ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle', permissions: null, permissionsStatus: 'idle', permissionsPseudonymId: null });
     }
     // Update lastUsedAt
@@ -294,14 +349,20 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
   importBackup: async (json: string) => {
     const identity = await db.importIdentity(json);
     const identities = await db.listIdentities();
-    if (identity.pseudonymId) {
+    if (identity.pseudonymId && (await cachedProofIsUsable(identity))) {
       api.setSessionToken(identity.sessionToken ?? null);
+      api.setZkProofPayload(identity.zkProofPayload ?? null);
       set({ storedIdentities: identities, identity, phase: 'ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
     } else if (identity.sk) {
+      // Imported backups drop the proof + null the session token, so a
+      // registered identity restores here without usable creds — re-prove via
+      // the normal flow instead of entering `ready` and 403-ing immediately.
       api.setSessionToken(null);
+      api.setZkProofPayload(null);
       set({ storedIdentities: identities, identity, phase: 'keys_ready', error: null, errorDetails: null, proofInFlight: false, provingStatus: 'idle' });
     } else {
       api.setSessionToken(null);
+      api.setZkProofPayload(null);
       set({ storedIdentities: identities });
     }
   },
@@ -330,6 +391,7 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
     voiceStore.forceReset();
 
     api.setSessionToken(null);
+    api.setZkProofPayload(null);
     set({ identity: null, phase: 'uninitialized', error: null, errorDetails: null, permissions: null, permissionsStatus: 'idle', permissionsPseudonymId: null, proofInFlight: false, provingStatus: 'idle' });
   },
 }));

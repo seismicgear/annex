@@ -27,7 +27,7 @@ import { isTauri, setMediaKeepalive, type PlatformMediaStatus } from '@/lib/taur
 import { useChannelsStore } from '@/stores/channels';
 import { useVoiceStore } from '@/stores/voice';
 import { MediaControls } from './MediaControls';
-import { LocalSelfView, ParticipantGrid, ScreenShareView } from './RemoteParticipants';
+import { ParticipantGrid } from './RemoteParticipants';
 import { LocalMediaStatus } from './VoiceDiagnostics';
 import { mediaErrorMessage, useTauriMediaRestore } from './useLocalMedia';
 import { useRemoteAudio } from './useRemoteAudio';
@@ -213,8 +213,6 @@ function RoomContent({ onLeave, mediaStatus, platformWarnings }: RoomContentProp
         isCameraEnabled={isCameraEnabled}
         isScreenShareEnabled={isScreenShareEnabled}
       />
-      <LocalSelfView session={localParticipant} />
-      <ScreenShareView />
       <ParticipantGrid session={localParticipant} />
       <MediaControls
         localParticipant={localParticipant}

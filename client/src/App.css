@@ -731,42 +731,79 @@
 
 /* ── Local Self-View ── */
 
-.local-self-view {
-  display: flex;
-  gap: 0.5rem;
-  padding: 0.5rem;
-  background: rgba(0, 0, 0, 0.15);
-  border-bottom: 1px solid #1a1a1a;
+/* ── In-call participant grid (unified: local + screen + remotes) ── */
+.call-grid {
+  display: grid;
+  gap: 0.6rem;
+  padding: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  align-content: start;
+  background: #0b0b0d;
+}
+/* A solo tile centers and is width-capped so it doesn't stretch absurdly. */
+.call-grid[data-tiles="1"] {
+  grid-template-columns: minmax(0, 520px);
+  justify-content: center;
 }
 
-.self-view-tile {
+.call-tile {
   position: relative;
-  flex: 1;
-  max-width: 200px;
-  border-radius: 6px;
+  aspect-ratio: 16 / 9;
+  border-radius: 12px;
   overflow: hidden;
-  border: 1px solid #222;
+  background: linear-gradient(135deg, #15151a, #0e0e12);
+  border: 2px solid rgba(255, 255, 255, 0.06);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+.call-tile.speaking {
+  border-color: var(--persona-accent, #4ade80);
+  box-shadow: 0 0 0 2px var(--persona-accent, #4ade80), 0 2px 12px rgba(0, 0, 0, 0.4);
+}
+.call-tile.screen {
+  border-color: rgba(248, 113, 113, 0.5);
 }
 
-.self-view-tile.screen {
-  max-width: 300px;
-}
-
-.self-view-tile video {
+.tile-video {
   width: 100%;
-  height: auto;
+  height: 100%;
+  object-fit: cover;
   display: block;
+  background: #000;
+}
+.call-tile.screen .tile-video {
+  object-fit: contain;
 }
 
-.self-view-label {
-  position: absolute;
-  bottom: 2px;
-  left: 4px;
-  font-size: 0.6rem;
+.tile-avatar {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: var(--persona-accent, #e63946);
   color: #fff;
-  background: rgba(0, 0, 0, 0.6);
-  padding: 1px 4px;
-  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.8rem;
+  font-weight: 700;
+}
+
+.tile-name {
+  position: absolute;
+  bottom: 0.5rem;
+  left: 0.5rem;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.72rem;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: 6px;
+  max-width: calc(100% - 1rem);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ── Screen Share View ── */

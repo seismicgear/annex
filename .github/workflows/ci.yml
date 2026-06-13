@@ -157,7 +157,7 @@ jobs:
       # the bundle stage, which is the strongest signal we have for
       # desktop correctness.
       - name: Install Tauri CLI
-        run: cargo install tauri-cli@2 --locked
+        run: cargo install tauri-cli@2.11.2 --locked
 
       - name: Tauri build (debug — validates bundle wiring)
         working-directory: crates/annex-desktop
@@ -190,7 +190,7 @@ jobs:
 
       - name: Verify Visual Studio C++ workload
         run: |
-          "$env:ProgramFiles(x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * `
+          & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * `
             -requires Microsoft.VisualStudio.Workload.NativeDesktop `
             -property installationPath
         shell: pwsh
@@ -211,7 +211,7 @@ jobs:
         working-directory: client
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli@2 --locked
+        run: cargo install tauri-cli@2.11.2 --locked
 
       # Skip piper on PR builds (avoids reaching out to release CDN every PR).
       # The release-desktop workflow runs the full pipeline including piper.
@@ -260,7 +260,7 @@ jobs:
         working-directory: client
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli@2 --locked
+        run: cargo install tauri-cli@2.11.2 --locked
 
       - name: Tauri build (debug)
         working-directory: crates/annex-desktop
