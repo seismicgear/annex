@@ -373,6 +373,47 @@ async function main() {
       log('cold-start confirmed: persisted proof restored, post succeeded after reload');
     }
 
+    // ── 7. Channel creation (founder / can_moderate) ──────────────────
+    // The first identity on a fresh server is promoted to founder, so the
+    // create-channel "+" is present. Drive the full CreateChannelDialog and
+    // prove the new channel shows up in the list (moderator-gated CRUD).
+    const createBtn = await page.$('.create-channel-btn');
+    if (createBtn) {
+      log('creating a channel (founder / can_moderate)');
+      await createBtn.click();
+      if (!(await page.waitForSelector('.dialog', { timeout: 10_000 }).catch(() => null))) {
+        fail('CreateChannelDialog did not open');
+      }
+      const newChannel = `evidence-${Date.now().toString(36)}`;
+      const nameInput = await page.$('.dialog input[placeholder="general"]');
+      if (!nameInput) fail('channel-name input not found in dialog');
+      await nameInput.type(newChannel);
+      const topicInput = await page.$('.dialog input[placeholder="What this channel is about"]');
+      if (topicInput) await topicInput.type('Created by the Puppeteer evidence run');
+      await shot(page, 'channel-create-dialog');
+
+      const createSubmit = await page.$('.dialog .primary-btn');
+      if (!createSubmit) fail('Create submit button not found');
+      await createSubmit.click();
+
+      const created = await page
+        .waitForFunction(
+          (label) =>
+            [...document.querySelectorAll('.channel-item')].some((r) =>
+              (r.textContent || '').includes(label),
+            ),
+          { timeout: 15_000, polling: 200 },
+          newChannel,
+        )
+        .then(() => true)
+        .catch(() => false);
+      if (!created) fail(`created channel "${newChannel}" never appeared in the channel list`);
+      await shot(page, 'channel-created');
+      log(`channel created and listed: ${newChannel}`);
+    } else {
+      log('no create-channel control (identity is not a moderator) — skipping channel-create');
+    }
+
     log('OK — Puppeteer drove the full identity → proof → chat flow (incl. cold start)');
   } finally {
     await browser.close();
