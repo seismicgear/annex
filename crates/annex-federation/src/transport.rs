@@ -34,7 +34,10 @@
 //! See `crates/annex-federation/src/signal.rs::SignalingPayload` for
 //! the wire format and `api/signal.js` for the relay-side gates.
 
+use crate::seal::{open as seal_open, seal as seal_seal, SealError};
 use crate::signal::{SignalClient, SignalError, SignalingPayload};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use ed25519_dalek::{SigningKey, VerifyingKey};
 use futures_util::Future;
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -69,6 +72,43 @@ pub enum TransportError {
     WaitForPeer(String),
     #[error("signaling payload rejected: {0}")]
     SignalingRejected(String),
+    #[error("seal error: {0}")]
+    Seal(String),
+}
+
+impl From<SealError> for TransportError {
+    fn from(e: SealError) -> Self {
+        TransportError::Seal(e.to_string())
+    }
+}
+
+/// Parse a 32-byte Ed25519 public key from a 64-char hex string.
+fn verifying_key_from_hex(hex: &str) -> Result<VerifyingKey, TransportError> {
+    let bytes = (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(hex.get(i..i + 2).unwrap_or(""), 16))
+        .collect::<Result<Vec<u8>, _>>()
+        .map_err(|_| TransportError::Seal("invalid peer pubkey hex".to_string()))?;
+    let arr: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| TransportError::Seal("peer pubkey must be 32 bytes".to_string()))?;
+    VerifyingKey::from_bytes(&arr).map_err(|e| TransportError::Seal(e.to_string()))
+}
+
+/// Seal an SDP for `recipient` and base64-encode it for the `sdp` wire field.
+/// The relay only ever sees this opaque blob — never the ICE candidates / IPs.
+fn seal_sdp(sdp: &str, recipient: &VerifyingKey) -> Result<String, TransportError> {
+    Ok(BASE64.encode(seal_seal(sdp.as_bytes(), recipient)?))
+}
+
+/// Reverse of [`seal_sdp`]: base64-decode then open with our own key.
+fn open_sdp(sealed_b64: &str, me: &SigningKey) -> Result<String, TransportError> {
+    let blob = BASE64
+        .decode(sealed_b64.as_bytes())
+        .map_err(|_| TransportError::Seal("sealed sdp is not valid base64".to_string()))?;
+    let plain = seal_open(&blob, me)?;
+    String::from_utf8(plain)
+        .map_err(|_| TransportError::Seal("sealed sdp was not utf-8".to_string()))
 }
 
 #[derive(Clone)]
@@ -88,12 +128,18 @@ pub struct FederationTransport {
     inbound_handler: InboundHandler,
     signal_signer: SignalSigner,
     signal_verifier: SignalVerifier,
+    /// Our Ed25519 signing key, used to OPEN SDPs sealed to us (the recipient
+    /// X25519 key is derived from it). The plaintext SDP — and the ICE
+    /// candidates / IP addresses inside — never leaves this process unsealed.
+    local_signing_key: Arc<SigningKey>,
 }
 
 impl FederationTransport {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         local_server_slug: impl Into<String>,
         local_public_key_hex: impl Into<String>,
+        local_signing_key: Arc<SigningKey>,
         signal: SignalClient,
         inbound_handler: InboundHandler,
         signal_signer: SignalSigner,
@@ -109,6 +155,7 @@ impl FederationTransport {
             inbound_handler,
             signal_signer,
             signal_verifier,
+            local_signing_key,
         }
     }
 
@@ -131,7 +178,12 @@ impl FederationTransport {
         });
     }
 
-    pub async fn establish_peer(&self, remote_server_slug: &str) -> Result<(), TransportError> {
+    pub async fn establish_peer(
+        &self,
+        remote_server_slug: &str,
+        remote_pubkey_hex: &str,
+    ) -> Result<(), TransportError> {
+        let recipient = verifying_key_from_hex(remote_pubkey_hex)?;
         let pc = self
             .build_peer_connection(remote_server_slug.to_string())
             .await?;
@@ -169,7 +221,8 @@ impl FederationTransport {
             to_server_slug: remote_server_slug.to_string(),
             session_id: session_id.clone(),
             sdp_type: "offer".to_string(),
-            sdp: offer.sdp,
+            // Sealed to the recipient: the relay forwards opaque ciphertext.
+            sdp: seal_sdp(&offer.sdp, &recipient)?,
             sent_at_ms: chrono::Utc::now().timestamp_millis(),
             from_pubkey_hex: self.local_public_key_hex.clone(),
             vrp_signature: String::new(),
@@ -237,13 +290,14 @@ impl FederationTransport {
         match payload.sdp_type.as_str() {
             "offer" => self.handle_offer(payload).await,
             "answer" => {
+                let answer_sdp = open_sdp(&payload.sdp, &self.local_signing_key)?;
                 if let Some(tx) = self
                     .pending_answers
                     .lock()
                     .await
                     .remove(&payload.session_id)
                 {
-                    let _ = tx.send(payload.sdp);
+                    let _ = tx.send(answer_sdp);
                 } else {
                     tracing::debug!(
                         from = %payload.from_server_slug,
@@ -260,11 +314,16 @@ impl FederationTransport {
     }
 
     async fn handle_offer(&self, payload: SignalingPayload) -> Result<(), TransportError> {
+        // The offerer's identity key — used to seal our answer back to them.
+        let offerer = verifying_key_from_hex(&payload.from_pubkey_hex)?;
+        // Open the sealed offer locally; the relay never saw this plaintext.
+        let offer_sdp = open_sdp(&payload.sdp, &self.local_signing_key)?;
+
         let pc = self
             .build_peer_connection(payload.from_server_slug.clone())
             .await?;
 
-        let offer = RTCSessionDescription::offer(payload.sdp)
+        let offer = RTCSessionDescription::offer(offer_sdp)
             .map_err(|e| TransportError::WebRtc(e.to_string()))?;
         pc.set_remote_description(offer)
             .await
@@ -283,7 +342,8 @@ impl FederationTransport {
             to_server_slug: payload.from_server_slug.clone(),
             session_id: payload.session_id,
             sdp_type: "answer".to_string(),
-            sdp: answer.sdp,
+            // Sealed to the offerer: the relay forwards opaque ciphertext.
+            sdp: seal_sdp(&answer.sdp, &offerer)?,
             sent_at_ms: chrono::Utc::now().timestamp_millis(),
             from_pubkey_hex: self.local_public_key_hex.clone(),
             vrp_signature: String::new(),

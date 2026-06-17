@@ -15,6 +15,7 @@
 
 pub mod db;
 pub mod handshake;
+pub mod seal;
 pub mod signal;
 pub mod transport;
 pub mod types;
