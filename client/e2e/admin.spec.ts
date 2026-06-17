@@ -36,6 +36,26 @@ test.describe('Admin & channel management (founder)', () => {
       await adminBtn.click();
       await page.getByRole('button', { name: s.item }).click();
       await expect(page.getByRole('heading', { name: s.heading }).first()).toBeVisible({ timeout: 15_000 });
+
+      if (s.item === 'Server Settings') {
+        // The Public URL must auto-populate from the request — the server now
+        // derives it instead of leaving the operator with a blank field.
+        const urlInput = page.getByPlaceholder('https://your-server.example.com');
+        await expect(urlInput).toBeVisible();
+        await expect(urlInput).not.toHaveValue('');
+
+        // Point it at a real public address and confirm the shareable invite
+        // link is generated AND routes through the marketing site
+        // (monolithannex.com) — the end-to-end invite-router deliverable.
+        await urlInput.fill('https://annex.demo.example');
+        await page.getByRole('button', { name: 'Save', exact: true }).click();
+        const inviteLink = page.locator('.share-link-input');
+        await expect(inviteLink).toBeVisible({ timeout: 15_000 });
+        await expect(inviteLink).toHaveValue(/^https:\/\/monolithannex\.com\/invite\//, {
+          timeout: 15_000,
+        });
+      }
+
       await page.screenshot({ path: `e2e-results/${s.shot}.png`, fullPage: true });
     }
 
