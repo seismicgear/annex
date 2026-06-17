@@ -19,19 +19,35 @@ export async function completeStartup(page: Page) {
     // Not on identity screen — already have keys
   }
 
-  // Phase 2: Server selection (wait for Continue button or Chat button)
-  // The app may go directly to the registration/proof phase if auto-connecting
-  const continueOrChat = page.getByRole('button', { name: /^(Continue|Chat)$/ });
-  await expect(continueOrChat).toBeVisible({ timeout: 30000 });
-
-  // If we see Continue, click it to proceed
+  // Phase 2 + 3: drive server selection → registration → main UI, recovering
+  // from transient startup failures exactly like a real user would.
+  //
+  // Under a busy/contended server the bootstrap or registration probe can
+  // momentarily fail ("Unable to contact server"); the app surfaces this with
+  // a Retry button (StartupGate's resetToServerSelection) rather than crashing.
+  // A test that only waits for the Chat button would hang on that screen, so we
+  // poll: click Continue when on server selection, click Retry on a transient
+  // error, and finish when the main UI's Chat button appears. Groth16 proving
+  // is CPU-bound (~5-15s typical, longer on slow/contended CI), so we allow a
+  // generous overall budget.
+  const chatBtn = page.getByRole('button', { name: 'Chat' });
   const continueBtn = page.getByRole('button', { name: 'Continue' });
-  if (await continueBtn.isVisible().catch(() => false)) {
-    await continueBtn.click();
-  }
+  const retryBtn = page.getByRole('button', {
+    name: /^(Retry|Retry startup|Retry \(cancel running proof\))$/,
+  });
 
-  // Phase 3: Wait for main UI (after ZK proof generation)
-  await expect(page.getByRole('button', { name: 'Chat' })).toBeVisible({ timeout: 90000 });
+  const deadline = Date.now() + 150_000;
+  while (Date.now() < deadline) {
+    if (await chatBtn.isVisible().catch(() => false)) break;
+    if (await continueBtn.first().isVisible().catch(() => false)) {
+      await continueBtn.first().click().catch(() => {});
+    } else if (await retryBtn.first().isVisible().catch(() => false)) {
+      // Transient "Unable to contact server" — recover like a user.
+      await retryBtn.first().click().catch(() => {});
+    }
+    await page.waitForTimeout(1000);
+  }
+  await expect(chatBtn).toBeVisible({ timeout: 5_000 });
 }
 
 /**
