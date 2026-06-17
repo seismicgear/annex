@@ -54,6 +54,9 @@ test.describe('Admin & channel management (founder)', () => {
         await expect(inviteLink).toHaveValue(/^https:\/\/monolithannex\.com\/invite\//, {
           timeout: 15_000,
         });
+        // Focused evidence of the generated marketing-site invite link.
+        await inviteLink.scrollIntoViewIfNeeded();
+        await page.screenshot({ path: 'e2e-results/admin-invite-link.png' });
       }
 
       await page.screenshot({ path: `e2e-results/${s.shot}.png`, fullPage: true });
