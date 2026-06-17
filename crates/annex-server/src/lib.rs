@@ -16,6 +16,7 @@ pub mod api;
 pub mod api_admin;
 pub mod api_agent;
 pub mod api_channels;
+pub mod api_e2e;
 pub mod api_federation;
 pub mod api_graph;
 pub mod api_invite;

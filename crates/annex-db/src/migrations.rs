@@ -179,6 +179,10 @@ const MIGRATIONS: &[Migration] = &[
         name: "040_message_request_ids_created_idx",
         sql: include_str!("migrations/040_message_request_ids_created_idx.sql"),
     },
+    Migration {
+        name: "041_e2e_channel_keys",
+        sql: include_str!("migrations/041_e2e_channel_keys.sql"),
+    },
 ];
 
 /// Errors that can occur during migration execution.
