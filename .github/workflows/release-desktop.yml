@@ -14,6 +14,14 @@ on:
         options:
           - "false"
           - "true"
+      allow_dev_ceremony:
+        description: "Build installers with dev-fixture ZK keys (staging / packaging dry-run only — NOT a real release)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 env:
   CARGO_TERM_COLOR: always
@@ -26,6 +34,12 @@ jobs:
   build-linux:
     name: Build (Linux x86_64, required)
     runs-on: ubuntu-22.04
+    # Staging / packaging dry-run opt-in: when dispatched with
+    # allow_dev_ceremony=true, the production ZK gate is allowed to proceed on
+    # the pinned dev-fixture manifest so we can prove the bundler produces a
+    # working installer. Empty string => not opted in (tag releases stay strict).
+    env:
+      ANNEX_ALLOW_DEV_CEREMONY: ${{ (github.event_name == 'workflow_dispatch' && inputs.allow_dev_ceremony == 'true') && '1' || '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -111,6 +125,8 @@ jobs:
   build-windows:
     name: Build (Windows x86_64, required)
     runs-on: windows-latest
+    env:
+      ANNEX_ALLOW_DEV_CEREMONY: ${{ (github.event_name == 'workflow_dispatch' && inputs.allow_dev_ceremony == 'true') && '1' || '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -182,6 +198,8 @@ jobs:
           - target: x86_64-apple-darwin
             arch: x86_64
     runs-on: macos-latest
+    env:
+      ANNEX_ALLOW_DEV_CEREMONY: ${{ (github.event_name == 'workflow_dispatch' && inputs.allow_dev_ceremony == 'true') && '1' || '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -232,7 +250,9 @@ jobs:
   release:
     needs: [build-linux, build-windows]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    # Only real tag pushes publish a release. A dev-fixture (staging) dry-run
+    # must never be turned into a GitHub Release, even if dispatched on a tag.
+    if: ${{ startsWith(github.ref, 'refs/tags/') && !(github.event_name == 'workflow_dispatch' && inputs.allow_dev_ceremony == 'true') }}
     permissions:
       contents: write
 
