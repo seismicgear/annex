@@ -134,7 +134,7 @@ export async function importIdentity(json: string): Promise<StoredIdentity> {
  * connection handles so subsequent calls re-open fresh databases.
  */
 export async function clearAllDatabases(): Promise<void> {
-  const DB_NAMES = ['annex-identity', 'annex-servers', 'annex-personas'];
+  const DB_NAMES = ['annex-identity', 'annex-servers', 'annex-personas', 'annex-e2e'];
   // Close all cached connection handles so subsequent calls re-open fresh databases.
   dbPromise = null;
   // Also reset handles in the servers and personas modules.
@@ -146,6 +146,10 @@ export async function clearAllDatabases(): Promise<void> {
   try {
     const { resetDbHandle: resetPersonasDb } = await import('@/lib/personas');
     resetPersonasDb();
+  } catch { /* module may not be loaded yet */ }
+  try {
+    const { resetE2eDbHandle } = await import('@/lib/e2e-store');
+    resetE2eDbHandle();
   } catch { /* module may not be loaded yet */ }
   for (const name of DB_NAMES) {
     try {

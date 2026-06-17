@@ -102,3 +102,14 @@ export {
   revokeUsernameGrant,
   setUsername,
 } from '@/api/usernames';
+
+export type { KeyWrapRecord, KeyWrapUpload, MemberKey } from '@/api/e2e';
+export {
+  getChannelE2e,
+  getChannelKeyWraps,
+  getChannelMemberKeys,
+  getMemberKey,
+  postChannelKeyWraps,
+  publishMyKey,
+  setChannelE2e,
+} from '@/api/e2e';
