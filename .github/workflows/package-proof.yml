@@ -1,30 +1,43 @@
-name: Release Desktop App
+name: Package Proof
+
+# Produces installable desktop artifacts on every platform to PROVE the Tauri
+# bundler works end to end: .deb + .AppImage (Linux), NSIS .exe + .msi
+# (Windows), and .dmg (macOS).
+#
+# This is deliberately SEPARATE from release-desktop.yml. A real release pins
+# multi-party trusted-setup ZK artifacts and refuses dev-fixture keys
+# (verify-artifacts.js under ANNEX_BUILD_PROFILE=production). Packaging
+# correctness, however, is independent of key provenance: the installer
+# layout, resource bundling, deep-link registration, and NSIS install/uninstall
+# hooks are identical whichever keys are inside. This workflow therefore builds
+# under ANNEX_BUILD_PROFILE=dev with freshly generated dev-fixture keys — the
+# same path ci.yml's desktop jobs already validate green — and uploads the
+# resulting installers so they can be downloaded, installed, and uninstalled.
+#
+# The artifacts produced here are NOT a production release: their ZK keys are
+# random-entropy dev fixtures. Do not distribute them to end users.
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
       include_macos:
-        description: "Include macOS desktop build (deferred / non-blocking)"
+        description: "Include macOS installers (.dmg)"
         required: false
-        default: "false"
+        default: "true"
         type: choice
         options:
-          - "false"
           - "true"
+          - "false"
 
 env:
   CARGO_TERM_COLOR: always
-  # `production` makes scripts/build-desktop.js call zk/scripts/verify-artifacts.js
-  # against the pinned manifest. Refusing to skip is the whole point of release.
-  ANNEX_BUILD_PROFILE: production
+  # dev-fixture keys; this proves packaging, not key provenance. build-desktop.js
+  # generates keys on demand under this profile and skips the production gate.
+  ANNEX_BUILD_PROFILE: dev
 
 jobs:
-  # ── Required platforms: Linux + Windows. A failure here fails the release. ──
-  build-linux:
-    name: Build (Linux x86_64, required)
+  linux:
+    name: Package (Linux x86_64)
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -36,13 +49,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: x86_64-unknown-linux-gnu
+          key: pkg-linux
 
-      # Tauri 2 ships against webkit2gtk-4.1, NOT 4.0. The package for the
-      # JavaScriptCore bindings has the `lib` prefix on Ubuntu — without it
-      # the install fails with "Unable to locate package javascriptcoregtk-4.1-dev".
-      # `xdg-desktop-portal` is a runtime portal, not a build-time dep, so we
-      # do NOT install it here (and `libxdg-desktop-portal-dev` doesn't exist).
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
@@ -76,30 +84,27 @@ jobs:
             client/package-lock.json
             zk/package-lock.json
 
-      # Production builds REQUIRE pinned ZK artifacts that match the manifest
-      # SHA-256 hashes. We do NOT regenerate keys here — the manifest +
-      # tracked-in-git artifacts are the source of truth.
-      #
-      # While the pinned manifest still says ceremony.type="dev-fixture",
-      # this step exits non-zero (code 3) by design — the production gate
-      # refuses to certify random-entropy keys for release. Don't bypass
-      # it with ANNEX_ALLOW_DEV_CEREMONY=1 for a public tag. See
-      # scripts/verify-production-rejects-dev-fixtures.sh for a standalone
-      # proof of that behaviour.
-      - name: Verify pinned ZK artifacts
-        run: node scripts/verify-artifacts.js
+      - name: Generate ZK keys (dev-fixture entropy)
+        run: |
+          npm ci
+          node scripts/build-circuits.js
+          node scripts/setup-groth16.js
         working-directory: zk
+
+      - name: Install client dependencies
+        run: npm ci
+        working-directory: client
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli@2.11.2 --locked
 
-      - name: Build Tauri app (Linux)
+      - name: Build installers (Linux)
         working-directory: crates/annex-desktop
-        run: cargo tauri build --target x86_64-unknown-linux-gnu
+        run: cargo tauri build --target x86_64-unknown-linux-gnu --bundles deb,appimage
         env:
           TAURI_SIGNING_PRIVATE_KEY: ""
 
-      - name: Upload Linux artifacts
+      - name: Upload Linux installers
         uses: actions/upload-artifact@v4
         with:
           name: annex-linux-x86_64
@@ -108,8 +113,8 @@ jobs:
             target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
           if-no-files-found: error
 
-  build-windows:
-    name: Build (Windows x86_64, required)
+  windows:
+    name: Package (Windows x86_64)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -121,7 +126,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: x86_64-pc-windows-msvc
+          key: pkg-windows
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -139,22 +144,30 @@ jobs:
             -property installationPath
         shell: pwsh
 
-      - name: Verify pinned ZK artifacts
+      - name: Generate ZK keys (dev-fixture entropy)
         shell: bash
-        run: node scripts/verify-artifacts.js
+        run: |
+          npm ci
+          node scripts/build-circuits.js
+          node scripts/setup-groth16.js
         working-directory: zk
+
+      - name: Install client dependencies
+        run: npm ci
+        working-directory: client
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli@2.11.2 --locked
 
-      - name: Build Tauri app (Windows)
+      - name: Build installers (Windows)
         working-directory: crates/annex-desktop
-        run: cargo tauri build --target x86_64-pc-windows-msvc
+        shell: bash
+        run: cargo tauri build --target x86_64-pc-windows-msvc --bundles nsis,msi
         env:
           CMAKE_ARGS: -DCMAKE_POLICY_VERSION_MINIMUM=3.5
           TAURI_SIGNING_PRIVATE_KEY: ""
 
-      - name: Upload Windows artifacts
+      - name: Upload Windows installers
         uses: actions/upload-artifact@v4
         with:
           name: annex-windows-x86_64
@@ -163,15 +176,9 @@ jobs:
             target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
           if-no-files-found: error
 
-  # ── Deferred platform: macOS. Opt-in via workflow_dispatch only. ──
-  # We don't run macOS automatically on tag pushes — the toolchain isn't
-  # validated by every PR (see ci.yml). When the user explicitly asks
-  # for it (workflow_dispatch with include_macos=true) we run it but
-  # `continue-on-error` keeps a Mac-side breakage from blocking the
-  # Linux + Windows release.
-  build-macos:
-    name: Build (macOS, deferred)
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.include_macos == 'true' }}
+  macos:
+    name: Package (macOS)
+    if: ${{ inputs.include_macos == 'true' }}
     continue-on-error: true
     strategy:
       fail-fast: false
@@ -192,7 +199,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          key: pkg-macos-${{ matrix.arch }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -203,56 +210,30 @@ jobs:
             client/package-lock.json
             zk/package-lock.json
 
-      - name: Verify pinned ZK artifacts
-        run: node scripts/verify-artifacts.js
+      - name: Generate ZK keys (dev-fixture entropy)
+        run: |
+          npm ci
+          node scripts/build-circuits.js
+          node scripts/setup-groth16.js
         working-directory: zk
+
+      - name: Install client dependencies
+        run: npm ci
+        working-directory: client
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli@2.11.2 --locked
 
-      - name: Build Tauri app (macOS)
+      - name: Build installers (macOS)
         working-directory: crates/annex-desktop
-        run: cargo tauri build --target ${{ matrix.target }}
+        run: cargo tauri build --target ${{ matrix.target }} --bundles dmg,app
         env:
           TAURI_SIGNING_PRIVATE_KEY: ""
 
-      - name: Upload macOS artifacts
+      - name: Upload macOS installers
         uses: actions/upload-artifact@v4
         with:
           name: annex-macos-${{ matrix.arch }}
           path: |
             target/${{ matrix.target }}/release/bundle/dmg/*.dmg
           if-no-files-found: warn
-
-  # The release job depends only on the required platforms. macOS is opt-in
-  # and `continue-on-error: true`, so its failure does not block the GitHub
-  # Release. If the user dispatched with include_macos=true and the macOS
-  # build did produce artifacts, they'll be picked up by download-artifact
-  # via the artifacts/** glob below.
-  release:
-    needs: [build-linux, build-windows]
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-    permissions:
-      contents: write
-
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: List artifacts
-        run: find artifacts -type f | sort
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          draft: true
-          generate_release_notes: true
-          files: |
-            artifacts/**/*.deb
-            artifacts/**/*.AppImage
-            artifacts/**/*.exe
-            artifacts/**/*.msi
-            artifacts/**/*.dmg
