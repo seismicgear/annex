@@ -6,6 +6,18 @@
 //! cryptographic verifier callback is part of the constructor, BUT
 //! **no caller in the workspace currently instantiates it**.
 //!
+//! ### Metadata-hardened signaling
+//!
+//! The transport addresses peers by a ROTATING rendezvous tag
+//! ([`crate::metadata::rendezvous_tag_for`]) rather than a stable slug, and
+//! leaves `from_server_slug`/`to_server_slug` blank on the wire, so the relay
+//! never sees the slug graph and cannot link a peer across hourly buckets. SDPs
+//! are sealed AND length-padded ([`crate::metadata::seal_padded_to`]) so the
+//! relay sees only constant-size ciphertext. Peers are keyed internally by their
+//! Ed25519 public key (a stable, privacy-preserving identifier). Because slugs
+//! are blank, a wired-in `signal_verifier` MUST authorise the sender by
+//! `from_pubkey_hex` (consulting `instances`/`federation_agreements`), not slug.
+//!
 //! Until a caller is wired in, the production server does NOT use this
 //! transport — federation traffic continues to flow over the existing
 //! HTTP federation routes (`/api/federation/*`), which have their own
@@ -34,7 +46,10 @@
 //! See `crates/annex-federation/src/signal.rs::SignalingPayload` for
 //! the wire format and `api/signal.js` for the relay-side gates.
 
-use crate::seal::{open as seal_open, seal as seal_seal, SealError};
+use crate::metadata::{
+    current_bucket, open_padded_from, rendezvous_tag_for, rendezvous_tag_for_now, seal_padded_to,
+};
+use crate::seal::SealError;
 use crate::signal::{SignalClient, SignalError, SignalingPayload};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use ed25519_dalek::{SigningKey, VerifyingKey};
@@ -95,18 +110,19 @@ fn verifying_key_from_hex(hex: &str) -> Result<VerifyingKey, TransportError> {
     VerifyingKey::from_bytes(&arr).map_err(|e| TransportError::Seal(e.to_string()))
 }
 
-/// Seal an SDP for `recipient` and base64-encode it for the `sdp` wire field.
-/// The relay only ever sees this opaque blob — never the ICE candidates / IPs.
+/// Seal an SDP for `recipient` (length-padded) and base64-encode it for the
+/// `sdp` wire field. The relay only ever sees this opaque, constant-size blob —
+/// never the ICE candidates / IPs, and never the payload's true length.
 fn seal_sdp(sdp: &str, recipient: &VerifyingKey) -> Result<String, TransportError> {
-    Ok(BASE64.encode(seal_seal(sdp.as_bytes(), recipient)?))
+    Ok(BASE64.encode(seal_padded_to(sdp.as_bytes(), recipient)?))
 }
 
-/// Reverse of [`seal_sdp`]: base64-decode then open with our own key.
+/// Reverse of [`seal_sdp`]: base64-decode, open with our own key, strip padding.
 fn open_sdp(sealed_b64: &str, me: &SigningKey) -> Result<String, TransportError> {
     let blob = BASE64
         .decode(sealed_b64.as_bytes())
         .map_err(|_| TransportError::Seal("sealed sdp is not valid base64".to_string()))?;
-    let plain = seal_open(&blob, me)?;
+    let plain = open_padded_from(&blob, me)?;
     String::from_utf8(plain)
         .map_err(|_| TransportError::Seal("sealed sdp was not utf-8".to_string()))
 }
@@ -159,10 +175,28 @@ impl FederationTransport {
         }
     }
 
+    /// Our own rotating rendezvous tag for a given bucket — the queue peers post
+    /// offers/answers to when addressing us.
+    fn own_tag(&self, bucket: u64) -> String {
+        rendezvous_tag_for(&self.local_signing_key.verifying_key(), bucket)
+    }
+
     pub fn spawn_signal_listener(self: Arc<Self>) {
         tokio::spawn(async move {
             loop {
-                match self.signal.poll_signal(&self.local_server_slug, 55).await {
+                let bucket = current_bucket();
+                // Drain any stragglers addressed to the previous bucket (a peer
+                // that posted just before the hourly rollover), then long-poll
+                // the current bucket. This tolerates clock skew at boundaries.
+                let prev_tag = self.own_tag(bucket.saturating_sub(1));
+                while let Ok(Some(payload)) = self.signal.poll_signal(&prev_tag, 0).await {
+                    if let Err(err) = self.handle_signal_payload(payload).await {
+                        tracing::warn!(error = %err, "failed to process inbound federation signal");
+                    }
+                }
+
+                let cur_tag = self.own_tag(bucket);
+                match self.signal.poll_signal(&cur_tag, 55).await {
                     Ok(Some(payload)) => {
                         if let Err(err) = self.handle_signal_payload(payload).await {
                             tracing::warn!(error = %err, "failed to process inbound federation signal");
@@ -184,9 +218,11 @@ impl FederationTransport {
         remote_pubkey_hex: &str,
     ) -> Result<(), TransportError> {
         let recipient = verifying_key_from_hex(remote_pubkey_hex)?;
-        let pc = self
-            .build_peer_connection(remote_server_slug.to_string())
-            .await?;
+        // Peers are keyed by their Ed25519 public key (stable, privacy-preserving)
+        // rather than the slug, which is blanked on the wire. `remote_server_slug`
+        // is retained in the signature for callers/logging only.
+        let peer_id = remote_pubkey_hex.to_string();
+        let pc = self.build_peer_connection(peer_id.clone()).await?;
 
         let dc = pc
             .create_data_channel(
@@ -198,8 +234,7 @@ impl FederationTransport {
             )
             .await
             .map_err(|e| TransportError::WebRtc(e.to_string()))?;
-        self.bind_data_channel(remote_server_slug.to_string(), dc.clone())
-            .await;
+        self.bind_data_channel(peer_id.clone(), dc.clone()).await;
 
         let offer = pc
             .create_offer(None)
@@ -217,15 +252,15 @@ impl FederationTransport {
             .insert(session_id.clone(), tx);
 
         let mut offer_payload = SignalingPayload {
-            from_server_slug: self.local_server_slug.clone(),
-            to_server_slug: remote_server_slug.to_string(),
-            // Legacy slug addressing for the (experimental) transport; the relay
-            // and wire protocol support rotating tags (crate::metadata) for the
-            // metadata-hardened path.
-            rendezvous_tag: String::new(),
+            // Slugs blanked: the relay must not learn who is talking to whom.
+            from_server_slug: String::new(),
+            to_server_slug: String::new(),
+            // Address the recipient's rotating queue (hides the graph, rotates
+            // hourly). The tag is part of the signed canonical string.
+            rendezvous_tag: rendezvous_tag_for_now(&recipient),
             session_id: session_id.clone(),
             sdp_type: "offer".to_string(),
-            // Sealed to the recipient: the relay forwards opaque ciphertext.
+            // Sealed + length-padded: the relay sees a constant-size opaque blob.
             sdp: seal_sdp(&offer.sdp, &recipient)?,
             sent_at_ms: chrono::Utc::now().timestamp_millis(),
             from_pubkey_hex: self.local_public_key_hex.clone(),
@@ -254,22 +289,19 @@ impl FederationTransport {
             .await
             .map_err(|e| TransportError::WebRtc(e.to_string()))?;
 
-        self.peers
-            .write()
-            .await
-            .insert(remote_server_slug.to_string(), pc);
+        self.peers.write().await.insert(peer_id, pc);
 
         Ok(())
     }
 
     pub async fn relay_message(
         &self,
-        remote_server_slug: &str,
+        peer_id: &str,
         envelope_json: &str,
     ) -> Result<(), TransportError> {
         let channels = self.channels.read().await;
-        let Some(dc) = channels.get(remote_server_slug) else {
-            return Err(TransportError::NotConnected(remote_server_slug.to_string()));
+        let Some(dc) = channels.get(peer_id) else {
+            return Err(TransportError::NotConnected(peer_id.to_string()));
         };
 
         dc.send_text(envelope_json)
@@ -279,7 +311,10 @@ impl FederationTransport {
     }
 
     async fn handle_signal_payload(&self, payload: SignalingPayload) -> Result<(), TransportError> {
-        if payload.to_server_slug != self.local_server_slug {
+        // Tag-addressed payloads arrived in OUR rotating queue, so they are for
+        // us by construction (and carry blank slugs). Only the legacy slug path
+        // needs the explicit addressee check.
+        if payload.rendezvous_tag.is_empty() && payload.to_server_slug != self.local_server_slug {
             return Err(TransportError::WebRtc(
                 "signaling payload addressed to a different server".to_string(),
             ));
@@ -318,14 +353,14 @@ impl FederationTransport {
     }
 
     async fn handle_offer(&self, payload: SignalingPayload) -> Result<(), TransportError> {
-        // The offerer's identity key — used to seal our answer back to them.
+        // The offerer's identity key — used to seal our answer back to them, to
+        // address their rotating queue, and as the peer-map key.
         let offerer = verifying_key_from_hex(&payload.from_pubkey_hex)?;
+        let peer_id = payload.from_pubkey_hex.clone();
         // Open the sealed offer locally; the relay never saw this plaintext.
         let offer_sdp = open_sdp(&payload.sdp, &self.local_signing_key)?;
 
-        let pc = self
-            .build_peer_connection(payload.from_server_slug.clone())
-            .await?;
+        let pc = self.build_peer_connection(peer_id.clone()).await?;
 
         let offer = RTCSessionDescription::offer(offer_sdp)
             .map_err(|e| TransportError::WebRtc(e.to_string()))?;
@@ -342,12 +377,14 @@ impl FederationTransport {
             .map_err(|e| TransportError::WebRtc(e.to_string()))?;
 
         let mut answer_payload = SignalingPayload {
-            from_server_slug: self.local_server_slug.clone(),
-            to_server_slug: payload.from_server_slug.clone(),
-            rendezvous_tag: String::new(),
+            // Slugs blanked; address the offerer's rotating queue.
+            from_server_slug: String::new(),
+            to_server_slug: String::new(),
+            rendezvous_tag: rendezvous_tag_for_now(&offerer),
             session_id: payload.session_id,
             sdp_type: "answer".to_string(),
-            // Sealed to the offerer: the relay forwards opaque ciphertext.
+            // Sealed + length-padded to the offerer: the relay sees opaque,
+            // constant-size ciphertext.
             sdp: seal_sdp(&answer.sdp, &offerer)?,
             sent_at_ms: chrono::Utc::now().timestamp_millis(),
             from_pubkey_hex: self.local_public_key_hex.clone(),
@@ -359,16 +396,13 @@ impl FederationTransport {
             })?;
         self.signal.post_signal(&answer_payload).await?;
 
-        self.peers
-            .write()
-            .await
-            .insert(payload.from_server_slug, pc);
+        self.peers.write().await.insert(peer_id, pc);
         Ok(())
     }
 
     async fn build_peer_connection(
         &self,
-        remote_slug: String,
+        peer_id: String,
     ) -> Result<Arc<RTCPeerConnection>, TransportError> {
         let api = APIBuilder::new().build();
         let pc = Arc::new(
@@ -385,7 +419,7 @@ impl FederationTransport {
 
         let channels = self.channels.clone();
         let handler = self.inbound_handler.clone();
-        let remote_for_dc = remote_slug.clone();
+        let remote_for_dc = peer_id.clone();
         pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
             let channels = channels.clone();
             let handler = handler.clone();
@@ -410,8 +444,8 @@ impl FederationTransport {
         Ok(pc)
     }
 
-    async fn bind_data_channel(&self, remote_slug: String, dc: Arc<RTCDataChannel>) {
-        self.channels.write().await.insert(remote_slug, dc.clone());
+    async fn bind_data_channel(&self, peer_id: String, dc: Arc<RTCDataChannel>) {
+        self.channels.write().await.insert(peer_id, dc.clone());
         let handler = self.inbound_handler.clone();
         dc.on_message(Box::new(move |msg| {
             let handler = handler.clone();
@@ -421,5 +455,47 @@ impl FederationTransport {
                 }
             })
         }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::metadata::rendezvous_tag_for;
+    use ed25519_dalek::SigningKey;
+    use rand::rngs::OsRng;
+
+    #[test]
+    fn sealed_sdp_hides_ip_and_length_and_round_trips() {
+        let sk = SigningKey::generate(&mut OsRng);
+        let vk = sk.verifying_key();
+        let sdp = "v=0\r\na=candidate:1 1 udp 2122260223 203.0.113.7 54321 typ host";
+        let sealed = seal_sdp(sdp, &vk).unwrap();
+        // The relay never sees the IP inside the SDP.
+        assert!(!sealed.contains("203.0.113.7"));
+        // Padding makes the wire length independent of the SDP size.
+        let big = "x".repeat(2000);
+        assert_eq!(sealed.len(), seal_sdp(&big, &vk).unwrap().len());
+        // The addressed recipient recovers the exact SDP.
+        assert_eq!(open_sdp(&sealed, &sk).unwrap(), sdp);
+    }
+
+    #[test]
+    fn a_non_recipient_cannot_open_the_sdp() {
+        let sk = SigningKey::generate(&mut OsRng);
+        let other = SigningKey::generate(&mut OsRng);
+        let sealed = seal_sdp("v=0\r\n...", &sk.verifying_key()).unwrap();
+        assert!(open_sdp(&sealed, &other).is_err());
+    }
+
+    #[test]
+    fn sender_and_recipient_derive_the_same_rendezvous_tag() {
+        // What a sender addresses (recipient's identity key) equals what the
+        // recipient polls (its own key) — so tag-based routing actually meets.
+        let recipient = SigningKey::generate(&mut OsRng);
+        let recipient_vk = recipient.verifying_key();
+        let sender_addresses = rendezvous_tag_for(&recipient_vk, 1234);
+        let recipient_polls = rendezvous_tag_for(&recipient.verifying_key(), 1234);
+        assert_eq!(sender_addresses, recipient_polls);
     }
 }

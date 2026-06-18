@@ -52,6 +52,13 @@ fn x25519_public_from_ed25519(vk: &VerifyingKey) -> XPublic {
     XPublic::from(vk.to_montgomery().to_bytes())
 }
 
+/// Public-facing: the raw 32-byte X25519 public key for an Ed25519 verifying
+/// key. Used by [`crate::metadata`] to derive a peer's rendezvous tag from the
+/// identity key already used to seal to them.
+pub fn x25519_public_from_verifying_key(vk: &VerifyingKey) -> [u8; 32] {
+    x25519_public_from_ed25519(vk).to_bytes()
+}
+
 /// Recipient's X25519 secret, derived from its Ed25519 signing key
 /// (`crypto_sign_ed25519_sk_to_curve25519`: clamped low half of SHA-512(seed)).
 fn x25519_secret_from_ed25519(sk: &SigningKey) -> XSecret {

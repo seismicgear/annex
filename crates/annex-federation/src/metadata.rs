@@ -20,8 +20,12 @@
 //!    traffic so a peer can post/poll on a steady cadence whether or not it has
 //!    a real session, hiding *when* federation actually happens.
 
-use crate::seal::{open_x25519, seal_x25519, SealError};
+use crate::seal::{
+    open as seal_open, open_x25519, seal as seal_seal, seal_x25519,
+    x25519_public_from_verifying_key, SealError,
+};
 use base64::Engine;
+use ed25519_dalek::{SigningKey, VerifyingKey};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 
@@ -67,6 +71,18 @@ pub fn rendezvous_tag_now(recipient_pub: &[u8; 32]) -> String {
     rendezvous_tag(recipient_pub, current_bucket())
 }
 
+/// The rendezvous tag for a peer identified by its Ed25519 verifying key — the
+/// same identity key used to seal payloads to it. Lets the signaling transport
+/// address a peer's rotating queue without any extra key exchange.
+pub fn rendezvous_tag_for(recipient: &VerifyingKey, bucket: u64) -> String {
+    rendezvous_tag(&x25519_public_from_verifying_key(recipient), bucket)
+}
+
+/// Convenience: [`rendezvous_tag_for`] in the current bucket.
+pub fn rendezvous_tag_for_now(recipient: &VerifyingKey) -> String {
+    rendezvous_tag_for(recipient, current_bucket())
+}
+
 /// Pad `plaintext` to a multiple of [`PAD_BLOCK`] with a length prefix so the
 /// original can be recovered exactly. Layout: `len(4, LE) ‖ plaintext ‖ zeros`.
 fn pad(plaintext: &[u8]) -> Vec<u8> {
@@ -102,6 +118,18 @@ pub fn seal_padded(plaintext: &[u8], recipient_pub: &[u8; 32]) -> Result<Vec<u8>
 pub fn open_padded(blob: &[u8], recipient_secret: &[u8; 32]) -> Result<Vec<u8>, SealError> {
     let padded = open_x25519(blob, recipient_secret)?;
     unpad(&padded)
+}
+
+/// Length-hiding seal to a peer's Ed25519 identity key (the recipient model the
+/// federation transport uses). Pads to a fixed block, then seals with the
+/// Ed25519→X25519 sealed box, so the relay sees a constant-size opaque blob.
+pub fn seal_padded_to(plaintext: &[u8], recipient: &VerifyingKey) -> Result<Vec<u8>, SealError> {
+    seal_seal(&pad(plaintext), recipient)
+}
+
+/// Open a blob produced by [`seal_padded_to`] with our Ed25519 signing key.
+pub fn open_padded_from(blob: &[u8], recipient: &SigningKey) -> Result<Vec<u8>, SealError> {
+    unpad(&seal_open(blob, recipient)?)
 }
 
 /// Cover traffic: a sealed blob addressed to a random ephemeral key that no one
@@ -195,6 +223,29 @@ mod tests {
         let one_block = seal_padded(&[1u8; 100], &p).unwrap();
         let two_block = seal_padded(&[1u8; PAD_BLOCK], &p).unwrap();
         assert_eq!(two_block.len(), one_block.len() + PAD_BLOCK);
+    }
+
+    #[test]
+    fn ed25519_padded_seal_round_trips_and_hides_length() {
+        use ed25519_dalek::SigningKey;
+        use rand::rngs::OsRng;
+        let sk = SigningKey::generate(&mut OsRng);
+        let vk = sk.verifying_key();
+        let short = seal_padded_to(b"v=0", &vk).unwrap();
+        let long = seal_padded_to(&[b'y'; 2000], &vk).unwrap();
+        assert_eq!(short.len(), long.len(), "padded length must not leak size");
+        assert_eq!(open_padded_from(&short, &sk).unwrap(), b"v=0");
+        assert_eq!(open_padded_from(&long, &sk).unwrap(), vec![b'y'; 2000]);
+    }
+
+    #[test]
+    fn tag_for_verifying_key_matches_raw_tag() {
+        use ed25519_dalek::SigningKey;
+        use rand::rngs::OsRng;
+        let sk = SigningKey::generate(&mut OsRng);
+        let vk = sk.verifying_key();
+        let raw_pub = x25519_public_from_verifying_key(&vk);
+        assert_eq!(rendezvous_tag_for(&vk, 9), rendezvous_tag(&raw_pub, 9));
     }
 
     #[test]

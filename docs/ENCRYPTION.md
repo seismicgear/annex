@@ -76,9 +76,13 @@ The signaling relay (`monolith-annex/api/signal.js`) was already *content*-blind
   there is no "decoy" flag at the relay — a decoy is just a normal signed
   envelope to a throwaway tag.
 
-The relay supports rotating-tag addressing today (`?tag=`, with `?slug=` legacy);
-wiring the (experimental) WebRTC transport to use tags/padding/decoys end-to-end
-is the remaining integration.
+The WebRTC transport (`crates/annex-federation/src/transport.rs`) now uses this
+end-to-end: it addresses peers by their rotating tag (polling its own
+current+previous bucket tags), blanks the slugs on the wire, seals **and pads**
+every SDP, and keys peers by their Ed25519 public key — so the relay sees only
+opaque, constant-size, unlinkable traffic. (The transport remains experimental:
+no production caller instantiates it yet, and a wired-in `signal_verifier` must
+authorise senders by pubkey since slugs are blank.)
 
 ## At scale (thousands of users)
 
