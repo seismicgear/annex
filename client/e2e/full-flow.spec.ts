@@ -10,22 +10,14 @@ import { completeStartup, joinAndSelectGeneral } from './helpers';
 
 test.describe('Full Flow', () => {
   test('identity → server → main chat UI', async ({ page }) => {
-    await page.goto('/');
-
-    // Create identity
-    await page.getByRole('button', { name: 'Create New Identity' }).click();
-
-    // Select server
-    await expect(page.getByRole('button', { name: 'Continue' })).toBeVisible({ timeout: 30000 });
-    await page.getByRole('button', { name: 'Continue' }).click();
-
-    // Wait for ZK proof + registration
-    await expect(page.getByRole('button', { name: 'Chat' })).toBeVisible({ timeout: 90000 });
+    // completeStartup performs the same journey (create identity → choose
+    // server → ZK proof → main UI) but recovers from transient startup errors.
+    await completeStartup(page);
 
     // Verify main UI
     await expect(page.locator('.sidebar-left')).toBeVisible();
     await expect(page.locator('.chat-area')).toBeVisible();
-    await expect(page.getByText('General')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText('General').first()).toBeVisible({ timeout: 5000 });
   });
 
   test('can navigate tabs after startup', async ({ page }) => {
@@ -49,9 +41,12 @@ test.describe('Full Flow', () => {
 
     const input = page.getByPlaceholder('Type a message...');
     await expect(input).toBeVisible({ timeout: 5000 });
-    await input.fill('Hello from Playwright E2E test!');
+    // Unique per run so re-running against a persistent #General never collides
+    // (a fixed string resolves to multiple matches → strict-mode violation).
+    const message = `Hello from Playwright E2E test ${Date.now()}`;
+    await input.fill(message);
     await page.getByRole('button', { name: 'Send' }).click();
 
-    await expect(page.getByText('Hello from Playwright E2E test!')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText(message).first()).toBeVisible({ timeout: 15000 });
   });
 });

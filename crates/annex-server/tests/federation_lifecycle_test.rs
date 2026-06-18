@@ -355,7 +355,16 @@ async fn test_federation_full_lifecycle() {
             sender, local_pseudonym_id,
             "Message should be stored with local pseudonym, not remote"
         );
-        assert_eq!(content, "Hello from Server A!");
+        // Content is encrypted at rest: the raw column is ciphertext, and
+        // decrypting with the server's key recovers the plaintext.
+        assert_ne!(
+            content, "Hello from Server A!",
+            "federated message content should be encrypted at rest"
+        );
+        assert_eq!(
+            state.message_cipher().decrypt(&content),
+            "Hello from Server A!"
+        );
     }
 
     // =========================================================================

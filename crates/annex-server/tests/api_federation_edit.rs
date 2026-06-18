@@ -36,6 +36,7 @@ struct Harness {
     app: axum::Router,
     pool: DbPool,
     remote_key: SigningKey,
+    cipher: annex_server::at_rest::MessageCipher,
 }
 
 fn build_harness(seed_original_receipt: bool) -> Harness {
@@ -103,13 +104,15 @@ fn build_harness(seed_original_receipt: bool) -> Harness {
     drop(conn);
 
     let tree = MerkleTree::new(20).unwrap();
+    let signing_key = SigningKey::generate(&mut csprng);
+    let cipher = annex_server::at_rest::MessageCipher::from_signing_key(&signing_key.to_bytes());
     let state = AppState {
         pool: pool.clone(),
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: load_dummy_vkey(),
         membership_vkey_v2: None,
         server_id: local_server_id,
-        signing_key: Arc::new(SigningKey::generate(&mut csprng)),
+        signing_key: Arc::new(signing_key),
         public_url: Arc::new(RwLock::new("http://localhost:3000".to_string())),
         policy: Arc::new(RwLock::new(policy)),
         rate_limiter: RateLimiter::new(),
@@ -139,6 +142,7 @@ fn build_harness(seed_original_receipt: bool) -> Harness {
         app: app(state),
         pool,
         remote_key,
+        cipher,
     }
 }
 
@@ -197,14 +201,17 @@ async fn applied_flag(response: axum::response::Response) -> bool {
     json["applied"].as_bool().unwrap()
 }
 
-fn message_content(pool: &DbPool) -> (String, Option<String>) {
-    let conn = pool.get().unwrap();
-    conn.query_row(
-        "SELECT content, edited_at FROM messages WHERE message_id = ?1",
-        rusqlite::params![MESSAGE_ID],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )
-    .unwrap()
+fn message_content(h: &Harness) -> (String, Option<String>) {
+    let conn = h.pool.get().unwrap();
+    let (stored, edited): (String, Option<String>) = conn
+        .query_row(
+            "SELECT content, edited_at FROM messages WHERE message_id = ?1",
+            rusqlite::params![MESSAGE_ID],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    // Content is encrypted at rest; decrypt to assert on the plaintext.
+    (h.cipher.decrypt(&stored), edited)
 }
 
 fn audit_rows(pool: &DbPool) -> i64 {
@@ -232,7 +239,7 @@ async fn valid_edit_applies_and_replay_is_idempotent() {
     assert_eq!(response.status(), StatusCode::OK);
     assert!(applied_flag(response).await);
 
-    let (content, edited_at) = message_content(&h.pool);
+    let (content, edited_at) = message_content(&h);
     assert_eq!(content, "edited content");
     assert!(edited_at.is_some());
     assert_eq!(audit_rows(&h.pool), 1, "prior content must be audited");
@@ -254,7 +261,7 @@ async fn tampered_signature_is_rejected() {
     // InvalidSignature maps to 401, same as the message-envelope path.
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
-    let (content, _) = message_content(&h.pool);
+    let (content, _) = message_content(&h);
     assert_eq!(content, "original federated content");
 }
 
@@ -266,7 +273,7 @@ async fn edit_without_original_receipt_is_rejected() {
     let response = post_edit(h.app.clone(), &envelope).await;
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
-    let (content, _) = message_content(&h.pool);
+    let (content, _) = message_content(&h);
     assert_eq!(content, "original federated content");
 }
 
@@ -284,7 +291,7 @@ async fn non_sender_editor_is_rejected() {
     let response = post_edit(h.app.clone(), &envelope).await;
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
-    let (content, _) = message_content(&h.pool);
+    let (content, _) = message_content(&h);
     assert_eq!(content, "original federated content");
 }
 
@@ -314,7 +321,7 @@ async fn edit_never_resurrects_a_deleted_message() {
     assert_eq!(response.status(), StatusCode::OK);
     assert!(!applied_flag(response).await, "tombstone must win");
 
-    let (content, _) = message_content(&h.pool);
+    let (content, _) = message_content(&h);
     assert_eq!(content, "", "deleted content must stay blank");
 }
 
@@ -349,7 +356,7 @@ async fn out_of_order_older_edit_does_not_regress_newer_content() {
         "an out-of-order older edit must not be applied"
     );
 
-    let (content, _) = message_content(&h.pool);
+    let (content, _) = message_content(&h);
     assert_eq!(content, "newer content");
     assert_eq!(
         audit_rows(&h.pool),

@@ -9,6 +9,14 @@ const DEFAULT_SIGNAL_BASE_URL: &str = "https://router.monolithannex.com";
 pub struct SignalingPayload {
     pub from_server_slug: String,
     pub to_server_slug: String,
+    /// Rotating, metadata-hardened rendezvous address (see
+    /// [`crate::metadata::rendezvous_tag`]). When non-empty it is the relay's
+    /// queue key instead of `to_server_slug`, so the relay never observes the
+    /// stable slug graph and cannot link a recipient across time buckets. It is
+    /// part of the signed canonical string, so the relay cannot re-address a
+    /// signed envelope. Empty string = legacy slug addressing.
+    #[serde(default)]
+    pub rendezvous_tag: String,
     /// Correlation id for one offer/answer exchange.
     pub session_id: String,
     /// SDP type: "offer" | "answer"
@@ -28,8 +36,9 @@ pub struct SignalingPayload {
     #[serde(default)]
     pub from_pubkey_hex: String,
     /// Ed25519 signature over the canonical signaling payload
-    ///   `from_server_slug|to_server_slug|session_id|sdp_type|sdp|sent_at_ms|from_pubkey_hex`
-    /// base64-encoded.
+    ///   `from_server_slug|to_server_slug|rendezvous_tag|session_id|sdp_type|sdp|sent_at_ms|from_pubkey_hex`
+    /// base64-encoded (`rendezvous_tag` is the empty string when absent). This
+    /// MUST match `api/signal.js` in the monolith-annex repo.
     pub vrp_signature: String,
 }
 

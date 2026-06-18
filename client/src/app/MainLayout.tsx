@@ -11,6 +11,7 @@
 import { useEffect, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
 import { AdminPanel } from '@/components/AdminPanel';
 import { ChannelList } from '@/components/ChannelList';
+import { ChannelEncryptionBar } from '@/components/ChannelEncryptionBar';
 import { EventLog } from '@/components/EventLog';
 import { FederationPanel } from '@/components/FederationPanel';
 import { MemberList } from '@/components/MemberList';
@@ -125,6 +126,7 @@ export function MainLayout({
             </aside>
             <main className="chat-area">
               <MessageSearch />
+              <ChannelEncryptionBar />
               <MessageView />
               <MessageInput />
             </main>

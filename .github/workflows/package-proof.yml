@@ -1,0 +1,239 @@
+name: Package Proof
+
+# Produces installable desktop artifacts on every platform to PROVE the Tauri
+# bundler works end to end: .deb + .AppImage (Linux), NSIS .exe + .msi
+# (Windows), and .dmg (macOS).
+#
+# This is deliberately SEPARATE from release-desktop.yml. A real release pins
+# multi-party trusted-setup ZK artifacts and refuses dev-fixture keys
+# (verify-artifacts.js under ANNEX_BUILD_PROFILE=production). Packaging
+# correctness, however, is independent of key provenance: the installer
+# layout, resource bundling, deep-link registration, and NSIS install/uninstall
+# hooks are identical whichever keys are inside. This workflow therefore builds
+# under ANNEX_BUILD_PROFILE=dev with freshly generated dev-fixture keys — the
+# same path ci.yml's desktop jobs already validate green — and uploads the
+# resulting installers so they can be downloaded, installed, and uninstalled.
+#
+# The artifacts produced here are NOT a production release: their ZK keys are
+# random-entropy dev fixtures. Do not distribute them to end users.
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_macos:
+        description: "Include macOS installers (.dmg)"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+env:
+  CARGO_TERM_COLOR: always
+  # dev-fixture keys; this proves packaging, not key provenance. build-desktop.js
+  # generates keys on demand under this profile and skips the production gate.
+  ANNEX_BUILD_PROFILE: dev
+
+jobs:
+  linux:
+    name: Package (Linux x86_64)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.88
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: pkg-linux
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            libgtk-3-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            libpipewire-0.3-dev \
+            patchelf
+
+      - name: Verify WebKitGTK version (>= 2.40 required for WebRTC)
+        run: |
+          version=$(pkg-config --modversion webkit2gtk-4.1)
+          echo "WebKitGTK version: $version"
+          major=$(echo "$version" | cut -d. -f1)
+          minor=$(echo "$version" | cut -d. -f2)
+          if [ "$major" -lt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -lt 40 ]; }; then
+            echo "::error::WebKitGTK $version is too old. WebRTC requires >= 2.40."
+            exit 1
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            client/package-lock.json
+            zk/package-lock.json
+
+      - name: Generate ZK keys (dev-fixture entropy)
+        run: |
+          npm ci
+          node scripts/build-circuits.js
+          node scripts/setup-groth16.js
+        working-directory: zk
+
+      - name: Install client dependencies
+        run: npm ci
+        working-directory: client
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli@2.11.2 --locked
+
+      - name: Build installers (Linux)
+        working-directory: crates/annex-desktop
+        run: cargo tauri build --target x86_64-unknown-linux-gnu --bundles deb,appimage
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ""
+
+      - name: Upload Linux installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: annex-linux-x86_64
+          path: |
+            target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
+            target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+
+  windows:
+    name: Package (Windows x86_64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.88
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: pkg-windows
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            client/package-lock.json
+            zk/package-lock.json
+
+      - name: Verify Visual Studio C++ workload
+        run: |
+          & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * `
+            -requires Microsoft.VisualStudio.Workload.NativeDesktop `
+            -property installationPath
+        shell: pwsh
+
+      - name: Generate ZK keys (dev-fixture entropy)
+        shell: bash
+        run: |
+          npm ci
+          node scripts/build-circuits.js
+          node scripts/setup-groth16.js
+        working-directory: zk
+
+      - name: Install client dependencies
+        run: npm ci
+        working-directory: client
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli@2.11.2 --locked
+
+      - name: Build installers (Windows)
+        working-directory: crates/annex-desktop
+        shell: bash
+        run: cargo tauri build --target x86_64-pc-windows-msvc --bundles nsis,msi
+        env:
+          CMAKE_ARGS: -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+          TAURI_SIGNING_PRIVATE_KEY: ""
+
+      - name: Upload Windows installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: annex-windows-x86_64
+          path: |
+            target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+            target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+          if-no-files-found: error
+
+  macos:
+    name: Package (macOS)
+    if: ${{ inputs.include_macos == 'true' }}
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            arch: arm64
+          - target: x86_64-apple-darwin
+            arch: x86_64
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.88
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: pkg-macos-${{ matrix.arch }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            client/package-lock.json
+            zk/package-lock.json
+
+      - name: Generate ZK keys (dev-fixture entropy)
+        run: |
+          npm ci
+          node scripts/build-circuits.js
+          node scripts/setup-groth16.js
+        working-directory: zk
+
+      - name: Install client dependencies
+        run: npm ci
+        working-directory: client
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli@2.11.2 --locked
+
+      - name: Build installers (macOS)
+        working-directory: crates/annex-desktop
+        run: cargo tauri build --target ${{ matrix.target }} --bundles dmg,app
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ""
+
+      - name: Upload macOS installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: annex-macos-${{ matrix.arch }}
+          path: |
+            target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          if-no-files-found: warn

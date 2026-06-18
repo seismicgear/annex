@@ -181,6 +181,16 @@ pub enum OutgoingMessage {
         #[serde(rename = "channelId")]
         channel_id: String,
     },
+    /// End-to-end encryption was toggled on a channel. Broadcast so clients that
+    /// already have the channel open switch to (or from) the E2E send path
+    /// immediately, instead of sending plaintext until they reload.
+    #[serde(rename = "channel_e2e_changed")]
+    ChannelE2eChanged {
+        #[serde(rename = "channelId")]
+        channel_id: String,
+        #[serde(rename = "e2eEnabled")]
+        e2e_enabled: bool,
+    },
     /// Resume acknowledgement — tells the client how many messages were replayed.
     #[serde(rename = "resumed")]
     Resumed {

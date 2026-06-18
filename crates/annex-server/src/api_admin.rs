@@ -9,6 +9,7 @@ use annex_observe::EventPayload;
 use annex_types::{Capabilities, ServerPolicy};
 use axum::{
     extract::{Extension, Json, Path, Query},
+    http::HeaderMap,
     response::{IntoResponse, Response},
     Json as AxumJson,
 };
@@ -342,10 +343,17 @@ pub async fn rename_server_handler(
 pub async fn get_server_handler(
     Extension(state): Extension<Arc<AppState>>,
     Extension(IdentityContext(identity)): Extension<IdentityContext>,
+    headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     if !identity.can_moderate {
         return Err(ApiError::Forbidden("insufficient permissions".to_string()));
     }
+
+    // Auto-detect (and persist) the public URL from the request when the
+    // operator hasn't configured one yet, so the admin sees a populated field
+    // and the client can immediately generate a monolithannex.com invite link.
+    let was_unset = state.get_public_url().is_empty();
+    let public_url = ensure_public_url(&state, &headers).await;
 
     let state_clone = state.clone();
     let (slug, label, description) = tokio::task::spawn_blocking(move || {
@@ -373,7 +381,8 @@ pub async fn get_server_handler(
         "slug": slug,
         "label": label,
         "description": description,
-        "public_url": state.get_public_url(),
+        "public_url": public_url,
+        "public_url_auto_detected": was_unset && !public_url.is_empty(),
     }))
     .into_response())
 }
@@ -385,11 +394,114 @@ pub struct SetPublicUrlRequest {
     pub public_url: String,
 }
 
+/// Derive the externally-visible base URL from the incoming request.
+///
+/// Honors reverse-proxy headers (`X-Forwarded-Proto` / `X-Forwarded-Host`) and
+/// falls back to the `Host` header. Loopback hosts default to `http`, everything
+/// else to `https` (production servers terminate TLS at a proxy). Returns `None`
+/// when no usable host header is present.
+pub(crate) fn derive_public_url_from_request(headers: &HeaderMap) -> Option<String> {
+    let first = |v: &axum::http::HeaderValue| {
+        v.to_str()
+            .ok()
+            .map(|s| s.split(',').next().unwrap_or(s).trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+
+    let host = headers
+        .get("x-forwarded-host")
+        .and_then(first)
+        .or_else(|| headers.get(axum::http::header::HOST).and_then(first))?;
+
+    // Strip the port to inspect the bare host. IPv6 literals are bracketed
+    // ("[::1]:3000"); everything else is "host:port".
+    let host_only = if let Some(rest) = host.strip_prefix('[') {
+        rest.split(']').next().unwrap_or(rest)
+    } else {
+        host.split(':').next().unwrap_or(host.as_str())
+    };
+    let is_loopback = host_only == "localhost"
+        || host_only == "0.0.0.0"
+        || host_only == "::1"
+        || host_only.starts_with("127.");
+
+    let scheme = headers
+        .get("x-forwarded-proto")
+        .and_then(first)
+        .filter(|s| s == "http" || s == "https")
+        .unwrap_or_else(|| {
+            if is_loopback {
+                "http".into()
+            } else {
+                "https".into()
+            }
+        });
+
+    Some(format!("{scheme}://{host}"))
+}
+
+/// Persist a public URL: update the `servers` row (URL + re-derived slug) and
+/// the in-memory state. Shared by the explicit admin setter and the request
+/// auto-detection path. Returns the re-derived server slug.
+pub(crate) async fn persist_public_url(
+    state: &Arc<AppState>,
+    url: &str,
+) -> Result<String, ApiError> {
+    let url = url.trim().trim_end_matches('/').to_string();
+    let next_slug = derive_server_slug_from_public_url(&url);
+
+    let state_clone = state.clone();
+    let url_db = url.clone();
+    let slug_db = next_slug.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = state_clone
+            .pool
+            .get()
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
+        conn.execute(
+            "UPDATE servers SET public_url = ?1, slug = ?2 WHERE id = ?3",
+            rusqlite::params![url_db, slug_db, state_clone.server_id],
+        )
+        .map_err(|e| ApiError::InternalServerError(format!("failed to persist public_url: {e}")))?;
+        Ok::<(), ApiError>(())
+    })
+    .await
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
+
+    {
+        let mut current = state.public_url.write().unwrap_or_else(|p| p.into_inner());
+        *current = url;
+    }
+
+    Ok(next_slug)
+}
+
+/// Return the server's public URL, auto-detecting and persisting it from the
+/// request when no URL has been configured yet. This fulfils deploy.sh's
+/// documented "auto-detected from requests" default, so a fresh operator gets a
+/// working monolithannex.com invite link without any manual configuration.
+pub(crate) async fn ensure_public_url(state: &Arc<AppState>, headers: &HeaderMap) -> String {
+    let current = state.get_public_url();
+    if !current.is_empty() {
+        return current;
+    }
+    match derive_public_url_from_request(headers) {
+        Some(derived) => {
+            if let Err(e) = persist_public_url(state, &derived).await {
+                tracing::warn!(error = %e, "failed to persist auto-detected public_url");
+            }
+            derived
+        }
+        None => current,
+    }
+}
+
 /// Handler for `PUT /api/admin/public-url`.
 ///
 /// Allows an admin to explicitly set the server's public URL so that invite
 /// links, federation handshakes, and relay paths use a globally-reachable
-/// address instead of an auto-detected localhost.
+/// address. Operators only need this to override the value auto-detected from
+/// incoming requests (e.g. to pin a canonical domain).
 pub async fn set_public_url_handler(
     Extension(state): Extension<Arc<AppState>>,
     Extension(IdentityContext(identity)): Extension<IdentityContext>,
@@ -406,31 +518,8 @@ pub async fn set_public_url_handler(
         ));
     }
 
-    // Persist to database so the URL survives server restarts
-    let url_clone = url.clone();
-    let next_slug = derive_server_slug_from_public_url(&url);
-    let next_slug_clone = next_slug.clone();
-    let state_clone = state.clone();
-    tokio::task::spawn_blocking(move || {
-        let conn = state_clone
-            .pool
-            .get()
-            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
-        conn.execute(
-            "UPDATE servers SET public_url = ?1, slug = ?2 WHERE id = ?3",
-            rusqlite::params![url_clone, next_slug_clone, state_clone.server_id],
-        )
-        .map_err(|e| ApiError::InternalServerError(format!("failed to persist public_url: {e}")))?;
-        Ok::<(), ApiError>(())
-    })
-    .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
-
-    // Update in-memory state
-    {
-        let mut current = state.public_url.write().unwrap_or_else(|p| p.into_inner());
-        *current = url.clone();
-    }
+    // Persist to database (URL + re-derived slug) and update in-memory state.
+    let next_slug = persist_public_url(&state, &url).await?;
 
     tracing::info!(
         public_url = %url,
@@ -1008,4 +1097,83 @@ pub async fn retry_federation_outbox_handler(
         "new_status": "pending",
     }))
     .into_response())
+}
+
+#[cfg(test)]
+mod public_url_tests {
+    use super::derive_public_url_from_request;
+    use axum::http::{HeaderMap, HeaderName, HeaderValue};
+
+    fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(
+                HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                HeaderValue::from_str(v).unwrap(),
+            );
+        }
+        h
+    }
+
+    #[test]
+    fn derives_https_from_forwarded_proxy_headers() {
+        // The real-world deployment case: a reverse proxy terminates TLS and
+        // forwards the canonical host. Invite links must come out as https.
+        let h = headers(&[
+            ("x-forwarded-proto", "https"),
+            ("x-forwarded-host", "annex.example.com"),
+            ("host", "10.0.0.5:3000"),
+        ]);
+        assert_eq!(
+            derive_public_url_from_request(&h).as_deref(),
+            Some("https://annex.example.com")
+        );
+    }
+
+    #[test]
+    fn forwarded_host_takes_the_first_of_a_list() {
+        let h = headers(&[
+            ("x-forwarded-proto", "https, http"),
+            ("x-forwarded-host", "annex.example.com, internal.lan"),
+        ]);
+        assert_eq!(
+            derive_public_url_from_request(&h).as_deref(),
+            Some("https://annex.example.com")
+        );
+    }
+
+    #[test]
+    fn falls_back_to_host_and_assumes_https_for_a_domain() {
+        let h = headers(&[("host", "chat.annex.io")]);
+        assert_eq!(
+            derive_public_url_from_request(&h).as_deref(),
+            Some("https://chat.annex.io")
+        );
+    }
+
+    #[test]
+    fn loopback_host_defaults_to_http() {
+        for host in ["127.0.0.1:3000", "localhost:8080", "[::1]:3000"] {
+            let h = headers(&[("host", host)]);
+            assert_eq!(
+                derive_public_url_from_request(&h).as_deref(),
+                Some(format!("http://{host}").as_str()),
+                "loopback host {host} should stay http"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_forwarded_proto_overrides_the_loopback_default() {
+        let h = headers(&[("x-forwarded-proto", "https"), ("host", "127.0.0.1:3000")]);
+        assert_eq!(
+            derive_public_url_from_request(&h).as_deref(),
+            Some("https://127.0.0.1:3000")
+        );
+    }
+
+    #[test]
+    fn none_without_any_host() {
+        assert_eq!(derive_public_url_from_request(&HeaderMap::new()), None);
+    }
 }

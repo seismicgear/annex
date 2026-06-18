@@ -20,6 +20,7 @@ use crate::api;
 use crate::api_admin;
 use crate::api_agent;
 use crate::api_channels;
+use crate::api_e2e;
 use crate::api_federation;
 use crate::api_graph;
 use crate::api_invite;
@@ -239,6 +240,29 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/api/invites/{code}",
             delete(api_invite::delete_invite_handler),
+        )
+        // ── End-to-end encrypted channels (content-blind key distribution) ──
+        .route("/api/keys/me", put(api_e2e::put_my_key_handler))
+        .route(
+            "/api/keys/{pseudonymId}",
+            get(api_e2e::get_member_key_handler),
+        )
+        .route(
+            "/api/channels/{channelId}/member-keys",
+            get(api_e2e::list_channel_member_keys_handler),
+        )
+        .route(
+            "/api/channels/{channelId}/key-wraps",
+            get(api_e2e::get_channel_key_wraps_handler)
+                .post(api_e2e::post_channel_key_wraps_handler),
+        )
+        .route(
+            "/api/channels/{channelId}/key-status",
+            get(api_e2e::get_channel_key_status_handler),
+        )
+        .route(
+            "/api/channels/{channelId}/e2e",
+            get(api_e2e::get_channel_e2e_handler).put(api_e2e::set_channel_e2e_handler),
         )
         .route("/api/ws/token", post(api_ws::create_ws_token_handler))
         .route(

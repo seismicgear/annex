@@ -34,7 +34,7 @@ pub use messages::{
     EDIT_WINDOW_SECONDS,
 };
 pub use retention::{delete_expired_messages, prune_expired_request_ids};
-pub use search::search_messages;
+pub use search::{scan_messages, search_messages};
 pub use types::{
     Channel, ChannelMember, CreateChannelParams, CreateMessageParams, Message, MessageEdit,
     UpdateChannelParams,

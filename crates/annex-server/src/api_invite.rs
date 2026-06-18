@@ -5,8 +5,9 @@
 //! previews (OG images, Discord embeds) and provides a "Open in Annex" button
 //! that launches the desktop app via the `annex://` protocol.
 
-use crate::{api::ApiError, middleware::IdentityContext, AppState};
+use crate::{api::ApiError, api_admin::ensure_public_url, middleware::IdentityContext, AppState};
 use axum::extract::{Extension, Json, Path};
+use axum::http::HeaderMap;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -270,6 +271,7 @@ pub struct InviteCodeEntry {
 pub async fn create_invite_handler(
     Extension(state): Extension<Arc<AppState>>,
     Extension(IdentityContext(identity)): Extension<IdentityContext>,
+    headers: HeaderMap,
     Json(payload): Json<CreateInviteRequest>,
 ) -> Result<Json<CreateInviteResponse>, ApiError> {
     if !identity.can_invite {
@@ -314,16 +316,13 @@ pub async fn create_invite_handler(
     .await
     .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
-    // Build the shareable URL
-    let public_url = state
-        .public_url
-        .read()
-        .map_err(|_| ApiError::InternalServerError("public_url lock poisoned".to_string()))?
-        .clone();
-
+    // Build the shareable URL. Auto-detect the public URL from the request when
+    // the operator hasn't configured one, so invites route through
+    // monolithannex.com out of the box (see deploy.sh's documented default).
+    let public_url = ensure_public_url(&state, &headers).await;
     if public_url.is_empty() {
         return Err(ApiError::BadRequest(
-            "server public URL is not configured; set ANNEX_PUBLIC_URL first".to_string(),
+            "server public URL could not be determined; set it in Admin → Server Settings or via ANNEX_PUBLIC_URL".to_string(),
         ));
     }
 

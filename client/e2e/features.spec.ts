@@ -73,7 +73,10 @@ test.describe('Feature evidence', () => {
     await msg.hover();
     await msg.locator('.delete-btn.confirming').click(); // second click → delete
 
-    await expect(page.locator('.message-deleted-text')).toBeVisible({ timeout: 15_000 });
+    // `.first()` mirrors the edited-badge / reply-context assertions above:
+    // the shared #General channel can already hold deleted messages from
+    // earlier tests, so match the first rather than violating strict mode.
+    await expect(page.locator('.message-deleted-text').first()).toBeVisible({ timeout: 15_000 });
     await page.screenshot({ path: 'e2e-results/feature-delete.png', fullPage: true });
   });
 

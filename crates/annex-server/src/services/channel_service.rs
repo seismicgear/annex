@@ -37,8 +37,8 @@ use std::sync::Arc;
 use annex_channels::{
     add_member, create_channel, create_message, delete_channel, delete_message, edit_message,
     get_channel, get_edit_history, get_message, is_member, list_channels, list_messages,
-    remove_member, search_messages, Channel, ChannelError, CreateChannelParams,
-    CreateMessageParams, Message, MessageEdit,
+    remove_member, Channel, ChannelError, CreateChannelParams, CreateMessageParams, Message,
+    MessageEdit,
 };
 
 /// Outcome of `send_message`: tells the caller whether the persisted
@@ -76,6 +76,12 @@ pub(crate) const MAX_SEARCH_QUERY_LEN: usize = 200;
 pub(crate) const MAX_HISTORY_PAGE: u32 = 100;
 /// Cap applied to a single search call (matches `annex_channels::search_messages`).
 pub(crate) const MAX_SEARCH_PAGE: u32 = 50;
+/// Per-channel scan window for encrypted-at-rest search. Bodies are stored
+/// encrypted, so search decrypts a bounded recent window in memory and filters
+/// there (a SQL `LIKE` cannot match ciphertext). Matches older than this window
+/// are not returned — the trade-off for content-at-rest confidentiality without
+/// a separate searchable index.
+pub(crate) const SEARCH_SCAN_CAP: u32 = 1000;
 
 /// Errors returned by [`ChannelService`].
 ///
@@ -652,11 +658,19 @@ impl ChannelService {
         let server_id = self.state.server_id;
         let cid = channel_id.to_string();
         let limit = limit.map(|l| l.min(MAX_HISTORY_PAGE));
+        let cipher = self.state.message_cipher();
         tokio::task::spawn_blocking(move || {
             let conn = pool
                 .get()
                 .map_err(|e| ChannelServiceError::Internal(format!("pool: {e}")))?;
-            list_messages(&conn, server_id, &cid, before, limit).map_err(map_channel_err)
+            let mut messages =
+                list_messages(&conn, server_id, &cid, before, limit).map_err(map_channel_err)?;
+            // Decrypt at-rest content for display (no-op for legacy plaintext
+            // or for E2E client ciphertext, which is not ours to open).
+            for m in &mut messages {
+                cipher.decrypt_in_place(&mut m.content);
+            }
+            Ok(messages)
         })
         .await
         .map_err(|e| ChannelServiceError::Internal(format!("join: {e}")))?
@@ -692,11 +706,33 @@ impl ChannelService {
         let server_id = self.state.server_id;
         let pseudonym_id = identity.pseudonym_id.clone();
         let limit = limit.unwrap_or(20).min(MAX_SEARCH_PAGE);
+        let cipher = self.state.message_cipher();
 
         tokio::task::spawn_blocking(move || {
             let conn = pool
                 .get()
                 .map_err(|e| ChannelServiceError::Internal(format!("pool: {e}")))?;
+
+            // Content is stored encrypted at rest, so a SQL LIKE cannot match.
+            // Instead scan a bounded recent window per channel, decrypt in
+            // memory, and substring-filter here. `query` is matched
+            // case-insensitively to mirror SQLite's default LIKE semantics.
+            let needle = query.to_lowercase();
+            let scan = |cid: &str| -> Result<Vec<Message>, ChannelServiceError> {
+                let mut hits = Vec::new();
+                let candidates = annex_channels::scan_messages(&conn, server_id, cid, SEARCH_SCAN_CAP)
+                    .map_err(map_channel_err)?;
+                for mut m in candidates {
+                    cipher.decrypt_in_place(&mut m.content);
+                    if m.content.to_lowercase().contains(&needle) {
+                        hits.push(m);
+                        if hits.len() >= limit as usize {
+                            break;
+                        }
+                    }
+                }
+                Ok(hits)
+            };
 
             // Without a target channel, restrict the sweep to channels the
             // user is in. Searching every server channel would leak content
@@ -719,17 +755,13 @@ impl ChannelService {
 
                 let mut all_results = Vec::new();
                 for cid in &member_channels {
-                    let mut results =
-                        search_messages(&conn, server_id, Some(cid), &query, limit)
-                            .map_err(map_channel_err)?;
-                    all_results.append(&mut results);
+                    all_results.append(&mut scan(cid)?);
                 }
                 all_results.sort_by(|a, b| b.created_at.cmp(&a.created_at));
                 all_results.truncate(limit as usize);
                 Ok(all_results)
             } else {
-                search_messages(&conn, server_id, channel_id.as_deref(), &query, limit)
-                    .map_err(map_channel_err)
+                scan(channel_id.as_deref().unwrap())
             }
         })
         .await
@@ -749,11 +781,16 @@ impl ChannelService {
 
         let pool = self.state.pool.clone();
         let mid = message_id.to_string();
+        let cipher = self.state.message_cipher();
         tokio::task::spawn_blocking(move || {
             let conn = pool
                 .get()
                 .map_err(|e| ChannelServiceError::Internal(format!("pool: {e}")))?;
-            get_edit_history(&conn, &mid).map_err(map_channel_err)
+            let mut edits = get_edit_history(&conn, &mid).map_err(map_channel_err)?;
+            for e in &mut edits {
+                cipher.decrypt_in_place(&mut e.old_content);
+            }
+            Ok(edits)
         })
         .await
         .map_err(|e| ChannelServiceError::Internal(format!("join: {e}")))?
@@ -792,6 +829,7 @@ impl ChannelService {
         let cid = channel_id.to_string();
         let sender = sender_pseudonym.to_string();
         let request_id = client_request_id;
+        let cipher = self.state.message_cipher();
         tokio::task::spawn_blocking(
             move || -> Result<(Message, bool, SendOutcome), ChannelServiceError> {
                 let mut conn = pool
@@ -817,7 +855,8 @@ impl ChannelService {
 
                     if let Some(mid) = existing_message_id {
                         // Hydrate the original message and short-circuit.
-                        let msg = get_message(&conn, &mid).map_err(map_channel_err)?;
+                        let mut msg = get_message(&conn, &mid).map_err(map_channel_err)?;
+                        cipher.decrypt_in_place(&mut msg.content);
                         let channel = get_channel(&conn, &cid).map_err(map_channel_err)?;
                         let is_federated =
                             matches!(channel.federation_scope, FederationScope::Federated);
@@ -835,14 +874,18 @@ impl ChannelService {
                     .map_err(|e| ChannelServiceError::Internal(format!("tx begin: {e}")))?;
 
                 let message_id = uuid::Uuid::new_v4().to_string();
+                // Encrypt the body at rest; keep the plaintext to return so the
+                // broadcast + federation relay see cleartext.
+                let plaintext = content;
                 let params = CreateMessageParams {
                     channel_id: cid.clone(),
                     message_id: message_id.clone(),
                     sender_pseudonym: sender.clone(),
-                    content,
+                    content: cipher.encrypt(&plaintext),
                     reply_to_message_id: reply_to,
                 };
-                let msg = create_message(&tx, &params).map_err(map_channel_err)?;
+                let mut msg = create_message(&tx, &params).map_err(map_channel_err)?;
+                msg.content = plaintext;
 
                 if let Some(ref rid) = request_id {
                     // Ignore UNIQUE conflicts: another in-flight request
@@ -895,11 +938,17 @@ impl ChannelService {
         let cid = channel_id.to_string();
         let pseudo = sender_pseudonym.to_string();
         let content = new_content.to_string();
+        let cipher = self.state.message_cipher();
         tokio::task::spawn_blocking(move || -> Result<(Message, bool), ChannelServiceError> {
             let conn = pool
                 .get()
                 .map_err(|e| ChannelServiceError::Internal(format!("pool: {e}")))?;
-            let msg = edit_message(&conn, &mid, &pseudo, &content).map_err(map_channel_err)?;
+            // Store the new body encrypted; the prior (encrypted) body is moved
+            // into message_edits by edit_message as-is. Return plaintext for the
+            // broadcast/relay.
+            let stored = cipher.encrypt(&content);
+            let mut msg = edit_message(&conn, &mid, &pseudo, &stored).map_err(map_channel_err)?;
+            msg.content = content;
             let channel = get_channel(&conn, &cid).map_err(map_channel_err)?;
             let is_federated = matches!(channel.federation_scope, FederationScope::Federated);
             Ok((msg, is_federated))
