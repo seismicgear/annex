@@ -15,6 +15,7 @@
 
 pub mod db;
 pub mod handshake;
+pub mod metadata;
 pub mod seal;
 pub mod signal;
 pub mod transport;

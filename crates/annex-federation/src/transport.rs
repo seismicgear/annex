@@ -219,6 +219,10 @@ impl FederationTransport {
         let mut offer_payload = SignalingPayload {
             from_server_slug: self.local_server_slug.clone(),
             to_server_slug: remote_server_slug.to_string(),
+            // Legacy slug addressing for the (experimental) transport; the relay
+            // and wire protocol support rotating tags (crate::metadata) for the
+            // metadata-hardened path.
+            rendezvous_tag: String::new(),
             session_id: session_id.clone(),
             sdp_type: "offer".to_string(),
             // Sealed to the recipient: the relay forwards opaque ciphertext.
@@ -340,6 +344,7 @@ impl FederationTransport {
         let mut answer_payload = SignalingPayload {
             from_server_slug: self.local_server_slug.clone(),
             to_server_slug: payload.from_server_slug.clone(),
+            rendezvous_tag: String::new(),
             session_id: payload.session_id,
             sdp_type: "answer".to_string(),
             // Sealed to the offerer: the relay forwards opaque ciphertext.
