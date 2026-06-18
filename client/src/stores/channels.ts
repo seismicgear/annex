@@ -52,6 +52,8 @@ interface ChannelsState {
   channels: Channel[];
   /** Currently selected channel ID. */
   activeChannelId: string | null;
+  /** Whether the active channel is end-to-end encrypted (reactive for UI). */
+  activeChannelE2e: boolean;
   /** Set of channel IDs the user is currently a member of. */
   joinedChannelIds: Set<string>;
   /** Messages for the active channel (newest last). */
@@ -93,6 +95,8 @@ interface ChannelsState {
   loadChannels: (pseudonymId: string) => Promise<void>;
   /** Select a channel and load its history. */
   selectChannel: (pseudonymId: string, channelId: string) => Promise<void>;
+  /** Turn on end-to-end encryption for the active channel (moderators only). */
+  enableChannelE2e: (pseudonymId: string) => Promise<void>;
   /** Connect WebSocket for real-time messages. Optional baseUrl for cross-server. */
   connectWs: (pseudonymId: string, baseUrl?: string, sessionToken?: string | null) => void;
   /** Send a message to the active channel. Returns the client request ID if queued, or null on failure. */
@@ -139,6 +143,7 @@ let typingCleanupInterval: ReturnType<typeof setInterval> | null = null;
 export const useChannelsStore = create<ChannelsState>((set, get) => ({
   channels: [],
   activeChannelId: null,
+  activeChannelE2e: false,
   joinedChannelIds: new Set<string>(),
   messages: [],
   wsConnected: false,
@@ -186,7 +191,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     // Staying subscribed to all joined channels lets us receive messages
     // for non-active channels and increment unread counts accurately.
 
-    set({ activeChannelId: channelId, messages: [], loadingOlder: false, hasMoreMessages: true, historyLoading: true, historyError: null, composerError: null, typingUsers: [], replyToMessage: null });
+    set({ activeChannelId: channelId, activeChannelE2e: false, messages: [], loadingOlder: false, hasMoreMessages: true, historyLoading: true, historyError: null, composerError: null, typingUsers: [], replyToMessage: null });
 
     // Auto-join the channel (idempotent — no-op if already a member).
     // Must be a member before fetching messages or joining voice.
@@ -209,6 +214,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     try {
       const e2e = await api.getChannelE2e(pseudonymId, channelId);
       markChannelE2e(channelId, e2e);
+      if (get().activeChannelId === channelId) set({ activeChannelE2e: e2e });
       if (e2e) await ensureChannelReady(channelId);
     } catch {
       markChannelE2e(channelId, false);
@@ -264,6 +270,17 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     if (ws) {
       ws.subscribe(requestedChannelId);
     }
+  },
+
+  enableChannelE2e: async (pseudonymId: string) => {
+    const channelId = get().activeChannelId;
+    if (!channelId) return;
+    // Mark the channel E2E on the server (moderator-gated server-side).
+    await api.setChannelE2e(pseudonymId, channelId, true);
+    markChannelE2e(channelId, true);
+    if (get().activeChannelId === channelId) set({ activeChannelE2e: true });
+    // Provision/resolve the channel key so the next message encrypts.
+    await ensureChannelReady(channelId);
   },
 
   connectWs: (pseudonymId: string, baseUrl?: string, sessionToken?: string | null) => {

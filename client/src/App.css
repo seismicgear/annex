@@ -3945,3 +3945,34 @@
   font-size: 0.8rem;
   text-align: center;
 }
+
+/* Channel end-to-end encryption bar */
+.channel-encryption-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.9rem;
+  font-size: 0.85rem;
+  border-bottom: 1px solid var(--border, #2a2a2a);
+  background: var(--surface-2, #1b1b1f);
+  color: var(--text-muted, #b9b9c3);
+  flex-wrap: wrap;
+}
+.channel-encryption-bar.encrypted {
+  color: var(--accent, #7bd88f);
+}
+.channel-encryption-bar button {
+  margin-left: auto;
+  padding: 0.25rem 0.7rem;
+  font-size: 0.8rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.channel-encryption-bar button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.channel-encryption-error {
+  width: 100%;
+  color: var(--danger, #e06c75);
+}
