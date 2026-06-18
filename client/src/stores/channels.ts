@@ -12,6 +12,7 @@ import {
   encryptForWire,
   ensureChannelReady,
   isChannelE2e,
+  isE2eBody,
   markChannelE2e,
   resetE2eChannels,
   setE2eIdentity,
@@ -227,8 +228,10 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       const messages = await api.getMessages(pseudonymId, requestedChannelId, undefined, PAGE_SIZE);
       if (get().activeChannelId !== requestedChannelId) return;
       const reversed = messages.reverse();
-      // Decrypt E2E history bodies for display (no-op for plaintext channels).
-      if (isChannelE2e(requestedChannelId)) {
+      // Decrypt E2E history bodies for display. Driven per-message by the body
+      // marker, so it works even if E2E was later disabled (old ciphertext still
+      // decrypts) or enabled (old plaintext passes through).
+      if (isChannelE2e(requestedChannelId) || reversed.some((m) => isE2eBody(m.content))) {
         await Promise.all(
           reversed.map(async (m) => {
             if (m.content && !m.deleted_at) {
@@ -356,6 +359,19 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
         return;
       }
 
+      // E2E was toggled on a channel: update our cached flag immediately so the
+      // send path encrypts (or stops encrypting) without waiting for a reload.
+      if (frame.type === 'channel_e2e_changed' && frame.channelId) {
+        const enabled = !!frame.e2eEnabled;
+        markChannelE2e(frame.channelId, enabled);
+        if (get().activeChannelId === frame.channelId) {
+          set({ activeChannelE2e: enabled });
+          // Warm the channel key so the very next message can be encrypted.
+          if (enabled) void ensureChannelReady(frame.channelId);
+        }
+        return;
+      }
+
       // Handle typing indicators
       if (frame.type === 'typing' && frame.pseudonymId && frame.channelId) {
         // Ignore own typing echoes
@@ -391,8 +407,8 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
           // Browser notification for background messages
           if (document.hidden && 'Notification' in globalThis && Notification.permission === 'granted') {
             const sender = frame.senderPseudonym?.slice(0, 12) ?? 'Someone';
-            // Never surface E2E ciphertext in an OS notification.
-            const body = isChannelE2e(frame.channelId!)
+            // Never surface E2E ciphertext in an OS notification (per-message).
+            const body = isE2eBody(frame.content ?? '')
               ? 'New encrypted message'
               : (frame.content ?? '').slice(0, 100);
             try {
@@ -418,16 +434,16 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
           edited_at: frame.editedAt ?? null,
           deleted_at: frame.deletedAt ?? null,
         };
-        const channelIsE2e = isChannelE2e(frame.channelId!);
+        const bodyIsE2e = isE2eBody(msg.content);
         set((state) => {
           // If this message confirms an optimistic send, replace it
           if (frame.clientRequestId) {
             const optimistic = state.messages.find((m) => m.clientRequestId === frame.clientRequestId);
             if (optimistic) {
-              // For E2E channels the wire `content` is ciphertext; keep the
+              // When the echoed wire `content` is E2E ciphertext, keep the
               // plaintext we already hold from the composer rather than
               // decrypting our own echo.
-              const confirmed = channelIsE2e ? { ...msg, content: optimistic.content } : { ...msg };
+              const confirmed = bodyIsE2e ? { ...msg, content: optimistic.content } : { ...msg };
               const updated = state.messages.map((m) =>
                 m.clientRequestId === frame.clientRequestId ? confirmed : m,
               );
@@ -447,7 +463,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
         });
         // Inbound E2E message from someone else: decrypt asynchronously and
         // patch the body in by message_id (own echoes already hold plaintext).
-        if (channelIsE2e && msg.message_id && !frame.clientRequestId && msg.content) {
+        if (bodyIsE2e && msg.message_id && !frame.clientRequestId && msg.content) {
           const cipherChannelId = frame.channelId!;
           const targetId = msg.message_id;
           const cipher = msg.content;
@@ -478,8 +494,8 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
               : m,
           ),
         }));
-        // Decrypt the edited body for E2E channels.
-        if (frame.channelId && isChannelE2e(frame.channelId) && frame.messageId && editedContent) {
+        // Decrypt the edited body when it's E2E ciphertext (per-message).
+        if (frame.channelId && frame.messageId && isE2eBody(editedContent)) {
           const ch = frame.channelId;
           const mid = frame.messageId;
           void decryptForDisplay(ch, editedContent).then((plain) => {
@@ -653,8 +669,8 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       // current view, so drop the stale response instead.
       if (get().activeChannelId !== activeChannelId) return;
       const olderReversed = older.reverse();
-      // Decrypt older E2E history bodies for display (no-op for plaintext).
-      if (isChannelE2e(activeChannelId)) {
+      // Decrypt older E2E history bodies for display (per-message marker).
+      if (isChannelE2e(activeChannelId) || olderReversed.some((m) => isE2eBody(m.content))) {
         await Promise.all(
           olderReversed.map(async (m) => {
             if (m.content && !m.deleted_at) {

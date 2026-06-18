@@ -141,7 +141,7 @@ export interface WsSendFrame {
 /** WebSocket frame received from server. */
 export interface WsReceiveFrame {
   type: 'message' | 'message_edited' | 'message_deleted' | 'rtx_bundle' | 'transcription' | 'error'
-    | 'channel_created' | 'channel_updated' | 'channel_deleted' | 'typing' | 'resumed'
+    | 'channel_created' | 'channel_updated' | 'channel_deleted' | 'channel_e2e_changed' | 'typing' | 'resumed'
     | 'webrtc_answer' | 'webrtc_ice_candidate' | 'internal_error';
   // Message fields (camelCase from WsMessagePayload)
   channelId?: string;
@@ -154,6 +154,8 @@ export interface WsReceiveFrame {
   deletedAt?: string | null;
   // Channel event fields
   channel?: Channel;
+  /** Whether E2E is now enabled (channel_e2e_changed). */
+  e2eEnabled?: boolean;
   // Typing indicator fields
   pseudonymId?: string;
   // Resume fields

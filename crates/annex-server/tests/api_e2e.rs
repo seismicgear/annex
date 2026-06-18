@@ -314,6 +314,44 @@ async fn wraps_are_only_visible_to_their_recipient() {
 }
 
 #[tokio::test]
+async fn wraps_for_non_members_are_dropped_and_not_counted() {
+    let (app, pool) = common::setup_test_app().await;
+    seed_channel(&pool, "chan");
+    seed_identity(&pool, "alice", false);
+    seed_member(&pool, "chan", "alice");
+    seed_identity(&pool, "outsider", false); // exists, but NOT a channel member
+    let b64 = |s: &str| base64::engine::general_purpose::STANDARD.encode(s.as_bytes());
+
+    // Alice (a member) wraps to an outsider — it must be silently dropped.
+    let resp = app
+        .clone()
+        .oneshot(request(
+            "POST",
+            "/api/channels/chan/key-wraps",
+            "alice",
+            Some(serde_json::json!({
+                "wraps": [{ "recipient_pseudonym_id": "outsider", "wrapped_key_b64": b64("x") }]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(json_body(resp).await["inserted"], 0);
+
+    // And the channel must NOT look keyed, so real members can still provision.
+    let resp = app
+        .oneshot(request(
+            "GET",
+            "/api/channels/chan/key-status",
+            "alice",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(json_body(resp).await["has_key"], false);
+}
+
+#[tokio::test]
 async fn first_wrap_wins_no_clobber() {
     let (app, pool) = common::setup_test_app().await;
     seed_channel(&pool, "chan");

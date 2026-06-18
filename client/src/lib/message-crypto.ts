@@ -10,6 +10,9 @@
  */
 
 import { getE2eChannelManager } from './e2e-store';
+import { isE2eBody } from './e2e-channel';
+
+export { isE2eBody };
 
 /** Placeholder shown when an inbound E2E body cannot be decrypted. */
 export const UNDECRYPTABLE_PLACEHOLDER = '🔒 encrypted message (no key)';
@@ -72,12 +75,16 @@ export async function encryptForWire(channelId: string, plaintext: string): Prom
 }
 
 /**
- * Turn an inbound body into display text. Pass-through for non-E2E channels;
- * decrypts for E2E channels, returning a placeholder (never throwing) when the
- * key is unavailable so one bad message can't break the timeline.
+ * Turn an inbound body into display text. The decision to decrypt is
+ * PER-MESSAGE — driven by the body's E2E marker, not the channel's current
+ * `e2e_enabled` flag — so history renders correctly even after a moderator
+ * toggles E2E on or off: marked bodies are always decrypted (the key wraps still
+ * exist), unmarked/plaintext bodies always pass through. Returns a placeholder
+ * (never throws) when an E2E body can't be opened, so one bad message can't
+ * break the timeline.
  */
 export async function decryptForDisplay(channelId: string, content: string): Promise<string> {
-  if (!isChannelE2e(channelId) || !activePseudonym) return content;
+  if (!activePseudonym || !isE2eBody(content)) return content;
   try {
     return await getE2eChannelManager(activePseudonym).decrypt(channelId, content);
   } catch {

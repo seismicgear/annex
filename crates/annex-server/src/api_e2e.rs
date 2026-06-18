@@ -253,11 +253,32 @@ pub async fn post_channel_key_wraps_handler(
             return Err(ApiError::Forbidden("not a member of this channel".into()));
         }
 
+        // Only wrap to CURRENT members. A wrap for an outsider would otherwise
+        // count toward `has_key` (key-status) and block real members — who have
+        // no wrap of their own — from ever provisioning the channel key.
+        let members: std::collections::HashSet<String> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT pseudonym_id FROM channel_members \
+                     WHERE server_id = ?1 AND channel_id = ?2",
+                )
+                .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
+            let rows = stmt
+                .query_map(rusqlite::params![server_id, channel_id], |r| {
+                    r.get::<_, String>(0)
+                })
+                .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
+            rows.filter_map(Result::ok).collect()
+        };
+
         let tx = conn
             .transaction()
             .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
         let mut inserted = 0usize;
         for w in &wraps {
+            if !members.contains(&w.recipient_pseudonym_id) {
+                continue; // skip wraps addressed to non-members
+            }
             inserted += tx
                 .execute(
                     "INSERT OR IGNORE INTO channel_key_wraps
@@ -365,9 +386,18 @@ pub async fn get_channel_key_status_handler(
             return Err(ApiError::Forbidden("not a member of this channel".into()));
         }
 
+        // Count only wraps addressed to CURRENT members, so a stray wrap for an
+        // outsider can't make the channel look keyed and block provisioning.
         conn.query_row(
-            "SELECT COUNT(*), COALESCE(MAX(key_epoch), 0)
-             FROM channel_key_wraps WHERE server_id = ?1 AND channel_id = ?2",
+            "SELECT COUNT(*), COALESCE(MAX(w.key_epoch), 0)
+             FROM channel_key_wraps w
+             WHERE w.server_id = ?1 AND w.channel_id = ?2
+               AND EXISTS (
+                 SELECT 1 FROM channel_members m
+                 WHERE m.server_id = w.server_id
+                   AND m.channel_id = w.channel_id
+                   AND m.pseudonym_id = w.recipient_pseudonym_id
+               )",
             rusqlite::params![server_id, channel_id],
             |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
         )
@@ -407,6 +437,7 @@ pub async fn set_channel_e2e_handler(
     let server_id = state.server_id;
     let state_clone = state.clone();
     let enabled = req.enabled;
+    let cid = channel_id.clone();
 
     let updated = tokio::task::spawn_blocking(move || {
         let conn = state_clone
@@ -415,7 +446,7 @@ pub async fn set_channel_e2e_handler(
             .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
         conn.execute(
             "UPDATE channels SET e2e_enabled = ?1 WHERE channel_id = ?2 AND server_id = ?3",
-            rusqlite::params![enabled as i64, channel_id, server_id],
+            rusqlite::params![enabled as i64, cid, server_id],
         )
         .map_err(|e| ApiError::InternalServerError(format!("failed to update channel: {e}")))
     })
@@ -425,6 +456,18 @@ pub async fn set_channel_e2e_handler(
     if updated == 0 {
         return Err(ApiError::NotFound("channel not found".into()));
     }
+
+    // Notify members who already have the channel open so they switch to (or
+    // from) the E2E send path immediately — otherwise they would keep sending
+    // plaintext to a now-E2E channel until they reload.
+    let frame = crate::ws::protocol::OutgoingMessage::ChannelE2eChanged {
+        channel_id: channel_id.clone(),
+        e2e_enabled: enabled,
+    };
+    if let Ok(json) = serde_json::to_string(&frame) {
+        state.connection_manager.broadcast(&channel_id, json).await;
+    }
+
     Ok(AxumJson(serde_json::json!({ "status": "ok", "e2e_enabled": enabled })).into_response())
 }
 

@@ -16,6 +16,7 @@
 
 import {
   decryptContent,
+  E2eError,
   encryptContent,
   fromBase64,
   fromHex,
@@ -28,6 +29,21 @@ import {
   toHex,
   utf8,
 } from './e2e';
+
+/**
+ * Version marker prefixed to every E2E-encrypted message body. Its presence is
+ * the authoritative, per-message signal that a stored body is E2E ciphertext —
+ * so rendering does not depend on the channel's current `e2e_enabled` flag (which
+ * a moderator can flip after messages already exist). A body that merely starts
+ * with this text but fails authentication is shown as undecryptable, never as a
+ * forged plaintext — the AEAD tag still gates correctness.
+ */
+export const E2E_BODY_PREFIX = 'e2e1:';
+
+/** Whether a stored/received body is an E2E ciphertext (carries the marker). */
+export function isE2eBody(body: string): boolean {
+  return typeof body === 'string' && body.startsWith(E2E_BODY_PREFIX);
+}
 
 /** Server endpoints this manager needs. Matches `@/api/e2e`. */
 export interface E2eChannelApi {
@@ -228,18 +244,26 @@ export class E2eChannelManager {
     ]);
   }
 
-  /** Encrypt a message body for an E2E channel; returns base64 ciphertext. */
+  /**
+   * Encrypt a message body for an E2E channel. The output carries a version
+   * marker ([`E2E_BODY_PREFIX`]) so that whether a stored body is E2E ciphertext
+   * is a PER-MESSAGE fact, independent of the channel's current `e2e_enabled`
+   * flag — history stays correct when E2E is toggled on or off later.
+   */
   async encrypt(channelId: string, plaintext: string): Promise<string> {
     const { cek } = await this.resolveChannelKey(channelId);
     const aad = utf8.encode(channelId);
-    return toBase64(encryptContent(cek, utf8.encode(plaintext), aad));
+    return E2E_BODY_PREFIX + toBase64(encryptContent(cek, utf8.encode(plaintext), aad));
   }
 
-  /** Decrypt a base64 ciphertext body from an E2E channel back to text. */
-  async decrypt(channelId: string, contentB64: string): Promise<string> {
+  /** Decrypt a marked E2E body back to text. Throws if the body is not marked. */
+  async decrypt(channelId: string, body: string): Promise<string> {
+    if (!isE2eBody(body)) {
+      throw new E2eError('not an E2E-encrypted body');
+    }
     const { cek } = await this.resolveChannelKey(channelId);
     const aad = utf8.encode(channelId);
-    return utf8.decode(decryptContent(cek, fromBase64(contentB64), aad));
+    return utf8.decode(decryptContent(cek, fromBase64(body.slice(E2E_BODY_PREFIX.length)), aad));
   }
 
   /** Drop cached key material (e.g. on logout). */
