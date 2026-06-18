@@ -170,13 +170,28 @@ export class AnnexWebSocket {
   }
 
   send(channelId: string, content: string, replyTo: string | null = null): string {
+    const clientRequestId = crypto.randomUUID();
+    this.sendWithRequestId(channelId, content, replyTo, clientRequestId);
+    return clientRequestId;
+  }
+
+  /**
+   * Send a chat message frame with a caller-supplied `clientRequestId`. Used by
+   * the E2E path, where the optimistic (plaintext) message is added to the UI
+   * synchronously while the ciphertext is produced asynchronously and only then
+   * put on the wire — both bound to the same request id.
+   */
+  sendWithRequestId(
+    channelId: string,
+    content: string,
+    replyTo: string | null,
+    clientRequestId: string,
+  ): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error('WebSocket is not connected');
     }
-    const clientRequestId = crypto.randomUUID();
     const frame: WsSendFrame = { type: 'message', channelId, content, replyTo, clientRequestId };
     this.ws.send(JSON.stringify(frame));
-    return clientRequestId;
   }
 
   editMessage(channelId: string, messageId: string, content: string): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) throw new Error('WebSocket is not connected'); this.ws.send(JSON.stringify({ type: 'edit_message', channelId, messageId, content } as WsSendFrame)); }
