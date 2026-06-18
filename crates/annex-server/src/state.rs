@@ -115,4 +115,11 @@ impl AppState {
             .unwrap_or_else(|p| p.into_inner())
             .clone()
     }
+
+    /// The transparent at-rest cipher for non-E2E message bodies. Derived on
+    /// demand from the server signing key (HKDF over 32 bytes — cheap), so no
+    /// extra state has to be threaded through every `AppState` construction.
+    pub fn message_cipher(&self) -> crate::at_rest::MessageCipher {
+        crate::at_rest::MessageCipher::from_signing_key(&self.signing_key.to_bytes())
+    }
 }

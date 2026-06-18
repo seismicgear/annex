@@ -28,6 +28,7 @@ pub mod api_upload;
 pub mod api_usernames;
 pub mod api_vrp;
 pub mod api_ws;
+pub mod at_rest;
 pub mod background;
 pub mod config;
 pub mod http;

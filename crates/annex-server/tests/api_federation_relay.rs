@@ -184,15 +184,24 @@ async fn test_receive_federated_message() {
 
     assert_eq!(response.status(), StatusCode::OK);
 
-    // 8. Verify Persistence
+    // 8. Verify Persistence. Content is encrypted at rest, so the persisted
+    // row's `content` is ciphertext (not the plaintext we sent) — assert the
+    // row exists under the local pseudonym and that it is NOT stored in clear.
     let conn = pool.get().unwrap();
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM messages WHERE message_id = ?1 AND sender_pseudonym = ?2 AND content = ?3",
-        rusqlite::params![message_id, local_pseudonym_id, content],
-        |row| row.get(0),
-    ).unwrap();
+    let (count, stored): (i64, String) = conn
+        .query_row(
+            "SELECT COUNT(*), COALESCE(MAX(content), '') FROM messages \
+             WHERE message_id = ?1 AND sender_pseudonym = ?2",
+            rusqlite::params![message_id, local_pseudonym_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
 
     assert_eq!(count, 1, "Message should be persisted with local pseudonym");
+    assert_ne!(
+        stored, content,
+        "federated content should be encrypted at rest, not stored in clear"
+    );
 }
 
 /// Builds the same fixture as `test_receive_federated_message` but lets the

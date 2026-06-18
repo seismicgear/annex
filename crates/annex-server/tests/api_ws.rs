@@ -67,15 +67,16 @@ async fn test_ws_lifecycle() {
         Err(_) => annex_identity::zk::generate_dummy_vkey(),
     };
 
+    let signing_key = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);
+    let at_rest_cipher =
+        annex_server::at_rest::MessageCipher::from_signing_key(&signing_key.to_bytes());
     let state = AppState {
         pool: pool.clone(),
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: Arc::new(vkey),
         membership_vkey_v2: None,
         server_id: 1,
-        signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
-            &mut rand::rngs::OsRng,
-        )),
+        signing_key: std::sync::Arc::new(signing_key),
         public_url: std::sync::Arc::new(std::sync::RwLock::new(
             "http://localhost:3000".to_string(),
         )),
@@ -187,6 +188,11 @@ async fn test_ws_lifecycle() {
         let conn = pool.get().unwrap();
         let msgs = list_messages(&conn, 1, "chan-1", None, None).unwrap();
         assert_eq!(msgs.len(), 1);
-        assert_eq!(msgs[0].content, content);
+        // Stored content is encrypted at rest; decrypt to compare plaintext.
+        assert_ne!(
+            msgs[0].content, content,
+            "content should be encrypted at rest"
+        );
+        assert_eq!(at_rest_cipher.decrypt(&msgs[0].content), content);
     }
 }

@@ -399,7 +399,12 @@ async fn key_status_reflects_provisioning() {
     // Non-member cannot probe key status.
     seed_identity(&pool, "mallory", false);
     let resp = app
-        .oneshot(request("GET", "/api/channels/chan/key-status", "mallory", None))
+        .oneshot(request(
+            "GET",
+            "/api/channels/chan/key-status",
+            "mallory",
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);

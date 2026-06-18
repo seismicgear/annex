@@ -80,15 +80,16 @@ async fn test_agent_websocket_behavior() {
         },
     };
 
+    let at_rest_signing_key = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);
+    let at_rest_cipher =
+        annex_server::at_rest::MessageCipher::from_signing_key(&at_rest_signing_key.to_bytes());
     let state = AppState {
         pool: pool.clone(),
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: Arc::new(vkey),
         membership_vkey_v2: None,
         server_id: 1,
-        signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
-            &mut rand::rngs::OsRng,
-        )),
+        signing_key: std::sync::Arc::new(at_rest_signing_key),
         public_url: std::sync::Arc::new(std::sync::RwLock::new(
             "http://localhost:3000".to_string(),
         )),
@@ -186,7 +187,8 @@ async fn test_agent_websocket_behavior() {
         let conn = pool.get().unwrap();
         let msgs = list_messages(&conn, 1, "chan-agent", None, None).unwrap();
         assert_eq!(msgs.len(), 1);
-        assert_eq!(msgs[0].content, content);
+        // Stored content is encrypted at rest; decrypt to compare plaintext.
+        assert_eq!(at_rest_cipher.decrypt(&msgs[0].content), content);
         assert_eq!(msgs[0].sender_pseudonym, "agent-007");
     }
 }

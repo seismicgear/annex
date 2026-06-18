@@ -1225,16 +1225,20 @@ impl FederationService {
                 // (the receipt check rejects duplicates earlier), but
                 // we keep the constraint-violation arm for defence in
                 // depth against direct DB writes or schema oddities.
+                // Encrypt the federated body at rest; broadcast plaintext.
                 let params = CreateMessageParams {
                     channel_id: envelope.channel_id.clone(),
                     message_id: envelope.message_id.clone(),
                     sender_pseudonym: identity.pseudonym_id.clone(),
-                    content: envelope.content.clone(),
+                    content: state.message_cipher().encrypt(&envelope.content),
                     reply_to_message_id: None,
                 };
 
                 let inserted = match create_message(&tx, &params) {
-                    Ok(msg) => Some(msg),
+                    Ok(mut msg) => {
+                        msg.content = envelope.content.clone();
+                        Some(msg)
+                    }
                     Err(annex_channels::ChannelError::Database(
                         rusqlite::Error::SqliteFailure(code, _),
                     )) if code.code == rusqlite::ErrorCode::ConstraintViolation => None,
@@ -1739,13 +1743,14 @@ impl FederationService {
                         // Both timestamps were minted by the origin;
                         // datetime() normalizes the two storage formats
                         // ('YYYY-MM-DD HH:MM:SS' vs RFC 3339).
+                        let stored_content = state.message_cipher().encrypt(&envelope.content);
                         let updated_rows = tx
                             .execute(
                                 "UPDATE messages SET content = ?1, edited_at = datetime(?2) \
                                  WHERE message_id = ?3 \
                                    AND (edited_at IS NULL OR datetime(edited_at) <= datetime(?2))",
                                 rusqlite::params![
-                                    &envelope.content,
+                                    &stored_content,
                                     &envelope.created_at,
                                     &envelope.message_id
                                 ],
@@ -1758,8 +1763,9 @@ impl FederationService {
                                 rusqlite::params![&envelope.message_id, &prior_content],
                             )
                             .map_err(FederationError::DbError)?;
-                            let updated = annex_channels::get_message(&tx, &envelope.message_id)
+                            let mut updated = annex_channels::get_message(&tx, &envelope.message_id)
                                 .map_err(FederationError::Channel)?;
+                            state.message_cipher().decrypt_in_place(&mut updated.content);
                             Some((channel_id, updated))
                         } else {
                             tracing::debug!(
