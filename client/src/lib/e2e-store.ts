@@ -75,6 +75,7 @@ export function boundE2eApi(pseudonymId: string): E2eChannelApi {
     postChannelKeyWraps: (channelId, epoch, wraps) =>
       e2eApi.postChannelKeyWraps(pseudonymId, channelId, epoch, wraps),
     getChannelKeyWraps: (channelId) => e2eApi.getChannelKeyWraps(pseudonymId, channelId),
+    getChannelKeyStatus: (channelId) => e2eApi.getChannelKeyStatus(pseudonymId, channelId),
   };
 }
 

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   E2eChannelManager,
+  E2eKeyPendingError,
   type E2eChannelApi,
   type E2eKeyStore,
 } from './e2e-channel';
@@ -64,6 +65,18 @@ class FakeServer {
           }
         }
         return out;
+      },
+      getChannelKeyStatus: async (channel) => {
+        this.requireMember(channel, me);
+        let count = 0;
+        let maxEpoch = 0;
+        for (const [key, v] of this.wraps) {
+          if (key.split('|')[0] === channel) {
+            count++;
+            maxEpoch = Math.max(maxEpoch, v.epoch);
+          }
+        }
+        return { has_key: count > 0, max_epoch: maxEpoch };
       },
     };
   }
@@ -153,6 +166,25 @@ describe('E2eChannelManager', () => {
     // Bob converges to the very same key bytes.
     const kb = await bob.resolveChannelKey('chan');
     expect(kb.cek).toEqual(k1.cek);
+  });
+
+  it('a member who published a key late does not mint a rival key', async () => {
+    // Alice provisions while Dave (a member) has not published a key yet, so
+    // Alice's provisioning wraps only to herself + bob.
+    server.addMember('chan', 'dave');
+    const cipher = await alice.encrypt('chan', 'classified');
+
+    const dave = new E2eChannelManager(server.apiFor('dave'), memStore());
+    await dave.ensureDevicePublished(); // dave now in the directory, but no wrap yet
+
+    // Dave must NOT provision a rival key — the channel already has one.
+    await expect(dave.resolveChannelKey('chan')).rejects.toBeInstanceOf(E2eKeyPendingError);
+
+    // An existing member opens the channel and reconciles, admitting dave.
+    await alice.reconcile('chan');
+
+    // Dave can now read the message under the SAME key (no divergence).
+    expect(await dave.decrypt('chan', cipher)).toBe('classified');
   });
 
   it('forget() clears cached key material', async () => {

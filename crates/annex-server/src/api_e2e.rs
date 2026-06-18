@@ -338,6 +338,51 @@ pub async fn get_channel_key_wraps_handler(
     Ok(AxumJson(serde_json::json!({ "wraps": wraps })).into_response())
 }
 
+/// `GET /api/channels/{channelId}/key-status` — whether the channel already has
+/// any sealed key material and the highest epoch present. Lets a client decide
+/// whether to provision a fresh content key (none exists yet) or wait to be
+/// admitted by an existing member (one already exists) — avoiding two members
+/// minting rival keys for the same channel. Reveals only counts, never key
+/// bytes. Caller must be a member.
+pub async fn get_channel_key_status_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(IdentityContext(identity)): Extension<IdentityContext>,
+    Path(channel_id): Path<String>,
+) -> Result<Response, ApiError> {
+    let server_id = state.server_id;
+    let pseudonym = identity.pseudonym_id.clone();
+    let state_clone = state.clone();
+
+    let (count, max_epoch) = tokio::task::spawn_blocking(move || {
+        let conn = state_clone
+            .pool
+            .get()
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
+
+        if !annex_channels::is_member(&conn, server_id, &channel_id, &pseudonym)
+            .map_err(|e| ApiError::InternalServerError(e.to_string()))?
+        {
+            return Err(ApiError::Forbidden("not a member of this channel".into()));
+        }
+
+        conn.query_row(
+            "SELECT COUNT(*), COALESCE(MAX(key_epoch), 0)
+             FROM channel_key_wraps WHERE server_id = ?1 AND channel_id = ?2",
+            rusqlite::params![server_id, channel_id],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .map_err(|e| ApiError::InternalServerError(e.to_string()))
+    })
+    .await
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
+
+    Ok(AxumJson(serde_json::json!({
+        "has_key": count > 0,
+        "max_epoch": max_epoch
+    }))
+    .into_response())
+}
+
 // ── E2E channel flag ──────────────────────────────────────────────────────
 
 #[derive(Deserialize)]

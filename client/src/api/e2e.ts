@@ -82,6 +82,17 @@ export async function getChannelKeyWraps(
   return r.wraps;
 }
 
+/** Whether the channel already holds sealed key material, and the top epoch. */
+export async function getChannelKeyStatus(
+  pseudonymId: string,
+  channelId: string,
+): Promise<{ has_key: boolean; max_epoch: number }> {
+  return request<{ has_key: boolean; max_epoch: number }>(
+    `/api/channels/${encodeURIComponent(channelId)}/key-status`,
+    { headers: authHeaders(pseudonymId) },
+  );
+}
+
 /** Whether a channel is end-to-end encrypted. */
 export async function getChannelE2e(pseudonymId: string, channelId: string): Promise<boolean> {
   const r = await request<{ e2e_enabled: boolean }>(

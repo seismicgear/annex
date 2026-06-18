@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 const fakeManager = {
   ensureDevicePublished: vi.fn(async () => 'pubhex'),
   resolveChannelKey: vi.fn(async () => ({ epoch: 1, cek: new Uint8Array(32) })),
+  reconcile: vi.fn(async () => {}),
   encrypt: vi.fn(async (_channelId: string, plaintext: string) => `ENC(${plaintext})`),
   decrypt: vi.fn(async (_channelId: string, content: string) => {
     if (content === 'BAD') throw new Error('cannot decrypt');

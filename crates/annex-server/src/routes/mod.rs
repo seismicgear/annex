@@ -257,6 +257,10 @@ pub fn app(state: AppState) -> Router {
                 .post(api_e2e::post_channel_key_wraps_handler),
         )
         .route(
+            "/api/channels/{channelId}/key-status",
+            get(api_e2e::get_channel_key_status_handler),
+        )
+        .route(
             "/api/channels/{channelId}/e2e",
             get(api_e2e::get_channel_e2e_handler).put(api_e2e::set_channel_e2e_handler),
         )

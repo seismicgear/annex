@@ -46,7 +46,16 @@ export async function ensureChannelReady(channelId: string): Promise<void> {
   if (!isChannelE2e(channelId) || !activePseudonym) return;
   const mgr = getE2eChannelManager(activePseudonym);
   await mgr.ensureDevicePublished();
-  await mgr.resolveChannelKey(channelId);
+  try {
+    await mgr.resolveChannelKey(channelId);
+  } catch {
+    // Key not yet available (we're awaiting admission by an existing member).
+    // Non-fatal: opening the channel still works, bodies just stay sealed
+    // until we're admitted.
+  }
+  // If we hold the key, admit any members who joined / published a key after
+  // it was provisioned (idempotent, best-effort).
+  await mgr.reconcile(channelId);
 }
 
 /**

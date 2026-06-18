@@ -41,6 +41,20 @@ export interface E2eChannelApi {
   getChannelKeyWraps(
     channelId: string,
   ): Promise<{ epoch: number; sender_pseudonym_id: string; wrapped_key_b64: string }[]>;
+  getChannelKeyStatus(channelId: string): Promise<{ has_key: boolean; max_epoch: number }>;
+}
+
+/**
+ * Thrown when a channel already has a content key but none is addressed to us
+ * yet: we must NOT mint a rival key, so we wait for an existing member to admit
+ * us (which happens automatically when one of them next opens the channel and
+ * reconciles). Callers treat this as "not yet readable".
+ */
+export class E2eKeyPendingError extends Error {
+  constructor(channelId: string) {
+    super(`E2E channel key not yet available for ${channelId} (awaiting admission)`);
+    this.name = 'E2eKeyPendingError';
+  }
 }
 
 /** Persistent storage for this device's secret and resolved channel keys. */
@@ -104,11 +118,22 @@ export class E2eChannelManager {
   private async doResolve(channelId: string): Promise<{ epoch: number; cek: Uint8Array }> {
     const secret = await this.getDeviceSecret();
 
-    // 1. Adopt a key already sealed to us, if any (highest epoch wins).
+    // 1. Adopt a key already sealed to us, if any (highest epoch wins). Having
+    //    adopted it, admit any members still missing it (cheap, idempotent).
     const mine = await this.adoptOwnWrap(channelId, secret);
-    if (mine) return this.remember(channelId, mine);
+    if (mine) {
+      await this.reconcileMembers(channelId, mine);
+      return this.remember(channelId, mine);
+    }
 
-    // 2. Provision a fresh CEK and seal it to every current member.
+    // 2. If the channel already has key material but none is for us, do NOT
+    //    mint a rival key — wait to be admitted by an existing member.
+    const status = await this.api.getChannelKeyStatus(channelId);
+    if (status.has_key) {
+      throw new E2eKeyPendingError(channelId);
+    }
+
+    // 3. We are the first: provision a fresh CEK and seal it to every member.
     const members = await this.api.getChannelMemberKeys(channelId);
     const cek = generateChannelKey();
     const epoch = 1;
@@ -120,13 +145,44 @@ export class E2eChannelManager {
       await this.api.postChannelKeyWraps(channelId, epoch, wraps);
     }
 
-    // 3. Re-read: another member may have provisioned first; adopt the winner.
+    // 4. Re-read: another member may have provisioned first; adopt the winner.
     const won = await this.adoptOwnWrap(channelId, secret);
     if (won) return this.remember(channelId, won);
 
     // No directory entry for ourselves yet (e.g. we hadn't published a key):
     // fall back to the key we just generated.
     return this.remember(channelId, { epoch, cek });
+  }
+
+  /**
+   * Seal the channel key (which we hold) to every current member, so members
+   * who joined or published a key after provisioning are admitted. Idempotent
+   * at the server (first-write-wins) and best-effort (never throws).
+   */
+  private async reconcileMembers(
+    channelId: string,
+    held: { epoch: number; cek: Uint8Array },
+  ): Promise<void> {
+    try {
+      const members = await this.api.getChannelMemberKeys(channelId);
+      if (members.length === 0) return;
+      const wraps = members.map((m) => ({
+        recipient_pseudonym_id: m.pseudonym_id,
+        wrapped_key_b64: toBase64(sealTo(held.cek, fromHex(m.x25519_pub_hex))),
+      }));
+      await this.api.postChannelKeyWraps(channelId, held.epoch, wraps);
+    } catch {
+      // Reconciliation is opportunistic; ignore transient failures.
+    }
+  }
+
+  /**
+   * Admit every current member by sealing the channel key to them. Safe to call
+   * on channel open; no-op if we cannot resolve the key yet.
+   */
+  async reconcile(channelId: string): Promise<void> {
+    const cached = this.cache.get(channelId) ?? (await this.store.loadChannelKey(channelId));
+    if (cached) await this.reconcileMembers(channelId, cached);
   }
 
   /** Fetch the wraps addressed to us and open the highest-epoch one we can. */

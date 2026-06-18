@@ -354,6 +354,58 @@ async fn first_wrap_wins_no_clobber() {
 }
 
 #[tokio::test]
+async fn key_status_reflects_provisioning() {
+    let (app, pool) = common::setup_test_app().await;
+    seed_channel(&pool, "chan");
+    for p in ["alice", "bob"] {
+        seed_identity(&pool, p, false);
+        seed_member(&pool, "chan", p);
+    }
+    let b64 = |s: &str| base64::engine::general_purpose::STANDARD.encode(s.as_bytes());
+
+    // Before any wrap, the channel has no key.
+    let resp = app
+        .clone()
+        .oneshot(request("GET", "/api/channels/chan/key-status", "bob", None))
+        .await
+        .unwrap();
+    let body = json_body(resp).await;
+    assert_eq!(body["has_key"], false);
+    assert_eq!(body["max_epoch"], 0);
+
+    // Alice provisions an epoch-2 key.
+    app.clone()
+        .oneshot(request(
+            "POST",
+            "/api/channels/chan/key-wraps",
+            "alice",
+            Some(serde_json::json!({
+                "epoch": 2,
+                "wraps": [{ "recipient_pseudonym_id": "bob", "wrapped_key_b64": b64("k") }]
+            })),
+        ))
+        .await
+        .unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(request("GET", "/api/channels/chan/key-status", "bob", None))
+        .await
+        .unwrap();
+    let body = json_body(resp).await;
+    assert_eq!(body["has_key"], true);
+    assert_eq!(body["max_epoch"], 2);
+
+    // Non-member cannot probe key status.
+    seed_identity(&pool, "mallory", false);
+    let resp = app
+        .oneshot(request("GET", "/api/channels/chan/key-status", "mallory", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
 async fn non_member_cannot_post_wraps() {
     let (app, pool) = common::setup_test_app().await;
     seed_channel(&pool, "chan");
