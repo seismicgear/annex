@@ -138,11 +138,12 @@ pub struct VrpValidationReport {
     pub alignment_status: VrpAlignmentStatus,
     /// The negotiated transfer scope.
     pub transfer_scope: VrpTransferScope,
-    /// Coarse numerical score DERIVED FROM the discrete status (Aligned=1.0,
-    /// Partial=0.5, Conflict=0.0) — NOT the underlying lexical-similarity value,
-    /// which is computed during comparison and currently discarded. Treat this
-    /// as a restatement of `alignment_status`, not an independent measurement.
-    /// (AUDIT.md Pass 4 / VRP F3.)
+    /// The measured anchor similarity (0.0–1.0): `1.0` on an exact match, `0.0`
+    /// on a prohibited-action divergence, and the bag-of-words cosine value in
+    /// the semantic branch (see `compare_peer_anchor_scored`). This is the real
+    /// measurement, independent of the final `alignment_status` verdict — a
+    /// reputation downgrade or a contract failure changes the status but not
+    /// this score.
     pub alignment_score: f32,
     /// Notes or reasons for the alignment outcome.
     pub negotiation_notes: Vec<String>,

@@ -93,11 +93,25 @@ pub fn compare_peer_anchor(
     remote: &VrpAnchorSnapshot,
     config: &VrpAlignmentConfig,
 ) -> VrpAlignmentStatus {
+    compare_peer_anchor_scored(local, remote, config).0
+}
+
+/// Like [`compare_peer_anchor`] but also returns the *measured* anchor
+/// similarity (0.0–1.0), so callers can record the real number rather than a
+/// status-derived placeholder. The score is `1.0` on an exact match, `0.0` on a
+/// prohibited-action divergence (or when no semantic comparison is possible),
+/// and the bag-of-words cosine value in the semantic branch — independent of
+/// whether that value cleared `min_alignment_score`.
+pub fn compare_peer_anchor_scored(
+    local: &VrpAnchorSnapshot,
+    remote: &VrpAnchorSnapshot,
+    config: &VrpAlignmentConfig,
+) -> (VrpAlignmentStatus, f32) {
     // Fast path: exact hash match
     if local.principles_hash == remote.principles_hash
         && local.prohibited_actions_hash == remote.prohibited_actions_hash
     {
-        return VrpAlignmentStatus::Aligned;
+        return (VrpAlignmentStatus::Aligned, 1.0);
     }
 
     // Prohibited-action divergence is an immediate conflict regardless of
@@ -105,7 +119,7 @@ pub fn compare_peer_anchor(
     // let peers with conflicting safety boundaries negotiate transfer scopes
     // they shouldn't have.
     if local.prohibited_actions_hash != remote.prohibited_actions_hash {
-        return VrpAlignmentStatus::Conflict;
+        return (VrpAlignmentStatus::Conflict, 0.0);
     }
 
     // Semantic alignment: compare original principle text when available.
@@ -128,12 +142,14 @@ pub fn compare_peer_anchor(
             semantic::calculate_semantic_alignment(&local.principles, &remote.principles, &embedder)
         {
             if score >= config.min_alignment_score {
-                return VrpAlignmentStatus::Partial;
+                return (VrpAlignmentStatus::Partial, score);
             }
+            // Below threshold → Conflict, but surface the real measured score.
+            return (VrpAlignmentStatus::Conflict, score);
         }
     }
 
-    VrpAlignmentStatus::Conflict
+    (VrpAlignmentStatus::Conflict, 0.0)
 }
 
 /// Validates that capability contracts are mutually compatible.
@@ -195,9 +211,9 @@ pub fn validate_federation_handshake(
     alignment_config: &VrpAlignmentConfig,
     transfer_config: &VrpTransferAcceptanceConfig,
 ) -> VrpValidationReport {
-    // 1. Compare anchors
-    let alignment_status =
-        compare_peer_anchor(local_anchor, &handshake.anchor_snapshot, alignment_config);
+    // 1. Compare anchors — keep the *measured* similarity, not just the status.
+    let (alignment_status, alignment_score) =
+        compare_peer_anchor_scored(local_anchor, &handshake.anchor_snapshot, alignment_config);
 
     // 2. Check capability contracts
     let contracts_ok = contracts_mutually_accepted(local_contract, &handshake.capability_contract);
@@ -216,13 +232,9 @@ pub fn validate_federation_handshake(
     // 3. Resolve transfer scope
     let transfer_scope = resolve_transfer_scope(final_status, transfer_config);
 
-    // Score is 1.0 for Aligned, 0.0 for Conflict (placeholder for now)
-    let alignment_score = match final_status {
-        VrpAlignmentStatus::Aligned => 1.0,
-        VrpAlignmentStatus::Partial => 0.5,
-        VrpAlignmentStatus::Conflict => 0.0,
-    };
-
+    // `alignment_score` is the measured anchor similarity from step 1 — it is
+    // NOT recomputed from `final_status`. The status is the verdict (anchors +
+    // contracts); the score reports how similar the anchors actually were.
     VrpValidationReport {
         alignment_status: final_status,
         transfer_scope,
@@ -272,11 +284,8 @@ pub fn apply_reputation_gate(
         ));
         report.alignment_status = new_status;
         report.transfer_scope = resolve_transfer_scope(new_status, transfer_config);
-        report.alignment_score = match new_status {
-            VrpAlignmentStatus::Aligned => 1.0,
-            VrpAlignmentStatus::Partial => 0.5,
-            VrpAlignmentStatus::Conflict => 0.0,
-        };
+        // `alignment_score` is the measured anchor similarity and is left
+        // untouched — only the verdict (status/scope) is downgraded.
     }
     report
 }

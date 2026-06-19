@@ -759,10 +759,13 @@ COMMENT-LIE (doc asserts X, code does Y).
   (0.25; neutral is 0.5, so fresh peers are unaffected) is downgraded one
   alignment step (Aligned→Partial→Conflict), with transfer scope/score
   recomputed. Unit-tested; the VRP handshake integration tests still pass.
-- **P4-VRP-2 (MEDIUM, COMMENT-LIE):** `alignment_score` is hardcoded
-  1.0/0.5/0.0 from the discrete status (`annex-vrp/src/lib.rs:207-212`, own
-  comment "placeholder for now"); the real cosine value is discarded.
-  `types.rs` called the field "computed". *(Doc corrected this pass.)*
+- **P4-VRP-2 (MEDIUM, COMMENT-LIE) — FIXED this pass:** `alignment_score` was
+  hardcoded 1.0/0.5/0.0 from the discrete status (own comment "placeholder for
+  now") and the real cosine was discarded. New `compare_peer_anchor_scored`
+  returns the measured similarity (1.0 exact / 0.0 prohibited-divergence /
+  real cosine in the semantic branch); `validate_federation_handshake` now
+  records that value, independent of the verdict, and the reputation gate no
+  longer overwrites it. Unit-tested.
 - **P4-VRP-3 (MED-HIGH, PARTIAL):** "Semantic alignment" is `BagOfWordsEmbedder`
   TF/cosine word-overlap (`annex-vrp/src/semantic.rs`); no embedding model
   exists (ROADMAP 3.3 unchecked) though the phase is COMPLETE. Paraphrased-but-

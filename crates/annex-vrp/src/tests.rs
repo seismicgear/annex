@@ -517,7 +517,8 @@ fn reputation_gate_downgrades_aligned_to_partial_when_poor() {
         out.transfer_scope,
         VrpTransferScope::ReflectionSummariesOnly
     );
-    assert_eq!(out.alignment_score, 0.5);
+    // The measured similarity is preserved — only the verdict is downgraded.
+    assert_eq!(out.alignment_score, 1.0);
     assert!(out
         .negotiation_notes
         .iter()
@@ -548,4 +549,47 @@ fn reputation_gate_downgrades_partial_to_conflict_and_conflict_is_terminal() {
     let out2 = apply_reputation_gate(conflict, 0.0, &cfg);
     assert_eq!(out2.alignment_status, VrpAlignmentStatus::Conflict);
     assert!(out2.negotiation_notes.is_empty());
+}
+
+#[test]
+fn compare_peer_anchor_scored_returns_measured_similarity() {
+    let cfg = VrpAlignmentConfig {
+        semantic_alignment_required: true,
+        min_alignment_score: 0.8,
+    };
+
+    // Exact match → status Aligned, score 1.0.
+    let a = VrpAnchorSnapshot::new(&["p1".to_string()], &["no1".to_string()]).unwrap();
+    let (status, score) = compare_peer_anchor_scored(&a, &a.clone(), &cfg);
+    assert_eq!(status, VrpAlignmentStatus::Aligned);
+    assert_eq!(score, 1.0);
+
+    // Prohibited-action divergence → Conflict, score 0.0 (no continuous score).
+    let b = VrpAnchorSnapshot::new(&["p1".to_string()], &["no2".to_string()]).unwrap();
+    let (status2, score2) = compare_peer_anchor_scored(&a, &b, &cfg);
+    assert_eq!(status2, VrpAlignmentStatus::Conflict);
+    assert_eq!(score2, 0.0);
+
+    // Matching prohibitions, differing-but-overlapping principles → the real
+    // cosine value is surfaced (NOT a hardcoded 0.5/1.0/0.0), and it is in
+    // (0.0, 1.0). With a high threshold this is a Conflict that still reports
+    // its measured similarity.
+    let c = VrpAnchorSnapshot::new(
+        &["free speech".to_string(), "privacy".to_string()],
+        &["no doxxing".to_string()],
+    )
+    .unwrap();
+    let d = VrpAnchorSnapshot::new(
+        &["free speech".to_string(), "transparency".to_string()],
+        &["no doxxing".to_string()],
+    )
+    .unwrap();
+    let (status3, score3) = compare_peer_anchor_scored(&c, &d, &cfg);
+    // Conflict under the 0.8 threshold, but the score is the real measured
+    // cosine — the old placeholder would have reported exactly 0.0 for Conflict.
+    assert_eq!(status3, VrpAlignmentStatus::Conflict);
+    assert!(
+        score3 > 0.0 && score3 < 1.0,
+        "expected a measured cosine in (0,1), got {score3}"
+    );
 }

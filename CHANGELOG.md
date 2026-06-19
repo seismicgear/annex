@@ -39,6 +39,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   deactivates federation agreements whose `updated_at` is older than
   `federation.agreement_ttl_days` (default 30; 0 disables). Re-handshakes and
   policy re-evaluations refresh `updated_at`, so only silent peers are reaped.
+- **VRP: `alignment_score` now reports the real measured similarity.** It was
+  hardcoded to 1.0/0.5/0.0 from the discrete status (a "placeholder"); the
+  validation report now carries the actual anchor similarity (exact match,
+  prohibited-action divergence, or the bag-of-words cosine), independent of the
+  final verdict. (AUDIT P4-VRP-2)
 - **VRP: longitudinal reputation now gates alignment outcomes.** Previously the
   handshake verdict was computed and reputation was read afterward and ignored
   (so an agent with a long history of Conflict was treated like a fresh one).
