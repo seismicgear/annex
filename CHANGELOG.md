@@ -10,6 +10,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Startup: the ZK-proof screen no longer looks frozen.** A first-run Groth16
+  proof can take 30–60s; the registration/proving screen previously showed only
+  a static label. It now has an animated spinner plus a live elapsed-time hint
+  (respects reduced-motion). (AUDIT P4-UX-1)
 - **Desktop host-mode voice now works out of the box.** `start_local_webrtc`
   previously tried to download a `webrtc-server` binary from a GitHub release
   URL that does not exist (404), and that failure disabled voice on every

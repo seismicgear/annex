@@ -197,6 +197,47 @@
   border-radius: 4px;
   margin-bottom: 1rem;
   font-size: 0.9rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.phase-label {
+  /* keep the label baseline-aligned with the spinner */
+}
+
+/* Animated spinner so a long (30–60s) first-run ZK proof never looks frozen. */
+.startup-spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(176, 124, 255, 0.25);
+  border-top-color: #b07cff;
+  border-radius: 50%;
+  animation: startup-spin 0.8s linear infinite;
+  flex: 0 0 auto;
+}
+
+@keyframes startup-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.phase-elapsed {
+  flex-basis: 100%;
+  text-align: center;
+  font-size: 0.75rem;
+  opacity: 0.6;
+  margin-top: 0.25rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .startup-spinner {
+    animation-duration: 2s;
+  }
 }
 
 .password-prompt {

@@ -861,10 +861,13 @@ COMMENT-LIE (doc asserts X, code does Y).
 
 ### UX / user flow (observed by driving the live UI)
 
-- **P4-UX-1 (MEDIUM):** The proof-generation screen shows a static
-  "Loading proof assets…" / "Generating zero-knowledge proof…" label with no
-  spinner/progress bar/elapsed time, for an operation the config budgets at
-  30–60s. On slower hardware this is indistinguishable from a hang.
+- **P4-UX-1 (MEDIUM) — FIXED this pass:** the proof-generation screen showed a
+  static "Loading proof assets…" / "Generating zero-knowledge proof…" label
+  with no spinner/progress/elapsed time for a 30–60s operation —
+  indistinguishable from a hang. `StartupGate` now renders an animated spinner
+  next to the phase label and, after 3s, a live "Ns elapsed · the first proof
+  can take 30–60s" hint (respects `prefers-reduced-motion`). Verified
+  visually via the Puppeteer UX tour.
 - **P4-UX-2 (LOW):** Status signals are inconsistent — the header server chip
   shows a **red** dot while the footer identity shows **green**, and the green
   "Reconnected" banner lingers for several seconds across tab switches rather

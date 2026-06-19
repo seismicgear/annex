@@ -12,6 +12,7 @@
  */
 
 import type { Dispatch, SetStateAction } from 'react';
+import { useEffect, useState } from 'react';
 import { IdentitySetup } from '@/components/IdentitySetup';
 import { StartupModeSelector, type DegradedStartupInfo } from '@/components/StartupModeSelector';
 import { setSessionToken } from '@/lib/api';
@@ -93,6 +94,28 @@ export function StartupGate(props: StartupGateProps) {
     resetToServerSelection,
     retryBootstrap,
   } = props;
+
+  // Elapsed-time counter for the active registration/proof phases. A first-run
+  // Groth16 proof can take 30–60s; without a moving indicator the static label
+  // looked frozen (AUDIT P4-UX-1). The timer runs continuously while any
+  // working phase is active and resets when we leave them.
+  const isWorking =
+    phase === 'keys_ready' ||
+    phase === 'registering' ||
+    phase === 'proving' ||
+    phase === 'verifying';
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (!isWorking) {
+      setElapsed(0);
+      return;
+    }
+    const started = Date.now();
+    const id = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - started) / 1000));
+    }, 1000);
+    return () => clearInterval(id);
+  }, [isWorking]);
 
   // Gate 0: Still checking IndexedDB for existing identities.
   if (!identityChecked) {
@@ -246,9 +269,18 @@ export function StartupGate(props: StartupGateProps) {
             </div>
           ) : (
             <div className={`phase-status phase-${phase}`}>
-              {phase === 'proving'
-                ? PROVING_STATUS_LABELS[provingStatus]
-                : (REGISTRATION_LABELS[phase] ?? 'Preparing...')}
+              <span className="startup-spinner" aria-hidden="true" />
+              <span className="phase-label">
+                {phase === 'proving'
+                  ? PROVING_STATUS_LABELS[provingStatus]
+                  : (REGISTRATION_LABELS[phase] ?? 'Preparing...')}
+              </span>
+              {elapsed >= 3 && (
+                <span className="phase-elapsed">
+                  {elapsed}s elapsed · the first proof can take 30–60s on slower
+                  hardware
+                </span>
+              )}
             </div>
           )}
           {phase === 'error' && error && (
