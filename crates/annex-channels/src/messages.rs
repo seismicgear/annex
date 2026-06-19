@@ -103,7 +103,16 @@ pub fn list_messages(
         None
     };
 
-    if let (Some(_), Some((before_ts, before_row_id))) = (&before, cursor) {
+    // A `before` cursor that does not resolve to a known message must yield an
+    // empty page — NOT the newest page. Falling through to the newest-page
+    // query here makes a "load older messages" pagination loop restart from the
+    // top and never terminate (and could surface messages the caller already
+    // has). An unknown cursor means "there is nothing before this".
+    if before.is_some() && cursor.is_none() {
+        return Ok(Vec::new());
+    }
+
+    if let Some((before_ts, before_row_id)) = cursor {
         let sql = format!(
             "SELECT
                 id, server_id, channel_id, message_id, sender_pseudonym, content,
@@ -334,4 +343,58 @@ fn resolve_retention_days(
         }
     };
     Ok((server_id, Some(policy.default_retention_days)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use annex_db::run_migrations;
+    use rusqlite::Connection;
+
+    fn insert_message(conn: &Connection, message_id: &str) {
+        conn.execute(
+            "INSERT INTO messages (server_id, channel_id, message_id, sender_pseudonym, content)
+             VALUES (1, 'chan', ?1, 'pseudo', 'hello')",
+            [message_id],
+        )
+        .expect("insert message");
+    }
+
+    #[test]
+    fn list_messages_unresolved_before_cursor_returns_empty_page() {
+        // Foreign keys are off on a bare in-memory connection (the pool enables
+        // them), so we can seed `messages` rows directly without parent rows.
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        run_migrations(&conn).expect("run migrations");
+        // Seed `messages` directly without parent server/channel rows — this is
+        // a focused test of the pagination query, not of referential integrity.
+        conn.execute_batch("PRAGMA foreign_keys = OFF;")
+            .expect("disable fk enforcement for seeding");
+
+        insert_message(&conn, "m1");
+        insert_message(&conn, "m2");
+
+        // No cursor → newest page returns the seeded messages.
+        let newest = list_messages(&conn, 1, "chan", None, None).expect("list newest");
+        assert_eq!(newest.len(), 2, "newest page should return both messages");
+
+        // A `before` cursor that resolves excludes the cursor message itself.
+        let before_valid =
+            list_messages(&conn, 1, "chan", Some("m2".to_string()), None).expect("list before m2");
+        assert!(
+            before_valid.iter().all(|m| m.message_id != "m2"),
+            "a resolved cursor must not include the cursor message"
+        );
+
+        // The regression guard: a `before` cursor that does NOT resolve to a
+        // known message must return an EMPTY page — not silently fall through
+        // to the newest page (which makes a load-older loop never terminate).
+        let before_unknown = list_messages(&conn, 1, "chan", Some("nope".to_string()), None)
+            .expect("list before unknown");
+        assert!(
+            before_unknown.is_empty(),
+            "an unresolved before cursor must yield an empty page, got {} rows",
+            before_unknown.len()
+        );
+    }
 }

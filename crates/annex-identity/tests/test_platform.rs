@@ -1,7 +1,7 @@
 use annex_db::run_migrations;
 use annex_identity::{
     create_platform_identity, deactivate_platform_identity, get_platform_identity,
-    update_capabilities, Capabilities,
+    update_capabilities, would_remove_last_moderator, Capabilities,
 };
 use annex_types::RoleCode;
 use rusqlite::Connection;
@@ -138,4 +138,75 @@ fn test_same_pseudonym_different_servers() {
     assert_eq!(id1.server_id, 1);
     assert_eq!(id2.server_id, 2);
     assert_ne!(id1.id, id2.id);
+}
+
+#[test]
+fn test_would_remove_last_moderator_guards_lockout() {
+    let conn = Connection::open_in_memory().expect("failed to open in-memory db");
+    run_migrations(&conn).expect("failed to run migrations");
+
+    let server_id = 1;
+
+    // Founder is the sole active moderator.
+    create_platform_identity(&conn, server_id, "founder", RoleCode::Human)
+        .expect("failed to create founder");
+    // A second, non-moderator identity.
+    create_platform_identity(&conn, server_id, "regular", RoleCode::Human)
+        .expect("failed to create regular identity");
+
+    let demote = Capabilities {
+        can_voice: true,
+        can_moderate: false,
+        can_invite: false,
+        can_federate: false,
+        can_bridge: false,
+    };
+    let promote = Capabilities {
+        can_voice: true,
+        can_moderate: true,
+        can_invite: true,
+        can_federate: true,
+        can_bridge: false,
+    };
+
+    // Demoting the only moderator must be flagged.
+    assert!(
+        would_remove_last_moderator(&conn, server_id, "founder", demote)
+            .expect("query should succeed"),
+        "demoting the sole active moderator must be refused"
+    );
+
+    // Demoting a non-moderator never removes a moderator.
+    assert!(
+        !would_remove_last_moderator(&conn, server_id, "regular", demote)
+            .expect("query should succeed"),
+        "demoting a non-moderator is not a last-moderator removal"
+    );
+
+    // Granting moderation is never a removal.
+    assert!(
+        !would_remove_last_moderator(&conn, server_id, "founder", promote)
+            .expect("query should succeed"),
+        "granting/retaining moderation can never be a last-moderator removal"
+    );
+
+    // Promote the regular identity to a second moderator.
+    update_capabilities(&conn, server_id, "regular", promote)
+        .expect("failed to promote second moderator");
+
+    // With two moderators, demoting either is now allowed.
+    assert!(
+        !would_remove_last_moderator(&conn, server_id, "founder", demote)
+            .expect("query should succeed"),
+        "with a second moderator present, demoting the founder is allowed"
+    );
+
+    // Deactivating the second moderator makes the founder the last one again.
+    deactivate_platform_identity(&conn, server_id, "regular")
+        .expect("failed to deactivate second moderator");
+    assert!(
+        would_remove_last_moderator(&conn, server_id, "founder", demote)
+            .expect("query should succeed"),
+        "an inactive moderator does not count — founder is the last active moderator"
+    );
 }

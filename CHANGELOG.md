@@ -6,6 +6,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **Desktop (all platforms): packaged app now locates its bundled ZK
+  verification key.** Tauri stores `bundle.resources` under a mangled
+  `<resource_root>/_up_/_up_/…` path that is not beside the executable; the
+  desktop app previously only probed exe-relative/dev paths, so an installed
+  deb/AppImage/NSIS/.app could not find `membership_vkey.json` and — with the
+  default `enforce_zk_proofs = true` — refused to start the embedded server.
+  Resolution now covers the real per-platform resource roots (Linux
+  `…/lib/Annex`, Windows beside-exe, macOS `Contents/Resources`). Piper and
+  voice-model resolution were fixed the same way. (AUDIT FINDING-038)
+- **Desktop: clean shutdown.** The app now kills the spawned `webrtc-server`
+  child and releases the Annex router public-endpoint session on exit, instead
+  of orphaning the process (holding its port) and leaving a public tunnel
+  advertised for a dead local server. (AUDIT FINDING-039)
+
+### Security
+
+- **Server: refuse to demote the last active moderator.** `PATCH
+  /api/admin/members/{id}/capabilities` now returns `409 Conflict` rather than
+  letting a moderator strip moderation from every admin and lock the server
+  out of administrative control. (AUDIT FINDING-040)
+
+---
+
 ## [0.1.0] — 2026-02-24
 
 First packaged release. Developer preview — not all features are production-ready. See [release_v0.1.md](release_v0.1.md) for the full release notes.

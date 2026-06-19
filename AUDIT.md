@@ -594,3 +594,114 @@ Remaining gap: admin-initiated member removal (e.g., kick) should also call `uns
 | FINDING-035 | HIGH | **FIXED** |
 | FINDING-036 | HIGH | **FIXED** |
 | FINDING-037 | MEDIUM | Documented |
+| FINDING-038 | CRITICAL | **FIXED** |
+| FINDING-039 | HIGH | **FIXED** |
+| FINDING-040 | HIGH | **FIXED** |
+
+---
+
+## Re-Audit Findings (Pass 3 — 2026-06-19)
+
+This pass focused on the *packaged* desktop application (deb / AppImage /
+NSIS / .app) and a fresh hostile review of the server authorization and
+federation surfaces. The desktop bundle had never been installed-and-run in
+CI — CI builds the bundle but does not execute it, and the e2e suites drive
+the standalone server — so the runtime resource-resolution path below was
+unvalidated until now.
+
+### [CRITICAL] FINDING-038: Packaged desktop app cannot locate bundled ZK vkey (and Piper / voices)
+
+**File:** `crates/annex-desktop/src/main.rs` (resource resolution in `main`)
+**Attacker:** N/A (availability / correctness; also forces insecure fallback)
+**Category:** Desktop packaging, Startup
+
+**Description:** Tauri mangles `bundle.resources` paths that escape the project
+dir: `../../zk/keys/membership_vkey.json` lands at runtime under
+`<resource_root>/_up_/_up_/zk/keys/membership_vkey.json`, where the resource
+root is `<exe_dir>/../lib/Annex` (Linux deb/AppImage), `<exe_dir>` (Windows),
+or `<exe_dir>/../Resources` (macOS) — **not** beside the exe. `main.rs` only
+probed flat exe-relative paths and a build-time workspace path, so on every
+installed bundle the vkey, Piper binary, and voices dir were never found.
+With the default `enforce_zk_proofs = true`, `start_embedded_server` then
+fails with `StartupError::MissingVerificationKey` — the installed Host-mode
+app cannot start its server at all (and with enforcement off it would fall
+back to the dummy vkey, i.e. insecure).
+
+**Impact:** The shipped Linux/Windows/macOS desktop app is non-functional in
+Host mode out of the box (or silently insecure). Undetected because CI never
+installs+runs the bundle.
+
+**Fix:** Added `bundled_resource_paths()` which, for each platform resource
+root, forms the `_up_/_up_/…` path the bundler actually emits, and extended
+the vkey / Piper / voices candidate lists with it. Verified against the real
+`Annex_0.0.1_amd64.deb` and `Annex.AppDir` layouts and covered by a unit test
+(`bundled_resource_paths_cover_installed_layouts`).
+
+### [HIGH] FINDING-039: Desktop exit leaks the webrtc-server child and the router public endpoint
+
+**File:** `crates/annex-desktop/src/main.rs`, `webrtc.rs`, `public_endpoint.rs`
+**Attacker:** Local (resource exhaustion); Network (stale public exposure)
+**Category:** Lifecycle, Resource leak
+
+**Description:** The app spawned `webrtc-server` as a `std::process::Child`
+(whose `Drop` does **not** kill the process) and registered a public HTTPS
+tunnel via the Annex router, but had no exit handler — `stop_local_webrtc`
+was dead code and `release_public_endpoint` was never invoked by the
+frontend. On exit the webrtc-server orphaned (holding its 7880–7899 port
+across restarts) and the router session stayed advertised until its
+server-side timeout, leaving a public URL pointing at a now-dead local server.
+
+**Fix:** `main` now builds the app and runs with a `RunEvent::Exit` handler
+that calls shared, idempotent helpers `webrtc::shutdown_local_webrtc` (kills +
+reaps the child) and `public_endpoint::release_router_session` (best-effort
+blocking `/v1/release`).
+
+### [HIGH] FINDING-040: Last active moderator can be demoted → irreversible admin lockout
+
+**File:** `crates/annex-server/src/api_admin.rs` (`update_member_capabilities_handler`)
+**Attacker:** Rogue / compromised moderator
+**Category:** Authorization, Availability
+
+**Description:** `PATCH /api/admin/members/{id}/capabilities` checked that the
+caller `can_moderate` but applied any capability set unconditionally. A single
+moderator could clear `can_moderate` on the founder, every other moderator,
+and themselves, leaving the server with zero admins — an irreversible lockout
+that also drops the server into the no-moderator self-heal path of
+`ensure_founder` (the residual of FINDING-006), where the next identity read
+re-promotes the lowest-id active account.
+
+**Fix:** Added `annex_identity::would_remove_last_moderator`, called before the
+update; the handler now returns `409 Conflict` when a change would remove the
+final active moderator. Demoting non-last moderators (or self, while another
+remains) is still allowed. Covered by
+`test_would_remove_last_moderator_guards_lockout`.
+
+### Documented residuals (not changed this pass)
+
+- **Federation / RTX peer-URL SSRF (refines FINDING-034 area):** outbound
+  federation/RTX requests gate peer `base_url`s with the *string-only*
+  `is_url_private_or_reserved`, which never resolves a `Host::Domain`. A peer
+  domain that resolves to a private/metadata IP bypasses the check, and
+  `federation_http_client()` performs no IP pinning. The link-preview proxy
+  already solves this (`api_link_preview::resolve_and_validate` +
+  `build_pinned_http_client` with `.resolve()` + per-hop revalidation).
+  Recommended fix: route all peer-URL outbound through a shared
+  resolve-then-validate-then-pin helper. Deferred here because a correct fix
+  is async-resolve-and-pin across ~6 call sites and must avoid making
+  DNS-in-unit-tests flaky and regressing the localhost federation test matrix.
+
+- **RTX redacted-topics content scan (refines FINDING-028):**
+  `check_redacted_topics` matches only the self-asserted `domain_tags`, not
+  `summary` / `reasoning_chain` / `caveats`. A sender can tag a redacted-topic
+  bundle as `["general"]` to slip content past the filter. Recommended fix:
+  also scan the textual fields (word-boundary, case-insensitive) and fail
+  closed, or derive `domain_tags` server-side.
+
+- **`ensure_founder` self-heal runs on an unauthenticated read (residual of
+  FINDING-006):** the requester-promotion vector is gone (only the lowest-id
+  active identity is promoted), but a privilege-granting write still executes
+  in response to an anonymous `GET /api/identity/{id}` when the server has no
+  active moderator. FINDING-040 closes the main route into that state.
+  Recommended hardening: move the self-heal off the read path (startup +
+  authenticated admin actions only) and persist a fixed owner identity rather
+  than relying on `MIN(id)`.

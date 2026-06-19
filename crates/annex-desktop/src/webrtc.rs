@@ -566,18 +566,31 @@ pub(crate) fn clear_webrtc_env(state: tauri::State<'_, AppManagedState>) -> Resu
     Ok(())
 }
 
-/// Stop the local WebRTC server if running.
+/// Kill the local webrtc-server child process if one is running. Idempotent.
 ///
-/// Not currently registered in the invoke handler. Retained for future use.
-#[tauri::command]
-#[allow(dead_code)]
-pub(crate) fn stop_local_webrtc(state: tauri::State<'_, AppManagedState>) -> Result<(), String> {
-    let mut guard = state.webrtc.lock().map_err(|e| e.to_string())?;
-    if let Some(mut lk) = guard.take() {
+/// Shared by the `stop_local_webrtc` command and the application-exit handler
+/// in `main`. A spawned `std::process::Child` is NOT terminated when dropped,
+/// so without an explicit kill the webrtc-server is orphaned when the desktop
+/// app exits and keeps holding its port (7880–7899), which then forces the
+/// next launch to fall back to a different port or exhaust the range.
+pub(crate) fn shutdown_local_webrtc(state: &AppManagedState) {
+    // Take the child out under the lock, then kill outside any await/long hold.
+    let child = state.webrtc.lock().ok().and_then(|mut guard| guard.take());
+    if let Some(mut lk) = child {
         tracing::info!(url = %lk.url, "stopping local webrtc-server");
         let _ = lk.child.kill();
         let _ = lk.child.wait();
     }
+}
+
+/// Stop the local WebRTC server if running.
+///
+/// Not currently registered in the invoke handler. Retained for future use;
+/// delegates to [`shutdown_local_webrtc`], which the exit handler also calls.
+#[tauri::command]
+#[allow(dead_code)]
+pub(crate) fn stop_local_webrtc(state: tauri::State<'_, AppManagedState>) -> Result<(), String> {
+    shutdown_local_webrtc(state.inner());
     Ok(())
 }
 

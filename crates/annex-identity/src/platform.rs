@@ -203,6 +203,56 @@ pub fn ensure_founder(conn: &Connection, server_id: i64) -> Result<bool, Identit
     Ok(promoted > 0)
 }
 
+/// Returns `true` if applying `new_caps` to `pseudonym_id` would remove the
+/// **last** active moderator from the server.
+///
+/// This is the case when all of the following hold:
+///   * `new_caps.can_moderate` is `false` (the update drops moderation), and
+///   * the target is currently an active moderator, and
+///   * no *other* active moderator exists.
+///
+/// Callers must refuse such an update: a server with zero moderators is locked
+/// out of all administrative control and drops into the no-moderator self-heal
+/// path in [`ensure_founder`], where the next identity read re-promotes the
+/// lowest-id active account. A moderator may still demote other moderators (or
+/// themselves) as long as at least one active moderator remains.
+///
+/// # Errors
+///
+/// Returns `IdentityError::DatabaseError` on query failure.
+pub fn would_remove_last_moderator(
+    conn: &Connection,
+    server_id: i64,
+    pseudonym_id: &str,
+    new_caps: Capabilities,
+) -> Result<bool, IdentityError> {
+    // Granting or retaining moderation can never drop the moderator count.
+    if new_caps.can_moderate {
+        return Ok(false);
+    }
+
+    let target_is_active_moderator: bool = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM platform_identities
+            WHERE server_id = ?1 AND pseudonym_id = ?2 AND can_moderate = 1 AND active = 1
+        )",
+        params![server_id, pseudonym_id],
+        |row| row.get(0),
+    )?;
+    if !target_is_active_moderator {
+        return Ok(false);
+    }
+
+    let active_moderators: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM platform_identities
+         WHERE server_id = ?1 AND can_moderate = 1 AND active = 1",
+        params![server_id],
+        |row| row.get(0),
+    )?;
+
+    Ok(active_moderators <= 1)
+}
+
 /// Deactivates a platform identity (sets active = 0).
 ///
 /// # Errors
