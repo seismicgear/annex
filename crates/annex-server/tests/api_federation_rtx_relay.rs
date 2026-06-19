@@ -15,7 +15,12 @@ use annex_db::{create_pool, DbRuntimeSettings};
 use annex_federation::FederatedRtxEnvelope;
 use annex_identity::MerkleTree;
 use annex_rtx::{BundleProvenance, ReflectionSummaryBundle};
-use annex_server::{api_rtx::rtx_relay_signing_payload, app, middleware::RateLimiter, AppState};
+use annex_server::{
+    api_rtx::{rtx_bundle_content_hash, rtx_relay_signing_payload},
+    app,
+    middleware::RateLimiter,
+    AppState,
+};
 use annex_types::ServerPolicy;
 use axum::{
     body::Body,
@@ -148,11 +153,13 @@ fn sign_envelope(
     origin_server: &str,
     relay_path: &[String],
 ) -> String {
+    let content_hash = rtx_bundle_content_hash(bundle);
     let payload = rtx_relay_signing_payload(
         &bundle.bundle_id,
         relaying_server,
         origin_server,
         relay_path,
+        &content_hash,
     );
     let signature = signing_key.sign(payload.as_bytes());
     hex::encode(signature.to_bytes())
@@ -555,6 +562,28 @@ async fn test_receive_federated_rtx_rejects_invalid_signature() {
 }
 
 #[tokio::test]
+async fn test_receive_federated_rtx_rejects_content_tampering() {
+    let env = setup_test_env("REFLECTION_SUMMARIES_ONLY");
+    let app = app(env.state.clone());
+
+    // The origin signs the bundle, then a relaying / man-in-the-middle peer
+    // alters its content while keeping the (now-stale) signature. The relay
+    // signing payload binds a hash of the content, so the receiver recomputes
+    // the hash from the tampered bundle and verification must fail.
+    let bundle = make_bundle("bundle-tamper-001");
+    let mut envelope = build_envelope(bundle, &env.remote_signing_key);
+    envelope.bundle.summary = "TAMPERED: undisclosed prohibited content".to_string();
+
+    let req = build_request(&envelope);
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "altering bundle content after the origin signed it must fail relay-signature verification"
+    );
+}
+
+#[tokio::test]
 async fn test_receive_federated_rtx_rejects_inactive_instance() {
     let env = setup_test_env("REFLECTION_SUMMARIES_ONLY");
 
@@ -638,6 +667,7 @@ fn test_signing_payload_deterministic() {
         "http://relay.com",
         "http://origin.com",
         &["http://relay.com".to_string()],
+        "contenthash",
     );
 
     let p2 = rtx_relay_signing_payload(
@@ -645,6 +675,7 @@ fn test_signing_payload_deterministic() {
         "http://relay.com",
         "http://origin.com",
         &["http://relay.com".to_string()],
+        "contenthash",
     );
 
     assert_eq!(p1, p2, "signing payload should be deterministic");
@@ -657,18 +688,28 @@ fn test_signing_payload_includes_all_fields() {
         "http://relay.com",
         "http://origin.com",
         &["http://hop1.com".to_string(), "http://hop2.com".to_string()],
+        "contenthash-xyz",
     );
 
     assert!(payload.contains("bundle-abc"));
     assert!(payload.contains("http://relay.com"));
     assert!(payload.contains("http://origin.com"));
     assert!(payload.contains("http://hop1.com|http://hop2.com"));
+    assert!(payload.contains("contenthash-xyz"));
 }
 
 #[test]
 fn test_signing_payload_empty_relay_path() {
-    let payload =
-        rtx_relay_signing_payload("bundle-xyz", "http://relay.com", "http://origin.com", &[]);
+    let payload = rtx_relay_signing_payload(
+        "bundle-xyz",
+        "http://relay.com",
+        "http://origin.com",
+        &[],
+        "contenthash",
+    );
 
-    assert_eq!(payload, "bundle-xyz\nhttp://relay.com\nhttp://origin.com\n");
+    assert_eq!(
+        payload,
+        "bundle-xyz\nhttp://relay.com\nhttp://origin.com\n\ncontenthash"
+    );
 }

@@ -162,20 +162,61 @@ pub struct GovernanceSummaryResponse {
 
 // ── Constants / helpers shared with the federation receive path ─────────
 
+/// Computes a stable content hash over a bundle's semantically-meaningful
+/// fields.
+///
+/// Binding this hash into the relay signing payload
+/// ([`rtx_relay_signing_payload`]) means a relaying or man-in-the-middle peer
+/// cannot alter a bundle's content, tags, author, timestamp, or author
+/// signature without invalidating the origin server's relay signature — the
+/// receiver recomputes the hash from the bundle it actually received and
+/// verification fails on any mismatch. Fields are length-prefixed (u64 LE) so
+/// the encoding is unambiguous across field boundaries.
+pub fn rtx_bundle_content_hash(bundle: &ReflectionSummaryBundle) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    let absorb = |bytes: &[u8], h: &mut Sha256| {
+        h.update((bytes.len() as u64).to_le_bytes());
+        h.update(bytes);
+    };
+    absorb(bundle.bundle_id.as_bytes(), &mut h);
+    absorb(bundle.source_pseudonym.as_bytes(), &mut h);
+    absorb(bundle.source_server.as_bytes(), &mut h);
+    absorb(bundle.summary.as_bytes(), &mut h);
+    absorb(
+        bundle.reasoning_chain.as_deref().unwrap_or("").as_bytes(),
+        &mut h,
+    );
+    h.update((bundle.domain_tags.len() as u64).to_le_bytes());
+    for t in &bundle.domain_tags {
+        absorb(t.as_bytes(), &mut h);
+    }
+    h.update((bundle.caveats.len() as u64).to_le_bytes());
+    for c in &bundle.caveats {
+        absorb(c.as_bytes(), &mut h);
+    }
+    absorb(bundle.created_at.to_string().as_bytes(), &mut h);
+    absorb(bundle.signature.as_bytes(), &mut h);
+    hex::encode(h.finalize())
+}
+
 /// Constructs the deterministic signing payload for an RTX relay envelope.
 ///
 /// The signed payload uses newline delimiters between fields to prevent
 /// ambiguity where field boundaries overlap (e.g., `"ab" + "c"` vs
 /// `"a" + "bc"`). Relay path entries are joined with `|` separators
-/// within their field.
+/// within their field. The trailing `content_hash` (see
+/// [`rtx_bundle_content_hash`]) binds the bundle's content to the signature so
+/// it cannot be tampered with in transit.
 pub fn rtx_relay_signing_payload(
     bundle_id: &str,
     relaying_server: &str,
     origin_server: &str,
     relay_path: &[String],
+    content_hash: &str,
 ) -> String {
     let relay_path_joined = relay_path.join("|");
-    format!("{bundle_id}\n{relaying_server}\n{origin_server}\n{relay_path_joined}")
+    format!("{bundle_id}\n{relaying_server}\n{origin_server}\n{relay_path_joined}\n{content_hash}")
 }
 
 /// Extracts redacted topics from a capability contract JSON string.
@@ -906,12 +947,15 @@ pub async fn relay_rtx_bundles(state: Arc<AppState>, bundle: ReflectionSummaryBu
             bundle_id: bundle.bundle_id.clone(),
         };
 
-        // Sign the relay envelope.
+        // Sign the relay envelope, binding the exact content we are sending
+        // (post-scope) so a downstream peer cannot alter it undetected.
+        let content_hash = rtx_bundle_content_hash(&scoped_bundle);
         let signing_payload = rtx_relay_signing_payload(
             &bundle.bundle_id,
             &pub_url,
             &bundle.source_server,
             &provenance.relay_path,
+            &content_hash,
         );
         let signature = state.signing_key.sign(signing_payload.as_bytes());
         let signature_hex = hex::encode(signature.to_bytes());
@@ -1001,9 +1045,19 @@ mod tests {
 
     #[test]
     fn test_rtx_relay_signing_payload_deterministic() {
-        let p1 = rtx_relay_signing_payload("b1", "relay", "origin", &["hop1".into()]);
-        let p2 = rtx_relay_signing_payload("b1", "relay", "origin", &["hop1".into()]);
+        let p1 = rtx_relay_signing_payload("b1", "relay", "origin", &["hop1".into()], "deadbeef");
+        let p2 = rtx_relay_signing_payload("b1", "relay", "origin", &["hop1".into()], "deadbeef");
         assert_eq!(p1, p2);
+    }
+
+    #[test]
+    fn test_rtx_relay_signing_payload_binds_content_hash() {
+        let base = rtx_relay_signing_payload("b1", "relay", "origin", &["hop1".into()], "aaaa");
+        let tampered = rtx_relay_signing_payload("b1", "relay", "origin", &["hop1".into()], "bbbb");
+        assert_ne!(
+            base, tampered,
+            "a different content hash must produce a different signing payload"
+        );
     }
 
     #[test]
@@ -1013,11 +1067,34 @@ mod tests {
             "http://relay.com",
             "http://origin.com",
             &["http://hop1.com".into(), "http://hop2.com".into()],
+            "abc123",
         );
         assert_eq!(
             payload,
-            "bundle-123\nhttp://relay.com\nhttp://origin.com\nhttp://hop1.com|http://hop2.com"
+            "bundle-123\nhttp://relay.com\nhttp://origin.com\nhttp://hop1.com|http://hop2.com\nabc123"
         );
+    }
+
+    #[test]
+    fn test_rtx_bundle_content_hash_detects_tampering() {
+        use annex_rtx::ReflectionSummaryBundle;
+        let mk = |summary: &str| ReflectionSummaryBundle {
+            bundle_id: "b1".into(),
+            source_pseudonym: "p1".into(),
+            source_server: "http://origin".into(),
+            domain_tags: vec!["rust".into()],
+            summary: summary.into(),
+            reasoning_chain: Some("chain".into()),
+            caveats: vec!["c1".into()],
+            created_at: 1,
+            signature: "sig".into(),
+            vrp_handshake_ref: "r".into(),
+        };
+        let a = rtx_bundle_content_hash(&mk("hello"));
+        let b = rtx_bundle_content_hash(&mk("hello"));
+        let c = rtx_bundle_content_hash(&mk("HELLO"));
+        assert_eq!(a, b, "identical content must hash identically");
+        assert_ne!(a, c, "altered content must change the hash");
     }
 
     #[test]

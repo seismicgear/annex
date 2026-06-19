@@ -35,9 +35,11 @@ Phase 7: Voice Infrastructure .......... PARTIAL  (no LiveKit; human↔human SFU
                                                    by default)
 Phase 8: Federation .................... COMPLETE (message/edit/redaction relay
                                                    verified; revocation works)
-Phase 9: RTX Knowledge Exchange ........ PARTIAL  (bundle author signature
-                                                   never verified; single-hop
-                                                   only; agreement TTL unwired)
+Phase 9: RTX Knowledge Exchange ........ PARTIAL  (relay now content-bound vs
+                                                   tampering [2026-06-19 fix];
+                                                   per-agent author sig still
+                                                   unverified; single-hop only;
+                                                   agreement TTL unwired)
 Phase 10: Observability ................ COMPLETE
 Phase 11: Client ....................... COMPLETE
 Phase 12: Hardening & Audit ............ COMPLETE

@@ -44,6 +44,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- **Federation: RTX relay signatures now bind bundle content.** The relay
+  envelope signature previously covered only metadata, so a relaying or
+  man-in-the-middle peer could rewrite a relayed bundle's content, tags, author,
+  or timestamp without invalidating it. The signing payload now includes a
+  length-prefixed SHA-256 hash of the bundle content, which the receiver
+  recomputes from the bundle it received — any tampering fails verification.
+  (Per-agent author-signature verification remains future work.) (AUDIT P4-FED-1)
 - **Server: refuse to demote the last active moderator.** `PATCH
   /api/admin/members/{id}/capabilities` now returns `409 Conflict` rather than
   letting a moderator strip moderation from every admin and lock the server

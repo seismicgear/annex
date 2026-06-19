@@ -812,14 +812,23 @@ COMMENT-LIE (doc asserts X, code does Y).
 
 ### Federation / RTX (Phase 8, 9)
 
-- **P4-FED-1 (HIGH, FAKE/COMMENT-LIE):** RTX bundle **author** signature is
-  never verified — on publish it is only length/non-empty checked
-  (`annex-rtx/src/validation.rs`, whose own comment admits "does not verify the
-  cryptographic signature") then stored; on federated receive only the relay
-  hop's envelope signature is checked, not the content. ROADMAP:969 "Receiving
-  server validates: bundle signature" is false. The `agent_registrations` table
-  has no signing-pubkey column, so the server structurally cannot verify it.
-  Any active peer can rewrite third-party bundle content/tags.
+- **P4-FED-1 (HIGH) — content-tampering half FIXED this pass:** the federated
+  relay signature previously covered only metadata
+  (`bundle_id\nrelaying\norigin\nrelay_path`), so a relaying / MITM peer could
+  rewrite a relayed bundle's content/tags/author/timestamp and the signature
+  still verified. The relay signing payload now binds
+  `rtx_bundle_content_hash(bundle)` (length-prefixed SHA-256 over the content
+  fields); the receiver recomputes it from the bundle it actually received, so
+  any in-transit alteration fails verification (new
+  `test_receive_federated_rtx_rejects_content_tampering`, 401). **Still open:**
+  the per-agent **author** signature on the bundle is still only length-checked
+  on publish (`annex-rtx/src/validation.rs` admits "does not verify the
+  cryptographic signature") — closing that requires capturing the agent's
+  Ed25519 signing pubkey at VRP handshake (a new `agent_registrations` column +
+  handshake field) and an agent client that actually signs bundles, which no
+  current client does. Origin-identity validation also remains existence-only
+  (P4-FED-2). Net: a peer can no longer silently rewrite a relayed bundle's
+  content, but author-authenticity end-to-end is still future work.
 - **P4-FED-2 (MED-HIGH, STUB):** RTX is structurally single-hop —
   `receive_federated_rtx` never re-relays, `relay_path` is hardcoded to one
   entry. The "provenance chain / multi-hop / loop prevention" machinery cannot

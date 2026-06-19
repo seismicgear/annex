@@ -58,7 +58,7 @@ use rusqlite::{OptionalExtension, Transaction, TransactionBehavior};
 use thiserror::Error;
 
 use crate::api::GetRootResponse;
-use crate::api_rtx::rtx_relay_signing_payload;
+use crate::api_rtx::{rtx_bundle_content_hash, rtx_relay_signing_payload};
 use crate::api_ws::OutgoingMessage;
 use crate::parse_transfer_scope;
 use crate::services::federation_repository as repo;
@@ -1902,12 +1902,19 @@ impl FederationService {
                     ));
                 }
 
-                // 3. Verify server signature on the envelope
+                // 3. Verify server signature on the envelope. The signing
+                //    payload binds a hash of the bundle content we actually
+                //    received (computed here, before any scope stripping), so a
+                //    relaying / MITM peer that altered the bundle's content,
+                //    tags, author, or timestamp produces a different hash and
+                //    fails verification — it cannot forge the origin's signature.
+                let content_hash = rtx_bundle_content_hash(&envelope.bundle);
                 let signing_payload = rtx_relay_signing_payload(
                     &envelope.bundle.bundle_id,
                     &envelope.relaying_server,
                     &envelope.provenance.origin_server,
                     &envelope.provenance.relay_path,
+                    &content_hash,
                 );
                 verify_ed25519(
                     &instance.public_key_hex,
