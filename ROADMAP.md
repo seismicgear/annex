@@ -28,9 +28,10 @@ Phase 6: Agent Protocol ................ PARTIAL  (negotiated capability
                                                    contract not enforced at
                                                    action time)
 Phase 7: Voice Infrastructure .......... PARTIAL  (no LiveKit; human↔human SFU
-                                                   real but disabled on default
-                                                   desktop host; agent TTS/STT
-                                                   non-functional by default)
+                                                   real, now enabled on default
+                                                   desktop host [2026-06-19 fix];
+                                                   agent TTS/STT non-functional
+                                                   by default)
 Phase 8: Federation .................... COMPLETE (message/edit/redaction relay
                                                    verified; revocation works)
 Phase 9: RTX Knowledge Exchange ........ PARTIAL  (bundle author signature

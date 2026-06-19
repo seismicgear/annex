@@ -783,7 +783,11 @@ COMMENT-LIE (doc asserts X, code does Y).
   desktop host start `startLocalWebRtc()` runs, the download throws, and the
   catch disables voice (`StartupModeSelector.tsx`). So **voice is silently off
   on a default desktop host install**, even though the in-process SFU would
-  work with a loopback override and no download.
+  work with a loopback override and no download. **FIXED in this pass:**
+  `start_local_webrtc` no longer downloads/spawns anything — it enables the
+  in-process SFU by setting a loopback `[webrtc]` override (the ~10 KB of dead
+  download machinery and its tests were removed). `is_enabled()` only needs a
+  non-empty loopback URL; signaling/media flow over the app WebSocket + ICE.
 - **P4-VOICE-3 (CRITICAL for the feature, STUB):** Agent voice cannot
   synthesize: no `voice_profiles` are ever loaded into `TtsService`
   (`add_profile` is called only in tests); the handler falls back to a

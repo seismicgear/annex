@@ -26,10 +26,16 @@ pub(crate) struct RouterSessionState {
     pub(crate) session_id: String,
 }
 
-/// Tracks a locally-managed WebRTC server process.
+/// Tracks the host-mode WebRTC SFU.
+///
+/// The SFU is embedded **in-process** in the Annex server (`annex-voice` runs
+/// it on the `webrtc` crate and signals over the app WebSocket), so there is
+/// normally no child process — `child` is `None`. The field is retained as an
+/// `Option` so an externally-spawned SFU sidecar (if ever reintroduced) can
+/// still be reaped on shutdown.
 pub(crate) struct WebRTCProcessState {
     pub(crate) url: String,
-    pub(crate) child: std::process::Child,
+    pub(crate) child: Option<std::process::Child>,
 }
 
 /// Runtime override for the embedded server's `[webrtc]` config block, set by

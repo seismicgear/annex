@@ -12,8 +12,6 @@
 //! frontend settings UI was removed; they're retained so a future admin CLI
 //! or plugin can re-use them without re-deriving the file/keychain plumbing.
 
-use std::path::{Path, PathBuf};
-
 use serde::{Deserialize, Serialize};
 
 use annex_server::config;
@@ -216,311 +214,50 @@ pub(crate) async fn check_webrtc_reachable(url: String) -> Result<serde_json::Va
 
 // ── Local WebRTC server management ──
 
-/// Probe a range of ports and return the first one that is not already in use.
-/// Uses a bind-and-drop approach: if we can bind to 127.0.0.1:port, the port
-/// is available. The socket is closed immediately so webrtc-server can bind.
-fn find_available_port(start: u16, end: u16) -> Option<u16> {
-    (start..=end).find(|&port| std::net::TcpListener::bind(("127.0.0.1", port)).is_ok())
-}
-
-const WEBRTC_VERSION: &str = "1.7.2";
-
-/// Returns the platform-specific WebRTC server binary name.
-fn webrtc_binary_name() -> &'static str {
-    if cfg!(target_os = "windows") {
-        "webrtc-server.exe"
-    } else {
-        "webrtc-server"
-    }
-}
-
-/// Returns the download URL for webrtc-server on this platform, if supported.
-fn webrtc_download_url() -> Option<String> {
-    let base = format!("https://github.com/webrtc/webrtc/releases/download/v{WEBRTC_VERSION}");
-    if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        Some(format!("{base}/webrtc_{WEBRTC_VERSION}_linux_amd64.tar.gz"))
-    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
-        Some(format!("{base}/webrtc_{WEBRTC_VERSION}_linux_arm64.tar.gz"))
-    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
-        Some(format!(
-            "{base}/webrtc_{WEBRTC_VERSION}_darwin_amd64.tar.gz"
-        ))
-    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        Some(format!(
-            "{base}/webrtc_{WEBRTC_VERSION}_darwin_arm64.tar.gz"
-        ))
-    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        Some(format!("{base}/webrtc_{WEBRTC_VERSION}_windows_amd64.zip"))
-    } else {
-        None
-    }
-}
-
-/// Searches PATH for the webrtc-server binary.
-fn find_webrtc_in_path() -> Option<PathBuf> {
-    let name = webrtc_binary_name();
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths).find_map(|dir| {
-            let full = dir.join(name);
-            if full.is_file() {
-                Some(full)
-            } else {
-                None
-            }
-        })
-    })
-}
-
-/// Ensures webrtc-server is available: checks PATH, then the local bin cache,
-/// and downloads it if necessary. Returns the path to the binary.
-async fn ensure_webrtc(data_dir: &Path) -> Result<PathBuf, String> {
-    // 1. Check PATH
-    if let Some(path) = find_webrtc_in_path() {
-        tracing::info!(path = %path.display(), "found webrtc-server in PATH");
-        return Ok(path);
-    }
-
-    // 2. Check local bin cache
-    let bin_dir = data_dir.join("bin");
-    let lk_path = bin_dir.join(webrtc_binary_name());
-    if lk_path.exists() {
-        tracing::info!(path = %lk_path.display(), "using cached webrtc-server");
-        return Ok(lk_path);
-    }
-
-    // 3. Download
-    let url = webrtc_download_url()
-        .ok_or_else(|| "webrtc-server download not supported on this platform".to_string())?;
-
-    tracing::info!(%url, "downloading webrtc-server");
-
-    std::fs::create_dir_all(&bin_dir)
-        .map_err(|e| format!("failed to create bin directory: {e}"))?;
-
-    let resp = reqwest::get(&url)
-        .await
-        .map_err(|e| format!("webrtc-server download failed: {e}"))?;
-
-    if !resp.status().is_success() {
-        return Err(format!(
-            "webrtc-server download failed: HTTP {}",
-            resp.status()
-        ));
-    }
-
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| format!("webrtc-server download read failed: {e}"))?;
-
-    if url.ends_with(".tar.gz") {
-        let tgz_path = bin_dir.join("webrtc.tar.gz");
-        std::fs::write(&tgz_path, &bytes)
-            .map_err(|e| format!("failed to write webrtc archive: {e}"))?;
-        let output = std::process::Command::new("tar")
-            .args([
-                "xzf",
-                &tgz_path.to_string_lossy(),
-                "-C",
-                &bin_dir.to_string_lossy(),
-            ])
-            .output()
-            .map_err(|e| format!("tar extract failed: {e}"))?;
-        if !output.status.success() {
-            return Err(format!(
-                "tar extract failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            ));
-        }
-        let _ = std::fs::remove_file(&tgz_path);
-    } else if url.ends_with(".zip") {
-        let zip_path = bin_dir.join("webrtc.zip");
-        std::fs::write(&zip_path, &bytes)
-            .map_err(|e| format!("failed to write webrtc archive: {e}"))?;
-
-        #[cfg(target_os = "windows")]
-        {
-            let output = std::process::Command::new("powershell")
-                .args([
-                    "-Command",
-                    &format!(
-                        "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
-                        zip_path.to_string_lossy(),
-                        bin_dir.to_string_lossy()
-                    ),
-                ])
-                .output()
-                .map_err(|e| format!("zip extraction failed: {e}"))?;
-            if !output.status.success() {
-                return Err(format!(
-                    "zip extraction failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                ));
-            }
-        }
-
-        #[cfg(not(target_os = "windows"))]
-        {
-            let output = std::process::Command::new("unzip")
-                .args([
-                    "-o",
-                    &zip_path.to_string_lossy(),
-                    "-d",
-                    &bin_dir.to_string_lossy(),
-                ])
-                .output()
-                .map_err(|e| format!("zip extraction failed: {e}"))?;
-            if !output.status.success() {
-                return Err(format!(
-                    "zip extraction failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                ));
-            }
-        }
-
-        let _ = std::fs::remove_file(&zip_path);
-    } else {
-        std::fs::write(&lk_path, &bytes)
-            .map_err(|e| format!("failed to write webrtc-server binary: {e}"))?;
-    }
-
-    // Make executable on Unix
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&lk_path, std::fs::Permissions::from_mode(0o755))
-            .map_err(|e| format!("failed to set webrtc-server permissions: {e}"))?;
-    }
-
-    tracing::info!(path = %lk_path.display(), "webrtc-server downloaded successfully");
-    Ok(lk_path)
-}
-
-/// Start a local WebRTC server instance for desktop host mode.
+/// Enable the host-mode WebRTC SFU.
 ///
-/// Generates random API key/secret, spawns the process, and sets environment
-/// variables so the embedded Annex server picks up the WebRTC config.
+/// Annex's SFU is embedded **in-process** in the Annex server: `annex-voice`
+/// runs it directly on the `webrtc` crate and exchanges SDP/ICE over the app
+/// WebSocket. There is **no external `webrtc-server`** to download or spawn —
+/// the previous implementation fetched a binary from a GitHub release URL that
+/// does not exist, and that 404 disabled voice on every default desktop host.
 ///
-/// Must be called BEFORE `start_embedded_server` for the env vars to take effect.
+/// Enabling voice therefore just means handing the embedded server a non-empty
+/// loopback `[webrtc]` config so its voice service reports `is_enabled() ==
+/// true`. The loopback host keeps the URL from being advertised to remote peers
+/// until a public endpoint is acquired. Must be called BEFORE
+/// `start_embedded_server` so the override is applied when the server is built.
 #[tauri::command]
 pub(crate) async fn start_local_webrtc(
     state: tauri::State<'_, AppManagedState>,
 ) -> Result<serde_json::Value, String> {
-    // Check if already running
+    // Already enabled? return the cached marker.
     {
         let guard = state.webrtc.lock().map_err(|e| e.to_string())?;
         if let Some(ref lk) = *guard {
-            return Ok(serde_json::json!({ "url": lk.url }));
+            return Ok(serde_json::json!({ "url": lk.url, "embedded": true }));
         }
     }
 
-    // Check if the embedded server is already running — env vars won't help after that
+    // The override must be set before the embedded server is built.
     {
         let guard = state.server.lock().map_err(|e| e.to_string())?;
         if guard.is_some() {
             return Err(
-                "embedded server is already running — start local WebRTC before the server, or restart the application".to_string()
+                "embedded server is already running — enable local voice before the server, or restart the application".to_string(),
             );
         }
     }
 
-    let lk_path = ensure_webrtc(&state.data_dir).await?;
-
-    // Generate random API key + secret
+    // Generate fresh credentials. (Voice-join tokens are HMAC-derived from the
+    // server's Ed25519 signing key, not this secret — see `annex_voice::token`
+    // — but a non-default key/secret avoids shipping the dev placeholder.)
     let api_key = format!("annex_{}", uuid::Uuid::new_v4().simple());
     let api_secret = format!("secret_{}", uuid::Uuid::new_v4().simple());
+    // Loopback marker: enables the in-process SFU without advertising a URL.
+    // Signaling and media flow over the app WebSocket + ICE, not this address.
+    let lk_url = "ws://127.0.0.1:7880".to_string();
 
-    // Probe for a free port starting from 7880. webrtc-server's --port flag
-    // doesn't support auto-select (port 0), so we try ports 7880..7899 and pick
-    // the first one that is not already in use.
-    let port = find_available_port(7880, 7899)
-        .ok_or("no available port in range 7880–7899 for webrtc-server")?;
-    if port != 7880 {
-        tracing::warn!(
-            default_port = 7880,
-            actual_port = port,
-            "default WebRTC port 7880 was occupied — fell back to port {port}"
-        );
-    }
-    let lk_url = format!("ws://127.0.0.1:{port}");
-
-    tracing::info!(path = %lk_path.display(), %port, "starting local webrtc-server");
-
-    let mut child = std::process::Command::new(&lk_path)
-        .args([
-            "--dev",
-            "--bind",
-            "127.0.0.1",
-            "--port",
-            &port.to_string(),
-            "--keys",
-            &format!("{api_key}: {api_secret}"),
-        ])
-        .stderr(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| format!("failed to start webrtc-server: {e}"))?;
-
-    // Read stderr in a background thread to detect readiness and keep pipe open.
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or("failed to capture webrtc-server stderr")?;
-    let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
-    std::thread::spawn(move || {
-        use std::io::{BufRead, BufReader};
-        let reader = BufReader::new(stderr);
-        let mut tx = Some(tx);
-        for line in reader.lines() {
-            match line {
-                Ok(line) => {
-                    tracing::debug!(line = %line, "webrtc-server");
-                    if let Some(sender) = tx.take() {
-                        // WebRTC logs readiness messages containing "started" or "ready"
-                        if line.contains("started")
-                            || line.contains("ready")
-                            || line.contains("listening")
-                        {
-                            let _ = sender.send(Ok(()));
-                            // Continue reading to drain the pipe
-                        } else {
-                            tx = Some(sender);
-                        }
-                    }
-                }
-                Err(e) => {
-                    if let Some(sender) = tx.take() {
-                        let _ = sender.send(Err(format!("webrtc-server stderr error: {e}")));
-                    }
-                    return;
-                }
-            }
-        }
-        if let Some(sender) = tx.take() {
-            let _ = sender.send(Err("webrtc-server exited before becoming ready".to_string()));
-        }
-    });
-
-    // Wait for readiness with timeout
-    tokio::time::timeout(std::time::Duration::from_secs(15), rx)
-        .await
-        .map_err(|_| "webrtc-server startup timed out after 15 seconds".to_string())?
-        .map_err(|_| "webrtc readiness channel dropped".to_string())??;
-
-    // Stash the WebRTC config in `AppManagedState`. `start_embedded_server`
-    // applies it to the `annex_server::config::Config` struct directly when
-    // building the server, eliminating the previous `std::env::set_var`
-    // approach (which was UB on Linux because the Tauri tokio runtime was
-    // already multi-threaded by the time this command runs — Rust 1.85
-    // marked `set_var` `unsafe` precisely to flag this hazard). See
-    // `app_state::WebRtcConfigOverride` for the full rationale.
-    //
-    // ANNEX_WEBRTC_URL is the internal bind address used for server-side API
-    // calls (token generation, room management). ANNEX_WEBRTC_PUBLIC_URL is
-    // the browser-facing WebSocket URL sent to clients in join responses.
-    // For local-only use both point at loopback. When a public endpoint is
-    // later acquired (acquire_public_endpoint), the frontend pushes a
-    // proper public URL via the server's admin API.
     {
         let mut guard = state
             .webrtc_config_override
@@ -529,22 +266,24 @@ pub(crate) async fn start_local_webrtc(
         *guard = Some(WebRtcConfigOverride {
             url: lk_url.clone(),
             public_url: lk_url.clone(),
-            api_key: api_key.clone(),
-            api_secret: api_secret.clone(),
+            api_key,
+            api_secret,
         });
     }
-
-    tracing::info!(%lk_url, "local webrtc-server ready");
 
     {
         let mut guard = state.webrtc.lock().map_err(|e| e.to_string())?;
         *guard = Some(WebRTCProcessState {
             url: lk_url.clone(),
-            child,
+            child: None,
         });
     }
 
-    Ok(serde_json::json!({ "url": lk_url, "port": port }))
+    tracing::info!(
+        %lk_url,
+        "enabled in-process WebRTC SFU for host mode (no external sidecar)"
+    );
+    Ok(serde_json::json!({ "url": lk_url, "embedded": true }))
 }
 
 /// Clear the in-memory WebRTC override so the embedded server falls back
@@ -566,20 +305,22 @@ pub(crate) fn clear_webrtc_env(state: tauri::State<'_, AppManagedState>) -> Resu
     Ok(())
 }
 
-/// Kill the local webrtc-server child process if one is running. Idempotent.
+/// Tear down host-mode voice on exit. Idempotent.
 ///
-/// Shared by the `stop_local_webrtc` command and the application-exit handler
-/// in `main`. A spawned `std::process::Child` is NOT terminated when dropped,
-/// so without an explicit kill the webrtc-server is orphaned when the desktop
-/// app exits and keeps holding its port (7880–7899), which then forces the
-/// next launch to fall back to a different port or exhaust the range.
+/// The SFU is normally in-process, so there is no child to reap — this just
+/// clears the tracked state. If an external sidecar was ever spawned (its
+/// `std::process::Child` is NOT terminated on drop), it is killed here so it
+/// does not orphan. Shared by the `stop_local_webrtc` command and the
+/// application-exit handler in `main`.
 pub(crate) fn shutdown_local_webrtc(state: &AppManagedState) {
-    // Take the child out under the lock, then kill outside any await/long hold.
-    let child = state.webrtc.lock().ok().and_then(|mut guard| guard.take());
-    if let Some(mut lk) = child {
-        tracing::info!(url = %lk.url, "stopping local webrtc-server");
-        let _ = lk.child.kill();
-        let _ = lk.child.wait();
+    // Take the entry out under the lock, then reap outside any long hold.
+    let entry = state.webrtc.lock().ok().and_then(|mut guard| guard.take());
+    if let Some(lk) = entry {
+        if let Some(mut child) = lk.child {
+            tracing::info!(url = %lk.url, "stopping external webrtc-server sidecar");
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 
@@ -605,30 +346,4 @@ pub(crate) fn get_local_webrtc_url(state: tauri::State<'_, AppManagedState>) -> 
         .lock()
         .ok()
         .and_then(|guard| guard.as_ref().map(|lk| lk.url.clone()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn find_available_port_returns_port_in_range() {
-        // With 20 ports to choose from, at least one should be available.
-        let port = find_available_port(49152, 49171);
-        assert!(port.is_some(), "should find at least one available port");
-        let port = port.unwrap();
-        assert!(
-            (49152..=49171).contains(&port),
-            "port {port} should be in range 49152–49171"
-        );
-    }
-
-    #[test]
-    fn find_available_port_returns_none_for_invalid_range() {
-        // Port 0 is never bindable in practice. Use a range that is definitely occupied
-        // by the test itself (port 0 is special — the OS picks one).
-        // Instead, test that an empty range returns None.
-        let port = find_available_port(10, 9);
-        assert!(port.is_none(), "invalid range should return None");
-    }
 }

@@ -10,6 +10,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Desktop host-mode voice now works out of the box.** `start_local_webrtc`
+  previously tried to download a `webrtc-server` binary from a GitHub release
+  URL that does not exist (404), and that failure disabled voice on every
+  default desktop host install. Annex's SFU is embedded in-process, so the
+  download was never needed — host mode now simply enables the in-process SFU
+  via a loopback `[webrtc]` override (dead download machinery removed).
+  (AUDIT P4-VOICE-2)
+
 - **Desktop (all platforms): packaged app now locates its bundled ZK
   verification key.** Tauri stores `bundle.resources` under a mangled
   `<resource_root>/_up_/_up_/…` path that is not beside the executable; the
