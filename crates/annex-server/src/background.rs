@@ -488,6 +488,48 @@ pub async fn start_db_maintenance_task(state: Arc<AppState>) {
     }
 }
 
+/// Periodically deactivates federation agreements that have gone silent past
+/// the configured TTL (`federation.agreement_ttl_days`).
+///
+/// Disabled when the TTL is `0`. The underlying SQL keys off `updated_at`,
+/// which is refreshed on every re-handshake / policy re-evaluation, so
+/// actively-maintained relationships are never reaped — only peers that have
+/// stopped talking to us. Checks hourly; the day-granularity threshold is
+/// applied in SQL.
+pub async fn start_federation_agreement_expiry_task(state: Arc<AppState>) {
+    let ttl_days = state.federation_config.agreement_ttl_days;
+    if ttl_days == 0 {
+        tracing::info!("federation agreement expiry disabled (agreement_ttl_days = 0)");
+        return;
+    }
+    let tick = Duration::from_secs(3600);
+    tracing::info!(
+        ttl_days,
+        "starting federation agreement expiry task (hourly check)"
+    );
+
+    loop {
+        sleep(tick).await;
+        let pool = state.pool.clone();
+        let server_id = state.server_id;
+        let _ = tokio::task::spawn_blocking(move || {
+            let conn = match pool.get() {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!("agreement expiry: pool error: {e}");
+                    return;
+                }
+            };
+            match annex_federation::expire_stale_agreements(&conn, server_id, ttl_days) {
+                Ok(0) => {}
+                Ok(n) => tracing::info!(expired = n, "expired stale federation agreements"),
+                Err(e) => tracing::warn!("agreement expiry failed: {e}"),
+            }
+        })
+        .await;
+    }
+}
+
 /// Bounded-exponential backoff: 60s, 120s, 240s, … up to a 1-hour cap.
 /// The caller passes the *next* attempt count (already incremented),
 /// so `backoff_seconds(1)` is the first retry interval.

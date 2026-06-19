@@ -34,6 +34,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Federation: agreement TTL is now enforced.** `expire_stale_agreements` was
+  implemented and tested but never called; a new hourly background task now
+  deactivates federation agreements whose `updated_at` is older than
+  `federation.agreement_ttl_days` (default 30; 0 disables). Re-handshakes and
+  policy re-evaluations refresh `updated_at`, so only silent peers are reaped.
 - **VRP: longitudinal reputation now gates alignment outcomes.** Previously the
   handshake verdict was computed and reputation was read afterward and ignored
   (so an agent with a long history of Conflict was treated like a fresh one).

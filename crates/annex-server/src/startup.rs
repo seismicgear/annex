@@ -633,6 +633,13 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
         state.clone(),
     )));
 
+    // Auto-expire silent federation agreements past their TTL
+    // (`federation.agreement_ttl_days`; 0 disables). Returns immediately when
+    // disabled, so it is always safe to spawn.
+    tokio::spawn(background::start_federation_agreement_expiry_task(
+        Arc::new(state.clone()),
+    ));
+
     // Build application
     let router = routes::app(state);
     let addr = SocketAddr::new(config.server.host, config.server.port);

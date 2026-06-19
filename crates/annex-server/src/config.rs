@@ -92,6 +92,14 @@ pub struct FederationConfig {
     /// before the sender flips to v2.
     #[serde(default = "default_outbound_envelope_version")]
     pub default_outbound_envelope_version: String,
+
+    /// Auto-expire (deactivate) federation agreements whose `updated_at` is
+    /// older than this many days. An agreement's `updated_at` is refreshed on
+    /// every re-handshake / policy re-evaluation, so this only reaps peers that
+    /// have gone silent — not actively-maintained relationships. `0` disables
+    /// automatic expiry. Default: 30 days.
+    #[serde(default = "default_agreement_ttl_days")]
+    pub agreement_ttl_days: u32,
 }
 
 impl Default for FederationConfig {
@@ -103,8 +111,13 @@ impl Default for FederationConfig {
             outbox_max_attempts: default_outbox_max_attempts(),
             outbox_per_peer_batch: default_outbox_per_peer_batch(),
             default_outbound_envelope_version: default_outbound_envelope_version(),
+            agreement_ttl_days: default_agreement_ttl_days(),
         }
     }
+}
+
+fn default_agreement_ttl_days() -> u32 {
+    30
 }
 
 fn default_freshness_window_seconds() -> i64 {

@@ -839,9 +839,13 @@ COMMENT-LIE (doc asserts X, code does Y).
   criterion 982 "bundles with redacted content are blocked." **Fixed in this
   pass:** `check_redacted_topics` now whole-word-scans `summary`/
   `reasoning_chain`/`caveats` (unit-tested).
-- **P4-FED-4 (MEDIUM, STUB):** `expire_stale_agreements` (agreement TTL) is
-  exported and tested but has no caller anywhere — no automatic expiration runs
-  despite the polished API.
+- **P4-FED-4 (MEDIUM, STUB) — FIXED this pass:** `expire_stale_agreements`
+  (agreement TTL) was exported and tested but had no caller, so no automatic
+  expiration ran. Now a dedicated background task
+  (`start_federation_agreement_expiry_task`, spawned at startup) calls it
+  hourly with the new `federation.agreement_ttl_days` config (default 30; 0
+  disables). The SQL keys off `updated_at` (refreshed on every
+  re-handshake/policy re-eval), so only genuinely silent peers are reaped.
 - **P4-FED-5 (MEDIUM, PARTIAL):** RTX federated receive has no freshness/replay
   guard (message/edit/redaction paths do). A captured RTX relay envelope can be
   replayed by an active peer. No federation-to-self/loopback guard on inbound
