@@ -5,11 +5,22 @@
 //! tracking. Adapted from the MABOS `value_resonance` module for the Annex
 //! server-agent and server-server contexts.
 //!
-//! VRP is the mechanism by which Annex enforces cryptographic trust rather than
-//! administrative trust. Every agent connection and every federation agreement
-//! is mediated by a VRP handshake that compares ethical/policy roots, evaluates
-//! capability contracts, checks longitudinal reputation, and produces an
-//! alignment classification (`Aligned`, `Partial`, or `Conflict`).
+//! VRP is the mechanism by which Annex mediates agent and federation trust.
+//! Every agent connection and every federation agreement is mediated by a VRP
+//! handshake that compares ethical/policy roots and evaluates capability
+//! contracts to produce an alignment classification (`Aligned`, `Partial`, or
+//! `Conflict`).
+//!
+//! NOTE on reputation: `check_reputation_score` is recorded per handshake and
+//! surfaced for display/ordering, but it does **not** currently feed back into
+//! the alignment classification — the verdict is computed by
+//! [`validate_federation_handshake`] before reputation is read. Making
+//! reputation affect the outcome is tracked in AUDIT.md (Pass 4 / VRP F2).
+//!
+//! NOTE on "semantic" alignment: the only embedder is a bag-of-words TF/cosine
+//! [`semantic::BagOfWordsEmbedder`] — i.e. lexical word-overlap, not a learned
+//! embedding model. Paraphrased-but-aligned principles can be misread as
+//! `Conflict`. A real embedding model is unimplemented (ROADMAP step 3.3).
 //!
 //! # Phase 3 implementation
 //!

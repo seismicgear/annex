@@ -114,7 +114,9 @@ pub struct VrpFederationHandshake {
 /// Configuration for alignment evaluation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct VrpAlignmentConfig {
-    /// Whether semantic alignment (embedding comparison) is required.
+    /// Whether the bag-of-words lexical-overlap alignment pass is required.
+    /// (Despite the historical name, this is TF/cosine word-overlap, not a
+    /// learned embedding model — see the crate docs and ROADMAP step 3.3.)
     pub semantic_alignment_required: bool,
     /// Minimum numerical score (0.0 - 1.0) to be considered aligned.
     pub min_alignment_score: f32,
@@ -136,7 +138,11 @@ pub struct VrpValidationReport {
     pub alignment_status: VrpAlignmentStatus,
     /// The negotiated transfer scope.
     pub transfer_scope: VrpTransferScope,
-    /// The numerical alignment score computed.
+    /// Coarse numerical score DERIVED FROM the discrete status (Aligned=1.0,
+    /// Partial=0.5, Conflict=0.0) — NOT the underlying lexical-similarity value,
+    /// which is computed during comparison and currently discarded. Treat this
+    /// as a restatement of `alignment_status`, not an independent measurement.
+    /// (AUDIT.md Pass 4 / VRP F3.)
     pub alignment_score: f32,
     /// Notes or reasons for the alignment outcome.
     pub negotiation_notes: Vec<String>,

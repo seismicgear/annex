@@ -705,3 +705,156 @@ remains) is still allowed. Covered by
   Recommended hardening: move the self-heal off the read path (startup +
   authenticated admin actions only) and persist a fixed owner identity rather
   than relying on `MIN(id)`.
+
+---
+
+## Pass 4 — Roadmap vs Reality (2026-06-19)
+
+A deliberate, skeptical sweep asking one question per subsystem: **does the
+code do what ROADMAP.md / README.md / the code comments claim?** Every finding
+below was confirmed by reading the implementation (file:line). The headline:
+the ZK identity primitives, text chat, presence, observability, and the
+human↔human WebRTC SFU are genuinely built; but **Voice, RTX security, the ZK
+circuit suite, and VRP "semantic"/reputation are marked COMPLETE while major
+completion criteria are unmet**, and several docs/comments assert behavior the
+code does not implement.
+
+Legend: DELIVERED · PARTIAL · STUB (wired but inert) · FAKE (cannot work) ·
+COMMENT-LIE (doc asserts X, code does Y).
+
+### Identity / ZK (Phase 1, 12)
+
+- **P4-ID-1 (HIGH, FAKE/COMMENT-LIE):** README advertised a 5-circuit pipeline;
+  only `identity`, `membership`, `membership_v2` exist (`zk/circuits/`,
+  `zk/scripts/build-circuits.js`). `channel-eligibility`, `link-pseudonyms`,
+  `federation-attestation` do not exist. The "prove capability flags without
+  revealing identity" privacy claim has zero ZK backing — channel capability
+  gating reads plaintext role flags (`channel_service.rs:466-473`). *(README
+  corrected in this pass.)*
+- **P4-ID-2 (HIGH, STUB):** The v2 secret-derived nullifier — the fix for the
+  disclosed FINDING-003 privacy hole (a v1 topic pseudonym is derivable from
+  the public commitment) — is unreachable from any shipped client. The client
+  hardcodes `protocolVersion: 'v1'` (`client/src/stores/identity.ts`), ships
+  only v1 wasm/zkey, and `enabled_zk_versions` defaults to `["v1"]`. The
+  privacy hole is still the only behavior production runs.
+- **P4-ID-3 (MEDIUM, PARTIAL):** Per-request ZK proof enforcement
+  (`verify_zk_membership_header`) is called from exactly 3 channel routes
+  (join, history, voice-join). `send_message`, WS message, RTX publish, and
+  admin ride a 1-hour HMAC bearer token minted after a single proof. The
+  config comment "channel access endpoints require a valid ZK membership
+  proof" overstates a prove-once-then-token model.
+- **DELIVERED (verified):** `enforce_zk_proofs` defaults true; dummy-vkey
+  refused under enforcement; Merkle restore + root-epoch grace correct; WS
+  legacy `?pseudonym=` rejected under enforcement.
+
+### VRP / Agent (Phase 3, 6)
+
+- **P4-VRP-1 (HIGH, STUB/COMMENT-LIE):** Completion criterion "reputation
+  scores… affect alignment outcomes" is false. `validate_federation_handshake`
+  computes the verdict (`api_vrp.rs:195`) **before** `check_reputation_score`
+  is read (`api_vrp.rs:219`); reputation is only stored and used for display
+  ordering. *(Module doc corrected this pass.)*
+- **P4-VRP-2 (MEDIUM, COMMENT-LIE):** `alignment_score` is hardcoded
+  1.0/0.5/0.0 from the discrete status (`annex-vrp/src/lib.rs:207-212`, own
+  comment "placeholder for now"); the real cosine value is discarded.
+  `types.rs` called the field "computed". *(Doc corrected this pass.)*
+- **P4-VRP-3 (MED-HIGH, PARTIAL):** "Semantic alignment" is `BagOfWordsEmbedder`
+  TF/cosine word-overlap (`annex-vrp/src/semantic.rs`); no embedding model
+  exists (ROADMAP 3.3 unchecked) though the phase is COMPLETE. Paraphrased-but-
+  aligned principles misclassify as Conflict. *(Docs corrected this pass.)*
+- **P4-VRP-4 (MEDIUM, PARTIAL):** The VRP-negotiated capability contract is
+  stored (`agent_registrations.capability_contract_json`) but never enforced
+  at action time; channel join checks role flags instead.
+- **DELIVERED (verified):** policy-change re-evaluation of active agents/peers
+  (`policy.rs` wired at `api_admin.rs:134`) — the ROADMAP 3.5 unchecked box
+  under-claims this; agent participant-type + alignment channel gating
+  (`channel_service.rs:485-544`).
+
+### Voice (Phase 7)
+
+- **P4-VOICE-1 (MEDIUM, COMMENT-LIE):** There is no LiveKit anywhere; voice is
+  a self-built in-process `webrtc`-crate SFU (`annex-voice` dep `webrtc=0.11`).
+  Every ROADMAP "LiveKit" line (deployment config, server SDK, room/token) is
+  mislabeled. Operators told to "deploy a LiveKit server" have nothing to
+  deploy.
+- **P4-VOICE-2 (HIGH, FAKE):** Desktop host mode downloads `webrtc-server` from
+  `github.com/webrtc/webrtc/releases/...` (`webrtc.rs:238-257`) — a URL that
+  404s (Google's source mirror, LiveKit's artifact naming). On every default
+  desktop host start `startLocalWebRtc()` runs, the download throws, and the
+  catch disables voice (`StartupModeSelector.tsx`). So **voice is silently off
+  on a default desktop host install**, even though the in-process SFU would
+  work with a loopback override and no download.
+- **P4-VOICE-3 (CRITICAL for the feature, STUB):** Agent voice cannot
+  synthesize: no `voice_profiles` are ever loaded into `TtsService`
+  (`add_profile` is called only in tests); the handler falls back to a
+  `"default"` profile that was never registered → `ProfileNotFound` →
+  `"TTS failed"`. The ROADMAP 7.4 integration test
+  (`agent_voice_test.rs:137-150`) **asserts the error path** (`assert_eq!(type,
+  "error")`, message `contains("TTS failed")`) — the test that supposedly
+  proves "audio appears in the room" proves it fails.
+- **P4-VOICE-4 (HIGH, PARTIAL):** STT (Whisper) and Bark TTS have real
+  subprocess integrations but **no provisioning** (no whisper setup script; no
+  Bark wrapper); only Piper has an installer. "Parler-TTS" named in the roadmap
+  isn't implemented. The `voice_config_status` endpoint is honest about all of
+  this — the one piece that tells the truth.
+- **DELIVERED (verified):** human↔human SFU signaling/RTP fan-out is real
+  (`annex-voice/src/service.rs`); the join token is a real, well-tested
+  HMAC-SHA256 token (`token.rs`) — just not a LiveKit JWT.
+
+### Federation / RTX (Phase 8, 9)
+
+- **P4-FED-1 (HIGH, FAKE/COMMENT-LIE):** RTX bundle **author** signature is
+  never verified — on publish it is only length/non-empty checked
+  (`annex-rtx/src/validation.rs`, whose own comment admits "does not verify the
+  cryptographic signature") then stored; on federated receive only the relay
+  hop's envelope signature is checked, not the content. ROADMAP:969 "Receiving
+  server validates: bundle signature" is false. The `agent_registrations` table
+  has no signing-pubkey column, so the server structurally cannot verify it.
+  Any active peer can rewrite third-party bundle content/tags.
+- **P4-FED-2 (MED-HIGH, STUB):** RTX is structurally single-hop —
+  `receive_federated_rtx` never re-relays, `relay_path` is hardcoded to one
+  entry. The "provenance chain / multi-hop / loop prevention" machinery cannot
+  engage. ROADMAP 9.4 multi-hop is marked done.
+- **P4-FED-3 (HIGH→fixed this pass, was COMMENT-LIE):** Redacted-topics
+  enforcement matched only self-asserted `domain_tags`, not content — a sender
+  could launder a prohibited topic into prose with a benign tag, contradicting
+  criterion 982 "bundles with redacted content are blocked." **Fixed in this
+  pass:** `check_redacted_topics` now whole-word-scans `summary`/
+  `reasoning_chain`/`caveats` (unit-tested).
+- **P4-FED-4 (MEDIUM, STUB):** `expire_stale_agreements` (agreement TTL) is
+  exported and tested but has no caller anywhere — no automatic expiration runs
+  despite the polished API.
+- **P4-FED-5 (MEDIUM, PARTIAL):** RTX federated receive has no freshness/replay
+  guard (message/edit/redaction paths do). A captured RTX relay envelope can be
+  replayed by an active peer. No federation-to-self/loopback guard on inbound
+  paths either.
+- **DELIVERED (verified):** message/edit/redaction relay signatures ARE
+  verified before persist + broadcast; conflict handshakes are not persisted;
+  manual federation revocation IS implemented and proactive policy-change peer
+  notification IS implemented — the release notes claiming these are missing
+  are **stale in the project's favor**.
+
+### UX / user flow (observed by driving the live UI)
+
+- **P4-UX-1 (MEDIUM):** The proof-generation screen shows a static
+  "Loading proof assets…" / "Generating zero-knowledge proof…" label with no
+  spinner/progress bar/elapsed time, for an operation the config budgets at
+  30–60s. On slower hardware this is indistinguishable from a hang.
+- **P4-UX-2 (LOW):** Status signals are inconsistent — the header server chip
+  shows a **red** dot while the footer identity shows **green**, and the green
+  "Reconnected" banner lingers for several seconds across tab switches rather
+  than dismissing promptly.
+- **GOOD:** empty states are genuinely well done ("No federation peers" with an
+  explanatory line); the Audio/Video settings dialog is clean and honest
+  ("No camera detected"); zero console errors through the full happy path; the
+  dark theme is polished and consistent. The core text-chat user flow
+  (identity → server → proof → channel → message, incl. cold-start persistence)
+  makes sense and works end to end.
+
+### Net
+
+Marketing-grade subsystems that are real: text chat, presence, observability,
+the ZK membership primitive, human↔human SFU mechanics, the desktop shell. The
+overstated ones — **agent voice, RTX cross-server integrity, the broader ZK
+circuit/privacy story, and VRP "semantic"/reputation trust** — are where the
+roadmap's COMPLETE labels and several comments do not match the code.

@@ -415,10 +415,8 @@ Full Circom / Groth16 pipeline:
 zk/
 ├── circuits/
 │   ├── identity.circom              # Poseidon(sk, roleCode, nodeId) commitment
-│   ├── membership.circom            # Merkle membership proof
-│   ├── link-pseudonyms.circom       # Opt-in cross-server identity linking
-│   ├── channel-eligibility.circom   # Prove capability flags without revealing full identity
-│   └── federation-attestation.circom # Multi-hop federation membership proof
+│   ├── membership.circom            # Merkle membership proof (v1)
+│   └── membership_v2.circom         # Membership proof with secret-derived nullifier (opt-in)
 ├── build/                           # Compiled R1CS / WASM / sym
 ├── keys/                            # Groth16 trusted setup artifacts, verification keys
 └── scripts/
@@ -429,11 +427,17 @@ zk/
 
 **`identity.circom`** — Binds secret key + role + node identity into a single field element.
 
-**`membership.circom`** — Proves a commitment is a leaf in a Merkle tree under a given root, without revealing the secret or leaf index.
+**`membership.circom`** — Proves a commitment is a leaf in a Merkle tree under a given root, without revealing the secret or leaf index. This is the v1 circuit every shipped client uses today.
 
-**`channel-eligibility.circom`** — Proves the holder has required capability flags for a channel without revealing the full identity record.
+**`membership_v2.circom`** — Same membership proof but with a secret-derived nullifier (so a topic pseudonym is not derivable from the public commitment). Server-side support exists but is **opt-in and disabled by default** (`security.enabled_zk_versions`), and no shipped client generates v2 proofs yet — see [AUDIT.md](AUDIT.md) FINDING-003/B.
 
-**`federation-attestation.circom`** — Proves cross-server membership to a third server without revealing which originating server the user belongs to (multi-hop federation privacy).
+> **Status note (not yet implemented):** earlier drafts of this README listed
+> `link-pseudonyms.circom`, `channel-eligibility.circom`, and
+> `federation-attestation.circom`. Those circuits do **not** exist in the
+> codebase. Channel-capability gating is currently enforced against plaintext
+> role flags in the database (`channel_service.rs`), **not** a zero-knowledge
+> proof. Cross-server attestation privacy is likewise not yet ZK-backed. These
+> remain planned work; see AUDIT.md "Pass 4 — Roadmap vs Reality."
 
 ---
 

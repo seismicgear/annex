@@ -14,21 +14,41 @@ If you're an AI assistant helping with this project: **read the current phase st
 
 ```
 Phase 0: Project Scaffold .............. COMPLETE
-Phase 1: Identity Plane ................ COMPLETE
+Phase 1: Identity Plane ................ PARTIAL  (membership v1 solid; 3 of 5
+                                                   advertised circuits absent;
+                                                   v2 nullifier-privacy fix
+                                                   unreachable from any client)
 Phase 2: Server Core ................... COMPLETE
-Phase 3: VRP Trust Negotiation ......... COMPLETE
+Phase 3: VRP Trust Negotiation ......... PARTIAL  (reputation does not affect
+                                                   outcomes; "semantic" = word
+                                                   overlap; score hardcoded)
 Phase 4: Text Communication ............ COMPLETE
 Phase 5: Presence Graph ................ COMPLETE
-Phase 6: Agent Protocol ................ COMPLETE
-Phase 7: Voice Infrastructure .......... COMPLETE
-Phase 8: Federation .................... COMPLETE
-Phase 9: RTX Knowledge Exchange ........ COMPLETE
+Phase 6: Agent Protocol ................ PARTIAL  (negotiated capability
+                                                   contract not enforced at
+                                                   action time)
+Phase 7: Voice Infrastructure .......... PARTIAL  (no LiveKit; human↔human SFU
+                                                   real but disabled on default
+                                                   desktop host; agent TTS/STT
+                                                   non-functional by default)
+Phase 8: Federation .................... COMPLETE (message/edit/redaction relay
+                                                   verified; revocation works)
+Phase 9: RTX Knowledge Exchange ........ PARTIAL  (bundle author signature
+                                                   never verified; single-hop
+                                                   only; agreement TTL unwired)
 Phase 10: Observability ................ COMPLETE
 Phase 11: Client ....................... COMPLETE
 Phase 12: Hardening & Audit ............ COMPLETE
 ```
 
-**Last updated**: 2026-02-18
+> **Reality check (2026-06-19):** several phases above were previously marked
+> `COMPLETE` while documented completion criteria were unmet. Per this
+> document's own rule — "you do not declare a phase complete unless every
+> completion criterion is met" — they are downgraded to `PARTIAL` with the
+> specific gaps noted. Full evidence (file:line, verdicts) is in
+> [AUDIT.md](AUDIT.md) "Pass 4 — Roadmap vs Reality".
+
+**Last updated**: 2026-06-19
 
 When phases change status, update this block and add a dated entry to the [Changelog](#changelog) at the bottom of this document.
 

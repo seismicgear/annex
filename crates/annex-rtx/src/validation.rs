@@ -62,22 +62,82 @@ pub fn enforce_transfer_scope(
     }
 }
 
-/// Checks whether a bundle contains any redacted topics.
+/// Checks whether a bundle attempts to share a redacted topic.
 ///
-/// Returns an error if any of the bundle's `domain_tags` appear in the
-/// redacted topics list from the sender's capability contract. Redacted
-/// topics represent knowledge domains that the agent is prohibited from
+/// A topic is considered shared if it appears either as one of the bundle's
+/// self-asserted `domain_tags` **or** as a whole word anywhere in the
+/// free-text content (`summary`, `reasoning_chain`, `caveats`). Scanning the
+/// content — not just the tags — is what makes redaction enforceable: a sender
+/// cannot launder a prohibited topic into prose while tagging the bundle
+/// `["general"]` (or leaving `domain_tags` empty).
+///
+/// Matching is case-insensitive and word-bounded (so a redacted topic
+/// `"finance"` does not match `"refinanced"`). Comparison is ASCII-case-folded;
+/// topics are short labels in practice.
+///
+/// Redacted topics represent knowledge domains the agent is prohibited from
 /// sharing per its VRP agreement.
 pub fn check_redacted_topics(
     bundle: &ReflectionSummaryBundle,
     redacted_topics: &[String],
 ) -> Result<(), RtxError> {
+    if redacted_topics.is_empty() {
+        return Ok(());
+    }
+
+    // 1. Self-asserted domain tags (case-insensitive exact match).
     for tag in &bundle.domain_tags {
-        if redacted_topics.contains(tag) {
+        if redacted_topics.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
             return Err(RtxError::RedactedTopic(tag.clone()));
         }
     }
+
+    // 2. Free-text content — defeats tag-laundering.
+    let mut haystacks: Vec<&str> = vec![bundle.summary.as_str()];
+    if let Some(rc) = bundle.reasoning_chain.as_deref() {
+        haystacks.push(rc);
+    }
+    for caveat in &bundle.caveats {
+        haystacks.push(caveat.as_str());
+    }
+    for topic in redacted_topics {
+        let needle = topic.trim();
+        if needle.is_empty() {
+            continue;
+        }
+        if haystacks.iter().any(|hay| contains_word_ci(hay, needle)) {
+            return Err(RtxError::RedactedTopic(topic.clone()));
+        }
+    }
+
     Ok(())
+}
+
+/// Whole-word, ASCII-case-insensitive search. A match must be bounded by a
+/// non-alphanumeric character (or string edge) on both sides, so `"finance"`
+/// matches `"in finance,"` but not `"refinanced"`.
+fn contains_word_ci(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    let hay = haystack.to_ascii_lowercase();
+    let need = needle.to_ascii_lowercase();
+    let bytes = hay.as_bytes();
+    let mut start = 0;
+    while let Some(pos) = hay[start..].find(&need) {
+        let i = start + pos;
+        let before_ok = i == 0 || !bytes[i - 1].is_ascii_alphanumeric();
+        let after = i + need.len();
+        let after_ok = after >= bytes.len() || !bytes[after].is_ascii_alphanumeric();
+        if before_ok && after_ok {
+            return true;
+        }
+        start = i + need.len();
+        if start >= hay.len() {
+            break;
+        }
+    }
+    false
 }
 
 /// Validates that a bundle has all required fields populated AND that
@@ -205,4 +265,82 @@ pub fn bundle_signing_payload(bundle: &ReflectionSummaryBundle) -> String {
         bundle.summary,
         bundle.created_at
     )
+}
+
+#[cfg(test)]
+mod redaction_tests {
+    use super::*;
+
+    fn bundle(
+        domain_tags: &[&str],
+        summary: &str,
+        reasoning: Option<&str>,
+        caveats: &[&str],
+    ) -> ReflectionSummaryBundle {
+        ReflectionSummaryBundle {
+            bundle_id: "b1".into(),
+            source_pseudonym: "p1".into(),
+            source_server: "http://localhost".into(),
+            domain_tags: domain_tags.iter().map(|s| s.to_string()).collect(),
+            summary: summary.into(),
+            reasoning_chain: reasoning.map(|s| s.to_string()),
+            caveats: caveats.iter().map(|s| s.to_string()).collect(),
+            created_at: 1,
+            signature: "00".into(),
+            vrp_handshake_ref: "r".into(),
+        }
+    }
+
+    #[test]
+    fn empty_redaction_list_allows_anything() {
+        let b = bundle(&["politics"], "anything about politics", None, &[]);
+        assert!(check_redacted_topics(&b, &[]).is_ok());
+    }
+
+    #[test]
+    fn redacted_domain_tag_is_blocked() {
+        let b = bundle(&["politics", "ethics"], "neutral summary", None, &[]);
+        assert!(check_redacted_topics(&b, &["politics".into()]).is_err());
+    }
+
+    #[test]
+    fn redacted_topic_laundered_into_summary_is_blocked() {
+        // The tag set is benign, but the prohibited topic appears in the prose.
+        let b = bundle(
+            &["general"],
+            "A deep dive into finance and markets.",
+            None,
+            &[],
+        );
+        assert!(
+            check_redacted_topics(&b, &["finance".into()]).is_err(),
+            "a redacted topic in the summary must be blocked even with a benign tag"
+        );
+    }
+
+    #[test]
+    fn redacted_topic_in_reasoning_or_caveats_is_blocked() {
+        let b = bundle(
+            &["general"],
+            "neutral",
+            Some("step 1: discuss politics"),
+            &[],
+        );
+        assert!(check_redacted_topics(&b, &["politics".into()]).is_err());
+        let b2 = bundle(&["general"], "neutral", None, &["may touch on Politics"]);
+        assert!(
+            check_redacted_topics(&b2, &["politics".into()]).is_err(),
+            "match is case-insensitive"
+        );
+    }
+
+    #[test]
+    fn substring_of_a_larger_word_is_not_a_false_positive() {
+        // "finance" must not match "refinanced".
+        let b = bundle(&["general"], "They refinanced the mortgage.", None, &[]);
+        assert!(
+            check_redacted_topics(&b, &["finance".into()]).is_ok(),
+            "whole-word matching must not flag 'refinanced' for redacted 'finance'"
+        );
+    }
 }
