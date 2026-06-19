@@ -19,9 +19,10 @@ Phase 1: Identity Plane ................ PARTIAL  (membership v1 solid; 3 of 5
                                                    v2 nullifier-privacy fix
                                                    unreachable from any client)
 Phase 2: Server Core ................... COMPLETE
-Phase 3: VRP Trust Negotiation ......... PARTIAL  (reputation does not affect
-                                                   outcomes; "semantic" = word
-                                                   overlap; score hardcoded)
+Phase 3: VRP Trust Negotiation ......... PARTIAL  (reputation now gates
+                                                   outcomes [2026-06-19 fix];
+                                                   "semantic" = word overlap;
+                                                   score hardcoded)
 Phase 4: Text Communication ............ COMPLETE
 Phase 5: Presence Graph ................ COMPLETE
 Phase 6: Agent Protocol ................ PARTIAL  (negotiated capability

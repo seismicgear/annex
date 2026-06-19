@@ -463,3 +463,89 @@ fn test_vrp_error_display() {
         "Error message should mention UNIX epoch, got: {msg}"
     );
 }
+
+fn report(status: VrpAlignmentStatus, scope: VrpTransferScope, score: f32) -> VrpValidationReport {
+    VrpValidationReport {
+        alignment_status: status,
+        transfer_scope: scope,
+        alignment_score: score,
+        negotiation_notes: vec![],
+    }
+}
+
+fn full_accept() -> VrpTransferAcceptanceConfig {
+    VrpTransferAcceptanceConfig {
+        allow_reflection_summaries: true,
+        allow_full_knowledge: true,
+    }
+}
+
+#[test]
+fn reputation_gate_is_noop_when_healthy() {
+    let r = report(
+        VrpAlignmentStatus::Aligned,
+        VrpTransferScope::FullKnowledgeBundle,
+        1.0,
+    );
+    let out = apply_reputation_gate(r, 0.6, &full_accept());
+    assert_eq!(out.alignment_status, VrpAlignmentStatus::Aligned);
+    assert!(out.negotiation_notes.is_empty());
+}
+
+#[test]
+fn reputation_gate_threshold_is_inclusive() {
+    // Exactly at the threshold counts as healthy (>=) — no downgrade.
+    let r = report(
+        VrpAlignmentStatus::Aligned,
+        VrpTransferScope::FullKnowledgeBundle,
+        1.0,
+    );
+    let out = apply_reputation_gate(r, MIN_REPUTATION_FOR_FULL_ALIGNMENT, &full_accept());
+    assert_eq!(out.alignment_status, VrpAlignmentStatus::Aligned);
+}
+
+#[test]
+fn reputation_gate_downgrades_aligned_to_partial_when_poor() {
+    let r = report(
+        VrpAlignmentStatus::Aligned,
+        VrpTransferScope::FullKnowledgeBundle,
+        1.0,
+    );
+    let out = apply_reputation_gate(r, 0.1, &full_accept());
+    assert_eq!(out.alignment_status, VrpAlignmentStatus::Partial);
+    assert_eq!(
+        out.transfer_scope,
+        VrpTransferScope::ReflectionSummariesOnly
+    );
+    assert_eq!(out.alignment_score, 0.5);
+    assert!(out
+        .negotiation_notes
+        .iter()
+        .any(|n| n.contains("downgraded")));
+}
+
+#[test]
+fn reputation_gate_downgrades_partial_to_conflict_and_conflict_is_terminal() {
+    let cfg = VrpTransferAcceptanceConfig {
+        allow_reflection_summaries: true,
+        allow_full_knowledge: false,
+    };
+    let partial = report(
+        VrpAlignmentStatus::Partial,
+        VrpTransferScope::ReflectionSummariesOnly,
+        0.5,
+    );
+    let out = apply_reputation_gate(partial, 0.0, &cfg);
+    assert_eq!(out.alignment_status, VrpAlignmentStatus::Conflict);
+    assert_eq!(out.transfer_scope, VrpTransferScope::NoTransfer);
+
+    // Conflict cannot be downgraded further.
+    let conflict = report(
+        VrpAlignmentStatus::Conflict,
+        VrpTransferScope::NoTransfer,
+        0.0,
+    );
+    let out2 = apply_reputation_gate(conflict, 0.0, &cfg);
+    assert_eq!(out2.alignment_status, VrpAlignmentStatus::Conflict);
+    assert!(out2.negotiation_notes.is_empty());
+}

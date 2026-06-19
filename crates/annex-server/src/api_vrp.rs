@@ -5,9 +5,10 @@ use annex_graph::update_node_activity;
 use annex_observe::EventPayload;
 use annex_types::PresenceEvent;
 use annex_vrp::{
-    check_reputation_score, record_vrp_outcome, validate_federation_handshake, ServerPolicyRoot,
-    VrpAlignmentConfig, VrpAlignmentStatus, VrpCapabilitySharingContract, VrpFederationHandshake,
-    VrpTransferAcceptanceConfig, VrpValidationReport,
+    apply_reputation_gate, check_reputation_score, record_vrp_outcome,
+    validate_federation_handshake, ServerPolicyRoot, VrpAlignmentConfig, VrpAlignmentStatus,
+    VrpCapabilitySharingContract, VrpFederationHandshake, VrpTransferAcceptanceConfig,
+    VrpValidationReport,
 };
 use axum::{
     extract::Extension,
@@ -205,7 +206,20 @@ pub async fn agent_handshake_handler(
             ApiError::InternalServerError(format!("failed to begin transaction: {e}"))
         })?;
 
-        // 8. Record Outcome
+        // 9. Check longitudinal reputation FROM PRIOR HISTORY — before the
+        // current outcome is recorded — so a sustained history of
+        // Partial/Conflict outcomes can gate this handshake's verdict.
+        let reputation_score =
+            check_reputation_score(&tx, state.server_id, &payload.pseudonym_id).map_err(
+                |e| ApiError::InternalServerError(format!("failed to check reputation: {e}")),
+            )?;
+
+        // Gate the freshly-computed alignment by reputation: a poor track
+        // record downgrades the verdict one step (Aligned->Partial->Conflict).
+        // This is what makes reputation actually affect the outcome.
+        let report = apply_reputation_gate(report, reputation_score, &transfer_config);
+
+        // 8. Record the FINAL (gated) outcome to the handshake log.
         record_vrp_outcome(
             &tx,
             state.server_id,
@@ -214,12 +228,6 @@ pub async fn agent_handshake_handler(
             &report,
         )
         .map_err(|e| ApiError::InternalServerError(format!("failed to log vrp outcome: {e}")))?;
-
-        // 9. Check Longitudinal Reputation
-        let reputation_score =
-            check_reputation_score(&tx, state.server_id, &payload.pseudonym_id).map_err(
-                |e| ApiError::InternalServerError(format!("failed to check reputation: {e}")),
-            )?;
 
         // 10. Upsert Agent Registration
         if report.alignment_status == VrpAlignmentStatus::Aligned

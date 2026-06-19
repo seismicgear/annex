@@ -32,6 +32,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   of orphaning the process (holding its port) and leaving a public tunnel
   advertised for a dead local server. (AUDIT FINDING-039)
 
+### Changed
+
+- **VRP: longitudinal reputation now gates alignment outcomes.** Previously the
+  handshake verdict was computed and reputation was read afterward and ignored
+  (so an agent with a long history of Conflict was treated like a fresh one).
+  The server now reads reputation from prior history before recording the
+  current outcome and downgrades the alignment one step when a peer's sustained
+  Partial/Conflict history has driven its reputation below the neutral band.
+  (AUDIT P4-VRP-1)
+
 ### Security
 
 - **Server: refuse to demote the last active moderator.** `PATCH

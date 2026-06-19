@@ -749,11 +749,16 @@ COMMENT-LIE (doc asserts X, code does Y).
 
 ### VRP / Agent (Phase 3, 6)
 
-- **P4-VRP-1 (HIGH, STUB/COMMENT-LIE):** Completion criterion "reputation
-  scores… affect alignment outcomes" is false. `validate_federation_handshake`
-  computes the verdict (`api_vrp.rs:195`) **before** `check_reputation_score`
-  is read (`api_vrp.rs:219`); reputation is only stored and used for display
-  ordering. *(Module doc corrected this pass.)*
+- **P4-VRP-1 (HIGH, STUB/COMMENT-LIE) — FIXED in this pass:** the completion
+  criterion "reputation scores… affect alignment outcomes" was false — the
+  verdict was computed before reputation was read, and reputation was only
+  stored/used for display ordering. Now `api_vrp` reads reputation from prior
+  history *before* recording the current outcome and applies
+  `annex_vrp::apply_reputation_gate`: a peer whose sustained Partial/Conflict
+  history has driven its reputation below `MIN_REPUTATION_FOR_FULL_ALIGNMENT`
+  (0.25; neutral is 0.5, so fresh peers are unaffected) is downgraded one
+  alignment step (Aligned→Partial→Conflict), with transfer scope/score
+  recomputed. Unit-tested; the VRP handshake integration tests still pass.
 - **P4-VRP-2 (MEDIUM, COMMENT-LIE):** `alignment_score` is hardcoded
   1.0/0.5/0.0 from the discrete status (`annex-vrp/src/lib.rs:207-212`, own
   comment "placeholder for now"); the real cosine value is discarded.

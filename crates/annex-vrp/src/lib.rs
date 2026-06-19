@@ -11,11 +11,12 @@
 //! contracts to produce an alignment classification (`Aligned`, `Partial`, or
 //! `Conflict`).
 //!
-//! NOTE on reputation: `check_reputation_score` is recorded per handshake and
-//! surfaced for display/ordering, but it does **not** currently feed back into
-//! the alignment classification — the verdict is computed by
-//! [`validate_federation_handshake`] before reputation is read. Making
-//! reputation affect the outcome is tracked in AUDIT.md (Pass 4 / VRP F2).
+//! NOTE on reputation: the base verdict from [`validate_federation_handshake`]
+//! is gated by longitudinal reputation via [`apply_reputation_gate`] — a peer
+//! whose history of `Partial`/`Conflict` outcomes has driven its reputation
+//! below [`MIN_REPUTATION_FOR_FULL_ALIGNMENT`] is downgraded one alignment step.
+//! Callers (see `api_vrp`) read the reputation score from prior history before
+//! recording the current outcome, then apply the gate.
 //!
 //! NOTE on "semantic" alignment: the only embedder is a bag-of-words TF/cosine
 //! [`semantic::BagOfWordsEmbedder`] — i.e. lexical word-overlap, not a learned
@@ -228,6 +229,56 @@ pub fn validate_federation_handshake(
         alignment_score,
         negotiation_notes: notes,
     }
+}
+
+/// Minimum longitudinal reputation a peer must retain to be admitted at the
+/// alignment its anchors/contracts earned this round.
+///
+/// The reputation score is neutral at 0.5 and only falls below this after a
+/// *sustained* history of `Partial`/`Conflict` outcomes — a single bad
+/// handshake from a fresh peer stays well above it — so the gate targets
+/// repeat offenders, not newcomers.
+pub const MIN_REPUTATION_FOR_FULL_ALIGNMENT: f32 = 0.25;
+
+/// Applies the longitudinal-reputation gate to a freshly-computed report.
+///
+/// When `reputation_score` is healthy (>= [`MIN_REPUTATION_FOR_FULL_ALIGNMENT`])
+/// the report is returned unchanged. Otherwise the alignment is downgraded one
+/// step — `Aligned` → `Partial`, `Partial` → `Conflict` — and the transfer
+/// scope and score are recomputed for the new status.
+///
+/// This is what makes reputation actually affect the outcome (ROADMAP Phase 3
+/// completion criterion): a peer with a poor track record cannot be freely
+/// re-admitted as `Aligned` on the strength of a single good anchor comparison.
+/// Callers must read `reputation_score` from history *before* recording the
+/// current outcome so it reflects past behaviour.
+pub fn apply_reputation_gate(
+    mut report: VrpValidationReport,
+    reputation_score: f32,
+    transfer_config: &VrpTransferAcceptanceConfig,
+) -> VrpValidationReport {
+    if reputation_score >= MIN_REPUTATION_FOR_FULL_ALIGNMENT {
+        return report;
+    }
+    let downgraded = match report.alignment_status {
+        VrpAlignmentStatus::Aligned => Some(VrpAlignmentStatus::Partial),
+        VrpAlignmentStatus::Partial => Some(VrpAlignmentStatus::Conflict),
+        VrpAlignmentStatus::Conflict => None,
+    };
+    if let Some(new_status) = downgraded {
+        report.negotiation_notes.push(format!(
+            "alignment downgraded {} -> {} due to low longitudinal reputation ({reputation_score:.2} < {MIN_REPUTATION_FOR_FULL_ALIGNMENT:.2})",
+            report.alignment_status, new_status
+        ));
+        report.alignment_status = new_status;
+        report.transfer_scope = resolve_transfer_scope(new_status, transfer_config);
+        report.alignment_score = match new_status {
+            VrpAlignmentStatus::Aligned => 1.0,
+            VrpAlignmentStatus::Partial => 0.5,
+            VrpAlignmentStatus::Conflict => 0.0,
+        };
+    }
+    report
 }
 
 /// Validates whether a validation report meets the requirements for a specific transfer scope.
