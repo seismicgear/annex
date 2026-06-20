@@ -843,14 +843,25 @@ COMMENT-LIE (doc asserts X, code does Y).
   in-process SFU by setting a loopback `[webrtc]` override (the ~10 KB of dead
   download machinery and its tests were removed). `is_enabled()` only needs a
   non-empty loopback URL; signaling/media flow over the app WebSocket + ICE.
-- **P4-VOICE-3 (CRITICAL for the feature, STUB):** Agent voice cannot
-  synthesize: no `voice_profiles` are ever loaded into `TtsService`
-  (`add_profile` is called only in tests); the handler falls back to a
-  `"default"` profile that was never registered → `ProfileNotFound` →
-  `"TTS failed"`. The ROADMAP 7.4 integration test
-  (`agent_voice_test.rs:137-150`) **asserts the error path** (`assert_eq!(type,
-  "error")`, message `contains("TTS failed")`) — the test that supposedly
-  proves "audio appears in the room" proves it fails.
+- **P4-VOICE-3 (CRITICAL for the feature, STUB) — FIXED this pass:** Agent
+  voice could not synthesize: no `voice_profiles` were ever loaded into
+  `TtsService`, and the handler's `"default"` fallback resolved to a profile
+  that was never registered → `ProfileNotFound` → `"TTS failed"`. Now:
+  - `TtsService::provision_default_profile()` registers a built-in `"default"`
+    profile, choosing **Piper** when its binary + a voice model are present,
+    otherwise **System** (espeak-ng) which needs no model file — so a fresh
+    install synthesizes out of the box.
+  - `startup::load_voice_profiles()` loads every operator-configured row from
+    the `voice_profiles` table into the running `TtsService` at boot.
+  - `scripts/claude-setup.sh` installs `espeak-ng` so the System backend is
+    present by default.
+  - The ROADMAP 7.4 integration test no longer asserts failure: it provisions
+    the default profile and asserts the pipeline gets **past** TTS (synthesis
+    succeeds; only the voice-transport stage may still error in a test without a
+    live SFU). New direct tests in `annex-voice` prove
+    `provision_default_profile` registers `"default"` and that
+    `synthesize(..,"default")` produces non-empty PCM encodable to opus frames
+    (`agent_voice_synthesizes_via_default_profile`, gated on espeak-ng).
 - **P4-VOICE-4 (HIGH, PARTIAL):** STT (Whisper) and Bark TTS have real
   subprocess integrations but **no provisioning** (no whisper setup script; no
   Bark wrapper); only Piper has an installer. "Parler-TTS" named in the roadmap

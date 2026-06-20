@@ -38,8 +38,12 @@ Phase 6: Agent Protocol ................ PARTIAL  (negotiated capability
 Phase 7: Voice Infrastructure .......... PARTIAL  (no LiveKit; human↔human SFU
                                                    real, now enabled on default
                                                    desktop host [2026-06-19 fix];
-                                                   agent TTS/STT non-functional
-                                                   by default)
+                                                   agent TTS now works out of the
+                                                   box — built-in default profile
+                                                   + espeak-ng System fallback +
+                                                   DB profile loader [2026-06-20];
+                                                   Whisper STT still needs model
+                                                   provisioning)
 Phase 8: Federation .................... COMPLETE (message/edit/redaction relay
                                                    verified; revocation works)
 Phase 9: RTX Knowledge Exchange ........ PARTIAL  (relay now content-bound vs
@@ -828,8 +832,8 @@ Voice channels that work for both humans and agents. Humans speak via WebRTC thr
 #### 7.4 — Agent voice output pipeline
 - [x] Agent sends text intent via WebSocket message with `type: "voice_intent"`
 - [x] Server routes text to TTS service with the agent's assigned voice profile
-- [x] TTS output is published to the LiveKit room as an audio track attributed to the agent's pseudonym
-- [x] Test: agent sends text → audio appears in LiveKit room → other participants hear it
+- [x] TTS output is published to the in-process SFU room as an audio track attributed to the agent's pseudonym (NOT LiveKit — native Rust SFU)
+- [x] Test: agent sends text → TTS synthesizes audio → encoded to opus frames for the SFU mixer. Closed [2026-06-20]: the built-in `"default"` profile is provisioned at startup (Piper if available, else espeak-ng System), operator profiles are loaded from `voice_profiles`, and the integration test now asserts synthesis SUCCEEDS instead of the old failure path.
 
 #### 7.5 — STT service
 - [x] `annex-voice` implements STT service:

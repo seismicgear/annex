@@ -10,6 +10,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Agent voice now synthesizes out of the box.** Agent text-to-speech could
+  never produce audio: no voice profiles were loaded into `TtsService`, and the
+  handler's `"default"` fallback resolved to a profile that was never
+  registered, so synthesis failed with `ProfileNotFound` → "TTS failed" before
+  any backend was tried (its integration test asserted the *failure*). Startup
+  now provisions a built-in `"default"` profile (Piper when its binary + a model
+  are present, otherwise the System/espeak-ng backend, which needs no model
+  file) and loads operator-configured rows from `voice_profiles` into the
+  running service; `scripts/claude-setup.sh` installs espeak-ng. New tests prove
+  `synthesize(..,"default")` yields non-empty PCM encodable to opus frames, and
+  the pipeline test now asserts synthesis succeeds. (AUDIT P4-VOICE-3)
 - **Startup: the ZK-proof screen no longer looks frozen.** A first-run Groth16
   proof can take 30–60s; the registration/proving screen previously showed only
   a static label. It now has an animated spinner plus a live elapsed-time hint

@@ -125,6 +125,72 @@ async fn ensure_webrtc_running(
     None
 }
 
+/// Loads operator-configured rows from the `voice_profiles` table for
+/// `server_id` into the running [`annex_voice::TtsService`]. Returns the count
+/// loaded. Best-effort: a malformed row is skipped with a warning rather than
+/// failing startup, and a DB error returns 0 (the built-in `"default"` profile
+/// still works).
+async fn load_voice_profiles(
+    pool: &annex_db::DbPool,
+    server_id: i64,
+    tts: &annex_voice::TtsService,
+) -> usize {
+    use annex_types::voice::{VoiceModel, VoiceProfile};
+
+    let pool = pool.clone();
+    let rows = tokio::task::spawn_blocking(move || -> Vec<(String, String, String, String, Option<String>, f32, f32, Option<u32>)> {
+        let Ok(conn) = pool.get() else { return Vec::new() };
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT profile_id, name, model, model_path, config_path, speed, pitch, speaker_id \
+             FROM voice_profiles WHERE server_id = ?1",
+        ) else { return Vec::new() };
+        let mapped = stmt.query_map([server_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, f64>(5)? as f32,
+                row.get::<_, f64>(6)? as f32,
+                row.get::<_, Option<i64>>(7)?.map(|v| v as u32),
+            ))
+        });
+        match mapped {
+            Ok(iter) => iter.filter_map(|r| r.ok()).collect(),
+            Err(_) => Vec::new(),
+        }
+    })
+    .await
+    .unwrap_or_default();
+
+    let mut count = 0;
+    for (profile_id, name, model_str, model_path, config_path, speed, pitch, speaker_id) in rows {
+        let model = match model_str.to_ascii_lowercase().as_str() {
+            "piper" => VoiceModel::Piper,
+            "bark" => VoiceModel::Bark,
+            "system" => VoiceModel::System,
+            other => {
+                tracing::warn!(profile = %profile_id, model = %other, "skipping voice profile with unknown model");
+                continue;
+            }
+        };
+        tts.add_profile(VoiceProfile {
+            id: profile_id,
+            name,
+            model,
+            model_path,
+            config_path,
+            speed,
+            pitch,
+            speaker_id,
+        })
+        .await;
+        count += 1;
+    }
+    count
+}
+
 /// Loads an optional ZK-circuit verification key with the same enforcement
 /// contract the membership keys use.
 ///
@@ -635,6 +701,18 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
         &config.voice.tts_voices_dir,
         &config.voice.tts_binary_path,
         &config.voice.bark_binary_path,
+    );
+    // Provision the built-in "default" profile and load operator-configured
+    // profiles from the `voice_profiles` table into the running TtsService.
+    // Without this, the WS voice handler's `"default"` fallback (and any
+    // operator profile) resolved to nothing and agent synthesis failed with
+    // ProfileNotFound — agent voice could never produce audio (AUDIT P4-VOICE-3).
+    let default_voice_model = tts_service.provision_default_profile().await;
+    let loaded_profiles = load_voice_profiles(&pool, server_id, &tts_service).await;
+    tracing::info!(
+        default_backend = ?default_voice_model,
+        operator_profiles = loaded_profiles,
+        "TTS voice profiles provisioned"
     );
     let stt_service =
         annex_voice::SttService::new(&config.voice.stt_model_path, &config.voice.stt_binary_path);

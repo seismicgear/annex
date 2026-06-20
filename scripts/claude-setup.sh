@@ -31,8 +31,18 @@ else
         libsoup-3.0-dev \
         javascriptcoregtk-4.1-dev \
         libpipewire-0.3-dev \
+        espeak-ng \
         2>&1 | tail -3
     info "System dependencies installed."
+fi
+
+# espeak-ng is the System-TTS backend the built-in "default" voice profile
+# falls back to when Piper isn't provisioned, so agent voice works out of the
+# box. Install it even when the WebKit deps were already present.
+if ! command -v espeak-ng >/dev/null 2>&1; then
+    info "Installing espeak-ng (System TTS fallback for agent voice)..."
+    apt-get install -y --no-install-recommends espeak-ng 2>&1 | tail -2 || \
+        warn "espeak-ng install failed; agent voice needs Piper or espeak-ng to synthesize."
 fi
 
 # ---------- 2. ZK keys ----------
