@@ -432,7 +432,7 @@ zk/
 
 **`membership.circom`** — Proves a commitment is a leaf in a Merkle tree under a given root, without revealing the secret or leaf index. This is the v1 circuit every shipped client uses today.
 
-**`membership_v2.circom`** — Same membership proof but with a secret-derived nullifier (so a topic pseudonym is not derivable from the public commitment). This is now the **default** path: the shipped client generates v2 proofs and the server accepts both v1 and v2 (`security.enabled_zk_versions = ["v1","v2"]`) for migration. This closes the v1 nullifier-linkability hole (see [AUDIT.md](AUDIT.md) FINDING-003).
+**`membership_v2.circom`** — Same membership proof but with a secret-derived nullifier (so a topic pseudonym is not derivable from the public commitment). This is now the **default** path: the shipped client generates v2 proofs and the server accepts both v1 and v2 (`security.enabled_zk_versions = ["v1","v2"]`) for migration.
 
 **`channel_eligibility.circom`** — Proves the holder is a member whose
 committed role equals the role a channel admits, emitting a channel-scoped

@@ -61,8 +61,7 @@ Phase 12: Hardening & Audit ............ COMPLETE
 > `COMPLETE` while documented completion criteria were unmet. Per this
 > document's own rule — "you do not declare a phase complete unless every
 > completion criterion is met" — they are downgraded to `PARTIAL` with the
-> specific gaps noted. Full evidence (file:line, verdicts) is in
-> [AUDIT.md](AUDIT.md) "Pass 4 — Roadmap vs Reality".
+> specific gaps noted inline in the phase summaries below.
 
 **Last updated**: 2026-06-19
 
