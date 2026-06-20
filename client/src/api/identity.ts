@@ -65,6 +65,55 @@ export async function getCurrentRoot(): Promise<{ rootHex: string; leafCount: nu
   return request<{ rootHex: string; leafCount: number }>('/api/registry/current-root');
 }
 
+// ───────── capability / linkage / federation ZK circuits (AUDIT P4-ID-1) ─────────
+
+/** Verify a channel-eligibility proof. Returns the channel-scoped nullifier. */
+export async function verifyChannelEligibility(
+  root: string,
+  channelTopic: string,
+  requiredRoleCode: number,
+  proof: unknown,
+  publicSignals: string[],
+): Promise<{ ok: boolean; nullifierHex: string }> {
+  return request('/api/zk/channel-eligibility', {
+    method: 'POST',
+    body: JSON.stringify({ root, channelTopic, requiredRoleCode, proof, publicSignals }),
+  });
+}
+
+/** Verify a voluntary pseudonym-linkage proof between two topics. */
+export async function verifyLinkPseudonyms(
+  topicA: string,
+  topicB: string,
+  proof: unknown,
+  publicSignals: string[],
+): Promise<{
+  ok: boolean;
+  linked: boolean;
+  nullifierAHex: string;
+  nullifierBHex: string;
+  nullifierAKnownLocally: boolean;
+  nullifierBKnownLocally: boolean;
+}> {
+  return request('/api/zk/link-pseudonyms', {
+    method: 'POST',
+    body: JSON.stringify({ topicA, topicB, proof, publicSignals }),
+  });
+}
+
+/** Verify a federation-attestation proof against the server's published root. */
+export async function verifyFederationAttestation(
+  root: string,
+  federationContext: string,
+  proof: unknown,
+  publicSignals: string[],
+): Promise<{ ok: boolean; nullifierHex: string; root: string }> {
+  return request('/api/zk/federation-attestation', {
+    method: 'POST',
+    body: JSON.stringify({ root, federationContext, proof, publicSignals }),
+  });
+}
+
 export async function getIdentityInfo(
   pseudonymId: string,
 ): Promise<IdentityInfo> {

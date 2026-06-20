@@ -83,6 +83,9 @@ async fn setup_test_server() -> (SocketAddr, annex_db::DbPool) {
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: Arc::new(vkey),
         membership_vkey_v2: None,
+        channel_eligibility_vkey: None,
+        link_pseudonyms_vkey: None,
+        federation_attestation_vkey: None,
         server_id: 1,
         signing_key: Arc::new(ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng)),
         public_url: std::sync::Arc::new(std::sync::RwLock::new(

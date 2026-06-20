@@ -58,6 +58,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- **Identity: the three advertised privacy circuits now exist and are enforced
+  in zero knowledge.** `channel_eligibility`, `link_pseudonyms`, and
+  `federation_attestation` previously did not exist — the README sold
+  capability/linkage/attestation privacy that had no cryptographic backing
+  (channel gating read plaintext role flags; cross-server attestation was a
+  metadata record). All three are now real Circom/Groth16 circuits over the
+  existing Poseidon(BN254) tree, with domain-separated nullifiers, verified by
+  new `POST /api/zk/{channel-eligibility,link-pseudonyms,federation-attestation}`
+  endpoints that bind the role/topic/context and root before accepting a proof.
+  The client generates them and the desktop bundle ships the keys. Proven by 18
+  new circuit assertions and four router integration tests driving real proofs.
+  (Trusted setup is still the dev-fixture; a multi-party ceremony is the
+  remaining production step.) (AUDIT P4-ID-1)
 - **Identity: the client now uses secret-derived (v2) nullifiers by default,
   closing the disclosed nullifier-linkability hole.** The v1 per-topic
   nullifier was `sha256(commitment + topic)` — derivable by anyone holding the

@@ -196,6 +196,37 @@ fn main() {
         );
     }
 
+    // Resolve the capability / linkage / federation circuit vkeys (AUDIT
+    // P4-ID-1) exactly like the membership keys, and set the per-circuit env
+    // override the embedded server reads. Under `enforce_zk_proofs=true` a
+    // missing one is a hard StartupError, so each must be bundled
+    // (tauri.conf.json bundle.resources) and resolvable here.
+    let resolve_circuit_vkey = |file: &str| -> Option<PathBuf> {
+        let mut candidates: Vec<PathBuf> = vec![
+            exe_dir.join(file),
+            exe_dir.join("zk").join("keys").join(file),
+            resource_base.join("zk").join("keys").join(file),
+        ];
+        candidates.extend(bundled_resource_paths(&exe_dir, &["zk", "keys", file]));
+        candidates.into_iter().find(|p| p.exists())
+    };
+    let zk_vkey_channel_eligibility = resolve_circuit_vkey("channel_eligibility_vkey.json");
+    let zk_vkey_link_pseudonyms = resolve_circuit_vkey("link_pseudonyms_vkey.json");
+    let zk_vkey_federation_attestation = resolve_circuit_vkey("federation_attestation_vkey.json");
+    for (label, found) in [
+        ("channel_eligibility", &zk_vkey_channel_eligibility),
+        ("link_pseudonyms", &zk_vkey_link_pseudonyms),
+        ("federation_attestation", &zk_vkey_federation_attestation),
+    ] {
+        if found.is_none() {
+            eprintln!(
+                "[annex-desktop] WARNING: no {label}_vkey.json found; that ZK circuit's \
+                 endpoint will be unavailable (503) and the embedded server will refuse \
+                 to start under enforce_zk_proofs."
+            );
+        }
+    }
+
     // Resolve Piper TTS binary from bundled resources or dev workspace.
     let piper_bin_name = if cfg!(target_os = "windows") {
         "piper.exe"
@@ -273,6 +304,15 @@ fn main() {
         }
         if let Some(vkey_path_v2) = zk_vkey_v2 {
             std::env::set_var("ANNEX_ZK_KEY_PATH_V2", vkey_path_v2);
+        }
+        if let Some(p) = zk_vkey_channel_eligibility {
+            std::env::set_var("ANNEX_ZK_KEY_PATH_CHANNEL_ELIGIBILITY", p);
+        }
+        if let Some(p) = zk_vkey_link_pseudonyms {
+            std::env::set_var("ANNEX_ZK_KEY_PATH_LINK_PSEUDONYMS", p);
+        }
+        if let Some(p) = zk_vkey_federation_attestation {
+            std::env::set_var("ANNEX_ZK_KEY_PATH_FEDERATION_ATTESTATION", p);
         }
         if let Some(piper_path) = piper_binary {
             std::env::set_var("ANNEX_TTS_BINARY_PATH", piper_path);

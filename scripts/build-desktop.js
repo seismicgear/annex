@@ -140,6 +140,23 @@ const clientArtifacts = [
     src: path.join(ZK_KEYS_DIR, "membership_v2_final.zkey"),
     dst: path.join(CLIENT_PUBLIC_ZK, "membership_v2_final.zkey"),
   },
+  // Capability / linkage / federation circuits (AUDIT P4-ID-1). The client
+  // generates these proofs for role-gated channel access, opt-in pseudonym
+  // linkage, and federated attestation.
+  ...["channel_eligibility", "link_pseudonyms", "federation_attestation"].flatMap(
+    (name) => [
+      {
+        label: `${name}.wasm`,
+        src: path.join(ZK_BUILD_DIR, `${name}_js`, `${name}.wasm`),
+        dst: path.join(CLIENT_PUBLIC_ZK, `${name}.wasm`),
+      },
+      {
+        label: `${name}_final.zkey`,
+        src: path.join(ZK_KEYS_DIR, `${name}_final.zkey`),
+        dst: path.join(CLIENT_PUBLIC_ZK, `${name}_final.zkey`),
+      },
+    ]
+  ),
 ];
 
 for (const a of clientArtifacts) {
@@ -191,6 +208,30 @@ if (!fs.existsSync(SERVER_VKEY_V2)) {
       `  WARNING (dev): ${SERVER_VKEY_V2} is missing. Tauri bundling will fail ` +
         `(membership_v2_vkey.json is a declared bundle resource).`
     );
+  }
+}
+
+// Capability / linkage / federation server vkeys — bundled as Tauri resources
+// (tauri.conf.json) and required at startup under enforcement so the embedded
+// server can verify those proofs (else the endpoints 503).
+for (const name of [
+  "channel_eligibility",
+  "link_pseudonyms",
+  "federation_attestation",
+]) {
+  const vkey = path.join(ZK_KEYS_DIR, `${name}_vkey.json`);
+  if (!fs.existsSync(vkey)) {
+    if (IS_PRODUCTION) {
+      fatal(
+        `${vkey} is missing. The desktop bundle requires it as a Tauri resource ` +
+          `so the embedded server can verify ${name} proofs.`
+      );
+    } else {
+      log(
+        `  WARNING (dev): ${vkey} is missing. Tauri bundling will fail ` +
+          `(${name}_vkey.json is a declared bundle resource).`
+      );
+    }
   }
 }
 

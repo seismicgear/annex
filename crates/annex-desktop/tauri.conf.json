@@ -40,6 +40,9 @@
     "resources": [
       "../../zk/keys/membership_vkey.json",
       "../../zk/keys/membership_v2_vkey.json",
+      "../../zk/keys/channel_eligibility_vkey.json",
+      "../../zk/keys/link_pseudonyms_vkey.json",
+      "../../zk/keys/federation_attestation_vkey.json",
       "../../assets/piper",
       "../../assets/voices"
     ],

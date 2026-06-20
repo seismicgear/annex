@@ -125,6 +125,61 @@ async fn ensure_webrtc_running(
     None
 }
 
+/// Loads an optional ZK-circuit verification key with the same enforcement
+/// contract the membership keys use.
+///
+/// Path priority: the named env var, otherwise `default_path`. Behaviour:
+///   - file present & parses & (under enforcement) is not the dummy key →
+///     `Some(Arc<vkey>)`.
+///   - file present but parses to the dummy key under enforcement →
+///     `StartupError::DummyVerificationKey` (a dummy verifies any proof).
+///   - file missing under enforcement → `StartupError::MissingVerificationKey`.
+///   - file missing WITHOUT enforcement → `None` plus a loud warning (the
+///     feature is simply unavailable; the matching handler returns 503).
+///
+/// Returning `None` (rather than a dummy) when enforcement is off is
+/// deliberate: these circuits are opt-in capabilities, and a handler that
+/// finds `None` should report "not configured" rather than silently accept
+/// proofs against a dummy key.
+fn load_circuit_vkey(
+    env_var: &str,
+    default_path: &str,
+    label: &str,
+    enforce_zk_proofs: bool,
+) -> Result<Option<Arc<annex_identity::zk::VerifyingKey<annex_identity::zk::Bn254>>>, StartupError>
+{
+    let path = std::env::var(env_var).unwrap_or_else(|_| default_path.to_string());
+    match std::fs::read_to_string(&path) {
+        Ok(vkey_json) => {
+            let parsed = annex_identity::zk::parse_verification_key(&vkey_json)
+                .map_err(StartupError::ZkError)?;
+            if enforce_zk_proofs && annex_identity::zk::is_dummy_vkey(&parsed) {
+                return Err(StartupError::DummyVerificationKey { path });
+            }
+            tracing::info!(circuit = label, path = %path, "loaded ZK circuit verification key");
+            Ok(Some(Arc::new(parsed)))
+        }
+        Err(e) => {
+            if enforce_zk_proofs {
+                return Err(StartupError::MissingVerificationKey {
+                    path,
+                    reason: format!("({label}) {e}"),
+                });
+            }
+            tracing::warn!(
+                circuit = label,
+                path = %path,
+                error = %e,
+                "ZK circuit verification key not found — feature disabled \
+                 (enforce_zk_proofs is false). The matching endpoint will return 503 \
+                 until the key is provided (e.g. via the env override or \
+                 `node zk/scripts/dev-setup-groth16.js`)."
+            );
+            Ok(None)
+        }
+    }
+}
+
 /// Initializes the tracing subscriber based on logging configuration.
 ///
 /// Must be called exactly once per process, before any tracing macros are used.
@@ -531,6 +586,35 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
         None
     };
 
+    // Load the capability/linkage/federation ZK circuit verification keys
+    // (AUDIT P4-ID-1). These three circuits prove, in zero knowledge:
+    //   - channel-eligibility: role-gated channel access with identity hidden
+    //   - link-pseudonyms:      voluntary same-identity linkage across topics
+    //   - federation-attestation: a hidden member attesting in a federation ctx
+    //
+    // They follow the SAME enforcement contract as the membership keys: when
+    // `enforce_zk_proofs` is on, a present-but-dummy key is refused; a missing
+    // key is a hard `StartupError`. The default key paths sit beside the
+    // membership keys and can be overridden per-circuit by env var.
+    let channel_eligibility_vkey = load_circuit_vkey(
+        "ANNEX_ZK_KEY_PATH_CHANNEL_ELIGIBILITY",
+        "zk/keys/channel_eligibility_vkey.json",
+        "channel-eligibility",
+        enforce_zk_proofs,
+    )?;
+    let link_pseudonyms_vkey = load_circuit_vkey(
+        "ANNEX_ZK_KEY_PATH_LINK_PSEUDONYMS",
+        "zk/keys/link_pseudonyms_vkey.json",
+        "link-pseudonyms",
+        enforce_zk_proofs,
+    )?;
+    let federation_attestation_vkey = load_circuit_vkey(
+        "ANNEX_ZK_KEY_PATH_FEDERATION_ATTESTATION",
+        "zk/keys/federation_attestation_vkey.json",
+        "federation-attestation",
+        enforce_zk_proofs,
+    )?;
+
     // Load or generate Signing Key.
     // Priority: (1) ANNEX_SIGNING_KEY env var, (2) persistent file on disk, (3) generate + persist.
     let signing_key = resolve_signing_key(&config.database.path)?;
@@ -573,6 +657,9 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: Arc::new(membership_vkey),
         membership_vkey_v2: membership_vkey_v2.clone(),
+        channel_eligibility_vkey,
+        link_pseudonyms_vkey,
+        federation_attestation_vkey,
         server_id,
         signing_key: Arc::new(signing_key),
         // Config/env public_url takes precedence; fall back to DB-persisted value

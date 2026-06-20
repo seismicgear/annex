@@ -724,13 +724,37 @@ COMMENT-LIE (doc asserts X, code does Y).
 
 ### Identity / ZK (Phase 1, 12)
 
-- **P4-ID-1 (HIGH, FAKE/COMMENT-LIE):** README advertised a 5-circuit pipeline;
-  only `identity`, `membership`, `membership_v2` exist (`zk/circuits/`,
-  `zk/scripts/build-circuits.js`). `channel-eligibility`, `link-pseudonyms`,
-  `federation-attestation` do not exist. The "prove capability flags without
-  revealing identity" privacy claim has zero ZK backing — channel capability
-  gating reads plaintext role flags (`channel_service.rs:466-473`). *(README
-  corrected in this pass.)*
+- **P4-ID-1 (HIGH, FAKE/COMMENT-LIE) — FIXED (the three missing circuits now
+  exist and are wired end to end):** the advertised `channel-eligibility`,
+  `link-pseudonyms`, and `federation-attestation` circuits were absent, so the
+  "prove capability/linkage/attestation without revealing identity" privacy
+  claims had zero ZK backing. They are now implemented:
+  - **Circuits** (`zk/circuits/{channel_eligibility,link_pseudonyms,
+    federation_attestation}.circom`) over the existing Poseidon(BN254) leaf and
+    depth-20 tree, with distinct nullifier domain separators (eligibility=2,
+    federation=3, vs membership-v2=1) so a nullifier from one cannot be replayed
+    as another. Built by `build-circuits.js` + `dev-setup-groth16.js`.
+  - **Proven**: 18 new `zk/scripts/test-proofs.js` assertions (51 total pass) —
+    valid proofs verify, wrong-role witnesses fail to generate, tampering is
+    rejected, the three domains are pairwise distinct, and `link-pseudonyms`
+    emits nullifiers byte-identical to registered membership-v2 pseudonyms.
+  - **Server**: vkeys load at startup into `AppState` (same enforce/dummy/missing
+    contract as membership); `POST /api/zk/{channel-eligibility,link-pseudonyms,
+    federation-attestation}` (`api_zk_circuits.rs`) verify each proof, bind the
+    topic/role/context public signals (via `topic_hash_for_v2`) and the root
+    (`is_root_acceptable`), and return 503 when a circuit is unconfigured.
+    Integration-tested with real Groth16 proofs through the router
+    (`tests/api_zk_circuits.rs`): valid→200, wrong-role→401, wrong-topic→400,
+    unconfigured→503.
+  - **Client** (`client/src/lib/zk.ts`, `client/src/api/identity.ts`) generates
+    the proofs and calls the endpoints; build/bundle pipeline
+    (`prepare-zk-dev.js`, `build-desktop.js`, `tauri.conf.json`, desktop
+    `main.rs`) ships the wasm/zkey/vkey.
+  - **Remaining** (documented, not silently shipped): these use the dev-fixture
+    trusted setup like all current circuits; a multi-party ceremony is the
+    production-grade follow-up tracked in `zk-merkle-production.md`. Plaintext
+    role-flag gating in `channel_service.rs` still exists as the default path;
+    the ZK endpoint is now available to enforce eligibility cryptographically.
 - **P4-ID-2 (HIGH, STUB) — FIXED this pass (closes disclosed CRITICAL
   FINDING-003):** the v2 secret-derived nullifier was unreachable from any
   client (the client hardcoded `protocolVersion:'v1'`, shipped only v1

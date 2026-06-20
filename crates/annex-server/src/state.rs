@@ -37,6 +37,29 @@ pub struct AppState {
     /// silently — each proof is dispatched to exactly one verifier by its
     /// declared protocol version.
     pub membership_vkey_v2: Option<Arc<VerifyingKey<Bn254>>>,
+    /// ZK channel-eligibility verification key (AUDIT P4-ID-1).
+    ///
+    /// Verifies proofs that the holder is a member whose committed role equals
+    /// the role a channel admits — without revealing which member. `Some` when
+    /// the key loaded at boot; `None` only in unenforced dev runs where the
+    /// matching endpoint returns 503. Public signals: `[root, nullifier,
+    /// requiredRoleCode, channelTopicHash]`.
+    pub channel_eligibility_vkey: Option<Arc<VerifyingKey<Bn254>>>,
+    /// ZK link-pseudonyms verification key (AUDIT P4-ID-1).
+    ///
+    /// Verifies a holder-consented proof that two topic-scoped nullifiers
+    /// derive from the same secret key (so two pseudonyms are the same person)
+    /// without revealing the key. Public signals: `[nullifierA, nullifierB,
+    /// topicHashA, topicHashB]`. Uses the same nullifier domain (1) as
+    /// membership v2, so the linked nullifiers equal registered pseudonyms.
+    pub link_pseudonyms_vkey: Option<Arc<VerifyingKey<Bn254>>>,
+    /// ZK federation-attestation verification key (AUDIT P4-ID-1).
+    ///
+    /// Verifies that a hidden member of this server's tree is attesting within
+    /// a federation context, against this server's published root, without
+    /// exposing the identity DB. Public signals: `[root, nullifier,
+    /// federationContextHash]`.
+    pub federation_attestation_vkey: Option<Arc<VerifyingKey<Bn254>>>,
     /// The local server ID.
     pub server_id: i64,
     /// The local server signing key (Ed25519).

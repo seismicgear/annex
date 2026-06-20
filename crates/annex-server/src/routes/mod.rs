@@ -32,6 +32,7 @@ use crate::api_upload;
 use crate::api_usernames;
 use crate::api_vrp;
 use crate::api_ws;
+use crate::api_zk_circuits;
 use crate::http::cors::build_cors_layer;
 use crate::http::layers::apply_global_layers;
 use crate::http::static_files::{attach_client_dist, attach_uploads};
@@ -324,6 +325,19 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/api/zk/verify-membership",
             post(api::verify_membership_handler),
+        )
+        // Capability / linkage / federation ZK circuits (AUDIT P4-ID-1).
+        .route(
+            "/api/zk/channel-eligibility",
+            post(api_zk_circuits::channel_eligibility_handler),
+        )
+        .route(
+            "/api/zk/link-pseudonyms",
+            post(api_zk_circuits::link_pseudonyms_handler),
+        )
+        .route(
+            "/api/zk/federation-attestation",
+            post(api_zk_circuits::federation_attestation_handler),
         )
         .route(
             "/api/session/refresh",

@@ -416,7 +416,10 @@ zk/
 ├── circuits/
 │   ├── identity.circom              # Poseidon(sk, roleCode, nodeId) commitment
 │   ├── membership.circom            # Merkle membership proof (v1)
-│   └── membership_v2.circom         # Membership proof with secret-derived nullifier (opt-in)
+│   ├── membership_v2.circom         # Membership proof with secret-derived nullifier (opt-in)
+│   ├── channel_eligibility.circom   # Role-gated channel access, identity hidden
+│   ├── link_pseudonyms.circom       # Opt-in same-identity pseudonym linkage
+│   └── federation_attestation.circom # Hidden-member cross-server attestation
 ├── build/                           # Compiled R1CS / WASM / sym
 ├── keys/                            # Groth16 trusted setup artifacts, verification keys
 └── scripts/
@@ -431,13 +434,32 @@ zk/
 
 **`membership_v2.circom`** — Same membership proof but with a secret-derived nullifier (so a topic pseudonym is not derivable from the public commitment). This is now the **default** path: the shipped client generates v2 proofs and the server accepts both v1 and v2 (`security.enabled_zk_versions = ["v1","v2"]`) for migration. This closes the v1 nullifier-linkability hole (see [AUDIT.md](AUDIT.md) FINDING-003).
 
-> **Status note (not yet implemented):** earlier drafts of this README listed
-> `link-pseudonyms.circom`, `channel-eligibility.circom`, and
-> `federation-attestation.circom`. Those circuits do **not** exist in the
-> codebase. Channel-capability gating is currently enforced against plaintext
-> role flags in the database (`channel_service.rs`), **not** a zero-knowledge
-> proof. Cross-server attestation privacy is likewise not yet ZK-backed. These
-> remain planned work; see AUDIT.md "Pass 4 — Roadmap vs Reality."
+**`channel_eligibility.circom`** — Proves the holder is a member whose
+committed role equals the role a channel admits, emitting a channel-scoped
+secret-derived nullifier, **without revealing which member**. Public signals:
+`[root, nullifier, requiredRoleCode, channelTopicHash]`. Backs role-gated
+channel access in zero knowledge instead of reading plaintext role flags.
+
+**`link_pseudonyms.circom`** — Lets a holder voluntarily prove two
+topic-scoped pseudonyms derive from the same secret key (the same identity)
+**without revealing the key** — the opt-in cross-context linkage referenced
+above. Public signals: `[nullifierA, nullifierB, topicHashA, topicHashB]`. Uses
+the same nullifier domain (1) as `membership_v2`, so the linked nullifiers
+equal the registered pseudonyms.
+
+**`federation_attestation.circom`** — Proves a hidden member of this server's
+tree is attesting in a federation context, verifiable against the server's
+published root, **without exposing the identity database**. Public signals:
+`[root, nullifier, federationContextHash]`.
+
+These three are wired end to end: server verification keys load at startup
+(`AppState`), the endpoints `POST /api/zk/{channel-eligibility,link-pseudonyms,
+federation-attestation}` verify proofs and bind topic/role/context, the client
+generates the proofs (`client/src/lib/zk.ts`), and the build/bundle pipeline
+ships the wasm/zkey/vkey artifacts. Like the membership keys they currently use
+a **dev-fixture trusted setup** (random-entropy, documented as dev-only in
+`docs/refactor/zk-merkle-production.md`); a multi-party ceremony is the
+remaining production-grade step, tracked there.
 
 ---
 

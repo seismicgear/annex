@@ -93,6 +93,9 @@ fn setup_test_env(transfer_scope: &str) -> TestEnv {
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: load_dummy_vkey(),
         membership_vkey_v2: None,
+        channel_eligibility_vkey: None,
+        link_pseudonyms_vkey: None,
+        federation_attestation_vkey: None,
         server_id: local_server_id,
         signing_key: local_signing_key.clone(),
         public_url: std::sync::Arc::new(std::sync::RwLock::new(

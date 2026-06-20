@@ -122,14 +122,53 @@ function copyArtifactsToClient() {
     warn(`Expected: ${zkeyV2Source}`);
   }
 
+  // Capability / linkage / federation circuits (AUDIT P4-ID-1). Best-effort:
+  // these endpoints return 503 if absent, so a checkout without them still
+  // boots — but the default client ships them.
+  copyCapabilityCircuits();
+
   log('Prepared client/public/zk artifacts for desktop dev.');
+}
+
+// Capability / linkage / federation circuits (AUDIT P4-ID-1).
+const CAPABILITY_CIRCUITS = ['channel_eligibility', 'link_pseudonyms', 'federation_attestation'];
+
+function capabilityArtifactPaths(name) {
+  return {
+    wasmSource: path.join(ZK_DIR, 'build', `${name}_js`, `${name}.wasm`),
+    zkeySource: path.join(ZK_DIR, 'keys', `${name}_final.zkey`),
+    wasmDest: path.join(CLIENT_DIR, 'public', 'zk', `${name}.wasm`),
+    zkeyDest: path.join(CLIENT_DIR, 'public', 'zk', `${name}_final.zkey`),
+  };
+}
+
+function copyCapabilityCircuits() {
+  for (const name of CAPABILITY_CIRCUITS) {
+    const p = capabilityArtifactPaths(name);
+    if (exists(p.wasmSource) && exists(p.zkeySource)) {
+      fs.mkdirSync(path.dirname(p.wasmDest), { recursive: true });
+      fs.copyFileSync(p.wasmSource, p.wasmDest);
+      fs.copyFileSync(p.zkeySource, p.zkeyDest);
+      log(`Prepared client/public/zk ${name} artifacts.`);
+    } else {
+      warn(`${name} artifacts missing in zk/ — that circuit's endpoint will 503.`);
+    }
+  }
+}
+
+function capabilityArtifactsPresent() {
+  return CAPABILITY_CIRCUITS.every((name) => {
+    const p = capabilityArtifactPaths(name);
+    return exists(p.wasmDest) && exists(p.zkeyDest);
+  });
 }
 
 if (
   exists(wasmDest) &&
   exists(zkeyDest) &&
   exists(wasmV2Dest) &&
-  exists(zkeyV2Dest)
+  exists(zkeyV2Dest) &&
+  capabilityArtifactsPresent()
 ) {
   log('client/public/zk artifacts already exist. Nothing to do.');
   process.exit(0);
