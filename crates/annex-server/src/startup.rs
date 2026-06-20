@@ -207,22 +207,27 @@ async fn load_voice_profiles(
     count
 }
 
-/// Loads an optional ZK-circuit verification key with the same enforcement
-/// contract the membership keys use.
+/// Loads an **optional** capability-circuit verification key.
+///
+/// Unlike the membership key (which is the core authentication primitive and is
+/// hard-required under `enforce_zk_proofs`), the channel-eligibility,
+/// link-pseudonyms, and federation-attestation circuits are opt-in capabilities.
+/// A server that doesn't ship their keys should still boot — the matching
+/// endpoint just returns `503 Service Unavailable`. So a **missing** key is
+/// never a startup error; it disables that one feature.
 ///
 /// Path priority: the named env var, otherwise `default_path`. Behaviour:
 ///   - file present & parses & (under enforcement) is not the dummy key →
 ///     `Some(Arc<vkey>)`.
 ///   - file present but parses to the dummy key under enforcement →
-///     `StartupError::DummyVerificationKey` (a dummy verifies any proof).
-///   - file missing under enforcement → `StartupError::MissingVerificationKey`.
-///   - file missing WITHOUT enforcement → `None` plus a loud warning (the
-///     feature is simply unavailable; the matching handler returns 503).
+///     `StartupError::DummyVerificationKey` (a dummy verifies any proof, so a
+///     committed/misbundled dummy must fail loudly even for an optional circuit).
+///   - file missing (with OR without enforcement) → `None` plus a warning; the
+///     feature is unavailable and the endpoint returns 503.
 ///
-/// Returning `None` (rather than a dummy) when enforcement is off is
-/// deliberate: these circuits are opt-in capabilities, and a handler that
-/// finds `None` should report "not configured" rather than silently accept
-/// proofs against a dummy key.
+/// Returning `None` (rather than a dummy) is deliberate: a handler that finds
+/// `None` reports "not configured" instead of silently accepting proofs against
+/// a dummy key.
 fn load_circuit_vkey(
     env_var: &str,
     default_path: &str,
@@ -242,20 +247,16 @@ fn load_circuit_vkey(
             Ok(Some(Arc::new(parsed)))
         }
         Err(e) => {
-            if enforce_zk_proofs {
-                return Err(StartupError::MissingVerificationKey {
-                    path,
-                    reason: format!("({label}) {e}"),
-                });
-            }
+            // Missing optional-circuit key: disable the feature, do NOT fail
+            // startup — even under enforcement. (The core membership key IS
+            // still hard-required; that check lives above this helper.)
             tracing::warn!(
                 circuit = label,
                 path = %path,
                 error = %e,
-                "ZK circuit verification key not found — feature disabled \
-                 (enforce_zk_proofs is false). The matching endpoint will return 503 \
-                 until the key is provided (e.g. via the env override or \
-                 `node zk/scripts/dev-setup-groth16.js`)."
+                "ZK circuit verification key not found — this capability is disabled \
+                 and its endpoint will return 503 until the key is provided (e.g. via \
+                 the env override or `node zk/scripts/dev-setup-groth16.js`)."
             );
             Ok(None)
         }

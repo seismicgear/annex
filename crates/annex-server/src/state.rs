@@ -41,9 +41,10 @@ pub struct AppState {
     ///
     /// Verifies proofs that the holder is a member whose committed role equals
     /// the role a channel admits — without revealing which member. `Some` when
-    /// the key loaded at boot; `None` only in unenforced dev runs where the
-    /// matching endpoint returns 503. Public signals: `[root, nullifier,
-    /// requiredRoleCode, channelTopicHash]`.
+    /// the key is shipped at boot; `None` (the matching endpoint returns 503)
+    /// when it isn't — this is an opt-in capability, not the core membership
+    /// key, so a missing key disables the feature rather than blocking startup.
+    /// Public signals: `[root, nullifier, requiredRoleCode, channelTopicHash]`.
     pub channel_eligibility_vkey: Option<Arc<VerifyingKey<Bn254>>>,
     /// ZK link-pseudonyms verification key (AUDIT P4-ID-1).
     ///
