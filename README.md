@@ -297,7 +297,7 @@ The **Value Resonance Protocol** is the cryptographic trust negotiation layer. T
 | `Partial` | `ReflectionSummariesOnly` | Restricted channels, text only, limited knowledge transfer |
 | `Conflict` | `NoTransfer` | Rejected |
 
-Alignment is determined in two stages: (1) exact hash match of principles/prohibited-actions yields `Aligned`; (2) if hashes differ, a bag-of-words semantic similarity check over the original principle texts determines whether the score meets the `min_alignment_score` threshold for `Partial`. This means servers with similar-but-not-identical policies can still federate at reduced trust.
+Alignment is determined in two stages: (1) exact hash match of principles/prohibited-actions yields `Aligned`; (2) if hashes differ, a **concept-embedding** semantic similarity check over the original principle texts determines whether the score meets the `min_alignment_score` threshold for `Partial`. The embedder (`semantic::ConceptEmbedder`) maps synonym families to shared concept dimensions (so "privacy" ≈ "confidentiality") and uses character-trigram hashing for morphology; it is fixed-dimension, so federated peers embed principles into the same space with no shared vocabulary. It is a deterministic lexical-concept model, not a learned neural one — the `SemanticEmbedder` trait keeps a learned model pluggable (ROADMAP 3.3). This means servers with similar-but-not-identical policies can still federate at reduced trust.
 
 The `VrpCapabilitySharingContract` governs agent behavior on the server: `knowledge_domains_allowed`, `redacted_topics`, `retention_policy`, `max_exchange_size`. Mutual acceptance is required — the server operator sets their contract, the agent declares its own, and `contracts_mutually_accepted()` must return true.
 

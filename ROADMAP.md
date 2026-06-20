@@ -16,16 +16,20 @@ If you're an AI assistant helping with this project: **read the current phase st
 Phase 0: Project Scaffold .............. COMPLETE
 Phase 1: Identity Plane ................ PARTIAL  (membership solid; v2 secret-
                                                    derived nullifier now the
-                                                   client default [2026-06-19],
-                                                   closing the v1 linkability
-                                                   hole; 3 of 5 advertised
-                                                   circuits still absent)
+                                                   client default [2026-06-19];
+                                                   all 5 advertised circuits now
+                                                   exist — channel-eligibility,
+                                                   link-pseudonyms, federation-
+                                                   attestation added [2026-06-20]
+                                                   on a dev-fixture setup,
+                                                   ceremony still TODO)
 Phase 2: Server Core ................... COMPLETE
-Phase 3: VRP Trust Negotiation ......... PARTIAL  (reputation now gates
-                                                   outcomes + real measured
-                                                   alignment score [2026-06-19];
-                                                   "semantic" still = bag-of-
-                                                   words word overlap)
+Phase 3: VRP Trust Negotiation ......... PARTIAL  (reputation gates outcomes +
+                                                   real measured alignment score
+                                                   [2026-06-19]; semantic now a
+                                                   paraphrase-aware concept
+                                                   embedding [2026-06-20], not a
+                                                   learned model)
 Phase 4: Text Communication ............ COMPLETE
 Phase 5: Presence Graph ................ COMPLETE
 Phase 6: Agent Protocol ................ PARTIAL  (negotiated capability
@@ -471,8 +475,15 @@ The trust negotiation layer. After this phase, an entity (agent or server) can p
 
 #### 3.3 — Semantic alignment (optional but recommended)
 - [x] Port `calculate_semantic_alignment` with embedder trait
-- [ ] Implement or integrate a local embedding model for semantic comparison
-- [ ] ADR: which embedding model, local vs. API, latency budget
+- [x] Implement a local embedding model for semantic comparison —
+      `semantic::ConceptEmbedder`: fixed-dimension, paraphrase-aware concept
+      embedding (synonym families → shared concept dims + char-trigram hashing),
+      deterministic and dependency-free, replacing bag-of-words as the default
+      [2026-06-20]. Unit-tested: paraphrase pairs beat bag-of-words by a clear
+      margin; opposing-value statements stay low.
+- [ ] (Optional) integrate a *learned* embedding model behind the
+      `SemanticEmbedder` trait for deployments that accept the size/latency cost
+- [ ] ADR: which learned embedding model, local vs. API, latency budget
 - [x] If deferred: ensure `VrpAlignmentConfig.semantic_alignment_required` can be set to `false` without breaking the handshake flow
 
 #### 3.4 — Reputation system

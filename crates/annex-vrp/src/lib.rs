@@ -18,10 +18,16 @@
 //! Callers (see `api_vrp`) read the reputation score from prior history before
 //! recording the current outcome, then apply the gate.
 //!
-//! NOTE on "semantic" alignment: the only embedder is a bag-of-words TF/cosine
-//! [`semantic::BagOfWordsEmbedder`] — i.e. lexical word-overlap, not a learned
-//! embedding model. Paraphrased-but-aligned principles can be misread as
-//! `Conflict`. A real embedding model is unimplemented (ROADMAP step 3.3).
+//! NOTE on "semantic" alignment: the default embedder is
+//! [`semantic::ConceptEmbedder`] — a fixed-dimension, paraphrase-aware concept
+//! embedding (synonym families share a concept dimension, plus char-trigram
+//! hashing for morphology). It is deterministic and dependency-free, so two
+//! federated peers embed principles into the same space with no shared
+//! vocabulary, and paraphrased-but-aligned principles are no longer reflexively
+//! `Conflict`. It is honestly NOT a learned neural model; the
+//! [`semantic::SemanticEmbedder`] trait keeps one pluggable for deployments
+//! that accept the size/latency cost (ROADMAP 3.3). The legacy
+//! [`semantic::BagOfWordsEmbedder`] is retained for comparison/tests.
 //!
 //! # Phase 3 implementation
 //!
@@ -128,15 +134,12 @@ pub fn compare_peer_anchor_scored(
         && !local.principles.is_empty()
         && !remote.principles.is_empty()
     {
-        let mut embedder = semantic::BagOfWordsEmbedder::new();
-        // Build shared vocabulary from both sides
-        let all_texts: Vec<String> = local
-            .principles
-            .iter()
-            .chain(remote.principles.iter())
-            .cloned()
-            .collect();
-        embedder.build_vocab(&all_texts);
+        // Concept embedding: fixed-dimension, no jointly-built vocabulary, and
+        // paraphrase-aware (synonym families share a concept dimension). A
+        // federated peer's principles embed into the SAME space as ours
+        // natively, and "users deserve privacy" ≈ "people are entitled to
+        // confidentiality" instead of scoring ~0 as bag-of-words did.
+        let embedder = semantic::ConceptEmbedder::new();
 
         if let Ok(score) =
             semantic::calculate_semantic_alignment(&local.principles, &remote.principles, &embedder)

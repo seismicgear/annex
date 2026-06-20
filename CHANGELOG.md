@@ -38,6 +38,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **VRP: semantic alignment now uses a paraphrase-aware concept embedding.** The
+  default embedder was bag-of-words TF/cosine — principles that expressed the
+  same value with different words (no shared tokens) misclassified as Conflict,
+  and it needed a jointly-built vocabulary (wrong for federation). The new
+  `semantic::ConceptEmbedder` is fixed-dimension and maps synonym families
+  (privacy↔confidentiality↔anonymity, surveillance↔tracking↔monitoring, …) to
+  shared concept dimensions, plus char-trigram hashing for morphology, so
+  federated peers embed into the same space natively and paraphrases align. It
+  is deterministic and dependency-free — honestly not a learned neural model;
+  the `SemanticEmbedder` trait keeps one pluggable. (AUDIT P4-VRP-3 / ROADMAP 3.3)
 - **Federation: agreement TTL is now enforced.** `expire_stale_agreements` was
   implemented and tested but never called; a new hourly background task now
   deactivates federation agreements whose `updated_at` is older than

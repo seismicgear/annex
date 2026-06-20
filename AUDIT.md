@@ -799,10 +799,24 @@ COMMENT-LIE (doc asserts X, code does Y).
   real cosine in the semantic branch); `validate_federation_handshake` now
   records that value, independent of the verdict, and the reputation gate no
   longer overwrites it. Unit-tested.
-- **P4-VRP-3 (MED-HIGH, PARTIAL):** "Semantic alignment" is `BagOfWordsEmbedder`
-  TF/cosine word-overlap (`annex-vrp/src/semantic.rs`); no embedding model
-  exists (ROADMAP 3.3 unchecked) though the phase is COMPLETE. Paraphrased-but-
-  aligned principles misclassify as Conflict. *(Docs corrected this pass.)*
+- **P4-VRP-3 (MED-HIGH, PARTIAL) — IMPROVED this pass:** "Semantic alignment"
+  was `BagOfWordsEmbedder` TF/cosine word-overlap — paraphrased-but-aligned
+  principles (no shared words) misclassified as Conflict, and it required a
+  jointly-built vocabulary (wrong for federation, where peers embed
+  independently). The default is now `semantic::ConceptEmbedder`: a
+  fixed-dimension, paraphrase-aware concept embedding that maps synonym families
+  (privacy↔confidentiality↔anonymity, surveillance↔tracking↔monitoring, …) to
+  shared concept dimensions plus char-trigram hashing for morphology. It embeds
+  every principle into the same space with no shared vocabulary, so federated
+  peers are directly comparable, and paraphrases now score Partial-able. Unit
+  tests prove paraphrase pairs beat bag-of-words by a clear margin while
+  opposing-value statements stay low. It is **honestly not a learned neural
+  model** — the `SemanticEmbedder` trait keeps one pluggable for deployments
+  that accept the size/latency cost (ROADMAP 3.3). *(The negation-gaming caveat
+  from AUDIT VRP §223 — "we do not surveil" vs "we surveil" — is unchanged:
+  concept embeddings, like bag-of-words, don't model negation; prohibited-action
+  hash divergence remains the hard safety gate, and principle similarity only
+  governs the Partial tier.)*
 - **P4-VRP-4 (MEDIUM, PARTIAL):** The VRP-negotiated capability contract is
   stored (`agent_registrations.capability_contract_json`) but never enforced
   at action time; channel join checks role flags instead.

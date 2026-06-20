@@ -76,6 +76,193 @@ fn tokenize(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Concept families for the values-alignment domain. Each entry maps a set of
+/// stem prefixes to a stable concept id; any token starting with one of those
+/// prefixes contributes to that concept's dimension. This is what lets
+/// *paraphrases* align: "privacy", "confidential", and "anonymity" all land on
+/// the `privacy` concept dimension even though they share no characters, so two
+/// principles that express the same value with different words score as similar.
+///
+/// The list is curated for Annex's ethical-root vocabulary (FOUNDATIONS.md):
+/// privacy, anti-surveillance, sovereignty, decentralization, consent, freedom,
+/// cryptographic integrity, identity, anti-censorship, anti-extraction,
+/// transparency, and equality. It is deliberately small and auditable rather
+/// than a giant learned table — and the [`SemanticEmbedder`] trait keeps a real
+/// learned model pluggable when latency/size budget allows (ROADMAP 3.3).
+const CONCEPT_FAMILIES: &[(&[&str], usize)] = &[
+    (
+        &[
+            "privac",
+            "privat",
+            "confiden",
+            "anonym",
+            "pseudonym",
+            "secre",
+        ],
+        0,
+    ),
+    (
+        &["surveil", "monitor", "track", "spy", "profil", "harvest"],
+        1,
+    ),
+    (
+        &[
+            "sovereign",
+            "autonom",
+            "ownership",
+            "self-host",
+            "selfhost",
+            "independ",
+        ],
+        2,
+    ),
+    (
+        &["decentral", "federat", "distribut", "peer", "mesh", "p2p"],
+        3,
+    ),
+    (&["consent", "voluntar", "opt-in", "optin", "permission"], 4),
+    (&["freedom", "liberty", "right", "free"], 5),
+    (
+        &[
+            "cryptograph",
+            "encrypt",
+            "zero-knowledge",
+            "zeroknowledge",
+            "zkp",
+            "verif",
+            "integrity",
+            "proof",
+        ],
+        6,
+    ),
+    (&["identit", "credential", "keypair", "pseudonymou"], 7),
+    (&["censor", "deplatform", "suppress", "silenc", "ban"], 8),
+    (
+        &[
+            "monetiz",
+            "advertis",
+            "exploit",
+            "extract",
+            "sell",
+            "engagement",
+        ],
+        9,
+    ),
+    (
+        &[
+            "transparen",
+            "auditab",
+            "accountab",
+            "verifiab",
+            "open-source",
+            "opensource",
+        ],
+        10,
+    ),
+    (&["equal", "fair", "equit", "first-class", "equals"], 11),
+];
+
+const N_CONCEPTS: usize = 12;
+/// Hashing-trick dimensions for raw tokens and char-trigrams (morphological
+/// robustness, e.g. "private" ↔ "privacy" share trigrams).
+const HASH_DIM: usize = 256;
+const EMBED_DIM: usize = N_CONCEPTS + HASH_DIM;
+/// Concept hits dominate the vector so paraphrases align strongly; raw lexical
+/// features still differentiate within a concept.
+const CONCEPT_WEIGHT: f32 = 3.0;
+const TOKEN_WEIGHT: f32 = 1.0;
+const TRIGRAM_WEIGHT: f32 = 0.5;
+
+/// Stable FNV-1a hash → bucket in `[0, HASH_DIM)` with a sign bit (signed
+/// hashing trick reduces collision bias).
+fn hash_bucket(s: &str, salt: u8) -> (usize, f32) {
+    let mut h: u64 = 0xcbf29ce484222325 ^ (salt as u64);
+    for b in s.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    let idx = (h % HASH_DIM as u64) as usize;
+    let sign = if (h >> 63) & 1 == 1 { 1.0 } else { -1.0 };
+    (idx, sign)
+}
+
+fn concept_for(token: &str) -> Option<usize> {
+    for (prefixes, concept) in CONCEPT_FAMILIES {
+        for p in *prefixes {
+            if token.starts_with(p) {
+                return Some(*concept);
+            }
+        }
+    }
+    None
+}
+
+/// A deterministic, fixed-dimension **concept embedding** for value-principle
+/// text. Unlike [`BagOfWordsEmbedder`] (which needs a jointly-built vocabulary
+/// and scores paraphrases near zero), this embeds every principle into the same
+/// `EMBED_DIM`-dimensional space independently — so a local server and a remote
+/// peer produce directly-comparable vectors with no shared vocabulary, and
+/// principles that express the same value with different words align.
+///
+/// It is **not** a learned neural model; it is a curated concept lexicon plus a
+/// character-trigram hashing trick. That is an honest, deterministic, zero-
+/// dependency upgrade that fixes the paraphrase-misclassification failure
+/// without bundling a multi-hundred-MB model into a sovereign desktop app. The
+/// [`SemanticEmbedder`] trait keeps a learned model pluggable if a deployment
+/// accepts the size/latency cost (ROADMAP 3.3).
+pub struct ConceptEmbedder;
+
+impl ConceptEmbedder {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for ConceptEmbedder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SemanticEmbedder for ConceptEmbedder {
+    fn embed(&self, text: &str) -> Result<Vec<f32>, String> {
+        let mut vec = vec![0.0f32; EMBED_DIM];
+        let tokens = tokenize(text);
+        if tokens.is_empty() {
+            // Empty / punctuation-only principle: return the zero vector. The
+            // cosine helper treats a zero-norm vector as orthogonal, which is
+            // the right "no signal" behaviour.
+            return Ok(vec);
+        }
+        for token in &tokens {
+            // Concept dimension (paraphrase bridge).
+            if let Some(c) = concept_for(token) {
+                vec[c] += CONCEPT_WEIGHT;
+            }
+            // Whole-token hashed feature (within-concept discrimination).
+            let (idx, sign) = hash_bucket(token, 0);
+            vec[N_CONCEPTS + idx] += TOKEN_WEIGHT * sign;
+            // Char-trigram features (morphological robustness).
+            let chars: Vec<char> = token.chars().collect();
+            if chars.len() >= 3 {
+                for w in chars.windows(3) {
+                    let tri: String = w.iter().collect();
+                    let (ti, ts) = hash_bucket(&tri, 1);
+                    vec[N_CONCEPTS + ti] += TRIGRAM_WEIGHT * ts;
+                }
+            }
+        }
+        // L2 normalize.
+        let norm: f32 = vec.iter().map(|v| v * v).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            for v in &mut vec {
+                *v /= norm;
+            }
+        }
+        Ok(vec)
+    }
+}
+
 /// A mock embedder for testing purposes.
 /// Maps known strings to pre-defined vectors.
 pub struct MockEmbedder {
@@ -249,5 +436,93 @@ mod tests {
         let score = calculate_semantic_alignment(&p1, &p2, &embedder).unwrap();
         // Cosine similarity should be close to 0.707
         assert!((score - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-4);
+    }
+
+    // ───────────────────────── ConceptEmbedder ─────────────────────────
+
+    fn bow_score(a: &[String], b: &[String]) -> f32 {
+        let mut e = BagOfWordsEmbedder::new();
+        let all: Vec<String> = a.iter().chain(b.iter()).cloned().collect();
+        e.build_vocab(&all);
+        calculate_semantic_alignment(a, b, &e).unwrap()
+    }
+
+    fn concept_score(a: &[String], b: &[String]) -> f32 {
+        calculate_semantic_alignment(a, b, &ConceptEmbedder::new()).unwrap()
+    }
+
+    #[test]
+    fn concept_embedder_is_fixed_dimension_without_vocab() {
+        // The whole point: no build_vocab, and any two texts embed into the
+        // same space directly.
+        let e = ConceptEmbedder::new();
+        let a = e.embed("users deserve privacy").unwrap();
+        let b = e.embed("totally different sentence here").unwrap();
+        assert_eq!(a.len(), b.len());
+        assert_eq!(a.len(), super::EMBED_DIM);
+    }
+
+    #[test]
+    fn concept_embedder_aligns_paraphrases_that_bow_misses() {
+        // Same value, different words, ZERO shared content words.
+        let p1 = vec!["users deserve privacy and anonymity".to_string()];
+        let p2 = vec!["people are entitled to confidentiality and pseudonymity".to_string()];
+
+        let bow = bow_score(&p1, &p2);
+        let concept = concept_score(&p1, &p2);
+
+        // Bag-of-words sees almost no overlap (maybe "and") → low.
+        // The concept embedder bridges privacy↔confidentiality,
+        // anonymity↔pseudonymity → materially higher.
+        assert!(
+            concept > bow + 0.2,
+            "concept paraphrase score ({concept}) should beat bag-of-words ({bow}) by a clear margin"
+        );
+        assert!(
+            concept > 0.5,
+            "paraphrased-but-aligned principles should score as at least Partial-able: {concept}"
+        );
+    }
+
+    #[test]
+    fn concept_embedder_surveillance_synonyms_align() {
+        let p1 = vec!["we reject mass surveillance".to_string()];
+        let p2 = vec!["we oppose pervasive tracking and monitoring".to_string()];
+        let score = concept_score(&p1, &p2);
+        assert!(
+            score > 0.5,
+            "surveillance/tracking/monitoring should align: {score}"
+        );
+    }
+
+    #[test]
+    fn concept_embedder_keeps_opposing_values_low() {
+        // Genuinely different value domains should NOT spuriously align high.
+        let privacy = vec!["privacy and anonymity are fundamental".to_string()];
+        let throughput = vec!["maximize advertising revenue and engagement".to_string()];
+        let score = concept_score(&privacy, &throughput);
+        assert!(
+            score < 0.4,
+            "unrelated/opposing value statements must stay low: {score}"
+        );
+    }
+
+    #[test]
+    fn concept_embedder_identical_text_is_one() {
+        let p = vec!["self-sovereign identity via zero-knowledge proofs".to_string()];
+        let score = concept_score(&p, &p);
+        assert!(
+            (score - 1.0).abs() < 1e-4,
+            "identical principles → 1.0: {score}"
+        );
+    }
+
+    #[test]
+    fn concept_embedder_morphological_variants_align() {
+        // private/privacy/privately share trigrams AND the privacy concept.
+        let a = vec!["the system keeps data private".to_string()];
+        let b = vec!["the system preserves privacy".to_string()];
+        let score = concept_score(&a, &b);
+        assert!(score > 0.5, "morphological variants should align: {score}");
     }
 }
