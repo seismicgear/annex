@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "circuit": "channel_eligibility",
+  "circuitVersion": "1.0.0",
+  "curve": "bn254",
+  "provingSystem": "groth16",
+  "treeDepth": 20,
+  "publicSignals": ["root", "nullifier", "requiredRoleCode", "channelTopicHash"],
+  "wasm_sha256": "23fb55feff575545bfb6626107d518b9c0e5560683eb6e0eea833b6940a16e5f",
+  "zkey_sha256": "da82b2a78e784494d9f4eeadc1124bcb3942584b9238fbb0387aae6c338947fb",
+  "vkey_sha256": "1ab12a8004393b8d8144f1086157b6a3e9f6af22d6e82c41a2e8172ea02378f4",
+  "r1cs_sha256": "44067c81af485d0f277346ea2e8d9c57371ede96c7af87d6b719d17e46b3f3a0",
+  "paths": {
+    "wasm": "../../build/channel_eligibility_js/channel_eligibility.wasm",
+    "zkey": "../../keys/channel_eligibility_final.zkey",
+    "vkey": "../../keys/channel_eligibility_vkey.json",
+    "r1cs": "../../build/channel_eligibility.r1cs"
+  },
+  "ceremony": {
+    "type": "dev-fixture",
+    "generatedAt": "2026-06-20",
+    "note": "These hashes pin the channel-eligibility artifacts produced by zk/scripts/dev-setup-groth16.js with random entropy. NOT a multi-party ceremony; replace artifacts AND hashes before a public production release, regenerating ALL circuit manifests together. See docs/refactor/zk-merkle-production.md."
+  }
+}

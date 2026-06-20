@@ -19,11 +19,13 @@
 //                    iteration. Random-entropy keys; NOT production-safe.
 //
 //   production     — runs `node zk/scripts/verify-artifacts.js` against the
-//                    pinned manifest at zk/artifacts/membership/manifest.json.
-//                    NEVER generates new keys. Hard-fails if any required
-//                    client artifact (membership.wasm, membership_final.zkey)
-//                    is missing or doesn't match the pinned hash. Use for
-//                    bundle / release builds.
+//                    pinned manifest for EVERY enabled circuit (membership,
+//                    membership_v2, channel_eligibility, link_pseudonyms,
+//                    federation_attestation). NEVER generates new keys.
+//                    Hard-fails if any circuit's manifest is missing or its
+//                    artifacts don't match the pinned hash — so a release can't
+//                    bundle unverified v2/capability keys for the default
+//                    identity path. Use for bundle / release builds.
 //
 // See docs/refactor/zk-merkle-production.md.
 
@@ -78,8 +80,29 @@ if (IS_PRODUCTION) {
   if (process.env.SKIP_ZK === "1") {
     fatal("SKIP_ZK=1 is forbidden in production builds; refusing to skip ZK verification.");
   }
-  log("Verifying pinned ZK artifacts against manifest...");
-  run("node scripts/verify-artifacts.js", ZK_DIR);
+  // Verify EVERY enabled circuit's pinned artifacts, not just membership.
+  // The shipped client generates v2 proofs by default and the server accepts
+  // v2 + the capability circuits, so a release that only gated membership could
+  // bundle unverified (random/dev) v2/capability wasm/zkey/vkey — defeating the
+  // pinned-ceremony gate for the DEFAULT identity path (AUDIT / Codex P1).
+  const PRODUCTION_MANIFESTS = [
+    "artifacts/membership/manifest.json",
+    "artifacts/membership_v2/manifest.json",
+    "artifacts/channel_eligibility/manifest.json",
+    "artifacts/link_pseudonyms/manifest.json",
+    "artifacts/federation_attestation/manifest.json",
+  ];
+  log("Verifying pinned ZK artifacts against per-circuit manifests...");
+  for (const manifest of PRODUCTION_MANIFESTS) {
+    if (!fs.existsSync(path.join(ZK_DIR, manifest))) {
+      fatal(
+        `${manifest} is missing. Production builds require a pinned manifest for every ` +
+          `enabled circuit (the default identity path is v2). Add it before releasing ` +
+          `— see docs/refactor/zk-merkle-production.md.`
+      );
+    }
+    run(`node scripts/verify-artifacts.js --manifest ${manifest}`, ZK_DIR);
+  }
   log("ZK artifacts verified.");
 } else if (process.env.SKIP_ZK === "1") {
   log("Skipping ZK build (SKIP_ZK=1, dev profile)");

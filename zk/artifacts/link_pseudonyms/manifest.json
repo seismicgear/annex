@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "circuit": "link_pseudonyms",
+  "circuitVersion": "1.0.0",
+  "curve": "bn254",
+  "provingSystem": "groth16",
+  "treeDepth": 0,
+  "publicSignals": ["nullifierA", "nullifierB", "topicHashA", "topicHashB"],
+  "wasm_sha256": "c2ff8f1ea9971ba8edeb637ea934bf20668ce4a168d60880ef87c00b3562a87e",
+  "zkey_sha256": "9176595ba9ff10e9697051194cef9f0f5ac8ce2a50218045fbcb9047272bfebf",
+  "vkey_sha256": "420d983fb252b520f942b5410f6c4d61c6d003735a04885e352ed88960073583",
+  "r1cs_sha256": "083b4021b8e5e1974bb1df952f7518544413dbbc7690bdf9a2ad95e24373f0c9",
+  "paths": {
+    "wasm": "../../build/link_pseudonyms_js/link_pseudonyms.wasm",
+    "zkey": "../../keys/link_pseudonyms_final.zkey",
+    "vkey": "../../keys/link_pseudonyms_vkey.json",
+    "r1cs": "../../build/link_pseudonyms.r1cs"
+  },
+  "ceremony": {
+    "type": "dev-fixture",
+    "generatedAt": "2026-06-20",
+    "note": "These hashes pin the link-pseudonyms artifacts produced by zk/scripts/dev-setup-groth16.js with random entropy. treeDepth is 0 because this circuit has no Merkle inclusion check (it only proves two nullifiers share a secret key). NOT a multi-party ceremony; replace artifacts AND hashes before a public production release, regenerating ALL circuit manifests together. See docs/refactor/zk-merkle-production.md."
+  }
+}
