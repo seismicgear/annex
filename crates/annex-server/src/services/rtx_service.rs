@@ -200,6 +200,63 @@ pub fn rtx_bundle_content_hash(bundle: &ReflectionSummaryBundle) -> String {
     hex::encode(h.finalize())
 }
 
+/// Verifies a bundle's per-agent **author** signature against the producing
+/// agent's Ed25519 public key (the `signing_pubkey` captured at VRP handshake).
+///
+/// The agent signs `SHA-256(author_signing_payload(bundle))` — a payload that
+/// binds every content field (see [`annex_rtx::author_signing_payload`]) — so a
+/// valid signature proves the bundle was authored by the holder of that key and
+/// that no content field was altered. This closes the per-agent
+/// author-authenticity half of AUDIT P4-FED-1.
+///
+/// `pubkey_hex` is 64-char hex (32-byte Ed25519 public key); `bundle.signature`
+/// is 128-char hex (64-byte Ed25519 signature). Any decode/length/verify
+/// failure returns `Err`.
+pub fn verify_bundle_author_signature(
+    bundle: &ReflectionSummaryBundle,
+    pubkey_hex: &str,
+) -> Result<(), ApiError> {
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+    use sha2::{Digest, Sha256};
+
+    let pk_bytes = hex::decode(pubkey_hex.trim())
+        .map_err(|_| ApiError::Unauthorized("agent signing_pubkey is not valid hex".to_string()))?;
+    let pk_arr: [u8; 32] = pk_bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| ApiError::Unauthorized("agent signing_pubkey must be 32 bytes".to_string()))?;
+    let verifying_key = VerifyingKey::from_bytes(&pk_arr).map_err(|_| {
+        ApiError::Unauthorized("agent signing_pubkey is not a valid Ed25519 key".to_string())
+    })?;
+
+    let sig_bytes = hex::decode(bundle.signature.trim())
+        .map_err(|_| ApiError::Unauthorized("bundle signature is not valid hex".to_string()))?;
+    let sig_arr: [u8; 64] = sig_bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| ApiError::Unauthorized("bundle signature must be 64 bytes".to_string()))?;
+    let signature = Signature::from_bytes(&sig_arr);
+
+    let digest = Sha256::digest(annex_rtx::author_signing_payload(bundle).as_bytes());
+    verifying_key.verify(&digest, &signature).map_err(|_| {
+        ApiError::Unauthorized("bundle author signature verification failed".to_string())
+    })
+}
+
+/// Produces the hex Ed25519 author signature for a bundle given the agent's
+/// 32-byte signing key. The counterpart to [`verify_bundle_author_signature`] —
+/// exposed so an agent client (and the tests) can sign bundles correctly.
+pub fn sign_bundle_author(
+    bundle: &ReflectionSummaryBundle,
+    signing_key_bytes: &[u8; 32],
+) -> String {
+    use ed25519_dalek::{Signer, SigningKey};
+    use sha2::{Digest, Sha256};
+    let sk = SigningKey::from_bytes(signing_key_bytes);
+    let digest = Sha256::digest(annex_rtx::author_signing_payload(bundle).as_bytes());
+    hex::encode(sk.sign(&digest).to_bytes())
+}
+
 /// Constructs the deterministic signing payload for an RTX relay envelope.
 ///
 /// The signed payload uses newline delimiters between fields to prevent
@@ -303,6 +360,24 @@ impl RtxService {
                         bundle.source_pseudonym
                     ))
                 })?;
+
+                // 4b. Per-agent author signature (AUDIT P4-FED-1). When the
+                //     agent advertised an Ed25519 signing key at VRP handshake,
+                //     the bundle's `signature` MUST be a valid author signature
+                //     over every content field — proving authorship and that no
+                //     field was altered. Legacy agents with no key on file fall
+                //     back to the structural-only check (the signature is still
+                //     length-validated by `validate_bundle_structure`), so this
+                //     does not break agents that pre-date the handshake field.
+                if let Some(pubkey) = agent.signing_pubkey.as_deref() {
+                    verify_bundle_author_signature(&bundle, pubkey)?;
+                } else {
+                    tracing::warn!(
+                        pseudonym = %bundle.source_pseudonym,
+                        "RTX publish from an agent with no signing_pubkey on file — \
+                         author signature not cryptographically verified (legacy agent)"
+                    );
+                }
 
                 // 5. Parse and validate transfer scope
                 let sender_scope =
@@ -993,6 +1068,66 @@ pub async fn relay_rtx_bundles(state: Arc<AppState>, bundle: ReflectionSummaryBu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn author_test_bundle() -> ReflectionSummaryBundle {
+        ReflectionSummaryBundle {
+            bundle_id: "bundle-1".into(),
+            source_pseudonym: "agent-1".into(),
+            source_server: "http://localhost:3000".into(),
+            domain_tags: vec!["rust".into(), "security".into()],
+            summary: "a distilled reflection".into(),
+            reasoning_chain: Some("step 1; step 2".into()),
+            caveats: vec!["low confidence".into()],
+            created_at: 1_700_000_000_000,
+            signature: String::new(),
+            vrp_handshake_ref: "1:2:3".into(),
+        }
+    }
+
+    #[test]
+    fn author_signature_round_trips_and_rejects_tampering() {
+        let sk_bytes = [7u8; 32];
+        let pubkey_hex = {
+            use ed25519_dalek::SigningKey;
+            hex::encode(SigningKey::from_bytes(&sk_bytes).verifying_key().to_bytes())
+        };
+
+        let mut bundle = author_test_bundle();
+        bundle.signature = sign_bundle_author(&bundle, &sk_bytes);
+
+        // Correct signature verifies.
+        assert!(verify_bundle_author_signature(&bundle, &pubkey_hex).is_ok());
+
+        // Tamper with a content field → signature no longer valid.
+        let mut tampered = bundle.clone();
+        tampered.summary = "a MALICIOUSLY altered reflection".into();
+        assert!(
+            verify_bundle_author_signature(&tampered, &pubkey_hex).is_err(),
+            "altering the summary must invalidate the author signature"
+        );
+
+        // Tamper with reasoning_chain → rejected.
+        let mut tampered2 = bundle.clone();
+        tampered2.reasoning_chain = Some("step 1; step 2; exfiltrate".into());
+        assert!(verify_bundle_author_signature(&tampered2, &pubkey_hex).is_err());
+
+        // Wrong key → rejected.
+        let other_pubkey = {
+            use ed25519_dalek::SigningKey;
+            hex::encode(
+                SigningKey::from_bytes(&[9u8; 32])
+                    .verifying_key()
+                    .to_bytes(),
+            )
+        };
+        assert!(verify_bundle_author_signature(&bundle, &other_pubkey).is_err());
+
+        // Malformed key / signature → rejected, not panicking.
+        assert!(verify_bundle_author_signature(&bundle, "nothex").is_err());
+        let mut bad_sig = bundle.clone();
+        bad_sig.signature = "00".into();
+        assert!(verify_bundle_author_signature(&bad_sig, &pubkey_hex).is_err());
+    }
 
     #[test]
     fn test_parse_transfer_scope() {

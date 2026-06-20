@@ -36,7 +36,7 @@ pub mod validation;
 pub use error::RtxError;
 pub use types::{BundleProvenance, ReflectionSummaryBundle, RtxSubscription};
 pub use validation::{
-    bundle_signing_payload, check_redacted_topics, enforce_transfer_scope,
+    author_signing_payload, bundle_signing_payload, check_redacted_topics, enforce_transfer_scope,
     validate_bundle_structure, MAX_CAVEATS, MAX_CAVEAT_BYTES, MAX_DOMAIN_TAGS,
     MAX_DOMAIN_TAG_BYTES, MAX_IDENTIFIER_BYTES, MAX_REASONING_CHAIN_BYTES, MAX_SUMMARY_BYTES,
 };

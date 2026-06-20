@@ -183,6 +183,10 @@ const MIGRATIONS: &[Migration] = &[
         name: "041_e2e_channel_keys",
         sql: include_str!("migrations/041_e2e_channel_keys.sql"),
     },
+    Migration {
+        name: "042_agent_signing_pubkey",
+        sql: include_str!("migrations/042_agent_signing_pubkey.sql"),
+    },
 ];
 
 /// Errors that can occur during migration execution.

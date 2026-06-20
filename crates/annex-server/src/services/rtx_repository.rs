@@ -40,6 +40,11 @@ pub(crate) struct LocalRtxSubscriber {
 pub(crate) struct AgentPublishContext {
     pub transfer_scope_str: String,
     pub capability_contract_json: String,
+    /// Agent's Ed25519 signing public key (64-char hex) captured at VRP
+    /// handshake, or `None` for a legacy agent that never advertised one.
+    /// When `Some`, the RTX publish path verifies the bundle's author
+    /// signature against it (AUDIT P4-FED-1).
+    pub signing_pubkey: Option<String>,
 }
 
 /// Filter set for `count_filtered_transfers` / `list_filtered_transfers`.
@@ -98,7 +103,7 @@ pub(crate) fn agent_publish_context(
     pseudonym: &str,
 ) -> Result<Option<AgentPublishContext>, rusqlite::Error> {
     conn.query_row(
-        "SELECT transfer_scope, capability_contract_json
+        "SELECT transfer_scope, capability_contract_json, signing_pubkey
          FROM agent_registrations
          WHERE server_id = ?1 AND pseudonym_id = ?2 AND active = 1",
         params![server_id, pseudonym],
@@ -106,6 +111,7 @@ pub(crate) fn agent_publish_context(
             Ok(AgentPublishContext {
                 transfer_scope_str: row.get(0)?,
                 capability_contract_json: row.get(1)?,
+                signing_pubkey: row.get(2)?,
             })
         },
     )

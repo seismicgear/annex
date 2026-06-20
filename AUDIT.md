@@ -881,15 +881,27 @@ COMMENT-LIE (doc asserts X, code does Y).
   `rtx_bundle_content_hash(bundle)` (length-prefixed SHA-256 over the content
   fields); the receiver recomputes it from the bundle it actually received, so
   any in-transit alteration fails verification (new
-  `test_receive_federated_rtx_rejects_content_tampering`, 401). **Still open:**
-  the per-agent **author** signature on the bundle is still only length-checked
-  on publish (`annex-rtx/src/validation.rs` admits "does not verify the
-  cryptographic signature") — closing that requires capturing the agent's
-  Ed25519 signing pubkey at VRP handshake (a new `agent_registrations` column +
-  handshake field) and an agent client that actually signs bundles, which no
-  current client does. Origin-identity validation also remains existence-only
-  (P4-FED-2). Net: a peer can no longer silently rewrite a relayed bundle's
-  content, but author-authenticity end-to-end is still future work.
+  `test_receive_federated_rtx_rejects_content_tampering`, 401). **Author-
+  authenticity half now CLOSED this pass:** the per-agent author signature was
+  only length-checked on publish. Now:
+  - agents advertise an Ed25519 `signingPubkey` during the VRP agent handshake
+    (`AgentHandshakeRequest`); it is validated (32-byte key) and persisted to a
+    new `agent_registrations.signing_pubkey` column (migration 042), preserved
+    across re-handshakes via `COALESCE` so an agent cannot silently drop it;
+  - `annex_rtx::author_signing_payload` binds **every** content field
+    (length-prefixed, domain `annex/rtx/author-sig/v1`), and
+    `verify_bundle_author_signature` (Ed25519 over its SHA-256) runs in
+    `publish_bundle` whenever the agent has a key on file — tampering or a
+    bogus signature is `401`;
+  - `sign_bundle_author` is exposed so an agent client can sign correctly;
+  - tested: payload binds each field, sign/verify round-trips + rejects
+    tampering/wrong-key/garbage, and the HTTP publish path accepts a valid
+    signature, rejects tampered content (401) and a garbage signature (401),
+    while a legacy agent with no key still publishes (backward compat).
+
+  Origin-identity validation remains existence-only (P4-FED-2). Net: both the
+  in-transit-rewrite and the per-agent author-authenticity halves of P4-FED-1
+  are now closed for agents that advertise a signing key.
 - **P4-FED-2 (MED-HIGH, STUB):** RTX is structurally single-hop —
   `receive_federated_rtx` never re-relays, `relay_path` is hardcoded to one
   entry. The "provenance chain / multi-hop / loop prevention" machinery cannot

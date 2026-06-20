@@ -107,7 +107,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   or timestamp without invalidating it. The signing payload now includes a
   length-prefixed SHA-256 hash of the bundle content, which the receiver
   recomputes from the bundle it received — any tampering fails verification.
-  (Per-agent author-signature verification remains future work.) (AUDIT P4-FED-1)
+  (AUDIT P4-FED-1)
+- **Federation: per-agent RTX author signatures are now cryptographically
+  verified.** The bundle `signature` field was only length-checked because no
+  agent signing key was on file. Agents now advertise an Ed25519 `signingPubkey`
+  at VRP handshake (persisted to `agent_registrations.signing_pubkey`, migration
+  042, preserved across re-handshakes); the publish path verifies each bundle's
+  author signature over a payload binding **every** content field
+  (`author_signing_payload`) against that key. A tampered or bogus signature is
+  rejected with `401`; agents that never advertised a key keep the legacy
+  structural check (backward compatible). This closes the per-agent
+  author-authenticity half of AUDIT P4-FED-1. (AUDIT P4-FED-1)
 - **Server: refuse to demote the last active moderator.** `PATCH
   /api/admin/members/{id}/capabilities` now returns `409 Conflict` rather than
   letting a moderator strip moderation from every admin and lock the server

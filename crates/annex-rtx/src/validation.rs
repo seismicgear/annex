@@ -143,8 +143,12 @@ fn contains_word_ci(haystack: &str, needle: &str) -> bool {
 /// Validates that a bundle has all required fields populated AND that
 /// every variable-length field is within sane size bounds.
 ///
-/// This performs structural validation only — it does not verify
-/// the cryptographic signature (that requires the sender's public key).
+/// This performs structural validation only — it does not verify the
+/// cryptographic signature here (that requires the sender's public key). The
+/// per-agent **author** signature IS verified in the publish path
+/// (`annex_server::services::rtx_service::verify_bundle_author_signature`)
+/// against the agent's `signing_pubkey` captured at VRP handshake, over
+/// [`author_signing_payload`], whenever the agent has advertised a key.
 ///
 /// Size bounds are enforced consistently across the publish path
 /// (`RtxService::publish_bundle`) and the federation receive path
@@ -256,6 +260,10 @@ pub fn validate_bundle_structure(bundle: &ReflectionSummaryBundle) -> Result<(),
 /// field value concatenation (e.g., `id="ab" + pseudo="cd"` vs `id="abcd"`).
 ///
 /// Callers should SHA256-hash this payload and sign the hash with Ed25519.
+///
+/// NOTE: this legacy payload binds only metadata + summary. For the per-agent
+/// **author** signature that must resist content tampering, use
+/// [`author_signing_payload`], which binds every content field.
 pub fn bundle_signing_payload(bundle: &ReflectionSummaryBundle) -> String {
     format!(
         "{}\n{}\n{}\n{}\n{}",
@@ -265,6 +273,56 @@ pub fn bundle_signing_payload(bundle: &ReflectionSummaryBundle) -> String {
         bundle.summary,
         bundle.created_at
     )
+}
+
+/// Canonical author-signature payload binding **every content field** of a
+/// bundle (everything except the `signature` field itself).
+///
+/// This is what the producing agent signs with its Ed25519 key and what the
+/// server verifies against the agent's `signing_pubkey` (captured at VRP
+/// handshake). Unlike [`bundle_signing_payload`] — which covers only metadata
+/// and the summary — this binds `domain_tags`, `reasoning_chain`, `caveats`,
+/// and `vrp_handshake_ref` too, so an agent (or a relay) cannot alter any
+/// content field without invalidating the author signature. (This is the
+/// per-agent author-authenticity half of AUDIT P4-FED-1; the relay/content
+/// hash closed the in-transit-rewrite half.)
+///
+/// Encoding: each field is emitted as `len(bytes) || ':' || bytes || '\n'`
+/// (length-prefixed) so no field value can be confused with a delimiter or
+/// with an adjacent field — domain `annex/rtx/author-sig/v1`. Vec fields emit
+/// their element count, then each element length-prefixed. `reasoning_chain`
+/// emits a leading `0`/`1` presence byte so `None` and `Some("")` differ.
+///
+/// Callers SHA-256 this payload and sign/verify the digest with Ed25519.
+pub fn author_signing_payload(bundle: &ReflectionSummaryBundle) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    out.push_str("annex/rtx/author-sig/v1\n");
+    let field = |s: &str, buf: &mut String| {
+        let _ = writeln!(buf, "{}:{}", s.len(), s);
+    };
+    field(&bundle.bundle_id, &mut out);
+    field(&bundle.source_pseudonym, &mut out);
+    field(&bundle.source_server, &mut out);
+    let _ = writeln!(out, "{}", bundle.created_at);
+    field(&bundle.vrp_handshake_ref, &mut out);
+    field(&bundle.summary, &mut out);
+    match &bundle.reasoning_chain {
+        Some(rc) => {
+            out.push_str("1\n");
+            field(rc, &mut out);
+        }
+        None => out.push_str("0\n"),
+    }
+    let _ = writeln!(out, "tags:{}", bundle.domain_tags.len());
+    for t in &bundle.domain_tags {
+        field(t, &mut out);
+    }
+    let _ = writeln!(out, "caveats:{}", bundle.caveats.len());
+    for c in &bundle.caveats {
+        field(c, &mut out);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -342,5 +400,57 @@ mod redaction_tests {
             check_redacted_topics(&b, &["finance".into()]).is_ok(),
             "whole-word matching must not flag 'refinanced' for redacted 'finance'"
         );
+    }
+
+    #[test]
+    fn author_signing_payload_binds_every_content_field() {
+        // The author payload must change if ANY content field changes — that is
+        // what makes the per-agent author signature resist content tampering.
+        let base = bundle(
+            &["rust", "security"],
+            "a summary",
+            Some("the reasoning"),
+            &["caveat one"],
+        );
+        let baseline = author_signing_payload(&base);
+
+        let mut mutate = |f: &dyn Fn(&mut ReflectionSummaryBundle)| {
+            let mut b = base.clone();
+            f(&mut b);
+            author_signing_payload(&b)
+        };
+
+        assert_ne!(baseline, mutate(&|b| b.summary = "different".into()));
+        assert_ne!(
+            baseline,
+            mutate(&|b| b.reasoning_chain = Some("changed".into()))
+        );
+        assert_ne!(baseline, mutate(&|b| b.reasoning_chain = None));
+        assert_ne!(baseline, mutate(&|b| b.domain_tags.push("extra".into())));
+        assert_ne!(baseline, mutate(&|b| b.caveats.push("extra".into())));
+        assert_ne!(baseline, mutate(&|b| b.bundle_id = "other".into()));
+        assert_ne!(baseline, mutate(&|b| b.source_pseudonym = "other".into()));
+        assert_ne!(baseline, mutate(&|b| b.source_server = "other".into()));
+        assert_ne!(baseline, mutate(&|b| b.vrp_handshake_ref = "other".into()));
+        assert_ne!(baseline, mutate(&|b| b.created_at = 999));
+
+        // The `signature` field itself is deliberately NOT bound (it's what gets
+        // signed), so changing it does not change the payload.
+        assert_eq!(baseline, mutate(&|b| b.signature = "deadbeef".into()));
+
+        // Deterministic.
+        assert_eq!(baseline, author_signing_payload(&base));
+    }
+
+    #[test]
+    fn author_signing_payload_resists_field_boundary_confusion() {
+        // Length-prefixing must prevent "ab"+"c" colliding with "a"+"bc".
+        let mut x = bundle(&[], "s", None, &[]);
+        x.source_pseudonym = "ab".into();
+        x.source_server = "c".into();
+        let mut y = bundle(&[], "s", None, &[]);
+        y.source_pseudonym = "a".into();
+        y.source_server = "bc".into();
+        assert_ne!(author_signing_payload(&x), author_signing_payload(&y));
     }
 }
