@@ -429,15 +429,7 @@ zk/
 
 **`membership.circom`** — Proves a commitment is a leaf in a Merkle tree under a given root, without revealing the secret or leaf index. This is the v1 circuit every shipped client uses today.
 
-**`membership_v2.circom`** — Same membership proof but with a secret-derived nullifier (so a topic pseudonym is not derivable from the public commitment). This is now the **default** path: the shipped client generates v2 proofs and the server accepts both v1 and v2 (`security.enabled_zk_versions = ["v1","v2"]`) for migration. This closes the v1 nullifier-linkability hole (see [AUDIT.md](AUDIT.md) FINDING-003).
-
-> **Status note (not yet implemented):** earlier drafts of this README listed
-> `link-pseudonyms.circom`, `channel-eligibility.circom`, and
-> `federation-attestation.circom`. Those circuits do **not** exist in the
-> codebase. Channel-capability gating is currently enforced against plaintext
-> role flags in the database (`channel_service.rs`), **not** a zero-knowledge
-> proof. Cross-server attestation privacy is likewise not yet ZK-backed. These
-> remain planned work; see AUDIT.md "Pass 4 — Roadmap vs Reality."
+**`membership_v2.circom`** — Same membership proof but with a secret-derived nullifier (so a topic pseudonym is not derivable from the public commitment). This is now the **default** path: the shipped client generates v2 proofs and the server accepts both v1 and v2 (`security.enabled_zk_versions = ["v1","v2"]`) for migration.
 
 ---
 
