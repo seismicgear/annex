@@ -167,6 +167,35 @@ fn main() {
         );
     }
 
+    // Resolve the v2 membership vkey the same way. With the default
+    // `enabled_zk_versions = ["v1","v2"]`, the embedded server loads this at
+    // startup; under `enforce_zk_proofs=true` a missing v2 vkey is a hard
+    // StartupError, so it must be bundled (see tauri.conf.json bundle.resources)
+    // and resolved here just like v1.
+    let mut vkey_v2_candidates: Vec<PathBuf> = vec![
+        exe_dir.join("membership_v2_vkey.json"),
+        exe_dir
+            .join("zk")
+            .join("keys")
+            .join("membership_v2_vkey.json"),
+        resource_base
+            .join("zk")
+            .join("keys")
+            .join("membership_v2_vkey.json"),
+    ];
+    vkey_v2_candidates.extend(bundled_resource_paths(
+        &exe_dir,
+        &["zk", "keys", "membership_v2_vkey.json"],
+    ));
+    let zk_vkey_v2 = vkey_v2_candidates.iter().find(|p| p.exists());
+    if zk_vkey_v2.is_none() {
+        eprintln!(
+            "[annex-desktop] WARNING: no membership_v2_vkey.json found; v2 ZK proofs \
+             will be unavailable and the embedded server will refuse to start if \
+             v2 is enabled under enforce_zk_proofs."
+        );
+    }
+
     // Resolve Piper TTS binary from bundled resources or dev workspace.
     let piper_bin_name = if cfg!(target_os = "windows") {
         "piper.exe"
@@ -241,6 +270,9 @@ fn main() {
         std::env::set_var("ANNEX_CLIENT_DIR", &client_dir);
         if let Some(vkey_path) = zk_vkey {
             std::env::set_var("ANNEX_ZK_KEY_PATH", vkey_path);
+        }
+        if let Some(vkey_path_v2) = zk_vkey_v2 {
+            std::env::set_var("ANNEX_ZK_KEY_PATH_V2", vkey_path_v2);
         }
         if let Some(piper_path) = piper_binary {
             std::env::set_var("ANNEX_TTS_BINARY_PATH", piper_path);

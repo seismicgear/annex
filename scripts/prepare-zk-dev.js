@@ -36,6 +36,13 @@ const zkeySource = path.join(ZK_DIR, 'keys', 'membership_final.zkey');
 const wasmDest = path.join(CLIENT_DIR, 'public', 'zk', 'membership.wasm');
 const zkeyDest = path.join(CLIENT_DIR, 'public', 'zk', 'membership_final.zkey');
 
+// v2 (secret-derived nullifier) circuit artifacts. The client generates v2
+// proofs by default; these must be served alongside v1.
+const wasmV2Source = path.join(ZK_DIR, 'build', 'membership_v2_js', 'membership_v2.wasm');
+const zkeyV2Source = path.join(ZK_DIR, 'keys', 'membership_v2_final.zkey');
+const wasmV2Dest = path.join(CLIENT_DIR, 'public', 'zk', 'membership_v2.wasm');
+const zkeyV2Dest = path.join(CLIENT_DIR, 'public', 'zk', 'membership_v2_final.zkey');
+
 function log(msg) {
   console.log(`[zk-prep] ${msg}`);
 }
@@ -103,10 +110,27 @@ function copyArtifactsToClient() {
     );
   }
 
+  // v2 artifacts (best-effort: warn rather than fail so a v1-only checkout
+  // still works, but the default client path is v2 so this should be present).
+  if (exists(wasmV2Source) && exists(zkeyV2Source)) {
+    fs.copyFileSync(wasmV2Source, wasmV2Dest);
+    fs.copyFileSync(zkeyV2Source, zkeyV2Dest);
+    log('Prepared client/public/zk v2 artifacts.');
+  } else {
+    warn('membership_v2 artifacts missing in zk/ — v2 proofs would fail.');
+    warn(`Expected: ${wasmV2Source}`);
+    warn(`Expected: ${zkeyV2Source}`);
+  }
+
   log('Prepared client/public/zk artifacts for desktop dev.');
 }
 
-if (exists(wasmDest) && exists(zkeyDest)) {
+if (
+  exists(wasmDest) &&
+  exists(zkeyDest) &&
+  exists(wasmV2Dest) &&
+  exists(zkeyV2Dest)
+) {
   log('client/public/zk artifacts already exist. Nothing to do.');
   process.exit(0);
 }

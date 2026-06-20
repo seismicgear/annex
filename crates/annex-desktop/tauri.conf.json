@@ -39,6 +39,7 @@
     "targets": "all",
     "resources": [
       "../../zk/keys/membership_vkey.json",
+      "../../zk/keys/membership_v2_vkey.json",
       "../../assets/piper",
       "../../assets/voices"
     ],

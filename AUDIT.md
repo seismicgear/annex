@@ -731,12 +731,21 @@ COMMENT-LIE (doc asserts X, code does Y).
   revealing identity" privacy claim has zero ZK backing — channel capability
   gating reads plaintext role flags (`channel_service.rs:466-473`). *(README
   corrected in this pass.)*
-- **P4-ID-2 (HIGH, STUB):** The v2 secret-derived nullifier — the fix for the
-  disclosed FINDING-003 privacy hole (a v1 topic pseudonym is derivable from
-  the public commitment) — is unreachable from any shipped client. The client
-  hardcodes `protocolVersion: 'v1'` (`client/src/stores/identity.ts`), ships
-  only v1 wasm/zkey, and `enabled_zk_versions` defaults to `["v1"]`. The
-  privacy hole is still the only behavior production runs.
+- **P4-ID-2 (HIGH, STUB) — FIXED this pass (closes disclosed CRITICAL
+  FINDING-003):** the v2 secret-derived nullifier was unreachable from any
+  client (the client hardcoded `protocolVersion:'v1'`, shipped only v1
+  artifacts, and `enabled_zk_versions` defaulted to `["v1"]`), so the v1
+  nullifier-linkability hole (a topic pseudonym derivable from the public
+  Merkle leaf) was the only production behavior. Now:
+  the client generates **v2** proofs by default (`generateMembershipProofV2`
+  computes `topicHash` matching the server's `topic_hash_for_v2` — cross-checked
+  by a reference-vector unit test — and the in-circuit nullifier is
+  `Poseidon(sk, topicHash, 1)`); v2 wasm/zkey are shipped to the client
+  (`prepare-zk-dev.js`/`build-desktop.js`); `enabled_zk_versions` defaults to
+  `["v1","v2"]` (accept both for migration); and the desktop bundles + resolves
+  `membership_v2_vkey.json`. Verified end-to-end: the Puppeteer flow drives a
+  real browser v2 proof → register → ZK-enforced channel join → message →
+  cold-start restore; the v1 smoke flow still passes (backward compat).
 - **P4-ID-3 (MEDIUM, PARTIAL):** Per-request ZK proof enforcement
   (`verify_zk_membership_header`) is called from exactly 3 channel routes
   (join, history, voice-join). `send_message`, WS message, RTX publish, and

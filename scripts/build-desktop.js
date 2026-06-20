@@ -128,6 +128,18 @@ const clientArtifacts = [
     src: path.join(ZK_KEYS_DIR, "membership_final.zkey"),
     dst: path.join(CLIENT_PUBLIC_ZK, "membership_final.zkey"),
   },
+  // v2 (secret-derived nullifier) — the shipped client generates v2 proofs by
+  // default, so these must be served alongside v1.
+  {
+    label: "membership_v2.wasm",
+    src: path.join(ZK_BUILD_DIR, "membership_v2_js", "membership_v2.wasm"),
+    dst: path.join(CLIENT_PUBLIC_ZK, "membership_v2.wasm"),
+  },
+  {
+    label: "membership_v2_final.zkey",
+    src: path.join(ZK_KEYS_DIR, "membership_v2_final.zkey"),
+    dst: path.join(CLIENT_PUBLIC_ZK, "membership_v2_final.zkey"),
+  },
 ];
 
 for (const a of clientArtifacts) {
@@ -161,6 +173,23 @@ if (!fs.existsSync(SERVER_VKEY)) {
     log(
       `  WARNING (dev): ${SERVER_VKEY} is missing. Tauri bundling will fail; ` +
         `desktop binary builds (cargo build) will fall back to the dummy vkey.`
+    );
+  }
+}
+
+// v2 server vkey — bundled as a Tauri resource (tauri.conf.json) and required
+// at startup because the default `enabled_zk_versions` now includes "v2".
+const SERVER_VKEY_V2 = path.join(ZK_KEYS_DIR, "membership_v2_vkey.json");
+if (!fs.existsSync(SERVER_VKEY_V2)) {
+  if (IS_PRODUCTION) {
+    fatal(
+      `${SERVER_VKEY_V2} is missing. The desktop bundle requires it as a Tauri ` +
+        `resource so the embedded server can verify v2 (secret-derived nullifier) proofs.`
+    );
+  } else {
+    log(
+      `  WARNING (dev): ${SERVER_VKEY_V2} is missing. Tauri bundling will fail ` +
+        `(membership_v2_vkey.json is a declared bundle resource).`
     );
   }
 }

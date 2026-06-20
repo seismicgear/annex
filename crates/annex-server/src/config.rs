@@ -226,7 +226,13 @@ fn default_enforce_zk_proofs() -> bool {
 }
 
 fn default_enabled_zk_versions() -> Vec<String> {
-    vec!["v1".to_string()]
+    // Accept BOTH protocol versions by default. v2 (secret-derived nullifier)
+    // is what shipped clients generate; v1 is retained so older clients and
+    // existing registrations keep working during migration. Enabling v2
+    // requires the v2 vkey to load at startup (under `enforce_zk_proofs`), so
+    // deployments must ship `membership_v2_vkey.json` (the desktop bundle and
+    // dev/e2e setup both do).
+    vec!["v1".to_string(), "v2".to_string()]
 }
 
 impl Default for SecurityConfig {

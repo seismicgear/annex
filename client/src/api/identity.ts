@@ -44,10 +44,19 @@ export async function verifyMembership(
   topic: string,
   proof: unknown,
   publicSignals: string[],
+  v2?: { nullifierHex: string; topicHashHex: string },
 ): Promise<VerifyMembershipResponse> {
+  const body: Record<string, unknown> = { root, commitment, topic, proof, publicSignals };
+  if (v2) {
+    // v2 (secret-derived nullifier): the server checks publicSignals[2]/[3]
+    // against these and recomputes topicHash from `topic`.
+    body.protocolVersion = 'v2';
+    body.nullifierHex = v2.nullifierHex;
+    body.topicHashHex = v2.topicHashHex;
+  }
   return request<VerifyMembershipResponse>('/api/zk/verify-membership', {
     method: 'POST',
-    body: JSON.stringify({ root, commitment, topic, proof, publicSignals }),
+    body: JSON.stringify(body),
   });
 }
 

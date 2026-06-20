@@ -238,31 +238,35 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
       identity.leafIndex = reg.leafIndex;
       await db.saveIdentity(identity);
 
-      // Generate proof.
+      // Generate a v2 membership proof: the per-topic nullifier is derived
+      // from the secret key INSIDE the circuit (Poseidon(sk, topicHash, 1)),
+      // not from the public commitment. This closes the v1 linkability hole
+      // where anyone holding the public Merkle leaf could compute every topic
+      // pseudonym. The VRP topic scopes pseudonym derivation to this server.
+      const vrpTopic = `annex:server:${serverSlug}:v2`;
       set({ phase: 'proving', proofInFlight: true, provingStatus: 'loading_assets', error: null, errorDetails: null });
-      const { proof, publicSignals } = await zk.generateMembershipProof({
+      const { proof, publicSignals, nullifierHex, topicHashHex } = await zk.generateMembershipProofV2({
         sk,
         roleCode: identity.roleCode,
         nodeId: identity.nodeId,
         leafIndex: reg.leafIndex,
         pathElements: reg.pathElements,
         pathIndexBits: reg.pathIndexBits,
-      }, {
+      }, vrpTopic, {
         onStage: (stage) => {
           set({ provingStatus: stage });
         },
       });
 
-      // Verify membership — the VRP topic scopes pseudonym derivation
-      // to this specific server.
+      // Verify membership.
       set({ phase: 'verifying', error: null, errorDetails: null, provingStatus: 'idle' });
-      const vrpTopic = `annex:server:${serverSlug}:v1`;
       const verification = await api.verifyMembership(
         reg.rootHex,
         identity.commitmentHex,
         vrpTopic,
         proof,
         publicSignals,
+        { nullifierHex, topicHashHex },
       );
 
       identity.pseudonymId = verification.pseudonymId;
@@ -270,18 +274,23 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
       identity.lastUsedAt = new Date().toISOString();
       api.setSessionToken(verification.sessionToken);
       // Cache the ZK proof so protected endpoints can include it. The shape
-      // MUST match the server's `ZkProofPayload`: `proof` + `root_hex` +
-      // `commitment_hex` are required (for v1 the server reconstructs the
-      // public signals from root+commitment). Omitting root_hex/commitment_hex
-      // made every ZK-enforced channel join/send fail with 403 ("Not a
-      // member of channel"). We persist it on the identity too so a cold
+      // MUST match the server's `ZkProofPayload`. For v2 the middleware
+      // re-verifies the full proof on channel access, so the payload carries
+      // `proof` + `root_hex` + `commitment_hex` + `publicSignals` (length 4) +
+      // `protocolVersion: 'v2'` + `topic` (to recompute and match the topic
+      // hash). Omitting any of these makes every ZK-enforced channel join/send
+      // fail with 403 ("Not a member of channel"). We persist it on the
+      // identity too so a cold
       // start / identity switch can restore it without re-proving.
       const zkProofPayload = JSON.stringify({
         proof,
         root_hex: reg.rootHex,
         commitment_hex: identity.commitmentHex,
-        protocolVersion: 'v1',
+        protocolVersion: 'v2',
         publicSignals,
+        // v2 requires the topic so the middleware can recompute and match
+        // publicSignals[3] (topicHash) when re-verifying on channel access.
+        topic: vrpTopic,
       });
       api.setZkProofPayload(zkProofPayload);
       identity.zkProofPayload = zkProofPayload;

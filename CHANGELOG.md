@@ -58,6 +58,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- **Identity: the client now uses secret-derived (v2) nullifiers by default,
+  closing the disclosed nullifier-linkability hole.** The v1 per-topic
+  nullifier was `sha256(commitment + topic)` — derivable by anyone holding the
+  public Merkle leaf, so a registry snapshot exposed every topic pseudonym. The
+  client now generates a v2 Groth16 proof whose nullifier is
+  `Poseidon(sk, topicHash, 1)` computed INSIDE the circuit, so the commitment no
+  longer reveals the pseudonym. The server accepts both v1 and v2 by default
+  (`security.enabled_zk_versions = ["v1","v2"]`) for migration; the desktop
+  bundles the v2 verification key. (AUDIT FINDING-003 / P4-ID-2)
 - **Federation: RTX relay signatures now bind bundle content.** The relay
   envelope signature previously covered only metadata, so a relaying or
   man-in-the-middle peer could rewrite a relayed bundle's content, tags, author,

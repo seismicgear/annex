@@ -14,10 +14,12 @@ If you're an AI assistant helping with this project: **read the current phase st
 
 ```
 Phase 0: Project Scaffold .............. COMPLETE
-Phase 1: Identity Plane ................ PARTIAL  (membership v1 solid; 3 of 5
-                                                   advertised circuits absent;
-                                                   v2 nullifier-privacy fix
-                                                   unreachable from any client)
+Phase 1: Identity Plane ................ PARTIAL  (membership solid; v2 secret-
+                                                   derived nullifier now the
+                                                   client default [2026-06-19],
+                                                   closing the v1 linkability
+                                                   hole; 3 of 5 advertised
+                                                   circuits still absent)
 Phase 2: Server Core ................... COMPLETE
 Phase 3: VRP Trust Negotiation ......... PARTIAL  (reputation now gates
                                                    outcomes + real measured
