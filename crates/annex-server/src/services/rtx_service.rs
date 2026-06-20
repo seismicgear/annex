@@ -167,11 +167,12 @@ pub struct GovernanceSummaryResponse {
 ///
 /// Binding this hash into the relay signing payload
 /// ([`rtx_relay_signing_payload`]) means a relaying or man-in-the-middle peer
-/// cannot alter a bundle's content, tags, author, timestamp, or author
-/// signature without invalidating the origin server's relay signature — the
-/// receiver recomputes the hash from the bundle it actually received and
-/// verification fails on any mismatch. Fields are length-prefixed (u64 LE) so
-/// the encoding is unambiguous across field boundaries.
+/// cannot alter a bundle's content, tags, author, timestamp, author signature,
+/// or VRP/provenance handshake reference without invalidating the origin
+/// server's relay signature — the receiver recomputes the hash from the bundle
+/// it actually received and verification fails on any mismatch. Fields are
+/// length-prefixed (u64 LE) so the encoding is unambiguous across field
+/// boundaries.
 pub fn rtx_bundle_content_hash(bundle: &ReflectionSummaryBundle) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
@@ -197,6 +198,10 @@ pub fn rtx_bundle_content_hash(bundle: &ReflectionSummaryBundle) -> String {
     }
     absorb(bundle.created_at.to_string().as_bytes(), &mut h);
     absorb(bundle.signature.as_bytes(), &mut h);
+    // Bind the VRP/provenance handshake reference too: the receive path stores
+    // this value, so a relaying peer must not be able to rewrite it without
+    // invalidating the relay signature.
+    absorb(bundle.vrp_handshake_ref.as_bytes(), &mut h);
     hex::encode(h.finalize())
 }
 

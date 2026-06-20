@@ -65,15 +65,38 @@ function exists(filePath) {
   return fs.existsSync(filePath);
 }
 
+// Every source artifact the dev client needs. The default registration path is
+// now v2 (`generateMembershipProofV2`), so a checkout that has only the v1
+// source must STILL rebuild — otherwise dev boots with no `/zk/membership_v2.*`
+// and identity registration fails at proof generation. The capability circuits
+// are included too so their endpoints aren't silently 503 in dev.
+function requiredSourceArtifacts() {
+  const list = [
+    { label: 'membership.wasm', path: wasmSource },
+    { label: 'membership_final.zkey', path: zkeySource },
+    { label: 'membership_v2.wasm', path: wasmV2Source },
+    { label: 'membership_v2_final.zkey', path: zkeyV2Source },
+  ];
+  for (const name of CAPABILITY_CIRCUITS) {
+    const p = capabilityArtifactPaths(name);
+    list.push({ label: `${name}.wasm`, path: p.wasmSource });
+    list.push({ label: `${name}_final.zkey`, path: p.zkeySource });
+  }
+  return list;
+}
+
 function ensureSourceArtifacts() {
-  if (exists(wasmSource) && exists(zkeySource)) {
+  const required = requiredSourceArtifacts();
+  const missing = required.filter((a) => !exists(a.path));
+  if (missing.length === 0) {
     log('ZK source artifacts already exist — skipping rebuild.');
     return;
   }
 
-  warn('Missing ZK source artifacts required for desktop dev.');
-  warn(`Expected: ${wasmSource}`);
-  warn(`Expected: ${zkeySource}`);
+  warn('Missing ZK source artifacts required for desktop dev:');
+  for (const a of missing) {
+    warn(`  Missing ${a.label}: ${a.path}`);
+  }
   log('Building ZK artifacts (one-time, may take a while)...');
 
   if (!exists(path.join(ZK_DIR, 'node_modules'))) {
@@ -84,9 +107,12 @@ function ensureSourceArtifacts() {
   run('node scripts/build-circuits.js', ZK_DIR);
   run('node scripts/dev-setup-groth16.js', ZK_DIR);
 
-  if (!exists(wasmSource) || !exists(zkeySource)) {
+  const stillMissing = requiredSourceArtifacts().filter((a) => !exists(a.path));
+  if (stillMissing.length > 0) {
     fail(
-      'ZK build completed but required artifacts are still missing. Check zk/scripts output above.'
+      'ZK build completed but required artifacts are still missing (' +
+        stillMissing.map((a) => a.label).join(', ') +
+        '). Check zk/scripts output above.'
     );
   }
 }
