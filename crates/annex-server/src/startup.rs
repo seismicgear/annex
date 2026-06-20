@@ -125,6 +125,19 @@ async fn ensure_webrtc_running(
     None
 }
 
+/// A raw `voice_profiles` row as read from SQLite:
+/// `(profile_id, name, model, model_path, config_path, speed, pitch, speaker_id)`.
+type VoiceProfileRow = (
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    f32,
+    f32,
+    Option<u32>,
+);
+
 /// Loads operator-configured rows from the `voice_profiles` table for
 /// `server_id` into the running [`annex_voice::TtsService`]. Returns the count
 /// loaded. Best-effort: a malformed row is skipped with a warning rather than
@@ -138,31 +151,34 @@ async fn load_voice_profiles(
     use annex_types::voice::{VoiceModel, VoiceProfile};
 
     let pool = pool.clone();
-    let rows = tokio::task::spawn_blocking(move || -> Vec<(String, String, String, String, Option<String>, f32, f32, Option<u32>)> {
-        let Ok(conn) = pool.get() else { return Vec::new() };
-        let Ok(mut stmt) = conn.prepare(
+    let rows =
+        tokio::task::spawn_blocking(move || -> Vec<VoiceProfileRow> {
+            let Ok(conn) = pool.get() else {
+                return Vec::new();
+            };
+            let Ok(mut stmt) = conn.prepare(
             "SELECT profile_id, name, model, model_path, config_path, speed, pitch, speaker_id \
              FROM voice_profiles WHERE server_id = ?1",
         ) else { return Vec::new() };
-        let mapped = stmt.query_map([server_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, Option<String>>(4)?,
-                row.get::<_, f64>(5)? as f32,
-                row.get::<_, f64>(6)? as f32,
-                row.get::<_, Option<i64>>(7)?.map(|v| v as u32),
-            ))
-        });
-        match mapped {
-            Ok(iter) => iter.filter_map(|r| r.ok()).collect(),
-            Err(_) => Vec::new(),
-        }
-    })
-    .await
-    .unwrap_or_default();
+            let mapped = stmt.query_map([server_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, f64>(5)? as f32,
+                    row.get::<_, f64>(6)? as f32,
+                    row.get::<_, Option<i64>>(7)?.map(|v| v as u32),
+                ))
+            });
+            match mapped {
+                Ok(iter) => iter.filter_map(|r| r.ok()).collect(),
+                Err(_) => Vec::new(),
+            }
+        })
+        .await
+        .unwrap_or_default();
 
     let mut count = 0;
     for (profile_id, name, model_str, model_path, config_path, speed, pitch, speaker_id) in rows {

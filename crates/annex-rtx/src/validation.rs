@@ -414,7 +414,7 @@ mod redaction_tests {
         );
         let baseline = author_signing_payload(&base);
 
-        let mut mutate = |f: &dyn Fn(&mut ReflectionSummaryBundle)| {
+        let mutate = |f: &dyn Fn(&mut ReflectionSummaryBundle)| {
             let mut b = base.clone();
             f(&mut b);
             author_signing_payload(&b)
