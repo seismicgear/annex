@@ -43,9 +43,44 @@ export default defineConfig({
   },
 
   projects: [
+    // ── Functional suite ──────────────────────────────────────────────
+    // The original assertion suite. Deliberately excludes e2e/audit/ so a
+    // plain `npm run test:e2e` keeps its existing meaning and runtime, and
+    // so `admin.spec.ts` keeps relying on being the earliest registrant.
     {
       name: 'chromium',
+      testIgnore: /audit\//,
       use: { ...devices['Desktop Chrome'] },
+    },
+
+    // ── UI audit lane ─────────────────────────────────────────────────
+    // `audit-setup` drives the real startup flow once per role and saves
+    // storage state (including IndexedDB, which is where the identity, keys
+    // and cached membership proof live). `audit` then reuses that state, so
+    // each captured surface costs a page load instead of a 30-60s Groth16
+    // proof.
+    //
+    // The audit lane needs a FRESH server: it registers its founder first so
+    // `ensure_founder` grants moderator. Run it via `scripts/ui-audit.sh`,
+    // which restarts the server before invoking these projects.
+    {
+      name: 'audit-setup',
+      testDir: './e2e/audit',
+      testMatch: /roles\.setup\.ts/,
+      use: { ...devices['Desktop Chrome'] },
+    },
+    {
+      name: 'audit',
+      testDir: './e2e/audit',
+      testMatch: /capture\.spec\.ts|manifest\.spec\.ts/,
+      dependencies: ['audit-setup'],
+      use: {
+        ...devices['Desktop Chrome'],
+        // The runner sets an explicit viewport per capture, and an
+        // end-of-test auto-screenshot would pollute the baseline directory.
+        screenshot: 'off',
+        video: 'off',
+      },
     },
   ],
 

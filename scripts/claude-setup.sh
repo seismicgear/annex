@@ -22,6 +22,14 @@ if pkg-config --exists webkit2gtk-4.1 2>/dev/null; then
 else
     info "Installing system dependencies (WebKitGTK, GTK, PipeWire)..."
     apt-get update -qq 2>/dev/null
+    # Package list must stay in sync with .github/workflows/ci.yml's
+    # check-desktop-linux job. Note `libjavascriptcoregtk-4.1-dev` — the
+    # `lib` prefix is required; `javascriptcoregtk-4.1-dev` does not exist
+    # and apt fails the whole transaction on it.
+    #
+    # `PIPESTATUS` is checked explicitly because `| tail` would otherwise
+    # mask a non-zero apt-get exit under `set -o pipefail`'s sibling rules:
+    # the pipeline status is tail's, so a failed install looked successful.
     apt-get install -y --no-install-recommends \
         libwebkit2gtk-4.1-dev \
         libappindicator3-dev \
@@ -29,10 +37,14 @@ else
         patchelf \
         libgtk-3-dev \
         libsoup-3.0-dev \
-        javascriptcoregtk-4.1-dev \
+        libjavascriptcoregtk-4.1-dev \
         libpipewire-0.3-dev \
         espeak-ng \
         2>&1 | tail -3
+    if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+        error "System dependency install failed — annex-desktop will not build."
+        exit 1
+    fi
     info "System dependencies installed."
 fi
 

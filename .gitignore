@@ -71,3 +71,6 @@ client/public/zk/
 Thumbs.db
 client/e2e-puppeteer/screenshots-voice/
 client/e2e-puppeteer/screenshots-edge/
+
+# UI audit: per-run warm auth state (binds to a per-run Merkle root, never committed)
+client/e2e/audit/.auth/
