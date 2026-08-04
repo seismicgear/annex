@@ -1,5 +1,8 @@
 use annex_db::run_migrations;
-use annex_identity::{check_nullifier_exists, insert_nullifier, IdentityError};
+use annex_identity::{
+    backfill_nullifier_owner, check_nullifier_exists, existing_nullifier_owner, insert_nullifier,
+    IdentityError,
+};
 use rusqlite::Connection;
 
 #[test]
@@ -78,4 +81,68 @@ fn test_nullifier_with_lookup_columns() {
     let (found_commit, found_topic) = found.expect("should find by pseudonym");
     assert_eq!(found_commit, commitment);
     assert_eq!(found_topic, topic);
+}
+
+#[test]
+fn existing_nullifier_owner_reports_the_binding() {
+    let conn = Connection::open_in_memory().expect("failed to open db");
+    run_migrations(&conn).expect("migrations failed");
+
+    let topic = "annex:server:demo:v2";
+    let nullifier = "b".repeat(64);
+
+    assert_eq!(
+        existing_nullifier_owner(&conn, topic, &nullifier).expect("lookup failed"),
+        None,
+        "an unused nullifier has no owner"
+    );
+
+    insert_nullifier(&conn, topic, &nullifier, Some("pseudo-1"), Some("commit-1"))
+        .expect("insertion failed");
+
+    let owner = existing_nullifier_owner(&conn, topic, &nullifier)
+        .expect("lookup failed")
+        .expect("nullifier should have an owner once consumed");
+    assert_eq!(owner.pseudonym_id.as_deref(), Some("pseudo-1"));
+    assert_eq!(owner.commitment_hex.as_deref(), Some("commit-1"));
+}
+
+#[test]
+fn backfill_fills_only_missing_owner_columns() {
+    let conn = Connection::open_in_memory().expect("failed to open db");
+    run_migrations(&conn).expect("migrations failed");
+
+    let topic = "annex:server:demo:v2";
+
+    // A row written before migration 024 added the denormalised columns.
+    let legacy = "c".repeat(64);
+    insert_nullifier(&conn, topic, &legacy, None, None).expect("insertion failed");
+    backfill_nullifier_owner(&conn, topic, &legacy, "pseudo-legacy", "commit-legacy")
+        .expect("backfill failed");
+
+    let owner = existing_nullifier_owner(&conn, topic, &legacy)
+        .expect("lookup failed")
+        .expect("row exists");
+    assert_eq!(owner.pseudonym_id.as_deref(), Some("pseudo-legacy"));
+    assert_eq!(owner.commitment_hex.as_deref(), Some("commit-legacy"));
+
+    // An existing binding must never be overwritten — re-authentication
+    // relies on it to tell the owner apart from a different identity.
+    let bound = "d".repeat(64);
+    insert_nullifier(
+        &conn,
+        topic,
+        &bound,
+        Some("pseudo-real"),
+        Some("commit-real"),
+    )
+    .expect("insertion failed");
+    backfill_nullifier_owner(&conn, topic, &bound, "pseudo-other", "commit-other")
+        .expect("backfill failed");
+
+    let owner = existing_nullifier_owner(&conn, topic, &bound)
+        .expect("lookup failed")
+        .expect("row exists");
+    assert_eq!(owner.pseudonym_id.as_deref(), Some("pseudo-real"));
+    assert_eq!(owner.commitment_hex.as_deref(), Some("commit-real"));
 }

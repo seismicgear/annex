@@ -259,13 +259,26 @@ export function StartupModeSelector({ onReady }: Props) {
           }
           setPhase('choose');
         } else {
-          // Web/Docker — pre-fill only, no auto-resume
           const prefs = loadWebStartupMode();
           if (cancelled) return;
           if (!prefs) {
             setPhase('choose');
             return;
           }
+          // Auto-resume "use this server". The objection to auto-resuming a
+          // remote URL — a "Connecting..." flash followed by an error if the
+          // host is unreachable — does not apply here: `local` means the
+          // current origin, which is by definition reachable because it just
+          // served this page. Without this, a returning web user was asked to
+          // re-pick a server they were already registered with on every single
+          // page load, and answering that prompt drove a redundant
+          // re-registration.
+          if (prefs.mode === 'local') {
+            applyLocal(true);
+            return;
+          }
+          // Remote stays pre-fill-only, so an unreachable saved host does not
+          // strand the user on an error screen with an empty URL field.
           if (prefs.mode === 'remote' && prefs.server_url) {
             setRemoteUrl(prefs.server_url);
           }
@@ -279,7 +292,7 @@ export function StartupModeSelector({ onReady }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [inTauri, applyHost, applyRemote]);
+  }, [inTauri, applyHost, applyRemote, applyLocal]);
 
   const handleReset = async () => {
     if (inTauri) {

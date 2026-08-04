@@ -12,11 +12,66 @@
 /** Base error class for API responses. */
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  /**
+   * The unparsed response body, kept for diagnostics. `message` is the
+   * human-readable form; anything shown to a user should use `message`.
+   */
+  rawBody: string;
+  constructor(status: number, message: string, rawBody = message) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.rawBody = rawBody;
   }
+}
+
+/** Last-resort wording when the server gives us nothing to work with. */
+const STATUS_FALLBACKS: Record<number, string> = {
+  400: 'The server rejected that request.',
+  401: 'Your session is no longer valid. Try signing in again.',
+  403: 'You do not have permission to do that.',
+  404: 'That item no longer exists.',
+  409: 'That conflicts with the current state on the server.',
+  413: 'That file is too large for this server’s limits.',
+  429: 'Too many requests — please wait a moment and try again.',
+  500: 'The server hit an unexpected error.',
+  503: 'That feature is not available on this server right now.',
+  507: 'The server is out of storage and cannot accept writes.',
+};
+
+/**
+ * Turns a raw error response into something worth showing a person.
+ *
+ * The backend does not speak one error dialect: most handlers return
+ * `{"error": "..."}`, the channel routes return a bare status code with an
+ * EMPTY body, and voice-join returns a JSON-shaped body with a
+ * `text/plain` content type. Passing the raw body straight through meant
+ * users saw things like
+ *   {"error":"nullifier already exists for topic 'annex:server:…:v2'"}
+ * or, on the channel routes, an empty string. Normalising here gives every
+ * caller one predictable `message` regardless of which dialect replied.
+ */
+export function extractErrorMessage(status: number, body: string): string {
+  const trimmed = body.trim();
+  if (trimmed) {
+    try {
+      const parsed: unknown = JSON.parse(trimmed);
+      if (typeof parsed === 'string' && parsed.trim()) return parsed.trim();
+      if (parsed && typeof parsed === 'object') {
+        const obj = parsed as Record<string, unknown>;
+        // `error` is the common field; `message` is used by the voice-join
+        // structured error alongside `error` as a machine-readable code.
+        for (const key of ['message', 'error'] as const) {
+          const value = obj[key];
+          if (typeof value === 'string' && value.trim()) return value.trim();
+        }
+      }
+    } catch {
+      // Not JSON — a plain-text body is already human-readable enough.
+      return trimmed;
+    }
+  }
+  return STATUS_FALLBACKS[status] ?? `Request failed (HTTP ${status}).`;
 }
 
 /**
@@ -119,7 +174,7 @@ export async function request<T>(path: string, options?: RequestInit): Promise<T
       throw new ApiError(429, `Rate limit exceeded.${waitMsg}`);
     }
     const body = await res.text();
-    throw new ApiError(res.status, body);
+    throw new ApiError(res.status, extractErrorMessage(res.status, body), body);
   }
   return res.json() as Promise<T>;
 }
@@ -150,7 +205,7 @@ export async function requestRemote<T>(
   });
   if (!res.ok) {
     const body = await res.text();
-    throw new ApiError(res.status, body);
+    throw new ApiError(res.status, extractErrorMessage(res.status, body), body);
   }
   return res.json() as Promise<T>;
 }
@@ -208,7 +263,7 @@ export async function refreshSessionToken(): Promise<string> {
   });
   if (!res.ok) {
     const body = await res.text();
-    throw new ApiError(res.status, body);
+    throw new ApiError(res.status, extractErrorMessage(res.status, body), body);
   }
   const data = await res.json() as { sessionToken: string };
   _sessionToken = data.sessionToken;
