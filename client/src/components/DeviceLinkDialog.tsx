@@ -18,6 +18,8 @@ import {
   generateQrSvg,
 } from '@/lib/device-link';
 import * as db from '@/lib/db';
+import { Modal } from '@/components/Modal';
+import { useDialogTitleId } from '@/lib/use-dialog-title-id';
 
 interface Props {
   onClose: () => void;
@@ -26,6 +28,7 @@ interface Props {
 type Mode = 'choose' | 'share' | 'receive';
 
 export function DeviceLinkDialog({ onClose }: Props) {
+  const titleId = useDialogTitleId();
   const identity = useIdentityStore((s) => s.identity);
   const loadIdentities = useIdentityStore((s) => s.loadIdentities);
 
@@ -99,148 +102,146 @@ export function DeviceLinkDialog({ onClose }: Props) {
   }, [inputPayload, inputCode, loadIdentities]);
 
   return (
-    <div className="dialog-overlay" onClick={onClose}>
-      <div className="dialog device-link-dialog" onClick={(e) => e.stopPropagation()}>
-        <h3>Device Linking</h3>
+    <Modal onClose={onClose} className="device-link-dialog" titleId={titleId}>
+      <h3 id={titleId}>Device Linking</h3>
 
-        {mode === 'choose' && (
-          <div className="device-link-choose">
-            <p className="device-link-description">
-              Transfer your identity to another device securely. No seed phrases, no manual exports.
-            </p>
-            <button
-              className="device-link-option"
-              onClick={handleShare}
-              disabled={!identity || generating}
-            >
-              <span className="device-link-option-icon">&#x1F4F1;</span>
-              <span className="device-link-option-text">
-                <strong>Link a New Device</strong>
-                <span>Show a transfer code to copy to your other device</span>
-              </span>
-            </button>
-            <button
-              className="device-link-option"
-              onClick={() => setMode('receive')}
-            >
-              <span className="device-link-option-icon">&#x1F4F7;</span>
-              <span className="device-link-option-text">
-                <strong>Receive from Another Device</strong>
-                <span>Paste a transfer code from your other device</span>
-              </span>
-            </button>
-            <div className="dialog-actions">
-              <button onClick={onClose}>Cancel</button>
-            </div>
+      {mode === 'choose' && (
+        <div className="device-link-choose">
+          <p className="device-link-description">
+            Transfer your identity to another device securely. No seed phrases, no manual exports.
+          </p>
+          <button
+            className="device-link-option"
+            onClick={handleShare}
+            disabled={!identity || generating}
+          >
+            <span className="device-link-option-icon">&#x1F4F1;</span>
+            <span className="device-link-option-text">
+              <strong>Link a New Device</strong>
+              <span>Show a transfer code to copy to your other device</span>
+            </span>
+          </button>
+          <button
+            className="device-link-option"
+            onClick={() => setMode('receive')}
+          >
+            <span className="device-link-option-icon">&#x1F4F7;</span>
+            <span className="device-link-option-text">
+              <strong>Receive from Another Device</strong>
+              <span>Paste a transfer code from your other device</span>
+            </span>
+          </button>
+          <div className="dialog-actions">
+            <button onClick={onClose}>Cancel</button>
           </div>
-        )}
+        </div>
+      )}
 
-        {mode === 'share' && (
-          <div className="device-link-share">
-            <p className="device-link-description">
-              Copy the transfer code below into the "Receive" screen on your other
-              device, then enter the pairing code to complete the transfer.
-            </p>
-            <div
-              className="qr-container"
-              aria-hidden="true"
-              dangerouslySetInnerHTML={{ __html: qrSvg }}
-            />
-            <label className="transfer-code-label" htmlFor="transfer-code">
-              Transfer code
-            </label>
+      {mode === 'share' && (
+        <div className="device-link-share">
+          <p className="device-link-description">
+            Copy the transfer code below into the "Receive" screen on your other
+            device, then enter the pairing code to complete the transfer.
+          </p>
+          <div
+            className="qr-container"
+            aria-hidden="true"
+            dangerouslySetInnerHTML={{ __html: qrSvg }}
+          />
+          <label className="transfer-code-label" htmlFor="transfer-code">
+            Transfer code
+          </label>
+          <textarea
+            id="transfer-code"
+            className="transfer-code-value"
+            value={transferCode}
+            readOnly
+            rows={3}
+            onFocus={(e) => e.currentTarget.select()}
+          />
+          <button
+            type="button"
+            className="secondary-btn"
+            onClick={() => {
+              navigator.clipboard
+                ?.writeText(transferCode)
+                .then(() => setCopied(true))
+                // Clipboard access can be denied; the field above is
+                // selectable so the user still has a way through.
+                .catch(() => setCopied(false));
+            }}
+          >
+            {copied ? 'Copied!' : 'Copy transfer code'}
+          </button>
+          <div className="pairing-code-display">
+            <span className="pairing-code-label">Pairing Code</span>
+            <span className="pairing-code-value">{pairingCode}</span>
+          </div>
+          <p className="pairing-code-hint">
+            Enter this code on your other device to complete the transfer.
+          </p>
+          <div className="dialog-actions">
+            <button onClick={() => setMode('choose')}>Back</button>
+            <button onClick={onClose}>Done</button>
+          </div>
+        </div>
+      )}
+
+      {mode === 'receive' && !success && (
+        <div className="device-link-receive">
+          <p className="device-link-description">
+            Paste the QR data from your other device and enter the pairing code.
+          </p>
+          <label>
+            QR Data
             <textarea
-              id="transfer-code"
-              className="transfer-code-value"
-              value={transferCode}
-              readOnly
-              rows={3}
-              onFocus={(e) => e.currentTarget.select()}
+              value={inputPayload}
+              onChange={(e) => setInputPayload(e.target.value)}
+              placeholder='Paste the encoded data here...'
+              rows={4}
+              disabled={importing}
             />
-            <button
-              type="button"
-              className="secondary-btn"
-              onClick={() => {
-                navigator.clipboard
-                  ?.writeText(transferCode)
-                  .then(() => setCopied(true))
-                  // Clipboard access can be denied; the field above is
-                  // selectable so the user still has a way through.
-                  .catch(() => setCopied(false));
-              }}
-            >
-              {copied ? 'Copied!' : 'Copy transfer code'}
+          </label>
+          <label>
+            Pairing Code
+            <input
+              type="text"
+              value={inputCode}
+              onChange={(e) => setInputCode(e.target.value)}
+              placeholder="000000"
+              maxLength={6}
+              pattern="[0-9]*"
+              inputMode="numeric"
+              disabled={importing}
+            />
+          </label>
+          {error && <div className="error-message">{error}</div>}
+          <div className="dialog-actions">
+            <button onClick={() => setMode('choose')} disabled={importing}>
+              Back
             </button>
-            <div className="pairing-code-display">
-              <span className="pairing-code-label">Pairing Code</span>
-              <span className="pairing-code-value">{pairingCode}</span>
-            </div>
-            <p className="pairing-code-hint">
-              Enter this code on your other device to complete the transfer.
-            </p>
-            <div className="dialog-actions">
-              <button onClick={() => setMode('choose')}>Back</button>
-              <button onClick={onClose}>Done</button>
-            </div>
+            <button
+              className="primary-btn"
+              onClick={handleImport}
+              disabled={importing || !inputPayload || inputCode.length !== 6}
+            >
+              {importing ? 'Decrypting...' : 'Import Identity'}
+            </button>
           </div>
-        )}
+        </div>
+      )}
 
-        {mode === 'receive' && !success && (
-          <div className="device-link-receive">
-            <p className="device-link-description">
-              Paste the QR data from your other device and enter the pairing code.
-            </p>
-            <label>
-              QR Data
-              <textarea
-                value={inputPayload}
-                onChange={(e) => setInputPayload(e.target.value)}
-                placeholder='Paste the encoded data here...'
-                rows={4}
-                disabled={importing}
-              />
-            </label>
-            <label>
-              Pairing Code
-              <input
-                type="text"
-                value={inputCode}
-                onChange={(e) => setInputCode(e.target.value)}
-                placeholder="000000"
-                maxLength={6}
-                pattern="[0-9]*"
-                inputMode="numeric"
-                disabled={importing}
-              />
-            </label>
-            {error && <div className="error-message">{error}</div>}
-            <div className="dialog-actions">
-              <button onClick={() => setMode('choose')} disabled={importing}>
-                Back
-              </button>
-              <button
-                className="primary-btn"
-                onClick={handleImport}
-                disabled={importing || !inputPayload || inputCode.length !== 6}
-              >
-                {importing ? 'Decrypting...' : 'Import Identity'}
-              </button>
-            </div>
+      {mode === 'receive' && success && (
+        <div className="device-link-success">
+          <div className="success-message">Identity imported successfully!</div>
+          <p>Your identity has been securely transferred to this device.</p>
+          <div className="dialog-actions">
+            <button className="primary-btn" onClick={onClose}>
+              Continue
+            </button>
           </div>
-        )}
-
-        {mode === 'receive' && success && (
-          <div className="device-link-success">
-            <div className="success-message">Identity imported successfully!</div>
-            <p>Your identity has been securely transferred to this device.</p>
-            <div className="dialog-actions">
-              <button className="primary-btn" onClick={onClose}>
-                Continue
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
+        </div>
+      )}
+    </Modal>
   );
 }

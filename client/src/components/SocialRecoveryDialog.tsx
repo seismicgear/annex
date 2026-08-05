@@ -11,6 +11,8 @@ import { useIdentityStore } from '@/stores/identity';
 import { splitSecretKey, reconstructSecretKey } from '@/lib/shamir';
 import * as zk from '@/lib/zk';
 import type { RecoveryConfig, RecoveryShard } from '@/types';
+import { Modal } from '@/components/Modal';
+import { useDialogTitleId } from '@/lib/use-dialog-title-id';
 
 interface Props {
   onClose: () => void;
@@ -19,6 +21,7 @@ interface Props {
 type Mode = 'choose' | 'setup' | 'setup-complete' | 'recover';
 
 export function SocialRecoveryDialog({ onClose }: Props) {
+  const titleId = useDialogTitleId();
   const identity = useIdentityStore((s) => s.identity);
   const importBackup = useIdentityStore((s) => s.importBackup);
 
@@ -177,255 +180,253 @@ export function SocialRecoveryDialog({ onClose }: Props) {
   };
 
   return (
-    <div className="dialog-overlay" onClick={onClose}>
-      <div className="dialog social-recovery-dialog" onClick={(e) => e.stopPropagation()}>
-        <h3>Social Recovery</h3>
+    <Modal onClose={onClose} className="social-recovery-dialog" titleId={titleId}>
+      <h3 id={titleId}>Social Recovery</h3>
 
-        {mode === 'choose' && (
-          <div className="recovery-choose">
-            <p className="recovery-description">
-              Protect your identity by splitting your secret key across trusted peers.
-              If you lose your devices, collect shards from your guardians to restore access.
-            </p>
-            <button
-              className="device-link-option"
-              onClick={() => setMode('setup')}
-              disabled={!identity}
-            >
-              <span className="device-link-option-icon">&#x1F6E1;</span>
-              <span className="device-link-option-text">
-                <strong>Set Up Recovery</strong>
-                <span>Split your key across trusted guardians</span>
-              </span>
-            </button>
-            <button
-              className="device-link-option"
-              onClick={() => setMode('recover')}
-            >
-              <span className="device-link-option-icon">&#x1F504;</span>
-              <span className="device-link-option-text">
-                <strong>Recover Identity</strong>
-                <span>Reconstruct your key from collected shards</span>
-              </span>
-            </button>
-            <div className="dialog-actions">
-              <button onClick={onClose}>Cancel</button>
-            </div>
+      {mode === 'choose' && (
+        <div className="recovery-choose">
+          <p className="recovery-description">
+            Protect your identity by splitting your secret key across trusted peers.
+            If you lose your devices, collect shards from your guardians to restore access.
+          </p>
+          <button
+            className="device-link-option"
+            onClick={() => setMode('setup')}
+            disabled={!identity}
+          >
+            <span className="device-link-option-icon">&#x1F6E1;</span>
+            <span className="device-link-option-text">
+              <strong>Set Up Recovery</strong>
+              <span>Split your key across trusted guardians</span>
+            </span>
+          </button>
+          <button
+            className="device-link-option"
+            onClick={() => setMode('recover')}
+          >
+            <span className="device-link-option-icon">&#x1F504;</span>
+            <span className="device-link-option-text">
+              <strong>Recover Identity</strong>
+              <span>Reconstruct your key from collected shards</span>
+            </span>
+          </button>
+          <div className="dialog-actions">
+            <button onClick={onClose}>Cancel</button>
           </div>
-        )}
+        </div>
+      )}
 
-        {mode === 'setup' && (
-          <form className="recovery-setup" onSubmit={handleSetup}>
-            <div className="recovery-params">
-              <label>
-                Total Guardians
-                <input
-                  type="number"
-                  min={2}
-                  max={10}
-                  value={totalShards}
-                  onChange={(e) => {
-                    const val = parseInt(e.target.value, 10);
-                    setTotalShards(val);
-                    // Clamp threshold if it now exceeds the new total
-                    if (threshold > val) setThreshold(val);
-                    // Ensure enough guardian slots (immutable update)
-                    if (guardians.length < val) {
-                      const extra = Array.from({ length: val - guardians.length }, () => ({ pseudonymId: '', label: '' }));
-                      setGuardians([...guardians, ...extra]);
-                    }
-                  }}
-                />
-              </label>
-              <label>
-                Required to Recover
-                <input
-                  type="number"
-                  min={2}
-                  max={totalShards}
-                  value={threshold}
-                  onChange={(e) => setThreshold(parseInt(e.target.value, 10))}
-                />
-              </label>
-            </div>
+      {mode === 'setup' && (
+        <form className="recovery-setup" onSubmit={handleSetup}>
+          <div className="recovery-params">
+            <label>
+              Total Guardians
+              <input
+                type="number"
+                min={2}
+                max={10}
+                value={totalShards}
+                onChange={(e) => {
+                  const val = parseInt(e.target.value, 10);
+                  setTotalShards(val);
+                  // Clamp threshold if it now exceeds the new total
+                  if (threshold > val) setThreshold(val);
+                  // Ensure enough guardian slots (immutable update)
+                  if (guardians.length < val) {
+                    const extra = Array.from({ length: val - guardians.length }, () => ({ pseudonymId: '', label: '' }));
+                    setGuardians([...guardians, ...extra]);
+                  }
+                }}
+              />
+            </label>
+            <label>
+              Required to Recover
+              <input
+                type="number"
+                min={2}
+                max={totalShards}
+                value={threshold}
+                onChange={(e) => setThreshold(parseInt(e.target.value, 10))}
+              />
+            </label>
+          </div>
 
-            <p className="recovery-hint">
-              {threshold} of {totalShards} guardians must provide their shard to recover your identity.
-            </p>
+          <p className="recovery-hint">
+            {threshold} of {totalShards} guardians must provide their shard to recover your identity.
+          </p>
 
-            <div className="guardian-list">
-              <h4>Guardians</h4>
-              {guardians.slice(0, totalShards).map((g, i) => (
-                <div key={i} className="guardian-entry">
-                  <input
-                    type="text"
-                    placeholder={`Guardian ${i + 1} name`}
-                    value={g.label}
-                    onChange={(e) => updateGuardian(i, 'label', e.target.value)}
-                  />
-                  <input
-                    type="text"
-                    placeholder="Pseudonym ID (optional)"
-                    value={g.pseudonymId}
-                    onChange={(e) => updateGuardian(i, 'pseudonymId', e.target.value)}
-                    className="guardian-pseudo"
-                  />
-                </div>
-              ))}
-            </div>
-
-            {error && <div className="error-message">{error}</div>}
-            <div className="dialog-actions">
-              <button type="button" onClick={() => setMode('choose')}>
-                Back
-              </button>
-              <button type="submit" className="primary-btn">
-                Generate Shards
-              </button>
-            </div>
-          </form>
-        )}
-
-        {mode === 'setup-complete' && recoveryConfig && (
-          <div className="recovery-complete">
-            <div className="success-message">
-              Recovery shards generated successfully!
-            </div>
-            <p className="recovery-hint">
-              Send each shard to the designated guardian. They should store it securely.
-              {recoveryConfig.threshold} of {recoveryConfig.totalShards} shards
-              are needed to recover.
-            </p>
-
-            <div className="shard-list">
-              {generatedShards.map((shard) => (
-                <div key={shard.index} className="shard-item">
-                  <div className="shard-header">
-                    <span className="shard-label">
-                      Shard #{shard.index} — {shard.holderLabel}
-                    </span>
-                    <button
-                      className="shard-copy-btn"
-                      onClick={() => copyShard(shard)}
-                    >
-                      {copiedShard === shard.index ? 'Copied!' : 'Copy'}
-                    </button>
-                  </div>
-                  <code className="shard-data">{shard.data.slice(0, 32)}...</code>
-                </div>
-              ))}
-            </div>
-
-            {error && <div className="error-message">{error}</div>}
-            {fallbackShardText && (
-              <div className="shard-fallback" onClick={(e) => e.stopPropagation()}>
+          <div className="guardian-list">
+            <h4>Guardians</h4>
+            {guardians.slice(0, totalShards).map((g, i) => (
+              <div key={i} className="guardian-entry">
                 <input
                   type="text"
-                  readOnly
-                  value={fallbackShardText}
-                  className="share-link-input"
-                  autoFocus
-                  onFocus={(e) => e.target.select()}
+                  placeholder={`Guardian ${i + 1} name`}
+                  value={g.label}
+                  onChange={(e) => updateGuardian(i, 'label', e.target.value)}
                 />
-                <button
-                  onClick={(e) => { e.stopPropagation(); setFallbackShardText(null); setError(null); }}
-                  className="channel-error-dismiss"
-                  aria-label="Dismiss"
-                >
-                  &times;
-                </button>
+                <input
+                  type="text"
+                  placeholder="Pseudonym ID (optional)"
+                  value={g.pseudonymId}
+                  onChange={(e) => updateGuardian(i, 'pseudonymId', e.target.value)}
+                  className="guardian-pseudo"
+                />
               </div>
-            )}
-
-            <div className="dialog-actions">
-              <button className="primary-btn" onClick={onClose}>
-                Done
-              </button>
-            </div>
+            ))}
           </div>
-        )}
 
-        {mode === 'recover' && !recoveredSk && (
-          <form className="recovery-reconstruct" onSubmit={handleRecover}>
-            <p className="recovery-description">
-              Enter the shards collected from your guardians to reconstruct your secret key.
-            </p>
+          {error && <div className="error-message">{error}</div>}
+          <div className="dialog-actions">
+            <button type="button" onClick={() => setMode('choose')}>
+              Back
+            </button>
+            <button type="submit" className="primary-btn">
+              Generate Shards
+            </button>
+          </div>
+        </form>
+      )}
 
-            <div className="recovery-shard-inputs">
-              {recoveryShards.map((s, i) => (
-                <div key={i} className="recovery-shard-entry">
-                  <input
-                    type="number"
-                    placeholder="Shard #"
-                    value={s.index}
-                    onChange={(e) => updateRecoveryShard(i, 'index', e.target.value)}
-                    min={1}
-                    max={255}
-                    className="recovery-shard-index"
-                  />
-                  <input
-                    type="text"
-                    placeholder="Shard data (hex)"
-                    value={s.data}
-                    onChange={(e) => updateRecoveryShard(i, 'data', e.target.value)}
-                    className="recovery-shard-data"
-                  />
+      {mode === 'setup-complete' && recoveryConfig && (
+        <div className="recovery-complete">
+          <div className="success-message">
+            Recovery shards generated successfully!
+          </div>
+          <p className="recovery-hint">
+            Send each shard to the designated guardian. They should store it securely.
+            {recoveryConfig.threshold} of {recoveryConfig.totalShards} shards
+            are needed to recover.
+          </p>
+
+          <div className="shard-list">
+            {generatedShards.map((shard) => (
+              <div key={shard.index} className="shard-item">
+                <div className="shard-header">
+                  <span className="shard-label">
+                    Shard #{shard.index} — {shard.holderLabel}
+                  </span>
+                  <button
+                    className="shard-copy-btn"
+                    onClick={() => copyShard(shard)}
+                  >
+                    {copiedShard === shard.index ? 'Copied!' : 'Copy'}
+                  </button>
                 </div>
-              ))}
+                <code className="shard-data">{shard.data.slice(0, 32)}...</code>
+              </div>
+            ))}
+          </div>
+
+          {error && <div className="error-message">{error}</div>}
+          {fallbackShardText && (
+            <div className="shard-fallback" onClick={(e) => e.stopPropagation()}>
+              <input
+                type="text"
+                readOnly
+                value={fallbackShardText}
+                className="share-link-input"
+                autoFocus
+                onFocus={(e) => e.target.select()}
+              />
               <button
-                type="button"
-                className="add-shard-btn"
-                onClick={addRecoveryShardSlot}
+                onClick={(e) => { e.stopPropagation(); setFallbackShardText(null); setError(null); }}
+                className="channel-error-dismiss"
+                aria-label="Dismiss"
               >
-                + Add Another Shard
+                &times;
               </button>
             </div>
+          )}
 
-            {error && <div className="error-message">{error}</div>}
-            <div className="dialog-actions">
-              <button type="button" onClick={() => setMode('choose')}>
-                Back
-              </button>
-              <button type="submit" className="primary-btn">
-                Reconstruct Key
-              </button>
-            </div>
-          </form>
-        )}
-
-        {mode === 'recover' && recoveredSk && !importSuccess && (
-          <div className="recovery-result">
-            <div className="success-message">Key reconstructed successfully!</div>
-            <p className="recovery-hint">
-              Your secret key has been recovered. Import it to regain access to your identity.
-              You will need to re-register with the server to generate a new membership proof.
-            </p>
-            {error && <div className="error-message">{error}</div>}
-            <div className="dialog-actions">
-              <button onClick={() => setMode('choose')}>Back</button>
-              <button className="primary-btn" onClick={handleImportRecovered}>
-                Import Recovered Key
-              </button>
-            </div>
+          <div className="dialog-actions">
+            <button className="primary-btn" onClick={onClose}>
+              Done
+            </button>
           </div>
-        )}
+        </div>
+      )}
 
-        {mode === 'recover' && importSuccess && (
-          <div className="recovery-result">
-            <div className="success-message">Identity restored locally!</div>
-            <p className="recovery-hint">
-              Your identity keys have been recovered and saved to this device.
-              To use this identity on a server, you still need to register it
-              — go to the server connection screen and complete registration.
-            </p>
-            <div className="dialog-actions">
-              <button className="primary-btn" onClick={onClose}>
-                Done
-              </button>
-            </div>
+      {mode === 'recover' && !recoveredSk && (
+        <form className="recovery-reconstruct" onSubmit={handleRecover}>
+          <p className="recovery-description">
+            Enter the shards collected from your guardians to reconstruct your secret key.
+          </p>
+
+          <div className="recovery-shard-inputs">
+            {recoveryShards.map((s, i) => (
+              <div key={i} className="recovery-shard-entry">
+                <input
+                  type="number"
+                  placeholder="Shard #"
+                  value={s.index}
+                  onChange={(e) => updateRecoveryShard(i, 'index', e.target.value)}
+                  min={1}
+                  max={255}
+                  className="recovery-shard-index"
+                />
+                <input
+                  type="text"
+                  placeholder="Shard data (hex)"
+                  value={s.data}
+                  onChange={(e) => updateRecoveryShard(i, 'data', e.target.value)}
+                  className="recovery-shard-data"
+                />
+              </div>
+            ))}
+            <button
+              type="button"
+              className="add-shard-btn"
+              onClick={addRecoveryShardSlot}
+            >
+              + Add Another Shard
+            </button>
           </div>
-        )}
-      </div>
-    </div>
+
+          {error && <div className="error-message">{error}</div>}
+          <div className="dialog-actions">
+            <button type="button" onClick={() => setMode('choose')}>
+              Back
+            </button>
+            <button type="submit" className="primary-btn">
+              Reconstruct Key
+            </button>
+          </div>
+        </form>
+      )}
+
+      {mode === 'recover' && recoveredSk && !importSuccess && (
+        <div className="recovery-result">
+          <div className="success-message">Key reconstructed successfully!</div>
+          <p className="recovery-hint">
+            Your secret key has been recovered. Import it to regain access to your identity.
+            You will need to re-register with the server to generate a new membership proof.
+          </p>
+          {error && <div className="error-message">{error}</div>}
+          <div className="dialog-actions">
+            <button onClick={() => setMode('choose')}>Back</button>
+            <button className="primary-btn" onClick={handleImportRecovered}>
+              Import Recovered Key
+            </button>
+          </div>
+        </div>
+      )}
+
+      {mode === 'recover' && importSuccess && (
+        <div className="recovery-result">
+          <div className="success-message">Identity restored locally!</div>
+          <p className="recovery-hint">
+            Your identity keys have been recovered and saved to this device.
+            To use this identity on a server, you still need to register it
+            — go to the server connection screen and complete registration.
+          </p>
+          <div className="dialog-actions">
+            <button className="primary-btn" onClick={onClose}>
+              Done
+            </button>
+          </div>
+        </div>
+      )}
+    </Modal>
   );
 }

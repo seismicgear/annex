@@ -77,8 +77,11 @@ fi
 # what broke. The capture's exit status is preserved and re-applied at the end
 # so CI still fails.
 # The ledger is append-only within a run, so it has to start empty or the
-# report would mix this run's findings with the previous one's.
+# report would mix this run's findings with the previous one's. Diagnostics
+# go the same way — a stale screenshot of a surface that has since been fixed
+# is worse than none, because it looks like current evidence.
 rm -f docs/ui-audit/findings.jsonl
+rm -rf client/e2e/audit/diagnostics
 
 echo "[ui-audit] capturing surfaces"
 capture_status=0

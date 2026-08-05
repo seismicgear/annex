@@ -14,12 +14,15 @@ import * as personas from '@/lib/personas';
 import * as api from '@/lib/api';
 import type { Persona } from '@/types';
 import type { MemberInfo } from '@/lib/api';
+import { Modal } from '@/components/Modal';
+import { useDialogTitleId } from '@/lib/use-dialog-title-id';
 
 interface Props {
   onClose: () => void;
 }
 
 export function IdentitySettings({ onClose }: Props) {
+  const titleId = useDialogTitleId();
   const identity = useIdentityStore((s) => s.identity);
   const loadVisibleUsernames = useUsernameStore((s) => s.loadVisibleUsernames);
   const pseudonymId = identity?.pseudonymId ?? '';
@@ -246,245 +249,243 @@ export function IdentitySettings({ onClose }: Props) {
   if (!pseudonymId) return null;
 
   return (
-    <div className="dialog-overlay" onClick={onClose}>
-      <div className="dialog profile-switcher" onClick={(e) => e.stopPropagation()}>
-        <h3>Identity</h3>
+    <Modal onClose={onClose} className="profile-switcher" titleId={titleId}>
+      <h3 id={titleId}>Identity</h3>
 
-        {/* Current pseudonym reference */}
-        {identity && (
-          <div className="current-identity-ref">
-            <span className="label">Cryptographic ID:<InfoTip text="A unique anonymous identifier generated on your device. This is how the server knows you without ever learning your real name." /></span>
-            <span className="pseudonym">{identity.pseudonymId ? `${identity.pseudonymId.slice(0, 16)}...` : 'pending'}</span>
-            <span className="server-badge">{identity.serverSlug}</span>
-          </div>
+      {/* Current pseudonym reference */}
+      {identity && (
+        <div className="current-identity-ref">
+          <span className="label">Cryptographic ID:<InfoTip text="A unique anonymous identifier generated on your device. This is how the server knows you without ever learning your real name." /></span>
+          <span className="pseudonym">{identity.pseudonymId ? `${identity.pseudonymId.slice(0, 16)}...` : 'pending'}</span>
+          <span className="server-badge">{identity.serverSlug}</span>
+        </div>
+      )}
+
+      {/* ── Persona section ── */}
+      <div className="policy-section">
+        <h4>Persona<InfoTip text="Your persona is just for you — it sets your display name and color on your device. Other users and the server never see it." /></h4>
+
+        {/* Persona list */}
+        <div className="persona-list">
+          {personaList.length === 0 && !creating && (
+            <p className="no-personas">
+              No personas defined. Create one to customize your display name and color.
+            </p>
+          )}
+          {personaList.map((p) => {
+            const isActive = activeServer?.personaId === p.id;
+            return (
+              <div
+                key={p.id}
+                className={`persona-item ${isActive ? 'active' : ''}`}
+                onClick={async () => {
+                  if (activeServer && !isActive) {
+                    await useServersStore.getState().setServerPersona(activeServer.id, p.id, p.accentColor);
+                    await loadPersonas();
+                  }
+                }}
+                style={{ cursor: isActive ? 'default' : 'pointer' }}
+              >
+                <div className="persona-avatar" style={{ background: p.accentColor }}>
+                  {p.displayName.charAt(0).toUpperCase()}
+                </div>
+                <div className="persona-info">
+                  <span className="persona-name">{p.displayName}{isActive ? ' (active)' : ''}</span>
+                  <span className="persona-meta">
+                    {p.serverSlug} {p.bio && `— ${p.bio}`}
+                  </span>
+                  {/* Inline color swatches for active persona */}
+                  {isActive && (
+                    <div className="color-picker" style={{ marginTop: '0.35rem' }}>
+                      {personas.ACCENT_COLORS.map((color) => (
+                        <button
+                          key={color}
+                          type="button"
+                          className={`color-swatch ${p.accentColor === color ? 'active' : ''}`}
+                          style={{ background: color }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleQuickColorChange(p, color);
+                          }}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="persona-actions">
+                  <button
+                    className="persona-edit-btn"
+                    onClick={(e) => { e.stopPropagation(); startEdit(p); }}
+                    title="Edit"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    className="persona-delete-btn"
+                    onClick={(e) => { e.stopPropagation(); handleDeletePersona(p.id); }}
+                    title="Delete"
+                  >
+                    Del
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Create / Edit form */}
+        {(creating || editing) && (
+          <form
+            className="persona-form"
+            onSubmit={editing ? handleEditPersona : handleCreatePersona}
+          >
+            <label>
+              Display Name
+              <input
+                type="text"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                placeholder="e.g. seismicgear"
+                maxLength={32}
+                autoFocus
+              />
+            </label>
+            <label>
+              Bio / Status
+              <input
+                type="text"
+                value={bio}
+                onChange={(e) => setBio(e.target.value)}
+                placeholder="Optional status or bio"
+                maxLength={120}
+              />
+            </label>
+            <label>
+              Accent Color
+              <div className="color-picker">
+                {personas.ACCENT_COLORS.map((color) => (
+                  <button
+                    key={color}
+                    type="button"
+                    className={`color-swatch ${accentColor === color ? 'active' : ''}`}
+                    style={{ background: color }}
+                    onClick={() => setAccentColor(color)}
+                  />
+                ))}
+              </div>
+            </label>
+            <div className="dialog-actions">
+              <button type="button" onClick={resetForm}>
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="primary-btn"
+                disabled={!displayName.trim()}
+              >
+                {editing ? 'Save Changes' : 'Create Persona'}
+              </button>
+            </div>
+          </form>
         )}
 
-        {/* ── Persona section ── */}
-        <div className="policy-section">
-          <h4>Persona<InfoTip text="Your persona is just for you — it sets your display name and color on your device. Other users and the server never see it." /></h4>
+        {!creating && !editing && (
+          <button onClick={() => setCreating(true)} className="primary-btn" style={{ marginTop: '0.5rem' }}>
+            New Persona
+          </button>
+        )}
+      </div>
 
-          {/* Persona list */}
-          <div className="persona-list">
-            {personaList.length === 0 && !creating && (
-              <p className="no-personas">
-                No personas defined. Create one to customize your display name and color.
-              </p>
-            )}
-            {personaList.map((p) => {
-              const isActive = activeServer?.personaId === p.id;
+      {/* ── Username section ── */}
+      <div className="policy-section" style={{ marginTop: '1rem' }}>
+        <h4>Server Username<InfoTip text="Unlike your persona, your username is stored (encrypted) on the server. Only people you explicitly grant access to can see it." /></h4>
+        <p className="field-hint" style={{ marginTop: 0 }}>
+          Set an encrypted display name visible only to users you grant access to.
+        </p>
+
+        <div className="persona-form">
+          <label>
+            Your Username
+            <input
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="Enter your display name..."
+              maxLength={32}
+            />
+            <span className="field-hint">Max 32 characters. Encrypted at rest.</span>
+          </label>
+
+          {error && <div className="error-message">{error}</div>}
+          {success && <div className="success-message">{success}</div>}
+
+          <div className="dialog-actions">
+            <button
+              className="primary-btn"
+              onClick={handleSetUsername}
+              disabled={saving || !username.trim()}
+            >
+              {saving ? 'Saving...' : 'Save Username'}
+            </button>
+            <button onClick={handleDeleteUsername} disabled={saving}>
+              Remove Username
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Visibility Grants ── */}
+      <div className="policy-section" style={{ marginTop: '1rem' }}>
+        <h4>Username Visibility<InfoTip text="Control exactly who can see your username. Everyone else only sees your anonymous cryptographic ID." /></h4>
+        <p className="field-hint" style={{ marginTop: 0 }}>
+          Choose who can see your username. Others will only see your pseudonym.
+        </p>
+
+        {loadingGrants ? (
+          <p>Loading...</p>
+        ) : (
+          <div className="member-list">
+            {members.map((m) => {
+              const isGranted = grantees.includes(m.pseudonym_id);
               return (
-                <div
-                  key={p.id}
-                  className={`persona-item ${isActive ? 'active' : ''}`}
-                  onClick={async () => {
-                    if (activeServer && !isActive) {
-                      await useServersStore.getState().setServerPersona(activeServer.id, p.id, p.accentColor);
-                      await loadPersonas();
-                    }
-                  }}
-                  style={{ cursor: isActive ? 'default' : 'pointer' }}
-                >
-                  <div className="persona-avatar" style={{ background: p.accentColor }}>
-                    {p.displayName.charAt(0).toUpperCase()}
-                  </div>
-                  <div className="persona-info">
-                    <span className="persona-name">{p.displayName}{isActive ? ' (active)' : ''}</span>
-                    <span className="persona-meta">
-                      {p.serverSlug} {p.bio && `— ${p.bio}`}
+                <div key={m.pseudonym_id} className="member-row">
+                  <div className="member-identity">
+                    <span className="member-pseudonym" title={m.pseudonym_id}>
+                      {m.pseudonym_id.slice(0, 16)}...
                     </span>
-                    {/* Inline color swatches for active persona */}
-                    {isActive && (
-                      <div className="color-picker" style={{ marginTop: '0.35rem' }}>
-                        {personas.ACCENT_COLORS.map((color) => (
-                          <button
-                            key={color}
-                            type="button"
-                            className={`color-swatch ${p.accentColor === color ? 'active' : ''}`}
-                            style={{ background: color }}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleQuickColorChange(p, color);
-                            }}
-                          />
-                        ))}
-                      </div>
-                    )}
+                    <span className="member-meta">
+                      {m.participant_type} | {isGranted ? 'Granted' : 'Hidden'}
+                    </span>
                   </div>
-                  <div className="persona-actions">
+                  <div className="member-caps">
                     <button
-                      className="persona-edit-btn"
-                      onClick={(e) => { e.stopPropagation(); startEdit(p); }}
-                      title="Edit"
+                      className={isGranted ? 'delete-btn' : 'primary-btn'}
+                      onClick={() =>
+                        isGranted ? handleRevoke(m.pseudonym_id) : handleGrant(m.pseudonym_id)
+                      }
+                      disabled={granting === m.pseudonym_id}
+                      style={{ fontSize: '0.8rem', padding: '0.25rem 0.5rem' }}
                     >
-                      Edit
-                    </button>
-                    <button
-                      className="persona-delete-btn"
-                      onClick={(e) => { e.stopPropagation(); handleDeletePersona(p.id); }}
-                      title="Delete"
-                    >
-                      Del
+                      {granting === m.pseudonym_id
+                        ? '...'
+                        : isGranted
+                          ? 'Revoke'
+                          : 'Grant'}
                     </button>
                   </div>
                 </div>
               );
             })}
+            {members.length === 0 && (
+              <p className="no-personas">No other members on this server yet.</p>
+            )}
           </div>
-
-          {/* Create / Edit form */}
-          {(creating || editing) && (
-            <form
-              className="persona-form"
-              onSubmit={editing ? handleEditPersona : handleCreatePersona}
-            >
-              <label>
-                Display Name
-                <input
-                  type="text"
-                  value={displayName}
-                  onChange={(e) => setDisplayName(e.target.value)}
-                  placeholder="e.g. seismicgear"
-                  maxLength={32}
-                  autoFocus
-                />
-              </label>
-              <label>
-                Bio / Status
-                <input
-                  type="text"
-                  value={bio}
-                  onChange={(e) => setBio(e.target.value)}
-                  placeholder="Optional status or bio"
-                  maxLength={120}
-                />
-              </label>
-              <label>
-                Accent Color
-                <div className="color-picker">
-                  {personas.ACCENT_COLORS.map((color) => (
-                    <button
-                      key={color}
-                      type="button"
-                      className={`color-swatch ${accentColor === color ? 'active' : ''}`}
-                      style={{ background: color }}
-                      onClick={() => setAccentColor(color)}
-                    />
-                  ))}
-                </div>
-              </label>
-              <div className="dialog-actions">
-                <button type="button" onClick={resetForm}>
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="primary-btn"
-                  disabled={!displayName.trim()}
-                >
-                  {editing ? 'Save Changes' : 'Create Persona'}
-                </button>
-              </div>
-            </form>
-          )}
-
-          {!creating && !editing && (
-            <button onClick={() => setCreating(true)} className="primary-btn" style={{ marginTop: '0.5rem' }}>
-              New Persona
-            </button>
-          )}
-        </div>
-
-        {/* ── Username section ── */}
-        <div className="policy-section" style={{ marginTop: '1rem' }}>
-          <h4>Server Username<InfoTip text="Unlike your persona, your username is stored (encrypted) on the server. Only people you explicitly grant access to can see it." /></h4>
-          <p className="field-hint" style={{ marginTop: 0 }}>
-            Set an encrypted display name visible only to users you grant access to.
-          </p>
-
-          <div className="persona-form">
-            <label>
-              Your Username
-              <input
-                type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                placeholder="Enter your display name..."
-                maxLength={32}
-              />
-              <span className="field-hint">Max 32 characters. Encrypted at rest.</span>
-            </label>
-
-            {error && <div className="error-message">{error}</div>}
-            {success && <div className="success-message">{success}</div>}
-
-            <div className="dialog-actions">
-              <button
-                className="primary-btn"
-                onClick={handleSetUsername}
-                disabled={saving || !username.trim()}
-              >
-                {saving ? 'Saving...' : 'Save Username'}
-              </button>
-              <button onClick={handleDeleteUsername} disabled={saving}>
-                Remove Username
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* ── Visibility Grants ── */}
-        <div className="policy-section" style={{ marginTop: '1rem' }}>
-          <h4>Username Visibility<InfoTip text="Control exactly who can see your username. Everyone else only sees your anonymous cryptographic ID." /></h4>
-          <p className="field-hint" style={{ marginTop: 0 }}>
-            Choose who can see your username. Others will only see your pseudonym.
-          </p>
-
-          {loadingGrants ? (
-            <p>Loading...</p>
-          ) : (
-            <div className="member-list">
-              {members.map((m) => {
-                const isGranted = grantees.includes(m.pseudonym_id);
-                return (
-                  <div key={m.pseudonym_id} className="member-row">
-                    <div className="member-identity">
-                      <span className="member-pseudonym" title={m.pseudonym_id}>
-                        {m.pseudonym_id.slice(0, 16)}...
-                      </span>
-                      <span className="member-meta">
-                        {m.participant_type} | {isGranted ? 'Granted' : 'Hidden'}
-                      </span>
-                    </div>
-                    <div className="member-caps">
-                      <button
-                        className={isGranted ? 'delete-btn' : 'primary-btn'}
-                        onClick={() =>
-                          isGranted ? handleRevoke(m.pseudonym_id) : handleGrant(m.pseudonym_id)
-                        }
-                        disabled={granting === m.pseudonym_id}
-                        style={{ fontSize: '0.8rem', padding: '0.25rem 0.5rem' }}
-                      >
-                        {granting === m.pseudonym_id
-                          ? '...'
-                          : isGranted
-                            ? 'Revoke'
-                            : 'Grant'}
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-              {members.length === 0 && (
-                <p className="no-personas">No other members on this server yet.</p>
-              )}
-            </div>
-          )}
-        </div>
-
-        <div className="dialog-actions" style={{ marginTop: '1rem' }}>
-          <button onClick={onClose}>Close</button>
-        </div>
+        )}
       </div>
-    </div>
+
+      <div className="dialog-actions" style={{ marginTop: '1rem' }}>
+        <button onClick={onClose}>Close</button>
+      </div>
+    </Modal>
   );
 }

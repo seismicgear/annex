@@ -15,6 +15,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useVoiceStore } from '@/stores/voice';
 import { isTauri } from '@/lib/tauri';
+import { Modal } from '@/components/Modal';
+import { useDialogTitleId } from '@/lib/use-dialog-title-id';
 
 interface DeviceInfo {
   deviceId: string;
@@ -95,6 +97,7 @@ async function requestDeviceAccess(audio: boolean, video: boolean): Promise<Devi
 }
 
 export function AudioSettings({ onClose }: { onClose: () => void }) {
+  const titleId = useDialogTitleId();
   const {
     inputDeviceId,
     outputDeviceId,
@@ -202,167 +205,165 @@ export function AudioSettings({ onClose }: { onClose: () => void }) {
   const sinkIdSupported = isSinkIdSupported();
 
   return (
-    <div className="dialog-overlay" onClick={onClose}>
-      <div className="dialog settings-dialog" onClick={(e) => e.stopPropagation()}>
-        <h3>Audio & Video Settings</h3>
+    <Modal onClose={onClose} className="settings-dialog" titleId={titleId}>
+      <h3 id={titleId}>Audio & Video Settings</h3>
 
-        {enumError && (
-          <p className="settings-note settings-unsupported">
-            Could not enumerate media devices: {enumError}.
-            {isTauri() && <> This platform or webview may not expose media device APIs. Check your OS privacy settings.</>}
-          </p>
-        )}
+      {enumError && (
+        <p className="settings-note settings-unsupported">
+          Could not enumerate media devices: {enumError}.
+          {isTauri() && <> This platform or webview may not expose media device APIs. Check your OS privacy settings.</>}
+        </p>
+      )}
 
-        <div className="settings-section">
-          <label>
-            Input Device (Microphone)
-            {micDenied && (
-              <p className="settings-note settings-unsupported">
-                Microphone permission was denied. Allow microphone access in your browser or OS settings to see device names.
-              </p>
-            )}
-            {micNeedsPermission && !micDenied && (
-              <p className="settings-note">
-                Microphone permission has not been granted. Device names are hidden.
-                <button
-                  type="button"
-                  className="inline-action-btn"
-                  onClick={handleRequestMicAccess}
-                  disabled={requestingMic}
-                >
-                  {requestingMic ? 'Requesting...' : 'Request microphone access'}
-                </button>
-              </p>
-            )}
+      <div className="settings-section">
+        <label>
+          Input Device (Microphone)
+          {micDenied && (
+            <p className="settings-note settings-unsupported">
+              Microphone permission was denied. Allow microphone access in your browser or OS settings to see device names.
+            </p>
+          )}
+          {micNeedsPermission && !micDenied && (
+            <p className="settings-note">
+              Microphone permission has not been granted. Device names are hidden.
+              <button
+                type="button"
+                className="inline-action-btn"
+                onClick={handleRequestMicAccess}
+                disabled={requestingMic}
+              >
+                {requestingMic ? 'Requesting...' : 'Request microphone access'}
+              </button>
+            </p>
+          )}
+          <select
+            value={inputDeviceId ?? ''}
+            onChange={(e) => setInputDevice(e.target.value || null)}
+          >
+            <option value="">System Default</option>
+            {audioInputs.map((d) => (
+              <option key={d.deviceId} value={d.deviceId}>
+                {d.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label>
+          Input Volume (OS-level)
+          <div className="volume-row">
+            <input
+              type="range"
+              min="0"
+              max="100"
+              value={inputVolume}
+              onChange={(e) => setInputVolume(Number(e.target.value))}
+              className="volume-slider"
+            />
+            <span className="volume-value">{inputVolume}%</span>
+          </div>
+        </label>
+        <p className="settings-note">
+          Microphone gain is controlled by your operating system. Adjust it in your OS sound settings.
+        </p>
+      </div>
+
+      <div className="settings-section">
+        <label>
+          Output Device (Speakers / Headphones)
+          {sinkIdSupported ? (
             <select
-              value={inputDeviceId ?? ''}
-              onChange={(e) => setInputDevice(e.target.value || null)}
+              value={outputDeviceId ?? ''}
+              onChange={(e) => setOutputDevice(e.target.value || null)}
             >
               <option value="">System Default</option>
-              {audioInputs.map((d) => (
+              {audioOutputs.map((d) => (
                 <option key={d.deviceId} value={d.deviceId}>
                   {d.label}
                 </option>
               ))}
             </select>
-          </label>
-
-          <label>
-            Input Volume (OS-level)
-            <div className="volume-row">
-              <input
-                type="range"
-                min="0"
-                max="100"
-                value={inputVolume}
-                onChange={(e) => setInputVolume(Number(e.target.value))}
-                className="volume-slider"
-              />
-              <span className="volume-value">{inputVolume}%</span>
-            </div>
-          </label>
-          <p className="settings-note">
-            Microphone gain is controlled by your operating system. Adjust it in your OS sound settings.
-          </p>
-        </div>
-
-        <div className="settings-section">
-          <label>
-            Output Device (Speakers / Headphones)
-            {sinkIdSupported ? (
-              <select
-                value={outputDeviceId ?? ''}
-                onChange={(e) => setOutputDevice(e.target.value || null)}
-              >
-                <option value="">System Default</option>
-                {audioOutputs.map((d) => (
-                  <option key={d.deviceId} value={d.deviceId}>
-                    {d.label}
-                  </option>
-                ))}
+          ) : (
+            <>
+              <select disabled>
+                <option>System Default</option>
               </select>
-            ) : (
-              <>
-                <select disabled>
-                  <option>System Default</option>
-                </select>
-                <p className="settings-note settings-unsupported">
-                  Output device selection is not supported in this browser or webview. Audio will play through the system default output.
-                </p>
-              </>
-            )}
-          </label>
-
-          <label>
-            Output Volume
-            <div className="volume-row">
-              <input
-                type="range"
-                min="0"
-                max="100"
-                value={outputVolume}
-                onChange={(e) => setOutputVolume(Number(e.target.value))}
-                className="volume-slider"
-              />
-              <span className="volume-value">{outputVolume}%</span>
-            </div>
-          </label>
-        </div>
-
-        <div className="settings-section">
-          <label>
-            Camera
-            {cameraDenied && (
               <p className="settings-note settings-unsupported">
-                Camera permission was denied. Allow camera access in your browser or OS settings to see device names.
+                Output device selection is not supported in this browser or webview. Audio will play through the system default output.
               </p>
-            )}
-            {cameraNeedsPermission && !cameraDenied && (
-              <p className="settings-note">
-                Camera permission has not been granted. Device names are hidden.
-                <button
-                  type="button"
-                  className="inline-action-btn"
-                  onClick={handleRequestCameraAccess}
-                  disabled={requestingCamera}
-                >
-                  {requestingCamera ? 'Requesting...' : 'Request camera access'}
-                </button>
-              </p>
-            )}
-            {videoInputs.length > 0 ? (
-              <select
-                value={cameraDeviceId ?? ''}
-                onChange={(e) => setCameraDevice(e.target.value || null)}
-              >
-                <option value="">System Default</option>
-                {videoInputs.map((d) => (
-                  <option key={d.deviceId} value={d.deviceId}>
-                    {d.label}
-                  </option>
-                ))}
-              </select>
-            ) : cameraNeedsPermission || cameraDenied ? (
-              <select disabled>
-                <option>Grant camera permission to see devices</option>
-              </select>
-            ) : (
-              <select disabled>
-                <option>No camera detected</option>
-              </select>
-            )}
-          </label>
-          <p className="settings-note">
-            Camera is activated per-call from the media controls. Select your preferred device here.
-          </p>
-        </div>
+            </>
+          )}
+        </label>
 
-        <div className="dialog-actions">
-          <button type="button" onClick={onClose} className="primary-btn">
-            Done
-          </button>
-        </div>
+        <label>
+          Output Volume
+          <div className="volume-row">
+            <input
+              type="range"
+              min="0"
+              max="100"
+              value={outputVolume}
+              onChange={(e) => setOutputVolume(Number(e.target.value))}
+              className="volume-slider"
+            />
+            <span className="volume-value">{outputVolume}%</span>
+          </div>
+        </label>
       </div>
-    </div>
+
+      <div className="settings-section">
+        <label>
+          Camera
+          {cameraDenied && (
+            <p className="settings-note settings-unsupported">
+              Camera permission was denied. Allow camera access in your browser or OS settings to see device names.
+            </p>
+          )}
+          {cameraNeedsPermission && !cameraDenied && (
+            <p className="settings-note">
+              Camera permission has not been granted. Device names are hidden.
+              <button
+                type="button"
+                className="inline-action-btn"
+                onClick={handleRequestCameraAccess}
+                disabled={requestingCamera}
+              >
+                {requestingCamera ? 'Requesting...' : 'Request camera access'}
+              </button>
+            </p>
+          )}
+          {videoInputs.length > 0 ? (
+            <select
+              value={cameraDeviceId ?? ''}
+              onChange={(e) => setCameraDevice(e.target.value || null)}
+            >
+              <option value="">System Default</option>
+              {videoInputs.map((d) => (
+                <option key={d.deviceId} value={d.deviceId}>
+                  {d.label}
+                </option>
+              ))}
+            </select>
+          ) : cameraNeedsPermission || cameraDenied ? (
+            <select disabled>
+              <option>Grant camera permission to see devices</option>
+            </select>
+          ) : (
+            <select disabled>
+              <option>No camera detected</option>
+            </select>
+          )}
+        </label>
+        <p className="settings-note">
+          Camera is activated per-call from the media controls. Select your preferred device here.
+        </p>
+      </div>
+
+      <div className="dialog-actions">
+        <button type="button" onClick={onClose} className="primary-btn">
+          Done
+        </button>
+      </div>
+    </Modal>
   );
 }

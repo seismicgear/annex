@@ -53,7 +53,27 @@ function shotPath(surfaceId: string, viewport: Viewport): string {
   return path.join(SHOT_DIR, viewport.id, `${surfaceId}.png`);
 }
 
-for (const surface of SURFACES) {
+/**
+ * Capture warm-role surfaces first, `fresh` ones last.
+ *
+ * A `fresh` surface creates a brand-new identity, and every registration
+ * moves the Merkle root. The warm roles hold a cached membership proof bound
+ * to the root as it was before the run started; once it is superseded past
+ * the server's 300s grace window the server rejects it, `loadPermissions`
+ * comes back 403, and the founder silently loses the admin gear — so every
+ * admin surface captured after an onboarding surface became unreachable.
+ *
+ * Ordering keeps the warm roles' proofs valid for their whole sweep. It does
+ * not fix the underlying behaviour: a user whose proof goes stale while the
+ * app is open also loses their capabilities until they reload, because the
+ * client does not re-verify on a 403. That is tracked as a product gap.
+ */
+const ORDERED_SURFACES = [...SURFACES].sort((a, b) => {
+  const rank = (r: string) => (r === 'fresh' ? 1 : 0);
+  return rank(a.role) - rank(b.role);
+});
+
+for (const surface of ORDERED_SURFACES) {
   const viewports = surface.viewports
     ? VIEWPORTS.filter((v) => surface.viewports!.includes(v.id))
     : VIEWPORTS;
@@ -166,6 +186,15 @@ for (const surface of SURFACES) {
             detail,
           })),
         );
+        // Recording is not enough: a surface we could not reach, or one that
+        // no longer matches its baseline, is a failure and the run must say
+        // so. Swallowing it here meant the lane reported green while ten
+        // surfaces were unreachable — the ledger knew, and nothing read it.
+        //
+        // Audit FINDINGS (accessibility, contrast, overflow) stay
+        // non-fatal by design, so one flawed screen does not truncate the
+        // sweep. These are a different class.
+        throw err;
       } finally {
         await context.close();
       }

@@ -15,6 +15,8 @@ import { resolveUrl } from '@/lib/api';
 import { normalizeServerUrl } from '@/lib/url';
 import { useIdentityStore } from '@/stores/identity';
 import type { SavedServer } from '@/types';
+import { Modal } from '@/components/Modal';
+import { useDialogTitleId } from '@/lib/use-dialog-title-id';
 
 interface AddServerDialogProps {
   onClose: () => void;
@@ -22,6 +24,7 @@ interface AddServerDialogProps {
 }
 
 function AddServerDialog({ onClose, onAdd }: AddServerDialogProps) {
+  const titleId = useDialogTitleId();
   const [url, setUrl] = useState('');
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState('');
@@ -53,33 +56,31 @@ function AddServerDialog({ onClose, onAdd }: AddServerDialogProps) {
   };
 
   return (
-    <div className="dialog-overlay" onClick={onClose}>
-      <div className="dialog add-server-dialog" onClick={(e) => e.stopPropagation()}>
-        <h3>Join a Server</h3>
-        <p className="dialog-description">
-          Enter the URL of an Annex server to establish a new cryptographic identity there.
-        </p>
-        <form onSubmit={handleSubmit}>
-          <label>
-            Server URL
-            <input
-              type="text"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              placeholder="annex.example.com"
-              autoFocus
-            />
-          </label>
-          {error && <p className="form-error">{error}</p>}
-          <div className="dialog-actions">
-            <button type="button" onClick={onClose}>Cancel</button>
-            <button type="submit" className="primary-btn" disabled={adding || !url.trim()}>
-              {adding ? 'Connecting...' : 'Join Server'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+    <Modal onClose={onClose} className="add-server-dialog" titleId={titleId}>
+      <h3 id={titleId}>Join a Server</h3>
+      <p className="dialog-description">
+        Enter the URL of an Annex server to establish a new cryptographic identity there.
+      </p>
+      <form onSubmit={handleSubmit}>
+        <label>
+          Server URL
+          <input
+            type="text"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder="annex.example.com"
+            autoFocus
+          />
+        </label>
+        {error && <p className="form-error">{error}</p>}
+        <div className="dialog-actions">
+          <button type="button" onClick={onClose}>Cancel</button>
+          <button type="submit" className="primary-btn" disabled={adding || !url.trim()}>
+            {adding ? 'Connecting...' : 'Join Server'}
+          </button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 

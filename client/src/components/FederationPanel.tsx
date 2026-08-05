@@ -12,6 +12,8 @@ import * as api from '@/lib/api';
 import { useServersStore } from '@/stores/servers';
 import { InfoTip } from '@/components/InfoTip';
 import type { FederationPeer, ServerSummary } from '@/types';
+import { Modal } from '@/components/Modal';
+import { useDialogTitleId } from '@/lib/use-dialog-title-id';
 
 interface PeerDetailProps {
   peer: FederationPeer;
@@ -21,6 +23,7 @@ interface PeerDetailProps {
 type JoinPhase = 'idle' | 'adding' | 'registering' | 'complete' | 'error';
 
 function PeerDetail({ peer, onClose }: PeerDetailProps) {
+  const titleId = useDialogTitleId();
   const [summary, setSummary] = useState<ServerSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [joinPhase, setJoinPhase] = useState<JoinPhase>('idle');
@@ -66,70 +69,68 @@ function PeerDetail({ peer, onClose }: PeerDetailProps) {
   }, [peer.base_url, beginRemoteRegistration]);
 
   return (
-    <div className="dialog-overlay" onClick={onClose}>
-      <div className="dialog peer-detail-dialog" onClick={(e) => e.stopPropagation()}>
-        <h3>Upstream Federation</h3>
+    <Modal onClose={onClose} className="peer-detail-dialog" titleId={titleId}>
+      <h3 id={titleId}>Upstream Federation</h3>
 
-        {loading ? (
-          <p className="loading-text">Fetching server metadata...</p>
-        ) : summary ? (
-          <div className="peer-detail-info">
-            <div className="peer-detail-header">
-              <span className="peer-detail-label">{summary.label}</span>
-              <span className="peer-detail-slug">{summary.slug}</span>
+      {loading ? (
+        <p className="loading-text">Fetching server metadata...</p>
+      ) : summary ? (
+        <div className="peer-detail-info">
+          <div className="peer-detail-header">
+            <span className="peer-detail-label">{summary.label}</span>
+            <span className="peer-detail-slug">{summary.slug}</span>
+          </div>
+          <div className="peer-detail-stats">
+            <div className="stat">
+              <span className="stat-value">{summary.total_active_members}</span>
+              <span className="stat-label">members</span>
             </div>
-            <div className="peer-detail-stats">
-              <div className="stat">
-                <span className="stat-value">{summary.total_active_members}</span>
-                <span className="stat-label">members</span>
-              </div>
-              <div className="stat">
-                <span className="stat-value">{summary.channel_count}</span>
-                <span className="stat-label">channels</span>
-              </div>
-              <div className="stat">
-                <span className="stat-value">{summary.federation_peer_count}</span>
-                <span className="stat-label">peers</span>
-              </div>
-              <div className="stat">
-                <span className="stat-value">{summary.active_agent_count}</span>
-                <span className="stat-label">agents</span>
-              </div>
+            <div className="stat">
+              <span className="stat-value">{summary.channel_count}</span>
+              <span className="stat-label">channels</span>
             </div>
-            <div className="peer-detail-trust">
-              <span className={`alignment-badge alignment-${peer.alignment_status.toLowerCase()}`}>
-                {peer.alignment_status}<InfoTip text="Shows how well this server's values match yours. 'Aligned' means strong trust; 'Unverified' means no assessment yet." />
-              </span>
-              <span className="scope-badge">{peer.transfer_scope}<InfoTip text="What kind of data can flow between servers — for example, messages only, or messages and media." /></span>
+            <div className="stat">
+              <span className="stat-value">{summary.federation_peer_count}</span>
+              <span className="stat-label">peers</span>
+            </div>
+            <div className="stat">
+              <span className="stat-value">{summary.active_agent_count}</span>
+              <span className="stat-label">agents</span>
             </div>
           </div>
-        ) : (
-          <p className="error-text">Could not reach server at {peer.base_url}</p>
-        )}
-
-        {joinError && (
-          <p className="error-text">{joinError}</p>
-        )}
-        <div className="dialog-actions">
-          <button onClick={onClose}>Close</button>
-          {summary && !alreadyJoined && joinPhase !== 'complete' && joinPhase !== 'registering' && (
-            <button
-              className="primary-btn"
-              onClick={handleJoin}
-              disabled={joinPhase === 'adding'}
-            >
-              {joinPhase === 'adding' ? 'Adding server...' : joinPhase === 'error' ? 'Retry' : 'Join this Server'}
-            </button>
-          )}
-          {joinPhase === 'registering' && (
-            <span className="joined-badge">Registration in progress...</span>
-          )}
-          {(alreadyJoined || joinPhase === 'complete') && (
-            <span className="joined-badge">Already in server list</span>
-          )}
+          <div className="peer-detail-trust">
+            <span className={`alignment-badge alignment-${peer.alignment_status.toLowerCase()}`}>
+              {peer.alignment_status}<InfoTip text="Shows how well this server's values match yours. 'Aligned' means strong trust; 'Unverified' means no assessment yet." />
+            </span>
+            <span className="scope-badge">{peer.transfer_scope}<InfoTip text="What kind of data can flow between servers — for example, messages only, or messages and media." /></span>
+          </div>
         </div>
+      ) : (
+        <p className="error-text">Could not reach server at {peer.base_url}</p>
+      )}
+
+      {joinError && (
+        <p className="error-text">{joinError}</p>
+      )}
+      <div className="dialog-actions">
+        <button onClick={onClose}>Close</button>
+        {summary && !alreadyJoined && joinPhase !== 'complete' && joinPhase !== 'registering' && (
+          <button
+            className="primary-btn"
+            onClick={handleJoin}
+            disabled={joinPhase === 'adding'}
+          >
+            {joinPhase === 'adding' ? 'Adding server...' : joinPhase === 'error' ? 'Retry' : 'Join this Server'}
+          </button>
+        )}
+        {joinPhase === 'registering' && (
+          <span className="joined-badge">Registration in progress...</span>
+        )}
+        {(alreadyJoined || joinPhase === 'complete') && (
+          <span className="joined-badge">Already in server list</span>
+        )}
       </div>
-    </div>
+    </Modal>
   );
 }
 
