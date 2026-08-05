@@ -53,7 +53,6 @@ export interface StartupGateProps {
   handleIgnoreProtocolInvite: () => void;
   serverReady: boolean;
   passwordRequired: boolean;
-  serverPassword: string;
   setServerPassword: Dispatch<SetStateAction<string>>;
   proofInFlight: boolean;
   provingStatus: ProvingStatus;
@@ -64,6 +63,62 @@ export interface StartupGateProps {
   setPasswordRequired: Dispatch<SetStateAction<boolean>>;
   resetToServerSelection: () => Promise<void>;
   retryBootstrap: () => void;
+}
+
+/**
+ * Password prompt for a server whose `access_mode` is `password`.
+ *
+ * The typed value is LOCAL state, and only reaches the parent on submit.
+ * That separation is the whole point of this component: the registration
+ * effect in `useServerSelection` keys off the parent's `serverPassword`, so
+ * while the input was bound directly to it, every keystroke re-ran the effect
+ * and fired a registration attempt with the partial password typed so far.
+ * Typing "hunter2" meant seven attempts against a ten-per-minute registration
+ * budget, none of them the password the user meant to send — and the "Join
+ * Server" button, whose `onClick` body was only a comment, did nothing at all.
+ */
+function PasswordPrompt({
+  onSubmit,
+  onBack,
+}: {
+  onSubmit: (password: string) => void;
+  onBack: () => void;
+}) {
+  const [draft, setDraft] = useState('');
+  const trimmed = draft.trim();
+
+  return (
+    <div className="password-prompt">
+      <p>This server requires a password to join.</p>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (trimmed) onSubmit(trimmed);
+        }}
+      >
+        <label className="visually-hidden" htmlFor="server-password">
+          Server password
+        </label>
+        <input
+          id="server-password"
+          type="password"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder="Enter server password"
+          autoComplete="current-password"
+          autoFocus
+        />
+        {/* `type` is explicit on both: without it a button inside a form
+            defaults to submit, so "Back" was submitting the form. */}
+        <button type="submit" className="primary-btn" disabled={!trimmed}>
+          Join Server
+        </button>
+        <button type="button" className="secondary-btn" onClick={onBack}>
+          Back
+        </button>
+      </form>
+    </div>
+  );
 }
 
 export function StartupGate(props: StartupGateProps) {
@@ -82,7 +137,6 @@ export function StartupGate(props: StartupGateProps) {
     handleIgnoreProtocolInvite,
     serverReady,
     passwordRequired,
-    serverPassword,
     setServerPassword,
     proofInFlight,
     provingStatus,
@@ -239,34 +293,13 @@ export function StartupGate(props: StartupGateProps) {
         <div className="identity-setup">
           <h2>Annex</h2>
           {passwordRequired && phase === 'keys_ready' ? (
-            <div className="password-prompt">
-              <p>This server requires a password to join.</p>
-              <form onSubmit={(e) => { e.preventDefault(); }}>
-                <input
-                  type="password"
-                  value={serverPassword}
-                  onChange={(e) => setServerPassword(e.target.value)}
-                  placeholder="Enter server password"
-                  autoFocus
-                />
-                <button
-                  className="primary-btn"
-                  disabled={!serverPassword.trim()}
-                  onClick={() => {
-                    // Trigger re-run of the auto-register effect
-                    // by updating serverPassword (already in deps)
-                  }}
-                >
-                  Join Server
-                </button>
-                <button
-                  className="secondary-btn"
-                  onClick={() => { setPasswordRequired(false); void resetToServerSelection(); }}
-                >
-                  Back
-                </button>
-              </form>
-            </div>
+            <PasswordPrompt
+              onSubmit={setServerPassword}
+              onBack={() => {
+                setPasswordRequired(false);
+                void resetToServerSelection();
+              }}
+            />
           ) : (
             <div className={`phase-status phase-${phase}`}>
               <span className="startup-spinner" aria-hidden="true" />

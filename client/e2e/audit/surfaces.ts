@@ -37,6 +37,21 @@ function stub(pattern: string | RegExp, body: unknown, status = 200) {
   };
 }
 
+/**
+ * Post a message and return its bubble.
+ *
+ * Edit and delete are only offered within `EDIT_WINDOW_MS` (60s) of posting
+ * (`MessageView.tsx`), so surfaces that need those controls cannot reuse the
+ * fixtures written during setup — by capture time they are minutes old.
+ */
+async function postFreshMessage(page: import('@playwright/test').Page, text: string) {
+  await page.getByPlaceholder('Type a message...').fill(text);
+  await page.getByRole('button', { name: 'Send' }).click();
+  const bubble = page.locator('.message', { hasText: text }).first();
+  await expect(bubble).toBeVisible({ timeout: 20_000 });
+  return bubble;
+}
+
 export const SURFACES: Surface[] = [
   // ─────────────────────── 02 · identity ───────────────────────
   {
@@ -74,7 +89,6 @@ export const SURFACES: Surface[] = [
       await page.locator('.device-link-option').nth(1).click();
       await expect(page.locator('.device-link-receive')).toBeVisible();
     },
-    mask: ['.device-link-receive'],
   },
   {
     id: 'device-link-share',
@@ -90,7 +104,9 @@ export const SURFACES: Surface[] = [
       await expect(page.locator('.device-link-share')).toBeVisible();
     },
     clip: '.dialog',
-    mask: ['.device-link-share'],
+    // Mask only the two regenerated values, not the whole panel — masking the
+    // entire panel would leave the screenshot proving nothing about it.
+    mask: ['.qr-container', '.pairing-code-value'],
   },
 
   // ─────────────────────── 03 · server startup ───────────────────────
@@ -106,6 +122,67 @@ export const SURFACES: Surface[] = [
         timeout: 60_000,
       });
     },
+  },
+
+  // ─────────────────────── 04 · registration ───────────────────────
+  {
+    id: 'registration-password-prompt',
+    stage: '04-registration',
+    title: 'Server password prompt',
+    role: 'fresh',
+    intent:
+      'The join gate for `access_mode: password` servers. Its submit control did nothing, and the ' +
+      'value reached the registration effect on every keystroke instead of on submit.',
+    setup: stub('**/api/public/server/summary', {
+      slug: 'audit',
+      label: 'Annex Server',
+      description: '',
+      public_url: '',
+      members_by_type: {},
+      total_active_members: 0,
+      channel_count: 1,
+      federation_peer_count: 0,
+      active_agent_count: 0,
+      access_mode: 'password',
+    }),
+    navigate: async (page) => {
+      await page.getByRole('button', { name: 'Create New Identity' }).click();
+      await page.getByRole('button', { name: 'Continue' }).click();
+      await expect(page.locator('.password-prompt')).toBeVisible({ timeout: 60_000 });
+    },
+  },
+  {
+    id: 'registration-progress',
+    stage: '04-registration',
+    title: 'Registering / proving progress',
+    role: 'fresh',
+    intent:
+      'What a first-time user stares at for 30-60s while the Groth16 proof runs. The elapsed ' +
+      'counter exists so the static label does not read as frozen.',
+    navigate: async (page) => {
+      await page.getByRole('button', { name: 'Create New Identity' }).click();
+      await page.getByRole('button', { name: 'Continue' }).click();
+      await expect(page.locator('.phase-status')).toBeVisible({ timeout: 30_000 });
+    },
+    // The phase label and elapsed counter both advance while we look at them.
+    mask: ['.phase-label', '.phase-elapsed'],
+    reportOnly: true,
+  },
+  {
+    id: 'registration-error',
+    stage: '04-registration',
+    title: 'Registration refused by the server',
+    role: 'fresh',
+    intent:
+      'A refusal must be shown once with its reason, not retried five times with backoff — that ' +
+      'burned six of the ten-per-minute registration budget on a single wrong answer.',
+    setup: stub('**/api/registry/register', { error: 'server is full' }, 403),
+    navigate: async (page) => {
+      await page.getByRole('button', { name: 'Create New Identity' }).click();
+      await page.getByRole('button', { name: 'Continue' }).click();
+      await expect(page.locator('.error-message')).toBeVisible({ timeout: 60_000 });
+    },
+    waive: { network: 'the 403 is injected deliberately to reach the refusal state' },
   },
 
   // ─────────────────────── 05 · channels ───────────────────────
@@ -184,15 +261,21 @@ export const SURFACES: Surface[] = [
     stage: '06-messaging',
     title: 'Editing your own message',
     role: 'founder',
-    intent: 'Inline edit with the live countdown showing how long the edit window has left.',
+    intent:
+      'Inline edit with the live countdown showing how long the edit window has left. The ' +
+      'countdown is masked because it ticks; the edit affordance around it is the point.',
     navigate: async (page) => {
       await selectChannel(page, SEED.defaultChannel);
-      const bubble = page.locator('.message', { hasText: SEED.messages.plain }).first();
+      // Edit and delete are only offered inside `EDIT_WINDOW_MS` (60s) of
+      // posting, so the seeded messages — written minutes earlier during
+      // setup — no longer show either control. Post a fresh one.
+      const bubble = await postFreshMessage(page, 'Message posted for the edit-mode capture.');
       await bubble.hover();
       await bubble.locator('.edit-btn').click();
       await expect(page.locator('.message-edit-input')).toBeVisible();
     },
     clip: '.chat-area',
+    mask: ['.edit-countdown'],
   },
   {
     id: 'message-delete-confirm',
@@ -204,12 +287,14 @@ export const SURFACES: Surface[] = [
       'is actually distinguishable from the idle one.',
     navigate: async (page) => {
       await selectChannel(page, SEED.defaultChannel);
-      const bubble = page.locator('.message', { hasText: SEED.messages.deleted }).first();
+      // Same 60s window as edit — see above.
+      const bubble = await postFreshMessage(page, 'Message posted for the delete-confirm capture.');
       await bubble.hover();
       await bubble.locator('.delete-btn').click();
       await expect(bubble.locator('.delete-btn.confirming')).toBeVisible();
     },
     clip: '.chat-area',
+    mask: ['.edit-countdown'],
   },
   {
     id: 'message-reply-composer',

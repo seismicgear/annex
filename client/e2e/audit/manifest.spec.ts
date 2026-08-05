@@ -111,22 +111,36 @@ test.describe('surface manifest', () => {
 
     const modalComponents = readAllSources(SRC)
       .filter(({ text }) => text.includes('dialog-overlay'))
-      .map(({ file }) => file)
-      .filter((file) => !(file in KNOWN_UNREACHABLE));
+      .filter(({ file }) => !(file in KNOWN_UNREACHABLE));
 
-    // Map each modal-bearing component to the surfaces that reach it, by
-    // matching the component's base name against surface ids and titles.
     const haystack = SURFACES.map((s) => `${s.id} ${s.title}`.toLowerCase()).join(' | ');
-    const uncovered = modalComponents.filter((file) => {
-      const base = path.basename(file, '.tsx');
-      // "CreateChannelDialog" -> ["create", "channel", "dialog"]
-      const words = base
+
+    /** "CreateChannelDialog" -> ["create", "channel"] */
+    const significantWords = (name: string) =>
+      name
         .replace(/([a-z])([A-Z])/g, '$1 $2')
         .toLowerCase()
         .split(/\s+/)
-        .filter((w) => w !== 'dialog' && w !== 'panel' && w.length > 2);
-      return !words.every((w) => haystack.includes(w));
-    });
+        .filter((w) => !['dialog', 'panel', 'detail', 'overlay'].includes(w) && w.length > 2);
+
+    const uncovered = modalComponents
+      .filter(({ file, text }) => {
+        // A file can host several modals — ServerHub declares AddServerDialog
+        // inline, FederationPanel declares PeerDetail. Matching only the file
+        // name would demand a surface called "server hub" for a dialog the
+        // user knows as "add server". So each declared component in the file
+        // is a candidate, and the file counts as covered when ANY of them is
+        // reached.
+        const candidates = [
+          path.basename(file, '.tsx'),
+          ...[...text.matchAll(/function\s+([A-Z][A-Za-z0-9]*)/g)].map((m) => m[1]),
+        ];
+        return !candidates.some((name) => {
+          const words = significantWords(name);
+          return words.length > 0 && words.every((w) => haystack.includes(w));
+        });
+      })
+      .map(({ file }) => file);
 
     expect(
       uncovered,

@@ -91,6 +91,13 @@ export default defineConfig({
         // end-of-test auto-screenshot would pollute the baseline directory.
         screenshot: 'off',
         video: 'off',
+        // Tracing snapshots the whole DOM on every action. On a DOM-heavy
+        // surface that dominates the run — the device-link QR renders one SVG
+        // element per module, and tracing it timed out the test at 45s while
+        // the same steps completed in under a second untraced. The audit
+        // produces its own diagnostics screenshot and findings ledger, so the
+        // trace was redundant as well as expensive.
+        trace: 'off',
       },
     },
   ],

@@ -1,5 +1,5 @@
 /**
- * Device linking dialog — generates a QR code for transferring identity
+ * Device linking dialog — transfers an identity between devices.
  * to another device, or accepts a scanned payload to import.
  *
  * Two modes:
@@ -32,6 +32,17 @@ export function DeviceLinkDialog({ onClose }: Props) {
   const [mode, setMode] = useState<Mode>('choose');
   const [pairingCode, setPairingCode] = useState('');
   const [qrSvg, setQrSvg] = useState('');
+  /**
+   * The encoded payload, shown as selectable text.
+   *
+   * It used to be generated and then rendered ONLY as the QR-like graphic —
+   * which `generateQrSvg` documents as "NOT a standards-compliant QR code and
+   * cannot be scanned by QR reader apps". So the share screen offered a code
+   * that could not be scanned and did not expose the payload that could be
+   * pasted: the flow it describes was impossible to complete.
+   */
+  const [transferCode, setTransferCode] = useState('');
+  const [copied, setCopied] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
@@ -52,6 +63,8 @@ export function DeviceLinkDialog({ onClose }: Props) {
       const svg = generateQrSvg(encoded);
       setPairingCode(code);
       setQrSvg(svg);
+      setTransferCode(encoded);
+      setCopied(false);
       setMode('share');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to generate link');
@@ -103,7 +116,7 @@ export function DeviceLinkDialog({ onClose }: Props) {
               <span className="device-link-option-icon">&#x1F4F1;</span>
               <span className="device-link-option-text">
                 <strong>Link a New Device</strong>
-                <span>Show a QR code for your other device to scan</span>
+                <span>Show a transfer code to copy to your other device</span>
               </span>
             </button>
             <button
@@ -113,7 +126,7 @@ export function DeviceLinkDialog({ onClose }: Props) {
               <span className="device-link-option-icon">&#x1F4F7;</span>
               <span className="device-link-option-text">
                 <strong>Receive from Another Device</strong>
-                <span>Enter data from another device's QR code</span>
+                <span>Paste a transfer code from your other device</span>
               </span>
             </button>
             <div className="dialog-actions">
@@ -125,12 +138,39 @@ export function DeviceLinkDialog({ onClose }: Props) {
         {mode === 'share' && (
           <div className="device-link-share">
             <p className="device-link-description">
-              Scan this QR code with your other device, then enter the pairing code.
+              Copy the transfer code below into the "Receive" screen on your other
+              device, then enter the pairing code to complete the transfer.
             </p>
             <div
               className="qr-container"
+              aria-hidden="true"
               dangerouslySetInnerHTML={{ __html: qrSvg }}
             />
+            <label className="transfer-code-label" htmlFor="transfer-code">
+              Transfer code
+            </label>
+            <textarea
+              id="transfer-code"
+              className="transfer-code-value"
+              value={transferCode}
+              readOnly
+              rows={3}
+              onFocus={(e) => e.currentTarget.select()}
+            />
+            <button
+              type="button"
+              className="secondary-btn"
+              onClick={() => {
+                navigator.clipboard
+                  ?.writeText(transferCode)
+                  .then(() => setCopied(true))
+                  // Clipboard access can be denied; the field above is
+                  // selectable so the user still has a way through.
+                  .catch(() => setCopied(false));
+              }}
+            >
+              {copied ? 'Copied!' : 'Copy transfer code'}
+            </button>
             <div className="pairing-code-display">
               <span className="pairing-code-label">Pairing Code</span>
               <span className="pairing-code-value">{pairingCode}</span>

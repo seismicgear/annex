@@ -132,19 +132,29 @@ export function generateQrSvg(data: string, size = 256): string {
   // not possible. The `size` and coordinates are always finite numbers.
   const moduleSize = size / moduleCount;
 
-  const parts: string[] = [
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}">`,
-    `<rect width="${size}" height="${size}" fill="white"/>`,
-  ];
-
+  // Every dark module is emitted into ONE path rather than its own <rect>.
+  // The per-rect version produced thousands of DOM nodes for a decorative
+  // graphic, which was slow to lay out and slow for anything that walks the
+  // DOM — it timed out Playwright's trace snapshotter outright. A single
+  // path renders identically at a fraction of the node count.
+  const segments: string[] = [];
   for (let row = 0; row < moduleCount; row++) {
     for (let col = 0; col < moduleCount; col++) {
       if (modules[row][col]) {
         const x = col * moduleSize;
         const y = row * moduleSize;
-        parts.push(`<rect x="${x}" y="${y}" width="${moduleSize}" height="${moduleSize}" fill="black"/>`);
+        // `h`/`v`/`h`/`z` draws the square relative to the `M` origin.
+        segments.push(`M${x} ${y}h${moduleSize}v${moduleSize}h-${moduleSize}z`);
       }
     }
+  }
+
+  const parts: string[] = [
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}">`,
+    `<rect width="${size}" height="${size}" fill="white"/>`,
+  ];
+  if (segments.length > 0) {
+    parts.push(`<path d="${segments.join('')}" fill="black"/>`);
   }
 
   parts.push('</svg>');

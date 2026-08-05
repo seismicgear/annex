@@ -19,16 +19,52 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const AUDIT_ROOT = path.join(REPO_ROOT, 'client', 'e2e', 'audit');
 const BASELINE_DIR = path.join(AUDIT_ROOT, 'baselines');
 const DOCS_DIR = path.join(REPO_ROOT, 'docs', 'ui-audit');
-const LEDGER = path.join(DOCS_DIR, 'findings.json');
+const LEDGER_JSONL = path.join(DOCS_DIR, 'findings.jsonl');
+const LEDGER_JSON = path.join(DOCS_DIR, 'findings.json');
 
 const SEVERITY_ORDER = { p1: 0, p2: 1, p3: 2 };
 
+/**
+ * Read the append-only ledger the capture run produced and consolidate it.
+ *
+ * The runner appends one JSON object per line as findings are produced,
+ * because Playwright restarts its worker process after certain failures and
+ * anything held in memory is lost with it — which silently emptied the ledger
+ * on exactly the runs that had findings worth reading.
+ */
 function loadLedger() {
-  if (!existsSync(LEDGER)) {
-    console.error(`[ui-audit-report] no ledger at ${LEDGER} — run scripts/ui-audit.sh first`);
-    process.exit(1);
+  if (!existsSync(LEDGER_JSONL)) {
+    // A clean run with nothing to report writes no lines at all.
+    console.warn(`[ui-audit-report] no findings recorded at ${LEDGER_JSONL}`);
+    return [];
   }
-  return JSON.parse(readFileSync(LEDGER, 'utf8')).findings ?? [];
+  const findings = [];
+  for (const [i, line] of readFileSync(LEDGER_JSONL, 'utf8').split('\n').entries()) {
+    if (!line.trim()) continue;
+    try {
+      findings.push(JSON.parse(line));
+    } catch {
+      console.warn(`[ui-audit-report] skipping malformed ledger line ${i + 1}`);
+    }
+  }
+  return findings;
+}
+
+function writeConsolidated(findings) {
+  const rank = SEVERITY_ORDER;
+  const sorted = [...findings].sort(
+    (a, b) =>
+      String(a.stage).localeCompare(String(b.stage)) ||
+      String(a.surfaceId).localeCompare(String(b.surfaceId)) ||
+      String(a.viewport).localeCompare(String(b.viewport)) ||
+      (rank[a.severity] ?? 9) - (rank[b.severity] ?? 9) ||
+      String(a.rule).localeCompare(String(b.rule)),
+  );
+  writeFileSync(
+    LEDGER_JSON,
+    `${JSON.stringify({ generatedBy: 'scripts/ui-audit-report.mjs', findings: sorted }, null, 2)}\n`,
+  );
+  return sorted;
 }
 
 /** Discover captured shots as { surfaceId: { viewport: relPathFromDocs } }. */
@@ -151,7 +187,7 @@ ${sections}
 `;
 }
 
-const findings = loadLedger();
+const findings = writeConsolidated(loadLedger());
 const shots = loadShots();
 mkdirSync(DOCS_DIR, { recursive: true });
 writeFileSync(path.join(DOCS_DIR, 'index.html'), render(findings, shots));

@@ -92,9 +92,18 @@ const CAPTURE_STYLESHEET = `
 /** Apply capture-time stabilisation. Safe to call more than once per page. */
 export async function stabilize(page: Page): Promise<void> {
   await page.addStyleTag({ content: CAPTURE_STYLESHEET });
-  // Fonts settle after the stylesheet so metrics are final before we measure
+
+  // Wait for fonts to settle so text metrics are final before we measure
   // overflow or take the shot.
-  await page.evaluate(() => document.fonts?.ready);
+  //
+  // The `await` inside matters: `document.fonts.ready` resolves to the
+  // FontFaceSet itself, and returning that from `evaluate` makes Playwright
+  // try to serialise a live host object across the wire. Awaiting it here and
+  // returning nothing keeps the handshake to a single boolean.
+  await page.evaluate(async () => {
+    await document.fonts?.ready;
+  });
+
   await page.waitForTimeout(150);
 }
 

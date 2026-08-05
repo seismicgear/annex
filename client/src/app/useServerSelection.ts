@@ -31,9 +31,27 @@ import {
   isTauri,
   markFirstRunCompleted,
 } from '@/lib/tauri';
+import { ApiError } from '@/lib/api';
 import type { DegradedStartupInfo } from '@/components/StartupModeSelector';
 import type { IdentityPhase } from '@/stores/identity';
 import type { StoredIdentity } from '@/types';
+
+/**
+ * Did the server answer and refuse us, as opposed to being unreachable?
+ *
+ * A refusal is a decision — wrong password, bad invite, server full, not
+ * permitted — and will be made identically however many times we ask. Only a
+ * transport-level failure is worth retrying.
+ *
+ * 429 is deliberately excluded: being rate limited means we have already asked
+ * too often, so hammering it further is exactly the wrong response.
+ */
+function isRefusal(err: unknown): boolean {
+  return (
+    err instanceof ApiError &&
+    [400, 401, 403, 409, 413, 429].includes(err.status)
+  );
+}
 
 interface UseServerSelectionArgs {
   phase: IdentityPhase;
@@ -130,6 +148,15 @@ export function useServerSelection({
             maxRetries: MAX_RETRIES,
             error: err,
           });
+
+          // Retrying only makes sense when the server could not be reached.
+          // A server that answered and REFUSED us — wrong password, invalid
+          // invite, server full, not allowed — will refuse identically five
+          // more times. Retrying anyway burned six of the ten-per-minute
+          // registration budget on a single wrong password, so a second
+          // attempt hit the rate limiter instead of the login.
+          if (isRefusal(err)) break;
+
           if (attempt < MAX_RETRIES) {
             await new Promise((r) => setTimeout(r, BASE_DELAY_MS * 2 ** attempt));
           }

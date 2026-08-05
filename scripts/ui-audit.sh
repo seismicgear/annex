@@ -76,6 +76,10 @@ fi
 # and still writes the ledger, so the contact sheet is the fastest way to see
 # what broke. The capture's exit status is preserved and re-applied at the end
 # so CI still fails.
+# The ledger is append-only within a run, so it has to start empty or the
+# report would mix this run's findings with the previous one's.
+rm -f docs/ui-audit/findings.jsonl
+
 echo "[ui-audit] capturing surfaces"
 capture_status=0
 (cd client && npx playwright test --project=audit --reporter=list "${PW_ARGS[@]+"${PW_ARGS[@]}"}" "${GREP_ARGS[@]+"${GREP_ARGS[@]}"}") || capture_status=$?

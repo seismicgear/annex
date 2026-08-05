@@ -297,7 +297,6 @@ export default function App() {
         handleIgnoreProtocolInvite={handleIgnoreProtocolInvite}
         serverReady={serverReady}
         passwordRequired={passwordRequired}
-        serverPassword={serverPassword}
         setServerPassword={setServerPassword}
         proofInFlight={proofInFlight}
         provingStatus={provingStatus}

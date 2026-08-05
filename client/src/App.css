@@ -4039,3 +4039,147 @@
   width: 100%;
   color: var(--danger, #e06c75);
 }
+
+
+/* Device-link transfer code — the payload the receiving device pastes.
+   Selectable and copyable, because the graphic above it is decorative: it is
+   explicitly not a scannable QR (see generateQrSvg), so this field is the
+   only way the transfer can actually be completed. */
+.transfer-code-label {
+  display: block;
+  margin: 0.75rem 0 0.25rem;
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.transfer-code-value {
+  width: 100%;
+  resize: vertical;
+  padding: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.7rem;
+  line-height: 1.4;
+  word-break: break-all;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * Responsive layout
+ *
+ * The app was built as a fixed three-column desktop layout: a 240px channel
+ * rail, a fluid chat column, and a 260px member rail, inside a header/footer
+ * that assume horizontal room. At a phone width that left the chat column
+ * roughly 60px wide, so message text wrapped to ONE CHARACTER PER LINE, the
+ * member list was pushed off-screen, the header tabs overlapped the persona
+ * chip, and the composer was unusable.
+ *
+ * Until this block, the entire stylesheet contained exactly one media query
+ * (`prefers-reduced-motion`) and zero width breakpoints.
+ *
+ * The approach is deliberately conservative — collapse rather than redesign:
+ *   ≤1100px  drop the member rail; it is contextual, not load-bearing.
+ *   ≤760px   drop the channel rail to a horizontal strip above the messages,
+ *            let the header and status bar wrap, and give the chat column the
+ *            full width.
+ * Nothing above 1100px changes, so the desktop baselines stay byte-identical
+ * and this block is verifiable on its own.
+ * ══════════════════════════════════════════════════════════════════════ */
+
+@media (max-width: 1100px) {
+  /* Contextual, and the first thing worth spending width on. */
+  .sidebar-right {
+    display: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .app-layout {
+    flex-direction: column;
+  }
+
+  /* The channel list becomes a horizontal, scrollable strip. It keeps its
+     own scrollbar rather than growing the page, so the composer stays put. */
+  .sidebar-left {
+    width: 100%;
+    max-height: 34vh;
+    border-right: none;
+    border-bottom: 1px solid #1a1a1a;
+    flex-shrink: 0;
+  }
+
+  .chat-area {
+    /* Without an explicit min-height a flex child refuses to shrink below its
+       content, which is what pushed the composer off-screen. */
+    min-height: 0;
+    flex: 1;
+  }
+
+  /* Header: let the tabs wrap under the wordmark instead of colliding with
+     the persona chip, which is absolutely positioned on wide screens. */
+  .app-header {
+    height: auto;
+    min-height: 48px;
+    flex-wrap: wrap;
+    gap: 0.25rem 0.5rem;
+    padding: 0.4rem 0.75rem;
+  }
+
+  .header-tabs {
+    margin-left: 0;
+    order: 3;
+    width: 100%;
+  }
+
+  .persona-context-indicator {
+    position: static;
+    transform: none;
+    order: 2;
+    margin-left: auto;
+    max-width: 55%;
+  }
+
+  /* Status bar: two rows rather than one overflowing row. */
+  .status-bar {
+    height: auto;
+    flex-wrap: wrap;
+    gap: 0.25rem 0.5rem;
+    padding: 0.4rem 0.75rem;
+  }
+
+  .status-actions {
+    flex-wrap: wrap;
+    gap: 0.25rem;
+  }
+
+  /* Dialogs were sized for a desktop viewport and overflowed the screen. */
+  .dialog {
+    width: calc(100vw - 1.5rem);
+    max-width: none;
+    max-height: calc(100vh - 2rem);
+    overflow-y: auto;
+  }
+
+  /* A message bubble capped at a percentage of a narrow column ends up
+     narrower than its own words. */
+  .message-content,
+  .message-bubble {
+    max-width: 100%;
+  }
+
+  /* The server rail is pure chrome; the hub is reachable from the header. */
+  .server-hub {
+    flex-direction: row;
+    width: 100%;
+    height: auto;
+    overflow-x: auto;
+  }
+
+  .app-with-hub {
+    flex-direction: column;
+  }
+}

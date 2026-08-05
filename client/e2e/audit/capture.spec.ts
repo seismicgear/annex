@@ -14,7 +14,7 @@
  * ledger is the deliverable; `report.mjs` renders it.
  */
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { attachCollector, runAudits } from './audits';
@@ -28,8 +28,26 @@ const SHOT_DIR = path.join(AUDIT_ROOT, 'baselines');
 /** Failure evidence — never a baseline, so it stays out of the tracked set. */
 const DIAG_DIR = path.join(AUDIT_ROOT, 'diagnostics');
 const LEDGER_DIR = path.join(process.cwd(), '..', 'docs', 'ui-audit');
+const LEDGER = path.join(LEDGER_DIR, 'findings.jsonl');
 
-const findings: Finding[] = [];
+/**
+ * Append findings to disk as they are produced, one JSON object per line.
+ *
+ * Accumulating in a module-level array and writing once in `afterAll` looked
+ * simpler and was wrong: Playwright restarts the worker process after certain
+ * test failures, which resets module state. A run with failures — exactly the
+ * run whose findings matter most — reported an EMPTY ledger, because the
+ * worker that finally ran `afterAll` had collected nothing.
+ *
+ * JSON Lines rather than JSON because appending must not require reading and
+ * rewriting the whole file from several worker processes.
+ * `scripts/ui-audit-report.mjs` consolidates it into `findings.json`.
+ */
+function record(...items: Finding[]): void {
+  if (items.length === 0) return;
+  mkdirSync(LEDGER_DIR, { recursive: true });
+  appendFileSync(LEDGER, items.map((f) => JSON.stringify(f)).join('\n') + '\n');
+}
 
 function shotPath(surfaceId: string, viewport: Viewport): string {
   return path.join(SHOT_DIR, viewport.id, `${surfaceId}.png`);
@@ -91,9 +109,7 @@ for (const surface of SURFACES) {
         }
 
         const captured = await runAudits(page, surface, viewport.id, collector);
-        for (const f of captured) {
-          findings.push({ ...f, screenshot: path.relative(AUDIT_ROOT, file) });
-        }
+        record(...captured.map((f) => ({ ...f, screenshot: path.relative(AUDIT_ROOT, file) })));
       } catch (err) {
         // Two very different failures land here and the ledger must not blur
         // them: a visual diff means the surface rendered but changed, while
@@ -114,7 +130,7 @@ for (const surface of SURFACES) {
         mkdirSync(path.dirname(file), { recursive: true });
         await page.screenshot({ path: file }).catch(() => {});
 
-        findings.push({
+        record({
           surfaceId: surface.id,
           stage: surface.stage,
           viewport: viewport.id,
@@ -130,28 +146,26 @@ for (const surface of SURFACES) {
         });
 
         // Console/network signals collected on the way are often the reason.
-        for (const e of new Set(collector.pageErrors)) {
-          findings.push({
+        record(
+          ...[...new Set(collector.pageErrors)].map((detail) => ({
             surfaceId: surface.id,
             stage: surface.stage,
             viewport: viewport.id,
-            audit: 'console',
-            severity: 'p1',
+            audit: 'console' as const,
+            severity: 'p1' as const,
             rule: 'uncaught-page-error',
-            detail: e,
-          });
-        }
-        for (const e of new Set(collector.networkFailures)) {
-          findings.push({
+            detail,
+          })),
+          ...[...new Set(collector.networkFailures)].map((detail) => ({
             surfaceId: surface.id,
             stage: surface.stage,
             viewport: viewport.id,
-            audit: 'network',
-            severity: 'p2',
+            audit: 'network' as const,
+            severity: 'p2' as const,
             rule: 'request-failed',
-            detail: e,
-          });
-        }
+            detail,
+          })),
+        );
       } finally {
         await context.close();
       }
@@ -159,21 +173,3 @@ for (const surface of SURFACES) {
   }
 }
 
-test.afterAll(() => {
-  mkdirSync(LEDGER_DIR, { recursive: true });
-  // Sorted so the ledger diffs cleanly between runs: stage, then surface,
-  // then viewport, then severity.
-  const severityRank = { p1: 0, p2: 1, p3: 2 } as const;
-  findings.sort(
-    (a, b) =>
-      a.stage.localeCompare(b.stage) ||
-      a.surfaceId.localeCompare(b.surfaceId) ||
-      a.viewport.localeCompare(b.viewport) ||
-      severityRank[a.severity] - severityRank[b.severity] ||
-      a.rule.localeCompare(b.rule),
-  );
-  writeFileSync(
-    path.join(LEDGER_DIR, 'findings.json'),
-    `${JSON.stringify({ generatedBy: 'client/e2e/audit/capture.spec.ts', findings }, null, 2)}\n`,
-  );
-});
