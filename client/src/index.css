@@ -28,13 +28,31 @@
 :root {
   /* Surfaces, darkest to lightest. */
   --bg: #000;
+  --bg-deep: #030303;
+  --surface-sunken: #080808;
   --bg-secondary: #0a0a0a;
   --surface-1: #111;
   --surface-2: #1a1a1a;
+  --surface-3: #2a2a2a;
   --bg-hover: rgba(255, 255, 255, 0.05);
+  /* Slightly blue-shifted surfaces used by the agent and knowledge panels,
+     which are deliberately distinguishable from ordinary chat chrome. */
+  --surface-cool-1: #2a2a3a;
+  --surface-cool-2: #3a3a4a;
 
-  /* Text. Contrast ratios are against --bg. */
+  /* Text. Contrast ratios are against --bg.
+     --text-strong / --text-bright / --text-body / --text-dim / --text-quiet
+     are four near-identical light greys that accumulated independently.
+     They are named separately rather than collapsed because collapsing them
+     changes pixels, and a rename that changes pixels hides the change it is
+     supposed to make reviewable. Collapsing is a follow-up whose diff shows
+     exactly which surfaces moved. */
+  --text-strong: #fff;                       /* 21.0:1 */
+  --text-bright: #eee;                       /* 18.1:1 */
   --text-primary: rgba(255, 255, 255, 0.87); /* 16.1:1 */
+  --text-body: #e0e0e0;                      /* 15.3:1 */
+  --text-dim: #ddd;                          /* 14.6:1 */
+  --text-quiet: #ccc;                        /* 12.1:1 */
   --text-secondary: #aaa;                    /*  9.0:1 */
   --text-muted: #888;                        /*  5.9:1 */
   /* Tuned against the LIGHTEST surface it appears on (#1a1a1a message
@@ -46,22 +64,53 @@
   --border: #222;
   --border-color: #222;
   --border-strong: #333;
+  --border-stronger: #444;
+  /* The hover/focus border. It is pure white on purpose: it is the only
+     thing distinguishing an interactive element that has keyboard focus. */
+  --border-emphasis: #fff;
+  --border-subtle: rgba(255, 255, 255, 0.15);
+  --border-faint: rgba(255, 255, 255, 0.06);
+
+  /* White overlays, by opacity. Hover and pressed states on dark surfaces. */
+  --overlay-white-02: rgba(255, 255, 255, 0.02);
+  --overlay-white-03: rgba(255, 255, 255, 0.03);
+  --overlay-white-08: rgba(255, 255, 255, 0.08);
+  --overlay-white-10: rgba(255, 255, 255, 0.1);
+  --overlay-white-20: rgba(255, 255, 255, 0.2);
+
+  /* Black overlays: drop shadows and the scrim behind dialogs. */
+  --shadow-soft: rgba(0, 0, 0, 0.2);
+  --shadow-medium: rgba(0, 0, 0, 0.4);
+  --scrim: rgba(0, 0, 0, 0.6);
 
   /* Status. */
   --accent: #e63946;
+  --accent-strong: #b3202c;
   /* The accent as a fill is fine behind white text; as TEXT on a dark
      background the saturated red lands near 4:1. This lighter tint is the
      one to use for accent-coloured text. */
   --accent-text: #ff8a92;
+  --accent-tint-15: rgba(230, 57, 70, 0.15);
+  --accent-tint-30: rgba(230, 57, 70, 0.3);
   --danger: #e63946;
   /* The same hue, dark enough that white text on it reaches 5.4:1. Use this
      whenever the danger colour is a FILL behind text; `--danger` stays right
      for borders, icons and anything not contrast-bound. */
   --danger-strong: #c72e3a;
+  /* Danger as a SURFACE — the tinted background behind destructive panels
+     and error banners, not the colour of anything on top of them. */
+  --danger-surface: #200a0a;
+  --danger-surface-strong: #5a2a2a;
   --error-color: #e63946;
   --error-text: #f87171;
+  --error-muted: #da7e7e;
+  --error-tint-10: rgba(248, 113, 113, 0.1);
+  --error-tint-12: rgba(248, 113, 113, 0.12);
+  --error-tint-15: rgba(248, 113, 113, 0.15);
   --warning-color: #fbbf24;
   --success-color: #4ade80;
+  --success-text: #7eda7e;
+  --success-tint-08: rgba(74, 222, 128, 0.08);
 
   /* Shape and depth. */
   --radius-sm: 4px;
