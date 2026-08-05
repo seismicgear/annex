@@ -18,6 +18,9 @@ import { fileURLToPath } from 'node:url';
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const AUDIT_ROOT = path.join(REPO_ROOT, 'client', 'e2e', 'audit');
 const BASELINE_DIR = path.join(AUDIT_ROOT, 'baselines');
+// `reportOnly` surfaces are captured but never diffed, so they are not
+// baselines and are not tracked. The contact sheet still shows them.
+const CAPTURE_DIR = path.join(AUDIT_ROOT, 'captures');
 const DOCS_DIR = path.join(REPO_ROOT, 'docs', 'ui-audit');
 const LEDGER_JSONL = path.join(DOCS_DIR, 'findings.jsonl');
 const LEDGER_JSON = path.join(DOCS_DIR, 'findings.json');
@@ -70,14 +73,18 @@ function writeConsolidated(findings) {
 /** Discover captured shots as { surfaceId: { viewport: relPathFromDocs } }. */
 function loadShots() {
   const shots = {};
-  if (!existsSync(BASELINE_DIR)) return shots;
-  for (const viewport of readdirSync(BASELINE_DIR)) {
-    const dir = path.join(BASELINE_DIR, viewport);
-    for (const file of readdirSync(dir)) {
-      if (!file.endsWith('.png')) continue;
-      const id = file.replace(/\.png$/, '');
-      shots[id] ??= {};
-      shots[id][viewport] = path.relative(DOCS_DIR, path.join(dir, file));
+  // Approved baselines first, then the report-only captures. Order matters
+  // only in that a surface cannot be both, so they never collide.
+  for (const root of [BASELINE_DIR, CAPTURE_DIR]) {
+    if (!existsSync(root)) continue;
+    for (const viewport of readdirSync(root)) {
+      const dir = path.join(root, viewport);
+      for (const file of readdirSync(dir)) {
+        if (!file.endsWith('.png')) continue;
+        const id = file.replace(/\.png$/, '');
+        shots[id] ??= {};
+        shots[id][viewport] = path.relative(DOCS_DIR, path.join(dir, file));
+      }
     }
   }
   return shots;

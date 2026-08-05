@@ -76,6 +76,10 @@ client/e2e-puppeteer/screenshots-edge/
 client/e2e/audit/.auth/
 # UI audit: failure evidence, regenerated each run
 client/e2e/audit/diagnostics/
+# UI audit: captures of surfaces that are audited but never pixel-diffed
+# (reportOnly). Not baselines — nothing compares against them, so tracking
+# them would just dirty the tree after every green run.
+client/e2e/audit/captures/
 # UI audit: the raw per-run ledger (append order, cleared at the start of each
 # run) and the rendered contact sheet. The sorted ledger,
 # docs/ui-audit/findings.json, IS tracked — it is the reviewable record of what

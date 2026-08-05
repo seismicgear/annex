@@ -10,6 +10,8 @@
 
 import { useEffect, useRef } from 'react';
 import { TrackSource, type WebRtcSession } from '@/lib/webrtc';
+import { useVoiceStore } from '@/stores/voice';
+import { useUsernameStore } from '@/stores/usernames';
 
 /** Renders a MediaStreamTrack into a <video>. `mirror` flips the local camera. */
 function VideoTile({ track, mirror = false }: { track: MediaStreamTrack; mirror?: boolean }) {
@@ -55,6 +57,21 @@ export function ParticipantGrid({ session }: { session: WebRtcSession }) {
   const identity = session.identity;
   const isSpeaking = session.isSpeaking;
 
+  // Who else is in this call, from the server's roster. The SFU has always
+  // keyed peers by pseudonym; until now only the count was exposed, so every
+  // remote tile rendered the literal string "Participant" and a call of four
+  // looked like four identical anonymous boxes.
+  const connectedChannelId = useVoiceStore((s) => s.connectedChannelId);
+  // `participantsByChannel` is defaulted rather than indexed directly: a store
+  // rehydrated from a build that predates it has no such key, and a missing
+  // roster must degrade to unnamed tiles, not crash the whole call view.
+  const roster = useVoiceStore((s) =>
+    connectedChannelId ? ((s.participantsByChannel ?? {})[connectedChannelId] ?? []) : [],
+  );
+  const getDisplayName = useUsernameStore((s) => s.getDisplayName);
+  const others = roster.filter((id) => id !== identity);
+  const nameFor = (id: string) => getDisplayName(id) ?? shortName(id);
+
   const camPub = session.trackPublications.get(TrackSource.Camera);
   const screenPub = session.trackPublications.get(TrackSource.ScreenShare);
   const localCamTrack = camPub && !camPub.isMuted && camPub.track ? camPub.track.mediaStreamTrack : null;
@@ -86,21 +103,39 @@ export function ParticipantGrid({ session }: { session: WebRtcSession }) {
         </div>
       )}
 
-      {/* Remote cameras */}
+      {/* Remote cameras.
+          A tile can only be attributed to a person when there is exactly one
+          other person in the call: the SFU writes every sender's RTP into a
+          single outbound track per receiver, so with two or more remote
+          senders there is no per-sender track to attribute. Naming a tile in
+          that case would be a guess, and a wrong one half the time — so the
+          roster is shown as a list instead and the tiles stay unnamed. See
+          `fan_out_collapses_every_sender_onto_one_track_per_receiver` in
+          crates/annex-voice. */}
       {remoteVideos.map((v) => (
         <div key={v.id} className="call-tile">
           <VideoTile track={v.track} />
-          <span className="tile-name">{shortName('Participant')}</span>
+          <span className="tile-name">
+            {others.length === 1 ? nameFor(others[0]) : 'Participant'}
+          </span>
         </div>
       ))}
 
       {/* Audio-only remotes */}
-      {Array.from({ length: audioOnlyRemotes }, (_, i) => (
-        <div key={`audio-${i}`} className="call-tile">
-          <Avatar label="P" />
-          <span className="tile-name">Participant</span>
-        </div>
-      ))}
+      {Array.from({ length: audioOnlyRemotes }, (_, i) => {
+        const name = others.length === 1 ? nameFor(others[0]) : null;
+        return (
+          <div key={`audio-${i}`} className="call-tile">
+            <Avatar label={name ?? 'P'} />
+            <span className="tile-name">{name ?? 'Participant'}</span>
+          </div>
+        );
+      })}
+      {/* With more than one other person in the call the tiles cannot be
+          named, so say who is here rather than leaving the user to guess. */}
+      {others.length > 1 && (
+        <p className="call-roster">In this call: {others.map(nameFor).join(', ')}</p>
+      )}
     </div>
   );
 }

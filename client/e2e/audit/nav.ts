@@ -32,7 +32,19 @@ export const NONDETERMINISTIC_SELECTORS = [
   '.server-slug',
   '.timestamp', // MessageView bubble time
   '.message-avatar', // avatar letter derives from the pseudonym
+  // The avatar only renders as an <img class="message-avatar"> when a persona
+  // supplies one. Without that it falls back to a different element entirely,
+  // showing the first character of the display name — which, with no persona
+  // or username resolved, is the first character of a pseudonym. Masking only
+  // the image left a single character changing every run.
+  '.message-avatar-placeholder',
   '.sender', // falls back to a truncated pseudonym when no persona name
+  // Reply affordances name the author of the message being replied to, and
+  // fall back to a truncated pseudonym the same way. Masking the pixels is not
+  // enough on its own — see the monospace treatment in App.css — but without
+  // it the text differs every run.
+  '.reply-bar-author',
+  '.reply-context-author',
   '.event-col-time', // EventLog "Time" column
   '.event-col-entity', // entity ids are pseudonyms/commitments
   '.share-link-input', // invite links embed a random code
@@ -102,6 +114,20 @@ export async function stabilize(page: Page): Promise<void> {
   // returning nothing keeps the handshake to a single boolean.
   await page.evaluate(async () => {
     await document.fonts?.ready;
+  });
+
+  // Pin any scrolled-to-bottom region to the bottom.
+  //
+  // The message view anchors to the newest message, so its scroll offset is
+  // settled by an effect that runs after layout — and anything that changes
+  // height afterwards (an edit textarea opening, a late-loading avatar) races
+  // it. A capture taken mid-race is a few pixels off and diffs against a
+  // baseline taken after it. Rather than sleep longer and hope, put the
+  // scroll where the component intends it to end up.
+  await page.evaluate(() => {
+    for (const el of document.querySelectorAll('.message-view')) {
+      el.scrollTop = el.scrollHeight;
+    }
   });
 
   await page.waitForTimeout(150);

@@ -25,6 +25,15 @@ if (process.env.PLAYWRIGHT_BROWSERS_PATH === undefined) {
 
 export default defineConfig({
   testDir: './e2e',
+  // Recording a baseline is an explicit act, never a side effect of a run.
+  //
+  // `'none'` refuses to write a snapshot for any reason — including the
+  // first-run "it was missing, so I created it" path, which would let a typo
+  // in a surface id silently mint a new baseline that then passes forever.
+  // `scripts/ui-audit.sh --update-baselines` passes `--update-snapshots` on
+  // the command line, and a CLI flag overrides this, so recording still works
+  // exactly where it is meant to.
+  updateSnapshots: 'none',
   outputDir: './e2e-results',
   fullyParallel: false, // Run serially — tests share server state
   forbidOnly: !!process.env.CI,

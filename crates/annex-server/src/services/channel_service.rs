@@ -198,6 +198,12 @@ pub struct JoinVoiceResponse {
 #[derive(Debug, serde::Serialize)]
 pub struct VoiceStatusResponse {
     pub participants: u32,
+    /// Pseudonyms of everyone currently in the call, sorted.
+    ///
+    /// The SFU has always keyed peers by pseudonym, but only the count was
+    /// exposed — so a client could say "3 people are here" and not who, and
+    /// every remote tile rendered the literal string "Participant".
+    pub participant_ids: Vec<String>,
     pub active: bool,
 }
 
@@ -1129,6 +1135,10 @@ impl ChannelService {
         self.require_membership(&identity.pseudonym_id, channel_id)
             .await?;
 
+        let participant_ids = self.state.voice_service.participant_ids(channel_id).await;
+        // Keep reading the count from its own accessor rather than deriving it
+        // from the roster: the two are read at slightly different moments and
+        // a caller comparing them can tell that the roster is a snapshot.
         let count = self
             .state
             .voice_service
@@ -1138,6 +1148,7 @@ impl ChannelService {
 
         Ok(VoiceStatusResponse {
             participants: count,
+            participant_ids,
             active: count > 0,
         })
     }

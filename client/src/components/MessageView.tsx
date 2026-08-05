@@ -371,10 +371,17 @@ function MessageBubble({
       {message.reply_to_message_id && !isDeleted && (() => {
         const parent = allMessages.find((m) => m.message_id === message.reply_to_message_id);
         if (!parent) return null;
-        const parentName = getDisplayName(parent.sender_pseudonym) ?? parent.sender_pseudonym.slice(0, 12) + '...';
+        const parentResolved = getDisplayName(parent.sender_pseudonym);
+        const parentName = parentResolved ?? parent.sender_pseudonym.slice(0, 12) + '...';
         return (
           <div className="reply-context">
-            <span className="reply-context-author">{parentName}</span>
+            <span
+              className={
+                parentResolved ? 'reply-context-author' : 'reply-context-author reply-context-author-pseudonym'
+              }
+            >
+              {parentName}
+            </span>
             <span className="reply-context-text">{parent.content.slice(0, 100)}{parent.content.length > 100 ? '...' : ''}</span>
           </div>
         );

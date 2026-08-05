@@ -63,6 +63,8 @@ export interface VoiceState {
   connectionError: string | null;
   /** Per-channel call-active status (keyed by channelId). */
   callActiveByChannel: Record<string, boolean>;
+  /** Pseudonyms in each channel's call, from the last `checkCallActive` poll. */
+  participantsByChannel: Record<string, string[]>;
   /** Per-channel join error (keyed by channelId). */
   joinErrorByChannel: Record<string, JoinError | null>;
   /** Whether the user has self-deafened (output muted). */
@@ -162,6 +164,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   connectionState: 'idle' as ConnectionState,
   connectionError: null,
   callActiveByChannel: {},
+  participantsByChannel: {},
   joinErrorByChannel: {},
   deafened: false,
   micMuted: false,
@@ -303,10 +306,12 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       const status = await api.getVoiceStatus(pseudonymId, channelId);
       set((s) => ({
         callActiveByChannel: { ...s.callActiveByChannel, [channelId]: status.active },
+        participantsByChannel: { ...s.participantsByChannel, [channelId]: status.participant_ids },
       }));
     } catch {
       set((s) => ({
         callActiveByChannel: { ...s.callActiveByChannel, [channelId]: false },
+        participantsByChannel: { ...s.participantsByChannel, [channelId]: [] },
       }));
     }
   },
@@ -322,10 +327,12 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   clearChannelCallState: (channelId) => {
     set((s) => {
       const restActive = Object.fromEntries(Object.entries(s.callActiveByChannel).filter(([k]) => k !== channelId));
+      const restRoster = Object.fromEntries(Object.entries(s.participantsByChannel).filter(([k]) => k !== channelId));
       const restErrors = Object.fromEntries(Object.entries(s.joinErrorByChannel).filter(([k]) => k !== channelId));
       const restJoining = Object.fromEntries(Object.entries(s.joiningByChannel).filter(([k]) => k !== channelId));
       return {
         callActiveByChannel: restActive,
+        participantsByChannel: restRoster,
         joinErrorByChannel: restErrors,
         joiningByChannel: restJoining,
         // Clear failure state when switching away from the failed channel
@@ -356,6 +363,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       connectionState: 'idle' as ConnectionState,
       connectionError: null,
       callActiveByChannel: {},
+      participantsByChannel: {},
       joinErrorByChannel: {},
       deafened: false,
       micMuted: false,

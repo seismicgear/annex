@@ -55,6 +55,20 @@ struct PeerSession {
     video_outbound_track: Arc<TrackLocalStaticRTP>,
 }
 
+/// The outbound track a receiver's RTP is written into.
+///
+/// Note what this signature cannot express: it takes the *receiver* and the
+/// media kind, and nothing about the *sender*. A receiver has exactly one
+/// audio track and one video track, so every other peer's RTP is written into
+/// the same one. See `fan_out_collapses_every_sender_onto_one_track_per_receiver`.
+fn outbound_track_for(session: &PeerSession, want_video: bool) -> Arc<TrackLocalStaticRTP> {
+    if want_video {
+        session.video_outbound_track.clone()
+    } else {
+        session.audio_outbound_track.clone()
+    }
+}
+
 struct Room {
     peers: DashMap<String, Arc<PeerSession>>,
     agent_track: Arc<TrackLocalStaticSample>,
@@ -225,6 +239,23 @@ impl VoiceService {
     ) -> Result<String, VoiceError> {
         crate::token::generate_join_token(room_name, participant_identity, secret, ttl_secs)
             .map_err(|e| VoiceError::Config(format!("voice token: {e}")))
+    }
+
+    /// The pseudonyms currently connected to `room_name`, sorted.
+    ///
+    /// The SFU has always keyed peers by pseudonym; only the count was ever
+    /// exposed, so the client knew how many people were in a call but not who,
+    /// and every remote tile in `RemoteParticipants.tsx` read "Participant".
+    /// Sorted so a caller rendering the roster gets a stable order rather than
+    /// `DashMap` iteration order, which reshuffles between reads.
+    pub async fn participant_ids(&self, room_name: &str) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .rooms
+            .get(room_name)
+            .map(|r| r.peers.iter().map(|p| p.key().clone()).collect())
+            .unwrap_or_default();
+        ids.sort();
+        ids
     }
 
     pub async fn participant_count(&self, room_name: &str) -> Result<u32, VoiceError> {
@@ -620,13 +651,10 @@ impl VoiceService {
                 .iter()
                 .filter(|peer| peer.key().as_str() != publisher_id)
                 .map(|peer| {
-                    let session = peer.value();
-                    let track = if want_video {
-                        session.video_outbound_track.clone()
-                    } else {
-                        session.audio_outbound_track.clone()
-                    };
-                    (peer.key().clone(), track)
+                    (
+                        peer.key().clone(),
+                        outbound_track_for(peer.value(), want_video),
+                    )
                 })
                 .collect();
 
@@ -715,6 +743,122 @@ mod tests {
                 channel_id.to_string(),
             )),
         })
+    }
+
+    #[tokio::test]
+    async fn participant_ids_names_who_is_in_the_call() {
+        let svc = test_service();
+        let room = empty_room("ch-roster");
+        for peer in ["carol", "alice", "bob"] {
+            room.peers
+                .insert(peer.to_string(), peer_session("ch-roster", peer).await);
+        }
+        svc.rooms.insert("ch-roster".to_string(), room);
+
+        // Sorted, not DashMap iteration order — a roster that reshuffles
+        // between polls makes the participant list jump around on screen.
+        assert_eq!(
+            svc.participant_ids("ch-roster").await,
+            vec!["alice", "bob", "carol"],
+        );
+        assert_eq!(
+            svc.participant_count("ch-roster").await.unwrap(),
+            3,
+            "the count and the roster must agree",
+        );
+    }
+
+    #[tokio::test]
+    async fn participant_ids_is_empty_for_a_room_that_does_not_exist() {
+        let svc = test_service();
+        assert!(svc.participant_ids("no-such-channel").await.is_empty());
+    }
+
+    /// A `PeerSession` with real outbound tracks, so the fan-out's choice of
+    /// track can be observed by identity.
+    async fn peer_session(channel_id: &str, peer_id: &str) -> Arc<PeerSession> {
+        let audio = Arc::new(TrackLocalStaticRTP::new(
+            RTCRtpCodecCapability {
+                mime_type: "audio/opus".to_string(),
+                clock_rate: 48_000,
+                channels: 1,
+                sdp_fmtp_line: "minptime=10;useinbandfec=1".to_string(),
+                rtcp_feedback: vec![],
+            },
+            format!("audio-{peer_id}"),
+            channel_id.to_string(),
+        ));
+        let video = Arc::new(TrackLocalStaticRTP::new(
+            RTCRtpCodecCapability {
+                mime_type: "video/VP8".to_string(),
+                clock_rate: 90_000,
+                channels: 0,
+                sdp_fmtp_line: String::new(),
+                rtcp_feedback: vec![],
+            },
+            format!("video-{peer_id}"),
+            channel_id.to_string(),
+        ));
+        let pc = APIBuilder::new()
+            .build()
+            .new_peer_connection(Default::default())
+            .await
+            .expect("peer connection");
+        Arc::new(PeerSession {
+            pc: Arc::new(pc),
+            audio_outbound_track: audio,
+            video_outbound_track: video,
+        })
+    }
+
+    /// Every sender's RTP lands on the same outbound track per receiver.
+    ///
+    /// This pins a real limitation rather than asserting desired behaviour. In
+    /// a two-person call there is exactly one remote sender, one outbound
+    /// track per receiver is correct, and everything works. Add a third
+    /// participant and two independent senders — different SSRCs, independent
+    /// encoder state — are interleaved onto a single track. A receiver cannot
+    /// demultiplex that: VP8 carries inter-frame references, so alternating
+    /// packets from two encoders decodes to neither stream.
+    ///
+    /// It is also the reason `RemoteParticipants.tsx` labels every remote tile
+    /// "Participant". There is no per-sender track to attribute to a
+    /// pseudonym, so there is nothing the UI could name. Fixing the label
+    /// means fixing the fan-out first: one outbound track per
+    /// (receiver, sender) pair, which needs server-initiated renegotiation
+    /// when a peer joins or leaves.
+    ///
+    /// When that lands, this test should start failing — that is the point.
+    #[tokio::test]
+    async fn fan_out_collapses_every_sender_onto_one_track_per_receiver() {
+        let bob = peer_session("ch-group", "bob").await;
+
+        // `fan_out_rtp` picks the destination with exactly this call, once per
+        // receiver, for whichever peer happens to be publishing. Ask it twice,
+        // standing in for two different senders.
+        let for_sender_alice = outbound_track_for(&bob, true);
+        let for_sender_carol = outbound_track_for(&bob, true);
+
+        assert!(
+            Arc::ptr_eq(&for_sender_alice, &for_sender_carol),
+            "bob receives one video track regardless of who is sending — two \
+             senders are interleaved onto it, which is why calls break above \
+             two participants and why remote tiles cannot be named",
+        );
+
+        // Audio has the same shape, and the same consequence for Opus.
+        assert!(Arc::ptr_eq(
+            &outbound_track_for(&bob, false),
+            &outbound_track_for(&bob, false),
+        ));
+
+        // Receivers do at least get their own tracks — the collapse is across
+        // senders, not across receivers.
+        let alice = peer_session("ch-group", "alice").await;
+        assert!(!Arc::ptr_eq(
+            &outbound_track_for(&bob, true),
+            &outbound_track_for(&alice, true),
+        ));
     }
 
     #[tokio::test]

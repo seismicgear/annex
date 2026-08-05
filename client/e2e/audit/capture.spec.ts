@@ -25,6 +25,13 @@ import { VIEWPORTS, type Finding, type Viewport } from './types';
 
 const AUDIT_ROOT = path.join(process.cwd(), 'e2e', 'audit');
 const SHOT_DIR = path.join(AUDIT_ROOT, 'baselines');
+// `reportOnly` surfaces are captured but never diffed, so their images are
+// evidence rather than a reference. They used to be written into `baselines/`
+// alongside the real ones, which meant every run rewrote tracked files that
+// nothing compares against — `git status` came back dirty after a green run,
+// and the noise is indistinguishable from a baseline someone meant to update.
+// They live here instead, and this directory is gitignored.
+const CAPTURE_DIR = path.join(AUDIT_ROOT, 'captures');
 /** Failure evidence — never a baseline, so it stays out of the tracked set. */
 const DIAG_DIR = path.join(AUDIT_ROOT, 'diagnostics');
 const LEDGER_DIR = path.join(process.cwd(), '..', 'docs', 'ui-audit');
@@ -49,8 +56,8 @@ function record(...items: Finding[]): void {
   appendFileSync(LEDGER, items.map((f) => JSON.stringify(f)).join('\n') + '\n');
 }
 
-function shotPath(surfaceId: string, viewport: Viewport): string {
-  return path.join(SHOT_DIR, viewport.id, `${surfaceId}.png`);
+function shotPath(surfaceId: string, viewport: Viewport, reportOnly = false): string {
+  return path.join(reportOnly ? CAPTURE_DIR : SHOT_DIR, viewport.id, `${surfaceId}.png`);
 }
 
 /**
@@ -101,7 +108,7 @@ for (const surface of ORDERED_SURFACES) {
         await stabilize(page);
 
         const target = surface.clip ? page.locator(surface.clip) : page;
-        const file = shotPath(surface.id, viewport);
+        const file = shotPath(surface.id, viewport, surface.reportOnly);
 
         const shotOptions = {
           mask: maskLocators(page, surface.mask),

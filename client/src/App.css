@@ -868,6 +868,18 @@
   white-space: nowrap;
 }
 
+/* Who is in the call, shown when there is more than one other participant and
+   the tiles therefore cannot be attributed to individuals. Spans the grid so
+   it reads as a caption for the whole call rather than as another tile. */
+.call-roster {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 0.35rem 0.5rem 0;
+  font-size: 0.72rem;
+  color: var(--text-subtle);
+  text-align: center;
+}
+
 /* ── Screen Share View ── */
 
 .screen-share-view {
@@ -3909,6 +3921,14 @@
   background: var(--bg-secondary, #2a2a3a);
   border-left: 3px solid var(--persona-accent, #e63946);
   color: var(--text-muted, #888);
+}
+
+/* An unresolved reply author is a raw cryptographic id, so it is set like
+   every other one in the app rather than like a person's name. */
+.reply-bar-author-pseudonym,
+.reply-context-author-pseudonym {
+  font-family: monospace;
+  font-weight: 500;
 }
 
 .reply-bar-label {

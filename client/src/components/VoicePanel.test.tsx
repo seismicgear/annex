@@ -11,6 +11,7 @@ type VoiceStoreSnapshot = {
   connectionState: string;
   connectionError: string | null;
   callActiveByChannel: Record<string, boolean>;
+  participantsByChannel: Record<string, string[]>;
   joinErrorByChannel: Record<string, { display: string; code: string | null; setupHint: string | null } | null>;
   deafened: boolean;
   micMuted: boolean;
@@ -159,6 +160,7 @@ function defaultVoiceState(): VoiceStoreSnapshot {
     connectionState: 'idle',
     connectionError: null,
     callActiveByChannel: {},
+    participantsByChannel: {},
     joinErrorByChannel: {},
     deafened: false,
     micMuted: false,
