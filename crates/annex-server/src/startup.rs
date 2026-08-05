@@ -776,6 +776,33 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
 
     // Initialize Voice / TTS / STT services
     let voice_service = annex_voice::VoiceService::new(config.webrtc);
+
+    // Tell the voice service where this server is actually reachable.
+    //
+    // The SFU runs in-process and its signalling rides the app's own
+    // WebSocket, so the address a remote client needs for voice is simply
+    // the address it is already talking to. `WebRtcConfig.url` survives from
+    // when the SFU was a separate LiveKit process; nothing dials it now, but
+    // `get_public_url()` still gates on it, and it defaults to
+    // `ws://localhost:7880` — a loopback address, which that method blanks
+    // on purpose because handing a remote client a loopback URL is useless.
+    //
+    // The effect was that `voice_enabled` defaults to true and voice was
+    // nonetheless refused for every client except one on the host machine:
+    // `join_voice` sees an empty URL and returns `VoiceNotConfigured`.
+    // Setting ANNEX_PUBLIC_URL — the documented way to say where the server
+    // lives — did not help, because the resolved value was only ever written
+    // into AppState and the sole caller of `set_public_url` was the admin
+    // route. An operator had to configure the server correctly AND then make
+    // an authenticated PUT before anyone could hold a call.
+    let effective_public_url = if config.server.public_url.is_empty() {
+        db_public_url.clone()
+    } else {
+        config.server.public_url.clone()
+    };
+    if !effective_public_url.is_empty() {
+        voice_service.set_public_url(effective_public_url.clone());
+    }
     let tts_service = annex_voice::TtsService::new(
         &config.voice.tts_voices_dir,
         &config.voice.tts_binary_path,
@@ -819,12 +846,12 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
         federation_attestation_vkey,
         server_id,
         signing_key: Arc::new(signing_key),
-        // Config/env public_url takes precedence; fall back to DB-persisted value
-        public_url: Arc::new(RwLock::new(if config.server.public_url.is_empty() {
-            db_public_url
-        } else {
-            config.server.public_url.clone()
-        })),
+        // Config/env public_url takes precedence; fall back to DB-persisted
+        // value. Resolved above as `effective_public_url` so the voice
+        // service is told the same thing — the two drifting apart is what
+        // made voice unreachable for remote clients on a correctly
+        // configured server.
+        public_url: Arc::new(RwLock::new(effective_public_url)),
         policy: Arc::new(RwLock::new(policy)),
         rate_limiter: RateLimiter::new(),
         connection_manager: api_ws::ConnectionManager::new(),

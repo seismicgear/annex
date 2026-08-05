@@ -939,6 +939,49 @@ mod tests {
         })
     }
 
+    /// The default config, as a fresh install actually gets it.
+    fn default_service() -> VoiceService {
+        VoiceService::new(WebRtcConfig::default())
+    }
+
+    #[test]
+    fn the_default_config_alone_cannot_serve_a_remote_client() {
+        // Not a bug in itself — `WebRtcConfig::default()` points at
+        // `ws://localhost:7880`, and handing a remote client a loopback
+        // address would be worse than refusing. This is pinned so the
+        // blanking is understood as deliberate, and so the test below reads
+        // as the fix rather than as a coincidence.
+        assert_eq!(
+            default_service().get_public_url(),
+            "",
+            "a loopback URL must not be handed to a remote client",
+        );
+    }
+
+    #[test]
+    fn the_servers_public_url_makes_voice_reachable() {
+        // The SFU is in-process and signals over the app's own WebSocket, so
+        // the address a remote client needs for voice IS the address of the
+        // server. `startup.rs` propagates the resolved public URL here at
+        // boot; before it did, `voice_enabled: true` was the default and
+        // every remote join was refused with `VoiceNotConfigured`, on a
+        // server whose ANNEX_PUBLIC_URL was set correctly.
+        let svc = default_service();
+        svc.set_public_url("https://annex.example.com".to_string());
+        assert_eq!(svc.get_public_url(), "https://annex.example.com");
+    }
+
+    #[test]
+    fn a_loopback_public_url_is_still_refused_for_remote_clients() {
+        // A single-machine dev setup sets ANNEX_PUBLIC_URL to localhost.
+        // Propagating it must not turn the blanking off: the value is still
+        // useless to anyone off-box, and pretending otherwise would trade a
+        // clear "voice not configured" for a call that fails to connect.
+        let svc = default_service();
+        svc.set_public_url("http://localhost:3000".to_string());
+        assert_eq!(svc.get_public_url(), "");
+    }
+
     fn empty_room(channel_id: &str) -> Arc<Room> {
         Arc::new(Room {
             peers: DashMap::new(),
