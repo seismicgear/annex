@@ -6,6 +6,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import * as api from '@/lib/api';
+import { summarizeEventPayload } from '@/lib/event-summary';
 import type { PublicEvent } from '@/types';
 
 const DOMAINS = ['ALL', 'IDENTITY', 'PRESENCE', 'FEDERATION', 'AGENT', 'MODERATION'];
@@ -95,13 +96,7 @@ export function EventLog() {
           </div>
         )}
         {events.map((evt) => {
-          let detail = '';
-          try {
-            const payload = JSON.parse(evt.payload_json);
-            detail = payload.description || payload.action_type || JSON.stringify(payload).slice(0, 80);
-          } catch {
-            detail = evt.payload_json.slice(0, 80);
-          }
+          const detail = summarizeEventPayload(evt.payload_json);
           return (
             <div key={evt.id} className="event-row">
               <span className="event-col-time">
@@ -114,8 +109,8 @@ export function EventLog() {
               <span className="event-col-entity" title={evt.entity_id ?? ''}>
                 {evt.entity_id ? `${evt.entity_id.slice(0, 12)}...` : '—'}
               </span>
-              <span className="event-col-detail" title={detail}>
-                {detail}
+              <span className="event-col-detail" title={detail || evt.payload_json}>
+                {detail || '—'}
               </span>
             </div>
           );

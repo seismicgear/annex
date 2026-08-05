@@ -104,9 +104,11 @@ export const SURFACES: Surface[] = [
       await expect(page.locator('.device-link-share')).toBeVisible();
     },
     clip: '.dialog',
-    // Mask only the two regenerated values, not the whole panel — masking the
-    // entire panel would leave the screenshot proving nothing about it.
-    mask: ['.qr-container', '.pairing-code-value'],
+    // Mask only the regenerated values, not the whole panel — masking the
+    // entire panel would leave the screenshot proving nothing about it. All
+    // three derive from a fresh keypair per run: the QR image, the pairing
+    // code, and the transfer-code textarea holding the encrypted payload.
+    mask: ['.qr-container', '.pairing-code-value', '.transfer-code-value'],
   },
 
   // ─────────────────────── 03 · server startup ───────────────────────
@@ -693,7 +695,10 @@ export const SURFACES: Surface[] = [
       await openTab(page, 'Federation');
       await expect(page.locator('.federation-panel')).toBeVisible();
     },
-    waive: { network: 'the 500 is deliberately injected to capture the error state' },
+    waive: {
+      network: 'the 500 is injected deliberately to reach the error state',
+      console: 'the browser logs the injected 500 to the console as well',
+    },
   },
 
   // ─────────────────────── 11 · observability ───────────────────────

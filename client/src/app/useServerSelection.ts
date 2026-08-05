@@ -18,11 +18,12 @@ import { useIdentityStore } from '@/stores/identity';
 import { useServersStore } from '@/stores/servers';
 import {
   getApiBaseUrl,
+  getServer,
   getServerSummary,
   setPublicUrl,
   setWebrtcPublicUrl,
 } from '@/lib/api';
-import { createInviteLink } from '@/lib/invite';
+import { canCreateInviteLink, createInviteLink } from '@/lib/invite';
 import { getPersonasForIdentity } from '@/lib/personas';
 import { clearWebStartupMode } from '@/lib/startup-prefs';
 import {
@@ -252,8 +253,13 @@ export function useServerSelection({
             publicEndpointError: prev?.publicEndpointError,
           }));
         }
-        // Pre-create an invite link so it's ready when the user visits settings
-        await createInviteLink(getApiBaseUrl(), identity.pseudonymId!).catch(() => {});
+        // Pre-create an invite link so it's ready when the user visits
+        // settings — but only when the server's public URL can actually
+        // produce one, otherwise this is a request that always 400s.
+        const server = await getServer(identity.pseudonymId!).catch(() => null);
+        if (canCreateInviteLink(server?.public_url)) {
+          await createInviteLink(getApiBaseUrl(), identity.pseudonymId!).catch(() => {});
+        }
       } catch {
         // Non-fatal — invite links may be unavailable without a public URL
       }

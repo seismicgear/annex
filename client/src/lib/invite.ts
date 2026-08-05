@@ -89,6 +89,23 @@ export function parseProtocolInvite(rawUrl: string): InvitePayload | null {
  *
  * Returns the full monolithannex.com shareable URL.
  */
+/**
+ * Can an invite link be built from this server's public URL?
+ *
+ * The invite format requires HTTPS — `InvitePayload::validate` on the server
+ * rejects anything else, because the link carries a join secret that must not
+ * be readable in transit. Callers used to test only that a public URL was
+ * *set*, so every http:// deployment fired an invite request that could never
+ * succeed: the admin panel did it twice (on open, and after saving a URL) and
+ * startup did it once more, each swallowing the failure in an empty catch. The
+ * operator saw no invite link and no reason for its absence, while the server
+ * log filled with rejected requests. The UI audit caught it as a repeated 400
+ * on `admin-server-settings`.
+ */
+export function canCreateInviteLink(publicUrl: string | null | undefined): boolean {
+  return /^https:\/\//i.test((publicUrl ?? '').trim());
+}
+
 export async function createInviteLink(
   _apiBaseUrl: string,
   pseudonymId: string,

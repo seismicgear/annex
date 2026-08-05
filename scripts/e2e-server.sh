@@ -52,6 +52,14 @@ start_server() {
     # share one. Left at defaults the suite captures screenshots of
     # "Rate limit exceeded" instead of the UI. Raised here for the harness
     # only — the shipped defaults are unchanged.
+    #
+    # Presence pruning is disabled (0) for the same class of reason. It fires
+    # on a 60s timer against a 300s inactivity threshold and appends a
+    # NODE_PRUNED row to the event log, so whether the audit's event-log
+    # screenshots contain that row depends on how far into the run the timer
+    # landed — the surface diffed against itself between runs. The audit's
+    # identities are idle by construction (their sessions are restored from
+    # storage state, not driven), so pruning them tests nothing here.
     ANNEX_CLIENT_DIR=client/dist \
     ANNEX_OPEN_BROWSER=false \
     ANNEX_DB_PATH="$db_dir/annex.db" \
@@ -60,6 +68,7 @@ start_server() {
     ANNEX_RATE_LIMIT_DEFAULT="${ANNEX_RATE_LIMIT_DEFAULT:-100000}" \
     ANNEX_RATE_LIMIT_REGISTRATION="${ANNEX_RATE_LIMIT_REGISTRATION:-100000}" \
     ANNEX_RATE_LIMIT_VERIFICATION="${ANNEX_RATE_LIMIT_VERIFICATION:-100000}" \
+    ANNEX_INACTIVITY_THRESHOLD_SECONDS="${ANNEX_INACTIVITY_THRESHOLD_SECONDS:-0}" \
     cargo run -p annex-server -- "$empty_config" > "$LOG_FILE" 2>&1 &
 
     local pid=$!

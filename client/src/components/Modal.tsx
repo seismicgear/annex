@@ -132,6 +132,65 @@ export function Modal({
     return () => document.removeEventListener("keydown", onKeyDown);
   }, []);
 
+  /**
+   * Pull focus back when it escapes to nowhere.
+   *
+   * The Tab trap below is a `keydown` handler on the dialog, so it only runs
+   * while focus is already inside. That leaves one hole, and it is the common
+   * case rather than an edge case: nearly every dialog here disables its
+   * submit button while the request is in flight
+   * (`disabled={submitting || ...}`), and a browser blurs an element the
+   * moment it becomes disabled. Focus lands on `document.body`, outside the
+   * dialog, where the trap can no longer see it — so a keyboard user who
+   * submits a dialog and gets an error back is silently dumped behind the
+   * modal, and the next Tab walks the page underneath. The UI audit caught
+   * exactly this on `storage-gate-507`.
+   *
+   * The same thing happens whenever a focused control is conditionally
+   * unmounted mid-interaction, which is why this belongs in the primitive
+   * rather than in each dialog.
+   *
+   * This is a NATIVE `focusout` listener rather than React's `onBlur`
+   * deliberately: React suppresses synthetic events originating from disabled
+   * form controls, which is precisely the case this exists to catch. A focus
+   * trap should not depend on the framework's event filtering.
+   */
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+
+    const restore = (departed: HTMLElement | null) => {
+      if (!mountedRef.current) return;
+      const current = dialogRef.current;
+      if (!current) return;
+      if (current.contains(document.activeElement)) return;
+      // Focus genuinely left the dialog while it is still open. The control
+      // that held it is usually about to come back — a submit button
+      // re-enabling once the request settles — so prefer returning focus
+      // exactly where it was, and fall back to the first control only if it is
+      // really gone.
+      if (departed?.isConnected && !departed.hasAttribute("disabled")) {
+        departed.focus({ preventScroll: true });
+        return;
+      }
+      const first = current.querySelector<HTMLElement>(FOCUSABLE);
+      (first ?? current).focus({ preventScroll: true });
+    };
+
+    const onFocusOut = (e: FocusEvent) => {
+      const next = e.relatedTarget as Node | null;
+      // Focus moved somewhere real and still inside: nothing to do.
+      if (next && dialog.contains(next)) return;
+      const departed = e.target as HTMLElement | null;
+      // Re-check once React has committed, so a control that is coming back
+      // has come back before we decide where to put focus.
+      queueMicrotask(() => restore(departed));
+    };
+
+    dialog.addEventListener("focusout", onFocusOut);
+    return () => dialog.removeEventListener("focusout", onFocusOut);
+  }, []);
+
   const handleKeyDown = useCallback((e: ReactKeyboardEvent<HTMLDivElement>) => {
     if (e.key !== "Tab") return;
     const dialog = dialogRef.current;

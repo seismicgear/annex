@@ -5,7 +5,7 @@
  * the active channel, and provides a create button for moderators.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useChannelsStore } from '@/stores/channels';
 import { useIdentityStore } from '@/stores/identity';
 import { CreateChannelDialog } from '@/components/CreateChannelDialog';
@@ -207,18 +207,45 @@ export function ChannelList() {
     }
   };
 
+  // Loading and error used to return a bare <div> with no heading and no
+  // landmark. Three things went wrong with that, and the UI audit caught the
+  // first: the document went h1 (app title) straight to h3 (member list),
+  // skipping the h2 this component owns, so `heading-order` failed on any
+  // surface where the channel list had not loaded. Less visibly, the
+  // "Channel list" landmark vanished — a screen-reader user navigating by
+  // region lost the sidebar entirely while it loaded or errored — and the
+  // whole column changed width mid-load because the shell was not there to
+  // hold it. Keep the shell in all three states and swap only the body.
+  const shell = (body: ReactNode) => (
+    <nav className="channel-list" aria-label="Channel list">
+      <div className="channel-list-header">
+        <h2>Channels</h2>
+        {!loading && !error && permissions?.capabilities.can_moderate && (
+          <button
+            className="create-channel-btn"
+            onClick={() => setShowCreate(true)}
+            title="Create channel"
+          >
+            +
+          </button>
+        )}
+      </div>
+      {body}
+    </nav>
+  );
+
   if (loading) {
-    return <div className="channel-list loading">Loading channels...</div>;
+    return shell(<p className="channel-list-status">Loading channels...</p>);
   }
 
   if (error) {
-    return (
-      <div className="channel-list loading">
+    return shell(
+      <div className="channel-list-status" role="alert">
         <p className="error-message">{error}</p>
         <button className="primary-btn" onClick={() => loadChannels(identity.pseudonymId!)}>
           Retry
         </button>
-      </div>
+      </div>,
     );
   }
 

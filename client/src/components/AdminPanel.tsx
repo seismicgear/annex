@@ -10,7 +10,7 @@ import { useChannelsStore } from '@/stores/channels';
 import { useServersStore } from '@/stores/servers';
 import { InfoTip } from '@/components/InfoTip';
 import * as api from '@/lib/api';
-import { createInviteLink } from '@/lib/invite';
+import { canCreateInviteLink, createInviteLink } from '@/lib/invite';
 import type { ServerPolicy, AccessMode } from '@/types';
 import type { MemberInfo } from '@/lib/api';
 
@@ -44,8 +44,8 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
         setSlug(s.slug);
         setPublicUrl(s.public_url);
         setPublicUrlInput(s.public_url);
-        // Auto-generate an invite link if a public URL is already configured
-        if (s.public_url) {
+        // Auto-generate an invite link if the public URL can produce one.
+        if (canCreateInviteLink(s.public_url)) {
           try {
             const result = await createInviteLink(api.getApiBaseUrl(), pseudonymId);
             setInviteUrl(result.url);
@@ -87,8 +87,8 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
       setPublicUrl(resp.public_url);
       setPublicUrlInput(resp.public_url);
       setSuccess('Public URL saved.');
-      // Auto-generate an invite link when a public URL is first set
-      if (resp.public_url && !inviteUrl) {
+      // Auto-generate an invite link when a usable public URL is first set
+      if (canCreateInviteLink(resp.public_url) && !inviteUrl) {
         try {
           const result = await createInviteLink(api.getApiBaseUrl(), pseudonymId);
           setInviteUrl(result.url);
@@ -138,7 +138,15 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
     }
   };
 
+  // An invite link embeds a join secret, so the invite format requires the
+  // server's public URL to be HTTPS — an http:// one is rejected by
+  // `InvitePayload::validate`. Checking only for a non-empty URL meant an
+  // operator on http:// was shown a "Create Invite Link" button that could
+  // never succeed; the UI audit caught the click returning HTTP 400 on
+  // `admin-server-settings` at every viewport. Distinguish the two cases so
+  // the reason is on screen before the click rather than after it.
   const hasPublicUrl = !!publicUrl;
+  const publicUrlIsSecure = canCreateInviteLink(publicUrl);
 
   const handleCreateInvite = async () => {
     setCreatingInvite(true);
@@ -244,7 +252,7 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
 
       <div className="policy-section">
         <h4>Share Server</h4>
-        {hasPublicUrl ? (
+        {hasPublicUrl && publicUrlIsSecure ? (
           <>
             <p className="field-hint">Create an invite link to share with others.</p>
             {inviteUrl ? (
@@ -261,8 +269,12 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
             )}
           </>
         ) : (
-          <p className="field-hint" style={{ color: 'var(--warning-color, #f0ad4e)' }}>
-            Set a Public URL above to generate a shareable invite link.
+          <p className="field-hint warning-hint">
+            {hasPublicUrl
+              ? `Invite links require an HTTPS Public URL. This server's is ${publicUrl}, ` +
+                'so an invite link cannot be created — the link carries a join secret and ' +
+                'must not be readable in transit.'
+              : 'Set a Public URL above to generate a shareable invite link.'}
           </p>
         )}
       </div>

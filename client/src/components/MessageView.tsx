@@ -198,6 +198,14 @@ function MessageBubble({
 
   // Show server username if available, then persona display name for own messages, then truncated pseudonym.
   let displayName: string;
+  // True when the name shown is a raw cryptographic id rather than something a
+  // person chose. Every other place the app prints one — `.pseudonym`,
+  // `.member-pseudonym`, `.event-col-entity` — sets it in monospace; the
+  // message header was the one that did not, so an id rendered here in a
+  // proportional font at a width that depended on which hex digits it happened
+  // to contain, and neighbouring bubbles sized differently for no visible
+  // reason.
+  let nameIsPseudonym = false;
   const cachedName = getDisplayName(message.sender_pseudonym);
   if (cachedName) {
     displayName = cachedName;
@@ -205,6 +213,7 @@ function MessageBubble({
     displayName = selfPersona.displayName;
   } else {
     displayName = message.sender_pseudonym.slice(0, 12) + '...';
+    nameIsPseudonym = true;
   }
 
   const avatar = isSelf && selfPersona?.avatarUrl ? selfPersona.avatarUrl : null;
@@ -282,7 +291,12 @@ function MessageBubble({
             {displayName.charAt(0).toUpperCase()}
           </span>
         )}
-        <span className="sender" title={message.sender_pseudonym}>{displayName}</span>
+        <span
+          className={nameIsPseudonym ? 'sender sender-pseudonym' : 'sender'}
+          title={message.sender_pseudonym}
+        >
+          {displayName}
+        </span>
         {message.edited_at && !isDeleted && (
           <button
             className="edited-badge"
