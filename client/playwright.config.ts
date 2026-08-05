@@ -74,6 +74,12 @@ export default defineConfig({
       testDir: './e2e/audit',
       testMatch: /capture\.spec\.ts|manifest\.spec\.ts/,
       dependencies: ['audit-setup'],
+      // Captures start from warm storage state, so a surface that is actually
+      // reachable lands in seconds. The suite-wide 120s budget exists for cold
+      // Groth16 proving and does not apply here — leaving it would mean an
+      // unreachable surface burned two minutes per viewport before reporting,
+      // which is what makes a broad audit unusable to iterate on.
+      timeout: 45_000,
       use: {
         ...devices['Desktop Chrome'],
         // The runner sets an explicit viewport per capture, and an

@@ -67,8 +67,14 @@ if [ "$UPDATE_BASELINES" -eq 1 ]; then
     rm -rf client/e2e/audit/baselines
 fi
 
+# A failing capture is not a reason to skip the report — it is the main
+# reason to produce one. The runner records unreachable surfaces as findings
+# and still writes the ledger, so the contact sheet is the fastest way to see
+# what broke. The capture's exit status is preserved and re-applied at the end
+# so CI still fails.
 echo "[ui-audit] capturing surfaces"
-(cd client && npx playwright test --project=audit --reporter=list "${GREP_ARGS[@]+"${GREP_ARGS[@]}"}")
+capture_status=0
+(cd client && npx playwright test --project=audit --reporter=list "${GREP_ARGS[@]+"${GREP_ARGS[@]}"}") || capture_status=$?
 
 echo "[ui-audit] rendering contact sheet"
 node scripts/ui-audit-report.mjs
@@ -77,3 +83,8 @@ echo "[ui-audit] done"
 echo "  baselines : client/e2e/audit/baselines/"
 echo "  ledger    : docs/ui-audit/findings.json"
 echo "  report    : docs/ui-audit/index.html"
+
+if [ "$capture_status" -ne 0 ]; then
+    echo "[ui-audit] capture reported failures — see the report above" >&2
+fi
+exit "$capture_status"

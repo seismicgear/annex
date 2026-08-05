@@ -69,6 +69,41 @@ for (const role of ROLE_ORDER) {
 }
 
 /**
+ * Re-save each role's state once every identity exists.
+ *
+ * A cached proof binds to the Merkle root current when it was generated, and
+ * each registration moves that root. So after all three roles are created,
+ * only the LAST one holds a proof matching the live root — the other two
+ * re-prove and re-verify on every page load.
+ *
+ * Across a hundred-odd captures that is a hundred-odd extra
+ * `verify-membership` calls, which trips the server's per-category rate
+ * limiter and produces an audit full of rate-limited screenshots that say
+ * nothing about the UI.
+ *
+ * One pass here refreshes each role against the now-final root, so the
+ * capture run makes zero verification calls. (This step only works because
+ * re-authentication is allowed at all — before that fix it returned 409 and
+ * locked the member out.)
+ */
+setup('refresh warm state against the final Merkle root', async ({ browser }) => {
+  for (const role of ROLE_ORDER) {
+    const context = await browser.newContext({ storageState: storageStatePath(role) });
+    const page = await context.newPage();
+
+    await page.goto('/');
+    await expect(
+      page.getByRole('button', { name: 'Chat' }),
+      `${role} must be able to return to the app`,
+    ).toBeVisible({ timeout: 60_000 });
+    await expect(page.locator('.channel-list')).toBeVisible({ timeout: 20_000 });
+
+    await context.storageState({ path: storageStatePath(role), indexedDB: true });
+    await context.close();
+  }
+});
+
+/**
  * Create the channels and messages the manifest expects to find.
  *
  * Covers all five channel types plus a deliberately empty channel, and a

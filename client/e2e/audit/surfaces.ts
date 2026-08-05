@@ -61,17 +61,36 @@ export const SURFACES: Surface[] = [
     },
   },
   {
-    id: 'identity-setup-device-link-share',
+    id: 'identity-setup-device-link-receive',
     stage: '02-identity',
-    title: 'Link from another device — share (QR + pairing code)',
+    title: 'Link from another device — receive',
     role: 'fresh',
-    intent: 'Proves the QR/pairing-code surface renders; the code is masked as nondeterministic.',
+    intent:
+      'The only device-link mode reachable before you have an identity. "Link a New Device" is ' +
+      'disabled here — you cannot share an identity you do not have yet — but nothing on screen ' +
+      'says so, which is a finding in its own right.',
     navigate: async (page) => {
       await page.locator('.device-link-setup-btn').click();
-      await page.locator('.device-link-option').first().click();
-      await expect(page.locator('.device-link-share, .device-link-receive')).toBeVisible();
+      await page.locator('.device-link-option').nth(1).click();
+      await expect(page.locator('.device-link-receive')).toBeVisible();
     },
-    mask: ['.device-link-share', '.device-link-receive'],
+    mask: ['.device-link-receive'],
+  },
+  {
+    id: 'device-link-share',
+    stage: '08-user-settings',
+    title: 'Link another device — share (QR + pairing code)',
+    role: 'founder',
+    intent:
+      'Sharing requires an existing identity, so this is only reachable from the status bar ' +
+      'once signed in. The QR image and pairing code are regenerated per run, so both are masked.',
+    navigate: async (page) => {
+      await openStatusBarDialog(page, 'Link');
+      await page.locator('.device-link-option').first().click();
+      await expect(page.locator('.device-link-share')).toBeVisible();
+    },
+    clip: '.dialog',
+    mask: ['.device-link-share'],
   },
 
   // ─────────────────────── 03 · server startup ───────────────────────

@@ -432,6 +432,58 @@ fn is_weak_signing_key_bytes(bytes: &[u8; 32]) -> bool {
 /// caller is responsible for driving `axum::serve(listener, app)`.
 ///
 /// Tracing must be initialized before calling this function (see [`init_tracing`]).
+/// Applies `ANNEX_RATE_LIMIT_*` overrides to a loaded policy, in memory.
+///
+/// The three rate-limit categories live in `ServerPolicy`, which is stored in
+/// the database and edited through `PUT /api/admin/policy`. That endpoint
+/// requires an existing moderator, so there is otherwise no way to raise the
+/// limits *before* the traffic that needs them — which is exactly what a
+/// container deployment, a load test, or an automated UI audit needs to do.
+///
+/// The value is requests per minute, matching `ServerPolicy::rate_limit`. Note
+/// that `0` does not mean "unlimited" — the limiter admits a request when the
+/// windowed count is `<= limit`, so `0` rejects everything in that category.
+/// To effectively remove a limit, set a large number.
+///
+/// Unparseable values are logged and ignored rather than failing startup: a
+/// typo in an optional tuning knob should not take a server down.
+fn apply_rate_limit_env_overrides(policy: &mut ServerPolicy) {
+    /// Picks the limit field an override applies to.
+    type LimitField = fn(&mut ServerPolicy) -> &mut u32;
+
+    const OVERRIDES: [(&str, LimitField); 3] = [
+        ("ANNEX_RATE_LIMIT_REGISTRATION", |p| {
+            &mut p.rate_limit.registration_limit
+        }),
+        ("ANNEX_RATE_LIMIT_VERIFICATION", |p| {
+            &mut p.rate_limit.verification_limit
+        }),
+        ("ANNEX_RATE_LIMIT_DEFAULT", |p| {
+            &mut p.rate_limit.default_limit
+        }),
+    ];
+
+    for (var, field) in OVERRIDES {
+        let Ok(raw) = std::env::var(var) else {
+            continue;
+        };
+        match raw.trim().parse::<u32>() {
+            Ok(value) => {
+                *field(policy) = value;
+                tracing::info!(env = var, value, "rate limit overridden from environment");
+            }
+            Err(e) => {
+                tracing::warn!(
+                    env = var,
+                    value = %raw,
+                    error = %e,
+                    "ignoring unparseable rate-limit override (expected a non-negative integer)"
+                );
+            }
+        }
+    }
+}
+
 pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Router), StartupError> {
     // Initialize database
     let pool = annex_db::create_pool(
@@ -483,7 +535,7 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
     };
 
     // Get Server ID, Policy, and persisted public URL (auto-seed if no server row exists)
-    let (server_id, policy, db_public_url): (i64, ServerPolicy, String) = {
+    let (server_id, mut policy, db_public_url): (i64, ServerPolicy, String) = {
         let conn = pool.get()?;
         let existing = conn
             .query_row(
@@ -550,6 +602,16 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
             }
         }
     };
+
+    // Rate limits are otherwise only reachable through `PUT /api/admin/policy`,
+    // which needs a moderator to already exist — so an automated deployment,
+    // load test or browser-driven audit has no way to raise them before the
+    // traffic that needs them starts. These env overrides close that gap.
+    //
+    // In-memory only: they deliberately do NOT rewrite `servers.policy_json`,
+    // so an operator's stored policy survives and the override disappears when
+    // the variable does.
+    apply_rate_limit_env_overrides(&mut policy);
 
     // Load ZK verification key.
     //
@@ -834,4 +896,102 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
     })?;
 
     Ok((listener, router))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Serialises the env-var tests. `std::env::set_var` is process-global, so
+    /// two of these running concurrently would see each other's values.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_env<T>(vars: &[(&str, Option<&str>)], f: impl FnOnce() -> T) -> T {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let saved: Vec<(String, Option<String>)> = vars
+            .iter()
+            .map(|(k, _)| ((*k).to_string(), std::env::var(k).ok()))
+            .collect();
+        for (k, v) in vars {
+            match v {
+                Some(val) => std::env::set_var(k, val),
+                None => std::env::remove_var(k),
+            }
+        }
+        let out = f();
+        for (k, v) in saved {
+            match v {
+                Some(val) => std::env::set_var(&k, val),
+                None => std::env::remove_var(&k),
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn rate_limit_overrides_are_applied_from_env() {
+        let policy = with_env(
+            &[
+                ("ANNEX_RATE_LIMIT_REGISTRATION", Some("55")),
+                ("ANNEX_RATE_LIMIT_VERIFICATION", Some("66")),
+                ("ANNEX_RATE_LIMIT_DEFAULT", Some("7777")),
+            ],
+            || {
+                let mut p = ServerPolicy::default();
+                apply_rate_limit_env_overrides(&mut p);
+                p
+            },
+        );
+
+        assert_eq!(policy.rate_limit.registration_limit, 55);
+        assert_eq!(policy.rate_limit.verification_limit, 66);
+        assert_eq!(policy.rate_limit.default_limit, 7777);
+    }
+
+    #[test]
+    fn rate_limit_defaults_survive_when_unset() {
+        let defaults = ServerPolicy::default();
+        let policy = with_env(
+            &[
+                ("ANNEX_RATE_LIMIT_REGISTRATION", None),
+                ("ANNEX_RATE_LIMIT_VERIFICATION", None),
+                ("ANNEX_RATE_LIMIT_DEFAULT", None),
+            ],
+            || {
+                let mut p = ServerPolicy::default();
+                apply_rate_limit_env_overrides(&mut p);
+                p
+            },
+        );
+
+        assert_eq!(policy.rate_limit, defaults.rate_limit);
+    }
+
+    #[test]
+    fn unparseable_rate_limit_override_is_ignored_not_fatal() {
+        // A typo in an optional tuning knob must not take the server down, and
+        // must not silently reinterpret itself as some other number.
+        let defaults = ServerPolicy::default();
+        let policy = with_env(
+            &[
+                ("ANNEX_RATE_LIMIT_DEFAULT", Some("lots")),
+                ("ANNEX_RATE_LIMIT_REGISTRATION", Some("-5")),
+                ("ANNEX_RATE_LIMIT_VERIFICATION", None),
+            ],
+            || {
+                let mut p = ServerPolicy::default();
+                apply_rate_limit_env_overrides(&mut p);
+                p
+            },
+        );
+
+        assert_eq!(
+            policy.rate_limit.default_limit,
+            defaults.rate_limit.default_limit
+        );
+        assert_eq!(
+            policy.rate_limit.registration_limit,
+            defaults.rate_limit.registration_limit
+        );
+    }
 }

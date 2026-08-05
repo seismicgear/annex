@@ -74,3 +74,5 @@ client/e2e-puppeteer/screenshots-edge/
 
 # UI audit: per-run warm auth state (binds to a per-run Merkle root, never committed)
 client/e2e/audit/.auth/
+# UI audit: failure evidence, regenerated each run
+client/e2e/audit/diagnostics/

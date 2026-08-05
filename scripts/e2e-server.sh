@@ -37,11 +37,20 @@ start_server() {
     echo "$db_dir" > "$DB_DIR_FILE"
 
     echo "[e2e] Starting server (db: $db_dir, log: $LOG_FILE)..."
+    # Rate limits default to 10/10/60 requests per minute, which a browser
+    # suite exceeds trivially: the UI audit alone drives ~100 page loads back
+    # to back, and every public route keys its bucket by IP, so all of them
+    # share one. Left at defaults the suite captures screenshots of
+    # "Rate limit exceeded" instead of the UI. Raised here for the harness
+    # only — the shipped defaults are unchanged.
     ANNEX_CLIENT_DIR=client/dist \
     ANNEX_OPEN_BROWSER=false \
     ANNEX_DB_PATH="$db_dir/annex.db" \
     ANNEX_HOST=127.0.0.1 \
     ANNEX_PORT=$PORT \
+    ANNEX_RATE_LIMIT_DEFAULT="${ANNEX_RATE_LIMIT_DEFAULT:-100000}" \
+    ANNEX_RATE_LIMIT_REGISTRATION="${ANNEX_RATE_LIMIT_REGISTRATION:-100000}" \
+    ANNEX_RATE_LIMIT_VERIFICATION="${ANNEX_RATE_LIMIT_VERIFICATION:-100000}" \
     cargo run -p annex-server -- /dev/null > "$LOG_FILE" 2>&1 &
 
     local pid=$!

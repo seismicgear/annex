@@ -14,6 +14,7 @@ export function EventLog() {
   const [events, setEvents] = useState<PublicEvent[]>([]);
   const [domain, setDomain] = useState('ALL');
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const fetchEvents = useCallback(async () => {
     setLoading(true);
@@ -24,8 +25,14 @@ export function EventLog() {
         100,
       );
       setEvents(result);
-    } catch {
-      // Fetch failed — keep existing events visible
+      setError(null);
+    } catch (err) {
+      // Previously this swallowed the failure and left the last-known list on
+      // screen. Combined with the 10s auto-refresh that meant a dead backend
+      // looked exactly like a quiet server — the audit log silently stopped
+      // being an audit log. Surface it instead, while keeping whatever we
+      // already fetched visible so a transient blip does not blank the table.
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
@@ -49,6 +56,7 @@ export function EventLog() {
           <select
             className="domain-filter"
             value={domain}
+            aria-label="Filter events by domain"
             onChange={(e) => setDomain(e.target.value)}
           >
             {DOMAINS.map((d) => (
@@ -63,7 +71,16 @@ export function EventLog() {
         </div>
       </div>
 
-      {events.length === 0 && !loading && (
+      {error && (
+        <div className="event-log-error" role="alert">
+          <span>Could not load events: {error}</span>
+          <button onClick={fetchEvents} className="secondary-btn" disabled={loading}>
+            Retry
+          </button>
+        </div>
+      )}
+
+      {events.length === 0 && !loading && !error && (
         <p className="event-log-empty">No events found</p>
       )}
 

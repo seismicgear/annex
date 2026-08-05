@@ -136,17 +136,46 @@ function PeerDetail({ peer, onClose }: PeerDetailProps) {
 export function FederationPanel() {
   const [peers, setPeers] = useState<FederationPeer[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [selectedPeer, setSelectedPeer] = useState<FederationPeer | null>(null);
 
-  useEffect(() => {
-    api
-      .getFederationPeers()
-      .then((r) => setPeers(r.peers))
-      .catch(() => { /* fetch failed — empty peers list displayed */ })
-      .finally(() => setLoading(false));
+  const loadPeers = useCallback(async () => {
+    setLoading(true);
+    try {
+      const r = await api.getFederationPeers();
+      setPeers(r.peers);
+      setError(null);
+    } catch (err) {
+      // A swallowed failure rendered as "No federation peers", so a broken
+      // backend was indistinguishable from a standalone server with none —
+      // and there was nothing to retry. Report it as what it is.
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
+  useEffect(() => {
+    void loadPeers();
+  }, [loadPeers]);
+
   if (loading) return <div className="federation-panel loading">Loading peers...</div>;
+
+  if (error) {
+    return (
+      <div className="federation-panel empty">
+        <p className="error-text" role="alert">
+          Could not load federation peers: {error}
+        </p>
+        <p className="federation-hint">
+          This is a problem reaching your own server, not a sign that no peers exist.
+        </p>
+        <button className="primary-btn" onClick={() => { void loadPeers(); }}>
+          Retry
+        </button>
+      </div>
+    );
+  }
 
   if (peers.length === 0) {
     return (

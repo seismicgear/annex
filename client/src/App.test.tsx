@@ -263,19 +263,57 @@ beforeEach(async () => {
 
 describe('App startup flow', () => {
   describe('ReconnectionBanner', () => {
-    it('shows disconnected banner immediately when ws starts disconnected', async () => {
+    it('stays silent while the first connection is still being established', async () => {
+      // `wsConnected` is false on every load simply because the socket has
+      // not opened yet. Announcing that as a lost connection meant every
+      // single page load flashed "Connection lost" then "Reconnected".
       useChannelsStore.setState({ wsConnected: false });
       const { ReconnectionBanner } = await import('./App');
       render(<ReconnectionBanner />);
 
-      expect(screen.getByRole('alert')).toHaveTextContent('Connection lost — reconnecting...');
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     });
 
-    it('shows reconnected banner on reconnect and auto-hides after 2 seconds', async () => {
+    it('says "connecting" — not "lost" — if the first connection is slow', async () => {
       vi.useFakeTimers();
       useChannelsStore.setState({ wsConnected: false });
       const { ReconnectionBanner } = await import('./App');
       render(<ReconnectionBanner />);
+
+      act(() => {
+        vi.advanceTimersByTime(4000);
+      });
+
+      expect(screen.getByRole('alert')).toHaveTextContent('Connecting to server...');
+      vi.useRealTimers();
+    });
+
+    it('does not claim a reconnection when the first connection succeeds', async () => {
+      vi.useFakeTimers();
+      useChannelsStore.setState({ wsConnected: false });
+      const { ReconnectionBanner } = await import('./App');
+      render(<ReconnectionBanner />);
+
+      act(() => {
+        useChannelsStore.setState({ wsConnected: true });
+      });
+
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      vi.useRealTimers();
+    });
+
+    it('reports a genuine drop and recovery, auto-hiding after 2 seconds', async () => {
+      vi.useFakeTimers();
+      // Start connected: this session has something to lose.
+      useChannelsStore.setState({ wsConnected: true });
+      const { ReconnectionBanner } = await import('./App');
+      render(<ReconnectionBanner />);
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+
+      act(() => {
+        useChannelsStore.setState({ wsConnected: false });
+      });
+
       expect(screen.getByRole('alert')).toHaveTextContent('Connection lost — reconnecting...');
 
       act(() => {

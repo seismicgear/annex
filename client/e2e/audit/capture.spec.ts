@@ -25,6 +25,8 @@ import { VIEWPORTS, type Finding, type Viewport } from './types';
 
 const AUDIT_ROOT = path.join(process.cwd(), 'e2e', 'audit');
 const SHOT_DIR = path.join(AUDIT_ROOT, 'baselines');
+/** Failure evidence — never a baseline, so it stays out of the tracked set. */
+const DIAG_DIR = path.join(AUDIT_ROOT, 'diagnostics');
 const LEDGER_DIR = path.join(process.cwd(), '..', 'docs', 'ui-audit');
 
 const findings: Finding[] = [];
@@ -73,6 +75,57 @@ for (const surface of SURFACES) {
         const captured = await runAudits(page, surface, viewport.id, collector);
         for (const f of captured) {
           findings.push({ ...f, screenshot: path.relative(AUDIT_ROOT, file) });
+        }
+      } catch (err) {
+        // A surface we cannot reach is itself a finding, and the most
+        // serious kind — either the navigation recipe has drifted from the
+        // UI, or the UI is broken. Recording it keeps the rest of the run
+        // going and puts the failure in the ledger next to everything else,
+        // instead of losing it in a stack trace.
+        //
+        // A best-effort screenshot of wherever we ended up is usually the
+        // fastest way to see which of the two it was. It goes to the
+        // diagnostics directory, not `baselines/` — it is evidence about a
+        // failure, not an approved picture of a working screen.
+        const file = path.join(DIAG_DIR, viewport.id, `${surface.id}.png`);
+        mkdirSync(path.dirname(file), { recursive: true });
+        await page.screenshot({ path: file }).catch(() => {});
+
+        findings.push({
+          surfaceId: surface.id,
+          stage: surface.stage,
+          viewport: viewport.id,
+          audit: 'console',
+          severity: 'p1',
+          rule: 'surface-unreachable',
+          detail: `could not reach this surface: ${
+            err instanceof Error ? err.message.split('\n')[0] : String(err)
+          }`,
+          screenshot: path.relative(AUDIT_ROOT, file),
+        });
+
+        // Console/network signals collected on the way are often the reason.
+        for (const e of new Set(collector.pageErrors)) {
+          findings.push({
+            surfaceId: surface.id,
+            stage: surface.stage,
+            viewport: viewport.id,
+            audit: 'console',
+            severity: 'p1',
+            rule: 'uncaught-page-error',
+            detail: e,
+          });
+        }
+        for (const e of new Set(collector.networkFailures)) {
+          findings.push({
+            surfaceId: surface.id,
+            stage: surface.stage,
+            viewport: viewport.id,
+            audit: 'network',
+            severity: 'p2',
+            rule: 'request-failed',
+            detail: e,
+          });
         }
       } finally {
         await context.close();

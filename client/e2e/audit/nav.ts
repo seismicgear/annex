@@ -28,10 +28,15 @@ import type { AppRole } from './roles';
 export const NONDETERMINISTIC_SELECTORS = [
   '.pseudonym', // StatusBar + IdentitySetup: truncated pseudonym id
   '.persona-context-name', // header persona chip
-  '.message-timestamp',
-  '.event-time', // EventLog "Time" column
+  '.persona-context-server', // server slug is generated per deployment
+  '.server-slug',
+  '.timestamp', // MessageView bubble time
+  '.message-avatar', // avatar letter derives from the pseudonym
+  '.sender', // falls back to a truncated pseudonym when no persona name
+  '.event-col-time', // EventLog "Time" column
+  '.event-col-entity', // entity ids are pseudonyms/commitments
   '.share-link-input', // invite links embed a random code
-  '.identity-commitment', // IdentitySettings cryptographic id block
+  '.current-identity-ref', // IdentitySettings cryptographic id block
   '.member-pseudonym', // admin member rows
   '.agent-pseudonym',
   '[data-nondeterministic]', // opt-in escape hatch added in components
@@ -53,6 +58,34 @@ const CAPTURE_STYLESHEET = `
     transition-delay: 0s !important;
     caret-color: transparent !important;
     scroll-behavior: auto !important;
+  }
+
+  /*
+   * Pin the persona accent.
+   *
+   * A new persona picks its colour with \`randomAccentColor()\`
+   * (client/src/lib/personas.ts), and AppShell publishes it as
+   * \`--persona-accent\` + tints, which drive buttons, links, badges, avatars
+   * and the active-channel highlight. Left alone, the entire UI is a
+   * different colour on every run and no pixel baseline can ever be stable.
+   *
+   * Pinned here rather than in the product because the randomness is real
+   * behaviour, not a bug the harness should paper over — if it should be
+   * deterministic, that is a product decision to make deliberately.
+   */
+  :root {
+    --persona-accent: #e63946 !important;
+    --persona-bg-tint: rgba(230, 57, 70, 0.06) !important;
+    --persona-border-tint: rgba(230, 57, 70, 0.3) !important;
+  }
+
+  /*
+   * Same problem, different source: ServerHub sets \`--server-accent\` as an
+   * inline style per icon (ServerHub.tsx), so it needs its own override
+   * rather than a \`:root\` declaration.
+   */
+  .server-hub-icon {
+    --server-accent: #e63946 !important;
   }
 `;
 
