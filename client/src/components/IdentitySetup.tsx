@@ -74,7 +74,9 @@ export function IdentitySetup() {
       {/* Device linking — transfer identity from another device */}
       {!isWorking && (
         <div className="setup-divider">
-          <span>or</span>
+          {/* Purely decorative: it separates two alternatives that already
+              read as alternatives. Announcing "or" on its own is noise. */}
+          <span aria-hidden="true">or</span>
         </div>
       )}
       {!isWorking && (
@@ -109,8 +111,16 @@ export function IdentitySetup() {
       {/* Import backup */}
       {!isWorking && (
         <div className="import-section">
-          <h3>Import Backup</h3>
-          <input type="file" ref={fileInputRef} accept=".json" />
+          <h3 id="import-backup-heading">Import Backup</h3>
+          <p className="identity-description">
+            Restore an identity from a backup file you exported earlier.
+          </p>
+          <input
+            type="file"
+            ref={fileInputRef}
+            accept=".json"
+            aria-labelledby="import-backup-heading"
+          />
           <button onClick={handleImport}>Import</button>
         </div>
       )}

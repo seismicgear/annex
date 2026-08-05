@@ -179,6 +179,98 @@ export const SURFACES: Surface[] = [
     },
   },
 
+  {
+    id: 'message-edit-mode',
+    stage: '06-messaging',
+    title: 'Editing your own message',
+    role: 'founder',
+    intent: 'Inline edit with the live countdown showing how long the edit window has left.',
+    navigate: async (page) => {
+      await selectChannel(page, SEED.defaultChannel);
+      const bubble = page.locator('.message', { hasText: SEED.messages.plain }).first();
+      await bubble.hover();
+      await bubble.locator('.edit-btn').click();
+      await expect(page.locator('.message-edit-input')).toBeVisible();
+    },
+    clip: '.chat-area',
+  },
+  {
+    id: 'message-delete-confirm',
+    stage: '06-messaging',
+    title: 'Delete confirmation (second click)',
+    role: 'founder',
+    intent:
+      'Deletion is a two-click confirm rather than a dialog. Capturing the armed state proves it ' +
+      'is actually distinguishable from the idle one.',
+    navigate: async (page) => {
+      await selectChannel(page, SEED.defaultChannel);
+      const bubble = page.locator('.message', { hasText: SEED.messages.deleted }).first();
+      await bubble.hover();
+      await bubble.locator('.delete-btn').click();
+      await expect(bubble.locator('.delete-btn.confirming')).toBeVisible();
+    },
+    clip: '.chat-area',
+  },
+  {
+    id: 'message-reply-composer',
+    stage: '06-messaging',
+    title: 'Composer with a reply in progress',
+    role: 'founder',
+    intent: 'The reply bar above the composer, showing who is being replied to.',
+    navigate: async (page) => {
+      await selectChannel(page, SEED.defaultChannel);
+      const bubble = page.locator('.message', { hasText: SEED.messages.replyParent }).first();
+      await bubble.hover();
+      await bubble.locator('.reply-btn').click();
+      await expect(page.locator('.reply-bar')).toBeVisible();
+    },
+    clip: '.chat-area',
+  },
+  {
+    id: 'message-search-results',
+    stage: '06-messaging',
+    title: 'Message search with results',
+    role: 'founder',
+    intent: 'The results listbox, including how a hit renders sender and timestamp.',
+    navigate: async (page) => {
+      await selectChannel(page, SEED.defaultChannel);
+      await page.locator('.search-toggle-btn').click();
+      await page.locator('.search-form input').fill('audit');
+      await page.locator('.search-form input').press('Enter');
+      await expect(page.locator('.search-results, .search-no-results')).toBeVisible({
+        timeout: 15_000,
+      });
+    },
+    mask: ['.search-result-time', '.search-result-sender'],
+  },
+  {
+    id: 'message-search-no-results',
+    stage: '06-messaging',
+    title: 'Message search with no matches',
+    role: 'founder',
+    intent: 'Empty-result state — must read as "nothing matched", not as a failure.',
+    navigate: async (page) => {
+      await selectChannel(page, SEED.defaultChannel);
+      await page.locator('.search-toggle-btn').click();
+      await page.locator('.search-form input').fill('zzzznotpresentzzzz');
+      await page.locator('.search-form input').press('Enter');
+      await expect(page.locator('.search-no-results')).toBeVisible({ timeout: 15_000 });
+    },
+  },
+  {
+    id: 'channel-encryption-bar-cta',
+    stage: '06-messaging',
+    title: 'End-to-end encryption call to action',
+    role: 'founder',
+    intent:
+      'Moderator-only prompt to turn on E2E for a channel. Non-moderators never see this bar.',
+    navigate: async (page) => {
+      await selectChannel(page, SEED.defaultChannel);
+      await expect(page.locator('.channel-encryption-bar')).toBeVisible();
+    },
+    clip: '.channel-encryption-bar',
+  },
+
   // ─────────────────────── 07 · voice ───────────────────────
   {
     id: 'voice-panel-disconnected',
@@ -192,6 +284,61 @@ export const SURFACES: Surface[] = [
         timeout: 15_000,
       });
     },
+  },
+
+  {
+    id: 'voice-panel-hybrid-channel',
+    stage: '07-voice',
+    title: 'Voice controls on a hybrid (text + voice) channel',
+    role: 'founder',
+    intent: 'Hybrid channels show the call affordance alongside the message list, unlike pure text.',
+    navigate: async (page) => {
+      await selectChannel(page, SEED.channels.hybrid);
+      await expect(page.locator('.voice-panel, .voice-permissions-notice')).toBeVisible({
+        timeout: 15_000,
+      });
+    },
+  },
+  {
+    id: 'voice-not-configured',
+    stage: '07-voice',
+    title: 'Voice channel on a server with voice unavailable',
+    role: 'founder',
+    intent:
+      'Operators who have not provisioned WebRTC need a clear explanation here, not a dead button.',
+    setup: stub('**/api/voice/config-status', {
+      configured: false,
+      url: '',
+      has_api_secret: false,
+      token_ttl_seconds: 0,
+    }),
+    navigate: async (page) => {
+      await selectChannel(page, SEED.channels.voice);
+      await expect(page.locator('.voice-panel, .voice-permissions-notice')).toBeVisible({
+        timeout: 15_000,
+      });
+    },
+  },
+  {
+    id: 'voice-join-failure',
+    stage: '07-voice',
+    title: 'Voice join rejected by the server',
+    role: 'founder',
+    intent:
+      'The voice-join handler returns a JSON-shaped body with a text/plain content type — one of ' +
+      'the error dialects the client had to be taught to read. This proves the message reaches the user.',
+    setup: stub(
+      '**/api/channels/*/voice/join',
+      { error: 'voice_disabled', message: 'Voice is disabled on this server.' },
+      403,
+    ),
+    navigate: async (page) => {
+      await selectChannel(page, SEED.channels.voice);
+      const join = page.locator('.voice-join-btn');
+      if (await join.isVisible().catch(() => false)) await join.click();
+      await page.waitForTimeout(1500);
+    },
+    waive: { network: 'the 403 is injected deliberately to reach the join-failure state' },
   },
 
   // ─────────────────────── 08 · user settings ───────────────────────
@@ -236,6 +383,72 @@ export const SURFACES: Surface[] = [
     intent: 'Shamir key-splitting entry point — set up shards or recover from them.',
     navigate: async (page) => {
       await openStatusBarDialog(page, 'Recovery');
+    },
+    clip: '.dialog',
+  },
+
+  {
+    id: 'identity-settings-persona-form',
+    stage: '08-user-settings',
+    title: 'Persona editor (name, bio, colour picker)',
+    role: 'founder',
+    intent: 'The 12-swatch accent picker that decides how this identity is coloured everywhere.',
+    navigate: async (page) => {
+      await openStatusBarDialog(page, 'Identity');
+      await page.getByRole('button', { name: 'New Persona' }).click();
+      await expect(page.locator('.color-picker')).toBeVisible();
+    },
+    clip: '.dialog',
+  },
+  {
+    id: 'social-recovery-setup',
+    stage: '08-user-settings',
+    title: 'Social recovery — shard setup',
+    role: 'founder',
+    intent: 'Choosing trustees and threshold for Shamir key splitting.',
+    navigate: async (page) => {
+      await openStatusBarDialog(page, 'Recovery');
+      await page.locator('.device-link-option').first().click();
+      await expect(page.locator('.dialog')).toBeVisible();
+    },
+    clip: '.dialog',
+    mask: ['.shard-list', '.shard-value'],
+  },
+  {
+    id: 'social-recovery-recover',
+    stage: '08-user-settings',
+    title: 'Social recovery — reconstruct from shards',
+    role: 'founder',
+    intent: 'The paste-shards path a user takes when they have lost their device.',
+    navigate: async (page) => {
+      await openStatusBarDialog(page, 'Recovery');
+      await page.locator('.device-link-option').nth(1).click();
+      await expect(page.locator('.dialog')).toBeVisible();
+    },
+    clip: '.dialog',
+  },
+  {
+    id: 'device-link-receive',
+    stage: '08-user-settings',
+    title: 'Link another device — receive',
+    role: 'founder',
+    intent: 'The paste-payload half of device linking, reached mid-session.',
+    navigate: async (page) => {
+      await openStatusBarDialog(page, 'Link');
+      await page.locator('.device-link-option').nth(1).click();
+      await expect(page.locator('.device-link-receive')).toBeVisible();
+    },
+    clip: '.dialog',
+  },
+  {
+    id: 'add-server-dialog',
+    stage: '08-user-settings',
+    title: 'Add another server',
+    role: 'founder',
+    intent: 'Multi-server entry point from the server hub rail.',
+    navigate: async (page) => {
+      await page.locator('.add-server-btn').click();
+      await expect(page.locator('.add-server-dialog')).toBeVisible();
     },
     clip: '.dialog',
   },
@@ -289,6 +502,48 @@ export const SURFACES: Surface[] = [
     intent: 'Channel delete surface; currently the only place using native confirm().',
     navigate: async (page) => {
       await openAdminSection(page, 'Channel Management');
+    },
+  },
+
+  {
+    id: 'admin-policy-password-mode',
+    stage: '09-admin',
+    title: 'Server policy with password access mode selected',
+    role: 'founder',
+    intent:
+      'Choosing "password" reveals a password field. This is the mode behind the join flow whose ' +
+      'submit button did nothing and which re-fired registration on every keystroke.',
+    navigate: async (page) => {
+      await openAdminSection(page, 'Server Policy');
+      await page.locator('select').first().selectOption('password');
+      await expect(page.locator('.view-content')).toBeVisible();
+    },
+  },
+  {
+    id: 'admin-channel-management-list',
+    stage: '09-admin',
+    title: 'Channel management with every channel type',
+    role: 'founder',
+    intent:
+      'Delete affordances for all five channel types. Deletion here is the last remaining native ' +
+      'confirm() in the app.',
+    navigate: async (page) => {
+      await openAdminSection(page, 'Channel Management');
+      await expect(page.locator('.channel-manager-item').first()).toBeVisible({ timeout: 15_000 });
+    },
+    clip: '.channel-manager',
+  },
+  {
+    id: 'non-admin-chat',
+    stage: '09-admin',
+    title: 'Chat as a non-moderator',
+    role: 'member',
+    intent:
+      'The negative case for every admin affordance: no gear, no create-channel button, no ' +
+      'encryption CTA. Proves capability gating actually hides things rather than only disabling them.',
+    navigate: async (page) => {
+      await selectChannel(page, SEED.defaultChannel);
+      await expect(page.locator('.admin-menu-btn')).toHaveCount(0);
     },
   },
 
@@ -401,6 +656,184 @@ export const SURFACES: Surface[] = [
       await expect(page.locator('.member-list')).toBeVisible({ timeout: 15_000 });
     },
     clip: '.sidebar-right',
+  },
+  {
+    id: 'federation-peer-detail',
+    stage: '10-federation',
+    title: 'Peer detail (explore a federated server)',
+    role: 'founder',
+    intent:
+      'The "Explore" dialog. It fetches the remote server cross-origin via `requestRemote`, which ' +
+      'is the path the CSP `connect-src` and the remote CORS default both constrain — so this ' +
+      'surface is where a browser-only federation break would show up.',
+    setup: async (page) => {
+      await page.route('**/api/public/federation/peers*', (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            peers: [
+              {
+                instance_id: 'peer-alpha',
+                label: 'Alpha Station',
+                base_url: 'https://alpha.example',
+                alignment_status: 'Aligned',
+                transfer_scope: 'FullKnowledgeBundle',
+              },
+            ],
+          }),
+        }),
+      );
+      await page.route('https://alpha.example/**', (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            slug: 'alpha',
+            label: 'Alpha Station',
+            description: '',
+            public_url: 'https://alpha.example',
+            members_by_type: { HUMAN: 42 },
+            total_active_members: 42,
+            channel_count: 9,
+            federation_peer_count: 3,
+            active_agent_count: 2,
+            access_mode: 'public',
+          }),
+        }),
+      );
+    },
+    navigate: async (page) => {
+      await openTab(page, 'Federation');
+      await page.getByRole('button', { name: /Explore|View Upstream/ }).first().click();
+      await expect(page.locator('.peer-detail-dialog')).toBeVisible({ timeout: 15_000 });
+    },
+    clip: '.dialog',
+  },
+  {
+    id: 'event-log-filtered',
+    stage: '11-observability',
+    title: 'Event log filtered to one domain',
+    role: 'founder',
+    intent: 'Domain filter applied — proves the select actually narrows the table.',
+    navigate: async (page) => {
+      await openTab(page, 'Events');
+      await page.locator('.domain-filter').selectOption('IDENTITY');
+      await expect(page.locator('.event-log')).toBeVisible({ timeout: 15_000 });
+    },
+    mask: ['.event-col-time', '.event-col-entity'],
+  },
+  {
+    id: 'event-log-error',
+    stage: '11-observability',
+    title: 'Event log when the events endpoint fails',
+    role: 'founder',
+    intent:
+      'This used to render as "No events found" on an auto-refreshing audit log — a dead backend ' +
+      'was indistinguishable from a quiet server. It must now read as a failure with a retry.',
+    setup: stub('**/api/public/events*', { error: 'internal server error' }, 500),
+    navigate: async (page) => {
+      await openTab(page, 'Events');
+      await expect(page.locator('.event-log-error')).toBeVisible({ timeout: 15_000 });
+    },
+    waive: { network: 'the 500 is injected deliberately to reach the error state' },
+  },
+  {
+    id: 'agent-detail-overlay',
+    stage: '12-agents',
+    title: 'Agent detail (alignment, transfer scope, reputation)',
+    role: 'founder',
+    intent: 'The only surface exposing an agent’s VRP standing to a human.',
+    setup: stub('**/api/public/agents*', {
+      agents: [
+        {
+          pseudonym_id: 'agent-aurora',
+          display_name: 'Aurora',
+          alignment_status: 'Aligned',
+          transfer_scope: 'FullKnowledgeBundle',
+          reputation: 0.92,
+          capabilities: ['summarise', 'translate'],
+          active: true,
+        },
+      ],
+    }),
+    navigate: async (page) => {
+      await selectChannel(page, SEED.defaultChannel);
+      await page.locator('.agent-list .agent-name').first().click();
+      await expect(page.locator('.agent-detail')).toBeVisible({ timeout: 15_000 });
+    },
+  },
+  {
+    id: 'reconnection-banner-disconnected',
+    stage: '13-cross-cutting',
+    title: 'Connection-lost banner',
+    role: 'founder',
+    intent:
+      'A genuine drop, as opposed to the phantom one every page load used to show. Driven by ' +
+      'taking the browser offline rather than by poking state, so it exercises the real path.',
+    navigate: async (page) => {
+      await selectChannel(page, SEED.defaultChannel);
+      await page.context().setOffline(true);
+      await expect(page.locator('.reconnection-banner')).toBeVisible({ timeout: 30_000 });
+    },
+    waive: {
+      network: 'the context is deliberately taken offline, so every in-flight request fails',
+      a11y: 'axe cannot fetch its own resources while the context is offline',
+    },
+  },
+  {
+    id: 'rate-limited',
+    stage: '13-cross-cutting',
+    title: 'Rate limited (HTTP 429)',
+    role: 'founder',
+    intent:
+      'Every protected route can return 429 with a Retry-After. The client turns it into a ' +
+      'sentence with the wait time; this proves the user is told how long to wait.',
+    setup: async (page) => {
+      await page.route('**/api/channels', (route) =>
+        route.fulfill({
+          status: 429,
+          headers: { 'Retry-After': '60' },
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'rate limit exceeded' }),
+        }),
+      );
+    },
+    navigate: async (page) => {
+      await expect(page.locator('.channel-action-error, .channel-list')).toBeVisible({
+        timeout: 20_000,
+      });
+    },
+    waive: { network: 'the 429 is injected deliberately to reach the rate-limited state' },
+  },
+  {
+    id: 'storage-gate-507',
+    stage: '13-cross-cutting',
+    title: 'Server out of storage (HTTP 507)',
+    role: 'founder',
+    intent:
+      'The storage gate blocks every mutating request once free space runs out. Users must be ' +
+      'told the server is full rather than seeing writes fail for no stated reason.',
+    setup: async (page) => {
+      await page.route('**/api/channels', (route) =>
+        route.request().method() === 'POST'
+          ? route.fulfill({
+              status: 507,
+              contentType: 'application/json',
+              body: JSON.stringify({ error: 'server is out of storage' }),
+            })
+          : route.continue(),
+      );
+    },
+    navigate: async (page) => {
+      await page.locator('.create-channel-btn').click();
+      const dialog = page.locator('.dialog');
+      await dialog.getByPlaceholder('general').fill('storage-gate-probe');
+      await dialog.getByRole('button', { name: 'Create' }).click();
+      await expect(dialog.locator('.error-message')).toBeVisible({ timeout: 15_000 });
+    },
+    clip: '.dialog',
+    waive: { network: 'the 507 is injected deliberately to reach the storage-gate state' },
   },
 ];
 

@@ -1,5 +1,70 @@
 /* Global styles for Annex client */
 
+/*
+ * ── Design tokens ──────────────────────────────────────────────────────
+ *
+ * App.css carries ~445 hardcoded hex literals across ~46 distinct colours,
+ * and referenced ELEVEN custom properties that were never defined anywhere
+ * (`--accent`, `--bg-hover`, `--bg-secondary`, `--border`, `--border-color`,
+ * `--danger`, `--error-color`, `--surface-2`, `--text-muted`,
+ * `--text-primary`, `--warning-color`). Every one of those silently resolved
+ * to its `var()` fallback, so the token layer looked present but could never
+ * actually be re-themed — changing a token changed nothing.
+ *
+ * Defining them here makes the existing `var(--x, #fallback)` call sites
+ * live without touching a single one of them: the fallback stays as the
+ * documented intent, and the token now overrides it. Literals elsewhere in
+ * App.css are migrated onto these tokens incrementally, one component group
+ * at a time, with the committed screenshot baselines proving each slice
+ * changed nothing it should not have.
+ *
+ * Values are chosen to match what was already on screen, EXCEPT where the
+ * audit found a WCAG contrast failure — those are corrected here rather than
+ * carried forward. `--text-muted` in particular was `#888`; the audit flagged
+ * the related `#666` (used for dividers, hints and placeholder text) at
+ * 3.66:1 against the near-black background, below the 4.5:1 AA threshold for
+ * normal text. `--text-subtle` is the corrected replacement.
+ */
+:root {
+  /* Surfaces, darkest to lightest. */
+  --bg: #000;
+  --bg-secondary: #0a0a0a;
+  --surface-1: #111;
+  --surface-2: #1a1a1a;
+  --bg-hover: rgba(255, 255, 255, 0.05);
+
+  /* Text. Contrast ratios are against --bg. */
+  --text-primary: rgba(255, 255, 255, 0.87); /* 16.1:1 */
+  --text-secondary: #aaa;                    /*  9.0:1 */
+  --text-muted: #888;                        /*  5.9:1 */
+  --text-subtle: #7a7a7a;                    /*  4.7:1 — AA floor for body text */
+
+  /* Lines. Not text, so not contrast-bound. */
+  --border: #222;
+  --border-color: #222;
+  --border-strong: #333;
+
+  /* Status. */
+  --accent: #e63946;
+  --danger: #e63946;
+  --error-color: #e63946;
+  --error-text: #f87171;
+  --warning-color: #fbbf24;
+  --success-color: #4ade80;
+
+  /* Shape and depth. */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+
+  /* Layering. Declared as a scale so new overlays stop inventing numbers. */
+  --z-sticky: 10;
+  --z-dropdown: 100;
+  --z-overlay: 200;
+  --z-dialog: 1000;
+  --z-toast: 10000;
+}
+
 *,
 *::before,
 *::after {

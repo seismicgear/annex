@@ -469,7 +469,7 @@
   line-height: 1;
   background: transparent;
   border: 1px solid transparent;
-  color: #666;
+  color: var(--text-subtle);
   border-radius: 3px;
   cursor: pointer;
   opacity: 0;
@@ -493,7 +493,7 @@
 }
 
 .no-channels {
-  color: #666;
+  color: var(--text-subtle);
   font-size: 0.85rem;
   padding: 0.5rem;
 }
@@ -512,7 +512,7 @@
 .message-view.empty {
   align-items: center;
   justify-content: center;
-  color: #666;
+  color: var(--text-subtle);
 }
 
 .message {
@@ -568,7 +568,7 @@
 
 .message-header .timestamp {
   margin-left: auto;
-  color: #666;
+  color: var(--text-subtle);
 }
 
 .message-content {
@@ -1047,7 +1047,7 @@
   display: flex;
   gap: 1rem;
   font-size: 0.75rem;
-  color: #666;
+  color: var(--text-subtle);
   margin-bottom: 1rem;
 }
 
@@ -1165,7 +1165,7 @@
 }
 
 .peer-url {
-  color: #666;
+  color: var(--text-subtle);
   font-size: 0.75rem;
 }
 
@@ -1403,7 +1403,7 @@
 }
 
 .event-log-empty {
-  color: #666;
+  color: var(--text-subtle);
   text-align: center;
   padding: 2rem;
 }
@@ -1460,7 +1460,7 @@
 .event-col-time {
   width: 80px;
   flex-shrink: 0;
-  color: #666;
+  color: var(--text-subtle);
 }
 
 .event-col-domain {
@@ -1690,7 +1690,7 @@
 
 .channel-manager-meta {
   font-size: 0.7rem;
-  color: #666;
+  color: var(--text-subtle);
 }
 
 .delete-btn {
@@ -1892,7 +1892,7 @@
   align-items: center;
   gap: 0.75rem;
   margin: 1rem 0;
-  color: #666;
+  color: var(--text-subtle);
   font-size: 0.8rem;
 }
 
@@ -1970,7 +1970,7 @@
 }
 
 .no-personas {
-  color: #666;
+  color: var(--text-subtle);
   font-size: 0.85rem;
   text-align: center;
   padding: 1rem;
@@ -2036,7 +2036,7 @@
   font-size: 0.7rem;
   background: transparent;
   border: 1px solid transparent;
-  color: #666;
+  color: var(--text-subtle);
   border-radius: 3px;
   cursor: pointer;
 }
@@ -2144,7 +2144,7 @@
 
 .server-slug {
   font-size: 0.65rem;
-  color: #666;
+  color: var(--text-subtle);
   padding: 0.05em 0.3em;
   background: rgba(255, 255, 255, 0.05);
   border-radius: 2px;
@@ -2410,7 +2410,7 @@
 .shard-data {
   font-family: monospace;
   font-size: 0.7rem;
-  color: #666;
+  color: var(--text-subtle);
   word-break: break-all;
 }
 
@@ -2741,7 +2741,7 @@
 
 .federation-hint {
   font-size: 0.8rem;
-  color: #666;
+  color: var(--text-subtle);
   margin-top: 0.5rem;
 }
 
@@ -3076,7 +3076,7 @@
   position: relative;
   margin-left: 0.35rem;
   vertical-align: middle;
-  color: #666;
+  color: var(--text-subtle);
   cursor: help;
   outline: none;
 }
@@ -3222,7 +3222,7 @@
   align-items: center;
   justify-content: center;
   font-size: 0.7rem;
-  color: #666;
+  color: var(--text-subtle);
   text-align: center;
 }
 
@@ -3365,7 +3365,7 @@
 
 .message-deleted-text {
   font-style: italic;
-  color: #666;
+  color: var(--text-subtle);
 }
 
 .message-actions {
@@ -3389,7 +3389,7 @@
   padding: 0;
   background: transparent;
   border: 1px solid transparent;
-  color: #666;
+  color: var(--text-subtle);
   border-radius: 3px;
   cursor: pointer;
   transition: color 0.1s, border-color 0.1s, background 0.1s;
@@ -3421,7 +3421,7 @@
 .edited-badge {
   background: transparent;
   border: none;
-  color: #666;
+  color: var(--text-subtle);
   font-size: 0.7rem;
   cursor: pointer;
   padding: 0;
@@ -3532,14 +3532,14 @@
 
 .edit-history-time {
   font-size: 0.65rem;
-  color: #666;
+  color: var(--text-subtle);
   margin-top: 0.15rem;
 }
 
 .edit-history-loading,
 .edit-history-empty {
   font-size: 0.75rem;
-  color: #666;
+  color: var(--text-subtle);
   padding: 0.25rem 0;
 }
 
@@ -3659,7 +3659,7 @@
 
 .tunnel-hint,
 .endpoint-hint {
-  color: #666;
+  color: var(--text-subtle);
   font-size: 0.8rem;
   margin: 0.5rem 0 0;
 }
@@ -3710,7 +3710,7 @@
 
 .tunnel-copy-btn:hover {
   background: #333;
-  border-color: #666;
+  border-color: var(--text-subtle);
 }
 
 .tunnel-url-note {

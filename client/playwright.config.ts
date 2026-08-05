@@ -80,6 +80,11 @@ export default defineConfig({
       // unreachable surface burned two minutes per viewport before reporting,
       // which is what makes a broad audit unusable to iterate on.
       timeout: 45_000,
+      // Baselines live in a tracked directory, addressed as
+      // `<viewport>/<surface>.png`. Deliberately NOT under `e2e-results/`,
+      // which Playwright wipes between runs and .gitignore excludes.
+      // Update them with `bash scripts/ui-audit.sh --update-baselines`.
+      snapshotPathTemplate: 'e2e/audit/baselines/{arg}{ext}',
       use: {
         ...devices['Desktop Chrome'],
         // The runner sets an explicit viewport per capture, and an

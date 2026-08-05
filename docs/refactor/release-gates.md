@@ -20,6 +20,7 @@ as authoritative for CI and update this file.
 | ZK artifacts      | `zk-deps`, `zk-circuit`, `zk-setup`, `zk-proof`, `zk-vkey-shipped`                          |
 | Migrations        | `mig-numbered`, `mig-no-edit`, `mig-applies`                                                |
 | Smoke / E2E       | `e2e-server-up`, `e2e-startup-flow`, `e2e-no-console-errors`, `smoke-server`, `smoke-desktop-build` |
+| UI audit          | `ui-audit-surfaces`, `ui-audit-baselines`, `ui-audit-a11y`                                    |
 
 ---
 
@@ -187,6 +188,23 @@ as authoritative for CI and update this file.
 - Artifact preconditions: `zk/keys/membership_vkey.json`, `zk/build/membership_js/membership.wasm`, `zk/keys/membership_final.zkey` must all exist as non-empty files (no dev fallback). The script exits with a clear error message if any are missing.
 - Failure modes: server fails to bind / fails to reach `/health`; ZK artifacts missing or corrupt; proof verification rejected by `enforce_zk_proofs`; founder bootstrap regressed so `POST /api/channels` returns 403; binary leaks across runs (the script execs the built binary directly so the captured PID is the server itself, not the `cargo run` wrapper).
 - Knobs: `ANNEX_SMOKE_PORT` (default `7321`), `ANNEX_SMOKE_HOST` (default `127.0.0.1`).
+
+### ui-audit-surfaces
+- Command: `bash scripts/ui-audit.sh`
+- Workflow: `.github/workflows/ci.yml::ui-audit`
+- Catches: a surface in `client/e2e/audit/surfaces.ts` that can no longer be reached — either the navigation recipe drifted from the UI, or the UI is broken. Also enforces manifest hygiene via `client/e2e/audit/manifest.spec.ts`: unique ids, known stages/roles/viewports, a non-empty `intent` per surface, a justified reason on every audit waiver, and — the important one — that every component rendering a `.dialog-overlay` is reached by some surface. A new dialog cannot silently go unaudited.
+- Failure artifacts: `client/e2e/audit/diagnostics/<viewport>/<surface>.png` (screenshot of wherever the run ended up), uploaded by CI.
+
+### ui-audit-baselines
+- Command: same run; comparison is `toHaveScreenshot` against `client/e2e/audit/baselines/`.
+- Catches: unintended visual drift, at a 0.5% pixel tolerance across four viewports (1440x900, 1280x800, 1024x768, 390x844). This is the guard that makes a CSS refactor safe: change a token, see exactly which screens moved.
+- Updating: `bash scripts/ui-audit.sh --update-baselines`, committed separately and reviewed as a diff of images. Never update baselines in the same commit as the change that moved them without saying so.
+- Note: baselines are recorded on Linux/Chromium. Font hinting differs enough across platforms that re-recording on macOS or Windows will produce spurious diffs — record on Linux.
+
+### ui-audit-a11y
+- Command: same run; axe-core (WCAG 2.1 A/AA + best-practice) per surface per viewport.
+- Catches: missing accessible names, contrast failures, heading-order breaks, duplicate landmarks, and — via a separate check — dialogs that do not move focus in, do not trap it, or do not close on Escape.
+- Findings are recorded to `docs/ui-audit/findings.json` rather than asserted, so the run completes and reports everything; the ledger is reviewed as part of the PR.
 
 ### smoke-desktop-build
 - Linux command: `bash scripts/smoke-desktop-build.sh`

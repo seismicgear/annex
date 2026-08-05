@@ -323,6 +323,70 @@ jobs:
       - name: Run server smoke
         run: bash scripts/smoke-server.sh
 
+  # UI audit — the browser lane. Until this job existed, NOTHING in CI drove a
+  # real browser: client/e2e/, client/e2e-puppeteer/ and scripts/e2e-server.sh
+  # were referenced by zero workflows, so every UI regression had to be caught
+  # by hand.
+  #
+  # This job boots a real server with a fresh database, walks the surface
+  # manifest, screenshots each surface at four viewports, and runs axe-core,
+  # console/pageerror capture, failed-request capture, overflow detection and
+  # the dialog keyboard contract against every one. Baselines committed under
+  # client/e2e/audit/baselines/ are diffed, so an unintended visual change
+  # fails here rather than shipping.
+  #
+  # Artifacts are uploaded on failure: the contact sheet plus the diagnostic
+  # screenshots of anything the run could not reach are usually enough to
+  # diagnose without reproducing locally.
+  ui-audit:
+    name: UI Audit (Linux)
+    runs-on: ubuntu-latest
+    needs: check-server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ui-audit
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install client deps
+        run: npm ci
+        working-directory: client
+
+      - name: Install Chromium for Playwright
+        run: npx playwright install --with-deps chromium
+        working-directory: client
+
+      # The audit drives a real in-browser Groth16 proof per role, so the
+      # circuits and dev keys have to exist before the server starts.
+      - name: Generate ZK keys
+        run: |
+          npm ci
+          node scripts/build-circuits.js
+          node scripts/setup-groth16.js
+        working-directory: zk
+
+      - name: Run UI audit
+        run: bash scripts/ui-audit.sh
+
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-audit-report
+          path: |
+            docs/ui-audit/
+            client/e2e/audit/diagnostics/
+          retention-days: 14
+          if-no-files-found: ignore
+
   # Server smoke — Windows. Same flow as the Linux smoke, exercised on
   # PowerShell so the .ps1 doesn't regress.
   smoke-server-windows:

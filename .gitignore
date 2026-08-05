@@ -76,3 +76,6 @@ client/e2e-puppeteer/screenshots-edge/
 client/e2e/audit/.auth/
 # UI audit: failure evidence, regenerated each run
 client/e2e/audit/diagnostics/
+# UI audit: ledger + contact sheet, regenerated on every run
+docs/ui-audit/findings.json
+docs/ui-audit/index.html

@@ -65,6 +65,25 @@ cd client && npx playwright test e2e/startup.spec.ts
 # HTML report is generated at client/e2e-report/
 ```
 
+### UI audit (screenshots + accessibility)
+```bash
+# Full run: fresh server, capture every surface at 4 viewports, audit each,
+# diff against committed baselines, render a contact sheet.
+bash scripts/ui-audit.sh
+
+# Iterate on one surface
+bash scripts/ui-audit.sh --grep admin-server-policy
+
+# Re-record baselines after an intended visual change (separate commit)
+bash scripts/ui-audit.sh --update-baselines
+```
+
+Surfaces are declared in `client/e2e/audit/surfaces.ts` — that file is the
+coverage contract, and `manifest.spec.ts` fails if a component renders a modal
+no surface reaches. Baselines live in `client/e2e/audit/baselines/` and are
+tracked; the ledger and contact sheet land in `docs/ui-audit/`. Full docs:
+`docs/ui-audit/README.md`.
+
 ### Linting
 ```bash
 cargo fmt --all --check

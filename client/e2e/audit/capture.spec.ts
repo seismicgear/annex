@@ -16,7 +16,7 @@
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { test } from '@playwright/test';
+import { expect, test } from '@playwright/test';
 import { attachCollector, runAudits } from './audits';
 import { landing, maskLocators, stabilize } from './nav';
 import { storageStatePath, type WarmRole } from './roles';
@@ -64,29 +64,52 @@ for (const surface of SURFACES) {
 
         const target = surface.clip ? page.locator(surface.clip) : page;
         const file = shotPath(surface.id, viewport);
-        mkdirSync(path.dirname(file), { recursive: true });
-        await target.screenshot({
-          path: file,
+
+        const shotOptions = {
           mask: maskLocators(page, surface.mask),
           maskColor: '#3a3a3a',
-          animations: 'disabled',
-        });
+          animations: 'disabled' as const,
+          // Font hinting and sub-pixel AA differ enough between machines that
+          // a zero-tolerance compare would fail on every host but the one that
+          // recorded the baseline. 0.5% is tight enough to catch a colour,
+          // spacing or layout change and loose enough to survive that.
+          maxDiffPixelRatio: 0.005,
+        };
+
+        if (surface.reportOnly) {
+          // Genuinely nondeterministic beyond what masking can fix (live
+          // video, animated media). Still captured and audited — just not
+          // diffed, so it cannot produce phantom failures.
+          mkdirSync(path.dirname(file), { recursive: true });
+          await target.screenshot({ path: file, ...shotOptions });
+        } else {
+          // `toHaveScreenshot` writes the baseline on first run and compares
+          // on every run after, so unintended visual drift fails CI. New
+          // baselines are therefore an explicit act
+          // (`ui-audit.sh --update-baselines`), not a silent side effect.
+          await expect(target).toHaveScreenshot([viewport.id, `${surface.id}.png`], shotOptions);
+        }
 
         const captured = await runAudits(page, surface, viewport.id, collector);
         for (const f of captured) {
           findings.push({ ...f, screenshot: path.relative(AUDIT_ROOT, file) });
         }
       } catch (err) {
-        // A surface we cannot reach is itself a finding, and the most
-        // serious kind — either the navigation recipe has drifted from the
-        // UI, or the UI is broken. Recording it keeps the rest of the run
-        // going and puts the failure in the ledger next to everything else,
-        // instead of losing it in a stack trace.
+        // Two very different failures land here and the ledger must not blur
+        // them: a visual diff means the surface rendered but changed, while
+        // anything else means we never got there at all — a navigation recipe
+        // that has drifted from the UI, or a UI that is broken.
         //
+        // Either way, recording it keeps the rest of the run going and puts
+        // the failure in the ledger next to everything else instead of losing
+        // it in a stack trace.
+        const message = err instanceof Error ? err.message : String(err);
+        const isVisualDiff = /toHaveScreenshot|Screenshot comparison failed/i.test(message);
+
         // A best-effort screenshot of wherever we ended up is usually the
-        // fastest way to see which of the two it was. It goes to the
-        // diagnostics directory, not `baselines/` — it is evidence about a
-        // failure, not an approved picture of a working screen.
+        // fastest way to tell which. It goes to the diagnostics directory,
+        // not `baselines/` — it is evidence about a failure, not an approved
+        // picture of a working screen.
         const file = path.join(DIAG_DIR, viewport.id, `${surface.id}.png`);
         mkdirSync(path.dirname(file), { recursive: true });
         await page.screenshot({ path: file }).catch(() => {});
@@ -96,11 +119,13 @@ for (const surface of SURFACES) {
           stage: surface.stage,
           viewport: viewport.id,
           audit: 'console',
-          severity: 'p1',
-          rule: 'surface-unreachable',
-          detail: `could not reach this surface: ${
-            err instanceof Error ? err.message.split('\n')[0] : String(err)
-          }`,
+          severity: isVisualDiff ? 'p2' : 'p1',
+          rule: isVisualDiff ? 'visual-regression' : 'surface-unreachable',
+          detail: isVisualDiff
+            ? `this surface no longer matches its committed baseline. If the change is ` +
+              `intended, re-record with \`bash scripts/ui-audit.sh --update-baselines\`. ` +
+              `${message.split('\n')[0]}`
+            : `could not reach this surface: ${message.split('\n')[0]}`,
           screenshot: path.relative(AUDIT_ROOT, file),
         });
 

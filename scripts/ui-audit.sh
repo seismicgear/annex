@@ -62,9 +62,13 @@ else
     echo "[ui-audit] NOTE: warm-role setup will fail if identities already exist."
 fi
 
+PW_ARGS=()
 if [ "$UPDATE_BASELINES" -eq 1 ]; then
-    echo "[ui-audit] removing existing baselines so this run rewrites them"
-    rm -rf client/e2e/audit/baselines
+    # `--update-snapshots` records baselines instead of failing on mismatch.
+    # Recording is deliberately opt-in: a run that silently rewrote its own
+    # baselines could never detect a visual regression.
+    echo "[ui-audit] recording baselines (--update-snapshots)"
+    PW_ARGS+=(--update-snapshots)
 fi
 
 # A failing capture is not a reason to skip the report — it is the main
@@ -74,7 +78,7 @@ fi
 # so CI still fails.
 echo "[ui-audit] capturing surfaces"
 capture_status=0
-(cd client && npx playwright test --project=audit --reporter=list "${GREP_ARGS[@]+"${GREP_ARGS[@]}"}") || capture_status=$?
+(cd client && npx playwright test --project=audit --reporter=list "${PW_ARGS[@]+"${PW_ARGS[@]}"}" "${GREP_ARGS[@]+"${GREP_ARGS[@]}"}") || capture_status=$?
 
 echo "[ui-audit] rendering contact sheet"
 node scripts/ui-audit-report.mjs
