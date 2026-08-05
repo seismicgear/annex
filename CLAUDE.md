@@ -112,7 +112,7 @@ cd client && npm run lint
 | `annex-db` | SQLite database layer, migrations |
 | `annex-identity` | ZK identity, Merkle trees |
 | `annex-channels` | Channel CRUD, messaging |
-| `annex-voice` | TTS/STT, LiveKit integration |
+| `annex-voice` | Native WebRTC SFU (`webrtc-rs`), Piper TTS, Whisper STT |
 | `annex-vrp` | Value Resonance Protocol (trust) |
 | `annex-federation` | Server federation |
 | `annex-rtx` | Agent knowledge exchange |

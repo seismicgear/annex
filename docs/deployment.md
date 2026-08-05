@@ -210,13 +210,17 @@ Run behind a reverse proxy (nginx, Caddy) with TLS. Set `ANNEX_PUBLIC_URL` to yo
 ANNEX_PUBLIC_URL=https://annex.example.com
 ```
 
-If LiveKit is also publicly accessible, set:
+If the voice SFU is reachable at a different address from the API, set:
 
 ```bash
-ANNEX_LIVEKIT_PUBLIC_URL=wss://livekit.example.com
+ANNEX_WEBRTC_PUBLIC_URL=wss://voice.example.com
 ```
 
-The server uses `ANNEX_PUBLIC_URL` for invite links and federation signatures. It uses `ANNEX_LIVEKIT_PUBLIC_URL` for the WebSocket URL sent to remote voice clients. Both are auto-detected from trusted forwarded headers (`X-Forwarded-Host`, `X-Forwarded-Proto`) when present.
+The server uses `ANNEX_PUBLIC_URL` for invite links and federation signatures, and `ANNEX_WEBRTC_PUBLIC_URL` for the WebSocket URL handed to remote voice clients. Both are auto-detected from trusted forwarded headers (`X-Forwarded-Host`, `X-Forwarded-Proto`) when present, so most deployments behind a single proxy need only the first.
+
+> Earlier revisions of this page named `ANNEX_LIVEKIT_PUBLIC_URL`. No such variable exists — nothing in the codebase reads it, so a deployment configured from those instructions silently had no SFU URL set at all. The voice settings are the `ANNEX_WEBRTC_*` family (`_URL`, `_PUBLIC_URL`, `_API_KEY`, `_API_SECRET`), matching the `[webrtc]` section of `config.toml`.
+
+`ANNEX_PUBLIC_URL` must be **HTTPS** for invite links to work: the invite format requires it, because the link carries a join secret that must not be readable in transit. On an `http://` public URL the admin panel says so and does not offer the invite action.
 
 ### Desktop host mode
 
