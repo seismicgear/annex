@@ -102,8 +102,8 @@ export function DeviceLinkDialog({ onClose }: Props) {
   }, [inputPayload, inputCode, loadIdentities]);
 
   return (
-    <Modal onClose={onClose} className="device-link-dialog" titleId={titleId}>
-      <h3 id={titleId}>Device Linking</h3>
+    <Modal onClose={onClose} className="device-link-dialog" titleId={titleId} focusKey={mode}>
+      <h2 id={titleId}>Device Linking</h2>
 
       {mode === 'choose' && (
         <div className="device-link-choose">

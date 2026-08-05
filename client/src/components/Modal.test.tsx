@@ -139,3 +139,59 @@ describe('Modal', () => {
     expect(dialog).toHaveFocus();
   });
 });
+
+describe('Modal focusKey', () => {
+  it('moves focus to the new step when the dialog changes contents', async () => {
+    // Multi-step dialogs (device linking, social recovery) replace their
+    // contents without unmounting. Focusing only on mount left the user on a
+    // control that no longer existed, so the next Tab started from the top of
+    // the document.
+    const user = userEvent.setup();
+
+    function Stepper() {
+      const [step, setStep] = useState<'one' | 'two'>('one');
+      return (
+        <Modal onClose={() => {}} label="Stepper" focusKey={step}>
+          {step === 'one' ? (
+            <button onClick={() => setStep('two')}>go to step two</button>
+          ) : (
+            <button>step two control</button>
+          )}
+        </Modal>
+      );
+    }
+
+    render(<Stepper />);
+    const first = screen.getByRole('button', { name: 'go to step two' });
+    expect(first).toHaveFocus();
+
+    await user.click(first);
+    expect(screen.getByRole('button', { name: 'step two control' })).toHaveFocus();
+  });
+
+  it('does not return focus to the trigger on a step change', async () => {
+    const user = userEvent.setup();
+
+    function Host() {
+      const [open, setOpen] = useState(false);
+      const [step, setStep] = useState(0);
+      return (
+        <>
+          <button onClick={() => setOpen(true)}>open</button>
+          {open && (
+            <Modal onClose={() => setOpen(false)} label="Stepper" focusKey={step}>
+              <button onClick={() => setStep((s) => s + 1)}>next ({step})</button>
+            </Modal>
+          )}
+        </>
+      );
+    }
+
+    render(<Host />);
+    await user.click(screen.getByRole('button', { name: 'open' }));
+    await user.click(screen.getByRole('button', { name: 'next (0)' }));
+
+    // Focus must stay inside the dialog, not snap back to "open".
+    expect(screen.getByRole('button', { name: 'next (1)' })).toHaveFocus();
+  });
+});

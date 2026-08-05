@@ -128,12 +128,12 @@ export function MainLayout({
       default:
         return (
           <div className="app-layout">
-            <aside className="sidebar-left">
+            <aside className="sidebar-left" aria-label="Channels">
               <ErrorBoundary label="the channel list">
                 <ChannelList />
               </ErrorBoundary>
             </aside>
-            <main className="chat-area">
+            <main className="chat-area" aria-label="Conversation">
               {/* Separate boundaries: a crash in the message list must not
                   take the composer with it, and vice versa. */}
               <ErrorBoundary label="the conversation">
@@ -145,7 +145,7 @@ export function MainLayout({
                 <MessageInput />
               </ErrorBoundary>
             </main>
-            <aside className="sidebar-right">
+            <aside className="sidebar-right" aria-label="Members and agents">
               <ErrorBoundary label="the member list">
                 <MemberList />
               </ErrorBoundary>
@@ -162,7 +162,7 @@ export function MainLayout({
           <img src={serverImageUrl} alt="" className="header-server-image" />
         )}
         <h1>Annex</h1>
-        <nav className="header-tabs">
+        <nav className="header-tabs" aria-label="Main views">
           <button
             className={`tab-btn ${activeView === 'chat' ? 'active' : ''}`}
             onClick={() => setActiveView('chat')}

@@ -57,7 +57,7 @@ function AddServerDialog({ onClose, onAdd }: AddServerDialogProps) {
 
   return (
     <Modal onClose={onClose} className="add-server-dialog" titleId={titleId}>
-      <h3 id={titleId}>Join a Server</h3>
+      <h2 id={titleId}>Join a Server</h2>
       <p className="dialog-description">
         Enter the URL of an Annex server to establish a new cryptographic identity there.
       </p>
@@ -180,7 +180,7 @@ export function ServerHub() {
 
   return (
     <>
-      <nav className={`server-hub ${switching ? 'switching' : ''}`}>
+      <nav className={`server-hub ${switching ? 'switching' : ''}`} aria-label="Your servers">
         {switchError && (
           <div className="server-hub-error" role="alert" title={switchError}>
             <span>!</span>

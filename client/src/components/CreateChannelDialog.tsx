@@ -52,7 +52,7 @@ export function CreateChannelDialog({ onClose }: { onClose: () => void }) {
 
   return (
     <Modal onClose={onClose} titleId={titleId}>
-      <h3 id={titleId}>Create Channel</h3>
+      <h2 id={titleId}>Create Channel</h2>
       <form onSubmit={handleSubmit}>
         <label>
           Name

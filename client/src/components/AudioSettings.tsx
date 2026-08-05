@@ -206,7 +206,7 @@ export function AudioSettings({ onClose }: { onClose: () => void }) {
 
   return (
     <Modal onClose={onClose} className="settings-dialog" titleId={titleId}>
-      <h3 id={titleId}>Audio & Video Settings</h3>
+      <h2 id={titleId}>Audio & Video Settings</h2>
 
       {enumError && (
         <p className="settings-note settings-unsupported">

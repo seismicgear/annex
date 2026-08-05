@@ -61,6 +61,17 @@ export interface ModalProps {
   label?: string;
   /** Id of the heading that names this dialog. */
   titleId?: string;
+  /**
+   * Changing this re-runs the focus-in step.
+   *
+   * Several dialogs are multi-step — DeviceLinkDialog swaps between
+   * choose/share/receive, SocialRecoveryDialog between four modes — and
+   * replace their entire contents without unmounting. Focusing only on mount
+   * left the user on a control that no longer exists after a step change, so
+   * the next Tab started from the top of the document. Pass the current step
+   * here and focus follows the content.
+   */
+  focusKey?: string | number;
 }
 
 export function Modal({
@@ -69,9 +80,12 @@ export function Modal({
   className = "",
   label,
   titleId,
+  focusKey,
 }: ModalProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const restoreFocusTo = useRef<HTMLElement | null>(null);
+  /** True between mount and unmount, so a `focusKey` change is not mistaken for a close. */
+  const mountedRef = useRef(true);
 
   // Keep the latest onClose without re-running the mount effect, so a caller
   // passing an inline arrow does not tear down and rebuild focus handling on
@@ -82,8 +96,12 @@ export function Modal({
     onCloseRef.current = onClose;
   }, [onClose]);
 
+  useEffect(() => () => { mountedRef.current = false; }, []);
+
   useEffect(() => {
-    restoreFocusTo.current = document.activeElement as HTMLElement | null;
+    // Remember the trigger once; a step change must not overwrite it with a
+    // control inside the dialog.
+    restoreFocusTo.current ??= document.activeElement as HTMLElement | null;
 
     const dialog = dialogRef.current;
     if (dialog) {
@@ -95,10 +113,11 @@ export function Modal({
 
     return () => {
       // Returning focus to the trigger is what makes a dialog feel like a
-      // detour rather than a navigation.
-      restoreFocusTo.current?.focus?.({ preventScroll: true });
+      // detour rather than a navigation. Only on unmount — a step change
+      // within the dialog must not throw focus back to the page.
+      if (!mountedRef.current) restoreFocusTo.current?.focus?.({ preventScroll: true });
     };
-  }, []);
+  }, [focusKey]);
 
   // Escape closes, from anywhere — including from inside an input, which is
   // where a user is most likely to want out.

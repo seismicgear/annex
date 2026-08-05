@@ -26,7 +26,7 @@ function AgentDetail({ agent, onClose }: { agent: AgentInfo; onClose: () => void
   return (
     <div className="agent-detail-overlay" onClick={onClose}>
       <div className="agent-detail" onClick={(e) => e.stopPropagation()}>
-        <h3>Agent: {displayName ?? agent.pseudonym_id.slice(0, 16) + '...'}</h3>
+        <h2>Agent: {displayName ?? agent.pseudonym_id.slice(0, 16) + '...'}</h2>
         <dl>
           <dt>Alignment</dt>
           <dd className={`alignment-${agent.alignment_status.toLowerCase()}`}>
@@ -93,7 +93,7 @@ export function MemberList() {
 
       {agents.length > 0 && (
         <div className="agent-list">
-          <h4>Active Agents</h4>
+          <h3>Active Agents</h3>
           {agents.map((agent) => {
             const name = getDisplayName(agent.pseudonym_id);
             return (

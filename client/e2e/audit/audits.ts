@@ -155,6 +155,9 @@ async function auditOverflow(page: Page): Promise<Omit<Finding, 'surfaceId' | 's
       const style = getComputedStyle(el);
       if (style.overflow !== 'hidden' && style.overflowX !== 'hidden') continue;
       if (style.textOverflow === 'ellipsis') continue;
+      // Screen-reader-only text is clipped to 1px on purpose — that is the
+      // whole technique. Flagging it would be reporting the fix as the bug.
+      if (el.classList.contains('visually-hidden')) continue;
       if (!el.textContent?.trim()) continue;
       if (el.scrollWidth <= el.clientWidth + 1) continue;
       if (el.children.length > 0) continue; // leaf text nodes only

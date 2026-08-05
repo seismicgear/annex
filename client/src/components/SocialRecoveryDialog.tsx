@@ -180,8 +180,8 @@ export function SocialRecoveryDialog({ onClose }: Props) {
   };
 
   return (
-    <Modal onClose={onClose} className="social-recovery-dialog" titleId={titleId}>
-      <h3 id={titleId}>Social Recovery</h3>
+    <Modal onClose={onClose} className="social-recovery-dialog" titleId={titleId} focusKey={mode}>
+      <h2 id={titleId}>Social Recovery</h2>
 
       {mode === 'choose' && (
         <div className="recovery-choose">

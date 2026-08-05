@@ -102,7 +102,7 @@ export function MessageSearch() {
         </button>
       </form>
       {results.length > 0 && (
-        <div className="search-results" role="listbox">
+        <div className="search-results" role="listbox" aria-label="Search results">
           {results.map((msg) => {
             const ts = parseMessageTimestamp(msg.created_at);
             const time = isNaN(ts) ? '' : new Date(ts).toLocaleString();

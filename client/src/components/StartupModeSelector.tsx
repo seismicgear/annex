@@ -325,7 +325,7 @@ export function StartupModeSelector({ onReady }: Props) {
   if (phase === 'starting_voice') {
     return (
       <div className="startup-mode-selector">
-        <h2>Annex</h2>
+        <h1>Annex</h1>
         <div className="startup-loading">Setting up voice...</div>
         <p className="tunnel-hint">
           This may take a moment on first launch while the voice server is
@@ -338,7 +338,7 @@ export function StartupModeSelector({ onReady }: Props) {
   if (phase === 'starting_server') {
     return (
       <div className="startup-mode-selector">
-        <h2>Annex</h2>
+        <h1>Annex</h1>
         <div className="startup-loading">Starting server...</div>
       </div>
     );
@@ -347,7 +347,7 @@ export function StartupModeSelector({ onReady }: Props) {
   if (phase === 'acquiring_endpoint') {
     return (
       <div className="startup-mode-selector">
-        <h2>Annex</h2>
+        <h1>Annex</h1>
         <div className="startup-loading">Setting up public access...</div>
         <p className="endpoint-hint">
           Acquiring a public endpoint from the Annex router so others can
@@ -360,7 +360,7 @@ export function StartupModeSelector({ onReady }: Props) {
   if (phase === 'connecting') {
     return (
       <div className="startup-mode-selector">
-        <h2>Annex</h2>
+        <h1>Annex</h1>
         <div className="startup-loading">Connecting to server...</div>
       </div>
     );
@@ -369,7 +369,7 @@ export function StartupModeSelector({ onReady }: Props) {
   if (phase === 'error') {
     return (
       <div className="startup-mode-selector">
-        <h2>Annex</h2>
+        <h1>Annex</h1>
         <div className="error-message">{error}</div>
         <button onClick={handleReset}>Try Again</button>
       </div>
@@ -379,7 +379,7 @@ export function StartupModeSelector({ onReady }: Props) {
   // phase === 'choose'
   return (
     <div className="startup-mode-selector">
-      <h2>Annex</h2>
+      <h1>Annex</h1>
       <p className="startup-description">
         Choose how to use Annex. Remembered values are shown as suggestions.
       </p>
@@ -388,7 +388,7 @@ export function StartupModeSelector({ onReady }: Props) {
         {inTauri ? (
           /* Tauri: Host a Server */
           <div className="startup-option">
-            <h3>Host a Server</h3>
+            <h2>Host a Server</h2>
             <p>
               Run your own Annex server on this device. A public URL is
               automatically configured so others can connect to you.
@@ -403,7 +403,7 @@ export function StartupModeSelector({ onReady }: Props) {
         ) : (
           /* Web/Docker: Use this server */
           <div className="startup-option">
-            <h3>Use This Server</h3>
+            <h2>Use This Server</h2>
             <p>
               Connect to the Annex server at the current address.
             </p>
@@ -418,7 +418,7 @@ export function StartupModeSelector({ onReady }: Props) {
         </div>
 
         <div className="startup-option">
-          <h3>Connect to {inTauri ? 'a' : 'Another'} Server</h3>
+          <h2>Connect to {inTauri ? 'a' : 'Another'} Server</h2>
           <p>Join an existing Annex server as a client.</p>
           <form onSubmit={handleClientSubmit}>
             <input

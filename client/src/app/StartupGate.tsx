@@ -177,7 +177,7 @@ export function StartupGate(props: StartupGateProps) {
       <div className="app">
         <main className="app-main setup">
           <div className="startup-mode-selector">
-            <h2>Annex</h2>
+            <h1>Annex</h1>
             <div className="startup-loading">Loading...</div>
           </div>
         </main>
@@ -190,7 +190,7 @@ export function StartupGate(props: StartupGateProps) {
       <div className="app">
         <main className="app-main setup">
           <div className="startup-mode-selector">
-            <h2>Annex</h2>
+            <h1>Annex</h1>
             <div className="error-message">Startup failed: {startupInitError}</div>
             {(startupErrorDetails || errorDetails) && (
               <details className="error-details">
@@ -291,7 +291,7 @@ export function StartupGate(props: StartupGateProps) {
     <div className="app">
       <main className="app-main setup">
         <div className="identity-setup">
-          <h2>Annex</h2>
+          <h1>Annex</h1>
           {passwordRequired && phase === 'keys_ready' ? (
             <PasswordPrompt
               onSubmit={setServerPassword}

@@ -182,7 +182,10 @@ export const SURFACES: Surface[] = [
       await page.getByRole('button', { name: 'Continue' }).click();
       await expect(page.locator('.error-message')).toBeVisible({ timeout: 60_000 });
     },
-    waive: { network: 'the 403 is injected deliberately to reach the refusal state' },
+    waive: {
+      network: 'the 403 is injected deliberately to reach the refusal state',
+      console: 'the browser logs the injected 403 to the console as well',
+    },
   },
 
   // ─────────────────────── 05 · channels ───────────────────────
@@ -423,7 +426,10 @@ export const SURFACES: Surface[] = [
       if (await join.isVisible().catch(() => false)) await join.click();
       await page.waitForTimeout(1500);
     },
-    waive: { network: 'the 403 is injected deliberately to reach the join-failure state' },
+    waive: {
+      network: 'the 403 is injected deliberately to reach the join-failure state',
+      console: 'the browser logs the injected 403 to the console as well',
+    },
   },
 
   // ─────────────────────── 08 · user settings ───────────────────────
@@ -823,7 +829,10 @@ export const SURFACES: Surface[] = [
       await openTab(page, 'Events');
       await expect(page.locator('.event-log-error')).toBeVisible({ timeout: 15_000 });
     },
-    waive: { network: 'the 500 is injected deliberately to reach the error state' },
+    waive: {
+      network: 'the 500 is injected deliberately to reach the error state',
+      console: 'the browser logs the injected 500 to the console as well',
+    },
   },
   {
     id: 'agent-detail-overlay',
@@ -876,6 +885,7 @@ export const SURFACES: Surface[] = [
     reportOnly: true,
     waive: {
       network: 'the context is deliberately taken offline, so every in-flight request fails',
+      console: 'every dropped request is also logged to the console',
       a11y: 'axe cannot fetch its own resources while the context is offline',
     },
   },
@@ -902,7 +912,10 @@ export const SURFACES: Surface[] = [
         timeout: 20_000,
       });
     },
-    waive: { network: 'the 429 is injected deliberately to reach the rate-limited state' },
+    waive: {
+      network: 'the 429 is injected deliberately to reach the rate-limited state',
+      console: 'the browser logs the injected 429 to the console as well',
+    },
   },
   {
     id: 'storage-gate-507',
@@ -931,7 +944,10 @@ export const SURFACES: Surface[] = [
       await expect(dialog.locator('.error-message')).toBeVisible({ timeout: 15_000 });
     },
     clip: '.dialog',
-    waive: { network: 'the 507 is injected deliberately to reach the storage-gate state' },
+    waive: {
+      network: 'the 507 is injected deliberately to reach the storage-gate state',
+      console: 'the browser logs the injected 507 to the console as well',
+    },
   },
 ];
 

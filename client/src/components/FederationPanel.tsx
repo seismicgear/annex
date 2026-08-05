@@ -70,7 +70,7 @@ function PeerDetail({ peer, onClose }: PeerDetailProps) {
 
   return (
     <Modal onClose={onClose} className="peer-detail-dialog" titleId={titleId}>
-      <h3 id={titleId}>Upstream Federation</h3>
+      <h2 id={titleId}>Upstream Federation</h2>
 
       {loading ? (
         <p className="loading-text">Fetching server metadata...</p>
@@ -193,7 +193,7 @@ export function FederationPanel() {
   return (
     <>
       <div className="federation-panel">
-        <h3>Federation Peers<InfoTip text="These are other Annex servers your community is connected to. You can explore them and join ones that interest you." /></h3>
+        <h2>Federation Peers<InfoTip text="These are other Annex servers your community is connected to. You can explore them and join ones that interest you." /></h2>
         <p className="federation-description">
           Discover new communities through the trusted edges of your current network.
         </p>

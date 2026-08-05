@@ -373,6 +373,7 @@ function MessageBubble({
           <textarea
             ref={editInputRef}
             className="message-edit-input"
+            aria-label="Edit message"
             value={editText}
             onChange={(e) => setEditText(e.target.value)}
             onKeyDown={handleEditKeyDown}

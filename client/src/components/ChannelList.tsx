@@ -225,7 +225,7 @@ export function ChannelList() {
   return (
     <nav className="channel-list" aria-label="Channel list">
       <div className="channel-list-header">
-        <h3>Channels</h3>
+        <h2>Channels</h2>
         {permissions?.capabilities.can_moderate && (
           <button
             className="create-channel-btn"

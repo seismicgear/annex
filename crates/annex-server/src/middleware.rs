@@ -374,6 +374,40 @@ pub fn resolve_client_ip_from_xff(
 /// common web attacks (XSS, clickjacking, MIME sniffing, etc.).
 ///
 /// CSP and Permissions-Policy are only set on HTML document responses.
+/// Content-Security-Policy sent with every HTML document.
+///
+/// `connect-src` is the load-bearing directive and it deliberately allows
+/// `https:` as a scheme source rather than only `'self'`.
+///
+/// Annex is a federated client: `client/src/api/core.ts::requestRemote` exists
+/// specifically to talk to OTHER Annex servers, and backs the federation
+/// peer-explore and remote-server-join flows. Those servers are discovered at
+/// runtime, so no static header can enumerate them. Restricting `connect-src`
+/// to `'self'` did not secure anything — it simply made those features
+/// impossible in a browser. A UI-audit capture of the peer-detail dialog
+/// caught the browser refusing the request outright:
+///
+///   Refused to connect to 'https://…/api/public/server/summary' because it
+///   violates the following Content Security Policy directive
+///
+/// The policy was also internally inconsistent about it: `ws:`/`wss:` are
+/// scheme sources that already permit a WebSocket to ANY host, so cross-origin
+/// realtime traffic was allowed while the cross-origin fetch that sets it up
+/// was blocked.
+///
+/// `http:` is deliberately NOT included, so a page served over HTTPS cannot be
+/// talked into a plaintext downgrade. Local development against an
+/// `http://localhost` peer is served over plain HTTP itself, where the
+/// browser treats the connection as same-scheme.
+const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; \
+     script-src 'self' 'wasm-unsafe-eval'; \
+     connect-src 'self' https: ws: wss:; \
+     img-src 'self' data: blob:; \
+     media-src 'self' blob: data: mediastream:; \
+     style-src 'self' 'unsafe-inline'; \
+     frame-ancestors 'none'; \
+     object-src 'none'";
+
 /// Setting them on API (JSON) responses is unnecessary and can confuse
 /// some WebView implementations (e.g. Tauri desktop mode).
 pub async fn security_headers_middleware(req: Request<Body>, next: Next) -> Response {
@@ -416,16 +450,7 @@ pub async fn security_headers_middleware(req: Request<Body>, next: Next) -> Resp
         );
         headers.insert(
             header::HeaderName::from_static("content-security-policy"),
-            header::HeaderValue::from_static(
-                "default-src 'self'; \
-                 script-src 'self' 'wasm-unsafe-eval'; \
-                 connect-src 'self' ws: wss:; \
-                 img-src 'self' data: blob:; \
-                 media-src 'self' blob: data: mediastream:; \
-                 style-src 'self' 'unsafe-inline'; \
-                 frame-ancestors 'none'; \
-                 object-src 'none'",
-            ),
+            header::HeaderValue::from_static(CONTENT_SECURITY_POLICY),
         );
     }
 
@@ -856,6 +881,57 @@ pub fn verify_zk_membership_header(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The federation client fetches OTHER servers cross-origin
+    /// (`api/core.ts::requestRemote`), so `connect-src` has to permit it.
+    /// Restricting it to `'self'` did not secure anything — the browser
+    /// refused the request outright and peer-explore / remote-join simply did
+    /// not work in a browser at all.
+    #[test]
+    fn csp_allows_the_cross_origin_fetches_federation_depends_on() {
+        let connect_src = CONTENT_SECURITY_POLICY
+            .split(';')
+            .map(str::trim)
+            .find(|d| d.starts_with("connect-src"))
+            .expect("policy must declare connect-src");
+
+        assert!(
+            connect_src.contains(" https:"),
+            "connect-src must allow cross-origin HTTPS or federation peer-explore \
+             and remote-server join are impossible in a browser: {connect_src}"
+        );
+        assert!(
+            connect_src.contains("'self'"),
+            "same-origin must remain allowed: {connect_src}"
+        );
+        assert!(
+            connect_src.contains(" ws:") && connect_src.contains(" wss:"),
+            "realtime traffic must stay allowed: {connect_src}"
+        );
+        assert!(
+            !connect_src.contains(" http:"),
+            "plaintext must NOT be allowed — an HTTPS page must not be talked \
+             into a downgrade: {connect_src}"
+        );
+    }
+
+    /// The rest of the policy is load-bearing too: WASM for in-browser
+    /// Groth16 proving, blob/mediastream for voice and uploads, and a hard
+    /// no on framing.
+    #[test]
+    fn csp_keeps_its_other_guarantees() {
+        for required in [
+            "script-src 'self' 'wasm-unsafe-eval'",
+            "media-src 'self' blob: data: mediastream:",
+            "frame-ancestors 'none'",
+            "object-src 'none'",
+        ] {
+            assert!(
+                CONTENT_SECURITY_POLICY.contains(required),
+                "policy lost `{required}`: {CONTENT_SECURITY_POLICY}"
+            );
+        }
+    }
 
     #[test]
     fn rate_limiter_allows_within_limit() {

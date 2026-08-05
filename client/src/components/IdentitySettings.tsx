@@ -250,7 +250,7 @@ export function IdentitySettings({ onClose }: Props) {
 
   return (
     <Modal onClose={onClose} className="profile-switcher" titleId={titleId}>
-      <h3 id={titleId}>Identity</h3>
+      <h2 id={titleId}>Identity</h2>
 
       {/* Current pseudonym reference */}
       {identity && (
