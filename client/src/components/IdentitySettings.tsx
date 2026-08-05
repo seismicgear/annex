@@ -40,6 +40,10 @@ export function IdentitySettings({ onClose }: Props) {
   const [username, setUsername] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Persona failures need their own slot: the shared `error` above renders
+  // inside the username section further down the dialog, so a persona failure
+  // reported through it would appear next to unrelated controls.
+  const [personaError, setPersonaError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
   // Pre-populate the username field from the visible usernames cache
@@ -112,6 +116,7 @@ export function IdentitySettings({ onClose }: Props) {
   const handleCreatePersona = async (e: FormEvent) => {
     e.preventDefault();
     if (!identity || !displayName.trim()) return;
+    setPersonaError(null);
     try {
       const created = await personas.createPersona(
         displayName.trim(),
@@ -127,14 +132,20 @@ export function IdentitySettings({ onClose }: Props) {
       }
       resetForm();
       await loadPersonas();
-    } catch {
-      // Creation failed — form stays open for retry
+    } catch (err) {
+      // Was `catch {}` with a comment reading "form stays open for retry".
+      // The form did stay open — with no indication anything had gone wrong,
+      // so retrying produced the same silent nothing. Personas are stored in
+      // IndexedDB, which fails for real reasons a user can act on: private
+      // browsing, a full quota, a blocked origin.
+      setPersonaError(err instanceof Error ? err.message : String(err));
     }
   };
 
   const handleEditPersona = async (e: FormEvent) => {
     e.preventDefault();
     if (!editing) return;
+    setPersonaError(null);
     try {
       await personas.updatePersona({
         ...editing,
@@ -148,17 +159,20 @@ export function IdentitySettings({ onClose }: Props) {
       }
       resetForm();
       await loadPersonas();
-    } catch {
-      // Update failed — form stays open for retry
+    } catch (err) {
+      setPersonaError(err instanceof Error ? err.message : String(err));
     }
   };
 
   const handleDeletePersona = async (id: string) => {
+    setPersonaError(null);
     try {
       await personas.deletePersona(id);
       await loadPersonas();
-    } catch {
-      // Delete failed — list remains unchanged
+    } catch (err) {
+      // "List remains unchanged" is indistinguishable from "nothing happened
+      // because you did not really click it".
+      setPersonaError(err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -393,6 +407,12 @@ export function IdentitySettings({ onClose }: Props) {
           <button onClick={() => setCreating(true)} className="primary-btn" style={{ marginTop: '0.5rem' }}>
             New Persona
           </button>
+        )}
+
+        {personaError && (
+          <div className="error-message" role="alert">
+            {personaError}
+          </div>
         )}
       </div>
 

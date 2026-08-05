@@ -54,6 +54,10 @@
      one to use for accent-coloured text. */
   --accent-text: #ff8a92;
   --danger: #e63946;
+  /* The same hue, dark enough that white text on it reaches 5.4:1. Use this
+     whenever the danger colour is a FILL behind text; `--danger` stays right
+     for borders, icons and anything not contrast-bound. */
+  --danger-strong: #c72e3a;
   --error-color: #e63946;
   --error-text: #f87171;
   --warning-color: #fbbf24;

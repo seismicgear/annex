@@ -9,6 +9,8 @@ import { useIdentityStore } from '@/stores/identity';
 import { useChannelsStore } from '@/stores/channels';
 import { useServersStore } from '@/stores/servers';
 import { InfoTip } from '@/components/InfoTip';
+import { Modal } from '@/components/Modal';
+import { useDialogTitleId } from '@/lib/use-dialog-title-id';
 import * as api from '@/lib/api';
 import { canCreateInviteLink, createInviteLink } from '@/lib/invite';
 import type { ServerPolicy, AccessMode } from '@/types';
@@ -835,19 +837,32 @@ function MemberManager({ pseudonymId }: { pseudonymId: string }) {
 function ChannelManager({ pseudonymId }: { pseudonymId: string }) {
   const { channels, loadChannels } = useChannelsStore();
   const [deleting, setDeleting] = useState<string | null>(null);
+  // Deleting a channel used to go through the browser's own `confirm()`, and
+  // report failure through `alert()`. Both are modal at the OS level, ignore
+  // every style and token in the app, cannot say which channel is about to be
+  // destroyed beyond a bare sentence, and in the Tauri webview render as a
+  // chrome-less box that does not look like part of the product. They were
+  // also the only two dialogs in the app that the audit could not reach, since
+  // a native dialog is outside the page.
+  const [pendingDelete, setPendingDelete] = useState<{ id: string; name: string } | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const confirmTitleId = useDialogTitleId();
 
   useEffect(() => {
     loadChannels(pseudonymId);
   }, [pseudonymId, loadChannels]);
 
-  const handleDelete = async (channelId: string) => {
-    if (!confirm('Delete this channel? This cannot be undone.')) return;
-    setDeleting(channelId);
+  const handleDelete = async () => {
+    if (!pendingDelete) return;
+    const { id } = pendingDelete;
+    setPendingDelete(null);
+    setDeleting(id);
+    setDeleteError(null);
     try {
-      await api.deleteChannel(pseudonymId, channelId);
+      await api.deleteChannel(pseudonymId, id);
       await loadChannels(pseudonymId);
     } catch (err) {
-      alert(err instanceof Error ? err.message : String(err));
+      setDeleteError(err instanceof Error ? err.message : String(err));
     } finally {
       setDeleting(null);
     }
@@ -868,7 +883,7 @@ function ChannelManager({ pseudonymId }: { pseudonymId: string }) {
             </div>
             <button
               className="delete-btn"
-              onClick={() => handleDelete(ch.channel_id)}
+              onClick={() => setPendingDelete({ id: ch.channel_id, name: ch.name })}
               disabled={deleting === ch.channel_id}
             >
               {deleting === ch.channel_id ? '...' : 'Delete'}
@@ -876,6 +891,30 @@ function ChannelManager({ pseudonymId }: { pseudonymId: string }) {
           </div>
         ))}
       </div>
+
+      {deleteError && (
+        <div className="error-message" role="alert">
+          {deleteError}
+        </div>
+      )}
+
+      {pendingDelete && (
+        <Modal onClose={() => setPendingDelete(null)} titleId={confirmTitleId}>
+          <h2 id={confirmTitleId}>Delete channel</h2>
+          <p>
+            Delete <strong>{pendingDelete.name}</strong>? Its messages go with it, and this
+            cannot be undone.
+          </p>
+          <div className="dialog-actions">
+            <button type="button" onClick={() => setPendingDelete(null)}>
+              Cancel
+            </button>
+            <button type="button" className="danger-btn" onClick={handleDelete}>
+              Delete channel
+            </button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

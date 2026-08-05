@@ -1746,6 +1746,26 @@
   background: #200a0a;
 }
 
+/* The affirmative button in a destructive confirmation. Filled rather than
+   outlined, because it is the action the dialog exists to confirm — but in the
+   danger colour, so it never reads as the safe default. */
+.danger-btn {
+  /* NOT `--danger` (#e63946): white on it is 4.17:1, under the 4.5 floor for
+     normal text, and this is a button whose whole job is being read correctly
+     before something irreversible happens. `--danger-strong` is the same hue
+     darkened to 5.4:1. The lighter red stays correct for borders and icons,
+     which are not contrast-bound. */
+  background: var(--danger-strong);
+  border: 1px solid var(--danger-strong);
+  color: #fff;
+  font-weight: 600;
+}
+
+.danger-btn:hover {
+  background: #b3202c;
+  border-color: #b3202c;
+}
+
 /* ── Invite Banner ── */
 
 .invite-banner {

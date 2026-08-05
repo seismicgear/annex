@@ -592,7 +592,7 @@ export const SURFACES: Surface[] = [
     stage: '09-admin',
     title: 'Admin — channel management',
     role: 'founder',
-    intent: 'Channel delete surface; currently the only place using native confirm().',
+    intent: 'Channel list with per-channel delete affordances, as a moderator sees it.',
     navigate: async (page) => {
       await openAdminSection(page, 'Channel Management');
     },
@@ -617,14 +617,30 @@ export const SURFACES: Surface[] = [
     stage: '09-admin',
     title: 'Channel management with every channel type',
     role: 'founder',
-    intent:
-      'Delete affordances for all five channel types. Deletion here is the last remaining native ' +
-      'confirm() in the app.',
+    intent: 'Delete affordances for all five channel types.',
     navigate: async (page) => {
       await openAdminSection(page, 'Channel Management');
       await expect(page.locator('.channel-manager-item').first()).toBeVisible({ timeout: 15_000 });
     },
     clip: '.channel-manager',
+  },
+  {
+    id: 'admin-channel-delete-confirm',
+    stage: '09-admin',
+    title: 'Confirming a channel deletion',
+    role: 'founder',
+    intent:
+      'Deleting a channel is irreversible and takes its messages with it, so the confirmation ' +
+      'has to name the channel. This was the browser\'s own confirm() until now — modal at the ' +
+      'OS level, unstyled, and invisible to this audit because a native dialog is outside the page.',
+    navigate: async (page) => {
+      await openAdminSection(page, 'Channel Management');
+      const row = page.locator('.channel-manager-item').first();
+      await expect(row).toBeVisible({ timeout: 15_000 });
+      await row.getByRole('button', { name: 'Delete' }).click();
+      await expect(page.getByRole('dialog')).toBeVisible();
+    },
+    clip: '.dialog',
   },
   {
     id: 'non-admin-chat',

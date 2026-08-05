@@ -106,10 +106,6 @@ test.describe('surface manifest', () => {
       'components/Modal.tsx':
         'the dialog primitive itself — it defines the overlay, it is not a screen. ' +
         'Every dialog that uses it is listed separately.',
-      'components/ProfileSwitcher.tsx':
-        'dead code — zero imports, superseded by IdentitySettings',
-      'components/UsernameSettings.tsx':
-        'dead code — zero imports, superseded by IdentitySettings',
     };
 
     const modalComponents = readAllSources(SRC)
