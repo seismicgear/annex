@@ -193,9 +193,13 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
           ) : (
             <div className="server-image-placeholder">No image set</div>
           )}
+          {/* Hidden and driven by the button below, so axe does not flag it
+              today — but a name costs nothing and survives the display rule
+              changing. */}
           <input
             ref={imageInputRef}
             type="file"
+            aria-label="Upload a server image"
             accept="image/jpeg,image/png,image/gif,image/webp"
             onChange={handleImageUpload}
             style={{ display: 'none' }}
@@ -236,6 +240,7 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
         <div className="share-link-row">
           <input
             type="text"
+            aria-label="Public URL"
             value={publicUrlInput}
             onChange={(e) => setPublicUrlInput(e.target.value)}
             placeholder="https://your-server.example.com"
@@ -257,7 +262,13 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
             <p className="field-hint">Create an invite link to share with others.</p>
             {inviteUrl ? (
               <div className="share-link-row">
-                <input type="text" value={inviteUrl} readOnly className="share-link-input" />
+                <input
+                  type="text"
+                  aria-label="Invite link"
+                  value={inviteUrl}
+                  readOnly
+                  className="share-link-input"
+                />
                 <button className="primary-btn" onClick={handleCopyLink}>
                   {copied ? 'Copied!' : 'Copy Link'}
                 </button>
@@ -613,6 +624,7 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
         <div className="tag-input">
           <input
             type="text"
+            aria-label="Add a required capability"
             value={newCapability}
             onChange={(e) => setNewCapability(e.target.value)}
             placeholder="Add capability..."
@@ -655,6 +667,7 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
         <div className="tag-input">
           <input
             type="text"
+            aria-label="Add a principle"
             value={newPrinciple}
             onChange={(e) => setNewPrinciple(e.target.value)}
             placeholder="Add principle..."
@@ -694,6 +707,7 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
         <div className="tag-input">
           <input
             type="text"
+            aria-label="Add a prohibited action"
             value={newProhibited}
             onChange={(e) => setNewProhibited(e.target.value)}
             placeholder="Add prohibited action..."

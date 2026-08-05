@@ -53,6 +53,15 @@ start_server() {
     # "Rate limit exceeded" instead of the UI. Raised here for the harness
     # only — the shipped defaults are unchanged.
     #
+    # A public URL is set for a third reason of the same kind. Left unset, the
+    # server slug comes from `generate_server_slug()` — random per boot — and
+    # it is rendered in the header chip. Masking hides the text but not its
+    # width, so the mask box changed size every run and shifted its neighbour's
+    # box with it; captures diffed against themselves roughly one run in three.
+    # With a URL set the slug is `sha256(url)[..6]`: same value, every time.
+    # HTTPS specifically, because that is the shape a real deployment has and
+    # it exercises the invite path rather than the "no public URL" branch.
+    #
     # Presence pruning is disabled (0) for the same class of reason. It fires
     # on a 60s timer against a 300s inactivity threshold and appends a
     # NODE_PRUNED row to the event log, so whether the audit's event-log
@@ -69,6 +78,7 @@ start_server() {
     ANNEX_RATE_LIMIT_REGISTRATION="${ANNEX_RATE_LIMIT_REGISTRATION:-100000}" \
     ANNEX_RATE_LIMIT_VERIFICATION="${ANNEX_RATE_LIMIT_VERIFICATION:-100000}" \
     ANNEX_INACTIVITY_THRESHOLD_SECONDS="${ANNEX_INACTIVITY_THRESHOLD_SECONDS:-0}" \
+    ANNEX_PUBLIC_URL="${ANNEX_PUBLIC_URL:-https://annex.audit.test}" \
     cargo run -p annex-server -- "$empty_config" > "$LOG_FILE" 2>&1 &
 
     local pid=$!
