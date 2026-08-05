@@ -7,7 +7,7 @@
  * establishes a new cryptographic identity on the remote node.
  */
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, type ReactNode } from 'react';
 import * as api from '@/lib/api';
 import { useServersStore } from '@/stores/servers';
 import { InfoTip } from '@/components/InfoTip';
@@ -160,11 +160,33 @@ export function FederationPanel() {
     void loadPeers();
   }, [loadPeers]);
 
-  if (loading) return <div className="federation-panel loading">Loading peers...</div>;
+  // One shell for every state.
+  //
+  // The loading, error and empty branches used to return a bare container with
+  // no heading, so opening the Federation tab on a server with no peers showed
+  // "No federation peers" and nothing saying which section that even was — the
+  // title only appeared once there was something to title. It is the same shape
+  // as ChannelList's loading/error and MessageView's empty branches: a
+  // component whose non-happy paths quietly drop the structure its happy path
+  // provides. Keeping the heading also keeps the document outline contiguous
+  // in every state rather than only the populated one.
+  const shell = (children: ReactNode, extraClass = '') => (
+    <div className={`federation-panel ${extraClass}`.trim()}>
+      <h2>
+        Federation Peers
+        <InfoTip text="These are other Annex servers your community is connected to. You can explore them and join ones that interest you." />
+      </h2>
+      {children}
+    </div>
+  );
+
+  if (loading) {
+    return shell(<p className="federation-hint">Loading peers...</p>, 'loading');
+  }
 
   if (error) {
-    return (
-      <div className="federation-panel empty">
+    return shell(
+      <>
         <p className="error-text" role="alert">
           Could not load federation peers: {error}
         </p>
@@ -174,26 +196,31 @@ export function FederationPanel() {
         <button className="primary-btn" onClick={() => { void loadPeers(); }}>
           Retry
         </button>
-      </div>
+      </>,
+      'empty',
     );
   }
 
   if (peers.length === 0) {
-    return (
-      <div className="federation-panel empty">
+    return shell(
+      <>
         <p>No federation peers</p>
         <p className="federation-hint">
           Federation peers appear when your server operator establishes
           trust relationships with other Annex nodes.
         </p>
-      </div>
+      </>,
+      'empty',
     );
   }
 
   return (
     <>
       <div className="federation-panel">
-        <h2>Federation Peers<InfoTip text="These are other Annex servers your community is connected to. You can explore them and join ones that interest you." /></h2>
+        <h2>
+          Federation Peers
+          <InfoTip text="These are other Annex servers your community is connected to. You can explore them and join ones that interest you." />
+        </h2>
         <p className="federation-description">
           Discover new communities through the trusted edges of your current network.
         </p>

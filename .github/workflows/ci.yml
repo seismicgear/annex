@@ -3,8 +3,15 @@ name: CI
 on:
   push:
     branches: [main]
+  # Every pull request, not only those targeting main.
+  #
+  # With `branches: [main]` a PR opened against any other base — a stacked
+  # branch, a release train, a long-lived feature line — got **zero** checks,
+  # and GitHub renders that identically to a PR whose checks all passed. The
+  # verification lanes in this file only protect what they actually run on, so
+  # restricting them by base branch quietly exempted the PRs most likely to
+  # need them.
   pull_request:
-    branches: [main]
   workflow_dispatch:
     inputs:
       include_macos:

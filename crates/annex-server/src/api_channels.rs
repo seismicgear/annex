@@ -267,16 +267,21 @@ pub async fn voice_status_handler(
     Extension(state): Extension<Arc<AppState>>,
     Extension(IdentityContext(identity)): Extension<IdentityContext>,
     Path(channel_id): Path<String>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Result<Json<VoiceStatusResponse>, StatusCode> {
+    // Return the struct rather than hand-building the JSON.
+    //
+    // This used to re-list the fields in a `json!` literal, so adding
+    // `participant_ids` to `VoiceStatusResponse` compiled, serialized in the
+    // service, and was then silently dropped here — the client never saw it.
+    // Nothing failed: the client defaults a missing roster to `[]`, which is
+    // indistinguishable from an empty call. A typed response cannot drift from
+    // its own struct.
     let svc = ChannelService::new(state);
     let resp = svc
         .voice_status(&identity, &channel_id)
         .await
         .map_err(err_to_status)?;
-    Ok(Json(json!({
-        "participants": resp.participants,
-        "active": resp.active,
-    })))
+    Ok(Json(resp))
 }
 
 /// `GET /api/channels/:channelId/messages/:messageId/edits`

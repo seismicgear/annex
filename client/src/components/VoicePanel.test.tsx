@@ -774,4 +774,59 @@ describe('VoicePanel', () => {
     rerender(<VoicePanel />);
     expect(screen.getByRole('button', { name: 'Create Call' })).not.toBeDisabled();
   });
+
+  // The roster names the tiles in the participant grid, and it only ever
+  // arrives from this poll. The effect used to bail the moment `voiceToken`
+  // was set — that is, the moment you were in the call — so whoever created a
+  // call held the pre-join roster (empty) forever and nobody who joined
+  // afterwards ever got a tile. Losing this again would look like nothing: the
+  // call still connects, the audio still works, the grid just never fills in.
+  describe('voice status polling', () => {
+    it('polls before joining, to choose between Create and Join', () => {
+      voiceState = { ...voiceState, voiceToken: null, connectedChannelId: null };
+
+      render(<VoicePanel />);
+
+      expect(voiceState.checkCallActive).toHaveBeenCalled();
+    });
+
+    it('keeps polling once connected, so the roster stays current', () => {
+      voiceState = {
+        ...voiceState,
+        voiceToken: 'a-token',
+        connectedChannelId: 'chan-1',
+        checkCallActive: vi.fn(async () => {}),
+      };
+
+      render(<VoicePanel />);
+
+      expect(
+        voiceState.checkCallActive,
+        'polling must continue while in a call — the roster is only populated here',
+      ).toHaveBeenCalled();
+    });
+
+    it('polls again on an interval rather than only once', () => {
+      vi.useFakeTimers();
+      try {
+        voiceState = {
+          ...voiceState,
+          voiceToken: 'a-token',
+          connectedChannelId: 'chan-1',
+          checkCallActive: vi.fn(async () => {}),
+        };
+
+        render(<VoicePanel />);
+        const initial = voiceState.checkCallActive.mock.calls.length;
+
+        act(() => {
+          vi.advanceTimersByTime(25_000);
+        });
+
+        expect(voiceState.checkCallActive.mock.calls.length).toBeGreaterThan(initial);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
 });

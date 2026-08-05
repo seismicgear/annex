@@ -144,9 +144,22 @@ export function VoicePanel() {
   const lastJoinErrorDetails = activeChannelId ? getJoinError(activeChannelId) : null;
   const lastJoinError = lastJoinErrorDetails?.display ?? null;
 
-  // Poll voice status to determine if a call is active (Create vs Join).
+  // Poll voice status: before a call, to choose between "Create" and "Join";
+  // during one, to keep the participant roster current.
+  //
+  // This used to stop the moment `voiceToken` was set — that is, the moment
+  // you were actually in the call. That was fine when the response was only a
+  // count used to label a button, but the roster now names the tiles, so
+  // freezing it at the pre-join poll meant the person who created a call held
+  // an empty roster forever and nobody who joined afterwards ever appeared.
+  // The poll continues while connected; it is one small request every ten
+  // seconds against a route the client already calls.
+  //
+  // Polling is the right shape here rather than join/leave events, because a
+  // participant can also vanish without an event the client sees — a dropped
+  // connection, a reaped peer — and a poll converges on the truth either way.
   useEffect(() => {
-    if (!isVoiceCapable || !activeChannelId || !identity?.pseudonymId || voiceToken) return;
+    if (!isVoiceCapable || !activeChannelId || !identity?.pseudonymId) return;
 
     checkCallActive(identity.pseudonymId!, activeChannelId);
     const interval = setInterval(
@@ -154,7 +167,7 @@ export function VoicePanel() {
       10_000,
     );
     return () => clearInterval(interval);
-  }, [isVoiceCapable, activeChannelId, identity?.pseudonymId, voiceToken, checkCallActive]);
+  }, [isVoiceCapable, activeChannelId, identity?.pseudonymId, checkCallActive]);
 
   const pseudonymId = identity?.pseudonymId ?? null;
 
