@@ -911,6 +911,12 @@ impl FederationService {
                     payload.originating_server
                 )));
             }
+            // Traffic is the liveness signal the expiry task was documented to
+            // rely on and never actually received: nothing else moves
+            // `updated_at` on a healthy link, so every agreement deactivated
+            // itself `agreement_ttl_days` after first contact. Guarded to at
+            // most one write per peer per day.
+            let _ = annex_federation::touch_agreement(&conn, state.server_id, instance.id);
 
             // 2. Verify Signature (newline-delimited to prevent field-boundary ambiguity)
             let message = format!("{}\n{}", channel_id, payload.pseudonym_id);
@@ -1029,6 +1035,12 @@ impl FederationService {
                         envelope.originating_server
                     )));
                 }
+                // Traffic is the liveness signal the expiry task was documented to
+                // rely on and never actually received: nothing else moves
+                // `updated_at` on a healthy link, so every agreement deactivated
+                // itself `agreement_ttl_days` after first contact. Guarded to at
+                // most one write per peer per day.
+                let _ = annex_federation::touch_agreement(&conn, state.server_id, instance.id);
 
                 // 2. Verify Signature
                 let signing_input = message_signing_input(&envelope);
@@ -1364,6 +1376,12 @@ impl FederationService {
                         envelope.originating_server
                     )));
                 }
+                // Traffic is the liveness signal the expiry task was documented to
+                // rely on and never actually received: nothing else moves
+                // `updated_at` on a healthy link, so every agreement deactivated
+                // itself `agreement_ttl_days` after first contact. Guarded to at
+                // most one write per peer per day.
+                let _ = annex_federation::touch_agreement(&conn, state.server_id, instance.id);
 
                 // 3. Freshness gate.
                 let fed_cfg = &state.federation_config;
@@ -1623,6 +1641,12 @@ impl FederationService {
                         envelope.originating_server
                     )));
                 }
+                // Traffic is the liveness signal the expiry task was documented to
+                // rely on and never actually received: nothing else moves
+                // `updated_at` on a healthy link, so every agreement deactivated
+                // itself `agreement_ttl_days` after first contact. Guarded to at
+                // most one write per peer per day.
+                let _ = annex_federation::touch_agreement(&conn, state.server_id, instance.id);
 
                 // 3. Freshness gate.
                 let fed_cfg = &state.federation_config;

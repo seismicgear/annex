@@ -163,6 +163,38 @@ pub fn list_active_agreements(
     rows.collect()
 }
 
+/// Records that an agreement is still carrying traffic.
+///
+/// `expire_stale_agreements` reaps agreements whose `updated_at` has not
+/// moved within the TTL, and its documentation said that column "is
+/// refreshed on every re-handshake / policy re-evaluation, so this only
+/// reaps peers that have gone silent". Neither half held for a working
+/// link. There is no periodic re-handshake — the only outbound one fires
+/// on a local policy change — and `recalculate_federation_agreements` skips
+/// the UPDATE entirely when the verdict is unchanged, which is exactly the
+/// case for a healthy peer. Ordinary federated traffic only ever read the
+/// row. So `updated_at` stayed frozen at the moment of first contact and
+/// every federation link deactivated itself `agreement_ttl_days` later,
+/// while messages were still flowing.
+///
+/// This is the liveness signal that was missing. The guard on the age keeps
+/// it to at most one write per peer per day rather than one per delivered
+/// message, so a busy link does not turn every inbound envelope into an
+/// extra UPDATE.
+pub fn touch_agreement(
+    conn: &Connection,
+    local_server_id: i64,
+    remote_instance_id: i64,
+) -> Result<usize> {
+    let rows = conn.execute(
+        "UPDATE federation_agreements SET updated_at = datetime('now')
+         WHERE local_server_id = ?1 AND remote_instance_id = ?2 AND active = 1
+         AND julianday('now') - julianday(updated_at) > 1.0",
+        params![local_server_id, remote_instance_id],
+    )?;
+    Ok(rows)
+}
+
 /// Expires agreements older than the given number of days.
 pub fn expire_stale_agreements(
     conn: &Connection,
@@ -275,5 +307,110 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 2, "agreements from different servers should coexist");
+    }
+}
+
+#[cfg(test)]
+mod liveness_tests {
+    use super::*;
+    use annex_vrp::{VrpAlignmentStatus, VrpTransferScope, VrpValidationReport};
+
+    fn setup_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE federation_agreements (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                local_server_id INTEGER NOT NULL,
+                remote_instance_id INTEGER NOT NULL,
+                alignment_status TEXT NOT NULL,
+                transfer_scope TEXT NOT NULL,
+                agreement_json TEXT NOT NULL,
+                remote_handshake_json TEXT,
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )",
+            [],
+        )
+        .unwrap();
+        conn
+    }
+
+    fn report() -> VrpValidationReport {
+        VrpValidationReport {
+            alignment_status: VrpAlignmentStatus::Aligned,
+            transfer_scope: VrpTransferScope::ReflectionSummariesOnly,
+            alignment_score: 1.0,
+            negotiation_notes: vec![],
+        }
+    }
+
+    fn backdate(conn: &Connection, days: i64) {
+        conn.execute(
+            &format!(
+                "UPDATE federation_agreements SET updated_at = datetime('now', '-{days} days')"
+            ),
+            [],
+        )
+        .unwrap();
+    }
+
+    /// A link carrying traffic must not be reaped.
+    ///
+    /// `expire_stale_agreements` reads `updated_at`, and nothing on the
+    /// message path used to write it — no periodic re-handshake exists, and
+    /// `recalculate_federation_agreements` skips the UPDATE when the verdict
+    /// is unchanged, which is the healthy case. So a perfectly good
+    /// federation relationship deactivated itself `agreement_ttl_days` after
+    /// first contact, while messages were still flowing. The touch is what
+    /// makes the expiry task mean "gone silent" rather than "existed for a
+    /// month".
+    #[test]
+    fn touching_an_agreement_saves_it_from_expiry() {
+        let mut conn = setup_db();
+        create_agreement(&mut conn, 1, 10, &report(), None).unwrap();
+        backdate(&conn, 45);
+
+        let touched = touch_agreement(&conn, 1, 10).expect("touch");
+        assert_eq!(touched, 1, "the touch did not update the row");
+
+        let expired = expire_stale_agreements(&conn, 1, 30).expect("expire");
+        assert_eq!(expired, 0, "an actively-used agreement was expired");
+    }
+
+    /// The behaviour the task exists for has to survive the fix.
+    #[test]
+    fn a_silent_peer_is_still_expired() {
+        let mut conn = setup_db();
+        create_agreement(&mut conn, 1, 10, &report(), None).unwrap();
+        backdate(&conn, 45);
+
+        let expired = expire_stale_agreements(&conn, 1, 30).expect("expire");
+        assert_eq!(expired, 1, "a peer that has not been heard from was kept");
+    }
+
+    /// The age guard keeps a busy link from turning every inbound envelope
+    /// into an extra UPDATE.
+    #[test]
+    fn a_recently_touched_agreement_is_not_written_again() {
+        let mut conn = setup_db();
+        create_agreement(&mut conn, 1, 10, &report(), None).unwrap();
+
+        let touched = touch_agreement(&conn, 1, 10).expect("touch");
+        assert_eq!(touched, 0, "a fresh row should not be rewritten");
+    }
+
+    /// The touch is scoped to one relationship, not "any agreement".
+    #[test]
+    fn touching_one_peer_does_not_save_another() {
+        let mut conn = setup_db();
+        create_agreement(&mut conn, 1, 10, &report(), None).unwrap();
+        create_agreement(&mut conn, 1, 11, &report(), None).unwrap();
+        backdate(&conn, 45);
+
+        touch_agreement(&conn, 1, 10).expect("touch");
+
+        let expired = expire_stale_agreements(&conn, 1, 30).expect("expire");
+        assert_eq!(expired, 1, "only the untouched peer should expire");
     }
 }

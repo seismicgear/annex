@@ -613,6 +613,30 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
     // the variable does.
     apply_rate_limit_env_overrides(&mut policy);
 
+    // Say plainly when the outbox will retry past the point a peer can accept.
+    //
+    // These two numbers are configured independently and only make sense
+    // together: retries beyond the freshness window are not "less likely to
+    // succeed", they cannot succeed, because the envelope's signed
+    // `created_at` never moves and the live ingest endpoint rejects on age.
+    {
+        let fed = &config.federation;
+        let usable =
+            crate::background::attempts_within_freshness_window(fed.freshness_window_seconds);
+        if fed.outbox_max_attempts > usable {
+            tracing::warn!(
+                outbox_max_attempts = fed.outbox_max_attempts,
+                freshness_window_seconds = fed.freshness_window_seconds,
+                usable_attempts = usable,
+                "federation outbox will retry past the receiver's freshness \
+                 window: attempts beyond {usable} are rejected as too old, not \
+                 merely likely to fail. Lower `outbox_max_attempts` or raise \
+                 `freshness_window_seconds`.",
+                usable = usable,
+            );
+        }
+    }
+
     // Say plainly when agent alignment is not being enforced.
     //
     // `agent_min_alignment_score` reads like a working gate, and with no

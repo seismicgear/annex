@@ -540,6 +540,46 @@ fn backoff_seconds(next_attempt: u32) -> u64 {
     (base.saturating_mul(1u64 << shift)).min(cap)
 }
 
+/// How many attempts of the backoff schedule can still be accepted by a peer,
+/// given the receiver's live freshness window.
+///
+/// The outbox posts to `/api/federation/messages`, which checks freshness in
+/// `DeliveryMode::Live` and rejects anything whose `created_at` is older than
+/// `freshness_window_seconds`. The envelope is signed at enqueue and its
+/// timestamp never moves, so once the cumulative backoff passes that window
+/// every remaining retry is guaranteed to be rejected — not "likely to fail",
+/// but structurally incapable of succeeding.
+///
+/// With the shipped defaults that was 12 attempts against a 300s window: the
+/// initial send, retries at 60s and 180s, and then nine more at 420s, 900s,
+/// 1860s … out to roughly three hours, all of them rejected as too old, after
+/// which the row was marked failed and the message dropped. The retries cost
+/// the peer a signature verification each and told the operator nothing, and
+/// `DeliveryMode::Catchup` — the mode that would accept them — is never
+/// constructed anywhere, so there is nothing to fall back to.
+///
+/// Returns the number of sends (including the first) that land inside the
+/// window, floored at 1.
+pub(crate) fn attempts_within_freshness_window(freshness_window_seconds: i64) -> u32 {
+    if freshness_window_seconds <= 0 {
+        return 1;
+    }
+    let window = freshness_window_seconds as u64;
+    let mut elapsed = 0u64;
+    // The first send happens immediately, so it always counts.
+    let mut sends = 1u32;
+    loop {
+        let next = backoff_seconds(sends);
+        match elapsed.checked_add(next) {
+            Some(t) if t <= window => {
+                elapsed = t;
+                sends += 1;
+            }
+            _ => return sends,
+        }
+    }
+}
+
 #[cfg(test)]
 mod outbox_routing_tests {
     use super::outbox_envelope_endpoint_path;
@@ -613,5 +653,43 @@ mod backoff_tests {
             assert!(s >= 60, "n={n} → {s}");
             assert!(s <= 3600, "n={n} → {s}");
         }
+    }
+}
+
+#[cfg(test)]
+mod freshness_budget_tests {
+    use super::attempts_within_freshness_window;
+
+    /// The shipped pairing. The backoff is 60s, 120s, 240s …, so against a
+    /// 300s window the immediate send plus retries at 60s and 180s land, and
+    /// the one at 420s does not.
+    #[test]
+    fn the_default_window_admits_three_sends() {
+        assert_eq!(attempts_within_freshness_window(300), 3);
+    }
+
+    /// The old default was 12 against that same window — nine sends that the
+    /// receiver was obliged to reject as too old, spread over ~3 hours.
+    #[test]
+    fn twelve_attempts_never_fitted_the_default_window() {
+        assert!(
+            attempts_within_freshness_window(300) < 12,
+            "if this ever passes, the retry budget and the freshness window \
+             have been reconciled and the warning at startup is dead code",
+        );
+    }
+
+    #[test]
+    fn a_wider_window_admits_more_sends() {
+        // 60 + 120 + 240 + 480 = 900
+        assert_eq!(attempts_within_freshness_window(900), 5);
+    }
+
+    #[test]
+    fn a_window_smaller_than_the_first_backoff_still_admits_the_first_send() {
+        // The initial POST happens immediately and is always worth making.
+        assert_eq!(attempts_within_freshness_window(30), 1);
+        assert_eq!(attempts_within_freshness_window(0), 1);
+        assert_eq!(attempts_within_freshness_window(-5), 1);
     }
 }

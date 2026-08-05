@@ -129,8 +129,24 @@ fn default_future_skew_seconds() -> i64 {
 fn default_outbox_interval_seconds() -> u64 {
     5
 }
+/// Retries that can actually be accepted, not retries that fit in a clock.
+///
+/// The outbox posts to the live ingest endpoint, which rejects an envelope
+/// older than `freshness_window_seconds` (default 300). The envelope is
+/// signed at enqueue and its `created_at` never moves, so the schedule
+/// (60s, 120s, 240s, …) leaves the window after the second retry. The old
+/// default of 12 spent the remaining nine attempts on requests the receiver
+/// was obliged to reject, over roughly three hours, before dropping the
+/// message anyway.
+///
+/// Three sends — immediate, +60s, +180s — is what fits. A peer down for
+/// longer than five minutes already loses the message; this stops the server
+/// pretending otherwise, and stops it hammering a recovering peer with
+/// envelopes that cannot be accepted. Operators who raise
+/// `freshness_window_seconds` should raise this to match; the server warns at
+/// startup when the two disagree.
 fn default_outbox_max_attempts() -> u32 {
-    12
+    3
 }
 fn default_outbox_per_peer_batch() -> u32 {
     8
