@@ -93,9 +93,16 @@ export function ParticipantGrid({ session }: { session: WebRtcSession }) {
   //
   // The server roster knows who is actually in the room, so count from that
   // and let the tracks decide only which of them are sending video.
-  const audioOnlyRemotes = Math.max(0, others.length - remoteVideos.length);
+  // Who is in the call but not on screen: everyone in the roster who has no
+  // live video track of their own. Each remote sender now has its own track
+  // (see `senderFromTrackId`), so this is a set difference rather than a count
+  // — with per-sender attribution there is no need to guess.
+  const sendingVideo = new Set(
+    remoteVideos.map((v) => v.sender).filter((s): s is string => s !== null),
+  );
+  const audioOnly = others.filter((id) => !sendingVideo.has(id));
 
-  const tileCount = 1 + (localScreenTrack ? 1 : 0) + remoteVideos.length + audioOnlyRemotes;
+  const tileCount = 1 + (localScreenTrack ? 1 : 0) + remoteVideos.length + audioOnly.length;
 
   return (
     <div className="call-grid" data-tiles={tileCount}>
@@ -126,26 +133,20 @@ export function ParticipantGrid({ session }: { session: WebRtcSession }) {
         <div key={v.id} className="call-tile">
           <VideoTile track={v.track} />
           <span className="tile-name">
-            {others.length === 1 ? nameFor(others[0]) : 'Participant'}
+            {v.sender ? nameFor(v.sender) : 'Participant'}
           </span>
         </div>
       ))}
 
-      {/* Audio-only remotes */}
-      {Array.from({ length: audioOnlyRemotes }, (_, i) => {
-        const name = others.length === 1 ? nameFor(others[0]) : null;
-        return (
-          <div key={`audio-${i}`} className="call-tile">
-            <Avatar label={name ?? 'P'} />
-            <span className="tile-name">{name ?? 'Participant'}</span>
-          </div>
-        );
-      })}
-      {/* With more than one other person in the call the tiles cannot be
-          named, so say who is here rather than leaving the user to guess. */}
-      {others.length > 1 && (
-        <p className="call-roster">In this call: {others.map(nameFor).join(', ')}</p>
-      )}
+      {/* Audio-only remotes: in the call but not sending video. Derived from
+          the roster rather than the track list, because the SFU attaches
+          tracks to a connection before the peer is necessarily publishing. */}
+      {audioOnly.map((id) => (
+        <div key={`audio-${id}`} className="call-tile">
+          <Avatar label={nameFor(id)} />
+          <span className="tile-name">{nameFor(id)}</span>
+        </div>
+      ))}
     </div>
   );
 }

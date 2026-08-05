@@ -309,9 +309,16 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
         participantsByChannel: { ...s.participantsByChannel, [channelId]: status.participant_ids },
       }));
     } catch {
+      // A failed poll clears the "is a call running" flag, because that is what
+      // it could not confirm — but it deliberately LEAVES the roster alone.
+      //
+      // Emptying it here made every participant tile vanish on a single
+      // dropped request and reappear on the next poll ten seconds later, so a
+      // call visibly emptied itself and refilled. A request that did not
+      // arrive is not evidence that everyone left; the last known roster is a
+      // better answer than "nobody".
       set((s) => ({
         callActiveByChannel: { ...s.callActiveByChannel, [channelId]: false },
-        participantsByChannel: { ...s.participantsByChannel, [channelId]: [] },
       }));
     }
   },

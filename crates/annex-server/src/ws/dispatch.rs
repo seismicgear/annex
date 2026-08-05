@@ -133,6 +133,9 @@ pub(crate) async fn dispatch(ctx: &CommandContext<'_>, msg: IncomingMessage) {
         IncomingMessage::WebRtcOffer { channel_id, sdp } => {
             webrtc::handle_offer(ctx, channel_id, sdp).await;
         }
+        IncomingMessage::WebRtcAnswer { channel_id, sdp } => {
+            webrtc::handle_answer(ctx, channel_id, sdp).await;
+        }
         IncomingMessage::WebRtcIceCandidate {
             channel_id,
             candidate,

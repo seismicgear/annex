@@ -47,6 +47,7 @@ export function useVoiceRoom({
 
     const sess = new WebRtcSession(iceServers, channelId, identity, {
       sendOffer: (ch, sdp) => ws.sendWebRtcOffer(ch, sdp),
+      sendAnswer: (ch, sdp) => ws.sendWebRtcAnswer(ch, sdp),
       sendIceCandidate: (ch, candidate, sdpMid, sdpMLineIndex) =>
         ws.sendIceCandidate(ch, candidate, sdpMid, sdpMLineIndex),
     });

@@ -126,6 +126,32 @@ export default defineConfig({
         trace: 'off',
       },
     },
+
+    // Multi-peer calls. Separate from `audit` because it drives three browser
+    // contexts through a real WebRTC session rather than capturing a surface,
+    // so it needs minutes rather than seconds and its failures mean something
+    // different: not "a screen changed" but "a call cannot be held".
+    {
+      name: 'group-call',
+      testDir: './e2e/audit',
+      testMatch: /group-call\.spec\.ts/,
+      dependencies: ['audit-setup'],
+      timeout: 240_000,
+      use: {
+        ...devices['Desktop Chrome'],
+        permissions: ['camera', 'microphone'],
+        launchOptions: {
+          args: [
+            '--use-fake-ui-for-media-stream',
+            '--use-fake-device-for-media-stream',
+            '--autoplay-policy=no-user-gesture-required',
+          ],
+        },
+        screenshot: 'off',
+        video: 'off',
+        trace: 'off',
+      },
+    },
   ],
 
   // Don't auto-start the server — we manage it externally via e2e-server.sh

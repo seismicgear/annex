@@ -38,6 +38,19 @@ pub struct SttTapFrame {
     pub pcm_s16le: Vec<u8>,
 }
 
+/// An offer the SERVER initiated, for a peer already in a call.
+///
+/// Adding a track to an established connection requires a new offer/answer.
+/// The existing signalling is client-offers / server-answers, so this rides
+/// the same broadcast-and-filter path as `IceCandidateEvent`: the WS session
+/// for `peer_id` picks it up and forwards it as `webrtc_offer`.
+#[derive(Debug, Clone)]
+pub struct RenegotiateEvent {
+    pub channel_id: String,
+    pub peer_id: String,
+    pub sdp: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct IceCandidateEvent {
     pub channel_id: String,
@@ -45,27 +58,86 @@ pub struct IceCandidateEvent {
     pub candidate: RTCIceCandidateInit,
 }
 
-struct PeerSession {
-    pc: Arc<RTCPeerConnection>,
-    /// Per-peer outbound track the SFU writes OTHER peers' audio into.
-    audio_outbound_track: Arc<TrackLocalStaticRTP>,
-    /// Per-peer outbound track the SFU writes OTHER peers' video into
-    /// (camera). Routed separately so video RTP never lands on the audio
-    /// track (which would corrupt the audio stream).
-    video_outbound_track: Arc<TrackLocalStaticRTP>,
+/// The pair of tracks carrying ONE sender's media to ONE receiver.
+///
+/// Audio and video are separate tracks because video RTP landing on an audio
+/// track corrupts the audio stream.
+struct OutboundTracks {
+    audio: Arc<TrackLocalStaticRTP>,
+    video: Arc<TrackLocalStaticRTP>,
 }
 
-/// The outbound track a receiver's RTP is written into.
+struct PeerSession {
+    pc: Arc<RTCPeerConnection>,
+    /// One track pair per OTHER peer in the room, keyed by that peer's
+    /// pseudonym.
+    ///
+    /// This used to be a single audio track and a single video track per
+    /// receiver, into which `fan_out_rtp` wrote every other peer's RTP. With
+    /// one remote peer that is correct. With two, their streams — different
+    /// SSRCs, independent encoder state — were interleaved onto one track, and
+    /// a receiver cannot demultiplex that: VP8 carries inter-frame references,
+    /// so alternating packets from two encoders decodes to neither. Calls were
+    /// structurally limited to two participants, and the client had no
+    /// per-sender track to attribute a tile to, which is why every remote tile
+    /// read "Participant".
+    ///
+    /// Each track's id is the sender's pseudonym, so it reaches the browser as
+    /// the MSID and the client can name the tile without a side channel.
+    outbound: DashMap<String, OutboundTracks>,
+}
+
+/// The track a given sender's RTP is written into, for a given receiver.
 ///
-/// Note what this signature cannot express: it takes the *receiver* and the
-/// media kind, and nothing about the *sender*. A receiver has exactly one
-/// audio track and one video track, so every other peer's RTP is written into
-/// the same one. See `fan_out_collapses_every_sender_onto_one_track_per_receiver`.
-fn outbound_track_for(session: &PeerSession, want_video: bool) -> Arc<TrackLocalStaticRTP> {
-    if want_video {
-        session.video_outbound_track.clone()
-    } else {
-        session.audio_outbound_track.clone()
+/// Returns `None` when the receiver has no track pair for that sender yet —
+/// a publisher whose media arrives in the window between joining and
+/// renegotiation completing. Dropping those packets is correct: there is
+/// nowhere to put them, and the sender's encoder will produce a keyframe once
+/// the track exists.
+fn outbound_track_for(
+    session: &PeerSession,
+    sender: &str,
+    want_video: bool,
+) -> Option<Arc<TrackLocalStaticRTP>> {
+    session.outbound.get(sender).map(|tracks| {
+        if want_video {
+            tracks.video.clone()
+        } else {
+            tracks.audio.clone()
+        }
+    })
+}
+
+/// Build the track pair carrying `sender`'s media into a receiver's
+/// connection.
+///
+/// The track id is the sender's pseudonym so the browser sees it as the MSID
+/// and can attribute the tile; the stream id groups a sender's audio and video
+/// into one MediaStream, which is what lets a client pair them.
+fn make_outbound_tracks(channel_id: &str, sender: &str) -> OutboundTracks {
+    OutboundTracks {
+        audio: Arc::new(TrackLocalStaticRTP::new(
+            RTCRtpCodecCapability {
+                mime_type: "audio/opus".to_string(),
+                clock_rate: 48_000,
+                channels: 1,
+                sdp_fmtp_line: "minptime=10;useinbandfec=1".to_string(),
+                rtcp_feedback: vec![],
+            },
+            format!("audio-{sender}"),
+            format!("{channel_id}-{sender}"),
+        )),
+        video: Arc::new(TrackLocalStaticRTP::new(
+            RTCRtpCodecCapability {
+                mime_type: "video/VP8".to_string(),
+                clock_rate: 90_000,
+                channels: 0,
+                sdp_fmtp_line: String::new(),
+                rtcp_feedback: vec![],
+            },
+            format!("video-{sender}"),
+            format!("{channel_id}-{sender}"),
+        )),
     }
 }
 
@@ -82,6 +154,7 @@ pub struct VoiceService {
     runtime_disabled: RwLock<bool>,
     stt_tap_tx: broadcast::Sender<SttTapFrame>,
     ice_candidate_tx: broadcast::Sender<IceCandidateEvent>,
+    renegotiate_tx: broadcast::Sender<RenegotiateEvent>,
 }
 
 impl std::fmt::Debug for VoiceService {
@@ -112,6 +185,7 @@ impl VoiceService {
 
         let (stt_tap_tx, _) = broadcast::channel(1024);
         let (ice_candidate_tx, _) = broadcast::channel(1024);
+        let (renegotiate_tx, _) = broadcast::channel(256);
 
         Self {
             config,
@@ -121,6 +195,7 @@ impl VoiceService {
             runtime_disabled: RwLock::new(false),
             stt_tap_tx,
             ice_candidate_tx,
+            renegotiate_tx,
         }
     }
 
@@ -266,11 +341,40 @@ impl VoiceService {
             .unwrap_or(0))
     }
 
+    /// Remove `identity` from every room it is in.
+    ///
+    /// Called when a WebSocket session ends. Until this existed, a peer was
+    /// only ever removed by an explicit leave — so closing a tab, losing a
+    /// network, or crashing left them in the room forever: still on the
+    /// roster, still holding a track slot on every other peer's connection,
+    /// and keeping the room alive so it was never reaped. Other participants
+    /// saw a tile for someone who had gone.
+    ///
+    /// Returns the channels it removed them from, so the caller can
+    /// renegotiate with whoever is left.
+    pub async fn remove_participant_everywhere(&self, identity: &str) -> Vec<String> {
+        let rooms: Vec<String> = self
+            .rooms
+            .iter()
+            .filter(|r| r.peers.contains_key(identity))
+            .map(|r| r.key().clone())
+            .collect();
+
+        for channel_id in &rooms {
+            let _ = self.remove_participant(channel_id, identity).await;
+        }
+        rooms
+    }
+
     pub async fn remove_participant(&self, room: &str, identity: &str) -> Result<(), VoiceError> {
         if let Some(peer) = self.drop_peer_and_maybe_reap(room, identity) {
             if let Err(e) = peer.pc.close().await {
                 debug!(error = %e, "failed to close peer connection");
             }
+            // Everyone still in the room held a track pair for the departed
+            // peer. Drop it and re-offer, or their grid keeps a tile for
+            // somebody who has gone.
+            self.drop_sender_from_remaining_peers(room, identity).await;
         }
         Ok(())
     }
@@ -330,6 +434,124 @@ impl VoiceService {
         self.ice_candidate_tx.subscribe()
     }
 
+    pub fn subscribe_renegotiations(&self) -> broadcast::Receiver<RenegotiateEvent> {
+        self.renegotiate_tx.subscribe()
+    }
+
+    /// Accept a peer's answer to an offer the server initiated.
+    ///
+    /// The counterpart to the `webrtc_offer` pushed by
+    /// [`Self::renegotiate_with`]. Unknown room or peer is not an error — both
+    /// mean the peer left while the offer was in flight.
+    pub async fn handle_renegotiation_answer(
+        &self,
+        channel_id: &str,
+        peer_id: &str,
+        answer_sdp: &str,
+    ) -> Result<(), VoiceError> {
+        let Some(room) = self.rooms.get(channel_id) else {
+            return Ok(());
+        };
+        let Some(peer) = room.peers.get(peer_id).map(|p| p.clone()) else {
+            return Ok(());
+        };
+        drop(room);
+
+        let answer = RTCSessionDescription::answer(answer_sdp.to_string())
+            .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
+        peer.pc
+            .set_remote_description(answer)
+            .await
+            .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Offer `receiver` an updated session description after its track set
+    /// changed.
+    ///
+    /// Best-effort by design: a peer that has gone away, or whose connection
+    /// is closing, must not fail the join of the peer that triggered this.
+    async fn renegotiate_with(&self, channel_id: &str, receiver: &str, peer: &Arc<PeerSession>) {
+        let offer = match peer.pc.create_offer(None).await {
+            Ok(o) => o,
+            Err(e) => {
+                debug!(peer = %receiver, error = %e, "could not create renegotiation offer");
+                return;
+            }
+        };
+        if let Err(e) = peer.pc.set_local_description(offer.clone()).await {
+            debug!(peer = %receiver, error = %e, "could not set local description");
+            return;
+        }
+        // No receiver is not an error: it just means nobody is listening on the
+        // broadcast yet, which is normal in tests and during shutdown.
+        let _ = self.renegotiate_tx.send(RenegotiateEvent {
+            channel_id: channel_id.to_string(),
+            peer_id: receiver.to_string(),
+            sdp: offer.sdp,
+        });
+    }
+
+    /// Drop the departed peer's track pair from everyone still in the room and
+    /// offer them the updated description.
+    async fn drop_sender_from_remaining_peers(&self, channel_id: &str, departed: &str) {
+        let Some(room) = self.rooms.get(channel_id) else {
+            return;
+        };
+        let remaining: Vec<(String, Arc<PeerSession>)> = room
+            .peers
+            .iter()
+            .map(|p| (p.key().clone(), p.value().clone()))
+            .collect();
+        drop(room);
+
+        for (receiver_id, peer) in remaining {
+            if peer.outbound.remove(departed).is_some() {
+                self.renegotiate_with(channel_id, &receiver_id, &peer).await;
+            }
+        }
+    }
+
+    /// Give every existing peer a track pair for the newcomer, and offer them
+    /// the updated description.
+    ///
+    /// Runs after the newcomer is in the room, so it deliberately skips them:
+    /// nobody receives their own media back.
+    async fn add_sender_to_existing_peers(&self, channel_id: &str, newcomer: &str) {
+        let Some(room) = self.rooms.get(channel_id) else {
+            return;
+        };
+        let receivers: Vec<(String, Arc<PeerSession>)> = room
+            .peers
+            .iter()
+            .filter(|p| p.key() != newcomer)
+            .map(|p| (p.key().clone(), p.value().clone()))
+            .collect();
+        drop(room);
+
+        for (receiver_id, peer) in receivers {
+            let tracks = make_outbound_tracks(channel_id, newcomer);
+            let added_audio = peer
+                .pc
+                .add_track(tracks.audio.clone() as Arc<dyn TrackLocal + Send + Sync>)
+                .await;
+            let added_video = peer
+                .pc
+                .add_track(tracks.video.clone() as Arc<dyn TrackLocal + Send + Sync>)
+                .await;
+            if let (Ok(_), Ok(_)) = (added_audio, added_video) {
+                peer.outbound.insert(newcomer.to_string(), tracks);
+                self.renegotiate_with(channel_id, &receiver_id, &peer).await;
+            } else {
+                debug!(
+                    receiver = %receiver_id,
+                    sender = %newcomer,
+                    "could not add tracks for the new peer",
+                );
+            }
+        }
+    }
+
     pub async fn handle_sdp_offer(
         self: &Arc<Self>,
         channel_id: &str,
@@ -344,41 +566,28 @@ impl VoiceService {
                 .map_err(|e| VoiceError::WebRtc(e.to_string()))?,
         );
 
-        let audio_outbound_track = Arc::new(TrackLocalStaticRTP::new(
-            RTCRtpCodecCapability {
-                mime_type: "audio/opus".to_string(),
-                clock_rate: 48_000,
-                channels: 1,
-                sdp_fmtp_line: "minptime=10;useinbandfec=1".to_string(),
-                rtcp_feedback: vec![],
-            },
-            format!("audio-{peer_id}"),
-            channel_id.to_string(),
-        ));
-        // Per-peer VP8 outbound track so the SFU can forward other peers'
-        // camera video. VP8 is registered by `register_default_codecs()`.
-        let video_outbound_track = Arc::new(TrackLocalStaticRTP::new(
-            RTCRtpCodecCapability {
-                mime_type: "video/VP8".to_string(),
-                clock_rate: 90_000,
-                channels: 0,
-                sdp_fmtp_line: String::new(),
-                rtcp_feedback: vec![],
-            },
-            format!("video-{peer_id}"),
-            channel_id.to_string(),
-        ));
+        // One track pair per peer ALREADY in the room, so this connection
+        // receives each of them on its own track. The agent (TTS) track is
+        // added last, as before.
+        let existing: Vec<String> = room
+            .peers
+            .iter()
+            .filter(|p| p.key() != peer_id)
+            .map(|p| p.key().clone())
+            .collect();
 
-        // Order matters: the client offers m=audio then m=video, so add the
-        // audio outbound track first, then the video one, so webrtc-rs maps
-        // them to the matching m-lines. The agent (TTS) audio track is added
-        // last, as before.
-        pc.add_track(audio_outbound_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
-            .await
-            .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
-        pc.add_track(video_outbound_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
-            .await
-            .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
+        let outbound: DashMap<String, OutboundTracks> = DashMap::new();
+        for sender in &existing {
+            let tracks = make_outbound_tracks(channel_id, sender);
+            pc.add_track(tracks.audio.clone() as Arc<dyn TrackLocal + Send + Sync>)
+                .await
+                .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
+            pc.add_track(tracks.video.clone() as Arc<dyn TrackLocal + Send + Sync>)
+                .await
+                .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
+            outbound.insert(sender.clone(), tracks);
+        }
+
         pc.add_track(room.agent_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
             .await
             .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
@@ -466,14 +675,13 @@ impl VoiceService {
             .await
             .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
 
-        room.peers.insert(
-            peer_id.to_string(),
-            Arc::new(PeerSession {
-                pc,
-                audio_outbound_track,
-                video_outbound_track,
-            }),
-        );
+        room.peers
+            .insert(peer_id.to_string(), Arc::new(PeerSession { pc, outbound }));
+
+        // Now that the newcomer is in the room, give everyone else a track for
+        // them and offer the updated description. Done after the insert so the
+        // set of receivers is exactly "everyone but the newcomer".
+        self.add_sender_to_existing_peers(channel_id, peer_id).await;
 
         Ok(answer)
     }
@@ -650,11 +858,14 @@ impl VoiceService {
                 .peers
                 .iter()
                 .filter(|peer| peer.key().as_str() != publisher_id)
-                .map(|peer| {
-                    (
-                        peer.key().clone(),
-                        outbound_track_for(peer.value(), want_video),
-                    )
+                // `filter_map`: a receiver with no track pair for this
+                // publisher yet — the window between joining and renegotiation
+                // completing — has nowhere to put the packet. Dropping it is
+                // correct; the encoder produces a keyframe once the track
+                // exists.
+                .filter_map(|peer| {
+                    outbound_track_for(peer.value(), publisher_id, want_video)
+                        .map(|track| (peer.key().clone(), track))
                 })
                 .collect();
 
@@ -751,7 +962,7 @@ mod tests {
         let room = empty_room("ch-roster");
         for peer in ["carol", "alice", "bob"] {
             room.peers
-                .insert(peer.to_string(), peer_session("ch-roster", peer).await);
+                .insert(peer.to_string(), peer_session("ch-roster", &[]).await);
         }
         svc.rooms.insert("ch-roster".to_string(), room);
 
@@ -774,91 +985,78 @@ mod tests {
         assert!(svc.participant_ids("no-such-channel").await.is_empty());
     }
 
-    /// A `PeerSession` with real outbound tracks, so the fan-out's choice of
-    /// track can be observed by identity.
-    async fn peer_session(channel_id: &str, peer_id: &str) -> Arc<PeerSession> {
-        let audio = Arc::new(TrackLocalStaticRTP::new(
-            RTCRtpCodecCapability {
-                mime_type: "audio/opus".to_string(),
-                clock_rate: 48_000,
-                channels: 1,
-                sdp_fmtp_line: "minptime=10;useinbandfec=1".to_string(),
-                rtcp_feedback: vec![],
-            },
-            format!("audio-{peer_id}"),
-            channel_id.to_string(),
-        ));
-        let video = Arc::new(TrackLocalStaticRTP::new(
-            RTCRtpCodecCapability {
-                mime_type: "video/VP8".to_string(),
-                clock_rate: 90_000,
-                channels: 0,
-                sdp_fmtp_line: String::new(),
-                rtcp_feedback: vec![],
-            },
-            format!("video-{peer_id}"),
-            channel_id.to_string(),
-        ));
+    /// A `PeerSession` carrying a track pair for each named sender.
+    async fn peer_session(channel_id: &str, senders: &[&str]) -> Arc<PeerSession> {
         let pc = APIBuilder::new()
             .build()
             .new_peer_connection(Default::default())
             .await
             .expect("peer connection");
+        let outbound = DashMap::new();
+        for sender in senders {
+            outbound.insert(sender.to_string(), make_outbound_tracks(channel_id, sender));
+        }
         Arc::new(PeerSession {
             pc: Arc::new(pc),
-            audio_outbound_track: audio,
-            video_outbound_track: video,
+            outbound,
         })
     }
 
-    /// Every sender's RTP lands on the same outbound track per receiver.
+    /// Each sender reaches a receiver on its OWN track.
     ///
-    /// This pins a real limitation rather than asserting desired behaviour. In
-    /// a two-person call there is exactly one remote sender, one outbound
-    /// track per receiver is correct, and everything works. Add a third
-    /// participant and two independent senders — different SSRCs, independent
-    /// encoder state — are interleaved onto a single track. A receiver cannot
-    /// demultiplex that: VP8 carries inter-frame references, so alternating
-    /// packets from two encoders decodes to neither stream.
-    ///
-    /// It is also the reason `RemoteParticipants.tsx` labels every remote tile
-    /// "Participant". There is no per-sender track to attribute to a
-    /// pseudonym, so there is nothing the UI could name. Fixing the label
-    /// means fixing the fan-out first: one outbound track per
-    /// (receiver, sender) pair, which needs server-initiated renegotiation
-    /// when a peer joins or leaves.
-    ///
-    /// When that lands, this test should start failing — that is the point.
+    /// This replaces `fan_out_collapses_every_sender_onto_one_track_per_receiver`,
+    /// which pinned the opposite and was written to start failing when this
+    /// landed. Previously `PeerSession` held one audio track and one video
+    /// track per receiver and `fan_out_rtp` wrote every other peer's RTP into
+    /// them, so two senders' streams — different SSRCs, independent encoder
+    /// state — were interleaved onto a single track. A receiver cannot
+    /// demultiplex that; VP8 in particular carries inter-frame references, so
+    /// alternating packets from two encoders decodes to neither stream. Calls
+    /// were structurally limited to two participants.
     #[tokio::test]
-    async fn fan_out_collapses_every_sender_onto_one_track_per_receiver() {
-        let bob = peer_session("ch-group", "bob").await;
+    async fn each_sender_reaches_a_receiver_on_its_own_track() {
+        let bob = peer_session("ch-group", &["alice", "carol"]).await;
 
-        // `fan_out_rtp` picks the destination with exactly this call, once per
-        // receiver, for whichever peer happens to be publishing. Ask it twice,
-        // standing in for two different senders.
-        let for_sender_alice = outbound_track_for(&bob, true);
-        let for_sender_carol = outbound_track_for(&bob, true);
+        let from_alice = outbound_track_for(&bob, "alice", true).expect("alice track");
+        let from_carol = outbound_track_for(&bob, "carol", true).expect("carol track");
 
         assert!(
-            Arc::ptr_eq(&for_sender_alice, &for_sender_carol),
-            "bob receives one video track regardless of who is sending — two \
-             senders are interleaved onto it, which is why calls break above \
-             two participants and why remote tiles cannot be named",
+            !Arc::ptr_eq(&from_alice, &from_carol),
+            "two senders must not share one track on the receiving side",
         );
 
-        // Audio has the same shape, and the same consequence for Opus.
-        assert!(Arc::ptr_eq(
-            &outbound_track_for(&bob, false),
-            &outbound_track_for(&bob, false),
-        ));
+        // Audio is separate from video for the same sender, so video RTP can
+        // never land on the audio track and corrupt it.
+        let alice_audio = outbound_track_for(&bob, "alice", false).expect("alice audio");
+        assert!(!Arc::ptr_eq(&from_alice, &alice_audio));
 
-        // Receivers do at least get their own tracks — the collapse is across
-        // senders, not across receivers.
-        let alice = peer_session("ch-group", "alice").await;
-        assert!(!Arc::ptr_eq(
-            &outbound_track_for(&bob, true),
-            &outbound_track_for(&alice, true),
-        ));
+        // Asking twice for the same (sender, kind) gives the same track.
+        let again = outbound_track_for(&bob, "alice", true).expect("alice track again");
+        assert!(Arc::ptr_eq(&from_alice, &again));
+    }
+
+    /// The track id carries the sender's pseudonym.
+    ///
+    /// It reaches the browser as the MSID, which is how a client attributes a
+    /// tile to a person without a side channel. Every remote tile used to read
+    /// the literal string "Participant" because there was nothing to read.
+    #[tokio::test]
+    async fn track_ids_name_the_sender() {
+        let tracks = make_outbound_tracks("ch-group", "alice-pseudonym");
+        assert_eq!(tracks.audio.id(), "audio-alice-pseudonym");
+        assert_eq!(tracks.video.id(), "video-alice-pseudonym");
+        assert_eq!(
+            tracks.audio.stream_id(),
+            tracks.video.stream_id(),
+            "a sender's audio and video share a stream id so a client can pair them",
+        );
+    }
+
+    /// A publisher a receiver has no track for yet is dropped, not panicked on.
+    #[tokio::test]
+    async fn a_sender_with_no_track_yet_yields_none() {
+        let bob = peer_session("ch-group", &["alice"]).await;
+        assert!(outbound_track_for(&bob, "someone-who-just-joined", false).is_none());
     }
 
     #[tokio::test]

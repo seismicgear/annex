@@ -121,7 +121,7 @@ export interface MessageEdit {
 /** WebSocket frame for sending messages. */
 export interface WsSendFrame {
   type: 'message' | 'edit_message' | 'delete_message' | 'typing' | 'resume'
-    | 'webrtc_offer' | 'webrtc_ice_candidate';
+    | 'webrtc_offer' | 'webrtc_answer' | 'webrtc_ice_candidate';
   channelId: string;
   content?: string;
   replyTo?: string | null;
@@ -142,7 +142,7 @@ export interface WsSendFrame {
 export interface WsReceiveFrame {
   type: 'message' | 'message_edited' | 'message_deleted' | 'rtx_bundle' | 'transcription' | 'error'
     | 'channel_created' | 'channel_updated' | 'channel_deleted' | 'channel_e2e_changed' | 'typing' | 'resumed'
-    | 'webrtc_answer' | 'webrtc_ice_candidate' | 'internal_error';
+    | 'webrtc_answer' | 'webrtc_offer' | 'webrtc_ice_candidate' | 'internal_error';
   // Message fields (camelCase from WsMessagePayload)
   channelId?: string;
   messageId?: string;

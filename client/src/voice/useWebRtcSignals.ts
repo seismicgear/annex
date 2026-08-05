@@ -28,6 +28,14 @@ export function useWebRtcSignals(
         session.handleAnswer(frame.sdp).catch((err) =>
           console.error('[webrtc] failed to handle answer:', err),
         );
+      } else if (frame.type === 'webrtc_offer' && frame.sdp) {
+        // A server-initiated offer: somebody joined or left the call and this
+        // peer's track set changed. Answering is what makes the new tracks
+        // live; ignoring it leaves the call frozen at the participants it
+        // started with.
+        session.handleRemoteOffer(frame.sdp).catch((err) =>
+          console.error('[webrtc] failed to handle server offer:', err),
+        );
       } else if (frame.type === 'webrtc_ice_candidate' && frame.candidate) {
         session.handleIceCandidate({
           candidate: frame.candidate,

@@ -33,21 +33,22 @@ vi.mock('@/stores/usernames', () => ({
 }));
 
 /**
- * A session with `remoteCount` live remote video tracks and `audioCount`
- * inbound audio tracks.
+ * A session with one live remote video track per named sender, plus
+ * `audioCount` inbound audio tracks.
  *
  * `audioCount` defaults to 3 on purpose: that is what a real connection looks
  * like even when nobody else is in the channel. The SFU attaches an audio mix,
  * a video slot and the agent TTS track to every peer connection at join, so
  * inbound track count says nothing about how many people are present.
  */
-function session(identity: string, remoteCount: number, audioCount = 3): WebRtcSession {
+function session(identity: string, senders: string[], audioCount = 3): WebRtcSession {
   return {
     identity,
     isSpeaking: false,
     trackPublications: new Map(),
-    remoteVideoTracks: Array.from({ length: remoteCount }, (_, i) => ({
-      id: `v${i}`,
+    remoteVideoTracks: senders.map((sender, i) => ({
+      id: `video-${sender}-${i}`,
+      sender,
       track: { readyState: 'live', muted: false } as unknown as MediaStreamTrack,
       stream: {} as MediaStream,
     })),
@@ -77,7 +78,7 @@ beforeEach(() => {
 describe('ParticipantGrid naming', () => {
   it('names the remote tile when exactly one other person is in the call', () => {
     voiceState.participantsByChannel = { 'chan-1': ['me', 'a1b2c3d4e5f6'] };
-    render(<ParticipantGrid session={session('me', 1)} />);
+    render(<ParticipantGrid session={session('me', ['a1b2c3d4e5f6'])} />);
 
     expect(screen.getByText('a1b2c3d4e5f6')).toBeInTheDocument();
     expect(screen.queryByText('Participant')).not.toBeInTheDocument();
@@ -86,7 +87,7 @@ describe('ParticipantGrid naming', () => {
   it('prefers a resolved username over the raw pseudonym', () => {
     voiceState.participantsByChannel = { 'chan-1': ['me', 'a1b2c3d4e5f6'] };
     usernames.getDisplayName = (id) => (id === 'a1b2c3d4e5f6' ? 'Ada' : undefined);
-    render(<ParticipantGrid session={session('me', 1)} />);
+    render(<ParticipantGrid session={session('me', ['a1b2c3d4e5f6'])} />);
 
     expect(screen.getByText('Ada')).toBeInTheDocument();
   });
@@ -94,33 +95,49 @@ describe('ParticipantGrid naming', () => {
   it('truncates a long pseudonym rather than overflowing the tile', () => {
     const long = 'f'.repeat(64);
     voiceState.participantsByChannel = { 'chan-1': ['me', long] };
-    render(<ParticipantGrid session={session('me', 1)} />);
+    render(<ParticipantGrid session={session('me', [long])} />);
 
     expect(screen.getByText(`${'f'.repeat(14)}…`)).toBeInTheDocument();
   });
 
-  // The important negative case: with two remote senders the SFU collapses
-  // them onto one track, so there is no way to know which tile is whom.
-  it('leaves tiles unnamed and lists the roster when more than one other is present', () => {
+  // Each sender now arrives on its own track carrying its pseudonym as the
+  // MSID, so every tile is named — no counting, no guessing. This replaces a
+  // test that asserted the opposite: while the SFU collapsed every sender onto
+  // one track per receiver there was nothing to attribute a tile to, and more
+  // than one remote meant all of them read "Participant".
+  it('names every tile independently when several people are sending', () => {
     voiceState.participantsByChannel = { 'chan-1': ['me', 'alice-id', 'bob-id'] };
-    usernames.getDisplayName = (id) =>
-      ({ 'alice-id': 'Alice', 'bob-id': 'Bob' })[id];
-    render(<ParticipantGrid session={session('me', 2)} />);
+    usernames.getDisplayName = (id) => ({ 'alice-id': 'Alice', 'bob-id': 'Bob' })[id];
+    render(<ParticipantGrid session={session('me', ['alice-id', 'bob-id'])} />);
 
-    expect(screen.getAllByText('Participant')).toHaveLength(2);
-    expect(screen.getByText('In this call: Alice, Bob')).toBeInTheDocument();
+    expect(screen.getByText('Alice')).toBeInTheDocument();
+    expect(screen.getByText('Bob')).toBeInTheDocument();
+    expect(screen.queryByText('Participant')).not.toBeInTheDocument();
   });
 
-  it('does not list a roster when it could name the tile', () => {
+  it('falls back to an unnamed tile for a track it cannot attribute', () => {
+    // The agent (TTS) track has no sender pseudonym in its id.
     voiceState.participantsByChannel = { 'chan-1': ['me', 'alice-id'] };
-    render(<ParticipantGrid session={session('me', 1)} />);
+    const s = session('me', ['alice-id']);
+    (s.remoteVideoTracks as { sender: string | null }[])[0].sender = null;
+    render(<ParticipantGrid session={s} />);
 
-    expect(screen.queryByText(/In this call:/)).not.toBeInTheDocument();
+    expect(screen.getByText('Participant')).toBeInTheDocument();
+  });
+
+  it('gives an audio-only participant a tile of their own', () => {
+    // In the roster, but sending no video.
+    voiceState.participantsByChannel = { 'chan-1': ['me', 'alice-id', 'quiet-id'] };
+    usernames.getDisplayName = (id) => ({ 'alice-id': 'Alice', 'quiet-id': 'Quiet' })[id];
+    render(<ParticipantGrid session={session('me', ['alice-id'])} />);
+
+    expect(screen.getByText('Alice')).toBeInTheDocument();
+    expect(screen.getByText('Quiet')).toBeInTheDocument();
   });
 
   it('excludes you from the roster', () => {
     voiceState.participantsByChannel = { 'chan-1': ['me'] };
-    render(<ParticipantGrid session={session('me', 0)} />);
+    render(<ParticipantGrid session={session('me', [])} />);
 
     expect(screen.queryByText(/In this call:/)).not.toBeInTheDocument();
     expect(screen.getByText('You')).toBeInTheDocument();
@@ -132,7 +149,7 @@ describe('ParticipantGrid naming', () => {
   // there.
   it('shows no remote tile when you are alone in the call', () => {
     voiceState.participantsByChannel = { 'chan-1': ['me'] };
-    render(<ParticipantGrid session={session('me', 0)} />);
+    render(<ParticipantGrid session={session('me', [])} />);
 
     expect(screen.queryByText('Participant')).not.toBeInTheDocument();
     expect(screen.getAllByText('You')).toHaveLength(1);
@@ -141,21 +158,26 @@ describe('ParticipantGrid naming', () => {
   it('shows exactly one remote tile for one other person, whatever the track count', () => {
     voiceState.participantsByChannel = { 'chan-1': ['me', 'alice-id'] };
     // Five inbound audio tracks, one other person. The roster decides.
-    render(<ParticipantGrid session={session('me', 0, 5)} />);
+    render(<ParticipantGrid session={session('me', [], 5)} />);
 
     expect(screen.getAllByText('alice-id')).toHaveLength(1);
   });
 
   // A store rehydrated from a build that predates the roster has no such key.
   // That must degrade to unnamed tiles, not take down the whole call view.
-  it('survives a store with no roster at all', () => {
+  // Track attribution comes from the MSID, not the roster, so a video tile is
+  // still named even when the roster request failed or the store predates it.
+  // Only audio-only tiles — which have no track to read — depend on the roster.
+  it('still names a video tile with no roster at all', () => {
     voiceState.participantsByChannel = undefined;
-    expect(() => render(<ParticipantGrid session={session('me', 1)} />)).not.toThrow();
-    expect(screen.getByText('Participant')).toBeInTheDocument();
+    expect(() =>
+      render(<ParticipantGrid session={session('me', ['a1b2c3d4e5f6'])} />),
+    ).not.toThrow();
+    expect(screen.getByText('a1b2c3d4e5f6')).toBeInTheDocument();
   });
 
   it('survives not being connected to a channel', () => {
     voiceState.connectedChannelId = null;
-    expect(() => render(<ParticipantGrid session={session('me', 1)} />)).not.toThrow();
+    expect(() => render(<ParticipantGrid session={session('me', ['a1b2c3d4e5f6'])} />)).not.toThrow();
   });
 });

@@ -86,6 +86,20 @@ pub enum IncomingMessage {
         #[serde(rename = "sdp")]
         sdp: String,
     },
+    /// The client's answer to an offer the SERVER initiated.
+    ///
+    /// Normal call setup is client-offers / server-answers. This is the other
+    /// direction: when someone joins or leaves a call, every other peer's
+    /// track set changes, and adding a track to an established connection
+    /// requires a fresh offer/answer. Without it a call cannot grow past the
+    /// participants it started with.
+    #[serde(rename = "webrtc_answer")]
+    WebRtcAnswer {
+        #[serde(rename = "channelId")]
+        channel_id: String,
+        #[serde(rename = "sdp")]
+        sdp: String,
+    },
     #[serde(rename = "webrtc_ice_candidate")]
     WebRtcIceCandidate {
         #[serde(rename = "channelId")]
@@ -201,6 +215,16 @@ pub enum OutgoingMessage {
     },
     #[serde(rename = "webrtc_answer")]
     WebRtcAnswer {
+        #[serde(rename = "channelId")]
+        channel_id: String,
+        #[serde(rename = "sdp")]
+        sdp: String,
+    },
+    /// An offer the SERVER initiated, because this peer's track set changed —
+    /// somebody joined or left the call. The client answers with
+    /// `IncomingMessage::WebRtcAnswer`.
+    #[serde(rename = "webrtc_offer")]
+    WebRtcOffer {
         #[serde(rename = "channelId")]
         channel_id: String,
         #[serde(rename = "sdp")]

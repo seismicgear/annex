@@ -123,6 +123,51 @@ impl WsSession {
             }
         });
 
+        // Server-initiated offers, on the same broadcast-and-filter shape as
+        // ICE above.
+        //
+        // When a peer joins or leaves a call every OTHER peer's track set
+        // changes, and adding a track to an established connection requires a
+        // fresh offer/answer. Without this task those offers are generated and
+        // never delivered, so a call can never grow past the participants it
+        // started with. `Lagged` is skipped rather than fatal for the same
+        // reason as ICE: dropping this session's renegotiation permanently
+        // would freeze its participant list for the rest of the call.
+        let mut reneg_rx = state.voice_service.subscribe_renegotiations();
+        let tx_for_reneg = tx.clone();
+        let pseudonym_for_reneg = pseudonym.clone();
+        let reneg_task = tokio::spawn(async move {
+            loop {
+                let event = match reneg_rx.recv().await {
+                    Ok(e) => e,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(
+                            pseudonym = %pseudonym_for_reneg,
+                            skipped = n,
+                            "renegotiation broadcast lagged; some offers skipped for this session",
+                        );
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                };
+                if event.peer_id != pseudonym_for_reneg {
+                    continue;
+                }
+                let outbound = OutgoingMessage::WebRtcOffer {
+                    channel_id: event.channel_id,
+                    sdp: event.sdp,
+                };
+                match serde_json::to_string(&outbound) {
+                    Ok(json) => {
+                        if tx_for_reneg.send(json).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => tracing::error!("failed to serialize webrtc offer: {}", e),
+                }
+            }
+        });
+
         let mut last_activity = std::time::Instant::now();
         // Per-session throttle for IncomingMessage::Typing. Typing
         // events are not subject to the HTTP rate-limit middleware —
@@ -176,6 +221,26 @@ impl WsSession {
             .await;
         send_task.abort();
         ice_task.abort();
+        reneg_task.abort();
+
+        // Leave any call this session was in.
+        //
+        // Peers were previously only removed by an explicit leave, so closing a
+        // tab, losing a network, or crashing left them in the SFU room
+        // forever — still on the roster, still holding a track slot on every
+        // other peer's connection, and keeping the room alive so it was never
+        // reaped. Everyone else saw a tile for somebody who had gone.
+        let left = state
+            .voice_service
+            .remove_participant_everywhere(&pseudonym)
+            .await;
+        if !left.is_empty() {
+            tracing::debug!(
+                pseudonym = %pseudonym,
+                channels = ?left,
+                "removed disconnected peer from voice rooms",
+            );
+        }
 
         // Clean up voice session for this pseudonym. Dropping the Arc
         // decrements its reference count; when it reaches zero the
