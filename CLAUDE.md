@@ -184,12 +184,21 @@ WebKit / Soup / PipeWire dev libraries and runs, in order:
 3. `cargo tauri build --debug` — the full bundle wiring (build-desktop.js,
    frontend, resource validation).
 
-`cargo test -p annex-desktop` is deliberately **NOT** run on PR CI. The
-test build links every Tauri Linux dep (gtk, wry, webkit2gtk) twice
+`cargo test -p annex-desktop` is deliberately **NOT** run in that job.
+The test build links every Tauri Linux dep (gtk, wry, webkit2gtk) twice
 (lib + test binary), which routinely exhausts the standard GitHub runner
 disk during the link phase. The release workflow's production tauri
 build is the strongest desktop-correctness signal we ship; PR CI's
 debug build is the day-to-day gate.
+
+The second desktop job, `desktop-audit`, runs
+`bash scripts/desktop-audit.sh` — it takes the bundle past "does it
+build" to **does it install and run**: `dpkg -i`, binary on PATH, the
+`annex://` scheme handler registered with the OS, a headless Xvfb launch
+that survives startup, then `dpkg -r` and confirmed removal. It *does*
+attempt `cargo test -p annex-desktop`, but gates it on ~8 GB of free
+disk and reports a skip rather than dying mid-link, so a tight runner
+degrades instead of failing. See `docs/ui-audit/README.md`.
 
 The `.gitkeep` stubs in `assets/piper/` and `assets/voices/` are
 committed so the Tauri resource validator passes on a fresh checkout

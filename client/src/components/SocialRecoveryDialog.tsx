@@ -256,7 +256,7 @@ export function SocialRecoveryDialog({ onClose }: Props) {
           </p>
 
           <div className="guardian-list">
-            <h4>Guardians</h4>
+            <h3>Guardians</h3>
             {guardians.slice(0, totalShards).map((g, i) => (
               <div key={i} className="guardian-entry">
                 <input

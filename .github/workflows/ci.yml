@@ -387,6 +387,84 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+  # Desktop audit — journey stage 01, "app install".
+  #
+  # `check-desktop-linux` proves the bundle *builds*. This job proves the
+  # bundle **installs and runs**: dpkg -i, the binary landing on PATH, the
+  # `annex://` scheme handler being registered with the OS (without which
+  # every invite link a user clicks goes nowhere), a headless launch that
+  # survives startup, then dpkg -r and confirmed removal. None of that is
+  # reachable from the browser lane, and all of it is the first thing a real
+  # user touches.
+  #
+  # It also runs `cargo test -p annex-desktop`, which check-desktop-linux
+  # deliberately skips — the script gates that on ~8 GB of free disk and
+  # reports a skip rather than dying mid-link, so a tight runner degrades
+  # instead of failing.
+  desktop-audit:
+    name: Desktop Audit (install → launch → uninstall)
+    runs-on: ubuntu-latest
+    needs: check-desktop-linux
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop-audit
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            libgtk-3-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            libpipewire-0.3-dev \
+            patchelf \
+            xvfb
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: |
+            client/package-lock.json
+            zk/package-lock.json
+
+      - name: Install client dependencies
+        run: npm ci
+        working-directory: client
+
+      # The bundler declares zk/keys/membership_vkey.json as a resource and
+      # validates it at build time, so the keys have to exist first.
+      - name: Generate ZK keys (dev-fixture entropy)
+        run: |
+          npm ci
+          node scripts/build-circuits.js
+          node scripts/setup-groth16.js
+        working-directory: zk
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli@2.11.2 --locked
+
+      - name: Run desktop audit
+        run: bash scripts/desktop-audit.sh
+
+      - name: Upload launch log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-audit-launch-log
+          path: /tmp/annex-desktop-launch.log
+          retention-days: 14
+          if-no-files-found: ignore
+
   # Server smoke — Windows. Same flow as the Linux smoke, exercised on
   # PowerShell so the .ps1 doesn't regress.
   smoke-server-windows:

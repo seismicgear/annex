@@ -27,7 +27,7 @@
 #   bash scripts/desktop-audit.sh --no-package # skip the bundle/install cycle
 #
 # Requires the GTK/WebKit/soup/pipewire dev packages (see
-# scripts/claude-setup.sh) and, for layer 3, root for dpkg.
+# scripts/claude-setup.sh) and, for layer 3, root or passwordless sudo for dpkg.
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -84,12 +84,26 @@ else
 fi
 
 # ── 3. Package: build → install → launch → uninstall ─────────────────────
+# dpkg needs root. This container runs as root; a CI runner does not but has
+# passwordless sudo. Resolve it once so the steps below read the same either
+# way, and skip cleanly when neither is available rather than failing.
+if [ "$(id -u)" -eq 0 ]; then
+    SUDO=""
+    CAN_DPKG=1
+elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+    SUDO="sudo"
+    CAN_DPKG=1
+else
+    SUDO=""
+    CAN_DPKG=0
+fi
+
 if [ "$PACKAGE" -eq 0 ]; then
     echo ""
     echo "[desktop-audit] skipping the package cycle (--no-package)"
-elif [ "$(id -u)" -ne 0 ]; then
+elif [ "$CAN_DPKG" -eq 0 ]; then
     echo ""
-    echo "[desktop-audit] skipping the package cycle (dpkg needs root)"
+    echo "[desktop-audit] skipping the package cycle (dpkg needs root or passwordless sudo)"
 else
     if ! command -v cargo-tauri >/dev/null 2>&1; then
         echo ""
@@ -99,9 +113,10 @@ else
 
     # SKIP_PIPER keeps the build from reaching out to GitHub for the TTS
     # binary; packaging correctness does not depend on it being present.
-    step "cargo tauri build --debug --bundles deb" \
-        env SKIP_PIPER=1 ANNEX_BUILD_PROFILE=dev \
-        cargo tauri build --debug --bundles deb --manifest-path crates/annex-desktop/Cargo.toml
+    # `cargo tauri` resolves tauri.conf.json relative to the working directory
+    # and rejects --manifest-path, so it has to run from inside the crate.
+    step "cargo tauri build --debug --bundles deb" bash -c \
+        'cd crates/annex-desktop && SKIP_PIPER=1 ANNEX_BUILD_PROFILE=dev cargo tauri build --debug --bundles deb'
 
     deb=$(find target -name 'Annex_*.deb' -o -name 'annex_*.deb' 2>/dev/null | head -1)
     if [ -z "$deb" ]; then
@@ -109,7 +124,7 @@ else
         FAIL=$((FAIL + 1))
     else
         echo "[desktop-audit] built $deb"
-        step "dpkg -i (install)" dpkg -i "$deb"
+        step "dpkg -i (install)" $SUDO dpkg -i "$deb"
 
         step "installed binary is on PATH" bash -c 'command -v annex-desktop >/dev/null'
 
@@ -136,7 +151,7 @@ else
             FAIL=$((FAIL + 1))
         fi
 
-        step "dpkg -r (uninstall)" dpkg -r annex
+        step "dpkg -r (uninstall)" $SUDO dpkg -r annex
         step "binary removed" bash -c '! command -v annex-desktop >/dev/null'
     fi
 fi

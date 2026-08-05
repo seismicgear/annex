@@ -21,6 +21,7 @@ as authoritative for CI and update this file.
 | Migrations        | `mig-numbered`, `mig-no-edit`, `mig-applies`                                                |
 | Smoke / E2E       | `e2e-server-up`, `e2e-startup-flow`, `e2e-no-console-errors`, `smoke-server`, `smoke-desktop-build` |
 | UI audit          | `ui-audit-surfaces`, `ui-audit-baselines`, `ui-audit-a11y`                                    |
+| Desktop install   | `desktop-audit-package`                                                                       |
 
 ---
 
@@ -205,6 +206,14 @@ as authoritative for CI and update this file.
 - Command: same run; axe-core (WCAG 2.1 A/AA + best-practice) per surface per viewport.
 - Catches: missing accessible names, contrast failures, heading-order breaks, duplicate landmarks, and — via a separate check — dialogs that do not move focus in, do not trap it, or do not close on Escape.
 - Findings are recorded to `docs/ui-audit/findings.json` rather than asserted, so the run completes and reports everything; the ledger is reviewed as part of the PR.
+
+### desktop-audit-package
+- Command: `bash scripts/desktop-audit.sh`
+- Workflow: `.github/workflows/ci.yml::desktop-audit`
+- Catches what "does it build" cannot: a `.deb` that installs but leaves no binary on PATH; a `.desktop` entry that drops `x-scheme-handler/annex`, so every invite link a user clicks silently goes nowhere; a bundle that crashes during startup rather than at compile time; and an uninstall that leaves the binary behind. This is journey stage 01 — the first thing a real user touches — and none of it is reachable from the browser lane.
+- Also runs `cargo test -p annex-desktop`, which `check-desktop-linux` skips. The script gates it on ~8 GB of free disk and reports a skip rather than dying mid-link, because the test binary links every Tauri Linux dep a second time.
+- Layer 3 needs root or passwordless sudo for dpkg and is skipped cleanly without either; `--no-package` skips it explicitly.
+- Failure artifacts: `/tmp/annex-desktop-launch.log`, uploaded by CI on failure.
 
 ### smoke-desktop-build
 - Linux command: `bash scripts/smoke-desktop-build.sh`

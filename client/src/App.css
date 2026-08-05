@@ -1586,6 +1586,12 @@
   border-top: 1px solid #1a1a1a;
 }
 
+/* Subsection headings inside a policy section. Two levels, because the
+   correct heading level depends on what precedes the section: AdminPanel
+   nests them under an h3, the identity dialog under its h2. Styling both
+   keeps the visual weight identical while each document outline stays
+   contiguous — axe's heading-order rule fires on a skipped level. */
+.policy-section h3,
 .policy-section h4 {
   font-size: 0.8rem;
   color: #888;
@@ -2331,7 +2337,7 @@
   margin-bottom: 0.75rem;
 }
 
-.guardian-list h4 {
+.guardian-list h3 {
   font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.1em;
@@ -2638,12 +2644,12 @@
 }
 
 .app-header h1 {
-  color: var(--persona-accent, #e63946);
+  color: var(--accent-text, #ff8a92);
 }
 
 .tab-btn.active {
   background: var(--persona-bg-tint, rgba(255, 255, 255, 0.2));
-  color: var(--persona-accent, #e63946);
+  color: var(--accent-text, #ff8a92);
 }
 
 /* Active persona context indicator in the header */
@@ -2855,7 +2861,7 @@
 
 .alignment-badge.alignment-aligned {
   background: rgba(230, 57, 70, 0.15);
-  color: #e63946;
+  color: var(--accent-text);
 }
 
 .alignment-badge.alignment-partial {
@@ -3624,14 +3630,14 @@
 }
 
 .startup-option input[type="text"]::placeholder {
-  color: #555;
+  color: var(--text-subtle);
 }
 
 .startup-divider {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  color: #555;
+  color: var(--text-subtle);
   font-size: 0.8rem;
 }
 
@@ -3753,7 +3759,7 @@
 .msg-retry-btn, .msg-dismiss-btn {
   background: none;
   border: none;
-  color: var(--persona-accent, #e63946);
+  color: var(--accent-text, #ff8a92);
   cursor: pointer;
   font-size: 0.7rem;
   text-decoration: underline;
@@ -3854,7 +3860,7 @@
 
 .reply-context-author {
   font-weight: 600;
-  color: var(--persona-accent, #e63946);
+  color: var(--accent-text, #ff8a92);
   white-space: nowrap;
 }
 
@@ -3878,7 +3884,7 @@
 }
 
 .reply-bar-label {
-  color: var(--persona-accent, #e63946);
+  color: var(--accent-text, #ff8a92);
   font-weight: 600;
   white-space: nowrap;
 }
@@ -3937,7 +3943,7 @@
 
 .search-toggle-btn:hover {
   color: var(--text-primary, #e0e0e0);
-  border-color: var(--persona-accent, #e63946);
+  border-color: var(--accent-text, #ff8a92);
 }
 
 .chat-area {
@@ -3988,7 +3994,7 @@
 .search-result-sender {
   font-weight: 600;
   font-size: 0.75rem;
-  color: var(--persona-accent, #e63946);
+  color: var(--accent-text, #ff8a92);
 }
 
 .search-result-content {

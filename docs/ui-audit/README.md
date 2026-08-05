@@ -22,7 +22,7 @@ Outputs:
 | Path | What it is |
 |---|---|
 | `client/e2e/audit/baselines/<viewport>/<surface>.png` | Approved screenshots. **Tracked** — these are the diff target. |
-| `docs/ui-audit/findings.json` | Machine-readable ledger, sorted for clean diffs. |
+| `docs/ui-audit/findings.json` | Machine-readable ledger. **Tracked** — sorted so it diffs cleanly, and a reviewer can read what the audit currently finds without running it. |
 | `docs/ui-audit/index.html` | Contact sheet: every surface, every viewport, with its findings. |
 | `client/e2e/audit/diagnostics/` | Screenshots of surfaces the run could not reach. Gitignored. |
 
@@ -35,6 +35,34 @@ against a server that already has identities produces a founder with no admin
 rights, so the setup fails loudly instead of capturing a half-empty audit.
 `--keep-server` skips the restart and will hit exactly that if identities
 already exist.
+
+## The desktop lane (journey stage 01)
+
+```bash
+bash scripts/desktop-audit.sh              # all three layers
+bash scripts/desktop-audit.sh --no-package # skip the bundle/install cycle
+```
+
+A browser against the served SPA reaches everything except what only exists in
+the desktop shell: the packaged installer, the `annex://` protocol handler the
+OS registers at install time, the first-run wipe, and the launch path. Those
+are the first things a real user touches, so they get their own lane.
+
+Three layers, cheapest first:
+
+1. **compile** — `cargo check` and `clippy -D warnings` on the Tauri crate.
+2. **logic** — `cargo test -p annex-desktop` (15 tests: deep-link parsing,
+   startup prefs, config, media detection). The desktop *build* jobs skip
+   these because the test binary links every Tauri dep a second time and
+   exhausts a standard runner's disk; this script checks for ~8 GB of headroom
+   and reports a skip rather than dying mid-link.
+3. **package** — build the `.deb`, `dpkg -i`, assert the binary lands on PATH
+   and that `x-scheme-handler/annex` is registered (without it every invite
+   link a user clicks goes nowhere), launch headless under Xvfb and confirm it
+   is still alive after 12s, then `dpkg -r` and confirm removal.
+
+Layer 3 needs root or passwordless sudo for dpkg and is skipped cleanly
+without either. Runs in CI as the `desktop-audit` job.
 
 ## How it fits together
 

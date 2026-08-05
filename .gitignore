@@ -76,6 +76,9 @@ client/e2e-puppeteer/screenshots-edge/
 client/e2e/audit/.auth/
 # UI audit: failure evidence, regenerated each run
 client/e2e/audit/diagnostics/
-# UI audit: ledger + contact sheet, regenerated on every run
-docs/ui-audit/findings.json
+# UI audit: the raw per-run ledger (append order, cleared at the start of each
+# run) and the rendered contact sheet. The sorted ledger,
+# docs/ui-audit/findings.json, IS tracked — it is the reviewable record of what
+# the audit currently finds, and it diffs cleanly.
+docs/ui-audit/findings.jsonl
 docs/ui-audit/index.html

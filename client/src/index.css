@@ -37,7 +37,10 @@
   --text-primary: rgba(255, 255, 255, 0.87); /* 16.1:1 */
   --text-secondary: #aaa;                    /*  9.0:1 */
   --text-muted: #888;                        /*  5.9:1 */
-  --text-subtle: #7a7a7a;                    /*  4.7:1 — AA floor for body text */
+  /* Tuned against the LIGHTEST surface it appears on (#1a1a1a message
+     bubbles and member rows), not against pure black — at #7a7a7a it passed
+     on the page background and quietly failed on every raised one. */
+  --text-subtle: #8a8a8a;                    /*  5.1:1 on #1a1a1a, 6.1:1 on #000 */
 
   /* Lines. Not text, so not contrast-bound. */
   --border: #222;
@@ -46,6 +49,10 @@
 
   /* Status. */
   --accent: #e63946;
+  /* The accent as a fill is fine behind white text; as TEXT on a dark
+     background the saturated red lands near 4:1. This lighter tint is the
+     one to use for accent-coloured text. */
+  --accent-text: #ff8a92;
   --danger: #e63946;
   --error-color: #e63946;
   --error-text: #f87171;

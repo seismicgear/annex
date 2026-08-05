@@ -359,15 +359,34 @@ pub async fn create_invite_handler(
 
     let url = invite
         .to_invite_url_with_base(&invite_base_url)
-        .map_err(|e| {
-            ApiError::InternalServerError(format!("failed to generate invite URL: {e}"))
-        })?;
+        .map_err(|e| invite_link_error(e, &public_url))?;
 
     Ok(Json(CreateInviteResponse {
         code,
         url,
         expires_at,
     }))
+}
+
+/// Turn an invite-link failure into the error an admin actually sees.
+///
+/// A rejected payload is almost always the operator's public URL being
+/// `http://` rather than `https://`, which the invite format requires so a
+/// shared link cannot be read in transit. That is configuration, not a server
+/// fault, and it was being reported as a 500 — and because
+/// `ApiError::InternalServerError` logs the real reason but returns the literal
+/// string "internal server error", the one sentence explaining how to fix it
+/// never reached the person who could act on it. Clicking "Create Invite Link"
+/// on an HTTP deployment produced an opaque failure with the explanation buried
+/// in the server log.
+fn invite_link_error(err: InviteLinkError, public_url: &str) -> ApiError {
+    match err {
+        InviteLinkError::InvalidServerUrl(reason) => ApiError::BadRequest(format!(
+            "cannot build an invite link from this server's public URL ({public_url}): {reason}. \
+             Set an HTTPS public URL in Admin → Server Settings, or via ANNEX_PUBLIC_URL."
+        )),
+        other => ApiError::InternalServerError(format!("failed to generate invite URL: {other}")),
+    }
 }
 
 /// Handler for `GET /api/invites`.
@@ -633,6 +652,53 @@ pub async fn delete_invite_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An `http://` public URL is the operator's configuration, not a server
+    /// fault. It was surfacing as a 500 whose body is the literal string
+    /// "internal server error" — so the one sentence explaining how to fix it
+    /// only ever reached the server log, and the admin clicking
+    /// "Create Invite Link" saw an opaque failure.
+    #[test]
+    fn http_public_url_is_a_client_error_with_actionable_guidance() {
+        let public_url = "http://annex.example.com";
+        let err = InvitePayload::new(public_url, "code-1", Some("Annex"), None::<String>)
+            .to_invite_url_with_base("https://monolithannex.com/invite")
+            .expect_err("an http:// server URL must be rejected");
+
+        match invite_link_error(err, public_url) {
+            ApiError::BadRequest(msg) => {
+                assert!(
+                    msg.contains("HTTPS"),
+                    "the message must say what is wrong so an operator can fix it: {msg}"
+                );
+                assert!(
+                    msg.contains(public_url),
+                    "the message must name the offending URL: {msg}"
+                );
+                assert!(
+                    msg.contains("Server Settings") && msg.contains("ANNEX_PUBLIC_URL"),
+                    "the message must say where to fix it: {msg}"
+                );
+            }
+            other => panic!("expected a client error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn https_public_url_produces_a_link() {
+        let url = InvitePayload::new(
+            "https://annex.example.com",
+            "code-1",
+            Some("Annex"),
+            None::<String>,
+        )
+        .to_invite_url_with_base("https://monolithannex.com/invite")
+        .expect("an https:// server URL is valid");
+        assert!(
+            url.starts_with("https://monolithannex.com/invite/"),
+            "got {url}"
+        );
+    }
 
     #[test]
     fn serialization_uses_camel_case() {

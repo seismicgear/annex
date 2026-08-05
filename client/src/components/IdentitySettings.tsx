@@ -263,7 +263,7 @@ export function IdentitySettings({ onClose }: Props) {
 
       {/* ── Persona section ── */}
       <div className="policy-section">
-        <h4>Persona<InfoTip text="Your persona is just for you — it sets your display name and color on your device. Other users and the server never see it." /></h4>
+        <h3>Persona<InfoTip text="Your persona is just for you — it sets your display name and color on your device. Other users and the server never see it." /></h3>
 
         {/* Persona list */}
         <div className="persona-list">
@@ -398,7 +398,7 @@ export function IdentitySettings({ onClose }: Props) {
 
       {/* ── Username section ── */}
       <div className="policy-section" style={{ marginTop: '1rem' }}>
-        <h4>Server Username<InfoTip text="Unlike your persona, your username is stored (encrypted) on the server. Only people you explicitly grant access to can see it." /></h4>
+        <h3>Server Username<InfoTip text="Unlike your persona, your username is stored (encrypted) on the server. Only people you explicitly grant access to can see it." /></h3>
         <p className="field-hint" style={{ marginTop: 0 }}>
           Set an encrypted display name visible only to users you grant access to.
         </p>
@@ -436,7 +436,7 @@ export function IdentitySettings({ onClose }: Props) {
 
       {/* ── Visibility Grants ── */}
       <div className="policy-section" style={{ marginTop: '1rem' }}>
-        <h4>Username Visibility<InfoTip text="Control exactly who can see your username. Everyone else only sees your anonymous cryptographic ID." /></h4>
+        <h3>Username Visibility<InfoTip text="Control exactly who can see your username. Everyone else only sees your anonymous cryptographic ID." /></h3>
         <p className="field-hint" style={{ marginTop: 0 }}>
           Choose who can see your username. Others will only see your pseudonym.
         </p>
