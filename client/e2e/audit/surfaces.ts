@@ -964,6 +964,120 @@ export const SURFACES: Surface[] = [
     // click there, so capturing it would assert a layout we chose against.
     viewports: ['desktop', 'laptop'],
   },
+  // ── Link previews ──
+  //
+  // A pasted URL renders a card built from server-proxied metadata (the proxy
+  // exists so the client never fetches a third-party origin directly). Three
+  // render branches, all of which a user sees.
+  {
+    id: 'link-preview-card',
+    stage: '06-messaging',
+    title: 'Message with a link preview card',
+    role: 'founder',
+    intent:
+      'The rich card a pasted link becomes. Stubbed because the real endpoint reaches a third ' +
+      'party, which no audit should depend on — and the image is proxied through the server, so ' +
+      'the card renders entirely from this payload.',
+    setup: stub('**/api/link-preview?*', {
+      url: 'https://example.com/an-article',
+      title: 'An article about distributed systems',
+      description:
+        'Why consensus is hard, why everybody gets clock skew wrong, and what to do about both.',
+      siteName: 'example.com',
+      imageUrl: null,
+    }),
+    navigate: async (page) => {
+      // A dedicated channel, not the shared default: these messages persist for
+      // the rest of the run, and a later capture of the same channel would
+      // re-fetch their previews un-stubbed and record the failures as its own.
+      await selectChannel(page, SEED.channels.text);
+      await postFreshMessage(page, 'Worth a read: https://example.com/an-article');
+      // `.first()`: surfaces share the seeded channel and each posts a message,
+      // so by the time a later one runs there are several previews on screen.
+      await expect(page.locator('.link-preview-card').first()).toBeVisible({ timeout: 20_000 });
+    },
+    clip: '.chat-area',
+  },
+  {
+    id: 'link-preview-unavailable',
+    stage: '06-messaging',
+    title: 'Link preview when the proxy cannot fetch metadata',
+    role: 'founder',
+    intent:
+      'A link whose metadata could not be fetched must still be a usable link — the fallback is ' +
+      'the domain and the URL, not a broken card and not a silently missing one.',
+    setup: stub('**/api/link-preview?*', { error: 'upstream unreachable' }, 502),
+    navigate: async (page) => {
+      await selectChannel(page, SEED.channels.text);
+      await postFreshMessage(page, 'Also worth a read: https://example.org/another-article');
+      await expect(page.locator('.link-preview-minimal').first()).toBeVisible({ timeout: 20_000 });
+    },
+    clip: '.chat-area',
+    waive: {
+      network: 'the 502 is injected deliberately to reach the fallback state',
+      console: 'the browser logs the injected 502 to the console as well',
+    },
+  },
+
+  // ── Inline help ──
+  {
+    id: 'info-tip-open',
+    stage: '09-admin',
+    title: 'An InfoTip popup, open',
+    role: 'founder',
+    intent:
+      'InfoTip is the only inline help in the app and appears beside a dozen admin controls, but ' +
+      'its OPEN state had never been captured — only the icon. It opens on focus as well as ' +
+      'hover, which is what makes it reachable without a pointer.',
+    navigate: async (page) => {
+      await openAdminSection(page, 'Server Policy');
+      // Focus rather than hover: it is the keyboard path, and a hover that the
+      // screenshot does not preserve would capture nothing.
+      await page.locator('.info-tip').first().focus();
+      await expect(page.locator('.info-tip-popup')).toBeVisible({ timeout: 10_000 });
+    },
+    clip: '.view-content',
+  },
+
+  // ── Render crash containment ──
+  {
+    id: 'error-boundary',
+    stage: '13-cross-cutting',
+    title: 'A view that crashed during render',
+    role: 'founder',
+    intent:
+      'What a user sees when a component throws. The boundaries exist so one bad record takes ' +
+      'out one column rather than the whole app, and this is the only surface that proves the ' +
+      'containment actually works. Triggered with an agent record missing `capabilities`, which ' +
+      'MemberList maps over unguarded.',
+    setup: stub('**/api/public/agents*', {
+      agents: [
+        {
+          pseudonym_id: 'agent-malformed',
+          display_name: 'Malformed',
+          alignment_status: 'Aligned',
+          transfer_scope: 'FullKnowledgeBundle',
+          reputation_score: 0.5,
+          // `capabilities` deliberately absent — MemberList reads `.length` on it.
+          active: true,
+        },
+      ],
+    }),
+    navigate: async (page) => {
+      await selectChannel(page, SEED.defaultChannel);
+      // `capabilities` is read in the agent DETAIL overlay, not the list, so
+      // the list renders fine and the throw happens on open.
+      await page.locator('.agent-item').first().click();
+      await expect(page.locator('.error-boundary')).toBeVisible({ timeout: 20_000 });
+    },
+    // The member rail — and so the agent list — is hidden below 1100px.
+    viewports: ['desktop', 'laptop'],
+    waive: {
+      console: 'React logs the caught render error, which is the point of the surface',
+      a11y: 'the crashed subtree is what is being captured; auditing it audits the crash',
+    },
+  },
+
   {
     id: 'reconnection-banner-disconnected',
     stage: '13-cross-cutting',
