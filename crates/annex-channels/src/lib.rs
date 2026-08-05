@@ -617,7 +617,8 @@ mod tests {
         assert!(updated.edited_at.is_some());
 
         // Check edit history
-        let history = get_edit_history(&conn, &msg.message_id).expect("history should succeed");
+        let history = get_edit_history(&conn, 1, "chan-edit", &msg.message_id)
+            .expect("history should succeed");
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].old_content, "Original content");
     }
@@ -727,7 +728,8 @@ mod tests {
         edit_message(&conn, &msg.message_id, "user-a", "Edit 2").expect("edit 2 failed");
         edit_message(&conn, &msg.message_id, "user-a", "Edit 3").expect("edit 3 failed");
 
-        let history = get_edit_history(&conn, &msg.message_id).expect("history failed");
+        let history =
+            get_edit_history(&conn, 1, "chan-edit", &msg.message_id).expect("history failed");
         assert_eq!(history.len(), 3);
         assert_eq!(history[0].old_content, "Original content");
         assert_eq!(history[1].old_content, "Edit 1");
@@ -735,6 +737,45 @@ mod tests {
 
         let current = get_message(&conn, &msg.message_id).expect("get msg failed");
         assert_eq!(current.content, "Edit 3");
+    }
+
+    /// `message_edits` has no channel column, so the scoping lives entirely
+    /// in this query's join. The route that reads it takes the channel and
+    /// the message as two independent path segments, and the membership
+    /// check upstream can only speak about the first — asking for the
+    /// history of a message under the wrong channel has to come back empty
+    /// here, or the check upstream is guarding nothing.
+    #[test]
+    fn edit_history_does_not_cross_channels() {
+        let conn = setup_db();
+        let msg = setup_editable_message(&conn);
+        edit_message(&conn, &msg.message_id, "user-a", "Edited content").expect("edit failed");
+
+        let other = CreateChannelParams {
+            server_id: 1,
+            channel_id: "chan-other".to_string(),
+            name: "Other".to_string(),
+            channel_type: ChannelType::Text,
+            topic: None,
+            vrp_topic_binding: None,
+            required_capabilities_json: None,
+            agent_min_alignment: None,
+            retention_days: None,
+            federation_scope: FederationScope::Local,
+        };
+        create_channel(&conn, &other).expect("create other channel");
+
+        let leaked = get_edit_history(&conn, 1, "chan-other", &msg.message_id).expect("history");
+        assert!(
+            leaked.is_empty(),
+            "the edit history of a message in chan-edit was returned under \
+             chan-other: {leaked:?}",
+        );
+
+        // A different server on the same database must not see it either.
+        let cross_server =
+            get_edit_history(&conn, 2, "chan-edit", &msg.message_id).expect("history");
+        assert!(cross_server.is_empty(), "history crossed servers");
     }
 
     /// Regression test for [F31]: `edit_message` must use
@@ -889,7 +930,7 @@ mod tests {
         // happened to slip through SQLite's snapshot check —
         // produce "Original" in the history).
         let final_conn = Connection::open(&db_path).expect("open final conn");
-        let history = get_edit_history(&final_conn, "msg-imm").expect("history");
+        let history = get_edit_history(&final_conn, 1, "chan-imm", "msg-imm").expect("history");
         assert_eq!(history.len(), 1, "expected exactly 1 edit history row");
         assert_eq!(
             history[0].old_content, "from-conn1",

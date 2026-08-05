@@ -786,13 +786,20 @@ impl ChannelService {
             .await?;
 
         let pool = self.state.pool.clone();
+        let server_id = self.state.server_id;
+        let cid = channel_id.to_string();
         let mid = message_id.to_string();
         let cipher = self.state.message_cipher();
         tokio::task::spawn_blocking(move || {
             let conn = pool
                 .get()
                 .map_err(|e| ChannelServiceError::Internal(format!("pool: {e}")))?;
-            let mut edits = get_edit_history(&conn, &mid).map_err(map_channel_err)?;
+            // Both identifiers go into the query. `require_membership` above
+            // can only vouch for the channel; the message has to be tied to
+            // that same channel or the two path segments are independently
+            // attacker-chosen.
+            let mut edits =
+                get_edit_history(&conn, server_id, &cid, &mid).map_err(map_channel_err)?;
             for e in &mut edits {
                 cipher.decrypt_in_place(&mut e.old_content);
             }
