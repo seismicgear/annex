@@ -10,6 +10,7 @@
 
 import { useEffect, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
 import { AdminPanel } from '@/components/AdminPanel';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { ChannelList } from '@/components/ChannelList';
 import { ChannelEncryptionBar } from '@/components/ChannelEncryptionBar';
 import { EventLog } from '@/components/EventLog';
@@ -93,13 +94,17 @@ export function MainLayout({
       case 'federation':
         return (
           <main className="view-content">
-            <FederationPanel />
+            <ErrorBoundary label="Federation">
+              <FederationPanel />
+            </ErrorBoundary>
           </main>
         );
       case 'events':
         return (
           <main className="view-content">
-            <EventLog />
+            <ErrorBoundary label="Events">
+              <EventLog />
+            </ErrorBoundary>
           </main>
         );
       case 'admin-policy':
@@ -114,7 +119,9 @@ export function MainLayout({
         };
         return (
           <main className="view-content">
-            <AdminPanel section={sectionMap[activeView]} />
+            <ErrorBoundary label="Admin">
+              <AdminPanel section={sectionMap[activeView]} />
+            </ErrorBoundary>
           </main>
         );
       }
@@ -122,16 +129,26 @@ export function MainLayout({
         return (
           <div className="app-layout">
             <aside className="sidebar-left">
-              <ChannelList />
+              <ErrorBoundary label="the channel list">
+                <ChannelList />
+              </ErrorBoundary>
             </aside>
             <main className="chat-area">
-              <MessageSearch />
-              <ChannelEncryptionBar />
-              <MessageView />
-              <MessageInput />
+              {/* Separate boundaries: a crash in the message list must not
+                  take the composer with it, and vice versa. */}
+              <ErrorBoundary label="the conversation">
+                <MessageSearch />
+                <ChannelEncryptionBar />
+                <MessageView />
+              </ErrorBoundary>
+              <ErrorBoundary label="the composer">
+                <MessageInput />
+              </ErrorBoundary>
             </main>
             <aside className="sidebar-right">
-              <MemberList />
+              <ErrorBoundary label="the member list">
+                <MemberList />
+              </ErrorBoundary>
             </aside>
           </div>
         );

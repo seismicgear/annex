@@ -4041,6 +4041,30 @@
 }
 
 
+/* Contained render crash. Styled as a self-contained panel because it sits
+   inside whatever region failed, next to an app that still works. */
+.error-boundary {
+  margin: 1rem;
+  padding: 1rem 1.25rem;
+  border: 1px solid #5a2a2a;
+  border-left: 3px solid var(--danger);
+  border-radius: var(--radius-lg);
+  background: #200a0a;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.error-boundary-title {
+  margin: 0 0 0.35rem;
+  font-weight: 600;
+  color: var(--error-text);
+}
+
+.error-boundary-hint {
+  margin: 0 0 0.75rem;
+  color: var(--text-muted);
+}
+
 /* Device-link transfer code — the payload the receiving device pastes.
    Selectable and copyable, because the graphic above it is decorative: it is
    explicitly not a scannable QR (see generateQrSvg), so this field is the

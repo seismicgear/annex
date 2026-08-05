@@ -37,6 +37,15 @@ start_server() {
     echo "$db_dir" > "$DB_DIR_FILE"
 
     echo "[e2e] Starting server (db: $db_dir, log: $LOG_FILE)..."
+
+    # The server PARSES its config-path argument as TOML, so an empty real
+    # file is used rather than /dev/null: if anything ever replaces /dev/null
+    # with a regular file, passing it here kills the server with a baffling
+    # TOML error instead of starting it. Empty means "defaults plus the env
+    # overrides below".
+    local empty_config="$db_dir/empty-config.toml"
+    : > "$empty_config"
+
     # Rate limits default to 10/10/60 requests per minute, which a browser
     # suite exceeds trivially: the UI audit alone drives ~100 page loads back
     # to back, and every public route keys its bucket by IP, so all of them
@@ -51,7 +60,7 @@ start_server() {
     ANNEX_RATE_LIMIT_DEFAULT="${ANNEX_RATE_LIMIT_DEFAULT:-100000}" \
     ANNEX_RATE_LIMIT_REGISTRATION="${ANNEX_RATE_LIMIT_REGISTRATION:-100000}" \
     ANNEX_RATE_LIMIT_VERIFICATION="${ANNEX_RATE_LIMIT_VERIFICATION:-100000}" \
-    cargo run -p annex-server -- /dev/null > "$LOG_FILE" 2>&1 &
+    cargo run -p annex-server -- "$empty_config" > "$LOG_FILE" 2>&1 &
 
     local pid=$!
     echo "$pid" > "$PID_FILE"

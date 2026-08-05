@@ -103,6 +103,9 @@ test.describe('surface manifest', () => {
   test('every modal component appears in the manifest', () => {
     /** Components that render a modal but are genuinely not reachable. */
     const KNOWN_UNREACHABLE: Record<string, string> = {
+      'components/Modal.tsx':
+        'the dialog primitive itself — it defines the overlay, it is not a screen. ' +
+        'Every dialog that uses it is listed separately.',
       'components/ProfileSwitcher.tsx':
         'dead code — zero imports, superseded by IdentitySettings',
       'components/UsernameSettings.tsx':
