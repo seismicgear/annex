@@ -389,6 +389,86 @@ export const SURFACES: Surface[] = [
       });
     },
   },
+  // ── In-call ──
+  //
+  // Everything above is a pre-call state. These need a real WebRTC session:
+  // `getUserMedia` has to resolve, the SFU has to answer, and the peer
+  // connection has to reach `connected` before the grid, the controls or the
+  // diagnostics render at all. The audit runs Chromium with fake media devices
+  // and the e2e server has the in-process SFU configured, so the whole in-call
+  // journey is reachable — see `playwright.config.ts` and `e2e-server.sh`.
+  {
+    id: 'call-in-progress',
+    stage: '07-voice',
+    title: 'In a call — participant grid and controls',
+    role: 'founder',
+    intent:
+      'What a user actually looks at for the length of a call: their own tile, the mic/camera/' +
+      'screen-share controls, and the connection state. Alone in the channel there must be no ' +
+      'remote tile — counting them from inbound track count showed a phantom "Participant", ' +
+      'because the SFU attaches three outbound tracks to every connection at join.',
+    navigate: async (page) => {
+      await selectChannel(page, SEED.channels.voice);
+      await page.locator('.voice-join-btn').first().click();
+      await expect(page.locator('.media-controls')).toBeVisible({ timeout: 30_000 });
+      await expect(page.locator('.call-grid')).toBeVisible({ timeout: 30_000 });
+    },
+    clip: '.voice-panel',
+  },
+  {
+    id: 'call-camera-on',
+    stage: '07-voice',
+    title: 'In a call with the camera on',
+    role: 'founder',
+    intent:
+      'The video path, end to end: a real captured track rendered into a tile. The tile content ' +
+      'is live video, so it is masked — the point of the capture is the surrounding chrome and ' +
+      'the control states, which are what change when video is enabled.',
+    navigate: async (page) => {
+      await selectChannel(page, SEED.channels.voice);
+      await page.locator('.voice-join-btn').first().click();
+      await expect(page.locator('.media-controls')).toBeVisible({ timeout: 30_000 });
+      await page.getByTitle('Turn on camera').click();
+      await expect(page.locator('.tile-video')).toBeVisible({ timeout: 30_000 });
+    },
+    clip: '.voice-panel',
+    mask: ['.tile-video'],
+  },
+  {
+    id: 'call-mic-muted',
+    stage: '07-voice',
+    title: 'In a call with the microphone muted',
+    role: 'founder',
+    intent:
+      'Mute is the control users reach for most and the one whose state has to be unambiguous ' +
+      'at a glance — a call where you cannot tell whether you are muted is the classic failure.',
+    navigate: async (page) => {
+      await selectChannel(page, SEED.channels.voice);
+      await page.locator('.voice-join-btn').first().click();
+      await expect(page.locator('.media-controls')).toBeVisible({ timeout: 30_000 });
+      // Scoped to the in-call controls: the status bar carries its own mute
+      // button with the same title, so an unscoped locator matches both.
+      const controls = page.locator('.media-controls');
+      await controls.getByTitle('Mute microphone').click();
+      await expect(controls.getByTitle('Unmute microphone')).toBeVisible({ timeout: 15_000 });
+    },
+    clip: '.voice-panel',
+  },
+  {
+    id: 'call-diagnostics',
+    stage: '07-voice',
+    title: 'In-call media diagnostics',
+    role: 'founder',
+    intent:
+      'The status pills that tell a user whether their own microphone and camera are actually ' +
+      'producing media — the first thing anyone looks at when others say they cannot be heard.',
+    navigate: async (page) => {
+      await selectChannel(page, SEED.channels.voice);
+      await page.locator('.voice-join-btn').first().click();
+      await expect(page.locator('.local-media-status')).toBeVisible({ timeout: 30_000 });
+    },
+    clip: '.local-media-status',
+  },
   {
     id: 'voice-not-configured',
     stage: '07-voice',

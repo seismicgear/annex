@@ -82,8 +82,18 @@ export function ParticipantGrid({ session }: { session: WebRtcSession }) {
   const remoteVideos = (session.remoteVideoTracks ?? []).filter(
     (v) => v.track.readyState === 'live' && !v.track.muted,
   );
-  // Audio-only remotes: incoming audio tracks beyond the ones that also have video.
-  const audioOnlyRemotes = Math.max(0, (session.remoteAudioTracks ?? []).length - remoteVideos.length);
+  // Audio-only remotes.
+  //
+  // NOT derived from `remoteAudioTracks.length`. The SFU attaches three
+  // outbound tracks to every peer connection at join time — an audio mix, a
+  // video slot, and the agent TTS track — so a user sitting alone in a channel
+  // already has inbound audio tracks and was shown a tile captioned
+  // "Participant". Joining an empty voice channel looked exactly like joining
+  // one that somebody else was already in.
+  //
+  // The server roster knows who is actually in the room, so count from that
+  // and let the tracks decide only which of them are sending video.
+  const audioOnlyRemotes = Math.max(0, others.length - remoteVideos.length);
 
   const tileCount = 1 + (localScreenTrack ? 1 : 0) + remoteVideos.length + audioOnlyRemotes;
 

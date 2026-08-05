@@ -62,6 +62,13 @@ start_server() {
     # HTTPS specifically, because that is the shape a real deployment has and
     # it exercises the invite path rather than the "no public URL" branch.
     #
+    # WebRTC is configured so the voice stage can capture an actual call. The
+    # SFU is in-process (`crates/annex-voice`, webrtc-rs), so the URL is this
+    # same server's WebSocket — the credentials only have to be non-empty for
+    # `voice_status` to report configured. Left unset, every voice surface can
+    # only ever be a pre-call state and the participant grid, media controls
+    # and diagnostics are unreachable.
+    #
     # Presence pruning is disabled (0) for the same class of reason. It fires
     # on a 60s timer against a 300s inactivity threshold and appends a
     # NODE_PRUNED row to the event log, so whether the audit's event-log
@@ -79,6 +86,9 @@ start_server() {
     ANNEX_RATE_LIMIT_VERIFICATION="${ANNEX_RATE_LIMIT_VERIFICATION:-100000}" \
     ANNEX_INACTIVITY_THRESHOLD_SECONDS="${ANNEX_INACTIVITY_THRESHOLD_SECONDS:-0}" \
     ANNEX_PUBLIC_URL="${ANNEX_PUBLIC_URL:-https://annex.audit.test}" \
+    ANNEX_WEBRTC_URL="${ANNEX_WEBRTC_URL:-ws://127.0.0.1:$PORT}" \
+    ANNEX_WEBRTC_API_KEY="${ANNEX_WEBRTC_API_KEY:-audit}" \
+    ANNEX_WEBRTC_API_SECRET="${ANNEX_WEBRTC_API_SECRET:-audit-secret}" \
     cargo run -p annex-server -- "$empty_config" > "$LOG_FILE" 2>&1 &
 
     local pid=$!

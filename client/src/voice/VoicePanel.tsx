@@ -228,8 +228,12 @@ export function VoicePanel() {
         ? 'Voice Disconnected'
         : 'Voice Connected';
 
+    // A <section> with a name, not a bare <div>: the call is a distinct region
+    // of the page, and a screen-reader user navigating by landmark otherwise
+    // has no way to jump to it — or to tell where it ends and the message
+    // history begins. axe reports the bare div as `region`.
     return (
-      <div className="voice-panel connected">
+      <section className="voice-panel connected" aria-label="Voice call">
         <div className="voice-connected-header">
           {headerText} — <strong>{channelLabel}</strong>
         </div>
@@ -246,7 +250,7 @@ export function VoicePanel() {
           mediaStatus={mediaStatus}
           platformWarnings={platformWarnings}
         />
-      </div>
+      </section>
     );
   }
 

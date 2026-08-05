@@ -96,6 +96,23 @@ export default defineConfig({
       snapshotPathTemplate: 'e2e/audit/baselines/{arg}{ext}',
       use: {
         ...devices['Desktop Chrome'],
+        // A call is a surface a user touches, so the audit has to be able to
+        // join one. Without a camera and microphone the voice stage can only
+        // ever capture pre-call states: `getUserMedia` rejects, the join never
+        // completes, and the participant grid, media controls and diagnostics
+        // are unreachable. Chromium's fake devices give a deterministic
+        // synthetic stream and auto-accept the permission prompt, so the whole
+        // in-call journey becomes capturable without a physical device.
+        permissions: ['camera', 'microphone'],
+        launchOptions: {
+          args: [
+            '--use-fake-ui-for-media-stream',
+            '--use-fake-device-for-media-stream',
+            // The fake stream still counts as autoplay; without this the
+            // <video> elements stay paused and every tile captures black.
+            '--autoplay-policy=no-user-gesture-required',
+          ],
+        },
         // The runner sets an explicit viewport per capture, and an
         // end-of-test auto-screenshot would pollute the baseline directory.
         screenshot: 'off',

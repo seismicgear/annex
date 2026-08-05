@@ -122,7 +122,7 @@ export function StatusBar() {
   return (
     <>
       {wsAuthRefreshing && (
-        <div className="voice-status-strip">
+        <section className="voice-status-strip" aria-label="Voice call status">
           <div className="voice-status-info">
             <span className="voice-status-dot" />
             <div className="voice-status-text">
@@ -130,12 +130,12 @@ export function StatusBar() {
               <span className="voice-status-channel">Refreshing session authentication…</span>
             </div>
           </div>
-        </div>
+        </section>
       )}
 
       {/* ── Persistent voice status strip (Discord-style) ── */}
       {inCall && (
-        <div className="voice-status-strip">
+        <section className="voice-status-strip" aria-label="Voice call status">
           <div className="voice-status-info">
             <span className="voice-status-dot" />
             <div className="voice-status-text">
@@ -192,12 +192,12 @@ export function StatusBar() {
               </svg>
             </button>
           </div>
-        </div>
+        </section>
       )}
 
       {/* ── Persistent voice-disconnected strip ── */}
       {!inCall && connectionError && lastFailedChannelId && (
-        <div className="voice-status-strip voice-status-disconnected">
+        <section className="voice-status-strip voice-status-disconnected" aria-label="Voice status">
           <div className="voice-status-info">
             <span className="voice-status-dot disconnected" />
             <div className="voice-status-text">
@@ -214,7 +214,7 @@ export function StatusBar() {
           >
             &times;
           </button>
-        </div>
+        </section>
       )}
 
       {/* ── Main status bar ── */}

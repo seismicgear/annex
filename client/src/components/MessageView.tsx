@@ -13,7 +13,7 @@
  * (if available) or truncated pseudonyms.
  */
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, type ReactNode } from 'react';
 import { useChannelsStore } from '@/stores/channels';
 import { useIdentityStore } from '@/stores/identity';
 import { useServersStore } from '@/stores/servers';
@@ -562,25 +562,40 @@ export function MessageView() {
     }
   };
 
+  // Every state renders through the same shell.
+  //
+  // The empty, loading and error branches used to return a bare
+  // `<div className="message-view empty">`, which cost two things. axe reported
+  // `scrollable-region-focusable` against them — `.message-view` scrolls, and a
+  // scrollable region that cannot take focus cannot be scrolled from the
+  // keyboard at all. Less visibly, `role="log"` and `aria-live="polite"` only
+  // existed on the populated branch, so switching to an empty channel
+  // destroyed the live region and the first message to arrive created it and
+  // landed in the same tick — which is exactly the case a screen reader does
+  // not announce.
+  const shell = (children: ReactNode, extraClass = '') => (
+    <div
+      className={`message-view ${extraClass}`.trim()}
+      role="log"
+      aria-label="Message history"
+      aria-live="polite"
+      tabIndex={0}
+    >
+      {children}
+    </div>
+  );
+
   if (!activeChannelId) {
-    return (
-      <div className="message-view empty">
-        <p>Select a channel to start chatting</p>
-      </div>
-    );
+    return shell(<p>Select a channel to start chatting</p>, 'empty');
   }
 
   if (historyLoading) {
-    return (
-      <div className="message-view empty">
-        <p>Loading channel history...</p>
-      </div>
-    );
+    return shell(<p>Loading channel history...</p>, 'empty');
   }
 
   if (historyError) {
-    return (
-      <div className="message-view empty">
+    return shell(
+      <>
         <p className="error-message">{historyError}</p>
         <button
           className="primary-btn"
@@ -592,21 +607,28 @@ export function MessageView() {
         >
           Retry
         </button>
-      </div>
+      </>,
+      'empty',
     );
   }
 
   if (messages.length === 0 && !loadingOlder) {
-    return (
-      <div className="message-view empty">
-        <p>No messages yet — be the first to say something!</p>
-      </div>
-    );
+    return shell(<p>No messages yet — be the first to say something!</p>, 'empty');
   }
 
   return (
     <>
-      <div className="message-view" ref={containerRef} onScroll={handleScroll} role="log" aria-label="Message history" aria-live="polite">
+      {/* Same contract as `shell` above; this branch keeps its own element
+          because it needs the scroll ref and handler. */}
+      <div
+        className="message-view"
+        ref={containerRef}
+        onScroll={handleScroll}
+        role="log"
+        aria-label="Message history"
+        aria-live="polite"
+        tabIndex={0}
+      >
         {messages.map((msg: Message) => (
           <MessageBubble
             key={msg.clientRequestId ?? msg.message_id}

@@ -32,8 +32,16 @@ vi.mock('@/stores/usernames', () => ({
   useUsernameStore: (sel: (s: typeof usernames) => unknown) => sel(usernames),
 }));
 
-/** A session with `remoteCount` live remote video tracks. */
-function session(identity: string, remoteCount: number): WebRtcSession {
+/**
+ * A session with `remoteCount` live remote video tracks and `audioCount`
+ * inbound audio tracks.
+ *
+ * `audioCount` defaults to 3 on purpose: that is what a real connection looks
+ * like even when nobody else is in the channel. The SFU attaches an audio mix,
+ * a video slot and the agent TTS track to every peer connection at join, so
+ * inbound track count says nothing about how many people are present.
+ */
+function session(identity: string, remoteCount: number, audioCount = 3): WebRtcSession {
   return {
     identity,
     isSpeaking: false,
@@ -43,7 +51,11 @@ function session(identity: string, remoteCount: number): WebRtcSession {
       track: { readyState: 'live', muted: false } as unknown as MediaStreamTrack,
       stream: {} as MediaStream,
     })),
-    remoteAudioTracks: [],
+    remoteAudioTracks: Array.from({ length: audioCount }, (_, i) => ({
+      id: `a${i}`,
+      track: {} as MediaStreamTrack,
+      stream: {} as MediaStream,
+    })),
   } as unknown as WebRtcSession;
 }
 
@@ -112,6 +124,26 @@ describe('ParticipantGrid naming', () => {
 
     expect(screen.queryByText(/In this call:/)).not.toBeInTheDocument();
     expect(screen.getByText('You')).toBeInTheDocument();
+  });
+
+  // Tiles used to be counted from `remoteAudioTracks.length`, which is never
+  // zero on a live connection — so sitting alone in a voice channel rendered a
+  // tile captioned "Participant" and looked exactly like somebody else being
+  // there.
+  it('shows no remote tile when you are alone in the call', () => {
+    voiceState.participantsByChannel = { 'chan-1': ['me'] };
+    render(<ParticipantGrid session={session('me', 0)} />);
+
+    expect(screen.queryByText('Participant')).not.toBeInTheDocument();
+    expect(screen.getAllByText('You')).toHaveLength(1);
+  });
+
+  it('shows exactly one remote tile for one other person, whatever the track count', () => {
+    voiceState.participantsByChannel = { 'chan-1': ['me', 'alice-id'] };
+    // Five inbound audio tracks, one other person. The roster decides.
+    render(<ParticipantGrid session={session('me', 0, 5)} />);
+
+    expect(screen.getAllByText('alice-id')).toHaveLength(1);
   });
 
   // A store rehydrated from a build that predates the roster has no such key.
