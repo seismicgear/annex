@@ -593,3 +593,86 @@ fn compare_peer_anchor_scored_returns_measured_similarity() {
         "expected a measured cosine in (0,1), got {score3}"
     );
 }
+
+/// A server running the shipped defaults must be able to admit an agent.
+///
+/// `ServerPolicy::default()` has `principles: []` and
+/// `agent_min_alignment_score: 0.8`, and the agent handshake hardcodes
+/// `semantic_alignment_required: true`. Before this, an empty local list
+/// made the semantic branch unreachable and control fell through to
+/// `Conflict` — so the only agent a stock server could admit was one with
+/// no principles and no prohibited actions at all. Agent participation, a
+/// headline feature, did not work out of the box and said nothing about
+/// why.
+mod empty_local_anchor {
+    use crate::{
+        compare_peer_anchor_scored, VrpAlignmentConfig, VrpAlignmentStatus, VrpAnchorSnapshot,
+    };
+
+    fn anchor(principles: &[&str], prohibited: &[&str]) -> VrpAnchorSnapshot {
+        VrpAnchorSnapshot::new(
+            &principles.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            &prohibited.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+        )
+        .expect("anchor")
+    }
+
+    fn strict() -> VrpAlignmentConfig {
+        VrpAlignmentConfig {
+            semantic_alignment_required: true,
+            min_alignment_score: 0.8,
+        }
+    }
+
+    #[test]
+    fn an_agent_with_principles_is_admitted_when_the_server_declares_none() {
+        let local = anchor(&[], &[]);
+        let remote = anchor(&["users deserve privacy"], &[]);
+
+        let (status, _) = compare_peer_anchor_scored(&local, &remote, &strict());
+        assert_eq!(
+            status,
+            VrpAlignmentStatus::Aligned,
+            "a server that has declared no values rejected an agent for \
+             having some — there was nothing for it to conflict with",
+        );
+    }
+
+    #[test]
+    fn prohibited_actions_are_still_enforced_with_no_local_principles() {
+        // The one boundary the operator DID state must keep working. This is
+        // the half that must not be weakened by admitting the case above.
+        let local = anchor(&[], &["no surveillance"]);
+        let remote = anchor(&["users deserve privacy"], &[]);
+
+        let (status, _) = compare_peer_anchor_scored(&local, &remote, &strict());
+        assert_eq!(
+            status,
+            VrpAlignmentStatus::Conflict,
+            "a declared prohibition was ignored",
+        );
+    }
+
+    #[test]
+    fn a_server_with_principles_still_scores_them() {
+        // The threshold has to remain live where the operator has actually
+        // configured it, or this fix would have silently disabled the gate
+        // everywhere instead of only where it could not run.
+        let local = anchor(&["users deserve privacy"], &[]);
+        let remote = anchor(&["maximise engagement at any cost"], &[]);
+
+        let (status, score) = compare_peer_anchor_scored(&local, &remote, &strict());
+        assert_eq!(status, VrpAlignmentStatus::Conflict);
+        assert!(score < 0.8, "unrelated principles scored {score}");
+    }
+
+    #[test]
+    fn identical_anchors_are_still_an_exact_match() {
+        let local = anchor(&["be kind"], &["no spam"]);
+        let remote = anchor(&["be kind"], &["no spam"]);
+
+        let (status, score) = compare_peer_anchor_scored(&local, &remote, &strict());
+        assert_eq!(status, VrpAlignmentStatus::Aligned);
+        assert_eq!(score, 1.0);
+    }
+}

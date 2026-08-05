@@ -59,13 +59,35 @@ export function MemberList() {
   const [summary, setSummary] = useState<ServerSummary | null>(null);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [selectedAgent, setSelectedAgent] = useState<AgentInfo | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const activeServerId = useServersStore((s) => s.activeServerId);
   const getDisplayName = useUsernameStore((s) => s.getDisplayName);
 
+  // Both requests are made once per server. A failure used to go to
+  // `console.error` and nowhere else, leaving `summary` null — and the whole
+  // panel is behind `{summary && ...}`, so the sidebar rendered as an empty
+  // column. A server with no members and a server that could not be reached
+  // looked identical, and there was nothing to click to try again.
   useEffect(() => {
-    api.getServerSummary().then(setSummary).catch(console.error);
-    api.getPublicAgents().then((r) => setAgents(r.agents)).catch(console.error);
-  }, [activeServerId]);
+    let cancelled = false;
+    // The clear-on-start happens in the same callback as the result rather
+    // than synchronously in the effect body, so a retry does not schedule an
+    // extra render before the request has even been made.
+    Promise.all([api.getServerSummary(), api.getPublicAgents()])
+      .then(([s, a]) => {
+        if (cancelled) return;
+        setSummary(s);
+        setAgents(a.agents);
+        setError(null);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.warn('[member-list] load failed:', err);
+        setError('Could not load members.');
+      });
+    return () => { cancelled = true; };
+  }, [activeServerId, reloadKey]);
 
   const handleAgentClick = useCallback((agent: AgentInfo) => {
     setSelectedAgent(agent);
@@ -73,6 +95,12 @@ export function MemberList() {
 
   return (
     <aside className="member-list">
+      {error && (
+        <div className="member-list-error" role="alert">
+          <span>{error}</span>
+          <button type="button" onClick={() => setReloadKey((k) => k + 1)}>Retry</button>
+        </div>
+      )}
       {summary && (
         <div className="server-summary">
           <h3>{summary.label}</h3>

@@ -613,6 +613,23 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
     // the variable does.
     apply_rate_limit_env_overrides(&mut policy);
 
+    // Say plainly when agent alignment is not being enforced.
+    //
+    // `agent_min_alignment_score` reads like a working gate, and with no
+    // declared principles there is nothing to score against — an agent's
+    // anchor is admitted on the strength of its prohibited actions alone.
+    // That is the right behaviour for a server that has stated no values
+    // (see `compare_peer_anchor_scored`), but it is not what the threshold
+    // in the policy suggests is happening, so it should not be silent.
+    if policy.principles.is_empty() {
+        tracing::warn!(
+            min_alignment_score = policy.agent_min_alignment_score,
+            "server policy declares no `principles`: agent semantic alignment \
+             is NOT enforced and `agent_min_alignment_score` has no effect. \
+             Declare principles via PUT /api/admin/policy to turn it on."
+        );
+    }
+
     // Load ZK verification key.
     //
     // Priority:

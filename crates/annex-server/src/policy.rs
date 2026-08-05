@@ -443,6 +443,48 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
     Ok(())
 }
 
+/// Builds the signed body for `POST /api/federation/handshake`.
+///
+/// Deliberately serializes the same struct the receiver deserializes rather
+/// than a `json!` literal that re-lists its fields. The literal that used to
+/// live here omitted `signature` entirely — a required, non-`Option` field
+/// with no `serde(default)` — so the peer's `Json<HandshakeRequest>`
+/// extractor rejected every re-handshake with a 422 before the handler ran.
+/// Nothing surfaced that: the POST is a detached `tokio::spawn`, the
+/// non-success arm only warns, and no caller sees a result. Peers kept
+/// serving whatever alignment they had recorded at first contact, and every
+/// policy change after that was invisible to them.
+///
+/// Building it from the struct also means a field added to
+/// `HandshakeRequest` or to `VrpFederationHandshake` is a compile error here
+/// instead of a field silently missing on the wire.
+pub fn handshake_payload(
+    public_url: &str,
+    handshake: &VrpFederationHandshake,
+    signing_key: &ed25519_dalek::SigningKey,
+) -> Result<serde_json::Value, serde_json::Error> {
+    use ed25519_dalek::Signer;
+
+    // The receiver verifies over `{base_url}\n{handshake_json}` — see
+    // `federation_service::handle_handshake`. The two have to agree
+    // byte-for-byte, so the signing input is built the same way.
+    let handshake_json = serde_json::to_string(handshake)?;
+    let signing_payload = format!("{public_url}\n{handshake_json}");
+    let signature = hex::encode(signing_key.sign(signing_payload.as_bytes()).to_bytes());
+
+    // `handshake` is `#[serde(flatten)]` on the request struct, so its fields
+    // sit alongside `base_url` and `signature` rather than nested.
+    let mut body = serde_json::to_value(handshake)?;
+    if let Some(obj) = body.as_object_mut() {
+        obj.insert(
+            "base_url".into(),
+            serde_json::Value::String(public_url.to_string()),
+        );
+        obj.insert("signature".into(), serde_json::Value::String(signature));
+    }
+    Ok(body)
+}
+
 /// Notifies federation peers of a policy change by initiating outbound re-handshakes.
 ///
 /// For each affected peer, constructs a new VRP handshake from the current server
@@ -525,11 +567,17 @@ pub async fn notify_federation_peers_of_policy_change(
         }
 
         let url = format!("{base_url}/api/federation/handshake");
-        let payload = serde_json::json!({
-            "base_url": public_url,
-            "anchor_snapshot": local_handshake.anchor_snapshot,
-            "capability_contract": local_handshake.capability_contract,
-        });
+        let payload = match handshake_payload(&public_url, &local_handshake, &state.signing_key) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!(
+                    peer = %base_url,
+                    error = %e,
+                    "failed to build signed re-handshake payload"
+                );
+                continue;
+            }
+        };
 
         let client_clone = client.clone();
         tokio::spawn(async move {

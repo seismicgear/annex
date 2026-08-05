@@ -498,3 +498,139 @@ describe('channels store', () => {
     expect(ws.reconnectForAuthRefresh).not.toHaveBeenCalled();
     expect(useChannelsStore.getState().wsAuthRefreshing).toBe(false);
   });
+
+describe('failures that used to look like success', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+  });
+
+  it('reverts an edit that could not be sent, instead of showing it saved', async () => {
+    const { useChannelsStore } = await import('./channels');
+
+    const ws = {
+      editMessage: vi.fn(() => { throw new Error('socket is closed'); }),
+    };
+    useChannelsStore.setState({
+      ws: ws as never,
+      activeChannelId: 'chan-1',
+      messages: [
+        { message_id: 'm1', channel_id: 'chan-1', sender_pseudonym: 'me',
+          content: 'origianl typo', created_at: '2026-01-01 00:00:00' } as never,
+      ],
+      editError: null,
+    });
+
+    useChannelsStore.getState().editMessage('m1', 'original typo fixed');
+
+    const state = useChannelsStore.getState();
+    // The correction never reached the server, so it must not be on screen
+    // looking applied — it came back on the next reload and the user had no
+    // idea their fix was lost.
+    expect(state.messages[0].content).toBe('origianl typo');
+    expect(state.editError).toBeTruthy();
+  });
+
+  it('keeps the optimistic edit when the send succeeds', async () => {
+    const { useChannelsStore } = await import('./channels');
+
+    const ws = { editMessage: vi.fn() };
+    useChannelsStore.setState({
+      ws: ws as never,
+      activeChannelId: 'chan-1',
+      messages: [
+        { message_id: 'm1', channel_id: 'chan-1', sender_pseudonym: 'me',
+          content: 'before', created_at: '2026-01-01 00:00:00' } as never,
+      ],
+      editError: null,
+    });
+
+    useChannelsStore.getState().editMessage('m1', 'after');
+
+    const state = useChannelsStore.getState();
+    expect(state.messages[0].content).toBe('after');
+    expect(state.editError).toBeNull();
+  });
+
+  it('a failed scrollback page does not claim the history has ended', async () => {
+    const api = await import('@/lib/api');
+    const { useChannelsStore } = await import('./channels');
+
+    vi.mocked(api.getMessages).mockRejectedValueOnce(new Error('network'));
+    useChannelsStore.setState({
+      activeChannelId: 'chan-1',
+      messages: [
+        { message_id: 'm1', channel_id: 'chan-1', sender_pseudonym: 'me',
+          content: 'hi', created_at: '2026-01-01 00:00:00' } as never,
+      ],
+      loadingOlder: false,
+      hasMoreMessages: true,
+      olderError: null,
+    });
+
+    await useChannelsStore.getState().loadOlderMessages('me');
+
+    const state = useChannelsStore.getState();
+    // `hasMoreMessages: false` here would render as "you have reached the
+    // beginning of this channel" — a claim the server never made.
+    expect(state.hasMoreMessages).toBe(true);
+    expect(state.olderError).toBeTruthy();
+  });
+
+  it('does not retry automatically after a failed page, but retry works', async () => {
+    const api = await import('@/lib/api');
+    const { useChannelsStore } = await import('./channels');
+
+    vi.mocked(api.getMessages).mockRejectedValueOnce(new Error('network'));
+    useChannelsStore.setState({
+      activeChannelId: 'chan-1',
+      messages: [
+        { message_id: 'm1', channel_id: 'chan-1', sender_pseudonym: 'me',
+          content: 'hi', created_at: '2026-01-01 00:00:00' } as never,
+      ],
+      loadingOlder: false,
+      hasMoreMessages: true,
+      olderError: null,
+    });
+
+    await useChannelsStore.getState().loadOlderMessages('me');
+    expect(vi.mocked(api.getMessages)).toHaveBeenCalledTimes(1);
+
+    // Every subsequent scroll event must NOT re-fire the request — that
+    // loop is what the old `hasMoreMessages: false` was preventing.
+    await useChannelsStore.getState().loadOlderMessages('me');
+    await useChannelsStore.getState().loadOlderMessages('me');
+    expect(vi.mocked(api.getMessages)).toHaveBeenCalledTimes(1);
+
+    // An explicit retry does re-fire it.
+    vi.mocked(api.getMessages).mockResolvedValueOnce([]);
+    await useChannelsStore.getState().retryOlderMessages('me');
+    expect(vi.mocked(api.getMessages)).toHaveBeenCalledTimes(2);
+    expect(useChannelsStore.getState().olderError).toBeNull();
+  });
+
+  it('a genuinely short page still ends the history', async () => {
+    const api = await import('@/lib/api');
+    const { useChannelsStore } = await import('./channels');
+
+    // Fewer than PAGE_SIZE rows means the start of the channel, which is a
+    // real end and must stay distinguishable from the failure above.
+    vi.mocked(api.getMessages).mockResolvedValueOnce([]);
+    useChannelsStore.setState({
+      activeChannelId: 'chan-1',
+      messages: [
+        { message_id: 'm1', channel_id: 'chan-1', sender_pseudonym: 'me',
+          content: 'hi', created_at: '2026-01-01 00:00:00' } as never,
+      ],
+      loadingOlder: false,
+      hasMoreMessages: true,
+      olderError: null,
+    });
+
+    await useChannelsStore.getState().loadOlderMessages('me');
+
+    const state = useChannelsStore.getState();
+    expect(state.hasMoreMessages).toBe(false);
+    expect(state.olderError).toBeNull();
+  });
+});

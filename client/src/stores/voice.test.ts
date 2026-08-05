@@ -220,3 +220,70 @@ describe('voice store', () => {
     expect(useVoiceStore.getState().connectionError).toBeNull();
   });
 });
+
+describe('clearChannelCallState and the connected call', () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it('does not wipe the roster of the call you are actually in', async () => {
+    const { useVoiceStore } = await import('./voice');
+
+    // In a call in chan-standup, with two other people on screen.
+    useVoiceStore.setState({
+      voiceToken: 'tok',
+      connectedChannelId: 'chan-standup',
+      participantsByChannel: { 'chan-standup': ['alice', 'bob'] },
+      callActiveByChannel: { 'chan-standup': true },
+      joinErrorByChannel: {},
+      joiningByChannel: {},
+    });
+
+    // Clicking another channel to read something calls this for the channel
+    // being switched AWAY from — which, mid-call, is the call's own channel.
+    useVoiceStore.getState().clearChannelCallState('chan-standup');
+
+    const state = useVoiceStore.getState();
+    expect(state.participantsByChannel['chan-standup']).toEqual(['alice', 'bob']);
+    expect(state.callActiveByChannel['chan-standup']).toBe(true);
+  });
+
+  it('still clears a channel you are not in a call in', async () => {
+    const { useVoiceStore } = await import('./voice');
+
+    // The case the function exists for: leaving a channel whose join failed
+    // must not leave its error behind for the next channel to display.
+    useVoiceStore.setState({
+      connectedChannelId: null,
+      participantsByChannel: { 'chan-old': ['carol'] },
+      callActiveByChannel: { 'chan-old': true },
+      joinErrorByChannel: { 'chan-old': { display: 'nope', code: null, setupHint: null } },
+      joiningByChannel: {},
+    });
+
+    useVoiceStore.getState().clearChannelCallState('chan-old');
+
+    const state = useVoiceStore.getState();
+    expect(state.participantsByChannel['chan-old']).toBeUndefined();
+    expect(state.callActiveByChannel['chan-old']).toBeUndefined();
+    expect(state.joinErrorByChannel['chan-old']).toBeUndefined();
+  });
+
+  it('clears a different channel while a call is running elsewhere', async () => {
+    const { useVoiceStore } = await import('./voice');
+
+    useVoiceStore.setState({
+      connectedChannelId: 'chan-standup',
+      participantsByChannel: { 'chan-standup': ['alice'], 'chan-other': ['dave'] },
+      callActiveByChannel: { 'chan-standup': true, 'chan-other': true },
+      joinErrorByChannel: {},
+      joiningByChannel: {},
+    });
+
+    useVoiceStore.getState().clearChannelCallState('chan-other');
+
+    const state = useVoiceStore.getState();
+    expect(state.participantsByChannel['chan-other']).toBeUndefined();
+    expect(state.participantsByChannel['chan-standup']).toEqual(['alice']);
+  });
+});

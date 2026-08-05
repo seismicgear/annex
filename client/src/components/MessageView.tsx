@@ -13,7 +13,7 @@
  * (if available) or truncated pseudonyms.
  */
 
-import { useEffect, useRef, useState, useCallback, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback, type ReactNode } from 'react';
 import { useChannelsStore } from '@/stores/channels';
 import { useIdentityStore } from '@/stores/identity';
 import { useServersStore } from '@/stores/servers';
@@ -500,9 +500,12 @@ function MessageBubble({
 
 export function MessageView() {
   const identity = useIdentityStore((s) => s.identity);
-  const { messages, activeChannelId, loadOlderMessages, loadingOlder, hasMoreMessages, historyLoading, historyError, typingUsers } = useChannelsStore();
+  const { messages, activeChannelId, loadOlderMessages, loadingOlder, hasMoreMessages, historyLoading, historyError, typingUsers, olderError, retryOlderMessages, editError, clearEditError } = useChannelsStore();
   const selectChannel = useChannelsStore((s) => s.selectChannel);
   const loadVisibleUsernames = useUsernameStore((s) => s.loadVisibleUsernames);
+  // The cache itself, not the getter: this has to re-evaluate when a fetch
+  // fills in names, or the effect below would refetch on every render.
+  const usernameCache = useUsernameStore((s) => s.cache);
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const prevMessageCount = useRef(0);
@@ -520,11 +523,33 @@ export function MessageView() {
     });
   }, [identity, serverAccentColor]);
 
-  // Load visible usernames from server
+  // Load visible usernames from server.
+  //
+  // Refetched when a sender appears that the cache cannot name, not just
+  // once on mount. The cache was previously filled a single time per
+  // identity, so anyone who joined the server, was granted username
+  // visibility, or simply spoke for the first time after the chat was
+  // opened stayed a raw pseudonym for the rest of the session — and the
+  // longer a session ran the more of the room was anonymous.
+  //
+  // Keyed on the set of unnamed senders so a channel full of people who are
+  // legitimately unnamed (visibility not granted) settles after one attempt
+  // instead of refetching forever: the key only changes when a NEW unknown
+  // pseudonym shows up.
+  const unnamedKey = useMemo(() => {
+    const unknown = new Set<string>();
+    for (const m of messages) {
+      if (m.sender_pseudonym && !usernameCache[m.sender_pseudonym]) {
+        unknown.add(m.sender_pseudonym);
+      }
+    }
+    return [...unknown].sort().join(',');
+  }, [messages, usernameCache]);
+
   useEffect(() => {
     if (!identity?.pseudonymId) return;
-    loadVisibleUsernames(identity.pseudonymId);
-  }, [identity?.pseudonymId, loadVisibleUsernames]);
+    void loadVisibleUsernames(identity.pseudonymId);
+  }, [identity?.pseudonymId, loadVisibleUsernames, unnamedKey]);
 
   // Auto-scroll to bottom on new messages; preserve scroll position on prepend
   useEffect(() => {
@@ -629,6 +654,17 @@ export function MessageView() {
         aria-live="polite"
         tabIndex={0}
       >
+        {olderError && (
+          <div className="scrollback-error" role="alert">
+            <span>{olderError}</span>
+            <button
+              type="button"
+              onClick={() => identity?.pseudonymId && void retryOlderMessages(identity.pseudonymId)}
+            >
+              Retry
+            </button>
+          </div>
+        )}
         {messages.map((msg: Message) => (
           <MessageBubble
             key={msg.clientRequestId ?? msg.message_id}
@@ -650,6 +686,13 @@ export function MessageView() {
         )}
         <div ref={bottomRef} />
       </div>
+
+      {editError && (
+        <div className="edit-error" role="alert">
+          <span>{editError}</span>
+          <button type="button" onClick={clearEditError} aria-label="Dismiss">&times;</button>
+        </div>
+      )}
 
       {lightboxUrl && (
         <div className="image-lightbox" onClick={() => setLightboxUrl(null)}>

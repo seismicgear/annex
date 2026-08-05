@@ -4281,3 +4281,55 @@
     flex-direction: column;
   }
 }
+
+/* ── Recoverable failures ──────────────────────────────────────────────
+   Four places that used to render a failed request as an empty result:
+   a search that found nothing, a member list for an empty server, a
+   channel whose history had ended, and an edit that saved. Each now says
+   what happened and — where a retry is meaningful — offers one. Shared
+   shape so they read as the same kind of event wherever they appear. */
+.search-error,
+.member-list-error,
+.scrollback-error,
+.edit-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  margin: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--error-text);
+  background: var(--error-tint-10);
+  border: 1px solid var(--error-tint-15);
+  border-radius: var(--radius-md);
+}
+
+.search-error button,
+.member-list-error button,
+.scrollback-error button,
+.edit-error button {
+  flex-shrink: 0;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.75rem;
+  color: var(--text-strong);
+  background: var(--overlay-white-08);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.search-error button:hover,
+.member-list-error button:hover,
+.scrollback-error button:hover,
+.edit-error button:hover {
+  background: var(--overlay-white-20);
+  border-color: var(--border-emphasis);
+}
+
+/* The scrollback notice sits at the top of the history, where the user is
+   looking when the page they scrolled for fails to arrive. */
+.scrollback-error {
+  margin: 0.5rem auto;
+  max-width: 32rem;
+}

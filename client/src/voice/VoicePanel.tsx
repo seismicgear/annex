@@ -158,16 +158,36 @@ export function VoicePanel() {
   // Polling is the right shape here rather than join/leave events, because a
   // participant can also vanish without an event the client sees — a dropped
   // connection, a reaped peer — and a poll converges on the truth either way.
-  useEffect(() => {
-    if (!isVoiceCapable || !activeChannelId || !identity?.pseudonymId) return;
+  //
+  // Two channels are polled, not one. The channel being *looked at* decides
+  // whether the button reads "Create Call" or "Join Call". The channel whose
+  // call you are *in* keeps the roster that names the tiles, and those are
+  // only the same channel until you click another one to read something
+  // while staying in the call — at which point the previous version stopped
+  // polling the call entirely and the roster froze.
+  const pollChannels = useMemo(() => {
+    const ids: string[] = [];
+    if (isVoiceCapable && activeChannelId) ids.push(activeChannelId);
+    if (connectedChannelId && connectedChannelId !== activeChannelId) {
+      ids.push(connectedChannelId);
+    }
+    return ids;
+  }, [isVoiceCapable, activeChannelId, connectedChannelId]);
+  // Joined into a primitive so the effect below re-runs when the SET changes
+  // rather than on every render — an array literal is a new reference each
+  // time and would restart the interval continuously.
+  const pollKey = pollChannels.join(',');
 
-    checkCallActive(identity.pseudonymId!, activeChannelId);
-    const interval = setInterval(
-      () => checkCallActive(identity.pseudonymId!, activeChannelId),
-      10_000,
-    );
+  useEffect(() => {
+    const pseudonymId = identity?.pseudonymId;
+    if (!pseudonymId || !pollKey) return;
+    const ids = pollKey.split(',');
+
+    const poll = () => ids.forEach((id) => checkCallActive(pseudonymId, id));
+    poll();
+    const interval = setInterval(poll, 10_000);
     return () => clearInterval(interval);
-  }, [isVoiceCapable, activeChannelId, identity?.pseudonymId, checkCallActive]);
+  }, [pollKey, identity?.pseudonymId, checkCallActive]);
 
   const pseudonymId = identity?.pseudonymId ?? null;
 

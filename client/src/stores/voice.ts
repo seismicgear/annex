@@ -332,6 +332,18 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     return get().joiningByChannel[channelId] ?? false;
   },
   clearChannelCallState: (channelId) => {
+    // Never clear the channel whose call you are actually in.
+    //
+    // This is called when the active channel changes, to stop the next
+    // channel inheriting the previous one's status and errors — which is
+    // right, except that "the channel you were looking at" and "the channel
+    // whose call you are in" are different things. A user in a call in #standup
+    // who clicks #general to read something is still in the call: the panel
+    // stays mounted and keeps rendering tiles. Clearing here wiped that
+    // call's roster and every remote tile lost its name, for the same reason
+    // as the poll that used to stop on connect — the roster was discarded by
+    // code reasoning about a different channel.
+    if (get().connectedChannelId === channelId) return;
     set((s) => {
       const restActive = Object.fromEntries(Object.entries(s.callActiveByChannel).filter(([k]) => k !== channelId));
       const restRoster = Object.fromEntries(Object.entries(s.participantsByChannel).filter(([k]) => k !== channelId));

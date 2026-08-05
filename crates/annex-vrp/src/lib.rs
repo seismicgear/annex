@@ -128,6 +128,27 @@ pub fn compare_peer_anchor_scored(
         return (VrpAlignmentStatus::Conflict, 0.0);
     }
 
+    // A server that has declared no principles has stated no requirement.
+    //
+    // `ServerPolicy::default()` ships `principles: []` alongside
+    // `agent_min_alignment_score: 0.8`, and the handshake hardcodes
+    // `semantic_alignment_required: true`. With an empty local list the
+    // semantic branch below was unreachable, so control fell to the
+    // `Conflict` at the end of this function and every agent that declared
+    // an ethical anchor was rejected — on a stock server, the only agent
+    // that could ever be admitted was one whose principles AND prohibited
+    // actions were both empty, matching the empty local anchor by hash.
+    // The threshold was never consulted, and nothing told the operator why
+    // agent registration always failed.
+    //
+    // Rejecting on a comparison that cannot be made is not fail-closed, it
+    // is arbitrary: there is no declared value for the agent to conflict
+    // with. Prohibited actions are different and are still enforced above —
+    // those are a boundary the operator actually stated.
+    if local.principles.is_empty() {
+        return (VrpAlignmentStatus::Aligned, 1.0);
+    }
+
     // Semantic alignment: compare original principle text when available.
     // Only reachable when prohibited actions already match (above).
     if config.semantic_alignment_required

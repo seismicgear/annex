@@ -14,6 +14,7 @@ export function MessageSearch() {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<Message[]>([]);
   const [searching, setSearching] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const identity = useIdentityStore((s) => s.identity);
   const activeChannelId = useChannelsStore((s) => s.activeChannelId);
@@ -40,6 +41,7 @@ export function MessageSearch() {
   const handleSearch = useCallback(async () => {
     if (!query.trim() || !identity?.pseudonymId) return;
     setSearching(true);
+    setError(null);
     try {
       const msgs = await api.searchMessages(
         identity.pseudonymId,
@@ -48,8 +50,14 @@ export function MessageSearch() {
         20,
       );
       setResults(msgs);
-    } catch {
+    } catch (err) {
+      // A failed request is not an empty result set. Rendering it as "No
+      // messages found" tells the user their search worked and the thing
+      // they are looking for does not exist — which is the one conclusion
+      // the server never actually reported.
+      console.warn('[search] request failed:', err);
       setResults([]);
+      setError('Search failed. Check your connection and try again.');
     } finally {
       setSearching(false);
     }
@@ -121,7 +129,13 @@ export function MessageSearch() {
           })}
         </div>
       )}
-      {results.length === 0 && query.trim() && !searching && (
+      {error && !searching && (
+        <div className="search-error" role="alert">
+          <span>{error}</span>
+          <button type="button" onClick={() => void handleSearch()}>Retry</button>
+        </div>
+      )}
+      {!error && results.length === 0 && query.trim() && !searching && (
         <div className="search-no-results">No messages found</div>
       )}
     </div>

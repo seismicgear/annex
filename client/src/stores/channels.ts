@@ -77,6 +77,19 @@ interface ChannelsState {
   loadingOlder: boolean;
   /** Whether there are more older messages to load. */
   hasMoreMessages: boolean;
+  /**
+   * Set when a scrollback page failed to load, so the UI can offer a retry.
+   *
+   * Kept separate from `hasMoreMessages` on purpose. A failed page used to
+   * set `hasMoreMessages: false` to stop the scroll handler retrying in a
+   * loop — which worked, and which also told the user they had reached the
+   * beginning of the channel. One dropped request ended the history of that
+   * channel for the rest of the session, and looked exactly like a short
+   * channel.
+   */
+  olderError: string | null;
+  /** Set when an edit could not be sent, so the user is not shown a false save. */
+  editError: string | null;
   /** The WebSocket instance (internal). */
   ws: AnnexWebSocket | null;
   /** Messages awaiting server acknowledgement, keyed by clientRequestId. */
@@ -108,6 +121,10 @@ interface ChannelsState {
   getPendingSend: (clientRequestId: string) => PendingSend | undefined;
   /** Edit a message in the active channel. */
   editMessage: (messageId: string, content: string) => void;
+  /** Dismiss the "edit not saved" notice. */
+  clearEditError: () => void;
+  /** Retry a scrollback page that failed, clearing the error first. */
+  retryOlderMessages: (pseudonymId: string) => Promise<void>;
   /** Delete a message in the active channel. */
   deleteMessage: (messageId: string) => void;
   /** Load older messages (pagination). */
@@ -156,6 +173,8 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
   historyError: null,
   loadingOlder: false,
   hasMoreMessages: true,
+  olderError: null,
+  editError: null,
   ws: null,
   pendingSends: new Map<string, PendingSend>(),
   typingUsers: [],
@@ -192,7 +211,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     // Staying subscribed to all joined channels lets us receive messages
     // for non-active channels and increment unread counts accurately.
 
-    set({ activeChannelId: channelId, activeChannelE2e: false, messages: [], loadingOlder: false, hasMoreMessages: true, historyLoading: true, historyError: null, composerError: null, typingUsers: [], replyToMessage: null });
+    set({ activeChannelId: channelId, activeChannelE2e: false, messages: [], loadingOlder: false, hasMoreMessages: true, olderError: null, editError: null, historyLoading: true, historyError: null, composerError: null, typingUsers: [], replyToMessage: null });
 
     // Auto-join the channel (idempotent — no-op if already a member).
     // Must be a member before fetching messages or joining voice.
@@ -624,12 +643,40 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     const { ws, activeChannelId } = get();
     if (!ws || !activeChannelId) return;
     const channelId = activeChannelId;
+
+    // Keep the old body so the optimistic update can be undone. An edit that
+    // never left the device used to stay on screen looking saved: the socket
+    // was down, `ws.editMessage` threw, the catch logged to a console nobody
+    // has open, and the user watched their correction apply. It survived
+    // until the next reload, at which point the original text came back and
+    // the edit was simply gone.
+    const previous = get().messages.find((m) => m.message_id === messageId);
+    const previousContent = previous?.content;
+    const previousEditedAt = previous?.edited_at;
+
     // Optimistically show the new plaintext locally.
     set((s) => ({
       messages: s.messages.map((m) =>
         m.message_id === messageId ? { ...m, content, edited_at: new Date().toISOString() } : m,
       ),
     }));
+
+    const revert = (err: unknown) => {
+      console.error('[channels] editMessage failed:', err);
+      if (previousContent === undefined) return;
+      set((s) => ({
+        messages: s.messages.map((m) =>
+          m.message_id === messageId
+            ? { ...m, content: previousContent, edited_at: previousEditedAt }
+            : m,
+        ),
+        // Surfaced in the composer area rather than swallowed: the whole
+        // point is that the user finds out now, while they still have the
+        // text they meant to send.
+        editError: 'Edit not saved — you appear to be offline. Try again.',
+      }));
+    };
+
     try {
       if (!isChannelE2e(channelId)) {
         ws.editMessage(channelId, messageId, content);
@@ -637,12 +684,14 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
         // Encrypt the edited body before it leaves the device.
         void encryptForWire(channelId, content)
           .then((cipher) => ws.editMessage(channelId, messageId, cipher))
-          .catch((err) => console.error('[channels] E2E edit failed:', err));
+          .catch(revert);
       }
     } catch (err) {
-      console.error('[channels] editMessage threw:', err);
+      revert(err);
     }
   },
+
+  clearEditError: () => set({ editError: null }),
 
   deleteMessage: (messageId: string) => {
     const { ws, activeChannelId } = get();
@@ -654,9 +703,18 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     }
   },
 
+  retryOlderMessages: async (pseudonymId: string) => {
+    set({ olderError: null });
+    await get().loadOlderMessages(pseudonymId);
+  },
+
   loadOlderMessages: async (pseudonymId: string) => {
-    const { activeChannelId, messages, loadingOlder, hasMoreMessages } = get();
+    const { activeChannelId, messages, loadingOlder, hasMoreMessages, olderError } = get();
     if (!activeChannelId || messages.length === 0 || loadingOlder || !hasMoreMessages) return;
+    // A previous page failed. Do not retry on every scroll event — that is
+    // the loop the old `hasMoreMessages: false` existed to prevent. Retry is
+    // available, but the user has to ask for it.
+    if (olderError) return;
 
     set({ loadingOlder: true });
     try {
@@ -683,14 +741,24 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       set((state) => ({
         messages: [...olderReversed, ...state.messages],
         hasMoreMessages: older.length >= PAGE_SIZE,
+        olderError: null,
       }));
     } catch (err) {
       console.warn('[channels] loadOlderMessages failed:', err);
-      // Stop trying to load more if the request failed to prevent
-      // infinite retry loops on scroll — but only for the channel this
-      // request was issued for.
+      // Record the failure instead of declaring the history finished.
+      //
+      // Setting `hasMoreMessages: false` here did stop the scroll handler
+      // retrying in a loop, and it also told the user they had reached the
+      // beginning of the channel. One dropped request — a flaky network, a
+      // token refresh, a server restart — permanently ended scrollback for
+      // that channel, and looked identical to a short history. There was no
+      // way to tell the difference and no way to retry.
+      //
+      // `olderError` suppresses the automatic retry the same way, because
+      // the scroll handler checks it; the difference is that the UI can now
+      // say what happened and offer the retry explicitly.
       if (get().activeChannelId === activeChannelId) {
-        set({ hasMoreMessages: false });
+        set({ olderError: 'Could not load earlier messages.' });
       }
     } finally {
       set({ loadingOlder: false });
