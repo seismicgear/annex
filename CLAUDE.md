@@ -84,6 +84,54 @@ no surface reaches. Baselines live in `client/e2e/audit/baselines/` and are
 tracked; the ledger and contact sheet land in `docs/ui-audit/`. Full docs:
 `docs/ui-audit/README.md`.
 
+#### Operating the audit
+
+A run takes ~11 minutes and is easy to invalidate. Four rules, each learned by
+invalidating one:
+
+- **Never run `cargo` alongside a run.** The server is built at run start; a
+  concurrent cargo command takes the build lock and starves it. Once
+  `Server ready` appears in the log the lock is free, but CPU contention can
+  still push a capture past its 45s budget.
+- **Never edit `client/src` mid-run.** `e2e-server.sh start` builds the client
+  once, at the beginning. Editing after that means the run no longer
+  corresponds to the working tree, and its result means nothing.
+- **Never commit while a `--update-baselines` run is in flight.** A partially
+  re-recorded baseline set looks exactly like a complete one in `git status`.
+  `64530f6` shipped four surfaces whose baselines were still being written,
+  and CI could not heal it: `updateSnapshots: 'none'` refuses to mint a
+  snapshot for any reason, so it failed until the files were committed from a
+  machine that had recorded them.
+- **A green run is only evidence if the tree is clean afterwards.** Zero
+  baseline drift across 252 captures is what proves a mechanical change (a
+  token migration, a rename, a refactor) changed no pixels. That claim is
+  worth more than reading the diff.
+
+#### Defect classes this codebase actually produces
+
+Every serious defect found by the audit and the two defect sweeps fell into one
+of these. Look for them first:
+
+1. **A failure rendered as an ordinary result.** A dropped request becomes "no
+   results", an empty list, or a saved edit. The user is told something true-
+   looking that the server never said. Found and fixed 8×.
+2. **A value that never crosses a boundary it is assumed to cross.** A field
+   added to a response struct but dropped by a hand-built `json!` at the edge;
+   a resolved config value written into `AppState` and nowhere else. Every
+   layer is individually correct and the feature is inert. Found 3×.
+3. **A check keyed on a different identifier than the query it guards.** The
+   route takes two ids, authorization reads one, the data reads the other.
+4. **A default that contradicts another default.** `voice_enabled: true` with a
+   loopback WebRTC URL; `agent_min_alignment_score: 0.8` with no principles to
+   score against; a 3-hour retry budget against a 5-minute freshness window.
+5. **A non-happy-path branch that drops structure the happy path provides** —
+   an error state rendered without the landmark, heading, or list the normal
+   state has. Found 4×.
+
+The corollary: unit tests do not catch (1)–(4), because in every case the unit
+under test was correct. They are only visible at the boundary — an HTTP-level
+test, or the browser.
+
 ### Linting
 ```bash
 cargo fmt --all --check
