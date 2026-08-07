@@ -113,6 +113,7 @@ async fn message_is_encrypted_at_rest_but_reads_back_plaintext() {
     let hits = svc
         .search_messages(
             &member(state.server_id, "psn"),
+            &HeaderMap::new(),
             "launch codes".to_string(),
             Some("chan".to_string()),
             None,
@@ -126,6 +127,7 @@ async fn message_is_encrypted_at_rest_but_reads_back_plaintext() {
     let misses = svc
         .search_messages(
             &member(state.server_id, "psn"),
+            &HeaderMap::new(),
             "nonexistent".to_string(),
             Some("chan".to_string()),
             None,

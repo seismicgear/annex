@@ -33,10 +33,10 @@ Authoritative env-var names live in `crates/annex-server/src/config.rs::load_con
 | `ANNEX_DB_PATH` | `annex.db` | SQLite database file path |
 | `ANNEX_CONFIG_PATH` | `config.toml` | Config file path |
 | `ANNEX_ZK_KEY_PATH` | `zk/keys/membership_vkey.json` | Groth16 verification key |
-| `ANNEX_WEBRTC_URL` | (none) | Internal WebRTC media URL (dev sidecar only; native SFU does not require this) |
-| `ANNEX_WEBRTC_PUBLIC_URL` | (none) | Public WebRTC URL announced to remote clients |
-| `ANNEX_WEBRTC_API_KEY` | (none) | Dev-mode WebRTC API key |
-| `ANNEX_WEBRTC_API_SECRET` | (none) | Dev-mode WebRTC API secret |
+| `ANNEX_WEBRTC_URL` | `ws://localhost:7880` | **Vestigial value, but do not clear it.** Nothing dials this address — the SFU is in-process. It survives only as the on/off gate: `VoiceService::is_enabled()` is false when it is empty, and `join_voice` then refuses every call with `voice_not_configured`. Leave it at the default unless you mean to disable voice. |
+| `ANNEX_WEBRTC_PUBLIC_URL` | (none) | Public URL announced to remote voice clients. Overridden at startup by `ANNEX_PUBLIC_URL` / the persisted server URL when either is set — see [Reverse proxy](#reverse-proxy-recommended). |
+| `ANNEX_WEBRTC_API_KEY` | `devkey` | Signalling auth key |
+| `ANNEX_WEBRTC_API_SECRET` | `secret` | Signalling auth secret. Change it for any deployment reachable off-host. |
 | `ANNEX_PUBLIC_URL` | (auto-derived) | Publicly-reachable server URL (for invites, federation) |
 | `ANNEX_LOG_LEVEL` | `info` | Log level (trace/debug/info/warn/error) |
 | `ANNEX_LOG_JSON` | `false` | JSON log output for log aggregation |
@@ -85,7 +85,22 @@ json = true
 - **Annex Server**: HTTP API, WebSocket messaging, identity, federation, observability, and the native WebRTC SFU for voice rooms.
 - **SQLite**: Single-file database with WAL mode for concurrent reads.
 
-Older versions of this guide and `docker-compose.yml` ran a LiveKit sidecar for voice. The in-tree code in `crates/annex-voice` is a native WebRTC SFU and does not require LiveKit. The Docker Compose file is being updated accordingly; if you operate an older deployment with a LiveKit sidecar, treat that path as legacy and migrate when convenient.
+### Voice transport
+
+Voice is served by a native WebRTC SFU built on `webrtc-rs`, compiled into the
+Annex binary (`crates/annex-voice/src/service.rs`). There is no media server to
+deploy, no second process to supervise, and no extra port to open for
+signalling: offer/answer and ICE candidates ride the app's own `/ws` WebSocket
+alongside chat traffic, so anything that already proxies the API also proxies
+voice signalling. Media itself is ordinary WebRTC — UDP to the ICE candidates
+the server advertises, which is what STUN/TURN configuration is for.
+
+Older versions of this guide and `docker-compose.yml` ran a LiveKit sidecar.
+That is gone: `docker-compose.yml` no longer defines the service and the server
+never dials an external SFU. `docker-compose.livekit.yml` still exists in the
+repo root but nothing includes it — do not use it. If you operate a deployment
+that still runs the sidecar, stop it; it has had no traffic since the native SFU
+landed.
 
 ## Voice Setup
 
@@ -210,13 +225,39 @@ Run behind a reverse proxy (nginx, Caddy) with TLS. Set `ANNEX_PUBLIC_URL` to yo
 ANNEX_PUBLIC_URL=https://annex.example.com
 ```
 
-If the voice SFU is reachable at a different address from the API, set:
+That one variable is normally enough for voice too. Because the SFU is
+in-process and signals over the app's own WebSocket, **the address a remote
+client needs for voice is the address it is already talking to.** At startup the
+server takes `ANNEX_PUBLIC_URL` (or, if unset, the public URL persisted in the
+`servers` table during zero-config bootstrap) and pushes it into the voice
+service, so setting it correctly configures both planes.
+
+`ANNEX_WEBRTC_PUBLIC_URL` remains for the unusual case where voice must be
+announced at a different address:
 
 ```bash
 ANNEX_WEBRTC_PUBLIC_URL=wss://voice.example.com
 ```
 
-The server uses `ANNEX_PUBLIC_URL` for invite links and federation signatures, and `ANNEX_WEBRTC_PUBLIC_URL` for the WebSocket URL handed to remote voice clients. Both are auto-detected from trusted forwarded headers (`X-Forwarded-Host`, `X-Forwarded-Proto`) when present, so most deployments behind a single proxy need only the first.
+Note the precedence, which is not what the variable name suggests: the value
+pushed in at startup **wins over** `ANNEX_WEBRTC_PUBLIC_URL`. So on any server
+that has a public URL — which, after first boot, is nearly all of them —
+`ANNEX_WEBRTC_PUBLIC_URL` has no effect. Overriding it in practice means an
+authenticated `PUT /api/admin/webrtc-public-url` (moderator capability
+required), which is also what the desktop host mode uses to push its
+router-issued URL into the running server. Note that this is a *different*
+route from `PUT /api/admin/public-url`, which updates only the HTTP layer's
+public URL and does not touch the voice service.
+
+> **Auto-detection does not cover voice.** The proxy-header fallback
+> (`X-Forwarded-Host` / `X-Forwarded-Proto`) fills in the server's public URL on
+> the first trusted request, but it writes only to the HTTP layer's state — it
+> does not reach the voice service. A deployment that sets nothing and relies on
+> forwarded headers will get working invite links and **broken remote voice**:
+> the voice service still holds the default `ws://localhost:7880`, which it
+> deliberately reports as empty rather than hand a remote client a loopback
+> address, so `join_voice` returns `voice_not_configured`. Set
+> `ANNEX_PUBLIC_URL` explicitly if anyone will call from off-host.
 
 > Earlier revisions of this page named `ANNEX_LIVEKIT_PUBLIC_URL`. No such variable exists — nothing in the codebase reads it, so a deployment configured from those instructions silently had no SFU URL set at all. The voice settings are the `ANNEX_WEBRTC_*` family (`_URL`, `_PUBLIC_URL`, `_API_KEY`, `_API_SECRET`), matching the `[webrtc]` section of `config.toml`.
 

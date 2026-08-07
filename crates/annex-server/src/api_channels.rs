@@ -21,7 +21,7 @@ use crate::AppState;
 use annex_channels::{Channel, Message, MessageEdit};
 use axum::{
     extract::{Extension, Path, Query},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::Json,
 };
 use serde::Deserialize;
@@ -302,11 +302,18 @@ pub async fn get_message_edits_handler(
 pub async fn search_messages_handler(
     Extension(state): Extension<Arc<AppState>>,
     Extension(IdentityContext(identity)): Extension<IdentityContext>,
+    headers: HeaderMap,
     Query(params): Query<SearchParams>,
 ) -> Result<Json<Vec<Message>>, StatusCode> {
     let svc = ChannelService::new(state);
     let messages = svc
-        .search_messages(&identity, params.q, params.channel_id, params.limit)
+        .search_messages(
+            &identity,
+            &headers,
+            params.q,
+            params.channel_id,
+            params.limit,
+        )
         .await
         .map_err(err_to_status)?;
     Ok(Json(messages))

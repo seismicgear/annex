@@ -35,9 +35,11 @@ Phase 5: Presence Graph ................ COMPLETE
 Phase 6: Agent Protocol ................ PARTIAL  (negotiated capability
                                                    contract not enforced at
                                                    action time)
-Phase 7: Voice Infrastructure .......... PARTIAL  (no LiveKit; human↔human SFU
-                                                   real, now enabled on default
-                                                   desktop host [2026-06-19 fix];
+Phase 7: Voice Infrastructure .......... PARTIAL  (native in-process SFU, no
+                                                   external media server;
+                                                   human↔human voice real, now
+                                                   enabled on default desktop
+                                                   host [2026-06-19 fix];
                                                    agent TTS now works out of the
                                                    box — built-in default profile
                                                    + espeak-ng System fallback +
@@ -80,7 +82,7 @@ These apply to every line of code in the project. No exceptions. No "we'll clean
 - **HTTP framework**: `axum`
 - **Database**: SQLite via `rusqlite` (with WAL mode, connection pooling via `r2d2` or `deadpool`)
 - **ZKP circuits**: Circom 2.x + snarkjs (Groth16)
-- **Voice transport**: LiveKit server SDK
+- **Voice transport**: native WebRTC SFU in-process (`webrtc-rs`), signalling over the app's own `/ws` WebSocket
 - **Build system**: Cargo workspaces for Rust, npm for ZK toolchain
 
 ### Quality Gates
@@ -152,7 +154,7 @@ A repository that compiles, runs an empty server, passes CI, and has the workspa
   │   ├── annex-vrp/          # VRP trust negotiation: compare_peer_anchor, contracts, reputation
   │   ├── annex-graph/        # presence graph: nodes, edges, BFS, visibility
   │   ├── annex-channels/     # channel model: types, messages, retention
-  │   ├── annex-voice/        # voice integration: LiveKit, TTS, STT
+  │   ├── annex-voice/        # native WebRTC SFU (webrtc-rs), TTS, STT
   │   ├── annex-federation/   # federation: attestation, agreements, cross-server messaging
   │   ├── annex-rtx/          # RTX knowledge exchange: bundles, transfer, governance
   │   ├── annex-observe/      # observability: event log, public APIs, SSE streams
@@ -800,24 +802,25 @@ Phase 6 is **COMPLETE** when:
 
 **Status**: `COMPLETE`
 **Prerequisites**: Phase 4 `COMPLETE`, Phase 6 `COMPLETE`
-**Estimated scope**: LiveKit integration, voice LLM TTS service, STT service, agent voice pipeline, voice profiles
+**Estimated scope**: native WebRTC SFU, voice LLM TTS service, STT service, agent voice pipeline, voice profiles
 
 ### What This Phase Produces
 
-Voice channels that work for both humans and agents. Humans speak via WebRTC through LiveKit. Agents send text and receive speech-rendered audio via the platform's voice LLM. All participants hear each other.
+Voice channels that work for both humans and agents. Humans speak via WebRTC to the SFU embedded in the Annex server. Agents send text and receive speech-rendered audio via the platform's voice LLM. All participants hear each other.
 
 ### Steps
 
-#### 7.1 — LiveKit server integration
-- [x] LiveKit server deployment configuration (Docker or native)
-- [x] `annex-voice` crate: LiveKit server SDK integration for room management
-- [x] Create LiveKit room per `VOICE` or `HYBRID` channel
-- [x] Token generation for human participants to join LiveKit rooms
+#### 7.1 — SFU integration
+*(Originally "LiveKit server integration". Corrected per update rule 5 — the criteria named a component that was never shipped; see the changelog.)*
+- [x] SFU runs in-process — no separate media server to deploy or supervise
+- [x] `annex-voice` crate: native `webrtc-rs` SFU for room management (`service.rs`)
+- [x] Create an SFU room per `VOICE` or `HYBRID` channel
+- [x] Token generation for human participants to join rooms
 - [x] Test: create room → generate token → verify token grants correct room access
 
 #### 7.2 — Human voice flow
-- [x] Client connects to LiveKit room using generated token
-- [x] Audio published and subscribed via standard LiveKit WebRTC flow
+- [x] Client connects to the SFU room using the generated token, signalling over the app's `/ws` WebSocket
+- [x] Audio published and subscribed via a plain `RTCPeerConnection` (`client/src/lib/webrtc.ts`) — no vendor SDK
 - [x] No server-side audio processing needed for human-to-human voice
 
 #### 7.3 — Voice LLM service (TTS)
@@ -832,12 +835,12 @@ Voice channels that work for both humans and agents. Humans speak via WebRTC thr
 #### 7.4 — Agent voice output pipeline
 - [x] Agent sends text intent via WebSocket message with `type: "voice_intent"`
 - [x] Server routes text to TTS service with the agent's assigned voice profile
-- [x] TTS output is published to the in-process SFU room as an audio track attributed to the agent's pseudonym (NOT LiveKit — native Rust SFU)
+- [x] TTS output is published to the in-process SFU room as an audio track attributed to the agent's pseudonym
 - [x] Test: agent sends text → TTS synthesizes audio → encoded to opus frames for the SFU mixer. Closed [2026-06-20]: the built-in `"default"` profile is provisioned at startup (Piper if available, else espeak-ng System), operator profiles are loaded from `voice_profiles`, and the integration test now asserts synthesis SUCCEEDS instead of the old failure path.
 
 #### 7.5 — STT service
 - [x] `annex-voice` implements STT service:
-  - Subscribes to human audio tracks in LiveKit rooms where agents are present
+  - Subscribes to human audio tracks in SFU rooms where agents are present
   - Transcribes audio via local Whisper (or equivalent)
   - Delivers transcription to subscribed agents as text via their WebSocket connection
 - [x] Message format: `{ "type": "transcription", "channelId": "...", "speakerPseudonym": "...", "text": "..." }`
@@ -849,7 +852,7 @@ Voice channels that work for both humans and agents. Humans speak via WebRTC thr
 - [x] Default voice profile for agents without explicit assignment
 
 #### 7.7 — Voice channel management
-- [x] `POST /api/channels/:channelId/voice/join` — join voice channel (creates LiveKit room participant)
+- [x] `POST /api/channels/:channelId/voice/join` — join voice channel (creates SFU room participant)
 - [x] `POST /api/channels/:channelId/voice/leave` — leave voice channel
 - [x] Voice participant list synced with channel membership
 
@@ -857,7 +860,7 @@ Voice channels that work for both humans and agents. Humans speak via WebRTC thr
 
 Phase 7 is **COMPLETE** when:
 
-- [x] Humans can join voice channels and speak to each other via WebRTC/LiveKit
+- [x] Humans can join voice channels and speak to each other via WebRTC to the in-process SFU
 - [x] Agents can send text and have it rendered as voice in the channel
 - [x] Agents receive transcriptions of human speech as text
 - [x] Voice profiles are assignable and produce distinct voices
@@ -1095,7 +1098,7 @@ Phase 10 is **COMPLETE** when:
 
 ### What This Phase Produces
 
-A client people actually use. Not a developer tool. Not a proof-of-concept with curl commands. A real client that handles key generation, proof generation, WebSocket messaging, voice via LiveKit, and presence graph visualization.
+A client people actually use. Not a developer tool. Not a proof-of-concept with curl commands. A real client that handles key generation, proof generation, WebSocket messaging, voice via WebRTC to the server's SFU, and presence graph visualization.
 
 ### Steps
 
@@ -1119,7 +1122,7 @@ A client people actually use. Not a developer tool. Not a proof-of-concept with 
 - [x] Channel creation (for authorized users)
 
 #### 11.4 — Voice UI
-- [x] LiveKit SDK integration
+- [x] WebRTC session management against the server's SFU (`client/src/lib/webrtc.ts`, `client/src/voice/`)
 - [x] Join/leave voice channel
 - [x] Mute/unmute
 - [x] Visual indication of who is speaking (including agents)
@@ -1192,7 +1195,7 @@ A system that is ready for public deployment. Not "ready for beta." Ready for pe
 
 #### 12.6 — Deployment packaging
 - [x] Docker image for server + dependencies
-- [x] Docker Compose for full stack (server + LiveKit + voice models)
+- [x] Docker Compose for full stack (server + voice models; the SFU needs no separate service)
 - [x] Configuration documentation
 - [x] Backup and restore procedures
 
@@ -1213,6 +1216,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-08-07 | Phase 7 criteria corrected per update rule 5. Every step that named **LiveKit** was replaced with the component that actually shipped: a native WebRTC SFU built on `webrtc-rs`, compiled into the server (`crates/annex-voice/src/service.rs`), whose signalling rides the app's own `/ws` WebSocket. No LiveKit dependency exists in `Cargo.toml` or `client/package.json`, nothing dials an external media server, and `ensure_webrtc_running` in `crates/annex-server/src/startup.rs` is a no-op that spawns no sidecar. Affected: the tech-stack list, the crate tree, Phase 7 scope/7.1/7.2/7.4/7.5/7.7 and its completion criteria, Phase 11.4, and Phase 12.6. No criterion was removed — each was restated against the shipped design, and the completion status of every step is unchanged because the capability each described was in fact delivered, by different means. Changelog rows dated 2026-02-18 and earlier retain their original LiveKit wording as a record of what was believed at the time. |
 | 2026-06-10 | Code Standards Quality Gate #9 corrected per update rule 5: "all migrations are reversible (every up has a down)" replaced with "all migrations are forward-only, immutable, and integrity-checked." The original criterion contradicted the shipped design — migrations are append-only and protected by the SHA-256 checksum ledger (migration 039, invariant I-DB-1), and no down-migrations have ever existed. Rollback is operational (SQLite backup/restore per the deployment guide), not schema-level. |
 | 2026-02-18 | Phase 12 `COMPLETE`. All phases finished. ZKP circuit audit with 16 invalid-witness tests and ADR 0006. VRP adversarial reputation tests (oscillation, sustained conflict, per-pseudonym isolation). Federation transfer scope enforcement fix in message relay. Merkle performance benchmarks (7.33ms insert+proof, target <50ms). Documentation final pass with stale status corrections. Deployment packaging: multi-stage Dockerfile, Docker Compose with LiveKit, comprehensive deployment guide. |
 | 2026-02-18 | Phase 11 `COMPLETE`. React+TypeScript+Vite web client with: ZK identity management (snarkjs proof generation, IndexedDB key storage, Poseidon commitment), channel UI (WebSocket messaging, history pagination), voice UI (LiveKit components-react), presence/agent inspection, federation peer display. ADR 0005 for framework selection. |

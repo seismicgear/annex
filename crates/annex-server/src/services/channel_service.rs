@@ -689,10 +689,25 @@ impl ChannelService {
     pub async fn search_messages(
         &self,
         identity: &PlatformIdentity,
+        headers: &HeaderMap,
         query: String,
         channel_id: Option<String>,
         limit: Option<u32>,
     ) -> Result<Vec<Message>, ChannelServiceError> {
+        // Search returns decrypted message content, so it needs the same gate
+        // as reading that content directly.
+        //
+        // `get_history` has called `enforce_zk` since the gate was introduced;
+        // this route never did. Under `enforce_zk_proofs = true` — the shipped
+        // default, and the posture nothing in the suite exercised until now —
+        // `GET /api/channels/{id}/messages` answered 403 without a membership
+        // proof while `GET /api/messages/search?channel_id={id}` returned the
+        // same messages from the same channel to the same caller with a
+        // session token alone. A session token outlives its holder's access to
+        // the ZK secret that minted it, so the gate was bypassable by asking
+        // for the content through the other door.
+        self.enforce_zk(identity, headers).await?;
+
         if query.trim().is_empty() {
             return Err(ChannelServiceError::BadRequest(
                 "query must not be empty".to_string(),

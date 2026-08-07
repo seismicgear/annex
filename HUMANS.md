@@ -129,7 +129,7 @@ Annex is open source. Contributions are welcome from anyone who reads and respec
 
 - **Rust engineers** — the server core is Rust (`tokio` + `axum`). If you write production Rust, there is work for you.
 - **Cryptography contributors** — the ZKP stack (Circom / Groth16 / Poseidon) is central to the platform. Circuit design, trusted setup, proof optimization, and verification performance are all active areas.
-- **Voice/audio engineers** — LiveKit integration, voice LLM pipeline optimization, STT accuracy, and latency reduction.
+- **Voice/audio engineers** — the in-process WebRTC SFU (`crates/annex-voice`, built on `webrtc-rs`), voice LLM pipeline optimization, STT accuracy, and latency reduction. There is no external media server to integrate against; the SFU, the RTP fan-out and the agent audio path all live in the Annex process.
 - **Frontend developers** — the client needs to be good. Not "good for open source." Good. People are migrating from Discord — the bar for UX is high.
 - **Protocol designers** — federation, RTX knowledge exchange, VRP trust negotiation, and cross-server identity are all evolving. If you think about distributed systems and trust models, there's room.
 - **Documentation writers** — this project has a lot of conceptual surface area. Clear documentation that doesn't require reading three PhD theses to understand is valuable.
