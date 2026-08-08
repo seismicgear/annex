@@ -271,6 +271,22 @@ pub fn delete_message(
         params![message_id],
     )?;
 
+    // And drop every earlier version of it.
+    //
+    // Blanking `content` alone hid the final text and left all the drafts
+    // behind: `message_edits` kept `old_content` verbatim and
+    // `get_edit_history` did not filter on `deleted_at`, so a message the
+    // sender had deleted still served every prior version through
+    // `GET /api/channels/{id}/messages/{mid}/edits`. Someone who mistyped a
+    // password, a name or an address, corrected it, then deleted the
+    // message, had published the mistake and hidden only the correction —
+    // which is the opposite of what "delete" is asked to do, and the one
+    // case where deleting matters most.
+    tx.execute(
+        "DELETE FROM message_edits WHERE message_id = ?1",
+        params![message_id],
+    )?;
+
     tx.commit()?;
     get_message(conn, message_id)
 }

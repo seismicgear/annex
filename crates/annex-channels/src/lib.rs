@@ -939,3 +939,117 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod deletion_tests {
+    use super::*;
+    use annex_db::run_migrations;
+    use annex_types::ServerPolicy;
+    use rusqlite::Connection;
+
+    /// Migrations plus `PRAGMA foreign_keys = ON`, which is what the pool
+    /// sets in production. Without the pragma neither of these defects is
+    /// reachable, which is why they survived: the plain `Connection::open`
+    /// used by other tests here does not enforce foreign keys.
+    fn setup() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        run_migrations(&conn).unwrap();
+        let policy = serde_json::to_string(&ServerPolicy::default()).unwrap();
+        conn.execute(
+            "INSERT INTO servers (slug, label, policy_json) VALUES ('t', 'T', ?1)",
+            [policy],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channels (server_id, channel_id, name, channel_type, federation_scope)
+             VALUES (1, 'chan', 'Chan', 'Text', 'LOCAL_ONLY')",
+            [],
+        )
+        .unwrap();
+        conn
+    }
+
+    fn edited_message(conn: &Connection, id: &str, expires_at: Option<&str>) {
+        conn.execute(
+            "INSERT INTO messages (server_id, channel_id, message_id, sender_pseudonym, content, expires_at)
+             VALUES (1, 'chan', ?1, 'alice', 'final', ?2)",
+            rusqlite::params![id, expires_at],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message_edits (message_id, old_content) VALUES (?1, 'the original')",
+            [id],
+        )
+        .unwrap();
+    }
+
+    /// The retention sweep deletes a BATCH in one statement, so a single
+    /// expired message with edit history used to abort the whole thing with
+    /// a foreign-key violation — and the same row was picked up again next
+    /// sweep, so message retention stopped permanently the first time an
+    /// edited message aged out. Nothing surfaced it: the sweep is a
+    /// background task that logs at warn.
+    #[test]
+    fn retention_can_delete_a_message_that_was_edited() {
+        let conn = setup();
+        edited_message(&conn, "expired", Some("2000-01-01 00:00:00"));
+
+        let deleted = delete_expired_messages(&conn).expect("the sweep must not abort");
+        assert_eq!(deleted, 1, "the expired message was not deleted");
+
+        let edits: i64 = conn
+            .query_row("SELECT COUNT(*) FROM message_edits", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(edits, 0, "orphaned edit history survived the message");
+    }
+
+    /// And one expired-but-edited message must not block the others.
+    #[test]
+    fn one_edited_message_does_not_block_the_whole_batch() {
+        let conn = setup();
+        edited_message(&conn, "expired-edited", Some("2000-01-01 00:00:00"));
+        conn.execute(
+            "INSERT INTO messages (server_id, channel_id, message_id, sender_pseudonym, content, expires_at)
+             VALUES (1, 'chan', 'expired-plain', 'alice', 'x', '2000-01-01 00:00:00')",
+            [],
+        )
+        .unwrap();
+
+        let deleted = delete_expired_messages(&conn).expect("sweep");
+        assert_eq!(deleted, 2, "the batch did not delete both expired messages");
+    }
+
+    /// Deleting a message has to take its drafts with it.
+    ///
+    /// Soft delete blanked `content` and left `message_edits` untouched, and
+    /// `get_edit_history` did not filter on `deleted_at` — so a deleted
+    /// message still served every earlier version. Someone who mistyped
+    /// something sensitive, corrected it, then deleted the message had
+    /// published the mistake and hidden only the correction.
+    #[test]
+    fn deleting_a_message_removes_its_earlier_versions() {
+        let conn = setup();
+        edited_message(&conn, "msg-1", None);
+
+        delete_message(&conn, "msg-1", "alice").expect("delete");
+
+        let history = get_edit_history(&conn, 1, "chan", "msg-1").expect("history");
+        assert!(
+            history.is_empty(),
+            "the deleted message still serves its earlier versions: {history:?}",
+        );
+    }
+
+    /// An ordinary edit still keeps its history — the fix must not delete
+    /// the feature along with the leak.
+    #[test]
+    fn editing_a_message_still_keeps_its_history() {
+        let conn = setup();
+        edited_message(&conn, "msg-1", None);
+
+        let history = get_edit_history(&conn, 1, "chan", "msg-1").expect("history");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].old_content, "the original");
+    }
+}
