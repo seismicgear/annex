@@ -1490,6 +1490,22 @@
   background: var(--overlay-white-02);
 }
 
+/* Every fixed-width column clips rather than wraps.
+   `.event-col-detail` already did this; the other four did not, so a value
+   too long for its column wrapped to a second line and grew the whole flex
+   row. Row height therefore depended on the longest pseudonym or timestamp
+   in the table, which is both a jumpy read for a user scanning an audit
+   trail and a source of run-to-run variation in the screenshot audit — the
+   masked columns hide the text but not the layout it forces. */
+.event-col-time,
+.event-col-domain,
+.event-col-type,
+.event-col-entity {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .event-col-time {
   width: 80px;
   flex-shrink: 0;
@@ -4057,6 +4073,17 @@
 
 .search-result-item:hover {
   background: var(--bg-hover, #333345);
+}
+
+/* Same reason as the event table: a sender or timestamp long enough to wrap
+   changes the height of every result below it. At the mobile width there is
+   least room, so that is where it showed up. `.search-result-content`
+   already clipped; these two did not. */
+.search-result-sender,
+.search-result-time {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .search-result-sender {

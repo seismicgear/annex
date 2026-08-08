@@ -331,6 +331,15 @@ export const SURFACES: Surface[] = [
         timeout: 15_000,
       });
     },
+    // Clipped to the search panel rather than capturing the whole page.
+    //
+    // Full-page, this was the only surface that flipped between pass and
+    // fail on identical commits — and only at the mobile viewport, which has
+    // the least room. The masks sit on per-result elements, so their geometry
+    // follows the results list; any variation in it perturbed the entire
+    // image rather than the region under test. The surface is about how a hit
+    // renders, so the page behind it is not evidence, it is noise.
+    clip: '.message-search',
     mask: ['.search-result-time', '.search-result-sender'],
   },
   {
