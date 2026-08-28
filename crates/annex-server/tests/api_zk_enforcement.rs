@@ -28,12 +28,14 @@
 //!     cannot reach `/api/zk/verify-membership` can never mint the session
 //!     token that enforced mode requires — gating them would brick sign-in.
 //!
-//! Writing those down surfaced one asymmetry that is almost certainly a bug
-//! rather than a decision: `GET /api/channels/{id}/messages` requires a
-//! membership proof and `GET /api/messages/search` returns the same channel's
-//! decrypted content without one. That is pinned by
-//! `search_currently_returns_channel_content_that_history_would_refuse`, which
-//! documents the hole and fails the day it is closed.
+//! Writing those down surfaced one asymmetry that was a bug rather than a
+//! decision: `GET /api/channels/{id}/messages` required a membership proof
+//! while `GET /api/messages/search` returned the same channel's decrypted
+//! content without one — so under enforcement the gate on history could be
+//! walked around by searching for a word in the message. That is fixed, and
+//! `search_is_gated_exactly_as_channel_history_is` now asserts both halves
+//! together: a future change that gates one and ungates the other fails here
+//! rather than at whichever route someone remembered.
 //!
 //! ## Why this file builds its own verifying key
 //!
