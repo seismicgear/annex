@@ -35,9 +35,38 @@ export function isChannelE2e(channelId: string): boolean {
   return e2eChannels.has(channelId);
 }
 
+/**
+ * Channels whose encryption state could not be determined.
+ *
+ * Distinct from "not encrypted" on purpose. `getChannelE2e` failing — a
+ * dropped request, a 500, a token refresh mid-flight — used to be recorded
+ * as `markChannelE2e(id, false)`, which is the same value a genuinely
+ * plaintext channel has. `sendMessage` then took its plaintext branch and
+ * put unencrypted content on the wire for the rest of the session, in a
+ * channel the user had turned encryption on for.
+ *
+ * That defeats the rule stated at the send site — "NEVER send plaintext to
+ * an E2E channel" — from upstream, by making the channel merely not *known*
+ * to be E2E. For encryption, an unknown state has to fail closed: the one
+ * outcome that cannot be undone is content already sent in the clear.
+ */
+const e2eUnknownChannels = new Set<string>();
+
+/** Records that this channel's encryption state could not be established. */
+export function markChannelE2eUnknown(channelId: string): void {
+  e2eUnknownChannels.add(channelId);
+  e2eChannels.delete(channelId);
+}
+
+/** True when the encryption state is unresolved and sending must not proceed. */
+export function isChannelE2eUnknown(channelId: string): boolean {
+  return e2eUnknownChannels.has(channelId);
+}
+
 /** Forget all E2E channel flags (e.g. on logout / identity switch). */
 export function resetE2eChannels(): void {
   e2eChannels.clear();
+  e2eUnknownChannels.clear();
 }
 
 /**

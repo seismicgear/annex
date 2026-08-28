@@ -6,6 +6,7 @@ vi.mock('@/lib/api', () => ({
   joinChannel: vi.fn(async () => {}),
   leaveChannel: vi.fn(async () => {}),
   createChannel: vi.fn(async () => ({ status: 'created' })),
+  getChannelE2e: vi.fn(async () => false),
 }));
 
 vi.mock('@/lib/ws', () => ({
@@ -632,5 +633,57 @@ describe('failures that used to look like success', () => {
     const state = useChannelsStore.getState();
     expect(state.hasMoreMessages).toBe(false);
     expect(state.olderError).toBeNull();
+  });
+});
+
+describe('an unresolved encryption state fails closed', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+  });
+
+  it('a failed encryption check does not put plaintext on the wire', async () => {
+    const api = await import('@/lib/api');
+    const { useChannelsStore } = await import('./channels');
+    const { isChannelE2e, isChannelE2eUnknown } = await import('@/lib/message-crypto');
+
+    // The check fails. Previously this recorded `false` — the same value a
+    // genuinely plaintext channel has — and every send for the rest of the
+    // session went out unencrypted in a channel the user had encrypted.
+    vi.mocked(api.getChannelE2e).mockRejectedValueOnce(new Error('network'));
+    vi.mocked(api.getMessages).mockResolvedValue([]);
+
+    const ws = { send: vi.fn(() => 'req-1'), subscribe: vi.fn(), connected: true };
+    useChannelsStore.setState({ ws: ws as never, wsConnected: true });
+
+    await useChannelsStore.getState().selectChannel('me', 'chan-secret');
+
+    expect(isChannelE2eUnknown('chan-secret')).toBe(true);
+    expect(isChannelE2e('chan-secret')).toBe(false);
+
+    const id = useChannelsStore.getState().sendMessage('secret text', 'me');
+
+    expect(id).toBeNull();
+    expect(ws.send).not.toHaveBeenCalled();
+    expect(useChannelsStore.getState().composerError).toMatch(/encrypted/i);
+  });
+
+  it('a channel the server confirms is plaintext still sends normally', async () => {
+    const api = await import('@/lib/api');
+    const { useChannelsStore } = await import('./channels');
+
+    // The fix must not turn every plaintext channel into a refusal — only an
+    // unresolved one. This is the half that would break the whole app.
+    vi.mocked(api.getChannelE2e).mockResolvedValueOnce(false);
+    vi.mocked(api.getMessages).mockResolvedValue([]);
+
+    const ws = { send: vi.fn(() => 'req-1'), subscribe: vi.fn(), connected: true };
+    useChannelsStore.setState({ ws: ws as never, wsConnected: true });
+
+    await useChannelsStore.getState().selectChannel('me', 'chan-open');
+    const id = useChannelsStore.getState().sendMessage('hello', 'me');
+
+    expect(id).toBe('req-1');
+    expect(ws.send).toHaveBeenCalled();
   });
 });

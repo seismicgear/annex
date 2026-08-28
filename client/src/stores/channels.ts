@@ -12,6 +12,8 @@ import {
   encryptForWire,
   ensureChannelReady,
   isChannelE2e,
+  isChannelE2eUnknown,
+  markChannelE2eUnknown,
   isE2eBody,
   markChannelE2e,
   resetE2eChannels,
@@ -236,8 +238,20 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       markChannelE2e(channelId, e2e);
       if (get().activeChannelId === channelId) set({ activeChannelE2e: e2e });
       if (e2e) await ensureChannelReady(channelId);
-    } catch {
-      markChannelE2e(channelId, false);
+    } catch (err) {
+      // Unknown, NOT plaintext. This used to record `false`, which is the
+      // same value a genuinely unencrypted channel has, so the send path
+      // took its plaintext branch and put unencrypted content on the wire
+      // for the rest of the session — in a channel the user had turned
+      // encryption on for. A failed check is not evidence of anything.
+      console.warn('[channels] could not determine channel encryption:', err);
+      markChannelE2eUnknown(channelId);
+      if (get().activeChannelId === channelId) {
+        set({
+          composerError:
+            'Could not confirm this channel is encrypted. Reload before sending.',
+        });
+      }
     }
 
     // Fetch history BEFORE subscribing to WS to avoid a race where
@@ -594,6 +608,19 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
         composerError: err instanceof Error ? err.message : 'Failed to send message',
       }));
     };
+
+    // Refuse to send while the encryption state is unresolved.
+    //
+    // The rule below — never put plaintext in an E2E channel — can only hold
+    // if "not E2E" means the server said so. When the check failed, sending
+    // anything is a guess, and the wrong guess is unrecoverable.
+    if (isChannelE2eUnknown(channelId)) {
+      set({
+        composerError:
+          'Could not confirm this channel is encrypted. Reload before sending.',
+      });
+      return null;
+    }
 
     // Plaintext channels: unchanged synchronous path (ws.send mints the id).
     if (!isChannelE2e(channelId)) {
