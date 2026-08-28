@@ -139,8 +139,73 @@ async function seedFixtures(page: import('@playwright/test').Page) {
   await sendMessage(page, SEED.messages.plain);
   await sendMessage(page, SEED.messages.long);
   await sendMessage(page, SEED.messages.replyParent);
+
+  // Edit and delete are only offered inside the 60s window after posting, so
+  // each action happens immediately after its own send. The three fixtures
+  // below are named for states the seeder never actually produced — a message
+  // called "This message was edited by the audit seeder" was posted and left
+  // alone — so the `(edited)` badge, the edit-history panel, the deleted
+  // tombstone and the reply rendering were all unreachable, and
+  // `SEED.messages.reply` was dead text. The resulting states persist, so
+  // every capture of the message list shows a realistic conversation rather
+  // than five untouched bubbles.
   await sendMessage(page, SEED.messages.edited);
+  await editMessage(page, SEED.messages.edited, SEED.messages.editedAfter);
+
   await sendMessage(page, SEED.messages.deleted);
+  await deleteMessage(page, SEED.messages.deleted);
+
+  await replyToMessage(page, SEED.messages.replyParent, SEED.messages.reply);
+}
+
+/// Edits a message in place. Must be called within the edit window of the
+/// send, or the control is not rendered at all.
+async function editMessage(
+  page: import('@playwright/test').Page,
+  original: string,
+  replacement: string,
+) {
+  const bubble = page.locator('.message', { hasText: original.slice(0, 40) }).first();
+  await bubble.hover();
+  await bubble.locator('.edit-btn').click();
+  const input = page.locator('.message-edit-input');
+  await expect(input).toBeVisible();
+  await input.fill(replacement);
+  await input.press('Enter');
+  await expect(
+    page.locator('.message', { hasText: replacement.slice(0, 40) }).first(),
+  ).toBeVisible({ timeout: 15_000 });
+  // The badge is the point: without it the edit did not reach the server.
+  await expect(
+    page.locator('.message', { hasText: replacement.slice(0, 40) }).first()
+      .locator('.edited-badge'),
+  ).toBeVisible({ timeout: 15_000 });
+}
+
+/// Deletes a message. Deletion is a two-click confirm, not a dialog.
+async function deleteMessage(page: import('@playwright/test').Page, text: string) {
+  const bubble = page.locator('.message', { hasText: text.slice(0, 40) }).first();
+  await bubble.hover();
+  await bubble.locator('.delete-btn').click();
+  await expect(bubble.locator('.delete-btn.confirming')).toBeVisible();
+  await bubble.locator('.delete-btn').click();
+  await expect(page.locator('.message-deleted-text').first()).toBeVisible({
+    timeout: 15_000,
+  });
+}
+
+/// Replies to a message, producing the `.reply-context` quote block.
+async function replyToMessage(
+  page: import('@playwright/test').Page,
+  parent: string,
+  body: string,
+) {
+  const bubble = page.locator('.message', { hasText: parent.slice(0, 40) }).first();
+  await bubble.hover();
+  await bubble.locator('.reply-btn').click();
+  await expect(page.locator('.reply-bar')).toBeVisible();
+  await sendMessage(page, body);
+  await expect(page.locator('.reply-context').first()).toBeVisible({ timeout: 15_000 });
 }
 
 async function sendMessage(page: import('@playwright/test').Page, text: string) {

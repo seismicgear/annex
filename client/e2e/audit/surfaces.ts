@@ -302,6 +302,79 @@ export const SURFACES: Surface[] = [
     mask: ['.edit-countdown'],
   },
   {
+    id: 'message-edited-badge',
+    stage: '06-messaging',
+    title: 'A message that has been edited',
+    role: 'founder',
+    intent:
+      'The `(edited)` marker on a message whose text has changed. The seeder posted a message ' +
+      'literally named "will be edited by the audit seeder" and then never edited it, so this ' +
+      'badge — the only signal that message history is not what it appears — was never captured.',
+    navigate: async (page) => {
+      await selectChannel(page, SEED.defaultChannel);
+      await expect(
+        page.locator('.message', { hasText: SEED.messages.editedAfter.slice(0, 40) })
+          .first()
+          .locator('.edited-badge'),
+      ).toBeVisible({ timeout: 15_000 });
+    },
+    clip: '.chat-area',
+  },
+  {
+    id: 'message-edit-history',
+    stage: '06-messaging',
+    title: 'Edit history for an edited message',
+    role: 'founder',
+    intent:
+      'Every prior version of a message, which is the transparency counterpart to allowing edits ' +
+      'at all. It is also the surface behind the IDOR that served other channels\' drafts, and ' +
+      'behind the redaction leak where deleting a message kept them — both fixed, neither visible ' +
+      'here until now.',
+    navigate: async (page) => {
+      await selectChannel(page, SEED.defaultChannel);
+      const bubble = page
+        .locator('.message', { hasText: SEED.messages.editedAfter.slice(0, 40) })
+        .first();
+      await bubble.locator('.edited-badge').click();
+      await expect(page.locator('.edit-history')).toBeVisible({ timeout: 15_000 });
+      await expect(page.locator('.edit-history-loading')).toHaveCount(0);
+    },
+    clip: '.chat-area',
+    mask: ['.edit-history-time'],
+  },
+  {
+    id: 'message-deleted-tombstone',
+    stage: '06-messaging',
+    title: 'A deleted message in the timeline',
+    role: 'founder',
+    intent:
+      'What is left after a delete: a tombstone holding the position, not a gap. Proving the row ' +
+      'still renders matters because the alternative — silently vanishing — makes a conversation ' +
+      'read as though it never happened.',
+    navigate: async (page) => {
+      await selectChannel(page, SEED.defaultChannel);
+      await expect(page.locator('.message-deleted-text').first()).toBeVisible({
+        timeout: 15_000,
+      });
+    },
+    clip: '.chat-area',
+  },
+  {
+    id: 'message-reply-rendered',
+    stage: '06-messaging',
+    title: 'A message rendered as a reply',
+    role: 'founder',
+    intent:
+      'The quoted parent above a reply. `message-reply-composer` captured the composer with a ' +
+      'reply armed, but nothing ever sent one, so `.reply-context` — the half a reader actually ' +
+      'sees — was uncaptured and SEED.messages.reply was dead text.',
+    navigate: async (page) => {
+      await selectChannel(page, SEED.defaultChannel);
+      await expect(page.locator('.reply-context').first()).toBeVisible({ timeout: 15_000 });
+    },
+    clip: '.chat-area',
+  },
+  {
     id: 'message-reply-composer',
     stage: '06-messaging',
     title: 'Composer with a reply in progress',

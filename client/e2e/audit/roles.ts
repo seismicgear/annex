@@ -64,7 +64,8 @@ export const SEED = {
   emptyChannel: 'audit-empty',
   messages: {
     plain: 'Plain seeded message for the audit harness.',
-    edited: 'This message was edited by the audit seeder.',
+    edited: 'This message will be edited by the audit seeder.',
+    editedAfter: 'This message was edited by the audit seeder.',
     deleted: 'This message will be deleted by the audit seeder.',
     replyParent: 'Parent message that the audit seeder replies to.',
     reply: 'Reply produced by the audit seeder.',
