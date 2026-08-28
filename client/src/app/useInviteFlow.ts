@@ -88,89 +88,31 @@ export function useInviteFlow({
     return () => { unlisten?.(); };
   }, [inTauri]);
 
-  // ── Process protocol invite: validate, switch server, trigger registration ──
+  // ── Protocol invite: always ask before joining a server ──
+  //
+  // An `annex://` link names the server it will register you with. Accepting
+  // one silently is a consent decision made on the user's behalf, using an
+  // identifier an attacker chose.
+  //
+  // Both phases now route to the same confirmation banner. Previously only
+  // `ready` (already registered on some server) did; a cold start at
+  // `keys_ready` — keys generated, not yet registered — ran the whole flow
+  // straight through: redeem the code, register the identity with that
+  // server, persist it as the startup mode. The identical link therefore
+  // asked for confirmation on a warm app and asked for nothing on a fresh
+  // install, which is the wrong way round: a fresh install is exactly when
+  // the user has no relationship with any server to judge the invite
+  // against.
+  //
+  // `handleAcceptProtocolInvite` performs the same steps the auto-path did,
+  // so accepting the banner is behaviour-identical — the only difference is
+  // that a person decided.
   useEffect(() => {
     if (!pendingProtocolInvite || !identity?.sk) return;
     if (phase !== 'keys_ready' && phase !== 'ready') return;
-    if (phase === 'ready') {
-      setPendingProtocolInviteConfirmation(pendingProtocolInvite);
-      setPendingProtocolInvite(null);
-      return;
-    }
-    let cancelled = false;
-    const flowId = beginStartupFlow();
-    const isCurrentFlow = () => startupFlowId.current === flowId;
-
-    (async () => {
-      try {
-        // 1. Validate invite code with target server
-        let redeemResult;
-        try {
-          redeemResult = await redeemInvite(pendingProtocolInvite.server, pendingProtocolInvite.code);
-        } catch (fetchErr) {
-          if (cancelled || !isCurrentFlow()) return;
-          // Distinguish network errors from server-side rejections
-          const isNetworkError = fetchErr instanceof TypeError && /failed to fetch/i.test(fetchErr.message);
-          const message = isNetworkError
-            ? `Could not reach server at ${pendingProtocolInvite.server}. Check your connection and try again.`
-            : (fetchErr instanceof Error ? fetchErr.message : 'Invite validation failed');
-          useIdentityStore.setState({ phase: 'error', error: message });
-          setPendingProtocolInvite(null);
-          return;
-        }
-        if (cancelled || !isCurrentFlow()) return;
-
-        // 2. Add remote server, clone identity, and switch API target
-        const { beginRemoteRegistration } = useServersStore.getState();
-        const server = await beginRemoteRegistration(pendingProtocolInvite.server);
-        if (!server) {
-          if (cancelled || !isCurrentFlow()) return;
-          useIdentityStore.setState({
-            phase: 'error',
-            error: `Failed to connect to server at ${pendingProtocolInvite.server}.`,
-          });
-          useServersStore.getState().cleanupFailedRegistration();
-          setPendingProtocolInvite(null);
-          return;
-        }
-
-        // 3. Persist startup preference so returning users auto-connect
-        if (inTauri) {
-          saveStartupMode({
-            startup_mode: { mode: 'client', server_url: pendingProtocolInvite.server },
-          }).catch(() => {});
-        }
-        if (!isCurrentFlow()) return;
-
-        // 4. Store invite code + slug for registration, mark server ready
-        // (beginRemoteRegistration already reset phase to keys_ready)
-        setPendingInviteCode(pendingProtocolInvite.code);
-        setPendingServerSlug(redeemResult.serverSlug);
-        setServerReady(true);
-        setPendingProtocolInvite(null);
-      } catch (err) {
-        if (cancelled || !isCurrentFlow()) return;
-        useIdentityStore.setState({
-          phase: 'error',
-          error: err instanceof Error ? err.message : 'Invite validation failed',
-        });
-        useServersStore.getState().cleanupFailedRegistration();
-        setPendingProtocolInvite(null);
-      }
-    })();
-
-    return () => { cancelled = true; };
-  }, [
-    pendingProtocolInvite,
-    identity?.sk,
-    phase,
-    inTauri,
-    beginStartupFlow,
-    startupFlowId,
-    setServerReady,
-    setPendingInviteCode,
-    setPendingServerSlug,
-  ]);
+    setPendingProtocolInviteConfirmation(pendingProtocolInvite);
+    setPendingProtocolInvite(null);
+  }, [pendingProtocolInvite, identity?.sk, phase]);
 
   const handleAcceptProtocolInvite = async () => {
     if (!pendingProtocolInviteConfirmation) return;

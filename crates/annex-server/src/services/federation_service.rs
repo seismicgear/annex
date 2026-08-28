@@ -936,7 +936,34 @@ impl FederationService {
                 )));
             }
 
-            // 4. Add Member
+            // 4. Verify the channel exists and is actually federated.
+            //
+            // `receive_federated_message` performs exactly this check before
+            // accepting content; the join path next to it did not, so
+            // `federation_scope` — the operator's declaration of which
+            // channels leave this server — governed messages but not
+            // membership. A peer with a valid agreement, a valid signature
+            // and an attested identity could enrol its users into a channel
+            // marked `Local`, after which those pseudonyms appear in the
+            // member list, in `list_members` and in the trust graph.
+            //
+            // The message path's own scope check still refused their
+            // content, so this was contained — but a gate that only some of
+            // a set of sibling paths apply is the shape that eventually lets
+            // something through, and containment by a second check is not a
+            // reason to leave the first one missing.
+            let channel = annex_channels::get_channel(&conn, &channel_id)
+                .map_err(FederationError::Channel)?;
+            if !matches!(
+                channel.federation_scope,
+                annex_types::FederationScope::Federated
+            ) {
+                return Err(FederationError::Forbidden(format!(
+                    "Channel {channel_id} is not federated"
+                )));
+            }
+
+            // 5. Add Member
             add_member(&conn, state.server_id, &channel_id, &payload.pseudonym_id)
                 .map_err(FederationError::Channel)?;
 

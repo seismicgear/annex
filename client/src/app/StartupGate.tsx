@@ -271,6 +271,19 @@ export function StartupGate(props: StartupGateProps) {
   if (!serverReady) {
     return (
       <div className="app">
+        {pendingProtocolInviteConfirmation && (
+          <div className="invite-confirmation-banner" role="dialog" aria-label="Invite confirmation">
+            <span>
+              Invite received for {pendingProtocolInviteConfirmation.server}
+            </span>
+            <button className="primary-btn" onClick={handleAcceptProtocolInvite}>
+              Join invite server
+            </button>
+            <button className="secondary-btn" onClick={handleIgnoreProtocolInvite}>
+              Ignore
+            </button>
+          </div>
+        )}
         <main className="app-main setup">
           <StartupModeSelector
             onReady={(degraded) => {
@@ -289,6 +302,19 @@ export function StartupGate(props: StartupGateProps) {
   // this gate just shows progress while it runs.
   return (
     <div className="app">
+        {pendingProtocolInviteConfirmation && (
+          <div className="invite-confirmation-banner" role="dialog" aria-label="Invite confirmation">
+            <span>
+              Invite received for {pendingProtocolInviteConfirmation.server}
+            </span>
+            <button className="primary-btn" onClick={handleAcceptProtocolInvite}>
+              Join invite server
+            </button>
+            <button className="secondary-btn" onClick={handleIgnoreProtocolInvite}>
+              Ignore
+            </button>
+          </div>
+        )}
       <main className="app-main setup">
         <div className="identity-setup">
           <h1>Annex</h1>
