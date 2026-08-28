@@ -351,6 +351,32 @@ fn main() {
     }
 
     tauri::Builder::default()
+        // Single instance MUST be registered before the deep-link plugin.
+        //
+        // Without it, clicking an `annex://` link while Annex is already
+        // running does not deliver `deep-link://new-url` to the running
+        // process on Linux or Windows — the OS simply starts a second one.
+        // Two Annex processes then share a data directory: two embedded
+        // servers racing for the same port, and two SQLite connections to
+        // the same file from separate processes, where WAL locking is the
+        // only thing standing between them and a corrupted database.
+        //
+        // The `deep-link` feature makes the plugin forward the argv of the
+        // second launch — which is where the URL is — into the first, so the
+        // existing `deep-link://new-url` listener below receives it and the
+        // invite is handled by the instance the user already has open.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            tracing::info!(
+                ?argv,
+                "second instance launched — forwarding to the running one"
+            );
+            // Raise the existing window: the user clicked something and
+            // expects Annex to come forward, not to be silently ignored.
+            if let Some(window) = app.webview_windows().values().next() {
+                let _ = window.set_focus();
+                let _ = window.unminimize();
+            }
+        }))
         .plugin(tauri_plugin_deep_link::init())
         .manage(AppManagedState {
             data_dir,
