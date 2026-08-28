@@ -169,6 +169,24 @@ export const useServersStore = create<ServersState>((set, get) => ({
         set({ switching: false });
       }
     } catch (err) {
+      // Only the switch that still owns the app context may roll back.
+      //
+      // Every mutation on the success path above is guarded by
+      // `switchEpoch === epoch`; the rollback was not. So a switch that
+      // failed slowly could land after the user had already started another
+      // one, and unconditionally repoint the API base URL, the identity and
+      // the WebSocket at ITS previous server — undoing a newer switch that
+      // had already succeeded. The user ends up on a server they did not
+      // choose, with `activeServerId` set to a third one, and the only
+      // visible symptom is that the wrong channels are listed.
+      //
+      // A superseded switch has nothing to restore: whatever it would put
+      // back has already been replaced by the switch that overtook it. It
+      // reports its failure to the caller and touches no shared state.
+      if (get().switchEpoch !== epoch) {
+        throw err;
+      }
+
       // Rollback: restore previous server context
       api.setApiBaseUrl(prevApiBaseUrl);
       if (prevIdentity?.id) {
