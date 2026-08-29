@@ -471,6 +471,45 @@ async fn a_video_is_refused_when_the_policy_disables_videos() {
     );
 }
 
+/// An upload larger than the GLOBAL body limit still reaches the handler.
+///
+/// `MAX_REQUEST_BODY_BYTES` is 2 MiB and applies to the whole app; the upload
+/// route group overrides it with `DefaultBodyLimit::max(50 MiB)` and lets the
+/// per-category policy decide. The default policy allows 5 MB images, so a
+/// 3 MiB photo is something the server explicitly permits — and every existing
+/// size test stayed under 2 MiB, so nothing established that the override
+/// actually wins. If the layer order were ever inverted, axum would answer 413
+/// before the handler ran and every upload the policy allows above 2 MiB would
+/// fail, with the policy still advertising 5 MB.
+#[tokio::test]
+async fn an_upload_above_the_global_body_limit_is_still_accepted() {
+    let a = setup_upload_app(ServerPolicy::default()).await;
+    add_member(&a.pool, "alice", false);
+    add_channel(&a.pool, "chan-up", "alice");
+
+    // 3 MiB: above the 2 MiB global limit, below the 5 MB image policy.
+    let mut big = png_with_text_chunk();
+    big.extend(std::iter::repeat_n(0u8, 3 * 1024 * 1024));
+    assert!(
+        big.len() > 2 * 1024 * 1024,
+        "the payload must exceed the global body limit for this test to mean anything"
+    );
+
+    let body = multipart_body("photo.png", "image/png", &big);
+    let (status, body) =
+        post_multipart(&a.router, "/api/channels/chan-up/upload", "alice", body).await;
+
+    assert_ne!(
+        status,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "the global 2 MiB limit reached the upload route: {body}",
+    );
+    assert!(
+        status.is_success(),
+        "an upload the policy allows was refused with {status}: {body}",
+    );
+}
+
 #[tokio::test]
 async fn an_oversized_image_is_refused_at_the_policy_limit() {
     let policy = ServerPolicy {
