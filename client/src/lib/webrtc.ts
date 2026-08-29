@@ -419,7 +419,16 @@ export class WebRtcSession {
         echoCancellation: true,
         noiseSuppression: true,
       };
-      if (opts?.deviceId) constraints.deviceId = opts.deviceId;
+      // `exact`, not a bare value.
+      //
+      // A bare `deviceId` is an IDEAL constraint: the browser uses that device
+      // when it is present and silently substitutes any other when it is not.
+      // So a microphone the user chose in settings and later unplugged was
+      // quietly replaced by a different one, with nothing said — on the call
+      // sites whose own comments say they "respect the selected device".
+      // `exact` makes the request mean what those comments claim; the caller
+      // decides what to do when it cannot be met.
+      if (opts?.deviceId) constraints.deviceId = { exact: opts.deviceId };
 
       const stream = await navigator.mediaDevices.getUserMedia({ audio: constraints });
       const newTrack = stream.getAudioTracks()[0];
@@ -461,7 +470,13 @@ export class WebRtcSession {
         height: { ideal: 480 },
         frameRate: { ideal: 24 },
       };
-      if (opts?.deviceId) constraints.deviceId = opts.deviceId;
+      // `exact` for the same reason as the microphone above — and here it also
+      // makes an existing recovery path reachable. `useLocalMedia` catches
+      // `NotFoundError`/`OverconstrainedError` to raise "Saved camera not
+      // found or disconnected" with a "Use default camera" button; a bare
+      // constraint never produces either error, so that prompt could not
+      // appear no matter which camera was missing.
+      if (opts?.deviceId) constraints.deviceId = { exact: opts.deviceId };
 
       const stream = await navigator.mediaDevices.getUserMedia({ video: constraints });
       const newTrack = stream.getVideoTracks()[0];

@@ -25,6 +25,12 @@ export function mediaErrorMessage(err: unknown, action: string): string {
     if (err.name === 'NotFoundError') {
       return `${action}: no device found. Is your device connected?`;
     }
+    // Raised when an `exact` deviceId cannot be satisfied — the saved device
+    // is gone. Without this it fell through to the raw `err.message`, which
+    // for this error is the constraint name and means nothing to a user.
+    if (err.name === 'OverconstrainedError') {
+      return `${action}: the saved device is no longer available.`;
+    }
     if (err.name === 'AbortError' || err.name === 'NotReadableError') {
       return `${action}: device may be in use by another application.`;
     }
@@ -168,7 +174,23 @@ export function useLocalMedia({
         // Enabling — pass the stored input device so first-time enable
         // and post-mute unmute both respect the selected device.
         const opts = inputDeviceId ? { deviceId: inputDeviceId } : undefined;
-        await localParticipant.setMicrophoneEnabled(true, opts);
+        try {
+          await localParticipant.setMicrophoneEnabled(true, opts);
+        } catch (deviceErr) {
+          // The saved microphone is gone. Now that the request is `exact`
+          // this raises rather than silently using a different device, so
+          // fall back on purpose and SAY so — the camera has a button for
+          // this decision, the microphone has no equivalent and leaving it
+          // muted would be worse than using the default.
+          const gone =
+            deviceErr instanceof DOMException &&
+            (deviceErr.name === 'OverconstrainedError' || deviceErr.name === 'NotFoundError');
+          if (!gone || !inputDeviceId) throw deviceErr;
+          await localParticipant.setMicrophoneEnabled(true);
+          setMediaError(
+            'Saved microphone not found or disconnected — using the default device instead.',
+          );
+        }
       }
       setMicMuted(micEnabled); // toggling: if was enabled, now muted
     } catch (err) {
