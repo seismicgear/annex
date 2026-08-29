@@ -445,6 +445,50 @@ export const SURFACES: Surface[] = [
     clip: '.chat-area',
   },
   {
+    id: 'message-from-another-member',
+    stage: '06-messaging',
+    title: 'A message from somebody else',
+    role: 'founder',
+    intent:
+      'The other half of every conversation, and it had never been captured. All fixture ' +
+      'messages were the founder\u2019s own, so every bubble in every screenshot carried `.self` ' +
+      'and the incoming path — left-aligned bubble, avatar, sender identity, username resolution ' +
+      '— was rendered by nothing and audited by nothing. Posted by the `second-member` role, ' +
+      'which the run already warms for the three-party call in `group-call.spec.ts` but which ' +
+      'no capture surface had ever used.',
+    navigate: async (page) => {
+      await selectChannel(page, SEED.defaultChannel);
+      const incoming = page
+        .locator('.message:not(.self)', { hasText: SEED.messages.fromOther.slice(0, 40) })
+        .first();
+      await expect(incoming).toBeVisible({ timeout: 15_000 });
+      await incoming.scrollIntoViewIfNeeded();
+    },
+    clip: '.chat-area',
+  },
+  {
+    id: 'message-reply-to-another-member',
+    stage: '06-messaging',
+    title: 'Replying to somebody else',
+    role: 'founder',
+    intent:
+      'The reply bar naming a different person. It rendered `sender_pseudonym.slice(0, 12)` ' +
+      'unconditionally — a hex string, even when that person\u2019s username was already ' +
+      'resolved and shown on the very message being replied to. The fix had no surface that ' +
+      'could see it, because there was never a message from anyone but yourself to reply to.',
+    navigate: async (page) => {
+      await selectChannel(page, SEED.defaultChannel);
+      const incoming = page
+        .locator('.message:not(.self)', { hasText: SEED.messages.fromOther.slice(0, 40) })
+        .first();
+      await expect(incoming).toBeVisible({ timeout: 15_000 });
+      await incoming.hover();
+      await incoming.locator('.reply-btn').click();
+      await expect(page.locator('.reply-bar')).toBeVisible();
+    },
+    clip: '.chat-area',
+  },
+  {
     id: 'composer-attachment-staged',
     stage: '06-messaging',
     title: 'An attachment staged in the composer',
@@ -644,15 +688,27 @@ export const SURFACES: Surface[] = [
         timeout: 15_000,
       });
     },
-    // Clipped to the bar, not the chat area. The wall of "no key"
-    // placeholders below is what these states are ABOUT, and photographing it
-    // made the surface flaky: these two do async key work after the history
-    // settles, so the message column's auto-scroll had not finished landing
-    // at capture time and the column sat a few pixels off between runs. The
-    // audits still run against the whole page, so the placeholders keep their
-    // accessibility and console coverage — only the picture narrows, and a
-    // guard that fails at random is worth less than a smaller one that holds.
+    // Clipped to the bar, and NOT pixel-diffed.
+    //
+    // Narrowing the clip from `.chat-area` to the bar removed the scroll
+    // race, and a residual flake survived it: `key-pending @ laptop` differed
+    // between two runs of identical code. Decoding both PNGs put the
+    // difference in a single constant-width rectangle spanning columns
+    // 368-674 — a mask box that had moved horizontally. No text moved; the
+    // crop is 708x123 in both. The crop is exactly the bar, and the bar
+    // contains no element in the mask set, so those boxes are Playwright's
+    // mask overlays landing at coordinates that do not survive the scroll it
+    // performs to bring a clipped element into view.
+    //
+    // That is the harness's own combination of masks and an element clip, not
+    // the app, and nothing this surface could assert about pixels would be
+    // trustworthy. It is still captured and still audited — a11y, contrast,
+    // console, network and the overflow pass all run against the whole page.
+    // What it gives up is the pixel diff, which was never going to hold.
+    // `ChannelEncryptionBar.keystate.test.tsx` pins the semantics instead,
+    // including that pending is a `status` and failed is an `alert`.
     clip: '.channel-encryption-bar',
+    reportOnly: true,
   },
   {
     id: 'channel-encryption-key-failed',
@@ -681,15 +737,27 @@ export const SURFACES: Surface[] = [
         timeout: 15_000,
       });
     },
-    // Clipped to the bar, not the chat area. The wall of "no key"
-    // placeholders below is what these states are ABOUT, and photographing it
-    // made the surface flaky: these two do async key work after the history
-    // settles, so the message column's auto-scroll had not finished landing
-    // at capture time and the column sat a few pixels off between runs. The
-    // audits still run against the whole page, so the placeholders keep their
-    // accessibility and console coverage — only the picture narrows, and a
-    // guard that fails at random is worth less than a smaller one that holds.
+    // Clipped to the bar, and NOT pixel-diffed.
+    //
+    // Narrowing the clip from `.chat-area` to the bar removed the scroll
+    // race, and a residual flake survived it: `key-pending @ laptop` differed
+    // between two runs of identical code. Decoding both PNGs put the
+    // difference in a single constant-width rectangle spanning columns
+    // 368-674 — a mask box that had moved horizontally. No text moved; the
+    // crop is 708x123 in both. The crop is exactly the bar, and the bar
+    // contains no element in the mask set, so those boxes are Playwright's
+    // mask overlays landing at coordinates that do not survive the scroll it
+    // performs to bring a clipped element into view.
+    //
+    // That is the harness's own combination of masks and an element clip, not
+    // the app, and nothing this surface could assert about pixels would be
+    // trustworthy. It is still captured and still audited — a11y, contrast,
+    // console, network and the overflow pass all run against the whole page.
+    // What it gives up is the pixel diff, which was never going to hold.
+    // `ChannelEncryptionBar.keystate.test.tsx` pins the semantics instead,
+    // including that pending is a `status` and failed is an `alert`.
     clip: '.channel-encryption-bar',
+    reportOnly: true,
     waive: {
       network:
         'the 500 is the stub this surface installs on purpose — it is the condition under test, ' +
@@ -1286,6 +1354,53 @@ export const SURFACES: Surface[] = [
       await expect(page.locator('.peer-detail-dialog')).toBeVisible({ timeout: 15_000 });
     },
     clip: '.dialog',
+  },
+  {
+    id: 'federation-peer-unreachable',
+    stage: '10-federation',
+    title: 'A peer that will not answer',
+    role: 'founder',
+    intent:
+      'The failure branch of the dialog above. It rendered "Could not reach server at …" and ' +
+      'stopped there — no reason, and no retry — and because the Join button is gated on the ' +
+      'summary having loaded, a single dropped cross-origin request turned the whole dialog into ' +
+      'a dead end that only closing and reopening could clear. The enclosing panel had already ' +
+      'been given a reason and a retry; the dialog nested inside it had not.',
+    setup: async (page) => {
+      await page.route('**/api/public/federation/peers*', (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            peers: [
+              {
+                instance_id: 'peer-alpha',
+                label: 'Alpha Station',
+                base_url: 'https://alpha.example',
+                alignment_status: 'Aligned',
+                transfer_scope: 'FullKnowledgeBundle',
+              },
+            ],
+          }),
+        }),
+      );
+      // The peer itself refuses, which is what a dead host or a CORS
+      // rejection looks like from the browser.
+      await page.route('https://alpha.example/**', (route) => route.abort('failed'));
+    },
+    navigate: async (page) => {
+      await openTab(page, 'Federation');
+      await page.getByRole('button', { name: /Explore|View Upstream/ }).first().click();
+      await expect(page.locator('.peer-detail-dialog')).toBeVisible({ timeout: 15_000 });
+      await expect(page.locator('.peer-detail-error')).toBeVisible({ timeout: 15_000 });
+    },
+    clip: '.dialog',
+    waive: {
+      network:
+        'the aborted request is the stub this surface installs on purpose — it is the condition ' +
+        'under test, not an incidental failure.',
+      console: 'the browser logs the aborted cross-origin request to the console as well',
+    },
   },
   {
     id: 'event-log-filtered',

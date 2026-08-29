@@ -754,6 +754,10 @@ function MemberManager({ pseudonymId }: { pseudonymId: string }) {
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
+    // Clear first, like every other handler in this file. Without it a failed
+    // load left its message on screen through the next successful one, so the
+    // panel showed a red error above a member list that had just loaded fine.
+    setError(null);
     try {
       const list = await api.listMembers(pseudonymId);
       setMembers(list);
@@ -768,6 +772,7 @@ function MemberManager({ pseudonymId }: { pseudonymId: string }) {
 
   const toggleCap = async (member: MemberInfo, cap: string) => {
     setUpdating(member.pseudonym_id);
+    setError(null);
     const updated = {
       can_voice: member.can_voice,
       can_moderate: member.can_moderate,

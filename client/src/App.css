@@ -4327,12 +4327,68 @@
     max-width: 100%;
   }
 
-  /* The server rail is pure chrome; the hub is reachable from the header. */
+  /* The server rail becomes a horizontal strip.
+     
+     Turning the outer container was not enough, and stopping there left the
+     strip laid out as a rail: `.server-hub-list` was still a column, every
+     `.server-hub-item-wrapper` was still `width: 100%`, and the active pill
+     — a 4px vertical bar pinned to `left: 0` — became a sliver down the far
+     left edge of a full-width row. The icons stacked vertically inside a
+     strip that was supposed to hold them side by side, which is what made
+     this the ugliest thing on the phone layout. */
   .server-hub {
     flex-direction: row;
+    align-items: center;
     width: 100%;
     height: auto;
+    padding: 8px 12px;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
     overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .server-hub-list {
+    flex-direction: row;
+    width: auto;
+  }
+
+  .server-hub-item-wrapper {
+    width: auto;
+    flex-shrink: 0;
+  }
+
+  /* The selected-server marker moves with the axis: the rail's leading edge
+     is its left side, the strip's is its bottom. Hover and active differ by
+     opacity here rather than by length, because a 36px-tall bar under a
+     32px icon is not a subtler version of the same thing. */
+  .server-hub-pill {
+    top: auto;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: auto;
+    height: 3px;
+    border-radius: 4px 4px 0 0;
+  }
+
+  .server-hub-item-wrapper:hover .server-hub-pill,
+  .server-hub-pill.active {
+    height: 3px;
+  }
+
+  .server-hub-icon.add-server-btn {
+    flex-shrink: 0;
+  }
+
+  /* The separator between the joined servers and "add a server" is a 32x2
+     rule with vertical margins — a horizontal line drawn to divide a stack.
+     In a strip it has to turn with everything else, or it stretches out as a
+     dash floating in the middle of the row. */
+  .server-hub-separator {
+    width: 2px;
+    height: 24px;
+    margin: 0 8px;
   }
 
   .app-with-hub {
@@ -4350,6 +4406,7 @@
 .member-list-error,
 .scrollback-error,
 .edit-history-error,
+.peer-detail-error,
 .edit-error {
   display: flex;
   align-items: center;
@@ -4368,6 +4425,7 @@
 .member-list-error button,
 .scrollback-error button,
 .edit-history-error button,
+.peer-detail-error button,
 .edit-error button {
   flex-shrink: 0;
   padding: 0.2rem 0.6rem;
@@ -4383,6 +4441,7 @@
 .member-list-error button:hover,
 .scrollback-error button:hover,
 .edit-history-error button:hover,
+.peer-detail-error button:hover,
 .edit-error button:hover {
   background: var(--overlay-white-20);
   border-color: var(--border-emphasis);

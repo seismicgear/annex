@@ -60,6 +60,17 @@ for (const role of ROLE_ORDER) {
       await seedFixtures(page);
     }
 
+    if (role === 'second-member') {
+      // One message from somebody else. The founder seeds everything else, so
+      // without this every bubble in every capture is the local user's own and
+      // `.message` without `.self` — the styling most of a real conversation
+      // uses — is never rendered, let alone audited. The role itself already
+      // existed for the three-party call in `group-call.spec.ts`; no capture
+      // surface had ever used it.
+      await selectChannel(page, SEED.defaultChannel);
+      await sendMessage(page, SEED.messages.fromOther);
+    }
+
     // `indexedDB: true` is what makes this worth doing: Annex keeps the
     // identity, keys and cached membership proof in IndexedDB, so restoring
     // it skips proof generation entirely on the capture run.

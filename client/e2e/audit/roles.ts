@@ -69,6 +69,16 @@ export const SEED = {
     deleted: 'This message will be deleted by the audit seeder.',
     replyParent: 'Parent message that the audit seeder replies to.',
     reply: 'Reply produced by the audit seeder.',
+    /**
+     * Posted by `second-member`, not the founder.
+     *
+     * Every other fixture message is the founder's own, so every captured
+     * bubble carried `.self` and the whole other-person rendering path —
+     * left-aligned bubble, avatar, sender name, username resolution — had
+     * never been screenshotted or run through axe. In a chat application
+     * that is half the message list.
+     */
+    fromOther: 'Message from the second member, so the audit sees a bubble that is not the local user.',
     long: 'Long message. '.repeat(60).trim(),
   },
 } as const;

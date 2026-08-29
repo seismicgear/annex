@@ -26,6 +26,7 @@ function PeerDetail({ peer, onClose }: PeerDetailProps) {
   const titleId = useDialogTitleId();
   const [summary, setSummary] = useState<ServerSummary | null>(null);
   const [loading, setLoading] = useState(true);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
   const [joinPhase, setJoinPhase] = useState<JoinPhase>('idle');
   const [joinError, setJoinError] = useState<string | null>(null);
   const beginRemoteRegistration = useServersStore((s) => s.beginRemoteRegistration);
@@ -36,14 +37,35 @@ function PeerDetail({ peer, onClose }: PeerDetailProps) {
     (s) => s.identityId && (s.baseUrl === peer.base_url || s.slug === summary?.slug),
   );
 
-  useEffect(() => {
-    let cancelled = false;
-    api.getRemoteServerSummary(peer.base_url)
-      .then((s) => { if (!cancelled) setSummary(s); })
-      .catch(() => { if (!cancelled) setSummary(null); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
+  /**
+   * Fetch the peer's public summary.
+   *
+   * The enclosing panel already learned this lesson — its list reports a
+   * failed load and offers a retry rather than rendering "no peers" — and the
+   * dialog nested inside it did not. A dropped cross-origin request left
+   * "Could not reach server at …" with no way to try again, and because the
+   * Join button is gated on `summary`, the whole dialog became a dead end:
+   * the only way to retry was to close it and reopen. The reason matters too,
+   * since a CORS refusal and an unreachable host are different problems for
+   * whoever operates that server.
+   */
+  const loadSummary = useCallback(async () => {
+    setLoading(true);
+    setSummaryError(null);
+    try {
+      const s = await api.getRemoteServerSummary(peer.base_url);
+      setSummary(s);
+    } catch (err) {
+      setSummary(null);
+      setSummaryError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
   }, [peer.base_url]);
+
+  useEffect(() => {
+    void loadSummary();
+  }, [loadSummary]);
 
   const handleJoin = useCallback(async () => {
     setJoinPhase('adding');
@@ -106,7 +128,13 @@ function PeerDetail({ peer, onClose }: PeerDetailProps) {
           </div>
         </div>
       ) : (
-        <p className="error-text">Could not reach server at {peer.base_url}</p>
+        <div className="peer-detail-error" role="alert">
+          <p className="error-text">
+            Could not reach server at {peer.base_url}
+            {summaryError ? `: ${summaryError}` : ''}
+          </p>
+          <button onClick={() => { void loadSummary(); }}>Retry</button>
+        </div>
       )}
 
       {joinError && (
