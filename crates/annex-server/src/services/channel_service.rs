@@ -974,6 +974,30 @@ impl ChannelService {
             // Store the new body encrypted; the prior (encrypted) body is moved
             // into message_edits by edit_message as-is. Return plaintext for the
             // broadcast/relay.
+            // The message must belong to the channel the caller named.
+            //
+            // `require_membership` above checks the CLIENT-SUPPLIED
+            // channel_id; the mutation below is keyed on message_id alone.
+            // Without tying them together, a member of channel B could edit
+            // or delete their own messages in channel A — one they had left
+            // or been removed from — by naming B in the frame. Ownership is
+            // still enforced by `edit_message`/`delete_message`, so this is
+            // narrower than reading another channel's content, but it
+            // defeats the rule that you cannot change anything in a channel
+            // you are not in.
+            //
+            // It also decides federation. `is_federated` is read from the
+            // channel the caller NAMED, so an edit to a message in a
+            // federated channel, submitted under a local channel id, is
+            // never relayed — peers keep the old text and the servers
+            // diverge with nothing logged. Same defect class as the edit
+            // history keyed on message_id alone.
+            let existing = get_message(&conn, &mid).map_err(map_channel_err)?;
+            if existing.channel_id != cid {
+                return Err(ChannelServiceError::NotFound(format!(
+                    "message {mid} is not in channel {cid}"
+                )));
+            }
             let stored = cipher.encrypt(&content);
             let mut msg = edit_message(&conn, &mid, &pseudo, &stored).map_err(map_channel_err)?;
             msg.content = content;
@@ -1010,6 +1034,30 @@ impl ChannelService {
             let conn = pool
                 .get()
                 .map_err(|e| ChannelServiceError::Internal(format!("pool: {e}")))?;
+            // The message must belong to the channel the caller named.
+            //
+            // `require_membership` above checks the CLIENT-SUPPLIED
+            // channel_id; the mutation below is keyed on message_id alone.
+            // Without tying them together, a member of channel B could edit
+            // or delete their own messages in channel A — one they had left
+            // or been removed from — by naming B in the frame. Ownership is
+            // still enforced by `edit_message`/`delete_message`, so this is
+            // narrower than reading another channel's content, but it
+            // defeats the rule that you cannot change anything in a channel
+            // you are not in.
+            //
+            // It also decides federation. `is_federated` is read from the
+            // channel the caller NAMED, so an edit to a message in a
+            // federated channel, submitted under a local channel id, is
+            // never relayed — peers keep the old text and the servers
+            // diverge with nothing logged. Same defect class as the edit
+            // history keyed on message_id alone.
+            let existing = get_message(&conn, &mid).map_err(map_channel_err)?;
+            if existing.channel_id != cid {
+                return Err(ChannelServiceError::NotFound(format!(
+                    "message {mid} is not in channel {cid}"
+                )));
+            }
             let msg = delete_message(&conn, &mid, &pseudo).map_err(map_channel_err)?;
             let channel = get_channel(&conn, &cid).map_err(map_channel_err)?;
             let is_federated = matches!(channel.federation_scope, FederationScope::Federated);
