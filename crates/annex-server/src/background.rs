@@ -505,6 +505,105 @@ pub async fn start_db_maintenance_task(state: Arc<AppState>) {
     }
 }
 
+/// Proactive half of the storage gate.
+///
+/// `storage_health`'s module header has always named this task as one
+/// of the two ways the gate is promoted — and only the other one, the
+/// reactive `SQLITE_FULL` trip, was ever wired. So
+/// `ANNEX_STORAGE_BLOCK_FREE_BYTES`, documented as the point where "the
+/// server refuses writes with HTTP 507", parsed, validated, reached
+/// `AppState`, and was read by nothing: `evaluate_db_file_size` existed,
+/// was unit-tested, and had no caller outside its own tests. An operator
+/// who set it got the behaviour of one who did not — writes flowed until
+/// SQLite itself returned `SQLITE_FULL`, which is the late, ambiguous
+/// signal the module was written to replace.
+///
+/// Returns immediately when `storage.max_db_bytes` is 0, so it is always
+/// safe to spawn. That is the default, and it is logged rather than
+/// silent: the thresholds are headroom beneath the cap, so without a cap
+/// there is nothing to measure them against.
+pub async fn start_storage_probe_task(state: Arc<AppState>, db_path: std::path::PathBuf) {
+    let max_bytes = state.storage_config.max_db_bytes;
+    if max_bytes == 0 {
+        tracing::info!(
+            "storage probe disabled (storage.max_db_bytes = 0) — the gate can still \
+             close reactively on a SQLite write error"
+        );
+        return;
+    }
+
+    let warn_free = state.storage_config.warn_free_bytes;
+    let block_free = state.storage_config.block_free_bytes;
+    tracing::info!(
+        max_db_bytes = max_bytes,
+        warn_free_bytes = warn_free,
+        block_free_bytes = block_free,
+        interval_seconds = STORAGE_PROBE_INTERVAL.as_secs(),
+        "starting storage probe task"
+    );
+
+    // Check before the first sleep. A server restarted onto a database
+    // that is already over the cap should refuse writes immediately,
+    // not spend the first interval accepting them.
+    let mut last = probe_once(&state, &db_path, warn_free, block_free, max_bytes).await;
+    if last != crate::storage_health::StorageState::Healthy {
+        tracing::warn!(
+            state = last.as_str(),
+            reason = %state.storage_health.reason(),
+            "storage gate is not healthy at startup"
+        );
+    }
+
+    loop {
+        sleep(STORAGE_PROBE_INTERVAL).await;
+        let now = probe_once(&state, &db_path, warn_free, block_free, max_bytes).await;
+        // Log transitions only. At one probe a minute, logging every
+        // tick would bury the transition that matters in noise.
+        if now != last {
+            tracing::warn!(
+                from = last.as_str(),
+                to = now.as_str(),
+                reason = %state.storage_health.reason(),
+                "storage gate state changed"
+            );
+            last = now;
+        }
+    }
+}
+
+/// One pass of the probe. `std::fs::metadata` is a blocking syscall, so
+/// it goes to the blocking pool like the maintenance task's SQLite work.
+async fn probe_once(
+    state: &Arc<AppState>,
+    db_path: &std::path::Path,
+    warn_free: u64,
+    block_free: u64,
+    max_bytes: u64,
+) -> crate::storage_health::StorageState {
+    let health = state.storage_health.clone();
+    let path = db_path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        crate::storage_health::evaluate_db_file_size(
+            &health,
+            &path,
+            warn_free,
+            block_free,
+            Some(max_bytes),
+        )
+    })
+    .await
+    // A panic in the blocking pool must not be read as "healthy" — that
+    // would be the gate reporting the reassuring answer because it
+    // failed to look. Report what the gate currently holds instead.
+    .unwrap_or_else(|_| state.storage_health.state())
+}
+
+/// How often the storage probe stats the database file. Fixed rather
+/// than configurable: a `stat` is cheap enough that a minute costs
+/// nothing, and frequent enough that the gate closes well inside the
+/// window between "filling up" and "full".
+const STORAGE_PROBE_INTERVAL: Duration = Duration::from_secs(60);
+
 /// Periodically deactivates federation agreements that have gone silent past
 /// the configured TTL (`federation.agreement_ttl_days`).
 ///

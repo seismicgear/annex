@@ -945,6 +945,14 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
         state.clone(),
     )));
 
+    // Start the proactive storage probe. Returns immediately when
+    // `storage.max_db_bytes` is 0 (the default), so it is always safe to
+    // spawn.
+    tokio::spawn(background::start_storage_probe_task(
+        Arc::new(state.clone()),
+        std::path::PathBuf::from(&config.database.path),
+    ));
+
     // Auto-expire silent federation agreements past their TTL
     // (`federation.agreement_ttl_days`; 0 disables). Returns immediately when
     // disabled, so it is always safe to spawn.

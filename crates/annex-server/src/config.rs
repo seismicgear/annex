@@ -181,17 +181,38 @@ fn default_outbound_envelope_version() -> String {
 /// Storage health + SQLite maintenance.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StorageConfig {
-    /// Free disk bytes at which the server logs a warning. Reads still
-    /// flow; writes still flow. Operational signal only.
+    /// Headroom, in bytes, beneath `max_db_bytes` at which the server
+    /// logs a warning. Reads still flow; writes still flow. Operational
+    /// signal only.
+    ///
+    /// These two thresholds used to be documented as *free disk* bytes.
+    /// They have never been that: `storage_health::evaluate_db_file_size`
+    /// measures them against `max_db_bytes`, because there is no portable
+    /// way to ask the OS for real free space and the module header
+    /// explains why adding `libc` / `windows_sys` for it was refused.
     #[serde(default = "default_storage_warn_free_bytes")]
     pub warn_free_bytes: u64,
 
-    /// Free disk bytes at which the server refuses writes with HTTP
-    /// 507 / a WS storage-error frame. Reads continue to flow. The
+    /// Headroom, in bytes, beneath `max_db_bytes` at which the server
+    /// refuses writes with HTTP 507. Reads continue to flow. The
     /// retention sweep and maintenance VACUUM are still allowed to run
     /// because they can reduce storage pressure.
     #[serde(default = "default_storage_block_free_bytes")]
     pub block_free_bytes: u64,
+
+    /// Cap on the SQLite database file size, in bytes. The two
+    /// thresholds above are headroom beneath this number, so it is what
+    /// makes them mean anything: at `0` — the default — the proactive
+    /// probe is disabled and only the reactive `SQLITE_FULL` path can
+    /// close the gate.
+    ///
+    /// Uncapped is the right default because the server cannot know how
+    /// much disk an operator intends to give it, and a guessed cap that
+    /// is too low blocks writes on a healthy machine. It is a default
+    /// that turns a feature off, so `start_storage_probe_task` says so
+    /// at startup rather than being silently inert.
+    #[serde(default)]
+    pub max_db_bytes: u64,
 
     /// Enable periodic SQLite maintenance. Runs
     /// `PRAGMA wal_checkpoint(TRUNCATE)`, `ANALYZE`, and optionally
@@ -216,6 +237,7 @@ impl Default for StorageConfig {
         Self {
             warn_free_bytes: default_storage_warn_free_bytes(),
             block_free_bytes: default_storage_block_free_bytes(),
+            max_db_bytes: 0,
             maintenance_enabled: false,
             maintenance_interval_hours: default_maintenance_interval_hours(),
             maintenance_vacuum: false,
@@ -700,6 +722,42 @@ fn validate_config(config: &Config) -> Result<(), ConfigError> {
         });
     }
 
+    // The thresholds are headroom beneath the cap, and the gate reads
+    // them in order: block first, then warn. So `block` has to be the
+    // tighter of the two or the warning is dead code — the gate jumps
+    // straight from healthy to refusing writes with no earlier signal,
+    // which is precisely the "disk full arrives as a surprise" failure
+    // this whole module exists to prevent.
+    if config.storage.max_db_bytes > 0
+        && config.storage.block_free_bytes >= config.storage.warn_free_bytes
+    {
+        return Err(ConfigError::InvalidValue {
+            field: "storage.block_free_bytes",
+            reason: format!(
+                "must be < storage.warn_free_bytes ({}), got {} — writes would be \
+                 blocked before the warning could ever fire",
+                config.storage.warn_free_bytes, config.storage.block_free_bytes
+            ),
+        });
+    }
+
+    // A cap at or beneath the blocking threshold has no headroom to
+    // spend: the gate closes the moment the probe first runs, on an
+    // empty database, and the server refuses every write it ever
+    // receives.
+    if config.storage.max_db_bytes > 0
+        && config.storage.max_db_bytes <= config.storage.block_free_bytes
+    {
+        return Err(ConfigError::InvalidValue {
+            field: "storage.max_db_bytes",
+            reason: format!(
+                "must be > storage.block_free_bytes ({}), got {} — the storage gate \
+                 would close on an empty database",
+                config.storage.block_free_bytes, config.storage.max_db_bytes
+            ),
+        });
+    }
+
     validate_cors_for_build_profile(&config.cors)?;
     validate_deployment_for_build_profile(&config.deployment)?;
 
@@ -1080,6 +1138,9 @@ pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
     if let Some(v) = parse_env_var::<u64>("ANNEX_STORAGE_BLOCK_FREE_BYTES")? {
         config.storage.block_free_bytes = v;
     }
+    if let Some(v) = parse_env_var::<u64>("ANNEX_STORAGE_MAX_DB_BYTES")? {
+        config.storage.max_db_bytes = v;
+    }
     if let Some(v) = parse_env_bool("ANNEX_DB_MAINTENANCE_ENABLED")? {
         config.storage.maintenance_enabled = v;
     }
@@ -1291,6 +1352,22 @@ mod tests {
             "ANNEX_FEDERATION_RELAY_TRANSPORT_ENABLED",
             "ANNEX_SIGNAL_TRUSTED_PEERS",
             "ANNEX_SIGNING_KEY",
+            // Ten of these had drifted out of the list the comment above
+            // claims to be complete. Nothing had noticed because no test
+            // set them; the first one that did would have leaked into
+            // every test after it. `clear_env_covers_every_var_load_config_reads`
+            // now holds the claim to account.
+            "ANNEX_STORAGE_WARN_FREE_BYTES",
+            "ANNEX_STORAGE_BLOCK_FREE_BYTES",
+            "ANNEX_STORAGE_MAX_DB_BYTES",
+            "ANNEX_DB_MAINTENANCE_ENABLED",
+            "ANNEX_DB_MAINTENANCE_INTERVAL_HOURS",
+            "ANNEX_DB_MAINTENANCE_VACUUM",
+            "ANNEX_FEDERATION_DEFAULT_ENVELOPE_VERSION",
+            "ANNEX_FEDERATION_FRESHNESS_SECONDS",
+            "ANNEX_FEDERATION_FUTURE_SKEW_SECONDS",
+            "ANNEX_FEDERATION_OUTBOX_INTERVAL_SECONDS",
+            "ANNEX_FEDERATION_OUTBOX_MAX_ATTEMPTS",
         ] {
             std::env::remove_var(name);
         }
@@ -1982,6 +2059,129 @@ port = 3000
 
         let err = load_config(None).expect_err("unimplemented backend must fail");
         assert!(matches!(err, ConfigError::InvalidValue { .. }));
+    }
+
+    /// The thresholds only mean something relative to the cap, and the
+    /// cap is what an operator has to set for any of it to do anything.
+    #[test]
+    fn storage_cap_env_override_is_read() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+        std::env::set_var(concat!("ANNEX_STORAGE", "_MAX_DB_BYTES"), "8589934592");
+
+        let config = load_config(None).expect("valid config");
+        assert_eq!(config.storage.max_db_bytes, 8_589_934_592);
+    }
+
+    /// Uncapped has to stay the default: the server cannot know how much
+    /// disk it was given, and a guessed cap blocks writes on a healthy
+    /// machine.
+    #[test]
+    fn storage_cap_defaults_to_uncapped() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+
+        let config = load_config(None).expect("valid config");
+        assert_eq!(config.storage.max_db_bytes, 0);
+    }
+
+    /// Block is the tighter threshold. Inverted, the warning is dead code
+    /// and the gate jumps from healthy straight to refusing writes.
+    #[test]
+    fn storage_thresholds_must_leave_room_for_the_warning() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+        std::env::set_var(concat!("ANNEX_STORAGE", "_MAX_DB_BYTES"), "1000000");
+        std::env::set_var(concat!("ANNEX_STORAGE", "_WARN_FREE_BYTES"), "1000");
+        std::env::set_var(concat!("ANNEX_STORAGE", "_BLOCK_FREE_BYTES"), "5000");
+
+        let err = load_config(None).expect_err("inverted thresholds must fail");
+        match err {
+            ConfigError::InvalidValue { field, .. } => {
+                assert_eq!(field, "storage.block_free_bytes");
+            }
+            other => panic!("expected InvalidValue, got {other:?}"),
+        }
+    }
+
+    /// A cap at or beneath the blocking threshold has no headroom to
+    /// spend, so the gate closes on an empty database and the server
+    /// refuses every write it will ever receive.
+    #[test]
+    fn storage_cap_beneath_the_block_threshold_is_rejected() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+        std::env::set_var(concat!("ANNEX_STORAGE", "_MAX_DB_BYTES"), "1000");
+        std::env::set_var(concat!("ANNEX_STORAGE", "_BLOCK_FREE_BYTES"), "5000");
+        std::env::set_var(concat!("ANNEX_STORAGE", "_WARN_FREE_BYTES"), "9000");
+
+        let err = load_config(None).expect_err("a cap under the block threshold must fail");
+        match err {
+            ConfigError::InvalidValue { field, .. } => {
+                assert_eq!(field, "storage.max_db_bytes");
+            }
+            other => panic!("expected InvalidValue, got {other:?}"),
+        }
+    }
+
+    /// `clear_env` says it mirrors every variable `load_config` reads, and
+    /// ten had drifted out of it. That is invisible until a test sets one
+    /// — then it leaks into every test that runs after, and the failure
+    /// shows up somewhere unrelated. The claim is cheap to check, so it
+    /// is checked rather than trusted.
+    #[test]
+    fn clear_env_covers_every_var_load_config_reads() {
+        const SRC: &str = include_str!("config.rs");
+        // Split so this test's own literals cannot match themselves.
+        let quoted_prefix = concat!("\"ANN", "EX_");
+
+        fn names(haystack: &str, quoted_prefix: &str) -> std::collections::BTreeSet<String> {
+            let mut out = std::collections::BTreeSet::new();
+            let mut rest = haystack;
+            while let Some(i) = rest.find(quoted_prefix) {
+                let after = &rest[i + 1..];
+                match after.find('"') {
+                    Some(end) => {
+                        // A bare name only. Several diagnostics quote a
+                        // variable at the start of a sentence — "ANNEX_...
+                        // =clustered under ..." — and those are prose, not
+                        // something to remove from the environment.
+                        let candidate = &after[..end];
+                        if candidate
+                            .chars()
+                            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+                        {
+                            out.insert(candidate.to_string());
+                        }
+                        rest = &after[end..];
+                    }
+                    None => break,
+                }
+            }
+            out
+        }
+
+        let tests_at = SRC
+            .find(concat!("mod ", "tests"))
+            .expect("config.rs has a test module");
+        let read = names(&SRC[..tests_at], quoted_prefix);
+
+        let after_tests = &SRC[tests_at..];
+        let clear_at = after_tests
+            .find(concat!("fn clear", "_env"))
+            .expect("the tests define clear_env");
+        let clear_body = &after_tests[clear_at..];
+        let clear_end = clear_body
+            .find("] {")
+            .expect("clear_env lists names in an array");
+        let cleared = names(&clear_body[..clear_end], quoted_prefix);
+
+        let missing: Vec<&String> = read.difference(&cleared).collect();
+        assert!(
+            missing.is_empty(),
+            "load_config reads these but clear_env does not remove them, so a test that \
+             sets one leaks it into every later test: {missing:?}"
+        );
     }
 
     #[test]

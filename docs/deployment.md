@@ -45,8 +45,23 @@ Authoritative env-var names live in `crates/annex-server/src/config.rs::load_con
 | `ANNEX_DB_MAINTENANCE_VACUUM` | `false` | Run `VACUUM` during the maintenance window (off by default; blocks writers) |
 | `ANNEX_IDEMPOTENCY_TTL_SECONDS` | `604800` (7 days) | Age past which WS-idempotency ledger rows (`clientRequestId` dedupe) are evicted |
 | `ANNEX_CORS_ALLOW_DEV_LOCALHOST` | unset (= build type) | Force the dev-localhost CORS relaxation on/off. Always off under `ANNEX_BUILD_PROFILE=production`/`release` |
-| `ANNEX_STORAGE_WARN_FREE_BYTES` | `536870912` (512 MiB) | Free-disk threshold for warning |
-| `ANNEX_STORAGE_BLOCK_FREE_BYTES` | `67108864` (64 MiB) | Free-disk threshold below which writes are rejected with HTTP 507 |
+| `ANNEX_STORAGE_MAX_DB_BYTES` | `0` (uncapped) | Size cap for the SQLite database file. **The two thresholds below are headroom beneath this number, so without it neither does anything.** |
+| `ANNEX_STORAGE_WARN_FREE_BYTES` | `536870912` (512 MiB) | Headroom beneath the cap at which the server logs a warning. Writes still flow |
+| `ANNEX_STORAGE_BLOCK_FREE_BYTES` | `67108864` (64 MiB) | Headroom beneath the cap below which writes are rejected with HTTP 507. Must be smaller than the warning threshold |
+
+These three are not free-*disk* measurements, despite what the two older
+names suggest. The server has no portable way to ask the OS how much space
+is left (see the `storage_health` module header for why adding `libc` /
+`windows_sys` for it was refused), so it measures the database file against
+a cap you set. Uncapped is the default: a guessed cap that is too low would
+refuse writes on a healthy machine. Leaving it unset means only the reactive
+path — SQLite itself returning `SQLITE_FULL` — can close the gate, which is
+the late signal the proactive probe exists to get ahead of.
+
+Both thresholds are validated at startup: the blocking threshold must be
+smaller than the warning one, and the cap must exceed the blocking
+threshold, or the server refuses to start rather than running with a gate
+that can never warn or one that closes on an empty database.
 | `ANNEX_FEDERATION_FRESHNESS_SECONDS` | `300` | Max age (seconds) of a live federated envelope's `created_at` |
 | `ANNEX_FEDERATION_FUTURE_SKEW_SECONDS` | `60` | Max future skew (seconds) of a live federated envelope's `created_at` |
 | `ANNEX_FEDERATION_OUTBOX_MAX_ATTEMPTS` | `12` | Max delivery attempts before an outbox row is marked `failed` |
