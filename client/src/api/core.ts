@@ -95,7 +95,25 @@ let _sessionToken: string | null = null;
 let _zkProofPayload: string | null = null;
 
 /** Auto-refresh interval handle. */
-let _refreshInterval: ReturnType<typeof setInterval> | null = null;
+let _refreshTimer: ReturnType<typeof setTimeout> | null = null;
+/**
+ * Bumped by every `start`/`stop`. A refresh already awaiting the network
+ * when the session tears down would otherwise reschedule itself onto a
+ * session that no longer exists.
+ */
+let _refreshGeneration = 0;
+
+/**
+ * Retry delays after a failed refresh, as fractions of the token's REMAINING
+ * validity (the 20% of the TTL still on the clock when the refresh fires).
+ *
+ * Expressing them as fractions rather than fixed seconds keeps every retry
+ * inside that window whatever the TTL is: they sum to 0.9375 of it, so the
+ * last attempt lands just before the token actually dies. The refresh
+ * endpoint accepts expired-but-validly-signed tokens, so retrying with the
+ * same credential is exactly what the server expects.
+ */
+const REFRESH_RETRY_FRACTIONS = [1 / 16, 1 / 8, 1 / 4, 1 / 2];
 
 /** Set the API base URL for cross-server requests. Empty string for current origin. */
 export function setApiBaseUrl(baseUrl: string): void {
@@ -271,8 +289,17 @@ export async function refreshSessionToken(): Promise<string> {
 }
 
 /**
- * Start auto-refreshing the session token at 80% of the given TTL.
- * Call stopTokenRefresh() to cancel.
+ * Start auto-refreshing the session token at 80% of the given TTL, retrying
+ * inside the remaining 20% if an attempt fails. Call stopTokenRefresh() to
+ * cancel.
+ *
+ * The retries are the point. A plain interval that shrugged off a failure
+ * would not try again until a full cycle later — 48 minutes for the standard
+ * 1-hour TTL — by which time the token has been dead for 36 of them, with
+ * every API call 401-ing behind a UI that still looks signed in. Now a
+ * transient failure is retried while the credential is still refreshable,
+ * and `onError` fires only once the retries are exhausted, so callers can
+ * treat it as "this session is over" rather than "one request failed".
  */
 export function startTokenRefresh(
   ttlSecs: number,
@@ -280,22 +307,40 @@ export function startTokenRefresh(
   onError?: (err: unknown) => void,
 ): void {
   stopTokenRefresh();
-  const intervalMs = ttlSecs * 0.8 * 1000;
-  _refreshInterval = setInterval(async () => {
-    try {
-      const newToken = await refreshSessionToken();
+  const generation = ++_refreshGeneration;
+  const cycleMs = ttlSecs * 0.8 * 1000;
+  const remainingMs = ttlSecs * 0.2 * 1000;
+
+  const schedule = (delayMs: number, attempt: number) => {
+    _refreshTimer = setTimeout(async () => {
+      _refreshTimer = null;
+      let newToken: string;
+      try {
+        newToken = await refreshSessionToken();
+      } catch (err) {
+        if (generation !== _refreshGeneration) return;
+        if (attempt < REFRESH_RETRY_FRACTIONS.length) {
+          schedule(remainingMs * REFRESH_RETRY_FRACTIONS[attempt], attempt + 1);
+        } else {
+          onError?.(err);
+        }
+        return;
+      }
+      if (generation !== _refreshGeneration) return;
       onRefreshed?.(newToken);
-    } catch (err) {
-      onError?.(err);
-    }
-  }, intervalMs);
+      schedule(cycleMs, 0);
+    }, delayMs);
+  };
+
+  schedule(cycleMs, 0);
 }
 
-/** Stop auto-refreshing the session token. */
+/** Stop auto-refreshing the session token, including any pending retry. */
 export function stopTokenRefresh(): void {
-  if (_refreshInterval !== null) {
-    clearInterval(_refreshInterval);
-    _refreshInterval = null;
+  _refreshGeneration++;
+  if (_refreshTimer !== null) {
+    clearTimeout(_refreshTimer);
+    _refreshTimer = null;
   }
 }
 

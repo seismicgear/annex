@@ -289,3 +289,78 @@ describe('identity store — API auth state sync', () => {
     expect(useIdentityStore.getState().permissionsStatus).toBe('error');
   });
 });
+
+/**
+ * `cachedProofIsUsable` gates entry into `ready`. It wrapped two very
+ * different operations in one `try`: parsing the locally stored proof, and
+ * asking the server for its current Merkle root. The single `catch` returned
+ * `true` — "the server is unreachable, trust the cache, nothing works offline
+ * anyway".
+ *
+ * That excuse does not apply to the parse. A cached payload that is not JSON
+ * is a corrupt credential, not an offline server, and trusting it drops the
+ * user into the main UI holding a proof the server will reject — every
+ * protected call 403s, with no route back to re-registration because the
+ * app believes it is `ready`. The parse must fail closed; only the network
+ * call is best-effort.
+ */
+describe('identity store — a corrupt cached proof must not open the door', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const base = {
+    id: '1', sk: 'abc', pseudonymId: 'p1', sessionToken: 'tok1', commitmentHex: 'c1',
+    roleCode: 0, nodeId: 'n1', serverSlug: 's1', leafIndex: 0, createdAt: '',
+  };
+
+  it('loadIdentities re-proves when the cached proof is not JSON', async () => {
+    vi.resetModules();
+    mockListIdentities.mockResolvedValueOnce([
+      { ...base, zkProofPayload: 'not json at all' },
+    ]);
+
+    const { useIdentityStore } = await import('./identity');
+    await useIdentityStore.getState().loadIdentities();
+
+    expect(useIdentityStore.getState().phase).toBe('keys_ready');
+    expect(mockSetZkProofPayload).toHaveBeenCalledWith(null);
+  });
+
+  it('loadIdentities re-proves when the cached proof carries a non-string root', async () => {
+    vi.resetModules();
+    mockListIdentities.mockResolvedValueOnce([
+      { ...base, zkProofPayload: JSON.stringify({ root_hex: { nested: true } }) },
+    ]);
+
+    const { useIdentityStore } = await import('./identity');
+    await useIdentityStore.getState().loadIdentities();
+
+    expect(useIdentityStore.getState().phase).toBe('keys_ready');
+  });
+
+  it('selectIdentity re-proves rather than trusting a truncated payload', async () => {
+    vi.resetModules();
+    mockGetIdentity.mockResolvedValueOnce({
+      ...base, zkProofPayload: '{"root_hex":"ROO',
+    });
+
+    const { useIdentityStore } = await import('./identity');
+    await useIdentityStore.getState().selectIdentity('1');
+
+    expect(useIdentityStore.getState().phase).toBe('keys_ready');
+  });
+
+  it('still trusts a well-formed cached proof when the server is unreachable', async () => {
+    vi.resetModules();
+    mockGetCurrentRoot.mockRejectedValueOnce(new Error('offline'));
+    mockListIdentities.mockResolvedValueOnce([
+      { ...base, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }) },
+    ]);
+
+    const { useIdentityStore } = await import('./identity');
+    await useIdentityStore.getState().loadIdentities();
+
+    expect(useIdentityStore.getState().phase).toBe('ready');
+  });
+});

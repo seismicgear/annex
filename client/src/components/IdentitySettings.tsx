@@ -57,6 +57,13 @@ export function IdentitySettings({ onClose }: Props) {
   const [grantees, setGrantees] = useState<string[]>([]);
   const [members, setMembers] = useState<MemberInfo[]>([]);
   const [loadingGrants, setLoadingGrants] = useState(true);
+  // Each list gets its own failure slot. They fail independently, and the
+  // consequence of each is different: an unknown member list means the
+  // roster is incomplete, while an unknown grant list means every row's
+  // "Hidden"/"Granted" label is a guess — and a guess here is a privacy
+  // claim, so the roster is withheld entirely rather than shown wrong.
+  const [grantsError, setGrantsError] = useState<string | null>(null);
+  const [membersError, setMembersError] = useState<string | null>(null);
   const [granting, setGranting] = useState<string | null>(null);
 
   // ── Load persona list ──
@@ -79,11 +86,14 @@ export function IdentitySettings({ onClose }: Props) {
   // ── Load grants & members ──
   const loadGrants = useCallback(async () => {
     if (!pseudonymId) return;
+    setLoadingGrants(true);
+    setGrantsError(null);
     try {
       const resp = await api.listUsernameGrants(pseudonymId);
       setGrantees(resp.grantees);
-    } catch {
-      // Ignore grant load errors (usernames may be disabled)
+    } catch (err) {
+      setGrantees([]);
+      setGrantsError(err instanceof Error ? err.message : 'the server did not answer');
     } finally {
       setLoadingGrants(false);
     }
@@ -91,11 +101,13 @@ export function IdentitySettings({ onClose }: Props) {
 
   const loadMembers = useCallback(async () => {
     if (!pseudonymId) return;
+    setMembersError(null);
     try {
       const list = await api.listMembers(pseudonymId);
       setMembers(list.filter((m) => m.pseudonym_id !== pseudonymId));
-    } catch {
-      // May not have permission to list members
+    } catch (err) {
+      setMembers([]);
+      setMembersError(err instanceof Error ? err.message : 'the server did not answer');
     }
   }, [pseudonymId]);
 
@@ -461,9 +473,22 @@ export function IdentitySettings({ onClose }: Props) {
           Choose who can see your username. Others will only see your pseudonym.
         </p>
 
+        {grantsError && (
+          <div className="member-list-error" role="alert">
+            <span>Could not load who can see your username: {grantsError}</span>
+            <button onClick={loadGrants}>Retry</button>
+          </div>
+        )}
+        {membersError && (
+          <div className="member-list-error" role="alert">
+            <span>Could not load the member list: {membersError}</span>
+            <button onClick={loadMembers}>Retry</button>
+          </div>
+        )}
+
         {loadingGrants ? (
           <p>Loading...</p>
-        ) : (
+        ) : grantsError ? null : (
           <div className="member-list">
             {members.map((m) => {
               const isGranted = grantees.includes(m.pseudonym_id);
@@ -496,7 +521,7 @@ export function IdentitySettings({ onClose }: Props) {
                 </div>
               );
             })}
-            {members.length === 0 && (
+            {members.length === 0 && !membersError && (
               <p className="no-personas">No other members on this server yet.</p>
             )}
           </div>

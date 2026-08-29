@@ -4318,6 +4318,7 @@
 .search-error,
 .member-list-error,
 .scrollback-error,
+.edit-history-error,
 .edit-error {
   display: flex;
   align-items: center;
@@ -4335,6 +4336,7 @@
 .search-error button,
 .member-list-error button,
 .scrollback-error button,
+.edit-history-error button,
 .edit-error button {
   flex-shrink: 0;
   padding: 0.2rem 0.6rem;
@@ -4349,6 +4351,7 @@
 .search-error button:hover,
 .member-list-error button:hover,
 .scrollback-error button:hover,
+.edit-history-error button:hover,
 .edit-error button:hover {
   background: var(--overlay-white-20);
   border-color: var(--border-emphasis);

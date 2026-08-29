@@ -90,7 +90,15 @@ export function useSessionConnection({
             useChannelsStore.getState().updateWsSessionToken(newToken);
           },
           async (err) => {
+            // Reached only after the in-window retries are exhausted, so the
+            // credential is genuinely gone rather than one request having
+            // failed. Take the same route as the cold-start failure above:
+            // drop to `keys_ready` so the user is offered re-registration.
+            // The alternative is what used to happen — a console line, and
+            // an app that looks signed in while every call 401s.
             console.error('session token refresh failed', err);
+            setSessionToken(null);
+            useIdentityStore.setState({ phase: 'keys_ready' });
           },
         );
       })();

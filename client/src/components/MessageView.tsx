@@ -149,6 +149,7 @@ function MessageBubble({
   const [showHistory, setShowHistory] = useState(false);
   const [editHistory, setEditHistory] = useState<MessageEdit[] | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const [canModify, setCanModify] = useState(
     isSelf && !isDeleted && isWithinEditWindow(message.created_at),
   );
@@ -247,24 +248,41 @@ function MessageBubble({
     setConfirmingDelete(false);
   }, [message.message_id, deleteMessage, confirmingDelete]);
 
+  /**
+   * Fetch the edit trail. A failure must never be written into
+   * `editHistory`: an empty array renders as "No edit history found", which
+   * is a claim about the message — *this was never edited* — on a message
+   * that visibly says it was. The audit trail is the one thing this panel
+   * exists to be trusted about, so a dropped request says so and offers a
+   * retry instead.
+   */
+  const loadHistory = useCallback(async () => {
+    if (!activeChannelId) return;
+    setHistoryLoading(true);
+    setHistoryError(null);
+    try {
+      const edits = await api.getMessageEdits(pseudonymId, activeChannelId, message.message_id);
+      setEditHistory(edits);
+    } catch (err) {
+      setEditHistory(null);
+      setHistoryError(
+        err instanceof Error ? err.message : 'the server did not answer',
+      );
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [pseudonymId, activeChannelId, message.message_id]);
+
   const handleShowHistory = useCallback(async () => {
     if (showHistory) {
       setShowHistory(false);
       return;
     }
     setShowHistory(true);
-    if (!editHistory && activeChannelId) {
-      setHistoryLoading(true);
-      try {
-        const edits = await api.getMessageEdits(pseudonymId, activeChannelId, message.message_id);
-        setEditHistory(edits);
-      } catch {
-        setEditHistory([]);
-      } finally {
-        setHistoryLoading(false);
-      }
-    }
-  }, [showHistory, editHistory, pseudonymId, activeChannelId, message.message_id]);
+    // Retry on reopen after a failure — `editHistory` stays null, so the
+    // panel does not cache a failure as an answer.
+    if (!editHistory) await loadHistory();
+  }, [showHistory, editHistory, loadHistory]);
 
   const handleEditKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -471,6 +489,11 @@ function MessageBubble({
           <div className="edit-history-header">Edit History</div>
           {historyLoading ? (
             <div className="edit-history-loading">Loading...</div>
+          ) : historyError ? (
+            <div className="edit-history-error" role="alert">
+              <span>Could not load edit history: {historyError}</span>
+              <button onClick={loadHistory}>Retry</button>
+            </div>
           ) : editHistory && editHistory.length > 0 ? (
             <div className="edit-history-list">
               {editHistory.map((edit) => (
