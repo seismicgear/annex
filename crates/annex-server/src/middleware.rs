@@ -202,8 +202,28 @@ struct WindowState {
     window_start: Instant,
 }
 
+/// Length of the rate-limit window, in seconds.
+///
+/// Kept as a plain integer as well as a `Duration` because the `Retry-After`
+/// header on a 429 has to state the same number. It used to be a separate
+/// `HeaderValue::from_static("60")`, agreeing with this window only by
+/// coincidence — change one and the server would keep telling clients to wait
+/// a length of time it no longer enforces.
+pub const RATE_LIMIT_WINDOW_SECS: u64 = 60;
 /// Rate limit window duration.
-const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
+const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(RATE_LIMIT_WINDOW_SECS);
+
+/// The `Retry-After` value for a 429, derived from the window it describes.
+///
+/// A worst case rather than an exact one: the limiter rotates a current and a
+/// previous window, so the true wait is often shorter. Overstating it is the
+/// safe direction — a client that waits too long merely succeeds late.
+fn retry_after_header() -> axum::http::HeaderValue {
+    // Always a bare integer, so this cannot fail; the fallback keeps the
+    // function total rather than panicking inside a request path.
+    axum::http::HeaderValue::from_str(&RATE_LIMIT_WINDOW_SECS.to_string())
+        .unwrap_or_else(|_| axum::http::HeaderValue::from_static("60"))
+}
 
 /// In-memory rate limiter state.
 ///
@@ -665,10 +685,9 @@ pub async fn rate_limit_middleware(req: Request<Body>, next: Next) -> Result<Res
     if !state.rate_limiter.check(key, limit) {
         let mut response = Response::new(Body::empty());
         *response.status_mut() = StatusCode::TOO_MANY_REQUESTS;
-        response.headers_mut().insert(
-            axum::http::header::RETRY_AFTER,
-            axum::http::HeaderValue::from_static("60"),
-        );
+        response
+            .headers_mut()
+            .insert(axum::http::header::RETRY_AFTER, retry_after_header());
         return Ok(response);
     }
 
