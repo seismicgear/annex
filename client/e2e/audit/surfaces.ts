@@ -881,11 +881,21 @@ export const SURFACES: Surface[] = [
     role: 'founder',
     intent:
       'Operators who have not provisioned WebRTC need a clear explanation here, not a dead button.',
+    // The real shape of `GET /api/voice/config-status` (routes/mod.rs). The
+    // stub used to return `{configured, url, has_api_secret, token_ttl_seconds}`
+    // — fields the server has never sent — which was harmless only for as long
+    // as the client ignored this endpoint until a join had already failed.
     setup: stub('**/api/voice/config-status', {
-      configured: false,
-      url: '',
-      has_api_secret: false,
-      token_ttl_seconds: 0,
+      voice_enabled: false,
+      policy_enabled: true,
+      infrastructure_ready: false,
+      has_public_url: false,
+      has_local_url: false,
+      stt_ready: false,
+      setup_hint:
+        'Voice is enabled by policy but WebRTC is not configured. Set webrtc.url, ' +
+        'webrtc.api_key, and webrtc.api_secret in config.toml or use ANNEX_WEBRTC_* ' +
+        'environment variables.',
     }),
     navigate: async (page) => {
       await selectChannel(page, SEED.channels.voice);

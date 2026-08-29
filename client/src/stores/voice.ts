@@ -125,6 +125,24 @@ export interface VoiceState {
   clearChannelCallState: (channelId: string) => void;
   /** Handle an unexpected disconnect — clears session state and records a user-visible error. */
   handleUnexpectedDisconnect: (errorMessage?: string) => void;
+  /**
+   * Server-side voice readiness, or null before it has been asked for.
+   *
+   * The panel used to learn about an unprovisioned server only by FAILING a
+   * join: `setupHint` was populated from the join error. So an operator who
+   * had not configured WebRTC got a live-looking "Create Call" button, and
+   * the explanation the server had ready all along appeared only after the
+   * user pressed it and it failed.
+   */
+  voiceConfig: api.VoiceConfigStatus | null;
+  /** Whether the readiness check has been attempted, and how it went. */
+  voiceConfigStatus: 'idle' | 'loading' | 'ready' | 'error';
+  /**
+   * Fetch server voice readiness once per server. Cheap and idempotent:
+   * subsequent calls no-op while loading or once resolved. `force` re-asks,
+   * which matters after an admin flips the policy toggle.
+   */
+  loadVoiceConfig: (force?: boolean) => Promise<void>;
   /** Force-clear all voice session state (used by server switching). */
   forceReset: () => void;
   /** Dismiss the persisted failure state (lastFailedChannelId + connectionError). */
@@ -170,6 +188,9 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   activeJoinRequestId: 0,
   joiningAnyCall: false,
   micToggleError: null,
+
+  voiceConfig: null,
+  voiceConfigStatus: 'idle' as const,
 
   inputDeviceId: (saved.inputDeviceId as string) ?? null,
   outputDeviceId: (saved.outputDeviceId as string) ?? null,
@@ -352,8 +373,25 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       connectionError: errorMessage ?? 'Voice disconnected unexpectedly.',
     });
   },
+  loadVoiceConfig: async (force = false) => {
+    const { voiceConfigStatus } = get();
+    if (!force && (voiceConfigStatus === 'loading' || voiceConfigStatus === 'ready')) return;
+    set({ voiceConfigStatus: 'loading' });
+    try {
+      const config = await api.getVoiceConfigStatus();
+      set({ voiceConfig: config, voiceConfigStatus: 'ready' });
+    } catch {
+      // Non-fatal, and deliberately NOT treated as "voice is broken": a failed
+      // readiness check says nothing about the server's configuration. The
+      // panel leaves the button as the permissions checks left it, and a join
+      // that does fail still surfaces the server's own hint.
+      set({ voiceConfig: null, voiceConfigStatus: 'error' });
+    }
+  },
   forceReset: () => {
     set({
+      voiceConfig: null,
+      voiceConfigStatus: 'idle' as const,
       voiceToken: null,
       webrtcUrl: null,
       iceServers: [],

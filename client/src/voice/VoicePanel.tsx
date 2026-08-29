@@ -123,9 +123,30 @@ export function VoicePanel() {
   const permissionsError = permissionsStatus === 'error';
   const permissionsDenied = permissionsStatus === 'denied';
   const permissionsReady = permissionsStatus === 'ready';
+  // Ask the server whether voice can work here BEFORE offering the button.
+  // The readiness check is server-global, so one request covers every voice
+  // channel; `loadVoiceConfig` no-ops once resolved and is reset on server
+  // switch by `forceReset`.
+  const voiceConfig = useVoiceStore((s) => s.voiceConfig);
+  const voiceConfigStatus = useVoiceStore((s) => s.voiceConfigStatus);
+  const loadVoiceConfig = useVoiceStore((s) => s.loadVoiceConfig);
+  useEffect(() => {
+    if (!isVoiceCapable) return;
+    void loadVoiceConfig();
+  }, [isVoiceCapable, loadVoiceConfig]);
+
+  // Only a POSITIVE answer that the server is not ready blocks the button. A
+  // failed or pending check says nothing, and must not turn into a spurious
+  // "voice is unavailable" on a server where it works.
+  const serverVoiceUnready =
+    voiceConfigStatus === 'ready' &&
+    voiceConfig !== null &&
+    !(voiceConfig.policy_enabled && voiceConfig.infrastructure_ready);
+
   // Voice join requires: permissions loaded successfully AND can_voice === true
-  // AND voice was not disabled at startup.
-  const canJoinVoice = isVoiceAllowed && permissionsReady && !voiceSessionDisabled;
+  // AND voice was not disabled at startup AND the server can actually serve it.
+  const canJoinVoice =
+    isVoiceAllowed && permissionsReady && !voiceSessionDisabled && !serverVoiceUnready;
 
   // Clear stale call state when switching away from a channel so the next
   // channel does not inherit the previous channel's status or errors.
@@ -210,6 +231,13 @@ export function VoicePanel() {
       return;
     }
 
+    // Readiness is known up front now, so its hint can be shown without a
+    // failed join first.
+    if (serverVoiceUnready && voiceConfig?.setup_hint) {
+      setSetupHint(voiceConfig.setup_hint);
+      return;
+    }
+
     const isVoiceNotConfigured =
       lastJoinErrorDetails?.code === 'voice_not_configured' ||
       lastJoinError?.includes('not configured');
@@ -233,7 +261,7 @@ export function VoicePanel() {
     return () => {
       cancelled = true;
     };
-  }, [lastJoinError, lastJoinErrorDetails]);
+  }, [lastJoinError, lastJoinErrorDetails, serverVoiceUnready, voiceConfig]);
 
   // Build RTCIceServer array from the server-provided config.
   const rtcIceServers = useMemo(() => {
@@ -315,17 +343,23 @@ export function VoicePanel() {
       ? 'Join Call'
       : 'Create Call';
 
-  const unavailableReason = voiceSessionDisabled
-    ? (voiceSessionDisabledReason ?? 'Voice is not available for this session.')
-    : permissionsDenied
-      ? 'Voice is not allowed for your identity on this server.'
-      : permissionsError
-        ? null // Handled by the inline retry UI below
-        : !permissionsReady
-          ? 'Checking voice permissions…'
-          : !isVoiceAllowed
-            ? 'Voice is disabled by server policy for your identity.'
-            : null;
+  // Most specific first: a server that cannot do voice at all is more useful
+  // to say than anything about this identity's permissions on it.
+  const unavailableReason = serverVoiceUnready
+    ? voiceConfig?.policy_enabled === false
+      ? 'Voice is turned off for this server.'
+      : 'Voice is not set up on this server yet.'
+    : voiceSessionDisabled
+      ? (voiceSessionDisabledReason ?? 'Voice is not available for this session.')
+      : permissionsDenied
+        ? 'Voice is not allowed for your identity on this server.'
+        : permissionsError
+          ? null // Handled by the inline retry UI below
+          : !permissionsReady
+            ? 'Checking voice permissions…'
+            : !isVoiceAllowed
+              ? 'Voice is disabled by server policy for your identity.'
+              : null;
 
   // Show connectionError when the active channel matches the last failed channel
   const showConnectionError = !!(connectionError && lastFailedChannelId && lastFailedChannelId === activeChannelId);

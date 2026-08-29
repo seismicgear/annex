@@ -43,6 +43,15 @@ type VoiceStoreSnapshot = {
   voiceSessionDisabled: boolean;
   voiceSessionDisabledReason: string | null;
   setVoiceSessionDisabled: ReturnType<typeof vi.fn>;
+  voiceConfig: {
+    voice_enabled: boolean;
+    policy_enabled: boolean;
+    infrastructure_ready: boolean;
+    has_public_url: boolean;
+    setup_hint: string;
+  } | null;
+  voiceConfigStatus: 'idle' | 'loading' | 'ready' | 'error';
+  loadVoiceConfig: ReturnType<typeof vi.fn>;
   setInputDevice: ReturnType<typeof vi.fn>;
   setOutputDevice: ReturnType<typeof vi.fn>;
   setInputVolume: ReturnType<typeof vi.fn>;
@@ -192,6 +201,16 @@ function defaultVoiceState(): VoiceStoreSnapshot {
     voiceSessionDisabled: false,
     voiceSessionDisabledReason: null,
     setVoiceSessionDisabled: vi.fn(),
+    // A ready, fully-provisioned server: the default for every other test.
+    voiceConfig: {
+      voice_enabled: true,
+      policy_enabled: true,
+      infrastructure_ready: true,
+      has_public_url: true,
+      setup_hint: 'Voice is configured and ready.',
+    },
+    voiceConfigStatus: 'ready' as const,
+    loadVoiceConfig: vi.fn(async () => {}),
     setInputDevice: vi.fn(),
     setOutputDevice: vi.fn(),
     setInputVolume: vi.fn(),
@@ -735,6 +754,91 @@ describe('VoicePanel', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(/Voice disconnected.*Voice Room/);
     // Dismiss button should be available
     expect(screen.getByLabelText('Dismiss')).toBeInTheDocument();
+  });
+
+  // ── Server-side readiness ─────────────────────────────────────────────
+  //
+  // The panel used to learn that a server had no WebRTC only by failing a
+  // join. So an operator who had not provisioned it got a live-looking
+  // "Create Call", pressed it, and only then saw the explanation the server
+  // had ready the whole time. The audit surface for this state is literally
+  // named for wanting "a clear explanation here, not a dead button".
+
+  it('asks the server whether voice can work, on a voice-capable channel', () => {
+    render(<VoicePanel />);
+    expect(voiceState.loadVoiceConfig).toHaveBeenCalled();
+  });
+
+  it('does not ask on a text-only channel', () => {
+    channelsState.channels = [{ channel_id: 'chan-1', channel_type: 'Text', name: 'General' }];
+    render(<VoicePanel />);
+    expect(voiceState.loadVoiceConfig).not.toHaveBeenCalled();
+  });
+
+  it('disables the button and explains when WebRTC is not provisioned', () => {
+    voiceState.voiceConfig = {
+      voice_enabled: false,
+      policy_enabled: true,
+      infrastructure_ready: false,
+      has_public_url: false,
+      setup_hint: 'Voice is enabled by policy but WebRTC is not configured.',
+    };
+    render(<VoicePanel />);
+
+    expect(screen.getByRole('button', { name: /Create Call/ })).toBeDisabled();
+    expect(screen.getByText('Voice is not set up on this server yet.')).toBeInTheDocument();
+    // The server's own hint, without having to fail a join first.
+    expect(
+      screen.getByText(/WebRTC is not configured/),
+    ).toBeInTheDocument();
+  });
+
+  it('says so differently when voice is merely turned off by policy', () => {
+    voiceState.voiceConfig = {
+      voice_enabled: false,
+      policy_enabled: false,
+      infrastructure_ready: true,
+      has_public_url: true,
+      setup_hint: 'Voice is disabled in the server policy.',
+    };
+    render(<VoicePanel />);
+
+    expect(screen.getByRole('button', { name: /Create Call/ })).toBeDisabled();
+    expect(screen.getByText('Voice is turned off for this server.')).toBeInTheDocument();
+  });
+
+  it('leaves the button alone while the readiness check is still pending', () => {
+    voiceState.voiceConfig = null;
+    voiceState.voiceConfigStatus = 'loading';
+    render(<VoicePanel />);
+    // Not knowing yet is not a reason to refuse; the permissions checks decide.
+    expect(screen.getByRole('button', { name: /Create Call/ })).toBeEnabled();
+  });
+
+  it('leaves the button alone when the readiness check itself failed', () => {
+    // A failed check says nothing about the server's configuration. Treating
+    // it as "voice is broken" would take working voice away over one dropped
+    // request — the failure-rendered-as-result mistake, inverted.
+    voiceState.voiceConfig = null;
+    voiceState.voiceConfigStatus = 'error';
+    render(<VoicePanel />);
+    expect(screen.getByRole('button', { name: /Create Call/ })).toBeEnabled();
+    expect(screen.queryByText(/not set up on this server/)).not.toBeInTheDocument();
+  });
+
+  it('does not join when the server cannot serve voice', async () => {
+    voiceState.voiceConfig = {
+      voice_enabled: false,
+      policy_enabled: true,
+      infrastructure_ready: false,
+      has_public_url: false,
+      setup_hint: 'not configured',
+    };
+    render(<VoicePanel />);
+    await act(async () => {
+      screen.getByRole('button', { name: /Create Call/ }).click();
+    });
+    expect(voiceState.joinCall).not.toHaveBeenCalled();
   });
 
   it('disables join button and shows reason when voiceSessionDisabled is true', () => {
