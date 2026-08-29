@@ -17,7 +17,8 @@ import { IdentitySetup } from '@/components/IdentitySetup';
 import { StartupModeSelector, type DegradedStartupInfo } from '@/components/StartupModeSelector';
 import { setSessionToken } from '@/lib/api';
 import { clearAllDatabases } from '@/lib/db';
-import { resetServerData } from '@/lib/tauri';
+import { clearStartupMode, isTauri, resetServerData } from '@/lib/tauri';
+import { clearWebStartupMode } from '@/lib/startup-prefs';
 import { useIdentityStore } from '@/stores/identity';
 import { useServersStore } from '@/stores/servers';
 import type { IdentityPhase, ProvingStatus } from '@/stores/identity';
@@ -225,6 +226,18 @@ export function StartupGate(props: StartupGateProps) {
                   try {
                     const { unremoved } = await clearAllDatabases();
                     await resetServerData();
+                    // Also drop the saved startup mode. The Retry button
+                    // above already does this "so the user lands on the
+                    // chooser instead of auto-resuming the mode that just
+                    // failed" — and this is the stronger escape hatch, so it
+                    // has strictly more reason to. Without it, clearing
+                    // everything and re-bootstrapping walked straight back
+                    // into the mode that had failed, which is often the cause
+                    // (a saved "use this server" pointing at a dead host).
+                    if (isTauri()) {
+                      await clearStartupMode().catch(() => {});
+                    }
+                    clearWebStartupMode();
                     if (unremoved.length > 0) {
                       // Almost always another Annex tab holding the database
                       // open, which the user can act on once told.
