@@ -466,6 +466,68 @@ describe('channels store', () => {
     });
     expect(useChannelsStore.getState().unreadCounts.B).toBe(1);
   });
+
+  it('keeps clientRequestId on the confirmed message so its React key is stable', async () => {
+    // MessageView keys rows `msg.clientRequestId ?? msg.message_id`. Dropping
+    // the field on confirmation flips the key, and React unmounts the row and
+    // mounts a fresh one — taking an open edit textarea with it and resetting
+    // the half-typed edit to the original content, with nothing said. Edit is
+    // only offered for 60s after posting, which is exactly the window in which
+    // the confirmation is still in flight.
+    const { AnnexWebSocket } = await import('@/lib/ws');
+    const onStatusHandlers: Array<(connected: boolean) => void> = [];
+    const onMessageHandlers: Array<(frame: import('@/types').WsReceiveFrame) => void> = [];
+    vi.mocked(AnnexWebSocket).mockImplementationOnce(function mockAnnexWebSocket() {
+      return {
+        onStatus: vi.fn((cb: (connected: boolean) => void) => { onStatusHandlers.push(cb); }),
+        onMessage: vi.fn((cb: (frame: import('@/types').WsReceiveFrame) => void) => { onMessageHandlers.push(cb); }),
+        connect: vi.fn(),
+        disconnect: vi.fn(),
+        subscribe: vi.fn(),
+        unsubscribe: vi.fn(),
+        send: vi.fn(),
+        setSessionToken: vi.fn(),
+        reconnectForAuthRefresh: vi.fn(),
+        trackLastMessageId: vi.fn(),
+        connected: false,
+      } as unknown as import('@/lib/ws').AnnexWebSocket;
+    });
+
+    const { useChannelsStore } = await import('./channels');
+    useChannelsStore.setState({
+      joinedChannelIds: new Set(['A']),
+      activeChannelId: 'A',
+      unreadCounts: {},
+      messages: [{
+        message_id: '',
+        channel_id: 'A',
+        sender_pseudonym: 'p1',
+        content: 'hello',
+        reply_to_message_id: null,
+        created_at: new Date().toISOString(),
+        pending: true,
+        clientRequestId: 'req-key',
+      }],
+    });
+    useChannelsStore.getState().connectWs('p1');
+    onStatusHandlers[0]?.(true);
+
+    onMessageHandlers[0]?.({
+      type: 'message',
+      channelId: 'A',
+      messageId: 'server-id-1',
+      senderPseudonym: 'p1',
+      content: 'hello',
+      createdAt: new Date().toISOString(),
+      clientRequestId: 'req-key',
+    });
+
+    const msgs = useChannelsStore.getState().messages;
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].message_id).toBe('server-id-1');
+    expect(msgs[0].pending).toBeFalsy();
+    expect(msgs[0].clientRequestId).toBe('req-key');
+  });
 });
 
 

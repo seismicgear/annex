@@ -537,7 +537,19 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
               // When the echoed wire `content` is E2E ciphertext, keep the
               // plaintext we already hold from the composer rather than
               // decrypting our own echo.
-              const confirmed = bodyIsE2e ? { ...msg, content: optimistic.content } : { ...msg };
+              //
+              // `clientRequestId` is carried over deliberately. MessageView
+              // keys rows `msg.clientRequestId ?? msg.message_id`; dropping it
+              // here flipped the key on confirmation, so React unmounted the
+              // row and mounted a new one. A user editing a message they had
+              // just posted — the only time editing is offered, and exactly
+              // when the confirmation is still in flight — lost the textarea
+              // and had their half-typed edit reset to the original, silently.
+              // The field is not a pending marker (`pending` and `failed`
+              // are), so keeping it changes nothing else.
+              const confirmed = bodyIsE2e
+                ? { ...msg, content: optimistic.content, clientRequestId: frame.clientRequestId }
+                : { ...msg, clientRequestId: frame.clientRequestId };
               const updated = state.messages.map((m) =>
                 m.clientRequestId === frame.clientRequestId ? confirmed : m,
               );
