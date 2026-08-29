@@ -130,6 +130,7 @@ export interface VoiceState {
   /** Dismiss the persisted failure state (lastFailedChannelId + connectionError). */
   dismissConnectionError: () => void;
   /** Clear the mic toggle error. */
+  setMicToggleError: (message: string | null) => void;
   clearMicToggleError: () => void;
 }
 
@@ -374,6 +375,9 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   },
   dismissConnectionError: () => {
     set({ lastFailedChannelId: null, connectionError: null });
+  },
+  setMicToggleError: (message) => {
+    set({ micToggleError: message });
   },
   clearMicToggleError: () => {
     set({ micToggleError: null });

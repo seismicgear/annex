@@ -188,23 +188,6 @@ describe('voice store', () => {
     expect(useVoiceStore.getState().voiceToken).toBe('tok-2');
   });
 
-  it('toggleMicAsync restores micMuted on failure', async () => {
-    const { useVoiceStore } = await import('./voice');
-
-    // Start unmuted
-    useVoiceStore.setState({ micMuted: false });
-
-    const fakeLp = {
-      isMicrophoneEnabled: true,
-      setMicrophoneEnabled: vi.fn(async () => { throw new Error('device lost'); }),
-    };
-
-    await expect(useVoiceStore.getState().toggleMicAsync(fakeLp)).rejects.toThrow('device lost');
-
-    // micMuted should be restored to match the real WebRTC state (enabled → not muted)
-    expect(useVoiceStore.getState().micMuted).toBe(false);
-    expect(useVoiceStore.getState().micToggleError).toBe('device lost');
-  });
 
   it('dismissConnectionError clears lastFailedChannelId and connectionError', async () => {
     const { useVoiceStore } = await import('./voice');

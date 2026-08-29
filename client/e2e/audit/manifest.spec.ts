@@ -108,8 +108,34 @@ test.describe('surface manifest', () => {
         'Every dialog that uses it is listed separately.',
     };
 
+    // Three markers, not one.
+    //
+    // `dialog-overlay` alone found only the components that use the `Modal`
+    // primitive, so a hand-rolled modal under its own class name was
+    // invisible to the check whose entire job is finding modals nobody looks
+    // at. Two were: the agent detail overlay and the image lightbox, each
+    // covering the whole application, neither with a `role="dialog"`, focus
+    // management, a focus trap or Escape. Both now use `Modal` — and the
+    // detector no longer depends on their having done so.
+    const MODAL_MARKERS = ['dialog-overlay', 'role="dialog"', "role='dialog'"];
+
+    /**
+     * Scan code, not prose.
+     *
+     * The markers are ordinary words, so a comment explaining why something
+     * is *not* a dialog trips a plain `includes`. `Modal.tsx` only sits in
+     * `KNOWN_UNREACHABLE` because its doc comment quotes the markup it
+     * replaced. Stripping comments first makes the check answer the question
+     * it is actually asking. `//` is left alone when preceded by `:` so that
+     * URLs in strings survive — imprecise for a general parser, exact enough
+     * for a boolean marker scan.
+     */
+    const stripComments = (text: string) =>
+      text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+
     const modalComponents = readAllSources(SRC)
-      .filter(({ text }) => text.includes('dialog-overlay'))
+      .map(({ file, text }) => ({ file, text, code: stripComments(text) }))
+      .filter(({ code }) => MODAL_MARKERS.some((m) => code.includes(m)))
       .filter(({ file }) => !(file in KNOWN_UNREACHABLE));
 
     const haystack = SURFACES.map((s) => `${s.id} ${s.title}`.toLowerCase()).join(' | ');

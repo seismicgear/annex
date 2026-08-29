@@ -19,6 +19,7 @@ import { useIdentityStore } from '@/stores/identity';
 import { useServersStore } from '@/stores/servers';
 import { useUsernameStore } from '@/stores/usernames';
 import { LinkPreview } from '@/components/LinkPreview';
+import { Modal } from '@/components/Modal';
 import { extractUrls } from '@/lib/link-preview';
 import { getPersonasForIdentity } from '@/lib/personas';
 import { resolveUrl } from '@/lib/api';
@@ -429,13 +430,26 @@ function MessageBubble({
           {imageUrls.length > 0 && (
             <div className="message-images">
               {imageUrls.map((url) => (
+                // Opening an image at full size was mouse-only: an `<img>`
+                // with an onClick, no role, no tabIndex and no key handler.
+                // The lightbox it opens is the one surface that covers the
+                // whole app, and a keyboard user could not get to it at all.
                 <img
                   key={url}
                   src={resolveUrl(url)}
                   alt="Uploaded image"
                   className="message-inline-image"
                   loading="lazy"
+                  role="button"
+                  tabIndex={0}
+                  aria-label="View image full size"
                   onClick={() => onImageClick(url)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onImageClick(url);
+                    }
+                  }}
                 />
               ))}
             </div>
@@ -717,16 +731,31 @@ export function MessageView() {
         </div>
       )}
 
+      {/*
+        The lightbox is a modal — it covers the entire application — and it
+        hand-rolled its own overlay instead of using `Modal`, so it had none
+        of what that provides: no `role="dialog"`, no focus moved into it, no
+        focus trap, and Escape did nothing. A keyboard user who reached it was
+        left tabbing through the page underneath, which the overlay hides.
+        It also escaped `manifest.spec.ts`, whose modal detector looks for
+        `.dialog-overlay` and cannot see a copy under another class name.
+      */}
       {lightboxUrl && (
-        <div className="image-lightbox" onClick={() => setLightboxUrl(null)}>
+        <Modal
+          onClose={() => setLightboxUrl(null)}
+          className="image-lightbox"
+          overlayClassName="image-lightbox-overlay"
+          label="Image at full size"
+        >
           <img src={resolveUrl(lightboxUrl)} alt="Full size" />
           <button
             className="lightbox-close"
             onClick={() => setLightboxUrl(null)}
+            aria-label="Close image"
           >
             x
           </button>
-        </div>
+        </Modal>
       )}
     </>
   );

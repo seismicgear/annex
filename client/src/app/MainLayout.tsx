@@ -252,8 +252,21 @@ export function MainLayout({
         )}
       </header>
 
+      {/*
+        A banner, and now labelled as one. It declared `role="dialog"` while
+        sitting in normal flow with no overlay, no focus moved into it, no
+        focus trap and no Escape — telling assistive tech it was a modal when
+        nothing about it behaved like one, and inconsistent with the
+        degraded-startup banner directly below, which has always been a
+        `status`. `region` plus `aria-live` announces it when it appears and
+        makes it navigable as a landmark, which is what it actually is.
+
+        Making it a genuine modal is a defensible product change — accepting
+        an `annex://` invite is consequential — but that is a decision about
+        interrupting the user, not a role attribute.
+      */}
       {pendingProtocolInviteConfirmation && (
-        <div className="invite-confirmation-banner" role="dialog" aria-label="Invite confirmation">
+        <div className="invite-confirmation-banner" role="region" aria-live="polite" aria-label="Invite confirmation">
           <span>
             Invite received for {pendingProtocolInviteConfirmation.server}
           </span>

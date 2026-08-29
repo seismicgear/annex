@@ -10,6 +10,8 @@ import * as api from '@/lib/api';
 import { useUsernameStore } from '@/stores/usernames';
 import { useServersStore } from '@/stores/servers';
 import type { AgentInfo, ServerSummary, ParticipantType } from '@/types';
+import { Modal } from '@/components/Modal';
+import { useDialogTitleId } from '@/lib/use-dialog-title-id';
 
 const TYPE_LABELS: Record<ParticipantType, string> = {
   HUMAN: 'Human',
@@ -19,39 +21,48 @@ const TYPE_LABELS: Record<ParticipantType, string> = {
   SERVICE: 'Service',
 };
 
+/**
+ * Agent detail.
+ *
+ * This hand-rolled the overlay/card pair that `Modal` exists to replace —
+ * `.agent-detail-overlay` was byte-for-byte `.dialog-overlay` — so it was a
+ * modal with no `role="dialog"`, no focus moved into it, no focus trap and no
+ * Escape. It also slipped past `manifest.spec.ts`, whose modal detector looks
+ * for `.dialog-overlay`: a copy under a different class name is invisible to a
+ * check that keys on the class name.
+ */
 function AgentDetail({ agent, onClose }: { agent: AgentInfo; onClose: () => void }) {
   const getDisplayName = useUsernameStore((s) => s.getDisplayName);
   const displayName = getDisplayName(agent.pseudonym_id);
+  const titleId = useDialogTitleId();
 
   return (
-    <div className="agent-detail-overlay" onClick={onClose}>
-      <div className="agent-detail" onClick={(e) => e.stopPropagation()}>
-        <h2>Agent: {displayName ?? agent.pseudonym_id.slice(0, 16) + '...'}</h2>
-        <dl>
-          <dt>Alignment</dt>
-          <dd className={`alignment-${agent.alignment_status.toLowerCase()}`}>
-            {agent.alignment_status}
-          </dd>
-          <dt>Transfer Scope</dt>
-          <dd>{agent.transfer_scope}</dd>
-          <dt>Reputation</dt>
-          <dd>{agent.reputation_score.toFixed(2)}</dd>
-          <dt>Capabilities</dt>
-          <dd>
-            {agent.capabilities.length > 0 ? (
-              <ul>
-                {agent.capabilities.map((c, i) => (
-                  <li key={i}>{c}</li>
-                ))}
-              </ul>
-            ) : (
-              'None declared'
-            )}
-          </dd>
-        </dl>
-        <button onClick={onClose}>Close</button>
-      </div>
-    </div>
+    <Modal onClose={onClose} className="agent-detail" titleId={titleId}>
+      <h2 id={titleId}>Agent: {displayName ?? agent.pseudonym_id.slice(0, 16) + '...'}</h2>
+      <dl>
+        <dt>Alignment</dt>
+        <dd className={`alignment-${agent.alignment_status.toLowerCase()}`}>
+          {agent.alignment_status}
+        </dd>
+        <dt>Transfer Scope</dt>
+        <dd>{agent.transfer_scope}</dd>
+        <dt>Reputation</dt>
+        <dd>{agent.reputation_score.toFixed(2)}</dd>
+        <dt>Capabilities</dt>
+        <dd>
+          {agent.capabilities.length > 0 ? (
+            <ul>
+              {agent.capabilities.map((c, i) => (
+                <li key={i}>{c}</li>
+              ))}
+            </ul>
+          ) : (
+            'None declared'
+          )}
+        </dd>
+      </dl>
+      <button onClick={onClose}>Close</button>
+    </Modal>
   );
 }
 

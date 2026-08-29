@@ -1134,23 +1134,12 @@
 }
 
 /* Agent detail overlay */
-.agent-detail-overlay {
-  position: fixed;
-  inset: 0;
-  background: var(--scrim);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 100;
-}
-
-.agent-detail {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 1.5rem;
+/* `.agent-detail-overlay` used to live here, byte-for-byte identical to
+   `.dialog-overlay`, and `.agent-detail` repeated the whole `.dialog` card.
+   The component now uses the `Modal` primitive, so both come from there and
+   only the one value that actually differed is kept. */
+.dialog.agent-detail {
   max-width: 400px;
-  width: 90%;
 }
 
 .agent-detail h2 {
@@ -2105,6 +2094,7 @@
   flex-shrink: 0;
 }
 
+.persona-activate-btn,
 .persona-edit-btn,
 .persona-delete-btn {
   padding: 0.2rem 0.4rem;
@@ -2116,6 +2106,7 @@
   cursor: pointer;
 }
 
+.persona-activate-btn:hover,
 .persona-edit-btn:hover {
   border-color: var(--border-emphasis);
   color: var(--text-strong);
@@ -3403,15 +3394,30 @@
 
 /* ── Image Lightbox ── */
 
-.image-lightbox {
-  position: fixed;
-  inset: 0;
+/* The lightbox is a `Modal` now, so the backdrop comes from
+   `.dialog-overlay` and only the two values that differ are overridden: a
+   darker scrim, because a photograph needs the room dimmed further than a
+   settings card does, and a stacking order above everything else. */
+.image-lightbox-overlay {
   z-index: 10000;
   background: rgba(0, 0, 0, 0.85);
+  cursor: pointer;
+}
+
+/* `.dialog` is a card — background, border, padding, a 420px cap. None of
+   that belongs around a full-bleed image, so the surface is reset to a bare
+   flex box and the image below keeps its own 90vw/90vh limits. */
+.dialog.image-lightbox {
+  position: static;
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  max-width: none;
+  width: auto;
   display: flex;
   align-items: center;
   justify-content: center;
-  cursor: pointer;
 }
 
 .image-lightbox img {
@@ -3422,8 +3428,11 @@
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
 }
 
-.lightbox-close {
-  position: absolute;
+/* Positioned against the overlay, not the surface: the surface now shrinks
+   to the image, so `top/right` on it would put the close control on the
+   picture instead of in the corner of the screen. */
+.image-lightbox-overlay .lightbox-close {
+  position: fixed;
   top: 1rem;
   right: 1rem;
   background: var(--scrim);

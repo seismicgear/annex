@@ -186,7 +186,16 @@ async function auditOverflow(page: Page): Promise<Omit<Finding, 'surfaceId' | 's
  * report widely on the first run.
  */
 async function auditKeyboard(page: Page): Promise<Omit<Finding, 'surfaceId' | 'stage' | 'viewport'>[]> {
-  const dialog = page.locator('.dialog').first();
+  // `[role="dialog"], .dialog` rather than `.dialog` alone.
+  //
+  // Keying only on the class meant this audit could never see a modal that
+  // did not use the `Modal` primitive — and two did not. The agent detail
+  // overlay and the image lightbox each hand-rolled the overlay/card pair,
+  // under their own class names, and so were exempt from every check here
+  // while being exactly the kind of surface the checks exist for: they cover
+  // the whole application. Both now use `Modal`, and this looks for the role
+  // as well so the next copy cannot opt itself out by picking a new class.
+  const dialog = page.locator('[role="dialog"], .dialog').first();
   if (!(await dialog.isVisible().catch(() => false))) return [];
 
   const findings: Omit<Finding, 'surfaceId' | 'stage' | 'viewport'>[] = [];

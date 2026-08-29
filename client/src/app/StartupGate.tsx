@@ -278,7 +278,7 @@ export function StartupGate(props: StartupGateProps) {
           )}
         </header>
         {pendingProtocolInviteConfirmation && (
-          <div className="invite-confirmation-banner" role="dialog" aria-label="Invite confirmation">
+          <div className="invite-confirmation-banner" role="region" aria-live="polite" aria-label="Invite confirmation">
             <span>
               Invite received for {pendingProtocolInviteConfirmation.server}
             </span>
@@ -304,7 +304,7 @@ export function StartupGate(props: StartupGateProps) {
     return (
       <div className="app">
         {pendingProtocolInviteConfirmation && (
-          <div className="invite-confirmation-banner" role="dialog" aria-label="Invite confirmation">
+          <div className="invite-confirmation-banner" role="region" aria-live="polite" aria-label="Invite confirmation">
             <span>
               Invite received for {pendingProtocolInviteConfirmation.server}
             </span>
@@ -335,7 +335,7 @@ export function StartupGate(props: StartupGateProps) {
   return (
     <div className="app">
         {pendingProtocolInviteConfirmation && (
-          <div className="invite-confirmation-banner" role="dialog" aria-label="Invite confirmation">
+          <div className="invite-confirmation-banner" role="region" aria-live="polite" aria-label="Invite confirmation">
             <span>
               Invite received for {pendingProtocolInviteConfirmation.server}
             </span>

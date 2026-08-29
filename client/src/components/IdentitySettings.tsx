@@ -339,6 +339,33 @@ export function IdentitySettings({ onClose }: Props) {
                   )}
                 </div>
                 <div className="persona-actions">
+                  {/*
+                    Switching persona was mouse-only: the whole row carried the
+                    onClick and nothing inside it was focusable for that
+                    action, so a keyboard user could edit and delete a persona
+                    but never select one. The row keeps its click as a
+                    convenience — it cannot become a <button> because it
+                    already contains buttons — and this is the control that
+                    actually does the job.
+                  */}
+                  {!isActive && (
+                    <button
+                      className="persona-activate-btn"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void (async () => {
+                          if (!activeServer) return;
+                          await useServersStore
+                            .getState()
+                            .setServerPersona(activeServer.id, p.id, p.accentColor);
+                          await loadPersonas();
+                        })();
+                      }}
+                      title={`Use ${p.displayName} on this server`}
+                    >
+                      Use
+                    </button>
+                  )}
                   <button
                     className="persona-edit-btn"
                     onClick={(e) => { e.stopPropagation(); startEdit(p); }}

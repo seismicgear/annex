@@ -81,6 +81,7 @@ export function useLocalMedia({
     setCameraDevice,
     inputDeviceId,
     setInputDevice,
+    setMicToggleError,
   } = useVoiceStore();
 
   const micEnabled = isMicrophoneEnabled;
@@ -131,10 +132,19 @@ export function useLocalMedia({
         console.warn('[VoicePanel] mic sync failed:', err);
         // Revert store to match the real WebRTC microphone state
         setMicMuted(!priorEnabled);
-        setMediaError(mediaErrorMessage(err, 'Microphone toggle'));
+        const message = mediaErrorMessage(err, 'Microphone toggle');
+        setMediaError(message);
+        // And into the store, because the mute this reconciles may have been
+        // pressed in the status bar rather than in the call panel.
+        // `mediaError` is `useState` inside this hook, so it renders only in
+        // `MediaControls`; a user on the Federation or Events tab saw the
+        // button flip back with no explanation anywhere on screen.
+        // `micToggleError` is what the status-bar strip renders, right next
+        // to the control that failed.
+        setMicToggleError(message);
       });
     }
-  }, [micMuted, localParticipant, setMicMuted]);
+  }, [micMuted, localParticipant, setMicMuted, setMicToggleError]);
 
   // Sync WebRTC mic state → store when WebRTC state changes externally.
   useEffect(() => {
@@ -279,6 +289,13 @@ export function useLocalMedia({
   const prevInputDeviceRef = useRef(inputDeviceId);
   useEffect(() => {
     const prevDeviceId = prevInputDeviceRef.current;
+    // An effect runs on mount as well as on change, and this one captured the
+    // previous device without ever comparing it. So every mount of this hook
+    // with a live microphone ran the unpublish/republish below against a
+    // device that had not changed — mounting the voice panel dropped your
+    // microphone track and put a new one up, which the other side hears as a
+    // gap. The ref exists precisely to tell those two cases apart.
+    if (prevDeviceId === inputDeviceId) return;
     prevInputDeviceRef.current = inputDeviceId;
 
     const lp = localParticipant;

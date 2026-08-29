@@ -55,6 +55,15 @@ export interface ModalProps {
   /** Extra classes on the dialog surface, e.g. `settings-dialog`. */
   className?: string;
   /**
+   * Extra classes on the backdrop.
+   *
+   * Only needed by dialogs whose backdrop differs from the standard scrim —
+   * the image lightbox wants a darker one and a much higher stacking order,
+   * and before this it hand-rolled the whole overlay to get them, which cost
+   * it every behaviour this component provides.
+   */
+  overlayClassName?: string;
+  /**
    * Accessible name. Prefer `titleId` when the dialog already renders a
    * heading — a visible heading and its accessible name should not drift.
    */
@@ -78,6 +87,7 @@ export function Modal({
   onClose,
   children,
   className = "",
+  overlayClassName = "",
   label,
   titleId,
   focusKey,
@@ -229,7 +239,7 @@ export function Modal({
   }, []);
 
   return (
-    <div className="dialog-overlay" onClick={onClose}>
+    <div className={`dialog-overlay ${overlayClassName}`.trim()} onClick={onClose}>
       <div
         ref={dialogRef}
         className={`dialog ${className}`.trim()}
