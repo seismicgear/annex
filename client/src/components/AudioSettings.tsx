@@ -101,12 +101,10 @@ export function AudioSettings({ onClose }: { onClose: () => void }) {
   const {
     inputDeviceId,
     outputDeviceId,
-    inputVolume,
     outputVolume,
     cameraDeviceId,
     setInputDevice,
     setOutputDevice,
-    setInputVolume,
     setOutputVolume,
     setCameraDevice,
   } = useVoiceStore();
@@ -249,22 +247,28 @@ export function AudioSettings({ onClose }: { onClose: () => void }) {
           </select>
         </label>
 
-        <label>
-          Input Volume (OS-level)
-          <div className="volume-row">
-            <input
-              type="range"
-              min="0"
-              max="100"
-              value={inputVolume}
-              onChange={(e) => setInputVolume(Number(e.target.value))}
-              className="volume-slider"
-            />
-            <span className="volume-value">{inputVolume}%</span>
-          </div>
-        </label>
+        {/*
+          There is no input-volume slider here on purpose.
+          
+          One used to sit above this note, labelled "Input Volume (OS-level)",
+          and it did nothing at all: `setInputVolume` wrote to the store and to
+          localStorage, and no code anywhere read the value back — not the
+          capture path, not the Tauri layer, not the server. The slider moved,
+          the percentage updated, and the microphone was untouched. Its
+          neighbour one section down, Output Volume, is real (`useRemoteAudio`
+          sets `el.volume` from it), so the two looked identical and behaved
+          completely differently.
+          
+          Telling the user where the control actually lives is the honest
+          version of this, and that is what the note below already did. Adding
+          real gain means a Web Audio `GainNode` between the captured track and
+          the published one — a change to the live call path that interacts
+          with echo cancellation and noise suppression — which is a feature to
+          decide on, not a slider to leave lying around in the meantime.
+        */}
         <p className="settings-note">
-          Microphone gain is controlled by your operating system. Adjust it in your OS sound settings.
+          Microphone gain is controlled by your operating system. Adjust it in
+          your OS sound settings.
         </p>
       </div>
 

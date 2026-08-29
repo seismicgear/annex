@@ -104,11 +104,46 @@ Add an entry to `SURFACES` in `client/e2e/audit/surfaces.ts`:
 }
 ```
 
-Then record its baseline:
+Then record its baseline with a **full** run:
 
 ```bash
-bash scripts/ui-audit.sh --update-baselines --grep admin-server-policy
+bash scripts/ui-audit.sh --update-baselines
 ```
+
+Not `--grep`. The surfaces share one server and one database and run in
+manifest order, so a single-surface run records a state that never occurs in a
+real one — the channel has fewer messages in it, no earlier surface has
+uploaded anything, and the baseline you commit will diff against the next full
+run. `--grep` is for iterating on a surface's navigation, never for recording.
+
+Then run once more **without** `--update-baselines`. A recording run rewrites
+whatever it sees, so it cannot fail on drift and proves nothing; the plain run
+afterwards is the evidence, and the tree should be clean when it finishes.
+
+Four things make a surface flaky, each learned by writing one:
+
+- **Do not leave state behind.** A surface that posts, uploads or provisions
+  against the real server changes what every later surface sees. If it must
+  write, make sure what it leaves works — `message-image-lightbox` first
+  stubbed the upload to return a URL nothing served, and every later surface
+  in that channel logged a 404.
+- **Do not depend on state an earlier viewport created.** Each viewport gets a
+  fresh browser context. `channel-encryption-enabled` provisioned a real
+  channel key at the first viewport and failed at the other three, because
+  their device keys could not open it.
+- **Clip narrowly, and prefer a clip that excludes anything scrolling.**
+  `.chat-area` drags in the auto-scrolling message column. The audits run
+  against the whole page regardless of the clip, so a narrower picture costs
+  no coverage.
+- **A deliberately-injected failure needs a waiver on `network` AND
+  `console`** — the browser logs an injected 500 to both.
+
+If a surface genuinely cannot be diffed — the two encryption failure bars are
+the current example, where Playwright's mask overlays land at coordinates that
+do not survive the scroll it performs to bring a clipped element into view —
+set `reportOnly: true`. It is still captured and still audited; only the pixel
+comparison is skipped. Say in a comment what was measured, so the next reader
+can tell a real limitation from a silenced failure.
 
 `manifest.spec.ts` fails if a component renders a `.dialog-overlay` and no
 surface reaches it, so a new dialog cannot quietly go unaudited. If a modal

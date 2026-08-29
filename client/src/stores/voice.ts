@@ -84,7 +84,6 @@ export interface VoiceState {
   /** Audio settings persisted across sessions. */
   inputDeviceId: string | null;
   outputDeviceId: string | null;
-  inputVolume: number;   // 0–100
   outputVolume: number;  // 0–100
   /** Camera device ID (persisted). */
   cameraDeviceId: string | null;
@@ -109,13 +108,11 @@ export interface VoiceState {
   /** Update audio settings. */
   setInputDevice: (deviceId: string | null) => void;
   setOutputDevice: (deviceId: string | null) => void;
-  setInputVolume: (vol: number) => void;
   setOutputVolume: (vol: number) => void;
   setCameraDevice: (deviceId: string | null) => void;
   /** Update the WebRTC room connection state. */
   setConnectionState: (state: ConnectionState, error?: string | null) => void;
   /** Shared async mic toggle — updates store only after WebRTC succeeds. */
-  toggleMicAsync: (localParticipant: unknown) => Promise<void>;
   /** Check if a call is active on a channel (for polling). */
   checkCallActive: (pseudonymId: string, channelId: string) => Promise<void>;
   /** Get call-active status for a specific channel. */
@@ -175,7 +172,6 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
 
   inputDeviceId: (saved.inputDeviceId as string) ?? null,
   outputDeviceId: (saved.outputDeviceId as string) ?? null,
-  inputVolume: (saved.inputVolume as number) ?? 100,
   outputVolume: (saved.outputVolume as number) ?? 100,
   cameraDeviceId: (saved.cameraDeviceId as string) ?? null,
 
@@ -262,10 +258,6 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     set({ outputDeviceId: deviceId });
     saveAudioSettings({ outputDeviceId: deviceId });
   },
-  setInputVolume: (vol) => {
-    set({ inputVolume: vol });
-    saveAudioSettings({ inputVolume: vol });
-  },
   setOutputVolume: (vol) => {
     set({ outputVolume: vol });
     saveAudioSettings({ outputVolume: vol });
@@ -286,19 +278,6 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
         connectedChannelId: null,
         lastFailedChannelId: connectedChannelId,
       });
-    }
-  },
-  toggleMicAsync: async (localParticipant: unknown) => {
-    const lp = localParticipant as { isMicrophoneEnabled: boolean; setMicrophoneEnabled: (v: boolean) => Promise<void> };
-    const shouldEnable = !lp.isMicrophoneEnabled;
-    try {
-      await lp.setMicrophoneEnabled(shouldEnable);
-      set({ micMuted: !shouldEnable, micToggleError: null });
-    } catch (err) {
-      // Explicitly restore store to match real WebRTC state
-      set({ micMuted: !lp.isMicrophoneEnabled, micToggleError: err instanceof Error ? err.message : 'Microphone toggle failed' });
-      console.warn('[voice] toggleMicAsync failed:', err);
-      throw err;
     }
   },
   checkCallActive: async (pseudonymId, channelId) => {
