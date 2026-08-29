@@ -85,7 +85,24 @@ export function EventLog() {
         <p className="event-log-empty">No events found</p>
       )}
 
-      <div className="event-table">
+      {/*
+        Focusable, and named.
+        
+        The table scrolls horizontally on a narrow screen — its columns are
+        fixed-width, and letting them shrink instead crushed Entity to a
+        sliver and gave Detail nothing. A scrollable region that cannot take
+        focus cannot be scrolled from the keyboard at all, which axe reports
+        as `scrollable-region-focusable`; `.message-view` carries `tabIndex`
+        for exactly the same reason. The `region` role and label are what
+        make it a landmark worth landing on rather than an unexplained stop
+        in the tab order.
+      */}
+      <div
+        className="event-table"
+        role="region"
+        aria-label="Event log table"
+        tabIndex={0}
+      >
         {events.length > 0 && (
           <div className="event-table-header">
             <span className="event-col-time">Time</span>

@@ -184,10 +184,9 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
 
   return (
     <div className="policy-editor">
-      <h3>Server Settings</h3>
 
       <div className="policy-section">
-        <h4>Server Image</h4>
+        <h3>Server Image</h3>
         <p className="field-hint" style={{ marginTop: 0 }}>Upload a logo or icon for your server. Metadata (EXIF, GPS) is stripped automatically.</p>
         <div className="server-image-section">
           {serverImageUrl ? (
@@ -234,7 +233,7 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
       </label>
 
       <div className="policy-section">
-        <h4>Public URL</h4>
+        <h3>Public URL</h3>
         <p className="field-hint">
           The publicly-reachable address of this server (e.g. your domain or Annex router endpoint).
           Invite links and federation use this so anyone in the world can connect.
@@ -258,7 +257,7 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
       </div>
 
       <div className="policy-section">
-        <h4>Share Server</h4>
+        <h3>Share Server</h3>
         {hasPublicUrl && publicUrlIsSecure ? (
           <>
             <p className="field-hint">Create an invite link to share with others.</p>
@@ -360,10 +359,9 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
 
   return (
     <div className="policy-editor">
-      <h3>Server Policy</h3>
 
       <div className="policy-section">
-        <h4>Access Control<InfoTip text="Controls who can sign up for your server. Public means anyone, invite-only requires a link, and password-protected requires a shared secret." /></h4>
+        <h3>Access Control<InfoTip text="Controls who can sign up for your server. Public means anyone, invite-only requires a link, and password-protected requires a shared secret." /></h3>
         <p className="field-hint" style={{ marginTop: 0 }}>Determines who can register on this server.</p>
         <label title="Controls how new users can join this server.">
           Access Mode
@@ -473,7 +471,7 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
       </div>
 
       <div className="policy-section">
-        <h4>Media & File Uploads</h4>
+        <h3>Media & File Uploads</h3>
         <p className="field-hint" style={{ marginTop: 0 }}>Control which upload types are allowed and their size limits. MIME types are verified server-side.</p>
         <div className="policy-grid">
           <label className="checkbox-label" title="Allow image uploads (JPEG, PNG, GIF, WebP). EXIF metadata is automatically stripped.">
@@ -545,7 +543,7 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
       </div>
 
       <div className="policy-section">
-        <h4>Rate Limits (per minute)</h4>
+        <h3>Rate Limits (per minute)</h3>
         <p className="field-hint" style={{ marginTop: 0 }}>Controls how many requests a single user can make per minute. Lower values protect against abuse but may slow down legitimate usage.</p>
         <div className="policy-grid">
           <label title="Maximum identity registrations allowed per minute from a single source.">
@@ -603,7 +601,7 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
       </div>
 
       <div className="policy-section">
-        <h4>Required Agent Capabilities<InfoTip text="AI agents must declare specific abilities (like 'summarize' or 'translate') to join this server. List the capabilities you require." /></h4>
+        <h3>Required Agent Capabilities<InfoTip text="AI agents must declare specific abilities (like 'summarize' or 'translate') to join this server. List the capabilities you require." /></h3>
         <ul className="tag-list">
           {policy.agent_required_capabilities.map((cap, i) => (
             <li key={i} className="tag-item">
@@ -648,7 +646,7 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
       </div>
 
       <div className="policy-section">
-        <h4>Principles<InfoTip text="Guidelines that AI agents on this server must follow — for example, 'Be helpful and honest' or 'Respect user privacy'." /></h4>
+        <h3>Principles<InfoTip text="Guidelines that AI agents on this server must follow — for example, 'Be helpful and honest' or 'Respect user privacy'." /></h3>
         <ul className="tag-list">
           {policy.principles.map((p, i) => (
             <li key={i} className="tag-item">
@@ -688,7 +686,7 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
       </div>
 
       <div className="policy-section">
-        <h4>Prohibited Actions<InfoTip text="Things AI agents are explicitly forbidden from doing — for example, 'Share private messages' or 'Impersonate users'." /></h4>
+        <h3>Prohibited Actions<InfoTip text="Things AI agents are explicitly forbidden from doing — for example, 'Share private messages' or 'Impersonate users'." /></h3>
         <ul className="tag-list">
           {policy.prohibited_actions.map((p, i) => (
             <li key={i} className="tag-item">
@@ -795,7 +793,6 @@ function MemberManager({ pseudonymId }: { pseudonymId: string }) {
 
   return (
     <div className="policy-editor">
-      <h3>Member Management</h3>
       <p className="field-hint" style={{ marginBottom: '0.75rem' }}>
         Toggle capabilities for each member. The first member (founder) has all permissions by default.
       </p>
@@ -875,7 +872,6 @@ function ChannelManager({ pseudonymId }: { pseudonymId: string }) {
 
   return (
     <div className="channel-manager">
-      <h3>Channel Management</h3>
       {channels.length === 0 && <p className="no-channels">No channels</p>}
       <div className="channel-manager-list">
         {channels.map((ch) => (
@@ -942,6 +938,15 @@ export function AdminPanel({ section }: { section?: 'policy' | 'channels' | 'mem
 
   return (
     <div className="admin-panel">
+      {/*
+        The only heading naming this view. Each panel below used to repeat it
+        verbatim as an `<h3>` directly underneath, so every admin screen
+        printed its own title twice — "Server Policy" over "Server Policy".
+        Dropping the repeat would have left `h2` followed by the sections'
+        `h4`s with a level skipped, which axe's heading-order rule fires on,
+        so the sections moved up to `h3`. `.policy-section h3` and `h4` were
+        already styled identically in App.css for exactly this reason.
+      */}
       <h2>{titles[active] ?? 'Server Policy'}</h2>
       {active === 'server' && (
         <ServerSettings pseudonymId={identity.pseudonymId} />

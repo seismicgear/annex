@@ -86,3 +86,15 @@ client/e2e/audit/captures/
 # the audit currently finds, and it diffs cleanly.
 docs/ui-audit/findings.jsonl
 docs/ui-audit/index.html
+
+# The server's runtime data directory: `ANNEX_UPLOAD_DIR` defaults to
+# `data/uploads`, so every real upload lands here — including the ones the UI
+# audit's `message-image-lightbox` surface makes, four per run.
+#
+# It was never ignored, and 96 of those PNGs were committed across six
+# commits before anyone noticed, because the surface was changed to upload for
+# real (so the URL in the message it leaves behind actually resolves) and the
+# commits that followed used `git add -A`. Nothing here is source: it is one
+# server instance's stored files.
+data/
+

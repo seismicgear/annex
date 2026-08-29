@@ -1454,6 +1454,25 @@
 
 .event-table {
   font-size: 0.8rem;
+  /* Scroll the table rather than compressing it.
+     
+     The columns are flex items with fixed widths, and a flex item shrinks by
+     default — so on a phone they did not overflow, they squeezed: Time,
+     Domain and Type survived, Entity was crushed to a sliver at the edge and
+     Detail got nothing at all. Those last two are what say who an event
+     happened to and what it was, so the narrow layout kept the scaffolding
+     and dropped the content. Nothing flagged it either, because a row that
+     compresses never exceeds the viewport.
+     
+     A `min-width` on the rows stops the squeeze and this scrolls instead,
+     which keeps every column under the heading that names it. Inert at any
+     width that already fits. */
+  overflow-x: auto;
+}
+
+.event-table-header,
+.event-row {
+  min-width: 36rem;
 }
 
 .event-table-header {
