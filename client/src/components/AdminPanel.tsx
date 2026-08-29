@@ -313,7 +313,7 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
       </div>
 
       {error && <div className="error-message" role="alert">{error}</div>}
-      {success && <div className="success-message">{success}</div>}
+      {success && <div className="success-message" role="status">{success}</div>}
 
     </div>
   );
@@ -744,7 +744,7 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
       </div>
 
       {error && <div className="error-message" role="alert">{error}</div>}
-      {success && <div className="success-message">{success}</div>}
+      {success && <div className="success-message" role="status">{success}</div>}
 
       <button className="primary-btn save-policy-btn" onClick={handleSave} disabled={saving}>
         {saving ? 'Saving...' : 'Save Policy'}

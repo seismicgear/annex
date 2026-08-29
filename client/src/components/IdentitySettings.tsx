@@ -476,7 +476,7 @@ export function IdentitySettings({ onClose }: Props) {
           </label>
 
           {error && <div className="error-message" role="alert">{error}</div>}
-          {success && <div className="success-message">{success}</div>}
+          {success && <div className="success-message" role="status">{success}</div>}
 
           <div className="dialog-actions">
             <button

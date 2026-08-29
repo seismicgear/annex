@@ -150,6 +150,38 @@ export const SURFACES: Surface[] = [
     },
   },
 
+  {
+    id: 'startup-remote-unreachable',
+    stage: '03-server-startup',
+    title: 'Server selection — the address entered does not respond',
+    role: 'fresh',
+    intent:
+      'The second onboarding screen had exactly one surface, its happy path. This is the ' +
+      'failure a new user actually hits: they type a server address and it is wrong, or ' +
+      'down. The message has to name the address and say what to do, and the form has to ' +
+      'stay filled so it can be corrected rather than retyped.',
+    setup: async (page) => {
+      // Nothing answers at the address, which is what an unreachable server
+      // looks like to `fetchWithTimeout` — a network failure, not a status.
+      await page.route('**/api/public/server/summary', (route) => route.abort('connectionrefused'));
+    },
+    navigate: async (page) => {
+      await page.getByRole('button', { name: 'Create New Identity' }).click();
+      await expect(page.getByRole('button', { name: 'Continue' })).toBeVisible({
+        timeout: 60_000,
+      });
+      await page.getByPlaceholder('annex.example.com').fill('does-not-exist.invalid');
+      await page.getByRole('button', { name: 'Connect' }).click();
+      await expect(page.locator('.form-error')).toBeVisible({ timeout: 20_000 });
+    },
+    waive: {
+      network:
+        'the unreachable address is the condition under test — the aborted request is what the ' +
+        'surface exists to produce, not an incidental failure.',
+      console: 'the browser logs the aborted fetch to the console as well as the network log',
+    },
+  },
+
   // ─────────────────────── 04 · registration ───────────────────────
   {
     id: 'registration-password-prompt',
@@ -283,6 +315,17 @@ export const SURFACES: Surface[] = [
       await page.locator('.search-toggle-btn').click();
       await expect(page.locator('.search-form')).toBeVisible();
     },
+    // Clipped to the search panel, for the reason `message-search-results`
+    // above already documents — it turned out to apply to its siblings too.
+    //
+    // The cause is now known: the encryption bar's button label starts with an
+    // emoji, and the width that glyph resolves to depends on when the system
+    // emoji font becomes available. A 32px swing in the button moved where the
+    // bar's text wrapped, which changed the bar's height, which shifted every
+    // message below it by 4px — 0.0075 of a mobile viewport, under the 0.005
+    // tolerance on some runs and over it on others. The subject here is the
+    // search panel; the audits still run against the whole page regardless.
+    clip: '.message-search',
   },
 
   {
@@ -592,6 +635,59 @@ export const SURFACES: Surface[] = [
       await page.locator('.search-form input').fill('zzzznotpresentzzzz');
       await page.locator('.search-form input').press('Enter');
       await expect(page.locator('.search-no-results')).toBeVisible({ timeout: 15_000 });
+    },
+    // Clipped to the search panel, for the reason `message-search-results`
+    // above already documents — it turned out to apply to its siblings too.
+    //
+    // The cause is now known: the encryption bar's button label starts with an
+    // emoji, and the width that glyph resolves to depends on when the system
+    // emoji font becomes available. A 32px swing in the button moved where the
+    // bar's text wrapped, which changed the bar's height, which shifted every
+    // message below it by 4px — 0.0075 of a mobile viewport, under the 0.005
+    // tolerance on some runs and over it on others. The subject here is the
+    // search panel; the audits still run against the whole page regardless.
+    clip: '.message-search',
+  },
+  {
+    id: 'message-search-failed',
+    stage: '06-messaging',
+    title: 'Message search the server could not answer',
+    role: 'founder',
+    intent:
+      'The counterpart to message-search-no-results, and the reason that one exists. Both ' +
+      'end with an empty result list, and only one of them means "nothing matched". A search ' +
+      'that 500s must not read as a fact about the archive.',
+    setup: stub('**/api/messages/search*', { error: 'internal server error' }, 500),
+    navigate: async (page) => {
+      await selectChannel(page, SEED.defaultChannel);
+      await page.locator('.search-toggle-btn').click();
+      await page.locator('.search-form input').fill('anything');
+      await page.locator('.search-form input').press('Enter');
+      await expect(page.locator('.search-error')).toBeVisible({ timeout: 15_000 });
+    },
+    waive: {
+      network: 'the 500 is the stub this surface installs — it is the condition under test',
+      console: 'the browser logs the injected 500 to the console as well',
+    },
+  },
+  {
+    id: 'message-edit-history-empty',
+    stage: '06-messaging',
+    title: 'Edit history the server says is genuinely empty',
+    role: 'founder',
+    intent:
+      'The third state of the same panel. "No edit history found" is the correct thing to ' +
+      'say when the server really returns none — the defect was ever saying it for a ' +
+      'failure. Capturing the honest empty case beside the error case is what keeps them ' +
+      'visibly different.',
+    setup: stub('**/api/channels/*/messages/*/edits', []),
+    navigate: async (page) => {
+      await selectChannel(page, SEED.defaultChannel);
+      const bubble = page
+        .locator('.message', { hasText: SEED.messages.editedAfter.slice(0, 40) })
+        .first();
+      await bubble.locator('.edited-badge').click();
+      await expect(page.locator('.edit-history-empty')).toBeVisible({ timeout: 15_000 });
     },
   },
   {

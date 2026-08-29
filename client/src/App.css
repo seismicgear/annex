@@ -3808,8 +3808,16 @@
   margin-bottom: 0.75rem;
 }
 
+/* Inherits `.form-error`'s colour rather than overriding it.
+
+   This said `color: var(--accent)` — the brand red, #e63946 — where the
+   generic rule two thousand lines above uses `--error-text` (#f87171).
+   On the dark card that lands at about 3.3:1, under the 4.5:1 AA floor for
+   normal text, so the one message telling a new user their server address is
+   wrong was the least readable text on the screen. `--error-text` reaches
+   ~6.7:1 there. Found by `startup-remote-unreachable`, the first surface ever
+   to photograph this state. */
 .startup-mode-selector .form-error {
-  color: var(--accent);
   font-size: 0.8rem;
   margin: 0;
 }

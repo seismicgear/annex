@@ -317,6 +317,11 @@ export function StartupModeSelector({ onReady }: Props) {
   if (phase === 'loading') {
     return (
       <div className="startup-mode-selector">
+        {/* Every other phase of this screen renders the `h1`; this one used to
+            drop it, so while startup preferences were being read the page had
+            no level-one heading at all. axe's `page-has-heading-one` would
+            have caught it, but no audit surface reached this phase. */}
+        <h1>Annex</h1>
         <div className="startup-loading">Loading...</div>
       </div>
     );

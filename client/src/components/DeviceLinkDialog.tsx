@@ -232,7 +232,7 @@ export function DeviceLinkDialog({ onClose }: Props) {
       )}
 
       {mode === 'receive' && success && (
-        <div className="device-link-success">
+        <div className="device-link-success" role="status">
           <div className="success-message">Identity imported successfully!</div>
           <p>Your identity has been securely transferred to this device.</p>
           <div className="dialog-actions">

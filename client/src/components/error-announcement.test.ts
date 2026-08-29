@@ -1,5 +1,5 @@
 /**
- * Every error message the app renders must announce itself.
+ * Every error and every success the app renders must announce itself.
  *
  * A source-scanning contract rather than 21 render tests, in the same spirit
  * as `e2e/audit/manifest.spec.ts`: the point is that no NEW error surface is
@@ -19,8 +19,16 @@ import { fileURLToPath } from 'node:url';
 /** `client/src`, resolved from this file's own location. */
 const SRC = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-/** Class names that mark an element as user-facing error TEXT. */
-const ERROR_CLASS = /\berror-message\b|\bform-error\b|\berror-text\b|\bchannel-encryption-error\b/;
+/**
+ * Class names that mark an element as a user-facing state MESSAGE.
+ *
+ * Successes count for the same reason errors do, and were missed on the first
+ * pass: a screen reader user presses Save, hears nothing, and cannot tell a
+ * silent success from a silent failure. `role="status"` (polite) is the right
+ * one there — `role="alert"` interrupts, which a confirmation should not.
+ */
+const ERROR_CLASS =
+  /\berror-message\b|\bform-error\b|\berror-text\b|\bchannel-encryption-error\b|\bsuccess-message\b|\bdevice-link-success\b/;
 /** Dismiss controls carry error-ish names but are buttons, not the message. */
 const DISMISS_CLASS = /-dismiss\b/;
 const LIVE = /role="alert"|role="status"|aria-live=/;
@@ -83,8 +91,9 @@ describe('error messages are announced', () => {
     expect(
       offenders,
       'These error messages are inserted into the page with nothing to announce them. ' +
-        'Add role="alert" to the element, or wrap a group of them in one alert — ' +
-        'not one per line, which reads as several interruptions describing one event.',
+        'Add role="alert" (errors) or role="status" (successes) to the element, or wrap a ' +
+        'group of them in one — not one per line, which reads as several interruptions ' +
+        'describing a single event.',
     ).toEqual([]);
   });
 });

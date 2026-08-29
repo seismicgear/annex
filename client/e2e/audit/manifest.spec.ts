@@ -173,4 +173,125 @@ test.describe('surface manifest', () => {
         'add a surface, or record why it is unreachable in KNOWN_UNREACHABLE',
     ).toEqual([]);
   });
+
+  /**
+   * The other half of coverage: not screens, but the STATES a screen reaches.
+   *
+   * Every modal is now in the manifest, and that says nothing about whether a
+   * failed search, a failed scrollback or a refused send is ever looked at.
+   * Those are the states this codebase gets wrong most often — a failure
+   * rendered as an ordinary result is the single most common defect class
+   * here — and they were invisible to every existing check.
+   *
+   * Detection is blunt on purpose, like the modal check: any class name
+   * containing a state word is a state worth a picture. When this fails,
+   * either add a surface that reaches it, or record it in `KNOWN_UNCOVERED`
+   * with the reason.
+   *
+   * The stale-entry half matters as much as the missing-entry half. Without
+   * it the allowlist only ever grows, and a list that only grows is a list
+   * nobody removes anything from.
+   */
+  test('every state a screen can render is reached by some surface', () => {
+    /**
+     * States no surface reaches yet, each with why. Shrinking this list is
+     * the work; adding to it needs a reason that is not "it was hard".
+     */
+    const KNOWN_UNCOVERED: Record<string, string> = {
+      'admin-loading': 'transient — the policy fetch resolves before a capture could settle on it',
+      'scrollback-error':
+        'the scroll handler only fires when `hasMoreMessages` is true, which needs a first ' +
+        'page of PAGE_SIZE (50) messages; the seed creates about ten, so reaching this ' +
+        'state means stubbing a synthetic page and photographing invented content. The ' +
+        'logic is covered by a store test instead.',
+      'loading-text': 'transient — federation summary fetch, same reason',
+      'startup-loading': 'transient — resolves as fast as the effect that sets it',
+      'composer-error':
+        'needs the socket down at the moment of send; the offline surface covers the ' +
+        'banner, and driving this one deterministically needs a WS-level stub the harness ' +
+        'does not have yet',
+      'edit-error': 'the edit goes over the WebSocket, which route stubbing cannot reach',
+      'device-link-success': 'needs two contexts completing a real link handshake',
+      'server-hub-error': 'needs a second registered server to switch away from',
+      'server-hub-failed-actions': 'same — reached only after a failed switch',
+      'media-error': 'needs a getUserMedia failure injected mid-call',
+      'stale-camera-actions': 'part of the stale-camera recovery block',
+      'stale-camera-recovery':
+        'the block itself — needs a saved camera id that is absent from the device list at ' +
+        'the moment a call starts',
+      'channel-encryption-error':
+        'the bar\'s own failure, distinct from the key states beside it — reachable by ' +
+        'stubbing the enable call, and worth a surface once the E2E surfaces are revisited',
+      'clear-state-error':
+        'needs an IndexedDB delete to fail, which the harness has no way to force',
+      'error-text':
+        'FederationPanel renders this twice; the peer-unreachable half IS captured, the ' +
+        'join-failure half is not',
+      'error-boundary-title':
+        'inside the error-boundary surface, which reaches it by a different selector — ' +
+        'photographed, just not named in the manifest',
+      'error-boundary-hint': 'same — inside the error-boundary surface',
+      'error-details':
+        'the <details> block inside registration-error and error-boundary; both are ' +
+        'captured, neither names this class',
+      'voice-error': 'covered in substance by voice-join-failure; the in-call variant is not',
+      'voice-status-error': 'the StatusBar mirror of the same in-call voice error',
+      'failed-status': 'a message whose send failed — needs a WS-level stub',
+      'pending-status': 'the optimistic in-flight moment, gone before a capture settles',
+      'success-message':
+        'shared by four dialogs; each success path writes real server state, so a surface ' +
+        'for it has to be the last to touch that state',
+    };
+
+    /**
+     * Class-name fragments that mark an element as a distinct visual STATE
+     * rather than ordinary structure.
+     */
+    const STATE_WORDS =
+      /error|empty|pending|failed|failure|loading|unavailable|success|offline|denied|expired|stale/;
+
+    /**
+     * Suffixes that name a CONTROL inside a state, not the state itself. The
+     * state's own surface already photographs its dismiss button.
+     */
+    const IS_CONTROL = /-dismiss$|-btn$/;
+
+    const stripComments = (text: string) =>
+      text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+
+    const states = new Map<string, string[]>();
+    for (const { file, text } of readAllSources(SRC)) {
+      for (const m of stripComments(text).matchAll(/className=[{"'`]([^"'`}]*)/g)) {
+        for (const raw of m[1].split(/\s+/)) {
+          const cls = raw.replace(/[`${}]/g, '').trim();
+          if (!cls || !STATE_WORDS.test(cls) || IS_CONTROL.test(cls)) continue;
+          states.set(cls, [...(states.get(cls) ?? []), file]);
+        }
+      }
+    }
+
+    const manifest = readFileSync(path.join(process.cwd(), 'e2e/audit/surfaces.ts'), 'utf8');
+    const uncovered = [...states.keys()]
+      .filter((cls) => !manifest.includes(cls))
+      .filter((cls) => !(cls in KNOWN_UNCOVERED))
+      .sort();
+
+    expect(
+      uncovered,
+      'no surface reaches these states, and they are not recorded as known gaps — ' +
+        'add a surface that reaches one, or add it to KNOWN_UNCOVERED with a reason',
+    ).toEqual([]);
+
+    // And the reverse: an allowlist entry that IS now reached is a stale
+    // excuse, and leaving it there hides the next real gap behind it.
+    const staleExcuses = Object.keys(KNOWN_UNCOVERED)
+      .filter((cls) => states.has(cls) && manifest.includes(cls))
+      .sort();
+
+    expect(
+      staleExcuses,
+      'these are listed as unreachable but a surface now reaches them — remove them ' +
+        'from KNOWN_UNCOVERED',
+    ).toEqual([]);
+  });
 });

@@ -419,7 +419,7 @@ export function SocialRecoveryDialog({ onClose }: Props) {
 
       {mode === 'setup-complete' && recoveryConfig && (
         <div className="recovery-complete">
-          <div className="success-message">
+          <div className="success-message" role="status">
             Recovery shards generated successfully!
           </div>
           <p className="recovery-hint">
@@ -540,7 +540,7 @@ export function SocialRecoveryDialog({ onClose }: Props) {
 
       {mode === 'recover' && recoveredSk && !importSuccess && (
         <div className="recovery-result">
-          <div className="success-message">Key reconstructed successfully!</div>
+          <div className="success-message" role="status">Key reconstructed successfully!</div>
           <p className="recovery-hint">
             Your secret key has been recovered. Import it to regain access to your identity.
             You will need to re-register with the server to generate a new membership proof.
@@ -557,7 +557,7 @@ export function SocialRecoveryDialog({ onClose }: Props) {
 
       {mode === 'recover' && importSuccess && (
         <div className="recovery-result">
-          <div className="success-message">Identity restored locally!</div>
+          <div className="success-message" role="status">Identity restored locally!</div>
           <p className="recovery-hint">
             Your identity keys have been recovered and saved to this device.
             To use this identity on a server, you still need to register it
