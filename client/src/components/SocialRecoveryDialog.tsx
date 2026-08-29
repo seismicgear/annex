@@ -9,6 +9,13 @@
 import { useState, type FormEvent } from 'react';
 import { useIdentityStore } from '@/stores/identity';
 import { splitSecretKey, reconstructSecretKey } from '@/lib/shamir';
+import {
+  looksLikeShardJson,
+  parseShardPayload,
+  serializeShardPayload,
+  SHARD_FORMAT_VERSION,
+  type ShardPayload,
+} from '@/lib/recovery-shard';
 import * as zk from '@/lib/zk';
 import type { RecoveryConfig, RecoveryShard } from '@/types';
 import { Modal } from '@/components/Modal';
@@ -19,6 +26,13 @@ interface Props {
 }
 
 type Mode = 'choose' | 'setup' | 'setup-complete' | 'recover';
+
+/** One row of the recover form: what was typed, plus what it parsed to. */
+interface RecoveryShardEntry {
+  index: string;
+  data: string;
+  payload: ShardPayload | null;
+}
 
 export function SocialRecoveryDialog({ onClose }: Props) {
   const titleId = useDialogTitleId();
@@ -31,11 +45,19 @@ export function SocialRecoveryDialog({ onClose }: Props) {
   // Setup state
   const [totalShards, setTotalShards] = useState(5);
   const [threshold, setThreshold] = useState(3);
-  const [guardians, setGuardians] = useState<Array<{ pseudonymId: string; label: string }>>([
-    { pseudonymId: '', label: '' },
-    { pseudonymId: '', label: '' },
-    { pseudonymId: '', label: '' },
-  ]);
+  /**
+   * Named guardians, one per shard.
+   *
+   * This used to be seeded with three entries while `totalShards` started at
+   * five, and only grew when the user TOUCHED the Total Guardians field. So on
+   * first open the dialog offered three name boxes, asked for five guardians,
+   * and refused to submit — with no visible way to add the missing two. The
+   * rendered rows are derived from `totalShards` below so the two cannot
+   * disagree again.
+   */
+  const [guardians, setGuardians] = useState<Array<{ pseudonymId: string; label: string }>>(
+    () => Array.from({ length: 5 }, () => ({ pseudonymId: '', label: '' })),
+  );
   const [recoveryConfig, setRecoveryConfig] = useState<RecoveryConfig | null>(null);
   const [generatedShards, setGeneratedShards] = useState<RecoveryShard[]>([]);
   const [copiedShard, setCopiedShard] = useState<number | null>(null);
@@ -43,16 +65,37 @@ export function SocialRecoveryDialog({ onClose }: Props) {
   const [fallbackShardText, setFallbackShardText] = useState<string | null>(null);
 
   // Recovery state
-  const [recoveryShards, setRecoveryShards] = useState<Array<{ index: string; data: string }>>([
-    { index: '', data: '' },
-    { index: '', data: '' },
-    { index: '', data: '' },
+  const [recoveryShards, setRecoveryShards] = useState<RecoveryShardEntry[]>([
+    { index: '', data: '', payload: null },
+    { index: '', data: '', payload: null },
+    { index: '', data: '', payload: null },
   ]);
   const [recoveredSk, setRecoveredSk] = useState<string | null>(null);
+  /** The verified parameters the recovered key belongs to. */
+  const [recoveredMeta, setRecoveredMeta] = useState<ShardPayload | null>(null);
   const [importSuccess, setImportSuccess] = useState(false);
 
+  /**
+   * Exactly `totalShards` rows, whatever the backing array happens to hold.
+   * Deriving them is what keeps "Total Guardians: 5" from rendering three
+   * boxes.
+   */
+  const guardianSlots = Array.from(
+    { length: totalShards },
+    (_, i) => guardians[i] ?? { pseudonymId: '', label: '' },
+  );
+
   const updateGuardian = (idx: number, field: 'pseudonymId' | 'label', value: string) => {
-    setGuardians((g) => g.map((item, i) => (i === idx ? { ...item, [field]: value } : item)));
+    setGuardians((g) => {
+      // The rendered rows come from `totalShards`, which can exceed what the
+      // array holds; pad rather than dropping the edit on the floor.
+      const next = g.length > idx ? [...g] : [
+        ...g,
+        ...Array.from({ length: idx + 1 - g.length }, () => ({ pseudonymId: '', label: '' })),
+      ];
+      next[idx] = { ...next[idx], [field]: value };
+      return next;
+    });
   };
 
   const handleSetup = async (e: FormEvent) => {
@@ -63,10 +106,14 @@ export function SocialRecoveryDialog({ onClose }: Props) {
       return;
     }
 
-    // Validate guardians
-    const validGuardians = guardians.filter((g) => g.label.trim());
+    // Validate the rows the user can actually see and fill.
+    const validGuardians = guardianSlots.filter((g) => g.label.trim());
     if (validGuardians.length < totalShards) {
-      setError(`Need at least ${totalShards} guardians`);
+      const missing = totalShards - validGuardians.length;
+      setError(
+        `Name all ${totalShards} guardians — ${missing} still ` +
+          `${missing === 1 ? 'needs' : 'need'} a name.`,
+      );
       return;
     }
 
@@ -99,10 +146,21 @@ export function SocialRecoveryDialog({ onClose }: Props) {
   };
 
   const copyShard = async (shard: RecoveryShard) => {
-    const shardData = JSON.stringify({
+    if (!identity) return;
+    // Everything a recovery needs: the share itself, how many shares it takes,
+    // and the public identity parameters to check the result against. The old
+    // payload carried only `index`/`data`, which the recover screen could not
+    // read and which left the reconstruction unverifiable.
+    const shardData = serializeShardPayload({
+      v: SHARD_FORMAT_VERSION,
       index: shard.index,
       data: shard.data,
-      for: identity?.pseudonymId?.slice(0, 12),
+      threshold,
+      totalShards,
+      roleCode: identity.roleCode,
+      nodeId: identity.nodeId,
+      commitment: identity.commitmentHex,
+      for: identity.pseudonymId?.slice(0, 12),
     });
     setFallbackShardText(null);
     try {
@@ -118,46 +176,120 @@ export function SocialRecoveryDialog({ onClose }: Props) {
 
   const updateRecoveryShard = (idx: number, field: 'index' | 'data', value: string) => {
     setRecoveryShards((s) =>
-      s.map((item, i) => (i === idx ? { ...item, [field]: value } : item)),
+      s.map((item, i) => {
+        if (i !== idx) return item;
+        if (field === 'data') {
+          // What a guardian was given is the JSON blob from the setup screen,
+          // so that is what they will paste. Unpack it into the row instead of
+          // rejecting it as "not hex".
+          const payload = parseShardPayload(value);
+          if (payload) {
+            return { index: String(payload.index), data: payload.data, payload };
+          }
+          return { ...item, data: value, payload: null };
+        }
+        return { ...item, index: value };
+      }),
     );
   };
 
   const addRecoveryShardSlot = () => {
-    setRecoveryShards((s) => [...s, { index: '', data: '' }]);
+    setRecoveryShards((s) => [...s, { index: '', data: '', payload: null }]);
   };
 
+  /**
+   * Reconstruct, then CHECK.
+   *
+   * Shamir cannot tell you that you supplied too few shares — interpolating
+   * k < threshold points returns a wrong 32-byte key, indistinguishable from a
+   * right one, and `reconstruct` only refuses fewer than two. This screen used
+   * to hand that straight to "Key reconstructed successfully!" and offer to
+   * import it, on the one path a user reaches after losing everything else.
+   *
+   * So the shards carry the identity's public parameters, and the result is
+   * only accepted once recomputing the commitment from it reproduces the one
+   * the shards agree on.
+   */
   const handleRecover = async (e: FormEvent) => {
     e.preventDefault();
     setError(null);
 
-    const validShards = recoveryShards.filter((s) => s.index && s.data);
-    if (validShards.length < 2) {
-      setError('Need at least 2 shards to reconstruct');
+    const filled = recoveryShards.filter((s) => s.index && s.data);
+    const payloads = filled.map((s) => s.payload).filter((p): p is ShardPayload => p !== null);
+
+    if (payloads.length !== filled.length || payloads.length === 0) {
+      const legacy = filled.some((s) => s.payload === null && looksLikeShardJson(s.data));
+      setError(
+        legacy
+          ? 'These shards were generated by an older version and do not carry the ' +
+            'information needed to check the recovered key. Generate a new set from ' +
+            'a device that still has your identity.'
+          : 'Paste the whole shard your guardian sent you — the block starting with "{". ' +
+            'A bare hex string carries nothing to check the recovered key against.',
+      );
+      return;
+    }
+
+    const commitment = payloads[0].commitment;
+    if (payloads.some((p) => p.commitment !== commitment)) {
+      setError('These shards belong to different identities. Use shards from a single set.');
+      return;
+    }
+
+    const indices = new Set(payloads.map((p) => p.index));
+    if (indices.size !== payloads.length) {
+      setError('The same shard was entered twice. Each guardian holds a different one.');
+      return;
+    }
+
+    const needed = payloads[0].threshold;
+    if (payloads.length < needed) {
+      setError(
+        `${payloads.length} of the ${needed} shards needed. ` +
+          'Collect the rest before reconstructing — fewer will not produce your key.',
+      );
       return;
     }
 
     try {
       const sk = reconstructSecretKey(
-        validShards.map((s) => ({ index: parseInt(s.index, 10), data: s.data })),
+        payloads.map((p) => ({ index: p.index, data: p.data })),
       );
+      await zk.initPoseidon();
+      const recomputed = await zk.computeCommitment(
+        BigInt('0x' + sk),
+        payloads[0].roleCode,
+        payloads[0].nodeId,
+      );
+      if (recomputed.toLowerCase() !== commitment.toLowerCase()) {
+        setError(
+          'The shards did not reconstruct your identity. Check that each one was ' +
+            'pasted whole and unmodified, and that they all come from the same set.',
+        );
+        return;
+      }
       setRecoveredSk(sk);
+      setRecoveredMeta(payloads[0]);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Reconstruction failed — check your shards');
     }
   };
 
   const handleImportRecovered = async () => {
-    if (!recoveredSk) return;
+    if (!recoveredSk || !recoveredMeta) return;
     setError(null);
 
     try {
-      // Recompute the missing fields from the recovered secret key using
-      // the same key-derivation path as normal identity creation.
-      await zk.initPoseidon();
-      const sk = BigInt('0x' + recoveredSk);
-      const nodeId = zk.generateNodeId();
-      const roleCode = 1; // Human
-      const commitmentHex = await zk.computeCommitment(sk, roleCode, nodeId);
+      // Restore the identity the shards describe.
+      //
+      // This used to call `generateNodeId()` — a fresh RANDOM value — and
+      // hardcode `roleCode: 1`, then derive a commitment from them. A
+      // commitment over a random node id is a different Merkle leaf, so even a
+      // perfectly reconstructed secret key produced a NEW identity rather than
+      // the one being recovered. The parameters travel with the shards now,
+      // and `handleRecover` has already verified they reproduce the
+      // commitment.
+      const { roleCode, nodeId, commitment: commitmentHex } = recoveredMeta;
 
       const backup = JSON.stringify({
         id: crypto.randomUUID(),
@@ -229,13 +361,10 @@ export function SocialRecoveryDialog({ onClose }: Props) {
                 onChange={(e) => {
                   const val = parseInt(e.target.value, 10);
                   setTotalShards(val);
-                  // Clamp threshold if it now exceeds the new total
+                  // Clamp threshold if it now exceeds the new total.
+                  // Guardian rows follow `totalShards` at render time, so
+                  // there is no slot bookkeeping to do here.
                   if (threshold > val) setThreshold(val);
-                  // Ensure enough guardian slots (immutable update)
-                  if (guardians.length < val) {
-                    const extra = Array.from({ length: val - guardians.length }, () => ({ pseudonymId: '', label: '' }));
-                    setGuardians([...guardians, ...extra]);
-                  }
                 }}
               />
             </label>
@@ -257,7 +386,7 @@ export function SocialRecoveryDialog({ onClose }: Props) {
 
           <div className="guardian-list">
             <h3>Guardians</h3>
-            {guardians.slice(0, totalShards).map((g, i) => (
+            {guardianSlots.map((g, i) => (
               <div key={i} className="guardian-entry">
                 <input
                   type="text"
@@ -350,24 +479,38 @@ export function SocialRecoveryDialog({ onClose }: Props) {
       {mode === 'recover' && !recoveredSk && (
         <form className="recovery-reconstruct" onSubmit={handleRecover}>
           <p className="recovery-description">
-            Enter the shards collected from your guardians to reconstruct your secret key.
+            Paste the shards your guardians sent you — each one whole, exactly as
+            they received it. The shard number fills itself in.
           </p>
 
           <div className="recovery-shard-inputs">
             {recoveryShards.map((s, i) => (
               <div key={i} className="recovery-shard-entry">
+                {/* The number box is 60px wide, so its "Shard #" placeholder
+                    rendered as "Shar" with the spinner arrows on top of it —
+                    the only thing naming the field was clipped. It is labelled
+                    properly now, and normally filled by the paste below rather
+                    than typed. */}
+                <label className="visually-hidden" htmlFor={`shard-index-${i}`}>
+                  Shard number for entry {i + 1}
+                </label>
                 <input
+                  id={`shard-index-${i}`}
                   type="number"
-                  placeholder="Shard #"
+                  placeholder="#"
                   value={s.index}
                   onChange={(e) => updateRecoveryShard(i, 'index', e.target.value)}
                   min={1}
                   max={255}
                   className="recovery-shard-index"
                 />
+                <label className="visually-hidden" htmlFor={`shard-data-${i}`}>
+                  Shard {i + 1}, as sent by your guardian
+                </label>
                 <input
+                  id={`shard-data-${i}`}
                   type="text"
-                  placeholder="Shard data (hex)"
+                  placeholder="Paste the shard your guardian sent"
                   value={s.data}
                   onChange={(e) => updateRecoveryShard(i, 'data', e.target.value)}
                   className="recovery-shard-data"

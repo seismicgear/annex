@@ -2546,8 +2546,10 @@
   gap: 0.5rem;
 }
 
+/* Wide enough for the spinner arrows Chromium draws inside a number input
+   plus the value; at 60px the arrows sat on top of the text. */
 .recovery-shard-index {
-  width: 60px;
+  width: 72px;
   padding: 0.35rem 0.5rem;
   border-radius: 4px;
   border: 1px solid var(--border);

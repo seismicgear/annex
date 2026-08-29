@@ -3,27 +3,34 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { SocialRecoveryDialog } from './SocialRecoveryDialog';
 
 const mockSplitSecretKey = vi.fn();
+const mockReconstructSecretKey = vi.fn();
 vi.mock('@/lib/shamir', () => ({
   splitSecretKey: (...args: unknown[]) => mockSplitSecretKey(...args),
-  reconstructSecretKey: vi.fn(),
+  reconstructSecretKey: (...args: unknown[]) => mockReconstructSecretKey(...args),
 }));
 
+const mockComputeCommitment = vi.fn(async () => 'c0ffee');
 vi.mock('@/lib/zk', () => ({
   initPoseidon: vi.fn(async () => {}),
-  generateNodeId: vi.fn(() => '1234'),
-  computeCommitment: vi.fn(async () => 'abcd'),
+  generateNodeId: vi.fn(() => 999999),
+  computeCommitment: (...a: unknown[]) => mockComputeCommitment(...(a as [])),
 }));
 
 const mockIdentity = {
   id: 'id-1',
   sk: 'deadbeef',
+  roleCode: 1,
+  nodeId: 482913,
+  commitmentHex: 'c0ffee',
   pseudonymId: 'pseudo-123456789012',
 };
+
+const mockImportBackup = vi.fn(async () => {});
 
 vi.mock('@/stores/identity', () => ({
   useIdentityStore: (selector: (state: Record<string, unknown>) => unknown) => selector({
     identity: mockIdentity,
-    importBackup: vi.fn(async () => {}),
+    importBackup: (...a: unknown[]) => mockImportBackup(...(a as [])),
   }),
 }));
 
@@ -129,5 +136,165 @@ describe('SocialRecoveryDialog', () => {
 
     // No fallback field should appear
     expect(screen.queryByText(/Clipboard access denied/)).not.toBeInTheDocument();
+  });
+
+  // ── The recovery path ────────────────────────────────────────────────
+  //
+  // Every test below covers a way this dialog used to report success on a
+  // recovery that had not happened.
+
+  const SHARD = (over: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      v: 2,
+      index: 1,
+      data: 'aabbcc',
+      threshold: 3,
+      totalShards: 5,
+      roleCode: 1,
+      nodeId: 482913,
+      commitment: 'c0ffee',
+      ...over,
+    });
+
+  function openRecover() {
+    render(<SocialRecoveryDialog onClose={vi.fn()} />);
+    fireEvent.click(screen.getByText('Recover Identity'));
+  }
+
+  function pasteShards(blobs: string[]) {
+    const fields = screen.getAllByPlaceholderText(/Paste the shard/);
+    blobs.forEach((b, i) => fireEvent.change(fields[i], { target: { value: b } }));
+  }
+
+  it('offers one guardian row per shard on first open', () => {
+    render(<SocialRecoveryDialog onClose={vi.fn()} />);
+    fireEvent.click(screen.getByText('Set Up Recovery'));
+
+    // Total Guardians defaults to 5. It used to render three boxes and then
+    // refuse to submit, with no way to add the missing two.
+    expect(Number((screen.getByLabelText(/Total Guardians/) as HTMLInputElement).value)).toBe(5);
+    expect(screen.getAllByPlaceholderText(/Guardian \d+ name/)).toHaveLength(5);
+  });
+
+  it('grows and keeps the guardian rows in step with the total', () => {
+    render(<SocialRecoveryDialog onClose={vi.fn()} />);
+    fireEvent.click(screen.getByText('Set Up Recovery'));
+    const total = screen.getByLabelText(/Total Guardians/);
+
+    fireEvent.change(total, { target: { value: '7' } });
+    expect(screen.getAllByPlaceholderText(/Guardian \d+ name/)).toHaveLength(7);
+
+    fireEvent.change(total, { target: { value: '2' } });
+    expect(screen.getAllByPlaceholderText(/Guardian \d+ name/)).toHaveLength(2);
+  });
+
+  it('fills the shard number from a pasted shard', () => {
+    openRecover();
+    pasteShards([SHARD({ index: 4 })]);
+    expect((screen.getByLabelText(/Shard number for entry 1/) as HTMLInputElement).value).toBe('4');
+  });
+
+  it('refuses a bare hex share, which cannot be verified', async () => {
+    openRecover();
+    pasteShards(['aabbcc', 'ddeeff', '112233']);
+    fireEvent.click(screen.getByText('Reconstruct Key'));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Paste the whole shard/)).toBeInTheDocument();
+    });
+    expect(mockReconstructSecretKey).not.toHaveBeenCalled();
+    expect(screen.queryByText(/reconstructed successfully/)).not.toBeInTheDocument();
+  });
+
+  it('refuses to reconstruct below the threshold instead of returning a wrong key', async () => {
+    openRecover();
+    // Two shards of a 3-of-5 set. Shamir would happily interpolate them into a
+    // plausible 32-byte key that is not the secret, and say nothing.
+    pasteShards([SHARD({ index: 1 }), SHARD({ index: 2 })]);
+    fireEvent.click(screen.getByText('Reconstruct Key'));
+
+    await waitFor(() => {
+      expect(screen.getByText(/2 of the 3 shards needed/)).toBeInTheDocument();
+    });
+    expect(mockReconstructSecretKey).not.toHaveBeenCalled();
+  });
+
+  it('rejects the same shard entered twice', async () => {
+    openRecover();
+    pasteShards([SHARD({ index: 2 }), SHARD({ index: 2 }), SHARD({ index: 2 })]);
+    fireEvent.click(screen.getByText('Reconstruct Key'));
+
+    await waitFor(() => {
+      expect(screen.getByText(/same shard was entered twice/)).toBeInTheDocument();
+    });
+    expect(mockReconstructSecretKey).not.toHaveBeenCalled();
+  });
+
+  it('rejects shards from two different identities', async () => {
+    openRecover();
+    pasteShards([
+      SHARD({ index: 1 }),
+      SHARD({ index: 2 }),
+      SHARD({ index: 3, commitment: 'beefbeef' }),
+    ]);
+    fireEvent.click(screen.getByText('Reconstruct Key'));
+
+    await waitFor(() => {
+      expect(screen.getByText(/different identities/)).toBeInTheDocument();
+    });
+    expect(mockReconstructSecretKey).not.toHaveBeenCalled();
+  });
+
+  it('does not report success when the key fails to reproduce the commitment', async () => {
+    mockReconstructSecretKey.mockReturnValue('00'.repeat(32));
+    mockComputeCommitment.mockResolvedValue('not-the-commitment');
+
+    openRecover();
+    pasteShards([SHARD({ index: 1 }), SHARD({ index: 2 }), SHARD({ index: 3 })]);
+    fireEvent.click(screen.getByText('Reconstruct Key'));
+
+    await waitFor(() => {
+      expect(screen.getByText(/did not reconstruct your identity/)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/reconstructed successfully/)).not.toBeInTheDocument();
+  });
+
+  it('accepts a reconstruction that reproduces the commitment', async () => {
+    mockReconstructSecretKey.mockReturnValue('11'.repeat(32));
+    mockComputeCommitment.mockResolvedValue('c0ffee');
+
+    openRecover();
+    pasteShards([SHARD({ index: 1 }), SHARD({ index: 2 }), SHARD({ index: 3 })]);
+    fireEvent.click(screen.getByText('Reconstruct Key'));
+
+    await waitFor(() => {
+      expect(screen.getByText(/reconstructed successfully/)).toBeInTheDocument();
+    });
+    // Verified against the parameters the shards carry, not freshly minted ones.
+    expect(mockComputeCommitment).toHaveBeenCalledWith(BigInt('0x' + '11'.repeat(32)), 1, 482913);
+  });
+
+  it('restores the original identity rather than deriving a new one', async () => {
+    mockReconstructSecretKey.mockReturnValue('11'.repeat(32));
+    mockComputeCommitment.mockResolvedValue('c0ffee');
+
+    openRecover();
+    pasteShards([SHARD({ index: 1 }), SHARD({ index: 2 }), SHARD({ index: 3 })]);
+    fireEvent.click(screen.getByText('Reconstruct Key'));
+    await waitFor(() => screen.getByText(/reconstructed successfully/));
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Import Recovered Key' }));
+    });
+
+    await waitFor(() => expect(mockImportBackup).toHaveBeenCalled());
+    const backup = JSON.parse(mockImportBackup.mock.calls[0][0] as unknown as string);
+    // It used to call generateNodeId() for a RANDOM node id and hardcode
+    // roleCode 1, producing a different commitment — a new identity, not the
+    // recovered one.
+    expect(backup.nodeId).toBe(482913);
+    expect(backup.roleCode).toBe(1);
+    expect(backup.commitmentHex).toBe('c0ffee');
+    expect(backup.sk).toBe('11'.repeat(32));
   });
 });
