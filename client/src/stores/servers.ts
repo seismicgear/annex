@@ -42,6 +42,8 @@ interface ServersState {
   addRemoteServer: (baseUrl: string) => Promise<SavedServer | null>;
   /** Remove a saved server. */
   removeServer: (serverId: string) => Promise<void>;
+  /** Dismiss the last switch failure. */
+  clearSwitchError: () => void;
   /** Update persona mapping for a server. */
   setServerPersona: (serverId: string, personaId: string | null, accentColor?: string) => Promise<void>;
   /** Get the active server entry. */
@@ -75,6 +77,7 @@ export const useServersStore = create<ServersState>((set, get) => ({
   serverImageUrl: null,
   pendingRegistrationServerId: null,
   switchError: null,
+  clearSwitchError: () => set({ switchError: null }),
   switchEpoch: 0,
 
   loadServers: async () => {

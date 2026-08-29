@@ -212,7 +212,7 @@ test.describe('surface manifest', () => {
         'does not have yet',
       'edit-error': 'the edit goes over the WebSocket, which route stubbing cannot reach',
       'device-link-success': 'needs two contexts completing a real link handshake',
-      'server-hub-error': 'needs a second registered server to switch away from',
+      'server-switch-error': 'needs a second registered server to switch away from',
       'server-hub-failed-actions': 'same — reached only after a failed switch',
       'stale-camera-actions':
         'inside the `.stale-camera-recovery` block, which `call-camera-device-missing` now ' +

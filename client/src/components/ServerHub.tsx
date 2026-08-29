@@ -147,6 +147,7 @@ export function ServerHub() {
   const switching = useServersStore((s) => s.switching);
   const switchServer = useServersStore((s) => s.switchServer);
   const switchError = useServersStore((s) => s.switchError);
+  const clearSwitchError = useServersStore((s) => s.clearSwitchError);
   const beginRemoteRegistration = useServersStore((s) => s.beginRemoteRegistration);
   const removeServer = useServersStore((s) => s.removeServer);
   const serverImageUrl = useServersStore((s) => s.serverImageUrl);
@@ -180,12 +181,32 @@ export function ServerHub() {
 
   return (
     <>
+      {/* Not inside the rail. It used to be: a `role="alert"` wrapping the
+          single character "!", with the real message in a `title`. That
+          announced "!" to a screen reader, was invisible to touch (a title
+          has no tap), had no CSS rule of its own so it rendered unstyled,
+          and never said the thing that matters most — that the switch rolled
+          back and you are still where you started. The rail is 72px with
+          `overflow-x: hidden`, so prose cannot live in it; this sits above
+          the app instead, where a sentence fits. */}
+      {switchError && (
+        <div className="server-switch-error" role="alert">
+          <span aria-hidden="true">&#9888;&#65039;</span>
+          <span>
+            Couldn&apos;t switch servers: {switchError}. You&apos;re still on the
+            server you started from.
+          </span>
+          <button
+            type="button"
+            className="server-switch-error-dismiss"
+            onClick={clearSwitchError}
+            aria-label="Dismiss"
+          >
+            &times;
+          </button>
+        </div>
+      )}
       <nav className={`server-hub ${switching ? 'switching' : ''}`} aria-label="Your servers">
-        {switchError && (
-          <div className="server-hub-error" role="alert" title={switchError}>
-            <span>!</span>
-          </div>
-        )}
         <div className="server-hub-list">
           {servers.map((server) => (
             <ServerIcon

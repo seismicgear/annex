@@ -166,9 +166,32 @@ export async function stabilize(page: Page): Promise<void> {
   await page.waitForTimeout(150);
 }
 
-/** Locators for the global mask set plus any surface-specific additions. */
-export function maskLocators(page: Page, extra: string[] = []): Locator[] {
-  return [...NONDETERMINISTIC_SELECTORS, ...extra].map((sel) => page.locator(sel));
+/**
+ * Locators for the global mask set plus any surface-specific additions,
+ * scoped to the clipped element when there is one.
+ *
+ * Playwright paints masks at their PAGE coordinates, and a clipped capture
+ * is a crop of that same painted page. So a mask on an element BEHIND the
+ * clipped one lands inside the crop — drawn over a subject that is already
+ * opaque, protecting nothing, and moving whenever the hidden layout behind
+ * it moves. `message-search-no-results @ narrow` failed on exactly that:
+ * 301 pixels of drift, every one of them a grey mask rectangle belonging to
+ * the message column behind an opaque search panel.
+ *
+ * Masking the whole column instead of its rows was tried first and did not
+ * help, because the global per-message masks are still applied alongside
+ * any surface-specific one — masking a parent does not remove its
+ * children's rectangles.
+ *
+ * Scoping costs no coverage: a mask outside the picture was never diffed.
+ */
+export function maskLocators(page: Page, extra: string[] = [], clip?: string): Locator[] {
+  const selectors = [...NONDETERMINISTIC_SELECTORS, ...extra];
+  if (!clip) return selectors.map((sel) => page.locator(sel));
+  const root = page.locator(clip);
+  // Descendants of the clipped element, plus the element itself when it is
+  // the nondeterministic thing being photographed.
+  return selectors.flatMap((sel) => [root.locator(sel), page.locator(`${clip}${sel}`)]);
 }
 
 // ─────────────────────────── landing ───────────────────────────

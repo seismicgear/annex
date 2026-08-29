@@ -96,4 +96,36 @@ describe('error messages are announced', () => {
         'describing a single event.',
     ).toEqual([]);
   });
+
+  /**
+   * Having a live region is not the same as having something to announce.
+   *
+   * `ServerHub` satisfied the rule above with
+   * `<div className="server-hub-error" role="alert" title={switchError}>`
+   * wrapping `<span>!</span>`. A screen reader announced the character "!".
+   * The sentence explaining what had failed sat in a `title`, which is
+   * hover-only on a pointer and unreachable entirely on touch — so the one
+   * place the message existed was the one place half the users could not
+   * look. The first rule cannot see this, because the role is present.
+   */
+  it('puts no live-region message in a title attribute', () => {
+    const offenders: string[] = [];
+
+    for (const file of tsxFiles(SRC)) {
+      readFileSync(file, 'utf8')
+        .split('\n')
+        .forEach((line, i) => {
+          if (!/role="(alert|status)"/.test(line)) return;
+          if (!/\btitle=[{"]/.test(line)) return;
+          offenders.push(`${file.slice(SRC.length + 1)}:${i + 1}`);
+        });
+    }
+
+    expect(
+      offenders,
+      'A live region announces its text content, not its title attribute, and a title ' +
+        'is hover-only on a pointer and unreachable on touch. Put the message in the ' +
+        'element (visually hidden if it must not be seen), not in a tooltip.',
+    ).toEqual([]);
+  });
 });

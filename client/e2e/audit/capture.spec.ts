@@ -111,7 +111,7 @@ for (const surface of ORDERED_SURFACES) {
         const file = shotPath(surface.id, viewport, surface.reportOnly);
 
         const shotOptions = {
-          mask: maskLocators(page, surface.mask),
+          mask: maskLocators(page, surface.mask, surface.clip),
           maskColor: '#3a3a3a',
           animations: 'disabled' as const,
           // Font hinting and sub-pixel AA differ enough between machines that
