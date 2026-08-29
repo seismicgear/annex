@@ -405,7 +405,7 @@ export function SocialRecoveryDialog({ onClose }: Props) {
             ))}
           </div>
 
-          {error && <div className="error-message">{error}</div>}
+          {error && <div className="error-message" role="alert">{error}</div>}
           <div className="dialog-actions">
             <button type="button" onClick={() => setMode('choose')}>
               Back
@@ -447,7 +447,7 @@ export function SocialRecoveryDialog({ onClose }: Props) {
             ))}
           </div>
 
-          {error && <div className="error-message">{error}</div>}
+          {error && <div className="error-message" role="alert">{error}</div>}
           {fallbackShardText && (
             <div className="shard-fallback" onClick={(e) => e.stopPropagation()}>
               <input
@@ -526,7 +526,7 @@ export function SocialRecoveryDialog({ onClose }: Props) {
             </button>
           </div>
 
-          {error && <div className="error-message">{error}</div>}
+          {error && <div className="error-message" role="alert">{error}</div>}
           <div className="dialog-actions">
             <button type="button" onClick={() => setMode('choose')}>
               Back
@@ -545,7 +545,7 @@ export function SocialRecoveryDialog({ onClose }: Props) {
             Your secret key has been recovered. Import it to regain access to your identity.
             You will need to re-register with the server to generate a new membership proof.
           </p>
-          {error && <div className="error-message">{error}</div>}
+          {error && <div className="error-message" role="alert">{error}</div>}
           <div className="dialog-actions">
             <button onClick={() => setMode('choose')}>Back</button>
             <button className="primary-btn" onClick={handleImportRecovered}>

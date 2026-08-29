@@ -138,7 +138,7 @@ function PeerDetail({ peer, onClose }: PeerDetailProps) {
       )}
 
       {joinError && (
-        <p className="error-text">{joinError}</p>
+        <p className="error-text" role="alert">{joinError}</p>
       )}
       <div className="dialog-actions">
         <button onClick={onClose}>Close</button>

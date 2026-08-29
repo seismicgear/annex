@@ -104,7 +104,7 @@ export function CreateChannelDialog({ onClose }: { onClose: () => void }) {
               : 'Messages stay on this server only.'}
           </span>
         </label>
-        {error && <div className="error-message">{error}</div>}
+        {error && <div className="error-message" role="alert">{error}</div>}
         <div className="dialog-actions">
           <button type="button" onClick={onClose} disabled={submitting}>
             Cancel

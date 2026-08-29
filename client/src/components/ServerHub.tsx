@@ -72,7 +72,7 @@ function AddServerDialog({ onClose, onAdd }: AddServerDialogProps) {
             autoFocus
           />
         </label>
-        {error && <p className="form-error">{error}</p>}
+        {error && <p className="form-error" role="alert">{error}</p>}
         <div className="dialog-actions">
           <button type="button" onClick={onClose}>Cancel</button>
           <button type="submit" className="primary-btn" disabled={adding || !url.trim()}>

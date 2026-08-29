@@ -100,7 +100,7 @@ export function ChannelEncryptionBar() {
       <button type="button" onClick={onEnable} disabled={busy}>
         {busy ? 'Enabling…' : '🔒 Enable encryption'}
       </button>
-      {error && <span className="channel-encryption-error">{error}</span>}
+      {error && <span className="channel-encryption-error" role="alert">{error}</span>}
     </div>
   );
 }

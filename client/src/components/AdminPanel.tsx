@@ -312,7 +312,7 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
         )}
       </div>
 
-      {error && <div className="error-message">{error}</div>}
+      {error && <div className="error-message" role="alert">{error}</div>}
       {success && <div className="success-message">{success}</div>}
 
     </div>
@@ -370,7 +370,7 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
   if (loading) return <p className="admin-loading" role="status">Loading policy...</p>;
   if (!policy) return (
     <div>
-      <p className="error-message">{error || 'Failed to load policy'}</p>
+      <p className="error-message" role="alert">{error || 'Failed to load policy'}</p>
       <button className="primary-btn" onClick={loadPolicy}>Retry</button>
     </div>
   );
@@ -743,7 +743,7 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
         </div>
       </div>
 
-      {error && <div className="error-message">{error}</div>}
+      {error && <div className="error-message" role="alert">{error}</div>}
       {success && <div className="success-message">{success}</div>}
 
       <button className="primary-btn save-policy-btn" onClick={handleSave} disabled={saving}>
@@ -815,7 +815,7 @@ function MemberManager({ pseudonymId }: { pseudonymId: string }) {
         Toggle capabilities for each member. The first member (founder) has all permissions by default.
       </p>
 
-      {error && <div className="error-message">{error}</div>}
+      {error && <div className="error-message" role="alert">{error}</div>}
 
       <div className="member-list">
         {members.map((m) => (

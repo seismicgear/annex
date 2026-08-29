@@ -475,7 +475,7 @@ export function IdentitySettings({ onClose }: Props) {
             <span className="field-hint">Max 32 characters. Encrypted at rest.</span>
           </label>
 
-          {error && <div className="error-message">{error}</div>}
+          {error && <div className="error-message" role="alert">{error}</div>}
           {success && <div className="success-message">{success}</div>}
 
           <div className="dialog-actions">

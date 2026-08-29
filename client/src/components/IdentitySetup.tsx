@@ -66,7 +66,7 @@ export function IdentitySetup() {
       <div className={`phase-status phase-${phase}`}>
         {PHASE_LABELS[phase] ?? ''}
       </div>
-      {error && <div className="error-message">{error}</div>}
+      {error && <div className="error-message" role="alert">{error}</div>}
 
       {/* Create new identity */}
       {!isWorking && (

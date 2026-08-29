@@ -215,7 +215,7 @@ export function DeviceLinkDialog({ onClose }: Props) {
               disabled={importing}
             />
           </label>
-          {error && <div className="error-message">{error}</div>}
+          {error && <div className="error-message" role="alert">{error}</div>}
           <div className="dialog-actions">
             <button onClick={() => setMode('choose')} disabled={importing}>
               Back

@@ -195,7 +195,7 @@ export function StartupGate(props: StartupGateProps) {
         <main className="app-main setup">
           <div className="startup-mode-selector">
             <h1>Annex</h1>
-            <div className="error-message">Startup failed: {startupInitError}</div>
+            <div className="error-message" role="alert">Startup failed: {startupInitError}</div>
             {(startupErrorDetails || errorDetails) && (
               <details className="error-details">
                 <summary>Details</summary>
@@ -389,18 +389,24 @@ export function StartupGate(props: StartupGateProps) {
           )}
           {phase === 'error' && error && (
             <>
-              <div className="error-message">{error}</div>
-              {error.includes('Proof generation timed out') && (
-                <div className="error-message">Hint: the first proof can take longer on slower hardware.</div>
-              )}
+              {/* One alert around the whole failure, not one per line. These
+                  render together — the error, an optional hint, an optional
+                  "proof still running" — and three sibling alerts would be
+                  three separate interruptions describing one event. */}
+              <div role="alert">
+                <div className="error-message">{error}</div>
+                {error.includes('Proof generation timed out') && (
+                  <div className="error-message">Hint: the first proof can take longer on slower hardware.</div>
+                )}
+                {proofInFlight && (
+                  <div className="error-message">proof still running.</div>
+                )}
+              </div>
               {(startupErrorDetails || errorDetails) && (
                 <details className="error-details">
                   <summary>Details</summary>
                   <pre>{startupErrorDetails ?? errorDetails}</pre>
                 </details>
-              )}
-              {proofInFlight && (
-                <div className="error-message">proof still running.</div>
               )}
               <button
                 className="primary-btn"

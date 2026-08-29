@@ -370,7 +370,7 @@ export function StartupModeSelector({ onReady }: Props) {
     return (
       <div className="startup-mode-selector">
         <h1>Annex</h1>
-        <div className="error-message">{error}</div>
+        <div className="error-message" role="alert">{error}</div>
         <button onClick={handleReset}>Try Again</button>
       </div>
     );
@@ -427,7 +427,7 @@ export function StartupModeSelector({ onReady }: Props) {
               onChange={(e) => setRemoteUrl(e.target.value)}
               placeholder="annex.example.com"
             />
-            {error && <div className="form-error">{error}</div>}
+            {error && <div className="form-error" role="alert">{error}</div>}
             <button
               type="submit"
               className="primary-btn"
