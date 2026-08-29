@@ -4360,3 +4360,16 @@
   margin: 0.5rem auto;
   max-width: 32rem;
 }
+
+/* The recovery button's failure notice. Shares the shape of the other
+   recoverable-failure strips — this one matters most, because it appears on
+   the screen a user reaches when nothing else has worked. */
+.clear-state-error {
+  padding: 0.5rem 0.75rem;
+  margin: 0.5rem 0;
+  font-size: 0.8rem;
+  color: var(--error-text);
+  background: var(--error-tint-10);
+  border: 1px solid var(--error-tint-15);
+  border-radius: var(--radius-md);
+}

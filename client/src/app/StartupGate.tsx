@@ -122,6 +122,7 @@ function PasswordPrompt({
 }
 
 export function StartupGate(props: StartupGateProps) {
+  const [clearStateError, setClearStateError] = useState<string | null>(null);
   const {
     identityChecked,
     startupInitError,
@@ -158,15 +159,17 @@ export function StartupGate(props: StartupGateProps) {
     phase === 'registering' ||
     phase === 'proving' ||
     phase === 'verifying';
-  const [elapsed, setElapsed] = useState(0);
+  // Derived rather than reset. Writing `setElapsed(0)` synchronously in the
+  // effect is the cascading-render pattern `react-hooks/set-state-in-effect`
+  // exists to catch; rendering 0 whenever the work is not running says the
+  // same thing without a state write.
+  const [tick, setTick] = useState(0);
+  const elapsed = isWorking ? tick : 0;
   useEffect(() => {
-    if (!isWorking) {
-      setElapsed(0);
-      return;
-    }
+    if (!isWorking) return;
     const started = Date.now();
     const id = setInterval(() => {
-      setElapsed(Math.floor((Date.now() - started) / 1000));
+      setTick(Math.floor((Date.now() - started) / 1000));
     }, 1000);
     return () => clearInterval(id);
   }, [isWorking]);
@@ -201,21 +204,50 @@ export function StartupGate(props: StartupGateProps) {
             <button className="primary-btn" onClick={retryBootstrap}>
               Retry startup
             </button>
+            {clearStateError && (
+              <div className="clear-state-error" role="alert">
+                {clearStateError}
+              </div>
+            )}
             <button
               className="secondary-btn"
               onClick={() => {
                 void (async () => {
+                  // No `finally`: the reset-and-retry must run only when the
+                  // data is actually gone. It used to run unconditionally,
+                  // which is what made this button appear to work — the
+                  // in-memory stores were cleared, bootstrap re-ran, and it
+                  // reloaded the identities from the IndexedDB that had never
+                  // been deleted, landing the user back in the same failure
+                  // with nothing said. This is the escape hatch; failing it
+                  // silently leaves no way forward.
+                  let cleared = false;
                   try {
-                    await clearAllDatabases();
+                    const { unremoved } = await clearAllDatabases();
                     await resetServerData();
+                    if (unremoved.length > 0) {
+                      // Almost always another Annex tab holding the database
+                      // open, which the user can act on once told.
+                      setClearStateError(
+                        'Some local data could not be cleared. Close any other Annex tabs or windows, then try again.',
+                      );
+                    } else {
+                      cleared = true;
+                    }
                   } catch (e) {
                     console.warn('clear local state failed:', e);
-                  } finally {
-                    useServersStore.setState({ servers: [], activeServerId: null, serverImageUrl: null, pendingRegistrationServerId: null, switchError: null });
-                    useIdentityStore.setState({ identity: null, phase: 'uninitialized', error: null, errorDetails: null });
-                    setSessionToken(null);
-                    retryBootstrap();
+                    setClearStateError(
+                      'Could not clear local data. Close any other Annex tabs or windows, then try again.',
+                    );
                   }
+
+                  if (!cleared) return;
+
+                  setClearStateError(null);
+                  useServersStore.setState({ servers: [], activeServerId: null, serverImageUrl: null, pendingRegistrationServerId: null, switchError: null });
+                  useIdentityStore.setState({ identity: null, phase: 'uninitialized', error: null, errorDetails: null });
+                  setSessionToken(null);
+                  retryBootstrap();
                 })();
               }}
             >
