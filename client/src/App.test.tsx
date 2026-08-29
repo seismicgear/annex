@@ -736,6 +736,34 @@ describe('App startup flow', () => {
       expect(dbMock.clearAllDatabases).not.toHaveBeenCalled();
     });
 
+    it('Tauri: a missing marker does NOT wipe data when identities exist', async () => {
+      // The marker is written by `markFirstRunCompleted()`, whose failure was
+      // swallowed at its call site. One failed write — a full disk, a
+      // permissions problem, an IPC hiccup — and the marker never appears, so
+      // the next launch treated an established install as fresh and deleted
+      // every identity, server, persona, message and upload. Silently, and
+      // with no way back.
+      //
+      // Existing identities are direct evidence that this is not a fresh
+      // install, and they outrank an absent marker file.
+      tauriEnabled = true;
+      const dbMock = await import('@/lib/db');
+      vi.mocked(dbMock.listIdentities).mockResolvedValue([FAKE_IDENTITY]);
+      const tauri = await import('@/lib/tauri');
+      vi.mocked(tauri.checkFirstRunCompleted).mockResolvedValue(false);
+
+      const App = (await import('./App')).default;
+      render(<App />);
+
+      await waitFor(() => {
+        expect(dbMock.listIdentities).toHaveBeenCalled();
+      });
+      await waitFor(() => {
+        expect(dbMock.clearAllDatabases).not.toHaveBeenCalled();
+      });
+      expect(vi.mocked(tauri.resetServerData)).not.toHaveBeenCalled();
+    });
+
     it('Tauri: first_run_completed=false triggers fresh install cleanup', async () => {
       tauriEnabled = true;
       const dbMock = await import('@/lib/db');

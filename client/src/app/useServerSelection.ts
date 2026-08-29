@@ -294,7 +294,17 @@ export function useServerSelection({
         }
 
         // Mark first-run as completed so subsequent launches skip cleanup
-        if (inTauri) markFirstRunCompleted().catch(() => {});
+        // Not swallowed: this marker is the only thing standing between the
+        // next launch and the fresh-install cleanup, which deletes every
+        // identity, server and upload. A failure here is not cosmetic.
+        if (inTauri) {
+          markFirstRunCompleted().catch((e) => {
+            console.error(
+              'failed to write the first-run marker — the next launch may treat this as a fresh install:',
+              e,
+            );
+          });
+        }
 
         const personas = await getPersonasForIdentity(identity.id);
         if (personas.length > 0) {
