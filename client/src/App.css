@@ -2413,6 +2413,14 @@
 
 .guardian-entry input {
   flex: 1;
+  /* `flex: 1` is `flex: 1 1 0%`, but a flex item's `min-width` is `auto`, and
+     for an <input> that floor is its intrinsic size — around 177px — not
+     zero. Two of them plus the gap need ~360px, and the dialog's content box
+     on a phone is about 318, so the second input ran past the padding and was
+     cut off at the dialog's edge. Same shape as the message-bubble rule in
+     the phone block: a percentage cap does nothing when the item refuses to
+     go below its own content width. */
+  min-width: 0;
   padding: 0.35rem 0.5rem;
   border-radius: 4px;
   border: 1px solid var(--border);
@@ -4366,6 +4374,25 @@
   .status-actions {
     flex-wrap: wrap;
     gap: 0.25rem;
+  }
+
+  /* The policy grid collapses to one column.
+     
+     It is `1fr 1fr` and each cell carries a field plus its explanation, so on
+     a 390px screen a string like "Allow connecting to other Annex servers to
+     share channels and messages." wrapped to one or two words per line in a
+     column about fifty pixels wide, and the field below it was pushed out of
+     the card. Nothing flagged it: the text is not clipped and nothing
+     overflows the viewport, so the overflow audit passes. It is simply
+     unreadable, which only shows up in the screenshot.
+
+     Only this grid. `.recovery-params` is also `1fr 1fr` but holds two short
+     numeric fields, and `.peer-detail-stats` is `repeat(4, 1fr)` holding four
+     one-word stats — both read better across than stacked, which the mobile
+     baselines show. A rule that collapsed every fixed grid would have made
+     those two worse to fix this one. */
+  .policy-grid {
+    grid-template-columns: 1fr;
   }
 
   /* Dialogs were sized for a desktop viewport and overflowed the screen. */

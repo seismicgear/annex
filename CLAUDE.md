@@ -110,6 +110,16 @@ invalidating one:
   it sees, so it cannot fail on drift and cannot tell you the guard holds.
   Every claim about the audit comes from a plain run afterwards, against the
   baselines that were just recorded.
+- **`--update-baselines` rewrites a baseline only when its comparison
+  FAILS.** A change that lands just inside `maxDiffPixelRatio: 0.005` leaves
+  the old PNG in place, so a surface you know you changed can come out of a
+  recording run still carrying its previous baseline — and then fail a later
+  run when ordinary anti-aliasing noise tips it over. It looks exactly like
+  flakiness, and it is not. When you have changed something and want its
+  baseline definitely regenerated, `rm` the file first; a missing snapshot is
+  always written. This cost two full cycles and a wrong diagnosis: the first
+  reading blamed a username-resolution race, and the actual cause was a
+  stale baseline the recording run had declined to rewrite.
 
 #### Writing a surface
 

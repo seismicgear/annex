@@ -120,6 +120,15 @@ Then run once more **without** `--update-baselines`. A recording run rewrites
 whatever it sees, so it cannot fail on drift and proves nothing; the plain run
 afterwards is the evidence, and the tree should be clean when it finishes.
 
+One trap in that first step: `--update-baselines` rewrites a baseline only
+when its comparison **fails**. A change that lands just inside
+`maxDiffPixelRatio: 0.005` leaves the old PNG alone, so a surface you know you
+changed can survive a recording run still carrying its previous baseline, and
+fail a later run when ordinary anti-aliasing noise tips it over. That reads as
+flakiness and is not. If you changed something and want its baseline
+definitely regenerated, delete the file first — a missing snapshot is always
+written.
+
 Four things make a surface flaky, each learned by writing one:
 
 - **Do not leave state behind.** A surface that posts, uploads or provisions

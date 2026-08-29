@@ -99,6 +99,7 @@ const CAPTURE_STYLESHEET = `
   .server-hub-icon {
     --server-accent: #e63946 !important;
   }
+
 `;
 
 /** Apply capture-time stabilisation. Safe to call more than once per page. */
