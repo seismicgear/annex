@@ -59,10 +59,25 @@ export function useVoiceRoom({
     sessionRef.current = sess;
     setSession(sess);
 
-    // Initiate the connection
-    sess.connect().catch((err) =>
-      console.error('[webrtc] connection failed:', err),
-    );
+    // Initiate the connection.
+    //
+    // A rejection has to drive the state machine, not just reach the console.
+    // `connect()` sets `Connecting` as its first statement and only attaches
+    // `pc.onconnectionstatechange` once the RTCPeerConnection exists, so a
+    // failure before that — getUserMedia refused, createOffer throwing, the
+    // signalling send failing — leaves the session pinned at `Connecting`
+    // with no further state change ever arriving. The panel renders that as
+    // "Joining…", so the user waits on a call that will never connect, with
+    // no error and no way out but reloading.
+    //
+    // Setting `Disconnected` hands it to the mapping in VoiceRoomProvider,
+    // which turns a disconnect during 'connecting' into
+    // `handleUnexpectedDisconnect` — the path that already exists for a call
+    // that drops, and the one a failed join should have been taking.
+    sess.connect().catch((err) => {
+      console.error('[webrtc] connection failed:', err);
+      setConnState(RoomConnectionState.Disconnected);
+    });
 
     return () => {
       sessionRef.current = null;
