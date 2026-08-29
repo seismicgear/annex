@@ -215,14 +215,35 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
         </div>
       </div>
 
+      {/*
+        The save control sits with the field it saves.
+        
+        It used to be a full-width primary button at the very bottom of the
+        form, below the Public URL and Share Server sections — the most
+        prominent control on the page, furthest from the one field it
+        affects, and reading like the form's overall submit when Public URL
+        already has its own inline Save. Anyone who edited the URL and
+        pressed the big button at the bottom would reasonably expect both to
+        be saved. Same row treatment as Public URL now, so the scope is
+        obvious from where it is.
+      */}
       <label title="The display name of your server visible to members and federation peers.">
         Server Name
-        <input
-          type="text"
-          value={label}
-          onChange={(e) => setLabel(e.target.value)}
-          maxLength={128}
-        />
+        <div className="share-link-row">
+          <input
+            type="text"
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            maxLength={128}
+          />
+          <button
+            className="secondary-btn"
+            onClick={handleRename}
+            disabled={saving || !label.trim()}
+          >
+            {saving ? 'Saving...' : 'Save'}
+          </button>
+        </div>
         <span className="field-hint">The public display name of this server.</span>
       </label>
 
@@ -294,9 +315,6 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
       {error && <div className="error-message">{error}</div>}
       {success && <div className="success-message">{success}</div>}
 
-      <button className="primary-btn save-policy-btn" onClick={handleRename} disabled={saving || !label.trim()}>
-        {saving ? 'Saving...' : 'Save Name'}
-      </button>
     </div>
   );
 }

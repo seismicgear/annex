@@ -220,6 +220,23 @@ input, textarea, select {
   font-size: inherit;
 }
 
+/* A disabled field has to look disabled.
+   
+   `button:disabled` above has dimmed and shown a not-allowed cursor since the
+   beginning; the form controls had no equivalent, and the app overrides their
+   colours anyway, so the browser's own greying never applied. The Server Slug
+   input is `disabled` with a hint reading "cannot be changed after creation"
+   and rendered identically to the editable Server Name directly above it —
+   inviting people to click into it and type, to no effect. The three
+   `<select disabled>` in Audio Settings, shown when the browser cannot switch
+   output devices, had the same problem. */
+input:disabled,
+textarea:disabled,
+select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 6px;
