@@ -30,8 +30,9 @@ vi.mock('@/stores/identity', () => ({
   useIdentityStore: (selector: (state: typeof identityState) => unknown) => selector(identityState),
 }));
 
+const mockUploadChatFile = vi.fn(async () => ({ url: '/uploads/file.png' }));
 vi.mock('@/lib/api', () => ({
-  uploadChatFile: vi.fn(async () => ({ url: '/uploads/file.png' })),
+  uploadChatFile: (...a: unknown[]) => mockUploadChatFile(...(a as [])),
 }));
 
 describe('MessageInput', () => {
@@ -121,5 +122,33 @@ describe('MessageInput', () => {
     render(<MessageInput />);
 
     expect(screen.getByText('Cannot send — not connected to the server.')).toBeInTheDocument();
+  });
+
+  it('announces an upload failure instead of inserting it silently', async () => {
+    // The bar was a bare `<div className="upload-error-bar">`. Every other
+    // error surface in the app carries `role="alert"`; without it a screen
+    // reader user presses Send, hears nothing, and is left with the
+    // attachment still staged and no indication it was refused.
+    mockUploadChatFile.mockRejectedValueOnce(new Error('storage unavailable'));
+
+    render(<MessageInput />);
+
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const file = new File([new Uint8Array([1, 2, 3])], 'a.png', { type: 'image/png' });
+    Object.defineProperty(fileInput, 'files', { value: [file], configurable: true });
+    await act(async () => {
+      fireEvent.change(fileInput);
+    });
+    // `handleFileSelect` reads the file through FileReader, which resolves on
+    // a later task; submitting before the preview exists takes the plain-text
+    // path and never uploads at all.
+    await screen.findByText(/a\.png/);
+
+    await act(async () => {
+      fireEvent.submit(document.querySelector('form') as HTMLFormElement);
+    });
+
+    const alerts = screen.getAllByRole('alert');
+    expect(alerts.some((a) => a.textContent?.includes('storage unavailable'))).toBe(true);
   });
 });

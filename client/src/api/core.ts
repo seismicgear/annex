@@ -184,17 +184,33 @@ export async function request<T>(path: string, options?: RequestInit): Promise<T
     ...options,
     headers,
   });
-  if (!res.ok) {
-    // Enhance rate limit errors with Retry-After guidance
-    if (res.status === 429) {
-      const retryAfter = res.headers.get('Retry-After');
-      const waitMsg = retryAfter ? ` Try again in ${retryAfter} seconds.` : ' Please wait and try again.';
-      throw new ApiError(429, `Rate limit exceeded.${waitMsg}`);
-    }
-    const body = await res.text();
-    throw new ApiError(res.status, extractErrorMessage(res.status, body), body);
-  }
+  if (!res.ok) await throwApiError(res);
   return res.json() as Promise<T>;
+}
+
+/**
+ * Turn a non-ok `Response` into an `ApiError` carrying a message a person can
+ * read, and never return.
+ *
+ * Extracted from `request` because the upload helpers cannot use it — a
+ * multipart body must not get a JSON `Content-Type` — and so threw
+ * `new ApiError(status, await res.text())` instead. That put the raw response
+ * body in `err.message`, and the composer renders it: an upload rejected by
+ * the storage gate showed the user
+ * `Upload failed: {"error":"storage unavailable"}`, while every other request
+ * in the app decoded the same body to `storage unavailable`. Uploads also
+ * missed the 429 handling, so a rate-limited attachment reported raw JSON
+ * where the rest of the app says when to try again.
+ */
+export async function throwApiError(res: Response): Promise<never> {
+  // Enhance rate limit errors with Retry-After guidance
+  if (res.status === 429) {
+    const retryAfter = res.headers.get('Retry-After');
+    const waitMsg = retryAfter ? ` Try again in ${retryAfter} seconds.` : ' Please wait and try again.';
+    throw new ApiError(429, `Rate limit exceeded.${waitMsg}`);
+  }
+  const body = await res.text();
+  throw new ApiError(res.status, extractErrorMessage(res.status, body), body);
 }
 
 /**

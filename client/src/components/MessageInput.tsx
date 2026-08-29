@@ -223,7 +223,11 @@ export function MessageInput() {
         </div>
       )}
       {uploadError && (
-        <div className="upload-error-bar">{uploadError}</div>
+        // `role="alert"`, like every other error surface in the app. Without
+        // it this bar appears silently: a screen-reader user presses Send,
+        // nothing is announced, and the composer still holds the attachment
+        // with no indication the upload was refused.
+        <div className="upload-error-bar" role="alert">{uploadError}</div>
       )}
       {preview && (
         <div className="image-preview-bar">

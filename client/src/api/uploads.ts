@@ -3,7 +3,7 @@
  * plus the public server-image read endpoint.
  */
 
-import { ApiError, authHeaders, getApiBaseUrl, request } from './core';
+import { authHeaders, getApiBaseUrl, request, throwApiError } from './core';
 
 export interface UploadResponse {
   status: string;
@@ -30,10 +30,7 @@ export async function uploadServerImage(
     headers: authHeaders(pseudonymId),
     body: formData,
   });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new ApiError(res.status, body);
-  }
+  if (!res.ok) await throwApiError(res);
   return res.json() as Promise<UploadResponse>;
 }
 
@@ -58,10 +55,7 @@ export async function uploadChatImage(
     headers: authHeaders(pseudonymId),
     body: formData,
   });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new ApiError(res.status, body);
-  }
+  if (!res.ok) await throwApiError(res);
   return res.json() as Promise<UploadResponse>;
 }
 
