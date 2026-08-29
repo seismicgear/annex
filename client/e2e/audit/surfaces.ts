@@ -669,6 +669,11 @@ export const SURFACES: Surface[] = [
       network: 'the 500 is the stub this surface installs — it is the condition under test',
       console: 'the browser logs the injected 500 to the console as well',
     },
+    // Clipped like its three siblings. Written without this, it failed
+    // verification on its very first run for the reason those were clipped
+    // for: the encryption bar's emoji-width swing shifts the message column
+    // behind the panel.
+    clip: '.message-search',
   },
   {
     id: 'message-edit-history-empty',
@@ -689,6 +694,15 @@ export const SURFACES: Surface[] = [
       await bubble.locator('.edited-badge').click();
       await expect(page.locator('.edit-history-empty')).toBeVisible({ timeout: 15_000 });
     },
+    // `.edit-history`, not the `.chat-area` its three siblings use.
+    //
+    // `.chat-area` contains the encryption bar AND the message column, so a
+    // change in the bar's height still moves everything inside the clip — it
+    // narrows the picture without removing the exposure. Those three have been
+    // stable so far and are left alone rather than re-recorded for a fault
+    // they have not shown; when one of them next needs re-recording it should
+    // move here too.
+    clip: '.edit-history',
   },
   {
     id: 'channel-encryption-bar-cta',
