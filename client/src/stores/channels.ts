@@ -424,7 +424,21 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
 
       // Handle resume acknowledgement
       if (frame.type === 'resumed') {
-        // Resume complete — no action needed, messages were already processed as normal frames
+        // A completed resume needs nothing: the missed messages arrived as
+        // ordinary `message` frames before this ack.
+        //
+        // `cursorLost` is the other outcome, and it does need something. It
+        // means the server could not work out what this client missed —
+        // the message id being resumed from no longer names a live message
+        // in the channel, which is what retention does on a schedule. The
+        // replay was empty and the count is meaningless, so the timeline on
+        // screen has a hole of unknown size. Refetch it. Doing nothing here
+        // is what made a purged cursor indistinguishable from being up to
+        // date. Only for the channel in view — `selectChannel` moves the
+        // user, and any other channel reloads from scratch when opened.
+        if (frame.cursorLost && frame.channelId && frame.channelId === get().activeChannelId) {
+          void get().selectChannel(pseudonymId, frame.channelId);
+        }
         return;
       }
 

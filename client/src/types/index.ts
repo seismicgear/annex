@@ -160,6 +160,15 @@ export interface WsReceiveFrame {
   pseudonymId?: string;
   // Resume fields
   missedCount?: number;
+  /**
+   * The server could not resolve the `lastMessageId` this client resumed
+   * from, so `missedCount` means nothing and the replay was empty. Set when
+   * retention has deleted the message the cursor names — routine on any
+   * channel with a retention window — or when the id belongs to a different
+   * channel. A client that treats this as "you missed nothing" keeps a
+   * timeline with an unknown-sized hole in it.
+   */
+  cursorLost?: boolean;
   // Transcription fields
   speakerPseudonym?: string;
   text?: string;

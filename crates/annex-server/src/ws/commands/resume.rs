@@ -1,22 +1,38 @@
 //! `IncomingMessage::Resume` — replay missed messages since a given
 //! `last_message_id` and acknowledge with the count.
 //!
-//! Behaviour preserved verbatim from the original inline arm:
+//! Resume has three outcomes, and they used to be two.
 //!
-//! 1. Run a blocking task that verifies channel membership (non-members
-//!    get an empty `messages` list — no error frame), resolves the
-//!    supplied `last_message_id` to its `(created_at, id)` cursor (an
-//!    unknown id also produces an empty list), and selects the next 200
-//!    messages strictly after that cursor, ordered by
-//!    `(created_at, id)` ascending.
-//! 2. Forwards each missed message back as an
-//!    `OutgoingMessage::Message { … }` frame on the per-connection mpsc
-//!    (using `try_send`, breaking on backpressure exactly as before).
-//! 3. Sends a final `OutgoingMessage::Resumed { channelId, missedCount }`
-//!    ack with the number of messages enqueued (zero on the empty paths
-//!    above).
-//! 4. Surfaces blocking errors / task-join errors via `send_ws_error`
-//!    with the same wording as the previous arm.
+//! Not being a member, and the cursor no longer resolving, both produced an
+//! empty message list, which reached the client as `Resumed { missedCount: 0
+//! }` — an affirmative "you missed nothing". The client's handler for that
+//! frame is a no-op, so nothing refetched and nothing was reported.
+//!
+//! The cursor case is the damaging one, because it is routine rather than
+//! exceptional. `retention::sweep` hard-DELETEs messages whose `expires_at`
+//! has passed, so on any channel with `retention_days` the id a client is
+//! holding stops existing on a schedule. A client that is offline across a
+//! purge reconnects, resumes, is told it missed nothing, and keeps a timeline
+//! with a hole in it that nothing will ever fill.
+//!
+//! So the three are now distinct:
+//!
+//! * **not a member** — a `send_ws_error` frame, matching what `subscribe`
+//!   already does for the same condition, and no ack;
+//! * **cursor lost** — `Resumed { missedCount: 0, cursorLost: true }`, which
+//!   tells the client its pointer is worthless and the channel needs a full
+//!   reload;
+//! * **replayed** — each message forwarded as an `OutgoingMessage::Message`
+//!   frame on the per-connection mpsc (`try_send`, breaking on backpressure),
+//!   then `Resumed { missedCount: <delivered>, cursorLost: false }`.
+//!
+//! The cursor lookup is also scoped to the channel being resumed. It matched
+//! on `message_id` alone while membership was checked against `channel_id`,
+//! so an id from a different channel resolved to a valid timestamp and
+//! replayed from an arbitrary point in this one. Out-of-channel ids are now
+//! simply lost cursors.
+//!
+//! Blocking errors and task-join errors are surfaced via `send_ws_error`.
 
 use std::sync::Arc;
 
@@ -28,11 +44,22 @@ use crate::ws::error::send_ws_error;
 use crate::ws::protocol::{OutgoingMessage, WsMessagePayload};
 use crate::AppState;
 
+/// What a resume request turned out to be. Collapsing these onto one empty
+/// list is what let a lost cursor be reported as an up-to-date timeline.
+pub(crate) enum ResumeOutcome {
+    NotAMember,
+    /// The supplied `last_message_id` does not name a live message in this
+    /// channel — retention deleted it, or it belongs somewhere else.
+    CursorLost,
+    Replayed(Vec<annex_channels::Message>),
+}
+
 pub(crate) async fn handle(ctx: &CommandContext<'_>, channel_id: String, last_message_id: String) {
     let state_clone: Arc<AppState> = ctx.state.clone();
     let pseudonym_clone = ctx.pseudonym.to_string();
     let tx_clone: mpsc::Sender<String> = ctx.tx.clone();
     let channel_id_for_ack = channel_id.clone();
+    let channel_id_for_err = channel_id.clone();
     let pseudonym_for_log = ctx.pseudonym.to_string();
 
     let res = tokio::task::spawn_blocking(move || {
@@ -41,18 +68,22 @@ pub(crate) async fn handle(ctx: &CommandContext<'_>, channel_id: String, last_me
             annex_channels::is_member(&conn, state_clone.server_id, &channel_id, &pseudonym_clone)
                 .map_err(|e| e.to_string())?;
         if !is_mem {
-            return Ok::<Vec<annex_channels::Message>, String>(vec![]);
+            return Ok::<ResumeOutcome, String>(ResumeOutcome::NotAMember);
         }
+        // Scoped to this server and channel: the cursor has to name a message
+        // in the channel whose membership was just checked, or the two
+        // identifiers in the request are independently attacker-chosen.
         let cursor: Option<(String, i64)> = conn
             .query_row(
-                "SELECT created_at, id FROM messages WHERE message_id = ?1",
-                [&last_message_id],
+                "SELECT created_at, id FROM messages \
+                 WHERE message_id = ?1 AND server_id = ?2 AND channel_id = ?3",
+                rusqlite::params![&last_message_id, state_clone.server_id, &channel_id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
             .map_err(|e| e.to_string())?;
         let Some((ts, row_id)) = cursor else {
-            return Ok(vec![]);
+            return Ok(ResumeOutcome::CursorLost);
         };
         let mut stmt = conn
             .prepare(
@@ -89,16 +120,36 @@ pub(crate) async fn handle(ctx: &CommandContext<'_>, channel_id: String, last_me
         for row in rows {
             messages.push(row.map_err(|e| e.to_string())?);
         }
-        Ok(messages)
+        Ok(ResumeOutcome::Replayed(messages))
     })
     .await;
 
     match res {
-        Ok(Ok(messages)) => {
+        Ok(Ok(ResumeOutcome::NotAMember)) => {
+            // Same answer `subscribe` gives for the same condition. Sending a
+            // `Resumed { missedCount: 0 }` here told someone who had been
+            // removed from the channel that they were up to date in it.
+            send_ws_error(
+                ctx.tx,
+                format!("Not a member of channel {channel_id_for_err}"),
+            );
+        }
+        Ok(Ok(ResumeOutcome::CursorLost)) => {
+            let ack = OutgoingMessage::Resumed {
+                channel_id: channel_id_for_ack,
+                missed_count: 0,
+                cursor_lost: true,
+            };
+            if let Ok(json) = serde_json::to_string(&ack) {
+                let _ = tx_clone.try_send(json);
+            }
+        }
+        Ok(Ok(ResumeOutcome::Replayed(messages))) => {
             let delivered_count = forward_resumed_messages(&tx_clone, messages);
             let ack = OutgoingMessage::Resumed {
                 channel_id: channel_id_for_ack,
                 missed_count: delivered_count,
+                cursor_lost: false,
             };
             if let Ok(json) = serde_json::to_string(&ack) {
                 let _ = tx_clone.try_send(json);

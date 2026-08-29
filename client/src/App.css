@@ -3441,10 +3441,17 @@
 
 /* ── Message Edit / Delete ── */
 
-.message.deleted {
-  opacity: 0.6;
-}
+/* A tombstone exists to keep a record: someone said something, at a time.
+   The row was dimmed whole with `opacity: 0.6`, which took the sender name
+   below the WCAG contrast threshold on every surface where a deleted message
+   is visible — 25 axe findings, all of them this one element — and erased
+   the only information the tombstone still carries. Moving the dimming onto
+   the content moved the failure with it: `.message-deleted-text` is already
+   `--text-subtle`, which passes on its own and does not survive being
+   multiplied by 0.6.
 
+   So there is no opacity here at all. The italic and the subdued colour are
+   the de-emphasis, and both stay readable. */
 .message-deleted-text {
   font-style: italic;
   color: var(--text-subtle);

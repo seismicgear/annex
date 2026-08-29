@@ -206,12 +206,24 @@ pub enum OutgoingMessage {
         e2e_enabled: bool,
     },
     /// Resume acknowledgement — tells the client how many messages were replayed.
+    ///
+    /// `cursor_lost` distinguishes "you missed nothing" from "I could not work
+    /// out what you missed". They are not the same answer and used to be sent
+    /// as the same frame. The client's `lastMessageId` stops resolving as soon
+    /// as retention deletes the row it names — a routine event on any channel
+    /// with `retention_days` — and a `missedCount: 0` in that case tells a
+    /// client that has been offline across a purge that its timeline is
+    /// complete, when in fact the whole backlog is missing and nothing will
+    /// ever fetch it. When this is set the count is meaningless and the client
+    /// must reload the channel rather than trust its cursor.
     #[serde(rename = "resumed")]
     Resumed {
         #[serde(rename = "channelId")]
         channel_id: String,
         #[serde(rename = "missedCount")]
         missed_count: usize,
+        #[serde(rename = "cursorLost")]
+        cursor_lost: bool,
     },
     #[serde(rename = "webrtc_answer")]
     WebRtcAnswer {

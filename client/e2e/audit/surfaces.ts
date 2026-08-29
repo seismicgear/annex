@@ -343,6 +343,37 @@ export const SURFACES: Surface[] = [
     mask: ['.edit-history-time'],
   },
   {
+    id: 'message-edit-history-error',
+    stage: '06-messaging',
+    title: 'Edit history the server could not return',
+    role: 'founder',
+    intent:
+      'The failure branch of the panel above. It used to write the failed fetch into the history ' +
+      'as an empty array, which renders as "No edit history found" — a claim that the message was ' +
+      'never edited, made on a message carrying an "(edited)" badge. The audit trail is the one ' +
+      'thing this panel exists to be trusted about, so the failure has to look like a failure.',
+    setup: stub(
+      '**/api/channels/*/messages/*/edits',
+      { error: 'internal server error' },
+      500,
+    ),
+    navigate: async (page) => {
+      await selectChannel(page, SEED.defaultChannel);
+      const bubble = page
+        .locator('.message', { hasText: SEED.messages.editedAfter.slice(0, 40) })
+        .first();
+      await bubble.locator('.edited-badge').click();
+      await expect(page.locator('.edit-history-error')).toBeVisible({ timeout: 15_000 });
+    },
+    clip: '.chat-area',
+    waive: {
+      network:
+        'the 500 is the stub this surface installs on purpose — it is the condition under test, ' +
+        'not an incidental failed request.',
+      console: 'the browser logs the injected 500 to the console as well',
+    },
+  },
+  {
     id: 'message-deleted-tombstone',
     stage: '06-messaging',
     title: 'A deleted message in the timeline',
@@ -618,6 +649,52 @@ export const SURFACES: Surface[] = [
       await openStatusBarDialog(page, 'Identity');
     },
     clip: '.dialog',
+  },
+  {
+    id: 'identity-settings-grants-error',
+    stage: '08-user-settings',
+    title: 'Username visibility when the grant list fails',
+    role: 'founder',
+    intent:
+      'A failed grant list used to leave every member row reading "Hidden" with a "Grant" button ' +
+      '— a privacy assurance that nobody can see your username, produced by a dropped request. ' +
+      'Because no row was ever marked granted, "Revoke" never appeared either, so a user who ' +
+      'opened this dialog to take someone\u2019s access away was told there was nothing to take. ' +
+      'The roster is now withheld rather than shown wrong.',
+    setup: stub('**/api/profile/username/grants', { error: 'internal server error' }, 500),
+    navigate: async (page) => {
+      await openStatusBarDialog(page, 'Identity');
+      await expect(page.locator('.member-list-error')).toBeVisible({ timeout: 15_000 });
+    },
+    clip: '.dialog',
+    waive: {
+      network:
+        'the 500 is the stub this surface installs on purpose — it is the condition under test, ' +
+        'not an incidental failed request.',
+      console: 'the browser logs the injected 500 to the console as well',
+    },
+  },
+  {
+    id: 'identity-settings-members-error',
+    stage: '08-user-settings',
+    title: 'Username visibility when the member list fails',
+    role: 'founder',
+    intent:
+      'The other half. A failed member list used to render as "No other members on this server ' +
+      'yet." — a statement about the server, made because a request did not arrive. The two ' +
+      'lists fail independently and now report independently.',
+    setup: stub('**/api/admin/members', { error: 'internal server error' }, 500),
+    navigate: async (page) => {
+      await openStatusBarDialog(page, 'Identity');
+      await expect(page.locator('.member-list-error')).toBeVisible({ timeout: 15_000 });
+    },
+    clip: '.dialog',
+    waive: {
+      network:
+        'the 500 is the stub this surface installs on purpose — it is the condition under test, ' +
+        'not an incidental failed request.',
+      console: 'the browser logs the injected 500 to the console as well',
+    },
   },
   {
     id: 'device-link-dialog',

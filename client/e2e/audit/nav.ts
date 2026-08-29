@@ -213,6 +213,13 @@ export async function openAdminSection(page: Page, section: AdminSection): Promi
   await gear.click();
   await page.getByRole('button', { name: section }).click();
   await expect(page.locator('.view-content')).toBeVisible();
+  // `.view-content` is visible while the pane still says "Loading …", so
+  // waiting on it alone is a race that every fetching admin section can lose.
+  // It cost a run: `admin-server-settings @ mobile` — the last viewport, on
+  // the most contended pass — captured the loading paragraph and diffed
+  // against a baseline of the loaded form. A flaky guard is worse than none,
+  // so wait for the placeholder to actually go.
+  await expect(page.locator('.admin-loading')).toHaveCount(0, { timeout: 15_000 });
 }
 
 /** Open the admin dropdown without navigating, to capture the popover itself. */

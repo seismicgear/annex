@@ -180,7 +180,7 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
     }
   };
 
-  if (loading) return <p>Loading server settings...</p>;
+  if (loading) return <p className="admin-loading" role="status">Loading server settings...</p>;
 
   return (
     <div className="policy-editor">
@@ -350,7 +350,7 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
     }
   };
 
-  if (loading) return <p>Loading policy...</p>;
+  if (loading) return <p className="admin-loading" role="status">Loading policy...</p>;
   if (!policy) return (
     <div>
       <p className="error-message">{error || 'Failed to load policy'}</p>
@@ -786,7 +786,7 @@ function MemberManager({ pseudonymId }: { pseudonymId: string }) {
     }
   };
 
-  if (loading) return <p>Loading members...</p>;
+  if (loading) return <p className="admin-loading" role="status">Loading members...</p>;
 
   return (
     <div className="policy-editor">

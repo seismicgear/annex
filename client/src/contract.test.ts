@@ -203,6 +203,18 @@ describe('contract: WebSocket server → client frames', () => {
     expect(fx.type).toBe('resumed');
     expect(isString(fx.channelId)).toBe(true);
     expect(isNumber(fx.missedCount)).toBe(true);
+    expect(fx.cursorLost).toBe(false);
+  });
+
+  // The two resume outcomes have to be distinguishable on the wire — a lost
+  // cursor and an up-to-date client used to arrive as the identical frame.
+  it('outgoing-resumed-cursor-lost is a distinct frame from a completed resume', () => {
+    const lost = loadFixture('ws/outgoing-resumed-cursor-lost.json') as WsReceiveFrame;
+    const done = loadFixture('ws/outgoing-resumed.json') as WsReceiveFrame;
+    expect(lost.type).toBe('resumed');
+    expect(lost.cursorLost).toBe(true);
+    expect(lost.missedCount).toBe(0);
+    expect(lost.cursorLost).not.toBe(done.cursorLost);
   });
 
   it('outgoing-error matches WsReceiveFrame for type=error', () => {
