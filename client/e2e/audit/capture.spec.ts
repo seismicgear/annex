@@ -173,8 +173,15 @@ for (const surface of ORDERED_SURFACES) {
         });
 
         // Console/network signals collected on the way are often the reason.
+        //
+        // Waivers apply here too. `runAudits` honours `surface.waive`, and
+        // this path did not, so a surface that injects a 500 to reach its own
+        // error state reported that 500 as a finding the moment anything else
+        // about it failed — noise in the ledger exactly when someone is
+        // reading it to work out what actually went wrong.
+        const waived = surface.waive ?? {};
         record(
-          ...[...new Set(collector.pageErrors)].map((detail) => ({
+          ...(waived.console ? [] : [...new Set(collector.pageErrors)]).map((detail) => ({
             surfaceId: surface.id,
             stage: surface.stage,
             viewport: viewport.id,
@@ -183,7 +190,7 @@ for (const surface of ORDERED_SURFACES) {
             rule: 'uncaught-page-error',
             detail,
           })),
-          ...[...new Set(collector.networkFailures)].map((detail) => ({
+          ...(waived.network ? [] : [...new Set(collector.networkFailures)]).map((detail) => ({
             surfaceId: surface.id,
             stage: surface.stage,
             viewport: viewport.id,

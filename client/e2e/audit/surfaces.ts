@@ -52,6 +52,30 @@ async function postFreshMessage(page: import('@playwright/test').Page, text: str
   return bubble;
 }
 
+/**
+ * A fixed 4×4 PNG, as bytes.
+ *
+ * Fixed rather than generated: the composer renders a staged attachment
+ * through `FileReader` as a data URL, so anything varying between runs would
+ * make the preview thumbnail a new image every time and the surface would
+ * diff against itself forever.
+ */
+const TINY_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAHElEQVQI12P4//8/w38GIAXDIBKE0DHxg' +
+    'ljNBAAO9TXL0Y4OHwAAAABJRU5ErkJggg==',
+  'base64',
+);
+
+/** Stage a file in the composer without sending it. */
+async function stageAttachment(page: import('@playwright/test').Page, name: string) {
+  await page.locator('.message-input input[type="file"]').setInputFiles({
+    name,
+    mimeType: 'image/png',
+    buffer: TINY_PNG,
+  });
+  await expect(page.locator('.image-preview-bar')).toBeVisible({ timeout: 15_000 });
+}
+
 export const SURFACES: Surface[] = [
   // ─────────────────────── 02 · identity ───────────────────────
   {
@@ -421,6 +445,72 @@ export const SURFACES: Surface[] = [
     clip: '.chat-area',
   },
   {
+    id: 'composer-attachment-staged',
+    stage: '06-messaging',
+    title: 'An attachment staged in the composer',
+    role: 'founder',
+    intent:
+      'What a user sees between choosing a file and sending it: thumbnail, name, size, category ' +
+      'and a way to back out. The whole attach-and-send flow was uncaptured, so this step — the ' +
+      'only chance to notice you picked the wrong file — had never been looked at.',
+    navigate: async (page) => {
+      await selectChannel(page, SEED.defaultChannel);
+      await stageAttachment(page, 'audit-fixture.png');
+    },
+    clip: '.chat-area',
+  },
+  {
+    id: 'composer-upload-failed',
+    stage: '06-messaging',
+    title: 'An upload the server refused',
+    role: 'founder',
+    intent:
+      'The upload fails after the user has already committed to sending. The staged file must ' +
+      'survive so the send can be retried, rather than the composer emptying and leaving them ' +
+      'to guess whether anything was sent.',
+    setup: stub('**/api/channels/*/upload', { error: 'storage unavailable' }, 500),
+    navigate: async (page) => {
+      await selectChannel(page, SEED.defaultChannel);
+      await stageAttachment(page, 'rejected.png');
+      await page.getByRole('button', { name: 'Send' }).click();
+      await expect(page.locator('.upload-error-bar')).toBeVisible({ timeout: 15_000 });
+    },
+    clip: '.chat-area',
+    waive: {
+      network:
+        'the 500 is the stub this surface installs on purpose — it is the condition under test, ' +
+        'not an incidental failed request.',
+      console: 'the browser logs the injected 500 to the console as well',
+    },
+  },
+  {
+    id: 'message-image-lightbox',
+    stage: '06-messaging',
+    title: 'An uploaded image at full size',
+    role: 'founder',
+    intent:
+      'The lightbox over the whole app — the one surface that covers everything else, and the ' +
+      'only way out of it is a close button and a click on the backdrop. Worth a keyboard and ' +
+      'contrast pass precisely because it takes over the screen.',
+    // Deliberately unstubbed: a real upload against the real endpoint.
+    //
+    // The first version stubbed the upload to return a made-up URL. That put a
+    // real message carrying a URL nothing serves into the shared channel, and
+    // every later surface that opened it recorded a 404 — 58 findings from one
+    // surface, none of them about the app. Uploading for real leaves behind a
+    // message whose image actually loads, and exercises the upload path
+    // end to end into the bargain.
+    navigate: async (page) => {
+      await selectChannel(page, SEED.defaultChannel);
+      await stageAttachment(page, 'lightbox.png');
+      await page.getByRole('button', { name: 'Send' }).click();
+      const image = page.locator('.message-inline-image').last();
+      await expect(image).toBeVisible({ timeout: 20_000 });
+      await image.click();
+      await expect(page.locator('.image-lightbox')).toBeVisible({ timeout: 15_000 });
+    },
+  },
+  {
     id: 'message-search-results',
     stage: '06-messaging',
     title: 'Message search with results',
@@ -554,7 +644,15 @@ export const SURFACES: Surface[] = [
         timeout: 15_000,
       });
     },
-    clip: '.chat-area',
+    // Clipped to the bar, not the chat area. The wall of "no key"
+    // placeholders below is what these states are ABOUT, and photographing it
+    // made the surface flaky: these two do async key work after the history
+    // settles, so the message column's auto-scroll had not finished landing
+    // at capture time and the column sat a few pixels off between runs. The
+    // audits still run against the whole page, so the placeholders keep their
+    // accessibility and console coverage — only the picture narrows, and a
+    // guard that fails at random is worth less than a smaller one that holds.
+    clip: '.channel-encryption-bar',
   },
   {
     id: 'channel-encryption-key-failed',
@@ -583,7 +681,15 @@ export const SURFACES: Surface[] = [
         timeout: 15_000,
       });
     },
-    clip: '.chat-area',
+    // Clipped to the bar, not the chat area. The wall of "no key"
+    // placeholders below is what these states are ABOUT, and photographing it
+    // made the surface flaky: these two do async key work after the history
+    // settles, so the message column's auto-scroll had not finished landing
+    // at capture time and the column sat a few pixels off between runs. The
+    // audits still run against the whole page, so the placeholders keep their
+    // accessibility and console coverage — only the picture narrows, and a
+    // guard that fails at random is worth less than a smaller one that holds.
+    clip: '.channel-encryption-bar',
     waive: {
       network:
         'the 500 is the stub this surface installs on purpose — it is the condition under test, ' +

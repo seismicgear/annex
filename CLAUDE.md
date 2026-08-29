@@ -106,6 +106,34 @@ invalidating one:
   baseline drift across 252 captures is what proves a mechanical change (a
   token migration, a rename, a refactor) changed no pixels. That claim is
   worth more than reading the diff.
+- **A recording run proves nothing.** `--update-baselines` rewrites whatever
+  it sees, so it cannot fail on drift and cannot tell you the guard holds.
+  Every claim about the audit comes from a plain run afterwards, against the
+  baselines that were just recorded.
+
+#### Writing a surface
+
+The surfaces share one server and one database, in manifest order, and three
+of the four ways to break that were learned by breaking it.
+
+- **A surface that writes to shared server state contaminates the ones after
+  it.** `message-image-lightbox` first stubbed the upload endpoint to return a
+  made-up URL. The message was real and went into the shared channel; the URL
+  resolved to nothing, so every later surface that opened that channel logged
+  a 404 — 58 findings from one surface, none of them about the app. Either
+  leave no trace, or leave one that works: it now uploads for real.
+- **A surface that reads shared server state is order-dependent across
+  viewports.** `channel-encryption-enabled` provisioned a real channel key at
+  the desktop viewport and then failed at the other three: each context has a
+  fresh device key, so the channel came back keyed-with-nothing-for-us — the
+  pending state, captured under the name of the ready one. It stubs both key
+  routes now, so every viewport reaches the same state.
+- **Clip narrowly.** `.chat-area` drags in the auto-scrolling message column,
+  and any surface doing async work after the history settles can photograph it
+  mid-scroll. The audits run against the whole page regardless of the clip, so
+  narrowing the picture costs no coverage.
+- **A deliberate failure needs a waiver on `network` AND `console`.** The
+  browser logs an injected 500 to both.
 
 #### Defect classes this codebase actually produces
 
