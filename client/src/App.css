@@ -270,9 +270,17 @@
   color: var(--text-secondary);
 }
 
+/* The two terminal states of one status block, painted the same colour.
+
+   `.phase-ready` sat on `--danger-surface` in `--accent` — the brand red —
+   and `.phase-error` sits on that same background in a muted red, so the
+   block that reports how startup ended said "danger" either way.
+   `.phase-ready` is reachable: `showStartupGate` also requires a
+   `pseudonymId`, so the window between the store reaching `ready` and the
+   pseudonym landing renders Gate 3 with this class. */
 .phase-ready {
-  background: var(--danger-surface);
-  color: var(--accent);
+  background: var(--success-surface);
+  color: var(--success-text);
 }
 
 .phase-error {
@@ -1129,9 +1137,15 @@
   border-radius: 2px;
 }
 
+/* The trust scale runs aligned -> partial -> conflict, and its best and worst
+   ends were both red: `aligned` took `--accent` (the brand red) while
+   `conflict` takes `--error-text`. A colour-coded trust badge whose good and
+   bad states are the same colour is doing nothing at all, which matters here
+   more than most places — deciding whether to federate with a peer is the
+   judgement this badge exists to inform. */
 .alignment-aligned .agent-badge,
 .alignment-aligned {
-  color: var(--accent);
+  color: var(--success-text);
 }
 
 .alignment-partial .agent-badge,
@@ -2958,8 +2972,8 @@
 }
 
 .alignment-badge.alignment-aligned {
-  background: var(--accent-tint-15);
-  color: var(--accent-text);
+  background: var(--success-tint-15);
+  color: var(--success-text);
 }
 
 .alignment-badge.alignment-partial {
