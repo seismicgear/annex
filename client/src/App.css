@@ -4131,7 +4131,13 @@
   display: flex;
   align-items: center;
   gap: 0.6rem;
-  padding: 0.5rem 0.9rem;
+  /* Right padding clears the search toggle, which is `position: absolute`
+     at the top-right of `.chat-area` with `z-index: 10` — so it floats over
+     whatever is up there, and when a channel is not encrypted that is this
+     bar's wrapping paragraph. On a phone the text reaches the button's edge
+     with nothing reserved for it. Cheaper to keep the text out of its way
+     than to make the two agree about where the line ends. */
+  padding: 0.5rem 2.9rem 0.5rem 0.9rem;
   font-size: 0.85rem;
   border-bottom: 1px solid var(--border, var(--surface-3));
   background: var(--surface-2, #1b1b1f);
@@ -4267,14 +4273,55 @@
     flex-direction: column;
   }
 
-  /* The channel list becomes a horizontal, scrollable strip. It keeps its
-     own scrollbar rather than growing the page, so the composer stays put. */
+  /* The channel list becomes a horizontal, scrollable strip.
+     
+     That is what this block always claimed, and only the container was ever
+     turned. `.channel-list` stayed a stack of `width: 100%` rows inside it,
+     so the "strip" was a full-width vertical list capped at 34vh — a third of
+     a phone screen spent on a channel picker, above a message column that got
+     about a quarter. Same half-applied turn as the server rail two rules
+     down. Turning the list as well makes it one row, which is what frees the
+     screen for the conversation. */
   .sidebar-left {
     width: 100%;
-    max-height: 34vh;
+    max-height: none;
     border-right: none;
     border-bottom: 1px solid var(--surface-2);
     flex-shrink: 0;
+    overflow-y: hidden;
+  }
+
+  .channel-list {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.4rem 0.5rem;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  /* The heading and the create button lead the strip instead of sitting
+     above it. `h2` keeps its text for the document outline; hiding it would
+     take the landmark's name with it. */
+  .channel-list-header {
+    flex-shrink: 0;
+    gap: 0.35rem;
+  }
+
+  .channel-list h2 {
+    padding: 0 0.25rem 0 0;
+  }
+
+  .channel-item {
+    width: auto;
+    flex-shrink: 0;
+  }
+
+  /* An error inside a row of chips has nowhere to wrap to, so it keeps its
+     own line under the strip rather than stretching it. */
+  .channel-action-error {
+    flex-basis: 100%;
   }
 
   .chat-area {
