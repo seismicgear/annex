@@ -68,6 +68,7 @@ that can never warn or one that closes on an empty database.
 | `ANNEX_FEDERATION_OUTBOX_INTERVAL_SECONDS` | `5` | Outbox worker tick interval |
 | `ANNEX_FEDERATION_OUTBOX_PER_PEER_BATCH` | `8` | Max outbox rows drained per peer per tick (fairness cap) |
 | `ANNEX_FEDERATION_ALLOW_PRIVATE_PEERS` | `false` | Permit federation peers at private / loopback / link-local addresses — see below |
+| `ANNEX_FEDERATION_RELAY_TRANSPORT_ENABLED` | `false` | **Accepted and validated, but not yet wired.** The relay transport exists in `annex-federation` and no server code starts it; setting this logs a warning at startup and changes nothing. Under a production profile it additionally requires `ANNEX_SIGNAL_TRUSTED_PEERS`. Federation runs over the HTTP outbox either way |
 
 #### Federating over a private network
 

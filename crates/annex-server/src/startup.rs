@@ -864,6 +864,29 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
     let stt_service =
         annex_voice::SttService::new(&config.voice.stt_model_path, &config.voice.stt_binary_path);
 
+    // The experimental relay transport is configurable and unwired.
+    //
+    // `annex_federation::transport` is complete — `FederationTransport`,
+    // `spawn_signal_listener`, `establish_peer` — and `annex-server` does not
+    // reference the module at all. The flag reaches `DeploymentConfig` and is
+    // validated, and nothing reads it after that. On a production profile the
+    // validation goes further and *demands* `ANNEX_SIGNAL_TRUSTED_PEERS`
+    // before it will start, so an operator can be made to configure a trust
+    // map for a subsystem that will not run.
+    //
+    // Saying so is the whole fix. Wiring the transport is feature work; a
+    // setting that silently does nothing is a defect on its own, and one line
+    // at startup is the difference between "not implemented yet" and "I
+    // configured this and cannot tell whether it is on".
+    if config.deployment.experimental_relay_transport_enabled {
+        tracing::warn!(
+            "deployment.experimental_relay_transport_enabled is set, but the relay \
+             transport is not wired into this server yet — the setting is accepted \
+             and validated, and no relay listener is started. Federation continues \
+             over the HTTP outbox."
+        );
+    }
+
     // Resolve upload directory
     let upload_dir =
         std::env::var("ANNEX_UPLOAD_DIR").unwrap_or_else(|_| "data/uploads".to_string());
