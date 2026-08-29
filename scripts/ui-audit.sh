@@ -28,6 +28,32 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# ── ONE RUN AT A TIME ──────────────────────────────────────────────────────
+#
+# `e2e-server.sh start` stops whatever holds port 3000 before starting its own
+# server, so a second audit launched while one is in flight kills the first
+# one's server mid-capture and the two then fight over the port. Neither side
+# reports a collision: the victim logs ordinary capture failures, and the new
+# run fails its founder setup with "founder must be the earliest registrant"
+# because it is talking to a database it did not create.
+#
+# That cost two full cycles and a wrong diagnosis before it was understood, and
+# writing the rule down in CLAUDE.md did not stop it happening again — the
+# mistake is easy to make when you wait for a `record` to finish so you can
+# commit, forgetting the `verify` behind it is still running. So the script
+# refuses rather than relying on anyone remembering.
+#
+# `flock` is used without a timeout on purpose: failing fast with a clear
+# message is more useful than a queued run that starts unattended twenty
+# minutes later against a tree that has moved on.
+AUDIT_LOCK="${TMPDIR:-/tmp}/annex-ui-audit.lock"
+exec {AUDIT_LOCK_FD}>"$AUDIT_LOCK"
+if ! flock -n "$AUDIT_LOCK_FD"; then
+    echo "[ui-audit] another audit run holds $AUDIT_LOCK — refusing to start." >&2
+    echo "[ui-audit] a run is record THEN verify; wait for both, not just the record." >&2
+    exit 1
+fi
+
 KEEP_SERVER=0
 GREP_ARGS=()
 UPDATE_BASELINES=0

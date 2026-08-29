@@ -89,7 +89,10 @@ tracked; the ledger and contact sheet land in `docs/ui-audit/`. Full docs:
 A run takes ~11 minutes and is easy to invalidate. Four rules, each learned by
 invalidating one:
 
-- **Never start a run while another is still going.** `e2e-server.sh start`
+- **Never start a run while another is still going.** `scripts/ui-audit.sh`
+  now takes an exclusive `flock` and refuses with a clear message rather than
+  trusting anyone to remember this, because writing the rule down here did not
+  stop it happening a second time. `e2e-server.sh start`
   stops whatever is on port 3000 before starting its own server, so a second
   run silently kills the first one's server mid-capture and the two then fight
   over the port. It does not look like a collision from either side: the
