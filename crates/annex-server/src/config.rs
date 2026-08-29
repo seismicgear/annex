@@ -93,6 +93,24 @@ pub struct FederationConfig {
     #[serde(default = "default_outbound_envelope_version")]
     pub default_outbound_envelope_version: String,
 
+    /// Allow federation peers at private, loopback or link-local addresses.
+    ///
+    /// Default `false`, which is the behaviour that shipped. Peer URLs are
+    /// operator-provisioned — nothing in the server writes an `instances`
+    /// row — so this gate is defence-in-depth against an edited peer row
+    /// rather than a boundary against untrusted input, and leaving it
+    /// unconditional made three ordinary topologies impossible: two servers
+    /// on a LAN, two containers addressing each other by Compose service
+    /// name, and peers across a VPN (Tailscale's 100.64/10 is rejected).
+    /// Every outbox row to such a peer was dropped at dequeue.
+    ///
+    /// Enabling it relaxes ONLY the private-address check, and only for
+    /// federation peers. Malformed and non-http(s) URLs stay refused, and
+    /// link previews — where the URL really is attacker-supplied — are
+    /// unaffected.
+    #[serde(default = "default_allow_private_peer_addresses")]
+    pub allow_private_peer_addresses: bool,
+
     /// Auto-expire (deactivate) federation agreements whose `updated_at` is
     /// older than this many days. An agreement's `updated_at` is refreshed on
     /// every re-handshake / policy re-evaluation, so this only reaps peers that
@@ -111,9 +129,14 @@ impl Default for FederationConfig {
             outbox_max_attempts: default_outbox_max_attempts(),
             outbox_per_peer_batch: default_outbox_per_peer_batch(),
             default_outbound_envelope_version: default_outbound_envelope_version(),
+            allow_private_peer_addresses: default_allow_private_peer_addresses(),
             agreement_ttl_days: default_agreement_ttl_days(),
         }
     }
+}
+
+fn default_allow_private_peer_addresses() -> bool {
+    false
 }
 
 fn default_agreement_ttl_days() -> u32 {
@@ -1045,6 +1068,9 @@ pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
     if let Some(v) = parse_env_var::<u32>("ANNEX_FEDERATION_OUTBOX_PER_PEER_BATCH")? {
         config.federation.outbox_per_peer_batch = v;
     }
+    if let Some(v) = parse_env_bool("ANNEX_FEDERATION_ALLOW_PRIVATE_PEERS")? {
+        config.federation.allow_private_peer_addresses = v;
+    }
     if let Some(v) = parse_env_var::<String>("ANNEX_FEDERATION_DEFAULT_ENVELOPE_VERSION")? {
         config.federation.default_outbound_envelope_version = v;
     }
@@ -1236,6 +1262,7 @@ mod tests {
             "ANNEX_RETENTION_CHECK_INTERVAL_SECONDS",
             "ANNEX_IDEMPOTENCY_TTL_SECONDS",
             "ANNEX_FEDERATION_OUTBOX_PER_PEER_BATCH",
+            "ANNEX_FEDERATION_ALLOW_PRIVATE_PEERS",
             "ANNEX_INACTIVITY_THRESHOLD_SECONDS",
             "ANNEX_PUBLIC_URL",
             "ANNEX_MERKLE_TREE_DEPTH",

@@ -127,7 +127,7 @@ async fn outbox_worker_refuses_to_post_to_private_peer_url() {
     );
     let err = last_error.unwrap_or_default();
     assert!(
-        err.contains("private/reserved"),
+        err.contains("not an allowed peer address"),
         "last_error should attribute the failure to the SSRF gate; got: {err}"
     );
 }
@@ -194,7 +194,7 @@ async fn outbox_worker_does_not_drop_public_peer_url() {
     );
     let err = last_error.unwrap_or_default();
     assert!(
-        !err.contains("private/reserved"),
+        !err.contains("not an allowed peer address"),
         "public peer URL must not trip the SSRF gate; got: {err}"
     );
 }

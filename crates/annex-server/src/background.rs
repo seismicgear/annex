@@ -116,6 +116,20 @@ pub async fn start_federation_outbox_task(state: Arc<AppState>) {
         max_attempts,
         "starting federation outbox task"
     );
+    // Say it out loud, at the one place an operator is already looking when
+    // federation is not delivering. The check this relaxes is also the one
+    // that silently drops every row to a LAN or VPN peer, so the presence of
+    // this line confirms the relaxation took effect, and its absence is the
+    // first thing to check when a private-network peer receives nothing.
+    if state.federation_config.allow_private_peer_addresses {
+        tracing::warn!(
+            "ANNEX_FEDERATION_ALLOW_PRIVATE_PEERS is enabled: federation peers at private, \
+             loopback and link-local addresses are permitted. Intended for LAN, container and \
+             VPN topologies. Peer URLs are operator-provisioned, but this does remove a \
+             defence-in-depth check against an `instances` row edited to point at an internal \
+             service."
+        );
+    }
 
     loop {
         sleep(interval).await;
@@ -301,7 +315,7 @@ pub async fn drain_outbox_batch(state: Arc<AppState>, batch_size: i64) -> Result
 
         // Defence-in-depth SSRF gate at dequeue time.
         //
-        // `relay_message` already applies `is_url_private_or_reserved`
+        // `relay_message` already applies `is_peer_url_disallowed`
         // at ENQUEUE time, so a row should never be written for a
         // private/loopback/link-local peer. But the outbox is durable
         // across restarts and the `instances` table is admin-editable,
@@ -312,11 +326,14 @@ pub async fn drain_outbox_batch(state: Arc<AppState>, batch_size: i64) -> Result
         // service. We mark the row as terminally failed — re-enqueue
         // requires a new message_id, which itself goes through the
         // enqueue-time SSRF gate.
-        if crate::api_link_preview::is_url_private_or_reserved(&peer_base) {
+        if crate::api_link_preview::is_peer_url_disallowed(
+            &peer_base,
+            state.federation_config.allow_private_peer_addresses,
+        ) {
             tracing::warn!(
                 outbox_id = id,
                 peer = %peer_base,
-                "dropping outbox row: peer base_url resolves to a private/reserved host (peer URL likely changed after enqueue)"
+                "dropping outbox row: peer base_url is not an allowed federation peer address (peer URL likely changed after enqueue)"
             );
             let pool = state.pool.clone();
             let _ = tokio::task::spawn_blocking(move || {
@@ -324,7 +341,7 @@ pub async fn drain_outbox_batch(state: Arc<AppState>, batch_size: i64) -> Result
                     let _ = conn.execute(
                         "UPDATE federation_outbox SET status = 'failed', \
                          attempts = attempts + 1, \
-                         last_error = 'peer base_url is private/reserved (dequeue-time SSRF gate)', \
+                         last_error = 'peer base_url is not an allowed peer address (dequeue-time SSRF gate)', \
                          updated_at = datetime('now') WHERE id = ?1",
                         rusqlite::params![id],
                     );

@@ -727,7 +727,13 @@ impl FederationService {
         // known instance row (administrator-controlled), block private /
         // loopback / link-local hosts so a misconfigured peer entry cannot
         // turn this endpoint into an SSRF probe of internal services.
-        if crate::api_link_preview::is_url_private_or_reserved(&payload.originating_server) {
+        // `federation.allow_private_peer_addresses` lifts the private-address
+        // half for deployments whose peers really are on a LAN, container
+        // network or VPN; malformed and non-http(s) URLs stay refused.
+        if crate::api_link_preview::is_peer_url_disallowed(
+            &payload.originating_server,
+            self.state.federation_config.allow_private_peer_addresses,
+        ) {
             return Err(FederationError::Forbidden(format!(
                 "originating_server {} resolves to a private or reserved address",
                 payload.originating_server
@@ -1096,8 +1102,9 @@ impl FederationService {
                 // since attestation, so the proof may no longer be valid.
                 //
                 // SSRF defence-in-depth: skip the freshness callback if the
-                // peer's base_url resolves to a private/loopback/link-local
-                // host. Peers are administratively trusted, but a misconfigured
+                // peer's base_url is not an allowed peer address — by default
+                // that includes private/loopback/link-local hosts, unless
+                // `federation.allow_private_peer_addresses` is set. Peers are administratively trusted, but a misconfigured
                 // peer entry (e.g. `http://localhost:9090`) would otherwise
                 // turn this code path into an outbound probe of internal
                 // services on every received message. We log the skip rather
@@ -1105,8 +1112,9 @@ impl FederationService {
                 // a soft "log on mismatch / continue on network error" gate,
                 // not a hard authorization step.
                 if !identity.root_hex_at_verification.is_empty()
-                    && !crate::api_link_preview::is_url_private_or_reserved(
+                    && !crate::api_link_preview::is_peer_url_disallowed(
                         &envelope.originating_server,
+                        state.federation_config.allow_private_peer_addresses,
                     )
                 {
                     let root_url =
@@ -2211,6 +2219,7 @@ pub async fn relay_message(
     channel_id: String,
     message: annex_channels::Message,
 ) {
+    let allow_private_peers = state.federation_config.allow_private_peer_addresses;
     let peers_result = tokio::task::spawn_blocking({
         let state = state.clone();
         let sender = message.sender_pseudonym.clone();
@@ -2310,10 +2319,10 @@ pub async fn relay_message(
                 tracing::debug!(peer = %p.base_url, "skipping outbox enqueue: NO_TRANSFER");
                 return false;
             }
-            if crate::api_link_preview::is_url_private_or_reserved(&p.base_url) {
+            if crate::api_link_preview::is_peer_url_disallowed(&p.base_url, allow_private_peers) {
                 tracing::warn!(
                     peer = %p.base_url,
-                    "skipping outbox enqueue: peer base_url resolves to a private or reserved host"
+                    "skipping outbox enqueue: peer base_url is not an allowed federation peer address"
                 );
                 return false;
             }
@@ -2385,6 +2394,7 @@ pub async fn relay_redaction(
     redacted_by: String,
     redaction_reason: &'static str,
 ) {
+    let allow_private_peers = state.federation_config.allow_private_peer_addresses;
     let peers_result = tokio::task::spawn_blocking({
         let state = state.clone();
         let redactor = redacted_by.clone();
@@ -2457,10 +2467,10 @@ pub async fn relay_redaction(
             if p.transfer_scope == "NO_TRANSFER" {
                 return false;
             }
-            if crate::api_link_preview::is_url_private_or_reserved(&p.base_url) {
+            if crate::api_link_preview::is_peer_url_disallowed(&p.base_url, allow_private_peers) {
                 tracing::warn!(
                     peer = %p.base_url,
-                    "skipping redaction enqueue: peer base_url resolves to a private or reserved host"
+                    "skipping redaction enqueue: peer base_url is not an allowed federation peer address"
                 );
                 return false;
             }
@@ -2524,6 +2534,7 @@ pub async fn relay_edit(
     edited_by: String,
     content: String,
 ) {
+    let allow_private_peers = state.federation_config.allow_private_peer_addresses;
     let peers_result = tokio::task::spawn_blocking({
         let state = state.clone();
         let editor = edited_by.clone();
@@ -2598,10 +2609,10 @@ pub async fn relay_edit(
             if p.transfer_scope == "NO_TRANSFER" {
                 return false;
             }
-            if crate::api_link_preview::is_url_private_or_reserved(&p.base_url) {
+            if crate::api_link_preview::is_peer_url_disallowed(&p.base_url, allow_private_peers) {
                 tracing::warn!(
                     peer = %p.base_url,
-                    "skipping edit enqueue: peer base_url resolves to a private or reserved host"
+                    "skipping edit enqueue: peer base_url is not an allowed federation peer address"
                 );
                 return false;
             }

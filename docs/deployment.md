@@ -52,6 +52,31 @@ Authoritative env-var names live in `crates/annex-server/src/config.rs::load_con
 | `ANNEX_FEDERATION_OUTBOX_MAX_ATTEMPTS` | `12` | Max delivery attempts before an outbox row is marked `failed` |
 | `ANNEX_FEDERATION_OUTBOX_INTERVAL_SECONDS` | `5` | Outbox worker tick interval |
 | `ANNEX_FEDERATION_OUTBOX_PER_PEER_BATCH` | `8` | Max outbox rows drained per peer per tick (fairness cap) |
+| `ANNEX_FEDERATION_ALLOW_PRIVATE_PEERS` | `false` | Permit federation peers at private / loopback / link-local addresses — see below |
+
+#### Federating over a private network
+
+`ANNEX_FEDERATION_ALLOW_PRIVATE_PEERS` defaults to `false`, which refuses any
+peer whose `base_url` resolves to a private, loopback or link-local address.
+That is the right default for peers reachable over the public internet, but it
+makes three ordinary topologies silently undeliverable — every outbox row to
+such a peer is dropped at dequeue, with only a log line to say so:
+
+- two servers on the same LAN (`10.*`, `192.168.*`, `172.16-31.*`),
+- two containers addressing each other by Compose service name (the name
+  resolves to a private IP, and `*.internal` is refused by hostname),
+- peers across a VPN — Tailscale's `100.64.0.0/10` is explicitly rejected.
+
+Set `ANNEX_FEDERATION_ALLOW_PRIVATE_PEERS=true` on **both** servers for those
+deployments. It relaxes only the private-address rule, and only for federation
+peers: malformed and non-`http(s)` peer URLs stay refused, and link previews —
+where the URL genuinely comes from untrusted message content — are unaffected.
+
+The check it relaxes is defence-in-depth rather than a trust boundary: nothing
+in the server writes an `instances` row, so a peer's `base_url` is only ever
+what an operator put there. What you give up is protection against an
+`instances` row later edited to point at an internal service. The server logs a
+warning at startup whenever the setting is on.
 
 ### Config File
 

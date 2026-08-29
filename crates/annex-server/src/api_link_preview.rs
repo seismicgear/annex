@@ -104,6 +104,51 @@ pub(crate) fn is_url_private_or_reserved(url: &str) -> bool {
     is_private_or_reserved(url)
 }
 
+/// The half of [`is_private_or_reserved`] that is never negotiable: a URL
+/// that does not parse, or whose scheme is not http(s).
+///
+/// Split out because the federation outbox has a different threat model from
+/// link previews. A preview URL comes out of a message — attacker-supplied,
+/// so every reserved range has to stay blocked. A federation peer's
+/// `base_url` is operator-provisioned: nothing in the server ever writes an
+/// `instances` row, so the address is only ever what an admin put there.
+/// Blocking private addresses for peers is defence-in-depth against an
+/// edited-after-the-fact peer row, not a boundary against untrusted input,
+/// and it made three ordinary deployments impossible: two servers on a LAN,
+/// two containers addressing each other by Compose service name (`.internal`
+/// and private IPs both), and peers across a VPN (Tailscale's 100.64/10 is
+/// explicitly rejected). In each case every outbox row was dropped at
+/// dequeue.
+///
+/// `ANNEX_FEDERATION_ALLOW_PRIVATE_PEERS` relaxes the private-address half
+/// for peers only. It must not relax this half: `file:///etc/passwd` is not a
+/// federation peer under any configuration.
+pub(crate) fn is_url_malformed_or_non_http(url: &str) -> bool {
+    let parsed = match url::Url::parse(url) {
+        Ok(u) => u,
+        Err(_) => return true,
+    };
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return true;
+    }
+    parsed.host().is_none()
+}
+
+/// SSRF gate for a federation peer's `base_url`.
+///
+/// With `allow_private = false` (the default) this is exactly
+/// [`is_url_private_or_reserved`]. With it enabled, only malformed and
+/// non-http(s) URLs are refused.
+pub(crate) fn is_peer_url_disallowed(url: &str, allow_private: bool) -> bool {
+    if is_url_malformed_or_non_http(url) {
+        return true;
+    }
+    if allow_private {
+        return false;
+    }
+    is_private_or_reserved(url)
+}
+
 /// Returns `true` if the URL's host resolves to a private/loopback/link-local address.
 /// This prevents SSRF attacks where a user could probe internal services.
 fn is_private_or_reserved(url: &str) -> bool {
