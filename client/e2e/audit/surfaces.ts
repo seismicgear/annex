@@ -473,6 +473,124 @@ export const SURFACES: Surface[] = [
     },
     clip: '.channel-encryption-bar',
   },
+  {
+    id: 'channel-encryption-enabled',
+    stage: '06-messaging',
+    title: 'An encrypted channel, key in hand',
+    role: 'founder',
+    intent:
+      'The headline feature actually switched on, which nothing captured before: only the ' +
+      '"turn it on" prompt and the non-moderator hidden case were reachable. This is the state ' +
+      'the other two encryption surfaces are measured against — the one where the user can read ' +
+      'the channel.',
+    setup: async (page) => {
+      // Hermetic on purpose. Left to the real server this surface passed at
+      // the first viewport and failed at the other three: provisioning a key
+      // writes wraps to the shared DB, and the next context has a fresh
+      // device key that can open none of them, so the channel came back as
+      // `has_key: true` with nothing for us — the pending state, captured
+      // under the name of the ready one. Stubbing both key routes makes each
+      // viewport mint its own key and reach the same state, and stops this
+      // surface leaving key material behind for the ones after it.
+      await page.route('**/api/channels/*/e2e', (route) =>
+        route.fulfill({ status: 200, contentType: 'application/json', body: '{"e2e_enabled":true}' }),
+      );
+      await page.route('**/api/channels/*/key-status', (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: '{"has_key":false,"max_epoch":0}',
+        }),
+      );
+      await page.route('**/api/channels/*/key-wraps', (route) =>
+        route.request().method() === 'POST'
+          ? route.fulfill({
+              status: 200,
+              contentType: 'application/json',
+              body: '{"status":"ok","inserted":1}',
+            })
+          : route.fulfill({ status: 200, contentType: 'application/json', body: '{"wraps":[]}' }),
+      );
+    },
+    navigate: async (page) => {
+      await selectChannel(page, SEED.defaultChannel);
+      await expect(page.locator('.channel-encryption-bar.encrypted')).toBeVisible({
+        timeout: 15_000,
+      });
+    },
+    clip: '.channel-encryption-bar',
+  },
+  {
+    id: 'channel-encryption-key-pending',
+    stage: '06-messaging',
+    title: 'Encrypted, and not admitted yet',
+    role: 'founder',
+    intent:
+      'You are in an encrypted channel whose key nobody has sealed to you yet, so every message ' +
+      'reads "🔒 encrypted message (no key)". This used to render under the reassuring green bar ' +
+      'above — true, and useless. The wait ends on its own when any key-holder next opens the ' +
+      'channel, and the bar now says so rather than leaving it looking like a dead end.',
+    setup: async (page) => {
+      // The channel is encrypted and HAS key material, but none of it is
+      // sealed to us — exactly the shape that makes `resolveChannelKey`
+      // raise `E2eKeyPendingError`.
+      await page.route('**/api/channels/*/e2e', (route) =>
+        route.fulfill({ status: 200, contentType: 'application/json', body: '{"e2e_enabled":true}' }),
+      );
+      await page.route('**/api/channels/*/key-wraps', (route) =>
+        route.fulfill({ status: 200, contentType: 'application/json', body: '{"wraps":[]}' }),
+      );
+      await page.route('**/api/channels/*/key-status', (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: '{"has_key":true,"max_epoch":1}',
+        }),
+      );
+    },
+    navigate: async (page) => {
+      await selectChannel(page, SEED.defaultChannel);
+      await expect(page.locator('.channel-encryption-bar.key-pending')).toBeVisible({
+        timeout: 15_000,
+      });
+    },
+    clip: '.chat-area',
+  },
+  {
+    id: 'channel-encryption-key-failed',
+    stage: '06-messaging',
+    title: 'Encrypted, and the key would not load',
+    role: 'founder',
+    intent:
+      'The other half. A key that cannot be fetched at all is not a wait — it will not resolve, ' +
+      'and sending stays blocked. It used to be indistinguishable from the state above because ' +
+      'one bare catch handled both.',
+    setup: async (page) => {
+      await page.route('**/api/channels/*/e2e', (route) =>
+        route.fulfill({ status: 200, contentType: 'application/json', body: '{"e2e_enabled":true}' }),
+      );
+      await page.route('**/api/channels/*/key-wraps', (route) =>
+        route.fulfill({
+          status: 500,
+          contentType: 'application/json',
+          body: '{"error":"internal server error"}',
+        }),
+      );
+    },
+    navigate: async (page) => {
+      await selectChannel(page, SEED.defaultChannel);
+      await expect(page.locator('.channel-encryption-bar.key-failed')).toBeVisible({
+        timeout: 15_000,
+      });
+    },
+    clip: '.chat-area',
+    waive: {
+      network:
+        'the 500 is the stub this surface installs on purpose — it is the condition under test, ' +
+        'not an incidental failed request.',
+      console: 'the browser logs the injected 500 to the console as well',
+    },
+  },
 
   // ─────────────────────── 07 · voice ───────────────────────
   {

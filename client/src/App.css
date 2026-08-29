@@ -4129,8 +4129,32 @@
   color: var(--text-muted, #b9b9c3);
   flex-wrap: wrap;
 }
+/* `--success-text`, not `--accent`. This said `var(--accent, #7bd88f)`: a
+   green literal with the brand accent in front of it. The accent is
+   `#e63946` — red — so the token migration silently repainted "End-to-end
+   encrypted, the server can't read these messages" from a confirmation into
+   something that reads as an alarm, and landed it at 4.2:1, under the 4.5:1
+   this 0.85rem text needs. The palette states the rule two files over: the
+   accent is a FILL behind white text, `--accent-text` is the tint for accent
+   text. Neither is right here — the state is success, and `--success-text`
+   (#7eda7e) is within a hair of the green the fallback was reaching for.
+
+   It went unseen because no surface captured an encrypted channel. The one
+   added alongside this found it on its first run. */
 .channel-encryption-bar.encrypted {
-  color: var(--accent, #7bd88f);
+  color: var(--success-text);
+}
+/* Encrypted, but not readable by this client. Deliberately not the accent
+   green of `.encrypted`: that colour reads as "everything is fine", and in
+   both of these states the user cannot read the channel. `pending` resolves
+   on its own, so it is a notice; `failed` does not, so it is a warning. */
+.channel-encryption-bar.key-pending {
+  color: var(--text-strong);
+  background: var(--overlay-white-08);
+}
+.channel-encryption-bar.key-failed {
+  color: var(--error-text);
+  background: var(--error-tint-10);
 }
 .channel-encryption-bar button {
   margin-left: auto;

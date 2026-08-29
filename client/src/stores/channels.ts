@@ -11,6 +11,8 @@ import {
   decryptForDisplay,
   encryptForWire,
   ensureChannelReady,
+  getChannelKeyError,
+  getChannelKeyState,
   isChannelE2e,
   isChannelE2eUnknown,
   markChannelE2eUnknown,
@@ -18,6 +20,7 @@ import {
   markChannelE2e,
   resetE2eChannels,
   setE2eIdentity,
+  type ChannelKeyState,
 } from '@/lib/message-crypto';
 import { clearE2eManagers } from '@/lib/e2e-store';
 
@@ -57,6 +60,17 @@ interface ChannelsState {
   activeChannelId: string | null;
   /** Whether the active channel is end-to-end encrypted (reactive for UI). */
   activeChannelE2e: boolean;
+  /** Re-attempt resolving the active channel's key, and reload if it lands. */
+  retryChannelKey: (pseudonymId: string) => Promise<void>;
+  /**
+   * Whether this client can actually read the active E2E channel. `pending`
+   * means the channel is keyed but we have not been admitted yet; `failed`
+   * means resolving the key went wrong. Both used to be invisible, so a
+   * channel full of "🔒 encrypted message (no key)" carried no explanation.
+   */
+  activeChannelKeyState: ChannelKeyState;
+  /** Why the key could not be resolved, for `activeChannelKeyState === 'failed'`. */
+  activeChannelKeyError: string | null;
   /** Set of channel IDs the user is currently a member of. */
   joinedChannelIds: Set<string>;
   /** Messages for the active channel (newest last). */
@@ -164,6 +178,8 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
   channels: [],
   activeChannelId: null,
   activeChannelE2e: false,
+  activeChannelKeyState: 'ready' as ChannelKeyState,
+  activeChannelKeyError: null,
   joinedChannelIds: new Set<string>(),
   messages: [],
   wsConnected: false,
@@ -213,7 +229,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     // Staying subscribed to all joined channels lets us receive messages
     // for non-active channels and increment unread counts accurately.
 
-    set({ activeChannelId: channelId, activeChannelE2e: false, messages: [], loadingOlder: false, hasMoreMessages: true, olderError: null, editError: null, historyLoading: true, historyError: null, composerError: null, typingUsers: [], replyToMessage: null });
+    set({ activeChannelId: channelId, activeChannelE2e: false, activeChannelKeyState: 'ready', activeChannelKeyError: null, messages: [], loadingOlder: false, hasMoreMessages: true, olderError: null, editError: null, historyLoading: true, historyError: null, composerError: null, typingUsers: [], replyToMessage: null });
 
     // Auto-join the channel (idempotent — no-op if already a member).
     // Must be a member before fetching messages or joining voice.
@@ -237,7 +253,15 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       const e2e = await api.getChannelE2e(pseudonymId, channelId);
       markChannelE2e(channelId, e2e);
       if (get().activeChannelId === channelId) set({ activeChannelE2e: e2e });
-      if (e2e) await ensureChannelReady(channelId);
+      if (e2e) {
+        await ensureChannelReady(channelId);
+        if (get().activeChannelId === channelId) {
+          set({
+            activeChannelKeyState: getChannelKeyState(channelId),
+            activeChannelKeyError: getChannelKeyError(channelId),
+          });
+        }
+      }
     } catch (err) {
       // Unknown, NOT plaintext. This used to record `false`, which is the
       // same value a genuinely unencrypted channel has, so the send path
@@ -308,6 +332,23 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     }
   },
 
+  retryChannelKey: async (pseudonymId: string) => {
+    const channelId = get().activeChannelId;
+    if (!channelId || !isChannelE2e(channelId)) return;
+    set({ activeChannelKeyState: 'ready', activeChannelKeyError: null });
+    await ensureChannelReady(channelId);
+    if (get().activeChannelId !== channelId) return;
+    const state = getChannelKeyState(channelId);
+    set({
+      activeChannelKeyState: state,
+      activeChannelKeyError: getChannelKeyError(channelId),
+    });
+    // Landing the key means the history on screen is a page of placeholders
+    // that can now be read. Reload so the messages actually appear — leaving
+    // them is the same silence this whole state exists to end.
+    if (state === 'ready') await get().selectChannel(pseudonymId, channelId);
+  },
+
   enableChannelE2e: async (pseudonymId: string) => {
     const channelId = get().activeChannelId;
     if (!channelId) return;
@@ -317,6 +358,12 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     if (get().activeChannelId === channelId) set({ activeChannelE2e: true });
     // Provision/resolve the channel key so the next message encrypts.
     await ensureChannelReady(channelId);
+    if (get().activeChannelId === channelId) {
+      set({
+        activeChannelKeyState: getChannelKeyState(channelId),
+        activeChannelKeyError: getChannelKeyError(channelId),
+      });
+    }
   },
 
   connectWs: (pseudonymId: string, baseUrl?: string, sessionToken?: string | null) => {

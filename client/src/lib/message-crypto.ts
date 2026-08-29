@@ -10,7 +10,7 @@
  */
 
 import { getE2eChannelManager } from './e2e-store';
-import { isE2eBody } from './e2e-channel';
+import { E2eKeyPendingError, isE2eBody } from './e2e-channel';
 
 export { isE2eBody };
 
@@ -63,10 +63,46 @@ export function isChannelE2eUnknown(channelId: string): boolean {
   return e2eUnknownChannels.has(channelId);
 }
 
+/**
+ * Whether this client can actually read an E2E channel.
+ *
+ * `resolveChannelKey` already distinguishes the two ways it can come back
+ * without a key: `E2eKeyPendingError` means the channel HAS key material and
+ * none of it is sealed to us yet — we are waiting to be admitted by a member
+ * who holds it — while anything else is a genuine failure. `ensureChannelReady`
+ * threw both away in one bare `catch`, so both looked identical from the UI:
+ * a wall of "🔒 encrypted message (no key)" under a status bar reading
+ * "End-to-end encrypted — the server can't read these messages." True, and
+ * useless. Nothing said why the messages were unreadable, that the state
+ * resolves on its own, or that anything had gone wrong.
+ *
+ * `pending` is not an error. Any member holding the key admits every current
+ * member on channel open (`E2eChannelManager.reconcile`), and our device key
+ * is published before we ever get here, so the wait ends without either party
+ * doing anything deliberate.
+ */
+export type ChannelKeyState = 'ready' | 'pending' | 'failed';
+
+const keyPendingChannels = new Set<string>();
+const keyFailedChannels = new Map<string, string>();
+
+export function getChannelKeyState(channelId: string): ChannelKeyState {
+  if (keyPendingChannels.has(channelId)) return 'pending';
+  if (keyFailedChannels.has(channelId)) return 'failed';
+  return 'ready';
+}
+
+/** Why the channel key could not be resolved, for the `failed` state only. */
+export function getChannelKeyError(channelId: string): string | null {
+  return keyFailedChannels.get(channelId) ?? null;
+}
+
 /** Forget all E2E channel flags (e.g. on logout / identity switch). */
 export function resetE2eChannels(): void {
   e2eChannels.clear();
   e2eUnknownChannels.clear();
+  keyPendingChannels.clear();
+  keyFailedChannels.clear();
 }
 
 /**
@@ -77,13 +113,23 @@ export function resetE2eChannels(): void {
 export async function ensureChannelReady(channelId: string): Promise<void> {
   if (!isChannelE2e(channelId) || !activePseudonym) return;
   const mgr = getE2eChannelManager(activePseudonym);
+  keyPendingChannels.delete(channelId);
+  keyFailedChannels.delete(channelId);
   await mgr.ensureDevicePublished();
   try {
     await mgr.resolveChannelKey(channelId);
-  } catch {
-    // Key not yet available (we're awaiting admission by an existing member).
-    // Non-fatal: opening the channel still works, bodies just stay sealed
-    // until we're admitted.
+  } catch (err) {
+    // Neither branch is fatal — the channel still opens, and sending still
+    // refuses rather than leaking plaintext. What each needs is to be
+    // visible, and they are not the same thing to say.
+    if (err instanceof E2eKeyPendingError) {
+      keyPendingChannels.add(channelId);
+    } else {
+      keyFailedChannels.set(
+        channelId,
+        err instanceof Error ? err.message : 'the channel key could not be resolved',
+      );
+    }
   }
   // If we hold the key, admit any members who joined / published a key after
   // it was provisioned (idempotent, best-effort).
