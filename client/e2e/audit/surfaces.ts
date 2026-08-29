@@ -746,6 +746,27 @@ export const SURFACES: Surface[] = [
     clip: '.edit-history',
   },
   {
+    id: 'channel-encryption-failed-to-enable',
+    stage: '06-messaging',
+    title: 'Turning on encryption, refused by the server',
+    role: 'founder',
+    intent:
+      'The bar offers one irreversible action and had no captured failure state. Turning on ' +
+      'E2E either happened or it did not, and a moderator who is told nothing will press the ' +
+      'button again — on a channel that may or may not already be encrypted.',
+    setup: stub('**/api/channels/*/e2e', { error: 'could not enable encryption' }, 500),
+    navigate: async (page) => {
+      await selectChannel(page, SEED.defaultChannel);
+      await page.locator('.channel-encryption-bar button').click();
+      await expect(page.locator('.channel-encryption-error')).toBeVisible({ timeout: 15_000 });
+    },
+    clip: '.channel-encryption-bar',
+    waive: {
+      network: 'the 500 is the stub this surface installs — it is the condition under test',
+      console: 'the browser logs the injected 500 to the console as well',
+    },
+  },
+  {
     id: 'channel-encryption-bar-cta',
     stage: '06-messaging',
     title: 'End-to-end encryption call to action',
@@ -989,6 +1010,69 @@ export const SURFACES: Surface[] = [
     },
     clip: '.voice-panel',
     mask: ['.tile-video'],
+  },
+  {
+    id: 'call-camera-device-missing',
+    stage: '07-voice',
+    title: 'In a call whose saved camera is gone',
+    role: 'founder',
+    intent:
+      'A camera chosen in settings and later unplugged. `useLocalMedia` asks for it by device ' +
+      'id, the browser answers OverconstrainedError, and the recovery prompt is the only thing ' +
+      'standing between the user and a camera button that silently does nothing.',
+    setup: async (page) => {
+      // The saved device id has to be present before the app boots, and has to
+      // name a device Chromium's fake-device set does not contain.
+      await page.addInitScript(() => {
+        localStorage.setItem(
+          'annex:audioSettings',
+          JSON.stringify({ cameraDeviceId: 'camera-that-was-unplugged' }),
+        );
+      });
+    },
+    navigate: async (page) => {
+      await selectChannel(page, SEED.channels.voice);
+      await page.locator('.voice-join-btn').first().click();
+      await expect(page.locator('.media-controls')).toBeVisible({ timeout: 30_000 });
+      await page.getByTitle('Turn on camera').click();
+      await expect(page.locator('.stale-camera-recovery')).toBeVisible({ timeout: 30_000 });
+    },
+    clip: '.voice-panel',
+  },
+  {
+    id: 'call-mic-device-missing',
+    stage: '07-voice',
+    title: 'In a call whose saved microphone is gone',
+    role: 'founder',
+    intent:
+      'The microphone half of the unplugged-device problem. The camera offers a button to ' +
+      'choose the fallback; the microphone cannot — leaving someone muted is worse than ' +
+      'using a different input — so it falls back on its own and has to say so, or the user ' +
+      'is talking into a device they never picked with nothing on screen admitting it.',
+    setup: async (page) => {
+      // Same shape as the camera surface: the saved id has to be in place
+      // before boot, and has to name a device Chromium's fake set lacks.
+      await page.addInitScript(() => {
+        localStorage.setItem(
+          'annex:audioSettings',
+          JSON.stringify({ inputDeviceId: 'microphone-that-was-unplugged' }),
+        );
+      });
+    },
+    navigate: async (page) => {
+      await selectChannel(page, SEED.channels.voice);
+      await page.locator('.voice-join-btn').first().click();
+      await expect(page.locator('.media-controls')).toBeVisible({ timeout: 30_000 });
+      // The fallback lives in the enable branch of `toggleMic`, so the mic has
+      // to be off before the toggle that exercises it. Scoped to the in-call
+      // controls — the status bar carries a button with the same title.
+      const controls = page.locator('.media-controls');
+      await controls.getByTitle('Mute microphone').click();
+      await expect(controls.getByTitle('Unmute microphone')).toBeVisible({ timeout: 15_000 });
+      await controls.getByTitle('Unmute microphone').click();
+      await expect(page.locator('.media-error')).toBeVisible({ timeout: 30_000 });
+    },
+    clip: '.voice-panel',
   },
   {
     id: 'call-mic-muted',

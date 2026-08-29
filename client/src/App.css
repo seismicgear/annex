@@ -4251,9 +4251,15 @@
   opacity: 0.6;
   cursor: default;
 }
+/* `--error-text`, not `--danger` — the same substitution the `.encrypted`
+   rule above was fixed for, missed here because nothing captured a failed
+   enable. `--danger` (#e63946) is the FILL colour, and as text on
+   `--surface-2` it lands at 4.15:1, under the 4.5:1 this 0.85rem line needs;
+   the literal it replaced (#e06c75) had been passing at 5.4:1. `--error-text`
+   is what `.key-failed` two rules up already uses for exactly this job. */
 .channel-encryption-error {
   width: 100%;
-  color: var(--danger, #e06c75);
+  color: var(--error-text);
 }
 
 

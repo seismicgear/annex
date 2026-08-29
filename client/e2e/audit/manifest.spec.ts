@@ -214,14 +214,9 @@ test.describe('surface manifest', () => {
       'device-link-success': 'needs two contexts completing a real link handshake',
       'server-hub-error': 'needs a second registered server to switch away from',
       'server-hub-failed-actions': 'same — reached only after a failed switch',
-      'media-error': 'needs a getUserMedia failure injected mid-call',
-      'stale-camera-actions': 'part of the stale-camera recovery block',
-      'stale-camera-recovery':
-        'the block itself — needs a saved camera id that is absent from the device list at ' +
-        'the moment a call starts',
-      'channel-encryption-error':
-        'the bar\'s own failure, distinct from the key states beside it — reachable by ' +
-        'stubbing the enable call, and worth a surface once the E2E surfaces are revisited',
+      'stale-camera-actions':
+        'inside the `.stale-camera-recovery` block, which `call-camera-device-missing` now ' +
+        'captures — photographed, just not named in the manifest',
       'clear-state-error':
         'needs an IndexedDB delete to fail, which the harness has no way to force',
       'error-text':

@@ -1,4 +1,15 @@
 {
   "generatedBy": "scripts/ui-audit-report.mjs",
-  "findings": []
+  "findings": [
+    {
+      "surfaceId": "message-search-no-results",
+      "stage": "06-messaging",
+      "viewport": "narrow",
+      "audit": "console",
+      "severity": "p2",
+      "rule": "visual-regression",
+      "detail": "this surface no longer matches its committed baseline. If the change is intended, re-record with `bash scripts/ui-audit.sh --update-baselines`. \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoHaveScreenshot\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\u001b[22m failed",
+      "screenshot": "diagnostics/narrow/message-search-no-results.png"
+    }
+  ]
 }
