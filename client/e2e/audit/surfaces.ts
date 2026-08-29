@@ -860,27 +860,21 @@ export const SURFACES: Surface[] = [
         timeout: 15_000,
       });
     },
-    // Clipped to the bar, and NOT pixel-diffed.
+    // Diffed again, after two runs of identical code disagreed here.
     //
-    // Narrowing the clip from `.chat-area` to the bar removed the scroll
-    // race, and a residual flake survived it: `key-pending @ laptop` differed
-    // between two runs of identical code. Decoding both PNGs put the
-    // difference in a single constant-width rectangle spanning columns
-    // 368-674 — a mask box that had moved horizontally. No text moved; the
-    // crop is 708x123 in both. The crop is exactly the bar, and the bar
-    // contains no element in the mask set, so those boxes are Playwright's
-    // mask overlays landing at coordinates that do not survive the scroll it
-    // performs to bring a clipped element into view.
+    // The difference was one constant-width rectangle spanning columns
+    // 368-674 that had moved horizontally — no text moved, and the crop was
+    // 708x123 in both. The bar contains no element in the mask set, so that
+    // box could only be a mask overlay from something else on the page,
+    // painted at its own page coordinates into a crop it has no business
+    // being in. The surface was made `reportOnly` on that evidence, which
+    // was the right read of a harness defect and the wrong remedy: it gave
+    // up the pixel diff instead of fixing the masks.
     //
-    // That is the harness's own combination of masks and an element clip, not
-    // the app, and nothing this surface could assert about pixels would be
-    // trustworthy. It is still captured and still audited — a11y, contrast,
-    // console, network and the overflow pass all run against the whole page.
-    // What it gives up is the pixel diff, which was never going to hold.
-    // `ChannelEncryptionBar.keystate.test.tsx` pins the semantics instead,
-    // including that pending is a `status` and failed is an `alert`.
+    // `maskLocators` now scopes masks to the clipped element, so a clipped
+    // capture is painted only with masks that belong inside the picture.
+    // The overlay that moved is no longer drawn at all.
     clip: '.channel-encryption-bar',
-    reportOnly: true,
   },
   {
     id: 'channel-encryption-key-failed',
@@ -909,27 +903,21 @@ export const SURFACES: Surface[] = [
         timeout: 15_000,
       });
     },
-    // Clipped to the bar, and NOT pixel-diffed.
+    // Diffed again, after two runs of identical code disagreed here.
     //
-    // Narrowing the clip from `.chat-area` to the bar removed the scroll
-    // race, and a residual flake survived it: `key-pending @ laptop` differed
-    // between two runs of identical code. Decoding both PNGs put the
-    // difference in a single constant-width rectangle spanning columns
-    // 368-674 — a mask box that had moved horizontally. No text moved; the
-    // crop is 708x123 in both. The crop is exactly the bar, and the bar
-    // contains no element in the mask set, so those boxes are Playwright's
-    // mask overlays landing at coordinates that do not survive the scroll it
-    // performs to bring a clipped element into view.
+    // The difference was one constant-width rectangle spanning columns
+    // 368-674 that had moved horizontally — no text moved, and the crop was
+    // 708x123 in both. The bar contains no element in the mask set, so that
+    // box could only be a mask overlay from something else on the page,
+    // painted at its own page coordinates into a crop it has no business
+    // being in. The surface was made `reportOnly` on that evidence, which
+    // was the right read of a harness defect and the wrong remedy: it gave
+    // up the pixel diff instead of fixing the masks.
     //
-    // That is the harness's own combination of masks and an element clip, not
-    // the app, and nothing this surface could assert about pixels would be
-    // trustworthy. It is still captured and still audited — a11y, contrast,
-    // console, network and the overflow pass all run against the whole page.
-    // What it gives up is the pixel diff, which was never going to hold.
-    // `ChannelEncryptionBar.keystate.test.tsx` pins the semantics instead,
-    // including that pending is a `status` and failed is an `alert`.
+    // `maskLocators` now scopes masks to the clipped element, so a clipped
+    // capture is painted only with masks that belong inside the picture.
+    // The overlay that moved is no longer drawn at all.
     clip: '.channel-encryption-bar',
-    reportOnly: true,
     waive: {
       network:
         'the 500 is the stub this surface installs on purpose — it is the condition under test, ' +

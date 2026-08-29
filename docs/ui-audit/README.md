@@ -147,12 +147,22 @@ Four things make a surface flaky, each learned by writing one:
 - **A deliberately-injected failure needs a waiver on `network` AND
   `console`** — the browser logs an injected 500 to both.
 
-If a surface genuinely cannot be diffed — the two encryption failure bars are
-the current example, where Playwright's mask overlays land at coordinates that
-do not survive the scroll it performs to bring a clipped element into view —
-set `reportOnly: true`. It is still captured and still audited; only the pixel
+**Masks are scoped to the clip.** Playwright paints masks at their page
+coordinates, and a clipped capture is a crop of that same painted page — so a
+mask on an element *behind* the clipped one lands inside the crop, drawn over
+a subject that is already opaque, and moves whenever the hidden layout behind
+it moves. That produced two separate flakes (`message-search-no-results` and
+both encryption key-state bars) and one wrong remedy: the bars were made
+`reportOnly` before the cause was understood. `maskLocators` now takes the
+clip and returns only masks inside it. This costs no coverage, because a mask
+outside the picture was never diffed.
+
+If a surface genuinely cannot be diffed — live video, animated media — set
+`reportOnly: true`. It is still captured and still audited; only the pixel
 comparison is skipped. Say in a comment what was measured, so the next reader
-can tell a real limitation from a silenced failure.
+can tell a real limitation from a silenced failure. Reach for it only after
+ruling out a harness cause: two of the four surfaces that carried it did not
+need it.
 
 `manifest.spec.ts` fails if a component renders a `.dialog-overlay` and no
 surface reaches it, so a new dialog cannot quietly go unaudited. If a modal

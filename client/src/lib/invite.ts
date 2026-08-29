@@ -6,11 +6,15 @@
  *   https://monolithannex.com/invite/{base64url_payload}
  *   → deep-links to annex://invite?server={encoded}&code={encoded}
  *
+ * The `annex://` half is parsed in `annex-desktop`, not here — the OS hands
+ * the URL to the Tauri process, which validates it and emits the result as
+ * an event. This module owns the http(s) links the browser sees.
+ *
  * Legacy invite URL format (direct server links):
  *   https://<host>/invite/<channelId>?slug=<serverSlug>&label=<label>
  */
 
-import type { InvitePayload, LegacyInvitePayload } from '@/types';
+import type { LegacyInvitePayload } from '@/types';
 
 /**
  * Parse an invite from the current window location.
@@ -52,32 +56,6 @@ export function parseLegacyInviteFromUrl(): LegacyInvitePayload | null {
   }
 
   return null;
-}
-
-/**
- * Parse an annex:// protocol invite URL.
- *
- * Expected format: annex://invite?server={percent_encoded}&code={percent_encoded}
- *
- * This is called when the desktop app receives a deep-link from
- * monolithannex.com's "Open in Annex" button.
- */
-export function parseProtocolInvite(rawUrl: string): InvitePayload | null {
-  try {
-    const url = new URL(rawUrl);
-    if (url.protocol !== 'annex:') return null;
-    if (url.hostname !== 'invite') return null;
-
-    const server = url.searchParams.get('server');
-    const code = url.searchParams.get('code');
-
-    if (!server || !code) return null;
-    if (!server.startsWith('https://')) return null;
-
-    return { server, code };
-  } catch {
-    return null;
-  }
 }
 
 /**

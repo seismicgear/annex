@@ -178,53 +178,6 @@ pub(crate) fn invite_expires_at_is_past(expires_at: &str, now: chrono::NaiveDate
     }
 }
 
-/// Parsed invite from an `annex://` protocol handler URL.
-#[derive(Debug, Clone)]
-pub struct ProtocolInvite {
-    /// The Annex server's public HTTPS URL (percent-decoded).
-    pub server: String,
-    /// The invite code (percent-decoded).
-    pub code: String,
-}
-
-/// Parse an `annex://` protocol handler URL.
-///
-/// Expected format: `annex://invite?server={percent_encoded}&code={percent_encoded}`
-///
-/// Returns `None` if the URL is not a valid `annex://invite` URL.
-pub fn parse_protocol_invite(raw_url: &str) -> Option<ProtocolInvite> {
-    let parsed = url::Url::parse(raw_url).ok()?;
-
-    if parsed.scheme() != "annex" {
-        return None;
-    }
-
-    // The host portion of annex://invite is "invite"
-    if parsed.host_str() != Some("invite") {
-        return None;
-    }
-
-    let mut server = None;
-    let mut code = None;
-
-    for (key, value) in parsed.query_pairs() {
-        match key.as_ref() {
-            "server" => server = Some(value.into_owned()),
-            "code" => code = Some(value.into_owned()),
-            _ => {}
-        }
-    }
-
-    let server = server?;
-    let code = code?;
-
-    if !server.starts_with("https://") {
-        return None;
-    }
-
-    Some(ProtocolInvite { server, code })
-}
-
 // ── API types ──
 
 /// Request body for `POST /api/invites`.
@@ -878,44 +831,6 @@ mod tests {
         );
         let url = payload.to_invite_url().unwrap();
         assert!(url.len() < 2048);
-    }
-
-    #[test]
-    fn parse_valid_protocol_invite() {
-        let url = "annex://invite?server=https%3A%2F%2Fannex.example.com&code=abc123";
-        let invite = parse_protocol_invite(url).unwrap();
-        assert_eq!(invite.server, "https://annex.example.com");
-        assert_eq!(invite.code, "abc123");
-    }
-
-    #[test]
-    fn parse_protocol_invite_missing_server() {
-        let url = "annex://invite?code=abc123";
-        assert!(parse_protocol_invite(url).is_none());
-    }
-
-    #[test]
-    fn parse_protocol_invite_missing_code() {
-        let url = "annex://invite?server=https%3A%2F%2Fannex.example.com";
-        assert!(parse_protocol_invite(url).is_none());
-    }
-
-    #[test]
-    fn parse_protocol_invite_wrong_path() {
-        let url = "annex://something-else?server=https%3A%2F%2Fannex.example.com&code=abc123";
-        assert!(parse_protocol_invite(url).is_none());
-    }
-
-    #[test]
-    fn parse_protocol_invite_rejects_http() {
-        let url = "annex://invite?server=http%3A%2F%2Fannex.example.com&code=abc123";
-        assert!(parse_protocol_invite(url).is_none());
-    }
-
-    #[test]
-    fn parse_protocol_invite_wrong_scheme() {
-        let url = "https://invite?server=https%3A%2F%2Fannex.example.com&code=abc123";
-        assert!(parse_protocol_invite(url).is_none());
     }
 
     #[test]

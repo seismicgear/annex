@@ -44,11 +44,6 @@ function shortName(id: string): string {
   return id.length > 14 ? `${id.slice(0, 14)}…` : id;
 }
 
-// Backwards-compatible no-ops: the unified grid below now renders local +
-// remote + screen, so the old separate self-view / screen-share stages are gone.
-export function LocalSelfView() { return null; }
-export function ScreenShareView() { return null; }
-
 /**
  * Unified participant grid: local camera/avatar, local screen share, every
  * remote camera forwarded by the SFU, plus avatar tiles for audio-only remotes.
