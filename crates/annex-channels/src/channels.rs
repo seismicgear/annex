@@ -184,9 +184,24 @@ pub fn delete_channel(conn: &Connection, channel_id: &str) -> Result<(), Channel
     let tx = conn.unchecked_transaction()?;
 
     // Delete child rows first to satisfy FK constraints.
+    //
+    // Every table with a foreign key to `channels(channel_id)` has to appear
+    // here, because none of them declare `ON DELETE`. `channel_key_wraps`
+    // arrived later, with E2E key distribution, and was not added — so
+    // deleting an *encrypted* channel raised a foreign-key violation, rolled
+    // the whole transaction back, and left the channel in place. A moderator
+    // could not delete an E2E channel at all, and the cause was invisible:
+    // it surfaces as a generic database error.
+    //
+    // `message_edits` is not listed because migration 043 gave it
+    // `ON DELETE CASCADE`, so deleting the messages takes it with them.
     tx.execute("DELETE FROM messages WHERE channel_id = ?1", [channel_id])?;
     tx.execute(
         "DELETE FROM channel_members WHERE channel_id = ?1",
+        [channel_id],
+    )?;
+    tx.execute(
+        "DELETE FROM channel_key_wraps WHERE channel_id = ?1",
         [channel_id],
     )?;
 

@@ -967,6 +967,15 @@ mod deletion_tests {
             [],
         )
         .unwrap();
+        // `channel_members` has a composite FK to platform_identities, so a
+        // membership row needs a real identity behind it.
+        conn.execute(
+            "INSERT INTO platform_identities
+               (server_id, pseudonym_id, participant_type, active)
+             VALUES (1, 'alice', 'HUMAN', 1)",
+            [],
+        )
+        .unwrap();
         conn
     }
 
@@ -1039,6 +1048,51 @@ mod deletion_tests {
             history.is_empty(),
             "the deleted message still serves its earlier versions: {history:?}",
         );
+    }
+
+    /// An encrypted channel must be deletable.
+    ///
+    /// `delete_channel` removes messages and members before the channel row,
+    /// to satisfy the foreign keys. `channel_key_wraps` — added later, for
+    /// E2E key distribution — references `channels(channel_id)` with no
+    /// `ON DELETE` and was never added to that list, so deleting an
+    /// encrypted channel raised a foreign-key violation and rolled the whole
+    /// transaction back. A moderator could not delete an E2E channel at all,
+    /// and the reason was invisible: the error surfaces as a generic
+    /// database failure.
+    ///
+    /// Same shape as the retention sweep that `message_edits` blocked. Both
+    /// were only reachable with `PRAGMA foreign_keys = ON`, which the pool
+    /// sets and the other tests in this file do not.
+    #[test]
+    fn an_e2e_channel_can_be_deleted() {
+        let conn = setup();
+        conn.execute(
+            "INSERT INTO messages (server_id, channel_id, message_id, sender_pseudonym, content)
+             VALUES (1, 'chan', 'm1', 'alice', 'hi')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channel_members (channel_id, pseudonym_id, server_id)
+             VALUES ('chan', 'alice', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channel_key_wraps
+               (server_id, channel_id, recipient_pseudonym_id, sender_pseudonym_id, wrapped_key_b64)
+             VALUES (1, 'chan', 'alice', 'bob', 'd3JhcHBlZA==')",
+            [],
+        )
+        .unwrap();
+
+        delete_channel(&conn, "chan").expect("an encrypted channel must be deletable");
+
+        let wraps: i64 = conn
+            .query_row("SELECT COUNT(*) FROM channel_key_wraps", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(wraps, 0, "key wraps outlived the channel they belong to");
     }
 
     /// An ordinary edit still keeps its history — the fix must not delete
