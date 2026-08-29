@@ -89,6 +89,15 @@ tracked; the ledger and contact sheet land in `docs/ui-audit/`. Full docs:
 A run takes ~11 minutes and is easy to invalidate. Four rules, each learned by
 invalidating one:
 
+- **Never start a run while another is still going.** `e2e-server.sh start`
+  stops whatever is on port 3000 before starting its own server, so a second
+  run silently kills the first one's server mid-capture and the two then fight
+  over the port. It does not look like a collision from either side: the
+  victim reports ordinary capture failures, and the new run fails its founder
+  setup with "founder must be the earliest registrant" because it is talking
+  to a database that is not the one it created. Launching record+verify as one
+  background command is not enough — wait for the VERIFY to finish, not just
+  the record.
 - **Never run `cargo` alongside a run.** The server is built at run start; a
   concurrent cargo command takes the build lock and starves it. Once
   `Server ready` appears in the log the lock is free, but CPU contention can

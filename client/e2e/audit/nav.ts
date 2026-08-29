@@ -100,6 +100,38 @@ const CAPTURE_STYLESHEET = `
     --server-accent: #e63946 !important;
   }
 
+  /*
+   * The encryption bar's button carries its label on the same wrapping flex
+   * line as the bar's text, and that label starts with an emoji. The width the
+   * emoji glyph resolves to depends on when the system emoji font becomes
+   * available — a race a screenshot can lose — and it swings by about 32px.
+   *
+   * On the narrower viewports that swing decides where the bar's text wraps,
+   * which decides the bar's height, which moves the entire message column
+   * below it by 4px. That is around 0.0075 of a mobile viewport: under the
+   * 0.005 tolerance on some runs and over it on others, which is the worst
+   * place for a difference to sit — it passes a recording run and fails the
+   * verification run that follows, on the same commit.
+   *
+   * Clipping was tried first and is not enough. Playwright draws masks at the
+   * masked elements' page coordinates even when they sit behind a clipped
+   * region, so a shifted message list moves its masks inside the clip too.
+   *
+   * Giving the text its own flex line takes the button out of the wrap
+   * calculation entirely: the text now wraps against the full width of the
+   * bar whatever the button measures. The button still renders, still shows
+   * its emoji, and still gets audited — it simply sits on its own row for
+   * every capture instead of only some of them.
+   *
+   * Pinned here rather than in the product for the same reason the persona
+   * accent is: the layout is real behaviour, and whether the button belongs
+   * beside the text or beneath it is a design decision, not something the
+   * harness should quietly settle.
+   */
+  .channel-encryption-bar > span:first-of-type {
+    flex: 1 0 100% !important;
+  }
+
 `;
 
 /** Apply capture-time stabilisation. Safe to call more than once per page. */

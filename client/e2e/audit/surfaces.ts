@@ -326,6 +326,19 @@ export const SURFACES: Surface[] = [
     // tolerance on some runs and over it on others. The subject here is the
     // search panel; the audits still run against the whole page regardless.
     clip: '.message-search',
+    // The message column behind the panel is masked as a whole.
+    //
+    // Clipping to `.message-search` was not enough: Playwright draws masks at
+    // the masked elements' PAGE coordinates, even for elements outside the
+    // clip, so the per-message `.sender` and avatar masks in the auto-scrolling
+    // column behind the panel land at different places inside the crop when
+    // that column settles a pixel or two differently. The panel has
+    // transparent regions, so they show through.
+    //
+    // Masking `.message-view` itself replaces all of that with one rectangle
+    // whose position follows a layout container rather than scroll state. The
+    // search panel — the actual subject — is still diffed.
+    mask: ['.message-view'],
   },
 
   {
@@ -621,7 +634,9 @@ export const SURFACES: Surface[] = [
     // image rather than the region under test. The surface is about how a hit
     // renders, so the page behind it is not evidence, it is noise.
     clip: '.message-search',
-    mask: ['.search-result-time', '.search-result-sender'],
+    // `.message-view` for the same reason its three siblings mask it: the
+    // scrolling column behind the panel moves its masks inside the crop.
+    mask: ['.search-result-time', '.search-result-sender', '.message-view'],
   },
   {
     id: 'message-search-no-results',
@@ -647,6 +662,19 @@ export const SURFACES: Surface[] = [
     // tolerance on some runs and over it on others. The subject here is the
     // search panel; the audits still run against the whole page regardless.
     clip: '.message-search',
+    // The message column behind the panel is masked as a whole.
+    //
+    // Clipping to `.message-search` was not enough: Playwright draws masks at
+    // the masked elements' PAGE coordinates, even for elements outside the
+    // clip, so the per-message `.sender` and avatar masks in the auto-scrolling
+    // column behind the panel land at different places inside the crop when
+    // that column settles a pixel or two differently. The panel has
+    // transparent regions, so they show through.
+    //
+    // Masking `.message-view` itself replaces all of that with one rectangle
+    // whose position follows a layout container rather than scroll state. The
+    // search panel — the actual subject — is still diffed.
+    mask: ['.message-view'],
   },
   {
     id: 'message-search-failed',
@@ -674,6 +702,19 @@ export const SURFACES: Surface[] = [
     // for: the encryption bar's emoji-width swing shifts the message column
     // behind the panel.
     clip: '.message-search',
+    // The message column behind the panel is masked as a whole.
+    //
+    // Clipping to `.message-search` was not enough: Playwright draws masks at
+    // the masked elements' PAGE coordinates, even for elements outside the
+    // clip, so the per-message `.sender` and avatar masks in the auto-scrolling
+    // column behind the panel land at different places inside the crop when
+    // that column settles a pixel or two differently. The panel has
+    // transparent regions, so they show through.
+    //
+    // Masking `.message-view` itself replaces all of that with one rectangle
+    // whose position follows a layout container rather than scroll state. The
+    // search panel — the actual subject — is still diffed.
+    mask: ['.message-view'],
   },
   {
     id: 'message-edit-history-empty',
