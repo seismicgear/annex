@@ -538,6 +538,11 @@ function MessageBubble({
 export function MessageView() {
   const identity = useIdentityStore((s) => s.identity);
   const { messages, activeChannelId, loadOlderMessages, loadingOlder, hasMoreMessages, historyLoading, historyError, typingUsers, olderError, retryOlderMessages, editError, clearEditError } = useChannelsStore();
+  // Whether the channel LIST itself failed to load, as opposed to this
+  // channel's history. Without it the no-channel-selected branch below tells
+  // the user to pick from a list that is empty because the request failed.
+  const channelListError = useChannelsStore((s) => s.error);
+  const channelListLoading = useChannelsStore((s) => s.loading);
   const selectChannel = useChannelsStore((s) => s.selectChannel);
   const loadVisibleUsernames = useUsernameStore((s) => s.loadVisibleUsernames);
   // The cache itself, not the getter: this has to re-evaluate when a fetch
@@ -648,6 +653,22 @@ export function MessageView() {
   );
 
   if (!activeChannelId) {
+    // "Select a channel to start chatting" is an instruction the user cannot
+    // follow when the sidebar is empty because its request failed — the
+    // rate-limited and offline states both land here, with one region saying
+    // the load failed and this one implying nothing is wrong. Say the same
+    // thing the sidebar says instead, and point at the retry that lives there.
+    if (channelListError) {
+      return shell(
+        <p className="error-message">
+          Your channels could not be loaded. Retry from the channel list.
+        </p>,
+        'empty',
+      );
+    }
+    if (channelListLoading) {
+      return shell(<p>Loading channels...</p>, 'empty');
+    }
     return shell(<p>Select a channel to start chatting</p>, 'empty');
   }
 
