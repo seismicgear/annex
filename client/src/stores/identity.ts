@@ -375,7 +375,21 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
   },
 
   importBackup: async (json: string) => {
-    const identity = await db.importIdentity(json);
+    // A backup that will not parse, or is not an Annex backup, threw out of
+    // here with nothing catching it. The screen that calls this renders
+    // `{error && ...}` from the store, and no failure path ever set it — so
+    // picking the wrong file did nothing at all, on the one screen people
+    // reach when something has already gone wrong for them.
+    let identity: StoredIdentity;
+    try {
+      identity = await db.importIdentity(json);
+    } catch (err) {
+      set({
+        error: 'That file is not a usable Annex backup.',
+        errorDetails: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+      });
+      return;
+    }
     const identities = await db.listIdentities();
     if (identity.pseudonymId && (await cachedProofIsUsable(identity))) {
       api.setSessionToken(identity.sessionToken ?? null);

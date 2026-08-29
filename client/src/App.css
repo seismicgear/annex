@@ -358,8 +358,19 @@
   text-align: left;
 }
 
-.import-section input[type='file'] {
-  margin-bottom: 0.5rem;
+/* The native input is hidden now and driven by a button, so the rule that
+   spaced it is gone. These two lay out the pair that replaced it. */
+.import-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.35rem;
+}
+
+.import-filename {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--text-subtle);
 }
 
 /* ── Channel List ── */

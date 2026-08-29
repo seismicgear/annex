@@ -364,3 +364,48 @@ describe('identity store — a corrupt cached proof must not open the door', () 
     expect(useIdentityStore.getState().phase).toBe('ready');
   });
 });
+
+/**
+ * A backup that will not import has to say so.
+ *
+ * `importBackup` called `db.importIdentity` with nothing catching it, so a
+ * file that is not JSON — or is JSON but not an Annex backup — threw out of
+ * the action into an unhandled rejection. `IdentitySetup` renders
+ * `{error && ...}` straight from this store, and no failure path ever set
+ * it, so choosing the wrong file did nothing whatsoever: no message, no
+ * change of state, nothing in the UI at all. That is the first screen of the
+ * app, and it is the screen people reach when something has already gone
+ * wrong for them and they are trying to restore.
+ */
+describe('identity store — a backup that cannot be imported', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('reports the failure instead of throwing out of the action', async () => {
+    vi.resetModules();
+    mockImportIdentity.mockRejectedValueOnce(new SyntaxError('Unexpected token < in JSON'));
+
+    const { useIdentityStore } = await import('./identity');
+
+    await expect(useIdentityStore.getState().importBackup('<html>')).resolves.toBeUndefined();
+
+    const state = useIdentityStore.getState();
+    expect(state.error).toMatch(/not a usable Annex backup/i);
+    // The detail is what tells someone which file they picked by mistake.
+    expect(state.errorDetails).toMatch(/SyntaxError/);
+  });
+
+  it('leaves the identity list alone when the import fails', async () => {
+    vi.resetModules();
+    mockImportIdentity.mockRejectedValueOnce(new Error('not a backup'));
+
+    const { useIdentityStore } = await import('./identity');
+    const before = useIdentityStore.getState().storedIdentities;
+
+    await useIdentityStore.getState().importBackup('nonsense');
+
+    expect(useIdentityStore.getState().storedIdentities).toBe(before);
+    expect(useIdentityStore.getState().identity).toBeNull();
+  });
+});
