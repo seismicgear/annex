@@ -7,7 +7,7 @@ use std::sync::{Arc, RwLock};
 use tokio::sync::broadcast;
 use tracing::{debug, error, warn};
 use webrtc::api::interceptor_registry::register_default_interceptors;
-use webrtc::api::media_engine::MediaEngine;
+use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_OPUS, MIME_TYPE_VP8};
 use webrtc::api::{APIBuilder, API};
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::ice_transport::ice_server::RTCIceServer;
@@ -19,8 +19,9 @@ use webrtc::rtcp::packet::Packet;
 use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
 use webrtc::rtcp::transport_feedbacks::transport_layer_nack::{NackPair, TransportLayerNack};
 use webrtc::rtp::packet::Packet as RtpPacket;
-use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
+use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters};
+use webrtc::rtp_transceiver::RTCPFeedback;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 use webrtc::track::track_local::TrackLocal;
@@ -108,6 +109,79 @@ fn outbound_track_for(
     })
 }
 
+/// Register exactly the codecs this SFU can forward.
+///
+/// The relay does not transcode: inbound RTP is written verbatim onto an
+/// outbound `TrackLocalStaticRTP`, which rewrites the SSRC and payload type to
+/// that track's own negotiated values and leaves the payload bytes alone. Both
+/// outbound tracks are built with a fixed capability — `audio/opus` and
+/// `video/VP8` (see `make_outbound_tracks`) — so anything else arriving
+/// inbound is relabelled as Opus or VP8 and handed to a decoder that cannot
+/// read it.
+///
+/// `register_default_codecs()` advertised G722, PCMU, PCMA, VP9, six H.264
+/// profiles and AV1 alongside them. Any of those could win negotiation on the
+/// publish leg, and two things then broke without a word: remote video decoded
+/// as VP8 when it was VP9 or H.264, and — because `relay_inbound_track` builds
+/// an `OpusDecoder` for every audio track unconditionally — the STT tap fed
+/// G.711 bytes to an Opus decoder.
+///
+/// Advertising only what the relay handles makes both assumptions true by
+/// construction. The cost is H.264 hardware decode, which is worth less than
+/// video that is intermittently unreadable depending on which codec the
+/// browser happened to pick.
+fn register_relay_codecs(media_engine: &mut MediaEngine) -> Result<(), webrtc::Error> {
+    media_engine.register_codec(
+        RTCRtpCodecParameters {
+            capability: RTCRtpCodecCapability {
+                mime_type: MIME_TYPE_OPUS.to_owned(),
+                clock_rate: 48_000,
+                channels: 2,
+                sdp_fmtp_line: "minptime=10;useinbandfec=1".to_owned(),
+                rtcp_feedback: vec![],
+            },
+            payload_type: 111,
+            ..Default::default()
+        },
+        RTPCodecType::Audio,
+    )?;
+    media_engine.register_codec(
+        RTCRtpCodecParameters {
+            capability: RTCRtpCodecCapability {
+                mime_type: MIME_TYPE_VP8.to_owned(),
+                clock_rate: 90_000,
+                channels: 0,
+                sdp_fmtp_line: String::new(),
+                // Matches what `register_default_codecs` attaches to VP8. The
+                // relay actively sends PLI and NACK, so the browser has to be
+                // told it may send them too.
+                rtcp_feedback: vec![
+                    RTCPFeedback {
+                        typ: "goog-remb".to_owned(),
+                        parameter: String::new(),
+                    },
+                    RTCPFeedback {
+                        typ: "ccm".to_owned(),
+                        parameter: "fir".to_owned(),
+                    },
+                    RTCPFeedback {
+                        typ: "nack".to_owned(),
+                        parameter: String::new(),
+                    },
+                    RTCPFeedback {
+                        typ: "nack".to_owned(),
+                        parameter: "pli".to_owned(),
+                    },
+                ],
+            },
+            payload_type: 96,
+            ..Default::default()
+        },
+        RTPCodecType::Video,
+    )?;
+    Ok(())
+}
+
 /// Build the track pair carrying `sender`'s media into a receiver's
 /// connection.
 ///
@@ -169,8 +243,8 @@ impl std::fmt::Debug for VoiceService {
 impl VoiceService {
     pub fn new(config: WebRtcConfig) -> Self {
         let mut media_engine = MediaEngine::default();
-        if let Err(e) = media_engine.register_default_codecs() {
-            warn!(error = %e, "failed to register default codecs");
+        if let Err(e) = register_relay_codecs(&mut media_engine) {
+            warn!(error = %e, "failed to register relay codecs");
         }
 
         let registry = match register_default_interceptors(Registry::new(), &mut media_engine) {
@@ -1043,6 +1117,73 @@ mod tests {
             pc: Arc::new(pc),
             outbound,
         })
+    }
+
+    /// The SDP we put on the wire must offer exactly what the relay can
+    /// forward.
+    ///
+    /// `make_outbound_tracks` hardcodes `audio/opus` and `video/VP8`, and
+    /// `relay_inbound_track` builds an `OpusDecoder` for every audio track.
+    /// Neither can hold unless negotiation is incapable of settling on
+    /// anything else — the relay does not transcode, and
+    /// `TrackLocalStaticRTP` rewrites the payload type while leaving the
+    /// payload bytes alone, so a VP9 frame relabelled as VP8 reaches the
+    /// receiver as noise.
+    ///
+    /// `register_default_codecs()` also advertised G722, PCMU, PCMA, VP9, six
+    /// H.264 profiles and AV1. Asserting on the generated SDP rather than on
+    /// the MediaEngine is deliberate: the SDP is what a browser actually
+    /// negotiates against.
+    #[tokio::test]
+    async fn the_offer_advertises_only_the_codecs_the_relay_can_forward() {
+        let svc = test_service();
+        let pc = svc
+            .api
+            .new_peer_connection(RTCConfiguration::default())
+            .await
+            .expect("peer connection");
+        pc.add_transceiver_from_kind(RTPCodecType::Audio, None)
+            .await
+            .expect("audio transceiver");
+        pc.add_transceiver_from_kind(RTPCodecType::Video, None)
+            .await
+            .expect("video transceiver");
+        let offer = pc.create_offer(None).await.expect("offer");
+
+        let advertised: Vec<String> = offer
+            .sdp
+            .lines()
+            .filter_map(|l| l.strip_prefix("a=rtpmap:"))
+            .filter_map(|l| l.split_once(' '))
+            .map(|(_, codec)| codec.split('/').next().unwrap_or("").to_lowercase())
+            .filter(|c| !c.is_empty() && c != "rtx" && c != "red" && c != "ulpfec")
+            .collect();
+
+        for banned in ["g722", "pcmu", "pcma", "vp9", "h264", "av1", "av1x"] {
+            assert!(
+                !advertised.iter().any(|c| c == banned),
+                "{banned} was advertised, but the relay can only forward Opus and VP8 \
+                 — got {advertised:?}"
+            );
+        }
+        assert!(
+            advertised.iter().any(|c| c == "opus"),
+            "Opus must be offered — got {advertised:?}"
+        );
+        assert!(
+            advertised.iter().any(|c| c == "vp8"),
+            "VP8 must be offered — got {advertised:?}"
+        );
+
+        let _ = pc.close().await;
+    }
+
+    /// And the outbound tracks must declare that same pair.
+    #[test]
+    fn the_outbound_tracks_declare_the_codecs_that_were_advertised() {
+        let tracks = make_outbound_tracks("ch", "alice");
+        assert_eq!(tracks.audio.codec().mime_type, "audio/opus");
+        assert_eq!(tracks.video.codec().mime_type, "video/VP8");
     }
 
     /// Each sender reaches a receiver on its OWN track.
