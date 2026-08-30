@@ -66,11 +66,16 @@ if [ "$QUICK" = false ]; then
 fi
 
 # ---------- Harness scripts ----------
-# scripts/e2e-server.sh decides which process owns port 3000, and both of the
-# ways it got that wrong were silent: it reported "Killing stray process" and
-# killed nothing, then reported "Server ready" against the survivor. Seconds
-# to run, and nothing else covers a shell script.
-run_step "e2e-server port handling" bash scripts/tests/e2e-server-port.test.sh
+# The scripts everything else is run through. Their failures were the silent
+# kind: e2e-server.sh reported "Killing stray process" having killed nothing
+# and then "Server ready" against the survivor; claude-setup.sh ended on a
+# failed apt-get with no statement of what failed, because `set -e` with
+# `pipefail` aborts at the pipeline and the check sat after it. Seconds each,
+# and nothing else covers a shell script. Globbed, so a new one is picked up.
+for _t in scripts/tests/*.test.sh; do
+    [ -e "$_t" ] || continue
+    run_step "$(basename "$_t" .test.sh) (harness)" bash "$_t"
+done
 
 # ---------- Rust tests ----------
 if [ -n "$CARGO_TEST_EXTRA" ]; then

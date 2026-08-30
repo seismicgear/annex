@@ -60,13 +60,16 @@ jobs:
         run: npm test
         working-directory: zk
 
-      # scripts/e2e-server.sh decides which process owns port 3000 for every
-      # browser lane. Both of the ways it got that wrong were silent — it
-      # reported "Killing stray process" having killed nothing, then reported
-      # "Server ready" against the survivor, and the run drove a database it
-      # had not created. Seconds to run.
+      # The scripts everything else runs through. Their failures were the
+      # silent kind: e2e-server.sh reported "Server ready" about a server it
+      # had not started, and claude-setup.sh ended on a failed apt-get with
+      # no statement of what failed. Seconds each.
       - name: Harness script tests
-        run: bash scripts/tests/e2e-server-port.test.sh
+        run: |
+          for t in scripts/tests/*.test.sh; do
+            echo "== $t"
+            bash "$t" || exit 1
+          done
 
       - name: cargo fmt
         run: cargo fmt --all --check
