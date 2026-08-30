@@ -255,7 +255,8 @@ export type AdminSection =
   | 'Server Settings'
   | 'Server Policy'
   | 'Member Management'
-  | 'Channel Management';
+  | 'Channel Management'
+  | 'Federation Delivery';
 
 /**
  * Open an admin section via the header gear dropdown.

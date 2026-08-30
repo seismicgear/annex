@@ -8,6 +8,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { useIdentityStore } from '@/stores/identity';
 import { useChannelsStore } from '@/stores/channels';
 import { useServersStore } from '@/stores/servers';
+import { FederationOutbox } from '@/components/FederationOutbox';
 import { InfoTip } from '@/components/InfoTip';
 import { Modal } from '@/components/Modal';
 import { useDialogTitleId } from '@/lib/use-dialog-title-id';
@@ -1087,7 +1088,11 @@ function ChannelManager({ pseudonymId }: { pseudonymId: string }) {
 
 // ── Main AdminPanel ──
 
-export function AdminPanel({ section }: { section?: 'policy' | 'channels' | 'members' | 'server' }) {
+export function AdminPanel({
+  section,
+}: {
+  section?: 'policy' | 'channels' | 'members' | 'server' | 'federation';
+}) {
   const identity = useIdentityStore((s) => s.identity);
 
   if (!identity?.pseudonymId) return null;
@@ -1097,6 +1102,7 @@ export function AdminPanel({ section }: { section?: 'policy' | 'channels' | 'mem
     policy: 'Server Policy',
     members: 'Member Management',
     channels: 'Channel Management',
+    federation: 'Federation Delivery',
   };
 
   const active = section ?? 'policy';
@@ -1118,6 +1124,7 @@ export function AdminPanel({ section }: { section?: 'policy' | 'channels' | 'mem
       )}
       {active === 'policy' && <PolicyEditor pseudonymId={identity.pseudonymId} />}
       {active === 'members' && <MemberManager pseudonymId={identity.pseudonymId} />}
+      {active === 'federation' && <FederationOutbox pseudonymId={identity.pseudonymId} />}
       {active === 'channels' && <ChannelManager pseudonymId={identity.pseudonymId} />}
     </div>
   );

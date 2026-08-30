@@ -34,7 +34,8 @@ export type AppView =
   | 'admin-policy'
   | 'admin-channels'
   | 'admin-members'
-  | 'admin-server';
+  | 'admin-server'
+  | 'admin-federation';
 
 export interface MainLayoutProps {
   activeView: AppView;
@@ -110,12 +111,17 @@ export function MainLayout({
       case 'admin-policy':
       case 'admin-channels':
       case 'admin-members':
-      case 'admin-server': {
-        const sectionMap: Record<string, 'policy' | 'channels' | 'members' | 'server'> = {
+      case 'admin-server':
+      case 'admin-federation': {
+        const sectionMap: Record<
+          string,
+          'policy' | 'channels' | 'members' | 'server' | 'federation'
+        > = {
           'admin-policy': 'policy',
           'admin-channels': 'channels',
           'admin-members': 'members',
           'admin-server': 'server',
+          'admin-federation': 'federation',
         };
         return (
           <main className="view-content">
@@ -245,6 +251,12 @@ export function MainLayout({
                   onClick={() => navigateAdmin('admin-channels')}
                 >
                   Channel Management
+                </button>
+                <button
+                  className={`admin-dropdown-item ${activeView === 'admin-federation' ? 'active' : ''}`}
+                  onClick={() => navigateAdmin('admin-federation')}
+                >
+                  Federation Delivery
                 </button>
               </div>
             )}

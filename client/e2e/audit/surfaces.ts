@@ -1733,6 +1733,101 @@ export const SURFACES: Surface[] = [
     clip: '.admin-panel',
   },
   {
+    id: 'admin-federation-outbox',
+    stage: '09-admin',
+    title: 'Admin — federation delivery queue',
+    role: 'founder',
+    intent:
+      'What the operator sees when cross-server deliveries are piling up. The list endpoint and ' +
+      'its per-row retry existed with no caller at all — the handler comment says the status ' +
+      'counts are there so "the UI show[s] queue depth and stuck deliveries at a glance", for a ' +
+      'UI that did not exist. A row carrying `.outbox-row-error` is a message nobody on the ' +
+      'other side received.',
+    // Stubbed: reaching a real failed delivery needs a second server that
+    // refuses one, and the row would then outlive this surface in a database
+    // every later surface shares.
+    setup: stub('**/api/admin/federation/outbox*', {
+      entries: [
+        {
+          id: 41,
+          peer_instance_id: 3,
+          peer_base_url: 'https://peer.audit.test',
+          peer_label: 'Audit Peer',
+          message_id: 'fed-msg-000041',
+          status: 'failed',
+          attempts: 5,
+          next_retry_at: '2026-03-01 10:14:00',
+          last_error: 'peer returned 503 after 5 attempts',
+          created_at: '2026-03-01 09:02:00',
+          updated_at: '2026-03-01 10:02:00',
+          envelope_bytes: 4096,
+        },
+        {
+          id: 42,
+          peer_instance_id: 3,
+          peer_base_url: 'https://peer.audit.test',
+          peer_label: 'Audit Peer',
+          message_id: 'fed-msg-000042',
+          status: 'pending',
+          attempts: 0,
+          next_retry_at: '2026-03-01 10:15:00',
+          last_error: null,
+          created_at: '2026-03-01 10:10:00',
+          updated_at: '2026-03-01 10:10:00',
+          envelope_bytes: 1536,
+        },
+      ],
+      counts: { pending: 1, failed: 1, delivered: 128 },
+      limit: 50,
+      offset: 0,
+    }),
+    navigate: async (page) => {
+      await openAdminSection(page, 'Federation Delivery');
+      await expect(page.locator('.outbox-row-error')).toContainText('peer returned 503', {
+        timeout: 15_000,
+      });
+    },
+    clip: '.admin-panel',
+  },
+  {
+    id: 'admin-federation-outbox-empty',
+    stage: '09-admin',
+    title: 'Admin — federation delivery queue with nothing in it',
+    role: 'founder',
+    intent:
+      'The `.outbox-empty` state, on the real server, which federates with nobody. It has to ' +
+      'read as "nothing has been queued" rather than as a screen that failed to load — the two ' +
+      'are the same picture unless the code keeps them apart.',
+    navigate: async (page) => {
+      await openAdminSection(page, 'Federation Delivery');
+      await expect(page.locator('.outbox-empty')).toBeVisible({ timeout: 15_000 });
+    },
+    clip: '.admin-panel',
+  },
+  {
+    id: 'admin-federation-outbox-unreadable',
+    stage: '09-admin',
+    title: 'Admin — delivery queue the server would not report',
+    role: 'founder',
+    intent:
+      'The counterpart to the empty queue, and the reason that surface is worth having. A ' +
+      'dropped read must not render as "nothing has been queued", which would tell the operator ' +
+      'every envelope had been delivered.',
+    setup: stub('**/api/admin/federation/outbox*', { error: 'internal server error' }, 500),
+    navigate: async (page) => {
+      await openAdminSection(page, 'Federation Delivery');
+      await expect(page.locator('.error-message[role="alert"]')).toContainText(
+        'Could not read the delivery queue',
+        { timeout: 15_000 },
+      );
+    },
+    waive: {
+      network: 'the 500 is the stub this surface installs — it is the condition under test',
+      console: 'the browser logs the injected 500 to the console as well',
+    },
+    clip: '.admin-panel',
+  },
+  {
     id: 'admin-server-policy',
     stage: '09-admin',
     title: 'Admin — server policy',

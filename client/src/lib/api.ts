@@ -75,12 +75,14 @@ export {
   getPublicEvents,
 } from '@/api/rtx';
 
-export type { MemberInfo, StorageHealth } from '@/api/admin';
+export type { MemberInfo, OutboxEntry, OutboxPage, StorageHealth } from '@/api/admin';
 export {
   clearStorageGate,
+  getFederationOutbox,
   getPolicy,
   getServer,
   getStorageHealth,
+  retryFederationOutboxRow,
   listMembers,
   renameServer,
   setPublicUrl,

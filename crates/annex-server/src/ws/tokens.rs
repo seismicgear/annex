@@ -55,8 +55,16 @@ use axum::http::StatusCode;
 pub const WS_TOKEN_TTL_SECS: u64 = 60;
 
 /// Duration for which a REST session token is valid (1 hour).
+///
 /// Issued by verify-membership after ZK proof verification. The client
-/// auto-refreshes before expiry via `POST /api/ws/token`.
+/// auto-refreshes it via `POST /api/session/refresh`, which accepts an
+/// expired-but-validly-signed token — see `startTokenRefresh` in
+/// `client/src/api/core.ts`.
+///
+/// This said `POST /api/ws/token`, four lines below a comment stating that
+/// the client never calls that endpoint. Both cannot be true, and it was the
+/// wrong one: `/api/ws/token` mints a 60-second WS token and would not
+/// refresh a REST session even if the client did call it.
 pub const SESSION_TOKEN_TTL_SECS: u64 = 3600;
 
 /// Derive a 32-byte HMAC key for WebSocket session tokens from the server's

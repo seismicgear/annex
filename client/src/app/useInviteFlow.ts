@@ -19,6 +19,7 @@ import {
   saveStartupMode,
 } from '@/lib/tauri';
 import type { IdentityPhase } from '@/stores/identity';
+import type { AppView } from '@/app/MainLayout';
 import type { InvitePayload, LegacyInvitePayload, StoredIdentity } from '@/types';
 
 interface UseInviteFlowArgs {
@@ -33,7 +34,7 @@ interface UseInviteFlowArgs {
   setServerReady: Dispatch<SetStateAction<boolean>>;
   setPendingInviteCode: Dispatch<SetStateAction<string | null>>;
   setPendingServerSlug: Dispatch<SetStateAction<string | null>>;
-  setActiveView: Dispatch<SetStateAction<'chat' | 'federation' | 'events' | 'admin-policy' | 'admin-channels' | 'admin-members' | 'admin-server'>>;
+  setActiveView: Dispatch<SetStateAction<AppView>>;
 }
 
 interface UseInviteFlowResult {

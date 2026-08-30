@@ -60,6 +60,65 @@ export async function clearStorageGate(
   );
 }
 
+// ── Federation outbox ──
+
+/** One queued cross-server delivery. */
+export interface OutboxEntry {
+  id: number;
+  peer_instance_id: number;
+  /** Null when the peer instance row has since been removed. */
+  peer_base_url: string | null;
+  peer_label: string | null;
+  message_id: string;
+  /** `pending` | `delivered` | `failed` | `paused`. */
+  status: string;
+  attempts: number;
+  next_retry_at: string;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+  envelope_bytes: number;
+}
+
+export interface OutboxPage {
+  entries: OutboxEntry[];
+  /** Row count per status across the whole queue, not just this page. */
+  counts: Record<string, number>;
+  limit: number;
+  offset: number;
+}
+
+export async function getFederationOutbox(
+  pseudonymId: string,
+  opts: { status?: string; limit?: number; offset?: number } = {},
+): Promise<OutboxPage> {
+  const params = new URLSearchParams();
+  if (opts.status) params.set('status', opts.status);
+  if (opts.limit != null) params.set('limit', String(opts.limit));
+  if (opts.offset != null) params.set('offset', String(opts.offset));
+  const qs = params.toString();
+  return request<OutboxPage>(`/api/admin/federation/outbox${qs ? '?' + qs : ''}`, {
+    headers: authHeaders(pseudonymId),
+  });
+}
+
+/**
+ * Return a `failed` or `paused` row to the retry rotation.
+ *
+ * The server rejects `pending` and `delivered` rows with a 409 rather than
+ * silently doing nothing — retrying a delivered envelope would duplicate the
+ * work even though the receiver's ledger drops it.
+ */
+export async function retryFederationOutboxRow(
+  pseudonymId: string,
+  outboxId: number,
+): Promise<{ status: string; outbox_id: number; message_id: string; new_status: string }> {
+  return request<{ status: string; outbox_id: number; message_id: string; new_status: string }>(
+    `/api/admin/federation/outbox/${outboxId}/retry`,
+    { method: 'POST', headers: authHeaders(pseudonymId) },
+  );
+}
+
 // ── Server Settings ──
 
 export async function getServer(
