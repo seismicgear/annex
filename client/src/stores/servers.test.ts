@@ -53,6 +53,7 @@ vi.mock('@/lib/api', () => ({
   resolveUrl: (url: string) => url,
 }));
 
+const mockCloneForServer = vi.fn(async (): Promise<string | null> => 'cloned-identity-1');
 vi.mock('./identity', () => ({
   useIdentityStore: Object.assign(
     () => ({}),
@@ -61,6 +62,7 @@ vi.mock('./identity', () => ({
         identity: { pseudonymId: 'p1', sessionToken: 'session-tok-1' },
         selectIdentity: (...args: unknown[]) => mockSelectIdentity(...args),
         loadPermissions: (...args: unknown[]) => mockLoadPermissions(...args),
+        cloneForServer: () => mockCloneForServer(),
       }),
       setState: vi.fn(),
     },
@@ -457,5 +459,50 @@ describe('switchServer rollback is scoped to the switch that owns the context', 
 
     expect(useServersStore.getState().activeServerId).toBe('srv-prev');
     expect(useServersStore.getState().switchError).toBeTruthy();
+  });
+});
+
+describe('a registration that fails says which of the two things failed', () => {
+  // `beginRemoteRegistration` returns null for an unreachable server AND for
+  // a local identity clone that could not be made, and all five callers
+  // rendered their own wording of "could not reach the server". For the
+  // second case that is a misdiagnosis: nothing was unreachable, and the
+  // user is sent to check a network that is working.
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockListServers.mockResolvedValue([]);
+    mockCloneForServer.mockResolvedValue('cloned-identity-1');
+    mockGetRemoteServerSummary.mockResolvedValue({
+      slug: 'remote',
+      label: 'Remote Server',
+      total_active_members: 5,
+    });
+  });
+
+  it('names the address and the reason when the server cannot be reached', async () => {
+    mockGetRemoteServerSummary.mockRejectedValueOnce(new Error('Failed to fetch'));
+    const { useServersStore } = await import('./servers');
+    useServersStore.setState({ servers: [], registrationError: null });
+
+    const result = await useServersStore.getState().beginRemoteRegistration('https://peer.example');
+
+    expect(result).toBeNull();
+    const why = useServersStore.getState().registrationError ?? '';
+    expect(why).toContain('https://peer.example');
+    expect(why).toContain('Failed to fetch');
+  });
+
+  it('does not blame the network when the local identity clone fails', async () => {
+    mockCloneForServer.mockResolvedValueOnce(null);
+    const { useServersStore } = await import('./servers');
+    useServersStore.setState({ servers: [], registrationError: null });
+
+    const result = await useServersStore.getState().beginRemoteRegistration('https://peer.example');
+
+    expect(result).toBeNull();
+    const why = useServersStore.getState().registrationError ?? '';
+    expect(why).toMatch(/local identity/i);
+    expect(why).not.toMatch(/could not reach/i);
+    expect(why).toMatch(/existing identity is unchanged/i);
   });
 });

@@ -81,7 +81,9 @@ function PeerDetail({ peer, onClose }: PeerDetailProps) {
           setJoinPhase('registering');
         }
       } else {
-        setJoinError('Could not reach server.');
+        setJoinError(
+          useServersStore.getState().registrationError ?? 'Could not reach server.',
+        );
         setJoinPhase('error');
       }
     } catch (err) {

@@ -163,14 +163,22 @@ export function ServerHub() {
 
   const handleAdd = useCallback(async (baseUrl: string) => {
     const server = await beginRemoteRegistration(baseUrl);
-    if (!server) throw new Error('Failed to add server');
+    if (!server) {
+      throw new Error(
+        useServersStore.getState().registrationError ?? 'Failed to add server',
+      );
+    }
   }, [beginRemoteRegistration]);
 
   const handleRetry = useCallback(async (server: SavedServer) => {
     // Remove the stale placeholder and re-initiate registration
     await removeServer(server.id).catch(() => {});
     const newServer = await beginRemoteRegistration(server.baseUrl);
-    if (!newServer) throw new Error('Failed to retry registration');
+    if (!newServer) {
+      throw new Error(
+        useServersStore.getState().registrationError ?? 'Failed to retry registration',
+      );
+    }
   }, [beginRemoteRegistration, removeServer]);
 
   const handleRemove = useCallback(async (serverId: string) => {

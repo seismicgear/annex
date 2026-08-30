@@ -129,7 +129,9 @@ export function useInviteFlow({
       if (!server) {
         useIdentityStore.setState({
           phase: 'error',
-          error: `Failed to connect to server at ${invite.server}.`,
+          error:
+            useServersStore.getState().registrationError ??
+            `Failed to connect to server at ${invite.server}.`,
         });
         useServersStore.getState().cleanupFailedRegistration();
         return;

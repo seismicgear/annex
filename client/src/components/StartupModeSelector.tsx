@@ -215,7 +215,10 @@ export function StartupModeSelector({ onReady }: Props) {
         // registration so App.tsx Gate 3 creates a proper identity/server pair.
         const server = await useServersStore.getState().beginRemoteRegistration(normalized);
         if (!server) {
-          setError('Failed to begin registration with the remote server.');
+          setError(
+            useServersStore.getState().registrationError ??
+              'Failed to begin registration with the remote server.',
+          );
           setPhase('choose');
           return;
         }

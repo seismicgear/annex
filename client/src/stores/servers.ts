@@ -44,6 +44,18 @@ interface ServersState {
   removeServer: (serverId: string) => Promise<void>;
   /** Dismiss the last switch failure. */
   clearSwitchError: () => void;
+  /**
+   * Why the last `beginRemoteRegistration` returned null.
+   *
+   * It returns `null` for two unrelated failures — the server could not be
+   * reached, or a local identity record could not be created for it — and
+   * all five callers rendered their own variant of "could not reach the
+   * server". For the second case that is simply wrong: nothing was
+   * unreachable, and the user is sent to check a network that is fine.
+   * `addRemoteServer` also swallowed the underlying error in a bare catch,
+   * so even the reachable case had no reason to give.
+   */
+  registrationError: string | null;
   /** Update persona mapping for a server. */
   setServerPersona: (serverId: string, personaId: string | null, accentColor?: string) => Promise<void>;
   /** Get the active server entry. */
@@ -77,6 +89,7 @@ export const useServersStore = create<ServersState>((set, get) => ({
   serverImageUrl: null,
   pendingRegistrationServerId: null,
   switchError: null,
+  registrationError: null,
   clearSwitchError: () => set({ switchError: null }),
   switchEpoch: 0,
 
@@ -284,7 +297,12 @@ export const useServersStore = create<ServersState>((set, get) => ({
       set({ servers: allServers });
 
       return server;
-    } catch {
+    } catch (err) {
+      set({
+        registrationError:
+          `Could not reach ${baseUrl}, or it did not answer as an Annex server` +
+          (err instanceof Error && err.message ? `: ${err.message}` : '.'),
+      });
       return null;
     }
   },
@@ -380,9 +398,11 @@ export const useServersStore = create<ServersState>((set, get) => ({
 
   beginRemoteRegistration: async (baseUrl: string) => {
     const identityStore = useIdentityStore.getState();
+    set({ registrationError: null });
 
     // 1. Add remote server placeholder (or return existing)
     const server = await get().addRemoteServer(baseUrl);
+    // `addRemoteServer` has already recorded why.
     if (!server) return null;
 
     // If the server already has an identity, just switch to it
@@ -393,7 +413,15 @@ export const useServersStore = create<ServersState>((set, get) => ({
 
     // 2. Clone or derive a new identity record for this server
     const clonedId = await identityStore.cloneForServer();
-    if (!clonedId) return null;
+    if (!clonedId) {
+      // Nothing was unreachable — this is local, and saying otherwise sends
+      // the user to debug a network that is working.
+      set({
+        registrationError:
+          'Could not create a local identity for this server. Your existing identity is unchanged.',
+      });
+      return null;
+    }
 
     // 3. Select the new identity so registration uses it (not the current one)
     await identityStore.selectIdentity(clonedId);
