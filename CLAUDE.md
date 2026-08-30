@@ -192,10 +192,28 @@ of these. Look for them first:
 5. **A non-happy-path branch that drops structure the happy path provides** —
    an error state rendered without the landmark, heading, or list the normal
    state has. Found 4×.
+6. **A read-then-write transaction opened DEFERRED.** Under WAL the read takes
+   a snapshot and the write has to upgrade; a concurrent commit turns that into
+   `SQLITE_BUSY_SNAPSHOT` *immediately*, with the busy handler never invoked,
+   so `busy_timeout` cannot help. It surfaces as an intermittent
+   "database is locked" on a perfectly ordinary operation. Every write
+   transaction in this repo is now `BEGIN IMMEDIATE`; if you add one, make it
+   IMMEDIATE too. Found in `edit_message`/`delete_message` first, then in
+   `send_message` a release later, then in eleven more sites.
 
 The corollary: unit tests do not catch (1)–(4), because in every case the unit
 under test was correct. They are only visible at the boundary — an HTTP-level
 test, or the browser.
+
+And a corollary to that: **the harness can have defect (1) too.** The audit's
+`postFreshMessage` waited for the message bubble, which is optimistic — it
+appears when the frame leaves the device and stays there, marked `failed`, if
+the server refuses. So a failed send passed the helper, the surface
+photographed a failed bubble and a composer error, and `--update-baselines`
+wrote it down as the correct appearance. A real intermittent server bug (6,
+above) lived inside a committed screenshot. When a helper waits for something
+to *appear*, ask what it looks like when the operation failed; if the answer is
+"the same, plus a badge", the helper is asserting nothing.
 
 ### Linting
 ```bash

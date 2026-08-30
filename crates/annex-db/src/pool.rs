@@ -53,6 +53,23 @@ pub fn create_pool(db_path: &str, settings: DbRuntimeSettings) -> Result<DbPool,
     let manager = SqliteConnectionManager::file(db_path)
         .with_flags(flags)
         .with_init(move |conn| {
+            // `busy_timeout` FIRST, before anything that can contend.
+            //
+            // It used to be set after the journal-mode switch, and switching
+            // to WAL needs a brief exclusive lock. r2d2 opens several
+            // connections at once, so their WAL switches raced each other
+            // with the default timeout of zero and one lost instantly —
+            // every server start logged `ERROR r2d2: database is locked`
+            // before the first migration ran. r2d2 retried and the server
+            // came up fine, so the only casualty was an operator reading an
+            // ERROR at startup that meant nothing. A pragma that governs
+            // waiting has to be in place before the first statement that
+            // might wait.
+            conn.execute_batch(&format!(
+                "PRAGMA busy_timeout = {};",
+                settings.busy_timeout_ms
+            ))?;
+
             // Set WAL mode and verify it was accepted. In-memory databases
             // report "memory" which is expected and acceptable.
             let journal_mode: String =
@@ -65,11 +82,7 @@ pub fn create_pool(db_path: &str, settings: DbRuntimeSettings) -> Result<DbPool,
                     )),
                 ));
             }
-            conn.execute_batch(&format!(
-                "PRAGMA foreign_keys = ON;
-                 PRAGMA busy_timeout = {};",
-                settings.busy_timeout_ms
-            ))
+            conn.execute_batch("PRAGMA foreign_keys = ON;")
         });
 
     // In-memory databases (:memory:) create a separate, empty database for
@@ -152,5 +165,56 @@ mod tests {
             4,
             "file-backed pool should use configured max_size"
         );
+    }
+}
+
+#[cfg(test)]
+mod init_order_tests {
+    use super::*;
+
+    /// A pool that opens several connections at once must not race itself.
+    ///
+    /// `PRAGMA journal_mode = WAL` needs a brief exclusive lock, and it used
+    /// to run before `PRAGMA busy_timeout` was set — so with the default
+    /// timeout of zero, one of the concurrently-initialising connections lost
+    /// instantly. Every server start logged `ERROR r2d2: database is locked`.
+    /// The pool recovered by retrying, which is why it went unnoticed: the
+    /// only casualty was an operator reading an ERROR that meant nothing.
+    #[test]
+    fn concurrent_connection_init_does_not_trip_the_lock() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("init-race.sqlite");
+        let pool = create_pool(
+            db_path.to_str().expect("utf-8 path"),
+            DbRuntimeSettings {
+                busy_timeout_ms: 5_000,
+                pool_max_size: 8,
+            },
+        )
+        .expect("pool builds");
+
+        // Force every connection in the pool to be opened and initialised at
+        // the same time, which is what r2d2 does at startup.
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let p = pool.clone();
+                std::thread::spawn(move || {
+                    let conn = p.get().expect("connection initialises");
+                    let mode: String = conn
+                        .query_row("PRAGMA journal_mode;", [], |r| r.get(0))
+                        .expect("journal mode readable");
+                    let busy: i32 = conn
+                        .query_row("PRAGMA busy_timeout;", [], |r| r.get(0))
+                        .expect("busy timeout readable");
+                    (mode, busy)
+                })
+            })
+            .collect();
+
+        for h in handles {
+            let (mode, busy) = h.join().expect("no panic during init");
+            assert_eq!(mode, "wal", "every connection must reach WAL mode");
+            assert_eq!(busy, 5_000, "every connection must carry the busy timeout");
+        }
     }
 }

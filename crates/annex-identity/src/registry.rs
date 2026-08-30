@@ -92,7 +92,16 @@ pub fn register_identity(
     let (leaf_index, new_root, updates) = tree.preview_insert(leaf)?;
 
     // Start transaction
-    let tx = conn.transaction().map_err(IdentityError::DatabaseError)?;
+    // IMMEDIATE. Every write transaction in this codebase takes the
+    // RESERVED lock at BEGIN: a DEFERRED one reads a WAL snapshot first
+    // and then has to upgrade, and if another connection committed in
+    // between SQLite answers SQLITE_BUSY_SNAPSHOT immediately — the busy
+    // handler is never called, so `busy_timeout` cannot help. That is
+    // what made message sends fail intermittently with "database is
+    // locked"; see `ws_send_immediate_tx.rs`.
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(IdentityError::DatabaseError)?;
 
     // 2. Check & Insert into vrp_identities
     // We try to insert directly. If it fails due to UNIQUE constraint, it's a duplicate.

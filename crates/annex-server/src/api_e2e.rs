@@ -272,7 +272,7 @@ pub async fn post_channel_key_wraps_handler(
         };
 
         let tx = conn
-            .transaction()
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
         let mut inserted = 0usize;
         for w in &wraps {
