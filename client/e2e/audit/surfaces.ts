@@ -1450,11 +1450,25 @@ export const SURFACES: Surface[] = [
       { error: 'voice_disabled', message: 'Voice is disabled on this server.' },
       403,
     ),
+    // This used to click the join button only `if (await join.isVisible())`
+    // and then sleep 1500ms with no assertion at all — the one surface in the
+    // manifest that asserted nothing. Both halves are the harness making the
+    // mistake it exists to catch: if the button ever stopped rendering, the
+    // click was skipped silently, and the sleep would then photograph an
+    // ordinary disconnected panel under the name "Voice join rejected by the
+    // server". `--update-baselines` would write that down as correct.
+    //
+    // The message text is asserted, not just the presence of `.voice-error`,
+    // because the panel renders that same element for four other reasons —
+    // a join error, a dropped call, an unavailable server, a denied identity
+    // — and any of them would satisfy a bare visibility check.
     navigate: async (page) => {
       await selectChannel(page, SEED.channels.voice);
-      const join = page.locator('.voice-join-btn');
-      if (await join.isVisible().catch(() => false)) await join.click();
-      await page.waitForTimeout(1500);
+      await page.locator('.voice-join-btn').click();
+      await expect(page.locator('.voice-error')).toContainText(
+        'Voice is disabled on this server.',
+        { timeout: 15_000 },
+      );
     },
     waive: {
       network: 'the 403 is injected deliberately to reach the join-failure state',
@@ -1670,6 +1684,53 @@ export const SURFACES: Surface[] = [
     navigate: async (page) => {
       await openAdminSection(page, 'Server Settings');
     },
+  },
+  {
+    id: 'admin-storage-gate-degraded',
+    stage: '09-admin',
+    title: 'Admin — storage gate holding writes',
+    role: 'founder',
+    intent:
+      'The other half of `storage-gate-507`. That surface photographs what a user sees when ' +
+      'the gate is closed; this is the screen the operator opens next. Both the read and the ' +
+      'clear existed on the server with no caller in the client, so the panel used to say ' +
+      'nothing about a server that had stopped accepting writes — and the gate has no ' +
+      'automatic recovery, so the only way out was a process restart.',
+    setup: stub('**/api/admin/storage', {
+      state: 'degraded',
+      reason: 'free space 41 MB is below the configured block threshold of 128 MB',
+      writes_blocked: true,
+    }),
+    navigate: async (page) => {
+      await openAdminSection(page, 'Server Settings');
+      await expect(page.locator('.storage-gate-state')).toContainText('degraded', {
+        timeout: 15_000,
+      });
+    },
+    clip: '.admin-panel',
+  },
+  {
+    id: 'admin-storage-gate-unreadable',
+    stage: '09-admin',
+    title: 'Admin — storage state the server would not report',
+    role: 'founder',
+    intent:
+      'A dropped read must not render as a healthy server. This panel exists to say when the ' +
+      'light is red, so a green one produced by a failed request is worse than no panel: the ' +
+      'operator stops looking.',
+    setup: stub('**/api/admin/storage', { error: 'internal server error' }, 500),
+    navigate: async (page) => {
+      await openAdminSection(page, 'Server Settings');
+      await expect(page.locator('.warning-hint[role="alert"]')).toContainText(
+        'Could not read storage health',
+        { timeout: 15_000 },
+      );
+    },
+    waive: {
+      network: 'the 500 is the stub this surface installs — it is the condition under test',
+      console: 'the browser logs the injected 500 to the console as well',
+    },
+    clip: '.admin-panel',
   },
   {
     id: 'admin-server-policy',

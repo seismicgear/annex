@@ -25,6 +25,41 @@ export async function updatePolicy(
   });
 }
 
+// ── Storage health gate (ADR-0009) ──
+
+/**
+ * The storage gate's current state.
+ *
+ * `degraded` means the server is answering every mutating request with a 507
+ * and will keep doing so until an operator clears it — there is no automatic
+ * recovery, by design. Both this and the clear below existed on the server
+ * with no caller here, so from the UI the only recovery was still a process
+ * restart.
+ */
+export interface StorageHealth {
+  /** `"healthy"`, `"warn"`, or `"degraded"`. */
+  state: string;
+  /** Why the gate left `healthy`. Empty while healthy. */
+  reason: string;
+  /** True while mutating requests are being rejected with HTTP 507. */
+  writes_blocked: boolean;
+}
+
+export async function getStorageHealth(pseudonymId: string): Promise<StorageHealth> {
+  return request<StorageHealth>('/api/admin/storage', {
+    headers: authHeaders(pseudonymId),
+  });
+}
+
+export async function clearStorageGate(
+  pseudonymId: string,
+): Promise<{ status: string; previous_state: string; state: string }> {
+  return request<{ status: string; previous_state: string; state: string }>(
+    '/api/admin/storage/clear',
+    { method: 'POST', headers: authHeaders(pseudonymId) },
+  );
+}
+
 // ── Server Settings ──
 
 export async function getServer(

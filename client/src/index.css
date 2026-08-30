@@ -117,6 +117,9 @@
      "ready" and "error" shared a background. */
   --success-tint-15: rgba(74, 222, 128, 0.15);
   --success-surface: #0a1a0e;
+  /* The warning scale had a colour and no tint, so the one place that needed
+     a warning background wrote the rgba out by hand. */
+  --warning-tint-15: rgba(251, 191, 36, 0.15);
 
   /* Shape and depth. */
   --radius-sm: 4px;

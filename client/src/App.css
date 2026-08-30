@@ -3013,7 +3013,7 @@
 }
 
 .alignment-badge.alignment-partial {
-  background: rgba(251, 191, 36, 0.15);
+  background: var(--warning-tint-15);
   color: var(--warning-color);
 }
 
@@ -3225,6 +3225,34 @@
    available one. Was an inline style on one element; it belongs here so the
    next one reads the same. */
 .field-hint.warning-hint {
+  color: var(--warning-color);
+}
+
+/* Storage gate state line. The badge carries the colour so the state word
+   itself is what changes, rather than tinting a whole paragraph. */
+.storage-gate-state {
+  margin: 0 0 0.4rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.storage-gate-badge {
+  display: inline-block;
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.storage-gate-healthy .storage-gate-badge {
+  background: var(--success-tint-15);
+  color: var(--success-color);
+}
+
+.storage-gate-tripped .storage-gate-badge {
+  background: var(--warning-tint-15);
   color: var(--warning-color);
 }
 

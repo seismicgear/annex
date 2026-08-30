@@ -16,6 +16,135 @@ import { canCreateInviteLink, createInviteLink } from '@/lib/invite';
 import type { ServerPolicy, AccessMode } from '@/types';
 import type { MemberInfo } from '@/lib/api';
 
+// ── Storage health gate ──
+
+/**
+ * The storage gate, and the only way to clear it that is not a process
+ * restart.
+ *
+ * `GET /api/admin/storage` and `POST /api/admin/storage/clear` shipped with
+ * no caller in the client at all. So a server that had tripped the gate
+ * answered every write with a 507 — the `storage-gate-507` surface is a
+ * picture of exactly that — and the admin panel, the one place an operator
+ * looks when the server stops accepting writes, said nothing about it and
+ * offered no way out. The server-side doc comment notes the clear endpoint
+ * exists because "before this endpoint existed the only recovery path was a
+ * process restart"; from the UI it still was.
+ *
+ * The gate has no automatic recovery by design, so clearing it is an
+ * assertion by a human that the underlying condition is fixed. If it is not,
+ * the next failing write re-trips it with a fresh reason — which is why this
+ * says what it is asserting rather than reading as a dismiss button.
+ */
+function StorageHealthSection({ pseudonymId }: { pseudonymId: string }) {
+  const [health, setHealth] = useState<api.StorageHealth | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [clearing, setClearing] = useState(false);
+  const [clearError, setClearError] = useState<string | null>(null);
+  const [cleared, setCleared] = useState(false);
+
+  const load = useCallback(async () => {
+    // A failed read is not a healthy server. Rendering it as one would put a
+    // green light on a panel whose whole job is to say when the light is red.
+    try {
+      const next = await api.getStorageHealth(pseudonymId);
+      setHealth(next);
+      setLoadError(null);
+    } catch (err) {
+      setHealth(null);
+      setLoadError(err instanceof Error ? err.message : String(err));
+    }
+  }, [pseudonymId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getStorageHealth(pseudonymId)
+      .then((next) => {
+        if (!cancelled) {
+          setHealth(next);
+          setLoadError(null);
+        }
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setHealth(null);
+          setLoadError(err instanceof Error ? err.message : String(err));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pseudonymId]);
+
+  const handleClear = async () => {
+    setClearing(true);
+    setClearError(null);
+    try {
+      await api.clearStorageGate(pseudonymId);
+      setCleared(true);
+      await load();
+    } catch (err) {
+      setClearError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setClearing(false);
+    }
+  };
+
+  const healthy = health?.state === 'healthy';
+
+  return (
+    <div className="policy-section">
+      <h3>
+        Storage
+        <InfoTip text="When the server runs low on disk it stops accepting writes and answers them with a 507. It does not recover on its own — an operator clears it here once the disk has been freed." />
+      </h3>
+
+      {loadError && (
+        <p className="field-hint warning-hint" role="alert">
+          Could not read storage health: {loadError}
+        </p>
+      )}
+
+      {health && (
+        <>
+          <p className={`storage-gate-state storage-gate-${healthy ? 'healthy' : 'tripped'}`}>
+            <span className="storage-gate-badge">{health.state}</span>
+            {health.writes_blocked
+              ? ' — writes are being rejected'
+              : healthy
+                ? ' — writes are being accepted'
+                : ' — writes are still being accepted'}
+          </p>
+          {health.reason && <p className="field-hint">{health.reason}</p>}
+          {!healthy && (
+            <>
+              <p className="field-hint">
+                Free space on the server&apos;s volume, then clear the gate. Clearing
+                asserts the condition is fixed; if it is not, the next failing write
+                trips it again.
+              </p>
+              <button type="button" onClick={handleClear} disabled={clearing}>
+                {clearing ? 'Clearing...' : 'Clear storage gate'}
+              </button>
+            </>
+          )}
+          {cleared && healthy && (
+            <p className="success-message" role="status">
+              Storage gate cleared. Writes are being accepted again.
+            </p>
+          )}
+          {clearError && (
+            <p className="error-message" role="alert">
+              Could not clear the storage gate: {clearError}
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── Server Settings ──
 
 function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
@@ -327,6 +456,8 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
           </p>
         )}
       </div>
+
+      <StorageHealthSection pseudonymId={pseudonymId} />
 
       {error && <div className="error-message" role="alert">{error}</div>}
       {success && <div className="success-message" role="status">{success}</div>}

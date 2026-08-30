@@ -219,8 +219,13 @@ test.describe('surface manifest', () => {
         'pinned by four tests in ServerHub.switcherror.test.tsx instead.',
       'clear-state-error':
         'needs an IndexedDB delete to fail, which the harness has no way to force',
-      'voice-error': 'covered in substance by voice-join-failure; the in-call variant is not',
-      'voice-status-error': 'the StatusBar mirror of the same in-call voice error',
+      'voice-status-error':
+        'the StatusBar mic-toggle error. It renders only while `inCall` — a real voice ' +
+        'token, a connected channel and a live WebRTC room — and only when that room\'s ' +
+        '`localParticipant.setMicrophoneEnabled` rejects. Reaching it means a real SFU ' +
+        'connection in headless Chromium with a microphone that fails on toggle, which the ' +
+        'harness has no way to arrange. `voice-error` covers the disconnected variants; ' +
+        'the in-call one shares its element and is reached the same way this is not.',
       'pending-status': 'the optimistic in-flight moment, gone before a capture settles',
     };
 

@@ -75,10 +75,12 @@ export {
   getPublicEvents,
 } from '@/api/rtx';
 
-export type { MemberInfo } from '@/api/admin';
+export type { MemberInfo, StorageHealth } from '@/api/admin';
 export {
+  clearStorageGate,
   getPolicy,
   getServer,
+  getStorageHealth,
   listMembers,
   renameServer,
   setPublicUrl,
