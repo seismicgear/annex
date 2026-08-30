@@ -300,13 +300,18 @@ pub async fn drain_outbox_batch(state: Arc<AppState>, batch_size: i64) -> Result
                 tokio::task::spawn_blocking(move || {
                     let conn = pool.get().ok();
                     if let Some(c) = conn {
-                        let _ = c.execute(
+                        if let Err(e) = c.execute(
                             "UPDATE federation_outbox SET attempts = attempts + 1, \
                              last_error = 'unknown peer', \
                              next_retry_at = datetime('now', '+1 hour'), \
                              updated_at = datetime('now') WHERE id = ?1",
                             rusqlite::params![id],
-                        );
+                        ) {
+                            tracing::error!(
+                                row = id,
+                                "outbox: could not record unknown-peer backoff: {e}"
+                            );
+                        }
                     }
                 });
                 continue;
@@ -338,13 +343,15 @@ pub async fn drain_outbox_batch(state: Arc<AppState>, batch_size: i64) -> Result
             let pool = state.pool.clone();
             let _ = tokio::task::spawn_blocking(move || {
                 if let Ok(conn) = pool.get() {
-                    let _ = conn.execute(
+                    if let Err(e) = conn.execute(
                         "UPDATE federation_outbox SET status = 'failed', \
                          attempts = attempts + 1, \
                          last_error = 'peer base_url is not an allowed peer address (dequeue-time SSRF gate)', \
                          updated_at = datetime('now') WHERE id = ?1",
                         rusqlite::params![id],
-                    );
+                    ) {
+                        tracing::error!(row = id, "outbox: could not mark row failed: {e}");
+                    }
                 }
             })
             .await;
@@ -370,13 +377,26 @@ pub async fn drain_outbox_batch(state: Arc<AppState>, batch_size: i64) -> Result
                     let pool = state.pool.clone();
                     let _ = tokio::task::spawn_blocking(move || {
                         if let Ok(conn) = pool.get() {
-                            let _ = conn.execute(
+                            // The one that matters most. A delivered row
+                            // that cannot be marked delivered stays pending,
+                            // is sent again on the next tick, and keeps
+                            // going until `max_attempts` records it as
+                            // failed — a message the peer already has,
+                            // reported as undelivered, from a write nobody
+                            // was told about.
+                            if let Err(e) = conn.execute(
                                 "UPDATE federation_outbox SET status = 'delivered', \
                                  attempts = attempts + 1, \
                                  last_error = NULL, \
                                  updated_at = datetime('now') WHERE id = ?1",
                                 rusqlite::params![id],
-                            );
+                            ) {
+                                tracing::error!(
+                                    row = id,
+                                    "outbox: delivered, but could not mark it so — it will be \
+                                     redelivered until it exhausts its attempts: {e}"
+                                );
+                            }
                         }
                     })
                     .await;
@@ -388,7 +408,7 @@ pub async fn drain_outbox_batch(state: Arc<AppState>, batch_size: i64) -> Result
                     let pool = state.pool.clone();
                     let _ = tokio::task::spawn_blocking(move || {
                         if let Ok(conn) = pool.get() {
-                            let _ = conn.execute(
+                            if let Err(e) = conn.execute(
                                 "UPDATE federation_outbox SET attempts = attempts + 1, \
                                  last_error = ?1, \
                                  next_retry_at = datetime('now', ?2), \
@@ -401,7 +421,13 @@ pub async fn drain_outbox_batch(state: Arc<AppState>, batch_size: i64) -> Result
                                     format!("+{backoff} seconds"),
                                     id,
                                 ],
-                            );
+                            ) {
+                                tracing::error!(
+                                    row = id,
+                                    "outbox: could not record the HTTP failure and backoff, so \
+                                     this row will be retried immediately: {e}"
+                                );
+                            }
                         }
                     })
                     .await;
@@ -412,13 +438,19 @@ pub async fn drain_outbox_batch(state: Arc<AppState>, batch_size: i64) -> Result
                     let err_str = e.to_string();
                     let _ = tokio::task::spawn_blocking(move || {
                         if let Ok(conn) = pool.get() {
-                            let _ = conn.execute(
+                            if let Err(e) = conn.execute(
                                 "UPDATE federation_outbox SET attempts = attempts + 1, \
                                  last_error = ?1, \
                                  next_retry_at = datetime('now', ?2), \
                                  updated_at = datetime('now') WHERE id = ?3",
                                 rusqlite::params![err_str, format!("+{backoff} seconds"), id,],
-                            );
+                            ) {
+                                tracing::error!(
+                                    row = id,
+                                    "outbox: could not record the transport failure and backoff, \
+                                     so this row will be retried immediately: {e}"
+                                );
+                            }
                         }
                     })
                     .await;
