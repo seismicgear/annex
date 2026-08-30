@@ -61,6 +61,8 @@ export function SocialRecoveryDialog({ onClose }: Props) {
   const [recoveryConfig, setRecoveryConfig] = useState<RecoveryConfig | null>(null);
   const [generatedShards, setGeneratedShards] = useState<RecoveryShard[]>([]);
   const [copiedShard, setCopiedShard] = useState<number | null>(null);
+  const [copiedShards, setCopiedShards] = useState<Set<number>>(new Set());
+  const [confirmClose, setConfirmClose] = useState(false);
   /** Shard JSON shown in a read-only fallback field when clipboard write fails. */
   const [fallbackShardText, setFallbackShardText] = useState<string | null>(null);
 
@@ -166,6 +168,12 @@ export function SocialRecoveryDialog({ onClose }: Props) {
     try {
       await navigator.clipboard.writeText(shardData);
       setCopiedShard(shard.index);
+      // Durable, unlike `copiedShard` which flashes for two seconds: this is
+      // what the Done guard reads. Recorded only on a clipboard success — the
+      // fallback path surfaces the text for manual copying but cannot know
+      // whether the user took it, and on an irreversible step it is better to
+      // warn once too often than to wave someone through.
+      setCopiedShards((prev) => new Set(prev).add(shard.index));
       setTimeout(() => setCopiedShard(null), 2000);
     } catch {
       // Clipboard API denied (e.g. Tauri webview) — show inline fallback
@@ -311,6 +319,9 @@ export function SocialRecoveryDialog({ onClose }: Props) {
     }
   };
 
+  const uncopiedShards = generatedShards.filter((g) => !copiedShards.has(g.index));
+
+
   return (
     <Modal onClose={onClose} className="social-recovery-dialog" titleId={titleId} focusKey={mode}>
       <h2 id={titleId}>Social Recovery</h2>
@@ -431,7 +442,9 @@ export function SocialRecoveryDialog({ onClose }: Props) {
             Send each shard to the designated guardian. They should store it
             securely.{' '}
             Any {recoveryConfig.threshold} of the {recoveryConfig.totalShards}{' '}
-            shards will recover your identity.
+            shards will recover your identity.{' '}
+            <strong>They are shown only once</strong> — copy every shard before
+            you close this dialog.
           </p>
 
           <div className="shard-list">
@@ -445,7 +458,11 @@ export function SocialRecoveryDialog({ onClose }: Props) {
                     className="shard-copy-btn"
                     onClick={() => copyShard(shard)}
                   >
-                    {copiedShard === shard.index ? 'Copied!' : 'Copy'}
+                    {copiedShard === shard.index
+                      ? 'Copied!'
+                      : copiedShards.has(shard.index)
+                        ? 'Copy again'
+                        : 'Copy'}
                   </button>
                 </div>
                 <code className="shard-data">{shard.data.slice(0, 32)}...</code>
@@ -474,8 +491,31 @@ export function SocialRecoveryDialog({ onClose }: Props) {
             </div>
           )}
 
+          {confirmClose && uncopiedShards.length > 0 && (
+            <div className="error-message" role="alert">
+              {uncopiedShards.length} of {generatedShards.length} shards have not
+              been copied. They cannot be shown again once this dialog closes,
+              and a recovery set you never distributed will not bring your
+              identity back. Press Done again to close anyway.
+            </div>
+          )}
+
           <div className="dialog-actions">
-            <button className="primary-btn" onClick={onClose}>
+            <button
+              className="primary-btn"
+              onClick={() => {
+                // The shard payloads live only in component state — the stored
+                // config deliberately holds `data: '***'` — so closing is a
+                // one-way door. Without this, someone who closed early was left
+                // with a config saying recovery was configured and no shards in
+                // existence: a safety net recorded as installed while absent.
+                if (uncopiedShards.length > 0 && !confirmClose) {
+                  setConfirmClose(true);
+                  return;
+                }
+                onClose();
+              }}
+            >
               Done
             </button>
           </div>

@@ -166,6 +166,65 @@ describe('SocialRecoveryDialog', () => {
     blobs.forEach((b, i) => fireEvent.change(fields[i], { target: { value: b } }));
   }
 
+  // The shard payloads exist only in component state — the stored config holds
+  // `data: '***'` on purpose — so closing this dialog destroys them. Someone
+  // who closed early was left with a config saying recovery was configured and
+  // no shards in existence: a safety net recorded as installed while absent.
+  async function generateThreeShards(onClose: () => void) {
+    render(<SocialRecoveryDialog onClose={onClose} />);
+    fireEvent.click(screen.getByText('Set Up Recovery'));
+    fireEvent.change(screen.getByLabelText(/Total Guardians/), { target: { value: '3' } });
+    const rows = screen.getAllByPlaceholderText(/Guardian \d+ name/);
+    for (let i = 0; i < rows.length; i++) {
+      fireEvent.change(rows[i], { target: { value: `Guardian ${i + 1}` } });
+    }
+    fireEvent.click(screen.getByText('Generate Shards'));
+    await waitFor(() => expect(screen.getByText(/Shard #1/)).toBeInTheDocument());
+  }
+
+  it('warns instead of closing when shards have not been copied', async () => {
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+      writable: true,
+      configurable: true,
+    });
+    const onClose = vi.fn();
+    await generateThreeShards(onClose);
+
+    fireEvent.click(screen.getByText('Done'));
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert').textContent).toMatch(/3 of 3 shards have not\s+been copied/);
+
+    // Deliberate: the second press goes through, so the warning informs
+    // rather than traps.
+    fireEvent.click(screen.getByText('Done'));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes on the first press once every shard is copied', async () => {
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+      writable: true,
+      configurable: true,
+    });
+    const onClose = vi.fn();
+    await generateThreeShards(onClose);
+
+    // Each click takes the first button still reading exactly "Copy"; the one
+    // just clicked flashes "Copied!" for two seconds and the earlier ones read
+    // "Copy again", so no button is visited twice.
+    for (let i = 0; i < 3; i++) {
+      const next = screen.getAllByText(/^Copy$/)[0];
+      await act(async () => {
+        fireEvent.click(next);
+      });
+    }
+    await waitFor(() => expect(screen.queryAllByText(/^Copy$/)).toHaveLength(0));
+
+    fireEvent.click(screen.getByText('Done'));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it('offers one guardian row per shard on first open', () => {
     render(<SocialRecoveryDialog onClose={vi.fn()} />);
     fireEvent.click(screen.getByText('Set Up Recovery'));

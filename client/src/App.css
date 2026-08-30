@@ -539,6 +539,22 @@
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+  /* Reserve the scrollbar's space whether or not it is showing.
+     `::-webkit-scrollbar` is 6px wide with a transparent track and a
+     `#1a1a1a` thumb, so on this near-black ground it is close to invisible —
+     but it still takes width out of the content box when it appears. Own
+     messages are right-aligned, so the whole conversation jumps sideways the
+     moment the history grows long enough to scroll: a real jitter a user sees
+     when they send one more message.
+     It is also a flake source. `message-edit-refused`,
+     `message-delete-confirm` and `message-image-lightbox` at the mobile
+     viewport — the narrowest, so the first to cross the threshold — moved 8px
+     between two record/verify pairs with no code change between them, because
+     which side of the threshold the shared, accumulating message column lands
+     on depends on the run's history. Reserving the gutter makes the picture
+     independent of that. Unsupported engines ignore the property and get
+     today's behaviour, so it cannot regress. */
+  scrollbar-gutter: stable;
 }
 
 .message-view.empty {

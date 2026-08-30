@@ -205,6 +205,23 @@ invalidating one:
   waits for `.pending-status` to clear now. The lesson is the older one
   restated: when a helper waits for something to appear, ask what the thing
   looks like in every state it can appear in.
+- **An invisible scrollbar still takes width, and right-aligned content moves
+  when it appears.** `::-webkit-scrollbar` is 6px with a transparent track and
+  a `#1a1a1a` thumb, which on this near-black ground reads as nothing — a
+  run-length scan across the row finds pure black on BOTH sides of the diff,
+  which is what makes this look like it is not a scrollbar. It is. Own
+  messages are right-aligned inside `.message-view`, so the conversation jumps
+  sideways the moment the history grows long enough to scroll.
+  `message-edit-refused`, `message-delete-confirm` and
+  `message-image-lightbox` at mobile — the narrowest viewport, so the first to
+  cross the threshold — moved 8px between two record/verify PAIRS with no code
+  change between them: not a coin flip within a run, but a change in which
+  side of the threshold the shared, accumulating message column had reached.
+  `scrollbar-gutter: stable` reserves the space always, which fixes the user-
+  visible jitter and makes the pictures independent of run history. Note the
+  earlier 21px shift on `message-edit-refused` was NOT this — that was a
+  withheld reply button. Two different causes on one surface; measure before
+  deciding which you have.
 - **The pointer's resting place is in the picture.** It stays where the last
   click left it, and hover affordances render. Moving a strip under a resting
   pointer re-hovers whatever slid beneath it, so `mobile/chat-main` came out
