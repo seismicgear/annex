@@ -1438,6 +1438,39 @@
   cursor: not-allowed;
 }
 
+/* The quieter of the two button weights — and, until now, the invisible one.
+   
+   `.secondary-btn` is used in six components and had no rule anywhere, so it
+   fell through to the base `button` in index.css: `background-color: #0a0a0a`
+   with a transparent border. That is the same colour as the dialogs and
+   panels it sits on, so every secondary button in the app rendered as bare
+   text. "Copy transfer code" — the one action on the device-link screen —
+   looked like a caption, and the Server Name "Save" in admin settings looked
+   like a label beside the Public URL "Save" that has a box round it.
+   
+   A visible surface and a border, one step down from `.primary-btn`'s filled
+   treatment. Found by listing every className in the JSX with no matching CSS
+   rule. */
+.secondary-btn {
+  background: var(--surface-2);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.secondary-btn:hover {
+  background: var(--surface-1);
+  border-color: var(--text-quiet);
+}
+
+.secondary-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .success-message {
   color: #4caf50;
   margin-bottom: 0.5rem;
