@@ -27,7 +27,7 @@ import {
 } from '@/lib/tauri';
 import { setApiBaseUrl, fetchWithTimeout } from '@/lib/api';
 import { clearWebStartupMode, loadWebStartupMode, saveWebStartupMode } from '@/lib/startup-prefs';
-import { normalizeServerUrl } from '@/lib/url';
+import { describeServerUrlError, normalizeServerUrl } from '@/lib/url';
 import { useServersStore } from '@/stores/servers';
 import { useIdentityStore } from '@/stores/identity';
 import { useVoiceStore } from '@/stores/voice';
@@ -154,18 +154,11 @@ export function StartupModeSelector({ onReady }: Props) {
       try {
         normalized = normalizeServerUrl(url);
       } catch (err) {
-        // `normalizeServerUrl` already knows why it refused — "Only http and
-        // https URLs are supported." — and this used to throw that away for
-        // a bare "Invalid URL format.", which names nothing the user typed
-        // and says nothing about what a valid address looks like. The other
-        // two failure branches below both echo the address and say what to
-        // do; this is the one a new user hits most, from a typo or a pasted
-        // path, and it was the only one giving them nothing to act on.
-        const why = err instanceof Error ? err.message : 'It could not be parsed.';
-        setError(
-          `Could not use "${url.trim()}" as a server address. ${why} ` +
-            'Enter a hostname like annex.example.com, optionally with a port.',
-        );
+        // The other two failure branches below both echo the address and say
+        // what to do; this is the one a new user hits most, from a typo or a
+        // pasted path. `describeServerUrlError` keeps its wording in step with
+        // the same question asked by `ServerHub`'s Join-a-Server dialog.
+        setError(describeServerUrlError(url, err));
         return;
       }
 

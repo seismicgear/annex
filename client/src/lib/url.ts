@@ -60,3 +60,29 @@ export function normalizeServerUrl(input: string): string {
 
   return normalized;
 }
+
+/**
+ * Turn a `normalizeServerUrl` rejection into a sentence for the user.
+ *
+ * Two dialogs ask for a server address — `StartupModeSelector` on first run
+ * and `ServerHub`'s Join-a-Server — and both used to answer a bad one with a
+ * bare "Invalid URL format.", naming nothing the user typed and describing no
+ * address that would work. Both were fixed, separately, to the same wording;
+ * this is that wording, in one place, so the next dialog that asks the
+ * question inherits it instead of inventing a third answer.
+ *
+ * The thrown message is the interesting half — `normalizeServerUrl` says
+ * "Only http and https URLs are supported." when it can tell why. When the
+ * `URL` constructor is what refused, its message is a bare "Invalid URL"
+ * (Chrome dresses it up as "Failed to construct 'URL': Invalid URL"), which
+ * restates the failure rather than explaining it, so it is replaced.
+ */
+export function describeServerUrlError(input: string, err: unknown): string {
+  const raw = err instanceof Error ? err.message : '';
+  const uninformative = !raw || /invalid url\.?$/i.test(raw.trim());
+  const why = uninformative ? 'It could not be parsed.' : raw;
+  return (
+    `Could not use "${input.trim()}" as a server address. ${why} ` +
+    'Enter a hostname like annex.example.com, optionally with a port.'
+  );
+}

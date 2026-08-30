@@ -12,7 +12,7 @@
 import { useState, useCallback } from 'react';
 import { useServersStore } from '@/stores/servers';
 import { resolveUrl } from '@/lib/api';
-import { normalizeServerUrl } from '@/lib/url';
+import { describeServerUrlError, normalizeServerUrl } from '@/lib/url';
 import { useIdentityStore } from '@/stores/identity';
 import type { SavedServer } from '@/types';
 import { Modal } from '@/components/Modal';
@@ -34,22 +34,15 @@ function AddServerDialog({ onClose, onAdd }: AddServerDialogProps) {
     const trimmed = url.trim();
     if (!trimmed) return;
 
-    // Normalize and validate URL.
-    //
-    // `normalizeServerUrl` says why it refused — "Only http and https URLs are
-    // supported." — and this threw that away for a bare "Invalid URL format."
-    // that names nothing and describes nothing. The same fix landed in
-    // `StartupModeSelector`; this is the second dialog asking the same
-    // question and it had the same gap.
+    // Normalize and validate URL. The wording lives in `describeServerUrlError`
+    // because `StartupModeSelector` asks the same question on first run and
+    // both dialogs had the same gap: a bare "Invalid URL format." that named
+    // nothing the user typed.
     let baseUrl: string;
     try {
       baseUrl = normalizeServerUrl(trimmed);
     } catch (err) {
-      const why = err instanceof Error ? err.message : 'It could not be parsed.';
-      setError(
-        `Could not use "${trimmed}" as a server address. ${why} ` +
-          'Enter a hostname like annex.example.com, optionally with a port.',
-      );
+      setError(describeServerUrlError(trimmed, err));
       return;
     }
 
