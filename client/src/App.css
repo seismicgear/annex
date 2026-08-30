@@ -3421,6 +3421,13 @@
 .agreement-revoke-btn {
   flex-shrink: 0;
   font-size: 0.75rem;
+  /* Pinned to the right edge, so a destructive control does not move with the
+     length of the text beside it. `.agreement-row` wraps, and below ~500px the
+     alignment and scope drop to a second line with the button after them —
+     which put Sever at a different x on every row, decided by whether the
+     scope was `FullKnowledgeBundle` or `ReflectionSummariesOnly`. On a wide
+     row this changes nothing: `.agreement-info` already takes the slack. */
+  margin-left: auto;
 }
 
 /* ── Federation delivery queue (admin) ── */

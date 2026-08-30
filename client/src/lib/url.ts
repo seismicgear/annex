@@ -20,6 +20,25 @@ function isPrivateIp(host: string): boolean {
 }
 
 /**
+ * Refuse a server address that carries credentials.
+ *
+ * `https://annex.trusted.example@evil.com` has host `evil.com` — the part a
+ * reader takes for the hostname is the username. Every place this value is
+ * shown shows the string (the invite banner, the server hub row, "Could not
+ * reach server at …"), and every request goes to the host, so the address a
+ * user approves and the server they reach are different machines.
+ *
+ * Refused rather than silently rewritten: Annex never sends credentials in a
+ * URL, so there is nothing here to support, and rewriting would hand back an
+ * address the user did not type.
+ */
+function rejectCredentials(parsed: URL): void {
+  if (parsed.username || parsed.password) {
+    throw new Error('Server addresses must not contain a username or password.');
+  }
+}
+
+/**
  * Normalize a user-entered server URL to a full URL with protocol.
  *
  * - Preserves explicit http:// or https://
@@ -38,6 +57,7 @@ export function normalizeServerUrl(input: string): string {
     if (!['http:', 'https:'].includes(parsed.protocol)) {
       throw new Error('Only http and https URLs are supported.');
     }
+    rejectCredentials(parsed);
     return url;
   }
 
@@ -57,6 +77,9 @@ export function normalizeServerUrl(input: string): string {
   if (!['http:', 'https:'].includes(parsed.protocol)) {
     throw new Error('Only http and https URLs are supported.');
   }
+  // Also on this branch: `annex.trusted.example@evil.com` has no scheme, gets
+  // one prepended, and lands in exactly the same shape.
+  rejectCredentials(parsed);
 
   return normalized;
 }

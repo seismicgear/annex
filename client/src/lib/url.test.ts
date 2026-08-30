@@ -73,3 +73,34 @@ describe('describeServerUrlError', () => {
     }
   });
 });
+
+describe('normalizeServerUrl — credentials in the address', () => {
+  // `https://annex.trusted.example@evil.com` has host `evil.com`; the part a
+  // reader takes for the hostname is the username. Everything that shows a
+  // server address shows the string — the invite banner, the server hub row,
+  // "Could not reach server at …" — and everything that connects uses the
+  // host. Refused rather than rewritten: Annex never sends credentials in a
+  // URL, so there is nothing here to support.
+  it.each([
+    'https://annex.trusted.example@evil.com',
+    'http://annex.trusted.example@evil.com',
+    'https://user:pass@evil.com',
+    'annex.trusted.example@evil.com',
+  ])('rejects %s', (input) => {
+    expect(() => normalizeServerUrl(input)).toThrow(/username or password/i);
+  });
+
+  it('still accepts an ordinary address', () => {
+    expect(normalizeServerUrl('https://annex.example.com')).toBe('https://annex.example.com');
+  });
+
+  it('explains the rejection to the user', () => {
+    let message = '';
+    try {
+      normalizeServerUrl('https://annex.trusted.example@evil.com');
+    } catch (err) {
+      message = describeServerUrlError('https://annex.trusted.example@evil.com', err);
+    }
+    expect(message).toMatch(/username or password/i);
+  });
+});
