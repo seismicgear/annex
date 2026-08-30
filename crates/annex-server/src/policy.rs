@@ -111,14 +111,38 @@ pub async fn recalculate_agent_alignments(state: Arc<AppState>) -> Result<(), Ap
                     }
                 };
 
-                let anchor: VrpAnchorSnapshot = serde_json::from_str(&anchor_json).map_err(|_| {
-                    ApiError::InternalServerError("failed to parse anchor".to_string())
-                })?;
+                // Skip the agent, do not abort the sweep.
+                //
+                // A MISSING anchor is tolerated two lines up with a warning and
+                // a `continue`; a malformed one used to take out the entire
+                // re-evaluation with a 500, so one corrupt row meant no agent
+                // was re-evaluated at all. It also discarded serde's message,
+                // which is the only thing that says WHICH field is wrong — so
+                // the operator got "failed to parse anchor" about a row the
+                // response did not name, from a sweep that had processed an
+                // unknown number of agents before giving up.
+                let anchor: VrpAnchorSnapshot = match serde_json::from_str(&anchor_json) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        tracing::warn!(
+                            agent = %pseudonym,
+                            "anchor snapshot is malformed, skipping re-evaluation: {e}"
+                        );
+                        continue;
+                    }
+                };
 
-                let contract: VrpCapabilitySharingContract = serde_json::from_str(&contract_json)
-                    .map_err(|_| {
-                        ApiError::InternalServerError("failed to parse contract".to_string())
-                    })?;
+                let contract: VrpCapabilitySharingContract =
+                    match serde_json::from_str(&contract_json) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            tracing::warn!(
+                                agent = %pseudonym,
+                                "capability contract is malformed, skipping re-evaluation: {e}"
+                            );
+                            continue;
+                        }
+                    };
 
                 let handshake = VrpFederationHandshake {
                     anchor_snapshot: anchor,
@@ -325,10 +349,21 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
                     }
                 };
 
-                let handshake: VrpFederationHandshake = serde_json::from_str(&handshake_json)
-                    .map_err(|_| {
-                        ApiError::InternalServerError("failed to parse handshake".to_string())
-                    })?;
+                // As above: a missing handshake is skipped with a warning, so a
+                // malformed one must be too rather than aborting every other
+                // agreement's re-evaluation.
+                let handshake: VrpFederationHandshake =
+                    match serde_json::from_str(&handshake_json) {
+                        Ok(h) => h,
+                        Err(e) => {
+                            tracing::warn!(
+                                agreement = id,
+                                peer = %base_url,
+                                "handshake data is malformed, skipping re-evaluation: {e}"
+                            );
+                            continue;
+                        }
+                    };
 
                 let report = validate_federation_handshake(
                     &local_anchor,
