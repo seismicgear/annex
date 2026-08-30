@@ -270,3 +270,96 @@ describe('clearChannelCallState and the connected call', () => {
     expect(state.participantsByChannel['chan-standup']).toEqual(['alice']);
   });
 });
+
+/**
+ * Captions arriving from the server.
+ *
+ * `OutgoingMessage::Transcription` has always been sent; nothing read it.
+ * These pin the two things the store decides — which call a line belongs to,
+ * and how many lines are kept.
+ */
+describe('voice store — transcripts', () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  const line = (over: Record<string, unknown> = {}) => ({
+    channelId: 'chan-1',
+    speakerPseudonym: 'psn-1',
+    text: 'hello',
+    at: 1,
+    ...over,
+  });
+
+  it('keeps a line for the call in progress', async () => {
+    const { useVoiceStore } = await import('./voice');
+    useVoiceStore.setState({ connectedChannelId: 'chan-1', transcripts: [] });
+
+    useVoiceStore.getState().appendTranscript(line());
+
+    expect(useVoiceStore.getState().transcripts).toHaveLength(1);
+  });
+
+  it('drops a line for a channel this client is not in a call on', async () => {
+    // A channel switch mid-call and a late frame can cross. Captions
+    // attributed to the wrong room are worse than no captions.
+    const { useVoiceStore } = await import('./voice');
+    useVoiceStore.setState({ connectedChannelId: 'chan-1', transcripts: [] });
+
+    useVoiceStore.getState().appendTranscript(line({ channelId: 'chan-2' }));
+
+    expect(useVoiceStore.getState().transcripts).toEqual([]);
+  });
+
+  it('drops a line when there is no call at all', async () => {
+    const { useVoiceStore } = await import('./voice');
+    useVoiceStore.setState({ connectedChannelId: null, transcripts: [] });
+
+    useVoiceStore.getState().appendTranscript(line());
+
+    expect(useVoiceStore.getState().transcripts).toEqual([]);
+  });
+
+  it('keeps the most recent lines and forgets the oldest', async () => {
+    // An hour-long call would otherwise accumulate thousands of lines for a
+    // strip that shows the last few.
+    const { useVoiceStore, MAX_TRANSCRIPT_LINES } = await import('./voice');
+    useVoiceStore.setState({ connectedChannelId: 'chan-1', transcripts: [] });
+
+    for (let i = 0; i < MAX_TRANSCRIPT_LINES + 10; i++) {
+      useVoiceStore.getState().appendTranscript(line({ text: `line ${i}`, at: i }));
+    }
+
+    const kept = useVoiceStore.getState().transcripts;
+    expect(kept).toHaveLength(MAX_TRANSCRIPT_LINES);
+    expect(kept[0].text).toBe('line 10');
+    expect(kept[kept.length - 1].text).toBe(`line ${MAX_TRANSCRIPT_LINES + 9}`);
+  });
+
+  it('starts a new call with no captions from the last one', async () => {
+    // Otherwise the previous room's words appear in this one.
+    const { useVoiceStore } = await import('./voice');
+    useVoiceStore.setState({
+      connectedChannelId: 'chan-1',
+      transcripts: [line()],
+      voiceToken: 'tok',
+    });
+
+    await useVoiceStore.getState().joinCall('psn-me', 'chan-2');
+
+    expect(useVoiceStore.getState().transcripts).toEqual([]);
+  });
+
+  it('leaves no captions behind when the call ends', async () => {
+    const { useVoiceStore } = await import('./voice');
+    useVoiceStore.setState({
+      connectedChannelId: 'chan-1',
+      transcripts: [line()],
+      voiceToken: 'tok',
+    });
+
+    await useVoiceStore.getState().leaveCall('psn-me');
+
+    expect(useVoiceStore.getState().transcripts).toEqual([]);
+  });
+});

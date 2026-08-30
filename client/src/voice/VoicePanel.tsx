@@ -17,6 +17,7 @@ import { useChannelsStore } from '@/stores/channels';
 import { useIdentityStore } from '@/stores/identity';
 import { useServersStore } from '@/stores/servers';
 import { useVoiceStore } from '@/stores/voice';
+import { VoiceCaptions } from './VoiceCaptions';
 import { VoiceRoomProvider } from './VoiceRoomProvider';
 import { PlatformMediaWarning } from './VoiceDiagnostics';
 
@@ -303,6 +304,7 @@ export function VoicePanel() {
             <p>{connectionError}</p>
           </div>
         )}
+        <VoiceCaptions />
         <VoiceRoomProvider
           channelId={connectedChannelId}
           iceServers={rtcIceServers}

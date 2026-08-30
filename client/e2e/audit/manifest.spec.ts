@@ -220,12 +220,11 @@ test.describe('surface manifest', () => {
       'clear-state-error':
         'needs an IndexedDB delete to fail, which the harness has no way to force',
       'voice-status-error':
-        'the StatusBar mic-toggle error. It renders only while `inCall` — a real voice ' +
-        'token, a connected channel and a live WebRTC room — and only when that room\'s ' +
-        '`localParticipant.setMicrophoneEnabled` rejects. Reaching it means a real SFU ' +
-        'connection in headless Chromium with a microphone that fails on toggle, which the ' +
-        'harness has no way to arrange. `voice-error` covers the disconnected variants; ' +
-        'the in-call one shares its element and is reached the same way this is not.',
+        'the StatusBar mic-toggle error. A live call is no longer the obstacle — `voice-captions` ' +
+        'joins one for real, the same way `group-call.spec.ts` does — but this also needs the ' +
+        'room\'s `localParticipant.setMicrophoneEnabled` to REJECT, and Chromium\'s fake media ' +
+        'device does not fail on toggle. Forcing it means breaking the track after the call is ' +
+        'up, from outside the page. Pinned by `useLocalMedia`\'s tests instead.',
       'pending-status': 'the optimistic in-flight moment, gone before a capture settles',
     };
 

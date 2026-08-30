@@ -18,6 +18,7 @@ type VoiceStoreSnapshot = {
   lastFailedChannelId: string | null;
   joiningAnyCall: boolean;
   micToggleError: string | null;
+  transcripts: { channelId: string; speakerPseudonym: string; text: string; at: number }[];
   inputDeviceId: string | null;
   outputDeviceId: string | null;
   inputVolume: number;
@@ -176,6 +177,7 @@ function defaultVoiceState(): VoiceStoreSnapshot {
     lastFailedChannelId: null,
     joiningAnyCall: false,
     micToggleError: null,
+    transcripts: [],
     inputDeviceId: null,
     outputDeviceId: null,
     inputVolume: 100,

@@ -103,6 +103,26 @@ async function postFreshMessage(page: import('@playwright/test').Page, text: str
   // the run: the harness could not tell a send from a non-send.
   await expect(bubble.locator('.failed-status')).toHaveCount(0, { timeout: 20_000 });
   await expect(page.locator('.composer-error')).toHaveCount(0);
+  // Nor is "not failed" the same as "confirmed". A bubble still marked
+  // `pending` renders one fewer control — the reply button is withheld until
+  // the message exists on the server — and the action row is right-aligned
+  // beside the bubble, so losing a 21px button moves the whole bubble 21px
+  // right. Every surface built on this helper was therefore photographing
+  // whichever side of the confirmation the network happened to be on.
+  //
+  // It reached a verify twice: `mobile/message-edit-refused` came back with
+  // its bubbles 21px left and a reply icon that had never been in frame, and
+  // `mobile/message-delete-confirm` failed outright at 7,322 pixels. The
+  // first reading blamed a scrollbar gutter, which the run-length scan then
+  // ruled out — the gutter is the container's own 16px padding in both, and
+  // the extra 21px is a button.
+  //
+  // Asserted as the presence of the reply control rather than the absence of
+  // the pending badge, whose class is a known-uncovered state, and the
+  // manifest's staleness check greps this file for class names — it cannot
+  // tell an absence assertion from coverage, and naming the class here made
+  // it report the allowlist entry as stale.
+  await expect(bubble.locator('.reply-btn')).toHaveCount(1, { timeout: 20_000 });
   return bubble;
 }
 
@@ -1435,6 +1455,66 @@ export const SURFACES: Surface[] = [
       await expect(page.locator('.voice-panel, .voice-permissions-notice')).toBeVisible({
         timeout: 15_000,
       });
+    },
+  },
+  {
+    id: 'voice-captions',
+    stage: '07-voice',
+    title: 'Live captions in a call',
+    role: 'founder',
+    intent:
+      'The only capture of anything inside a call, and of a feature that reached nobody. The ' +
+      'server transcribes call audio with whisper.cpp and sends each line to every participant ' +
+      'as a `transcription` frame; the client had no branch for it, so every line arrived, ' +
+      'passed validation, matched nothing, and was dropped.',
+    // A real join — the same path `group-call.spec.ts` uses — because the
+    // connected panel is gated on a real voice token, and because the
+    // captions strip only exists inside it. The transcript frames are
+    // injected: producing real ones needs a Whisper model this lane does not
+    // ship, and the frame is the contract either way.
+    setup: async (page) => {
+      await page.routeWebSocket(/\/ws/, (ws) => {
+        const server = ws.connectToServer();
+        ws.onMessage((raw) => {
+          const text = typeof raw === 'string' ? raw : raw.toString();
+          server.send(raw);
+          // The offer goes out once, when the call starts, and carries the
+          // channel id the store will have as `connectedChannelId` — which
+          // is what the transcript must match to be kept.
+          if (!text.includes('"webrtc_offer"')) return;
+          let channelId: string | undefined;
+          try {
+            channelId = (JSON.parse(text) as { channelId?: string }).channelId;
+          } catch {
+            return;
+          }
+          if (!channelId) return;
+          for (const [speaker, line] of [
+            ['psn-audit-caption-speaker-one', 'can everyone hear me on this one'],
+            ['psn-audit-caption-speaker-two', 'yes, going ahead with the release notes'],
+          ]) {
+            ws.send(
+              JSON.stringify({ type: 'transcription', channelId, speakerPseudonym: speaker, text: line }),
+            );
+          }
+        });
+        server.onMessage((raw) => ws.send(raw));
+      });
+    },
+    navigate: async (page) => {
+      await selectChannel(page, SEED.channels.voice);
+      await page.locator('.voice-join-btn').first().click();
+      await expect(page.locator('.voice-captions')).toBeVisible({ timeout: 45_000 });
+      await expect(page.locator('.voice-caption')).toHaveCount(2);
+    },
+    // Clipped to the strip. The panel around it renders the fake camera
+    // device's animated test pattern, which is not comparable frame to frame.
+    clip: '.voice-captions',
+    // The speaker column falls back to the pseudonym for anyone who has not
+    // granted a username, which is most people and all of these.
+    mask: ['.voice-caption-speaker'],
+    waive: {
+      console: 'the WebRTC session logs its negotiation against a lane with no SFU peer',
     },
   },
   {

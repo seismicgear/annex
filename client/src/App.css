@@ -3228,6 +3228,42 @@
   color: var(--warning-color);
 }
 
+/* ── Live call captions ── */
+
+.voice-captions {
+  max-height: 7rem;
+  overflow-y: auto;
+  margin: 0.4rem 0.5rem 0;
+  padding: 0.35rem 0.5rem;
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+}
+
+.voice-caption-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.voice-caption {
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.voice-caption-speaker {
+  margin-right: 0.35rem;
+  color: var(--text-muted);
+}
+
+.voice-caption-speaker::after {
+  content: ':';
+}
+
 /* ── Federation agreements (admin) ── */
 
 .agreements-empty {

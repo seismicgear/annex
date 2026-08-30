@@ -27,6 +27,7 @@ vi.mock('@/lib/ws', () => ({
 const mockLeaveCall = vi.fn(async () => {});
 const mockForceReset = vi.fn();
 const mockClearChannelCallState = vi.fn();
+const mockAppendTranscript = vi.fn();
 vi.mock('@/stores/voice', () => ({
   useVoiceStore: {
     getState: () => ({
@@ -34,6 +35,7 @@ vi.mock('@/stores/voice', () => ({
       leaveCall: mockLeaveCall,
       forceReset: mockForceReset,
       clearChannelCallState: mockClearChannelCallState,
+      appendTranscript: mockAppendTranscript,
     }),
   },
 }));
@@ -44,6 +46,7 @@ describe('channels store', () => {
     mockLeaveCall.mockClear();
     mockForceReset.mockClear();
     mockClearChannelCallState.mockClear();
+    mockAppendTranscript.mockClear();
   });
 
   it('resetServerState clears all per-server transient state', async () => {
@@ -465,6 +468,53 @@ describe('channels store', () => {
       createdAt: new Date().toISOString(),
     });
     expect(useChannelsStore.getState().unreadCounts.B).toBe(1);
+  });
+
+  it('routes a transcription frame to the voice store instead of dropping it', async () => {
+    // The boundary that was not crossed. The server transcribes call audio
+    // and sends `transcription` frames to every participant; `handleFrame`
+    // had no branch for them, so each one arrived, passed validation, matched
+    // nothing, and fell through to the active-channel guard and out.
+    //
+    // Handled ABOVE that guard on purpose: a transcript belongs to the call
+    // the user is in, which is not necessarily the channel they are reading —
+    // this frame names a channel that is not the active one, and still lands.
+    const { AnnexWebSocket } = await import('@/lib/ws');
+    const onStatusHandlers: Array<(connected: boolean) => void> = [];
+    const onMessageHandlers: Array<(f: import('@/types').WsReceiveFrame) => void> = [];
+    vi.mocked(AnnexWebSocket).mockImplementationOnce(function mockAnnexWebSocket() {
+      return {
+        onStatus: vi.fn((cb: (connected: boolean) => void) => { onStatusHandlers.push(cb); }),
+        onMessage: vi.fn((cb: (f: import('@/types').WsReceiveFrame) => void) => { onMessageHandlers.push(cb); }),
+        connect: vi.fn(),
+        disconnect: vi.fn(),
+        subscribe: vi.fn(),
+        unsubscribe: vi.fn(),
+        send: vi.fn(),
+        setSessionToken: vi.fn(),
+        reconnectForAuthRefresh: vi.fn(),
+        connected: false,
+      } as unknown as import('@/lib/ws').AnnexWebSocket;
+    });
+
+    const { useChannelsStore } = await import('./channels');
+    useChannelsStore.setState({ activeChannelId: 'A', joinedChannelIds: new Set(['A']) });
+    useChannelsStore.getState().connectWs('p1');
+    onStatusHandlers[0]?.(true);
+
+    onMessageHandlers[0]?.({
+      type: 'transcription',
+      channelId: 'voice-1',
+      speakerPseudonym: 'p2',
+      text: 'can everyone hear me',
+    });
+
+    expect(mockAppendTranscript).toHaveBeenCalledTimes(1);
+    expect(mockAppendTranscript.mock.calls[0][0]).toMatchObject({
+      channelId: 'voice-1',
+      speakerPseudonym: 'p2',
+      text: 'can everyone hear me',
+    });
   });
 
   it('keeps clientRequestId on the confirmed message so its React key is stable', async () => {

@@ -46,6 +46,24 @@ function getJoinErrorMessage(error: unknown): JoinError {
 /** WebRTC room connection lifecycle state. */
 export type ConnectionState = 'idle' | 'connecting' | 'connected' | 'failed';
 
+/** One transcribed utterance from a voice call. */
+export interface TranscriptLine {
+  channelId: string;
+  speakerPseudonym: string;
+  text: string;
+  /** Client receipt time. The server frame carries no timestamp. */
+  at: number;
+}
+
+/**
+ * How many caption lines to keep.
+ *
+ * Captions are a live aid, not a transcript archive — nothing scrolls back
+ * through them, and an hour-long call would otherwise accumulate thousands
+ * of lines in memory for a strip that shows the last few.
+ */
+export const MAX_TRANSCRIPT_LINES = 50;
+
 export interface VoiceState {
   /** WebRTC access token for the current session. */
   voiceToken: string | null;
@@ -80,6 +98,21 @@ export interface VoiceState {
   joiningAnyCall: boolean;
   /** User-visible error from the last mic toggle failure. */
   micToggleError: string | null;
+
+  /**
+   * Live speech-to-text for the call in progress, oldest first.
+   *
+   * The server has always produced these. `whisper.cpp` transcribes the call
+   * audio, `OutgoingMessage::Transcription` carries each line over the
+   * WebSocket to every participant, and startup even reports whether STT is
+   * ready — and nothing in the client read the frame. It arrived, passed
+   * validation, matched none of the branches in `handleFrame`, and was
+   * dropped. A whole subsystem, correct at every layer, rendering nowhere.
+   *
+   * Capped at [`MAX_TRANSCRIPT_LINES`]: a long call would otherwise grow this
+   * without bound, and nobody scrolls back through captions.
+   */
+  transcripts: TranscriptLine[];
 
   /** Audio settings persisted across sessions. */
   inputDeviceId: string | null;
@@ -117,6 +150,8 @@ export interface VoiceState {
   checkCallActive: (pseudonymId: string, channelId: string) => Promise<void>;
   /** Get call-active status for a specific channel. */
   isCallActive: (channelId: string) => boolean;
+  /** Record one transcribed line. Ignored unless it belongs to this call. */
+  appendTranscript: (line: TranscriptLine) => void;
   /** Get join error for a specific channel. */
   getJoinError: (channelId: string) => JoinError | null;
   /** Check if a join is in progress for a specific channel. */
@@ -188,6 +223,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   activeJoinRequestId: 0,
   joiningAnyCall: false,
   micToggleError: null,
+  transcripts: [],
 
   voiceConfig: null,
   voiceConfigStatus: 'idle' as const,
@@ -215,6 +251,9 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       lastFailedChannelId: null,
       connectionError: null,
       micToggleError: null,
+      // Captions belong to one call. Carrying the last call's lines into the
+      // next one would put words in a new room that were said in another.
+      transcripts: [],
     }));
     try {
       const { token, url, ice_servers } = await api.joinVoice(pseudonymId, channelId, 30_000);
@@ -261,6 +300,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       connectionError: null,
       lastFailedChannelId: null,
       micToggleError: null,
+      transcripts: [],
       // Clear call-active status for the channel we just left
       callActiveByChannel: connectedChannelId
         ? { ...s.callActiveByChannel, [connectedChannelId]: false }
@@ -407,12 +447,27 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       lastFailedChannelId: null,
       joiningAnyCall: false,
       micToggleError: null,
+      transcripts: [],
       voiceSessionDisabled: false,
       voiceSessionDisabledReason: null,
     });
   },
   dismissConnectionError: () => {
     set({ lastFailedChannelId: null, connectionError: null });
+  },
+  appendTranscript: (line) => {
+    set((s) => {
+      // A line for a channel this client is not in a call on is not this
+      // call's. The server sends transcripts to call participants, but a
+      // channel switch mid-call and a late-arriving frame can cross, and
+      // captions attributed to the wrong room are worse than none.
+      if (!s.connectedChannelId || line.channelId !== s.connectedChannelId) return s;
+      const next = [...s.transcripts, line];
+      return {
+        transcripts:
+          next.length > MAX_TRANSCRIPT_LINES ? next.slice(next.length - MAX_TRANSCRIPT_LINES) : next,
+      };
+    });
   },
   setMicToggleError: (message) => {
     set({ micToggleError: message });

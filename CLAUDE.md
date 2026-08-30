@@ -171,13 +171,20 @@ invalidating one:
   fix — it has the same "only if needed" clause and can silently no-op, which
   is how it was diagnosed as working when it was not. Set `scrollLeft` from
   two `getBoundingClientRect()` calls instead: arithmetic cannot decline.
-- **The emoji-width swing also decides whether a column overflows.** The
-  encryption bar's height is the documented case; the consequence downstream
-  is that the message column either does or does not need a scrollbar, and a
-  scrollbar's gutter moves every right-aligned bubble by its width.
-  `mobile/message-edit-refused` came back with its bubbles 20px to the left
-  and the reply affordance — which sits outside the bubble — inside the frame
-  for the first time. Nothing had changed in the messaging code.
+- **A bubble that is still `pending` is 21px wide-of-the-mark, and that was
+  read as a scrollbar.** `mobile/message-edit-refused` came back with its
+  bubbles 21px left and a reply icon that had never been in frame; the first
+  diagnosis here said a scrollbar gutter had appeared, hedged as unproven.
+  It was wrong. A run-length scan across the row settles it: the right gutter
+  is the container's own 16px padding in BOTH images, and the extra 21px is a
+  button. `MessageView` withholds the reply control while
+  `message.pending`, the action row is right-aligned beside the bubble, and
+  losing a control moves the bubble. `postFreshMessage` asserted the send had
+  not FAILED but never that it had been CONFIRMED, so every surface built on
+  it photographed whichever side of the confirmation the network was on. It
+  waits for `.pending-status` to clear now. The lesson is the older one
+  restated: when a helper waits for something to appear, ask what the thing
+  looks like in every state it can appear in.
 - **The pointer's resting place is in the picture.** It stays where the last
   click left it, and hover affordances render. Moving a strip under a resting
   pointer re-hovers whatever slid beneath it, so `mobile/chat-main` came out

@@ -496,6 +496,23 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
         return;
       }
 
+      // Live captions from the call.
+      //
+      // Handled here, above the active-channel guard below, because a
+      // transcript belongs to the CALL the user is in, and that is not
+      // necessarily the channel they are looking at — voice keeps running
+      // while you read another channel. The voice store decides whether the
+      // line is for the call in progress.
+      if (frame.type === 'transcription' && frame.channelId && frame.text) {
+        useVoiceStore.getState().appendTranscript({
+          channelId: frame.channelId,
+          speakerPseudonym: frame.speakerPseudonym ?? 'unknown',
+          text: frame.text,
+          at: Date.now(),
+        });
+        return;
+      }
+
       // Handle resume acknowledgement
       if (frame.type === 'resumed') {
         // A completed resume needs nothing: the missed messages arrived as
