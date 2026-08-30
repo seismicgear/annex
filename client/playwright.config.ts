@@ -53,9 +53,17 @@ export default defineConfig({
 
   projects: [
     // ── Functional suite ──────────────────────────────────────────────
-    // The original assertion suite. Deliberately excludes e2e/audit/ so a
-    // plain `npm run test:e2e` keeps its existing meaning and runtime, and
-    // so `admin.spec.ts` keeps relying on being the earliest registrant.
+    // The original assertion suite. It excludes e2e/audit/ so `admin.spec.ts`
+    // keeps relying on being the earliest registrant.
+    //
+    // `testIgnore` alone did not keep `npm run test:e2e` to its original
+    // meaning, which is what the comment here used to claim. Playwright runs
+    // every project unless told otherwise, so a bare `playwright test` also
+    // ran the audit lane — sixteen minutes of screenshot diffing, against a
+    // database the functional suite had already posted into, from a command
+    // documented as the E2E suite. The scripts in package.json name this
+    // project explicitly now; the audit lane has its own entry point in
+    // `scripts/ui-audit.sh`, which restarts the server first because it must.
     {
       name: 'chromium',
       testIgnore: /audit\//,

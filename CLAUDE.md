@@ -193,6 +193,11 @@ invalidating one:
 - **`pgrep -f "ui-audit.sh"` matches the watching shell itself**, so
   `until ! pgrep -f "ui-audit.sh"; do sleep …; done` never exits. Watch the
   log for `[ui-audit] done`.
+- **`playwright test` runs every project**, so `testIgnore` on one project
+  does not keep another out of a bare invocation. `npm run test:e2e` was
+  pulling in the sixteen-minute audit lane — against a database the functional
+  suite had already posted into — from a command documented as the E2E suite.
+  The scripts name `--project=chromium` explicitly now.
 
 #### Writing a surface
 

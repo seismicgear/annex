@@ -383,8 +383,17 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
             onChange={(e) => setLabel(e.target.value)}
             maxLength={128}
           />
+          {/* Named for what it saves.
+              
+              Moving this control next to its field left the page with two
+              buttons whose only accessible name was "Save" — one for the
+              server name, one for the public URL, indistinguishable to anyone
+              navigating by control. `admin.spec.ts` found it before a user
+              did, by matching both. The visible label stays short because the
+              field it sits beside says what it is. */}
           <button
             className="secondary-btn"
+            aria-label="Save server name"
             onClick={handleRename}
             disabled={saving || !label.trim()}
           >
@@ -416,6 +425,7 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
           />
           <button
             className="primary-btn"
+            aria-label="Save public URL"
             onClick={handleSavePublicUrl}
             disabled={savingUrl || publicUrlInput === publicUrl}
           >
