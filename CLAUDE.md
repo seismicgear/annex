@@ -285,9 +285,21 @@ of these. Look for them first:
    `SQLITE_BUSY_SNAPSHOT` *immediately*, with the busy handler never invoked,
    so `busy_timeout` cannot help. It surfaces as an intermittent
    "database is locked" on a perfectly ordinary operation. Every write
-   transaction in this repo is now `BEGIN IMMEDIATE`; if you add one, make it
-   IMMEDIATE too. Found in `edit_message`/`delete_message` first, then in
-   `send_message` a release later, then in eleven more sites.
+   transaction in this repo is `BEGIN IMMEDIATE`. Found in
+   `edit_message`/`delete_message` first, then in `send_message` a release
+   later, then in eleven more sites — the rule was written down here after
+   each one and re-broken anyway, because the only thing enforcing it was
+   whether the next person had read this paragraph. It is checked now:
+   `annex-server/tests/write_transactions_are_immediate.rs` scans the
+   workspace sources and fails on a plain `.transaction()`, an
+   `unchecked_transaction()`, or a `transaction_with_behavior` that is not
+   `Immediate`, naming the file and line. Source-scanning rather than
+   behavioural on purpose — the defect is a race, so a behavioural test for it
+   is either slow and flaky or passes for the wrong reason;
+   `tests/ws_send_immediate_tx.rs` covers one site that way. A `savepoint()`
+   is DEFERRED underneath and is deliberately NOT flagged: the one in
+   `annex-federation::create_agreement` writes before it reads, so it takes
+   the write lock at its first statement and the busy handler still applies.
 
 The corollary: unit tests do not catch (1)–(4), because in every case the unit
 under test was correct. They are only visible at the boundary — an HTTP-level
