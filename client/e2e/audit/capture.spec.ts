@@ -122,7 +122,9 @@ for (const surface of ORDERED_SURFACES) {
 
       try {
         await surface.setup?.(page);
-        await landing(page, surface.role);
+        if (!surface.skipLanding) {
+          await landing(page, surface.role);
+        }
         await surface.navigate(page);
         await stabilize(page);
 

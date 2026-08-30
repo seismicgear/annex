@@ -153,6 +153,53 @@ async function stageAttachment(page: import('@playwright/test').Page, name: stri
 export const SURFACES: Surface[] = [
   // ─────────────────────── 02 · identity ───────────────────────
   {
+    id: 'startup-bootstrap-failed',
+    stage: '02-identity',
+    title: 'Annex could not start',
+    role: 'fresh',
+    intent:
+      'The first failure a user can hit, before any identity exists: bootstrap throws and the ' +
+      'app shows a recovery screen instead of the identity chooser. Its logic had unit tests; ' +
+      'nothing had ever LOOKED at it, so the heading, the alert, the details disclosure and ' +
+      'both escape hatches (Retry startup, and the stronger clear-local-state) had never been ' +
+      'through axe, the overflow check or a single viewport other than whatever a developer ' +
+      'happened to have open. This is exactly the shape the ledger calls defect class 5 — a ' +
+      'non-happy-path branch that drops structure the happy path provides.',
+    // `landing()` waits for the identity button, which by construction never
+    // appears here.
+    skipLanding: true,
+    setup: async (page) => {
+      // Break IndexedDB before any app code runs. `loadServers()` reads the
+      // saved server list from it, and its failure is one of the two paths
+      // into this screen — the other being an outright failure to initialise
+      // local identity state, which lands in the same place with a different
+      // sentence. Failing the platform API rather than stubbing a module
+      // keeps this honest: the app is running its real bootstrap.
+      await page.addInitScript(() => {
+        const boom = () => {
+          throw new DOMException('IndexedDB is unavailable', 'InvalidStateError');
+        };
+        Object.defineProperty(window, 'indexedDB', {
+          configurable: true,
+          get: () => ({ open: boom, deleteDatabase: boom, databases: boom, cmp: boom }),
+        });
+      });
+    },
+    navigate: async (page) => {
+      await page.goto('/');
+      await page.waitForLoadState('domcontentloaded');
+      await expect(page.getByRole('alert').filter({ hasText: 'Startup failed' })).toBeVisible({
+        timeout: 30_000,
+      });
+      await expect(page.getByRole('button', { name: 'Retry startup' })).toBeVisible();
+    },
+    waive: {
+      console:
+        'the broken IndexedDB is the condition under test — the app logs the failure it is ' +
+        'being shown handling, which is the point of the surface.',
+    },
+  },
+  {
     id: 'identity-setup',
     stage: '02-identity',
     title: 'Identity creation (first launch)',

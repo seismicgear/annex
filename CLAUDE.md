@@ -213,6 +213,14 @@ invalidating one:
 - **`pgrep -f "ui-audit.sh"` matches the watching shell itself**, so
   `until ! pgrep -f "ui-audit.sh"; do sleep …; done` never exits. Watch the
   log for `[ui-audit] done`.
+- **A restarted session does not stop a run.** The shell and any watchers die
+  with it; a `nohup`-ed `ui-audit.sh` keeps going, and the first evidence is
+  the lock still being held. Check `pgrep -af ui-audit.sh` and the lock before
+  concluding a run is gone — starting a second one on top is the collision
+  everything above exists to prevent. The same restart is why a baseline can
+  come back modified with no run of yours in sight, and why reverting one
+  mid-run leaves that single file out of step with the rest of the set: the
+  verify pass afterwards is the arbiter, not `git status`.
 - **`playwright test` runs every project**, so `testIgnore` on one project
   does not keep another out of a bare invocation. `npm run test:e2e` was
   pulling in the sixteen-minute audit lane — against a database the functional

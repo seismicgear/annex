@@ -139,6 +139,18 @@ export interface Surface {
   /** Drives the UI to the surface. Called with the app already loaded. */
   navigate: (page: Page) => Promise<void>;
 
+  /**
+   * Skip `landing()` and let `navigate` do its own `page.goto`.
+   *
+   * `landing` waits for the first screen of a working app — the identity
+   * button for `fresh`, the Chat tab for a warm role. A surface that captures
+   * the app FAILING to start can never satisfy that, and loosening `landing`
+   * to accept the failure screen would blind every other surface to a boot
+   * that broke unexpectedly. This says "I am deliberately not landing", which
+   * is the honest version.
+   */
+  skipLanding?: boolean;
+
   /** Screenshot only this element instead of the viewport. */
   clip?: string;
   /**
