@@ -1,11 +1,21 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { summarizeEventPayload } from './event-summary';
 
 /**
- * The thirteen variants of `EventPayload` in `crates/annex-observe/src/event.rs`,
+ * Every variant of `EventPayload` in `crates/annex-observe/src/event.rs`,
  * serialised the way serde writes them (`#[serde(tag = "event", rename_all =
- * "SCREAMING_SNAKE_CASE")]`). If a variant is added there without a case here,
- * `covers_every_server_payload_variant` fails.
+ * "SCREAMING_SNAKE_CASE")]`).
+ *
+ * The comment here used to claim that adding a variant on the server without
+ * a case in this list would fail a test. It would not have: every test below
+ * iterates THIS object, so the list could only fail to cover itself. Nothing
+ * compared it to the Rust enum, and a new server event would have reached the
+ * event log as the unknown-event fallback with no test saying so.
+ *
+ * `every variant of the server enum has an entry here` reads the enum now, in
+ * the manner `manifest.spec.ts` reads the component sources.
  */
 const PAYLOADS: Record<string, object> = {
   IDENTITY_REGISTERED: { event: 'IDENTITY_REGISTERED', commitment_hex: 'a3f2'.repeat(16), role_code: 1 },
@@ -57,7 +67,31 @@ const PAYLOADS: Record<string, object> = {
 
 const summarize = (payload: object) => summarizeEventPayload(JSON.stringify(payload));
 
+/** The variant names in the Rust enum, as serde will tag them. */
+function serverPayloadVariants(): string[] {
+  // vitest runs from `client/`. Resolved rather than relative-imported so a
+  // move fails loudly here instead of silently checking nothing.
+  const file = path.resolve(process.cwd(), '../crates/annex-observe/src/event.rs');
+  const src = readFileSync(file, 'utf8');
+  const body = src.slice(src.indexOf('pub enum EventPayload'));
+  const end = body.indexOf('\n}');
+  const variants = [...body.slice(0, end).matchAll(/^ {4}([A-Z][A-Za-z0-9]*)\s*[{,]/gm)].map(
+    (m) => m[1],
+  );
+  if (variants.length === 0) {
+    throw new Error(`no EventPayload variants found in ${file} — has the enum moved?`);
+  }
+  return variants.map((v) => v.replace(/(?<!^)([A-Z])/g, '_$1').toUpperCase());
+}
+
 describe('summarizeEventPayload', () => {
+  it('has an entry for every variant of the server enum, and no stale ones', () => {
+    // Both directions. A missing entry means a real event renders as the
+    // unknown-event fallback; a stale one means this file is testing a shape
+    // the server stopped sending.
+    expect(Object.keys(PAYLOADS).sort()).toEqual(serverPayloadVariants().sort());
+  });
+
   it('covers every server payload variant with a non-empty summary', () => {
     for (const [name, payload] of Object.entries(PAYLOADS)) {
       expect(summarize(payload), `${name} produced no summary`).not.toBe('');

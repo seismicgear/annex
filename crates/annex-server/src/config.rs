@@ -1015,9 +1015,10 @@ pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
                     contents
                 };
                 let config: Config = toml::from_str(&sanitized)?;
-                // The slug is filled in AFTER the environment overrides below,
-                // not here — see `derive_slug_after_env` at the end of this
-                // function. Remember where to persist it once it exists.
+                // The slug is filled in AFTER the environment overrides
+                // below, not here — see the `config.server.server_slug
+                // .is_empty()` block at the end of this function, which
+                // explains why. Remember where to persist it once it exists.
                 persist_to = Some((p.to_string(), sanitized.clone()));
                 config
             }

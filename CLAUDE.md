@@ -31,7 +31,9 @@ bash scripts/test-all.sh --verbose # show test output (--nocapture)
 
 ### Individual test suites
 ```bash
-# Rust tests (excludes annex-desktop which has pre-existing compile errors)
+# Rust tests. annex-desktop is excluded because it needs the GTK/WebKit/soup/
+# pipewire dev packages, not because it is broken — see "Desktop crate build".
+# With those installed it compiles and clippies clean.
 cargo test --workspace --exclude annex-desktop
 
 # Run a specific test file

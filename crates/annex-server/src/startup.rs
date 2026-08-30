@@ -830,7 +830,8 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
     //
     // The effect was that `voice_enabled` defaults to true and voice was
     // nonetheless refused for every client except one on the host machine:
-    // `join_voice` sees an empty URL and returns `VoiceNotConfigured`.
+    // `ChannelService::join_voice_channel` sees an empty URL and returns
+    // `VoiceNotConfigured`.
     // Setting ANNEX_PUBLIC_URL — the documented way to say where the server
     // lives — did not help, because the resolved value was only ever written
     // into AppState and the sole caller of `set_public_url` was the admin
