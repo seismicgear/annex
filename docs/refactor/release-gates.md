@@ -19,7 +19,7 @@ as authoritative for CI and update this file.
 | Frontend          | `fe-deps`, `fe-lint`, `fe-test`, `fe-build`                                                 |
 | ZK artifacts      | `zk-deps`, `zk-circuit`, `zk-setup`, `zk-proof`, `zk-vkey-shipped`                          |
 | Migrations        | `mig-numbered`, `mig-no-edit`, `mig-applies`                                                |
-| Smoke / E2E       | `e2e-server-up`, `e2e-startup-flow`, `e2e-no-console-errors`, `smoke-server`, `smoke-desktop-build` |
+| Smoke / E2E       | `e2e-server-up`, `e2e-startup-flow`, `e2e-group-call`, `e2e-puppeteer`, `e2e-no-console-errors`, `smoke-server`, `smoke-federation`, `smoke-desktop-build` |
 | UI audit          | `ui-audit-surfaces`, `ui-audit-baselines`, `ui-audit-a11y`                                    |
 | Desktop install   | `desktop-audit-package`                                                                       |
 
@@ -171,7 +171,27 @@ as authoritative for CI and update this file.
 ### e2e-startup-flow
 - Command: `cd client && npm run test:e2e` (Playwright Chromium headless against `http://127.0.0.1:3000`)
 - Tests live in `client/e2e/` (e.g., `e2e/startup.spec.ts`). Each test gets a fresh browser context so IndexedDB is clean. The flow under test: IdentitySetup → StartupModeSelector → ZK proof → Chat UI.
+- Workflow: `ui-audit` job, step `Functional browser suite`, against its own fresh server. Until that step existed this suite ran in NO workflow — it is the `chromium` Playwright project, and the audit job runs `--project=audit`, so defining both in one config had hidden the fact that only one of them was executed.
 - Failure artifacts: screenshots in `client/e2e-results/`, HTML report in `client/e2e-report/`.
+
+### e2e-group-call
+- Command: `bash scripts/e2e-all.sh group-call`
+- Workflow: `ui-audit` job, step `Group call lane`, against its own fresh server.
+- Three real browser contexts with fake media devices join one channel serially, so each join exercises renegotiation against a room that already has peers in it. Asserts every participant sees itself plus two DISTINCT others — the property the SFU rearchitecture (`16a76b7`) exists to provide, and which the single-track fan-out could not.
+- This is the guard that REPLACED the pinning test deleted when that landing happened. It was named by no script, no workflow and no doc until this entry, so between the rearchitecture and now, nothing ran it.
+
+### e2e-puppeteer
+- Command: `bash scripts/e2e-all.sh puppeteer`
+- Workflow: `ui-audit` job, step `Puppeteer journey`, against its own fresh server.
+- A second driver over the same journey — cold start, identity, in-browser proof, chat, channel create. It asserts: `fail()` prints and exits 1, and `main()` ends `.catch((err) => fail(...))`. Needs no browser of its own; `resolveChrome()` finds the Playwright-installed one.
+- Run it with its OWN server, not shared: channel creation needs a moderator and `ensure_founder` grants that to the earliest registrant, so a shared server leaves this lane an ordinary member and it silently skips that check. `e2e-all.sh both` restarts between lanes for this reason.
+
+### smoke-federation
+- Command: `bash scripts/smoke-federation.sh`
+- Workflow: `smoke-server-linux` job, step `Run federation smoke`.
+- Boots a server and plays a remote peer whose Ed25519 key we control: seeds the post-handshake state, signs a real `FederatedMessageEnvelope`, POSTs it, and asserts it is accepted, persisted under the attested local pseudonym, idempotent on re-POST, and REJECTED when the signature is tampered with.
+- Requires the `sqlite3` CLI. It reads the stored row directly and decrypts it with the server's at-rest key (HKDF-SHA256 over `signing.key` beside the database) — a plain string compare against `messages.content` fails, because non-E2E bodies are stored as `\x01ar1:base64(...)`.
+- This is the only end-to-end evidence that two servers federate, and it was referenced by no workflow, script or doc before this entry.
 
 ### e2e-no-console-errors
 - Manual / per-PR: when running locally against an embedded desktop server (`cargo tauri dev` from `crates/annex-desktop/`), no `[error]` lines from `tracing` and no console errors in the webview during the golden flow:
@@ -219,7 +239,7 @@ as authoritative for CI and update this file.
 - Linux command: `bash scripts/smoke-desktop-build.sh`
 - Windows command: `pwsh scripts/smoke-desktop-build.ps1`
 - Workflow: not currently a separate CI job — `lin-build` / `win-build` plus the Tauri bundle gates in `release-desktop.yml` are a strict superset. Use this script locally as a fast pass/fail before pushing.
-- What it covers: verifies the three release-critical ZK artifacts are present and that `membership_vkey.json` parses as JSON; runs `npm --prefix client run build`; runs `cargo build -p annex-desktop --release`; confirms `client/dist/`, `client/public/zk/`, `zk/keys/membership_vkey.json`, and `target/release/annex-desktop[.exe]` exist as non-empty files.
+- What it covers: verifies the three release-critical ZK artifacts are present and that `membership_vkey.json` parses as JSON; runs `node scripts/build-desktop.js` (the same entry point Tauri's `beforeBuildCommand` uses, so the smoke stays on the bundle path rather than beside it); runs `cargo build -p annex-desktop --release`; confirms `client/dist/`, `client/public/zk/`, `zk/keys/membership_vkey.json`, and `target/release/annex-desktop[.exe]` exist as non-empty files.
 - Dev-only knob: `SKIP_CLIENT_BUILD=1` (bash) / `-SkipClientBuild` (pwsh) skips the client build step. **Not for release / CI** — the script labels the branch dev-only and refuses to continue if `client/dist/index.html` is missing.
 
 ---
