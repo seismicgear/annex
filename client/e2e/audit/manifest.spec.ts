@@ -206,10 +206,6 @@ test.describe('surface manifest', () => {
         'logic is covered by a store test instead.',
       'loading-text': 'transient — federation summary fetch, same reason',
       'startup-loading': 'transient — resolves as fast as the effect that sets it',
-      'composer-error':
-        'needs the socket down at the moment of send; the offline surface covers the ' +
-        'banner, and driving this one deterministically needs a WS-level stub the harness ' +
-        'does not have yet',
       'edit-error': 'the edit goes over the WebSocket, which route stubbing cannot reach',
       'device-link-success': 'needs two contexts completing a real link handshake',
       'server-switch-error': 'needs a second registered server to switch away from',
@@ -231,7 +227,6 @@ test.describe('surface manifest', () => {
         'captured, neither names this class',
       'voice-error': 'covered in substance by voice-join-failure; the in-call variant is not',
       'voice-status-error': 'the StatusBar mirror of the same in-call voice error',
-      'failed-status': 'a message whose send failed — needs a WS-level stub',
       'pending-status': 'the optimistic in-flight moment, gone before a capture settles',
       'success-message':
         'shared by four dialogs; each success path writes real server state, so a surface ' +

@@ -305,6 +305,63 @@ export const SURFACES: Surface[] = [
     clip: '.chat-area',
   },
   {
+    id: 'message-send-failed',
+    stage: '06-messaging',
+    title: 'A message the server refused',
+    role: 'founder',
+    intent:
+      'The two halves of a rejected send, which are set together by one WebSocket error frame ' +
+      'and had no surface between them: the bubble keeps its text and is marked failed with ' +
+      'retry and dismiss beside it, and the composer says why. Getting this wrong is the ' +
+      'defect this codebase produces most — a send that failed rendered as one that worked.',
+    setup: async (page) => {
+      // Intercept the socket rather than the HTTP layer: sending goes over
+      // the WebSocket, which route stubbing cannot reach, and that is why
+      // both of these states sat in `KNOWN_UNCOVERED`.
+      //
+      // Everything is proxied to the real server except the send itself,
+      // which is answered with the error frame and NOT forwarded. That
+      // matters beyond this surface: the channel is shared, so a message
+      // that reached the server would be photographed by every messaging
+      // surface captured after this one.
+      await page.routeWebSocket(/\/ws/, (ws) => {
+        const server = ws.connectToServer();
+        ws.onMessage((raw) => {
+          const text = typeof raw === 'string' ? raw : raw.toString();
+          let frame: { type?: string; channelId?: string; clientRequestId?: string };
+          try {
+            frame = JSON.parse(text);
+          } catch {
+            server.send(raw);
+            return;
+          }
+          if (frame.type === 'message' && frame.clientRequestId) {
+            ws.send(
+              JSON.stringify({
+                type: 'error',
+                channelId: frame.channelId,
+                clientRequestId: frame.clientRequestId,
+                message: 'Message rejected: you are not a member of this channel.',
+              }),
+            );
+            return;
+          }
+          server.send(raw);
+        });
+        server.onMessage((raw) => ws.send(raw));
+      });
+    },
+    navigate: async (page) => {
+      await selectChannel(page, SEED.defaultChannel);
+      await page.getByPlaceholder('Type a message...').fill('this one does not land');
+      await page.getByRole('button', { name: 'Send' }).click();
+      await expect(page.locator('.failed-status')).toBeVisible({ timeout: 20_000 });
+      await expect(page.locator('.composer-error')).toBeVisible({ timeout: 20_000 });
+    },
+    clip: '.chat-area',
+  },
+
+  {
     id: 'message-search-open',
     stage: '06-messaging',
     title: 'Message search (expanded)',

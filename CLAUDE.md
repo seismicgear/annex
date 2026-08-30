@@ -118,6 +118,21 @@ invalidating one:
   baseline drift across 252 captures is what proves a mechanical change (a
   token migration, a rename, a refactor) changed no pixels. That claim is
   worth more than reading the diff.
+- **`git status` is not a measure of visual change — count pixels.** PNG
+  bytes are not reproducible run to run: re-recording a baseline that is
+  visually identical still rewrites it, because font rasterisation moves a
+  handful of anti-aliased pixels. Measured on this repo, an unchanged
+  `.chat-area` capture comes back with 8-16 differing pixels out of 711,760
+  — a ratio of 0.00002 against a 0.005 tolerance, 250x below the threshold.
+  So a `git status` listing 54 modified baselines can mean *nothing* moved.
+  A claim about what a change did to the pixels has to come from decoding
+  the two PNGs and counting; one such claim in this session's history
+  ("139 baselines were carrying mask rectangles") was about 2x overstated
+  because it read `git status` instead. Sampling the same set properly put
+  it at roughly half real, half noise — and two of the real ones came in at
+  0.0022 and 0.0003, under the tolerance, which is exactly why the
+  baselines have to be deleted before re-recording rather than left for
+  `--update-baselines` to notice.
 - **A recording run proves nothing.** `--update-baselines` rewrites whatever
   it sees, so it cannot fail on drift and cannot tell you the guard holds.
   Every claim about the audit comes from a plain run afterwards, against the

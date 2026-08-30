@@ -3928,13 +3928,23 @@
 
 /* ── Optimistic / Failed Message States ── */
 
-.message.pending {
-  opacity: 0.6;
-}
-
+/* Neither of these dims itself any more.
+ *
+ * `opacity` multiplies every colour inside the element, text included, and
+ * these two states put their text on the wrong side of the contrast floor
+ * doing it: the timestamp is `--text-subtle` (#8a8a8a, 5.04:1 on the message
+ * background), and 0.8 opacity blends it to #747474 — 3.72:1 — while 0.6
+ * takes it to 2.64:1. The sender goes the same way. So the message became
+ * hardest to read at exactly the moment it needed attention, which is
+ * backwards: a failed send is the one message in the column the user has to
+ * act on.
+ *
+ * Nothing is lost by removing it. Both states already say what they are in
+ * words — "sending..." and "failed", the latter next to Retry and Dismiss —
+ * and failed keeps the red rule down its left edge. `message-send-failed`
+ * captures this state; axe found the 0.8 case there on its first run. */
 .message.failed {
   border-left: 3px solid var(--error-color, var(--accent));
-  opacity: 0.8;
 }
 
 .message-status {
