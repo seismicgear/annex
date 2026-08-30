@@ -560,9 +560,17 @@ export function MessageView() {
   // Load the local user's persona for display name / avatar
   useEffect(() => {
     if (!identity) return;
+    // The read is local and fast, but it is keyed on the identity — and this
+    // app is built on keeping identities apart. A late resolve after a switch
+    // would show one identity's persona name and colour while another is
+    // active, which is the one mistake it must not make.
+    let cancelled = false;
     getPersonasForIdentity(identity.id).then((list) => {
-      setSelfPersona(list[0] ?? null);
+      if (!cancelled) setSelfPersona(list[0] ?? null);
     });
+    return () => {
+      cancelled = true;
+    };
   }, [identity, serverAccentColor]);
 
   // Load visible usernames from server.

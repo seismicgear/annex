@@ -39,9 +39,18 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
   const imageInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    // Keyed on `pseudonymId`, which changes when the user switches servers.
+    // Without this guard the in-flight request for the PREVIOUS server can
+    // resolve after the switch and write its label, slug and public URL into
+    // a form that now belongs to a different server — and the Save button
+    // beside them would then write those values to it. The invite-link call
+    // below is worse: it reads `getApiBaseUrl()` at await time, so it would
+    // pair the new server's URL with the old server's pseudonym.
+    let cancelled = false;
     api
       .getServer(pseudonymId)
       .then(async (s) => {
+        if (cancelled) return;
         setLabel(s.label);
         setSlug(s.slug);
         setPublicUrl(s.public_url);
@@ -50,14 +59,21 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
         if (canCreateInviteLink(s.public_url)) {
           try {
             const result = await createInviteLink(api.getApiBaseUrl(), pseudonymId);
-            setInviteUrl(result.url);
+            if (!cancelled) setInviteUrl(result.url);
           } catch {
             // Non-critical — user can create one manually
           }
         }
       })
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
-      .finally(() => setLoading(false));
+      .catch((err: unknown) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [pseudonymId]);
 
   const handleRename = async () => {
