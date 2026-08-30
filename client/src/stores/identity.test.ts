@@ -41,6 +41,12 @@ vi.mock('@/lib/zk', () => ({
   generateNodeId: vi.fn(() => 'node1'),
   computeCommitment: vi.fn(async () => 'commit1'),
   generateMembershipProof: vi.fn(async () => ({ proof: {}, publicSignals: [] })),
+  generateMembershipProofV2: vi.fn(async () => ({
+    proof: {},
+    publicSignals: [],
+    nullifierHex: 'n1',
+    topicHashHex: 't1',
+  })),
   cancelMembershipProofGeneration: vi.fn(async () => {}),
   isProofGenerationInFlight: vi.fn(() => false),
   ZkProofAssetsError: class extends Error {},
@@ -407,5 +413,50 @@ describe('identity store — a backup that cannot be imported', () => {
 
     expect(useIdentityStore.getState().storedIdentities).toBe(before);
     expect(useIdentityStore.getState().identity).toBeNull();
+  });
+});
+
+describe('identity store — proof timeout message', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // `StartupGate` used to append its own hint here — "the first proof can take
+  // longer on slower hardware" — behind `error.includes('Proof generation
+  // timed out')`. Since this is the only producer of that string and it
+  // already carries the same advice, the user read the sentence twice in two
+  // wordings. The hint is gone, which makes this message the ONLY place the
+  // advice survives: strip the parenthetical here and a user who times out is
+  // told to retry with no reason to expect a different result.
+  it('tells the user why a retry might succeed, not just to retry', async () => {
+    vi.resetModules();
+    const zk = await import('@/lib/zk');
+    vi.mocked(zk.generateMembershipProofV2).mockRejectedValueOnce(
+      new zk.ZkProofTimeoutError('Proof generation timed out after 120s (configured timeout: 120000ms).'),
+    );
+
+    const { useIdentityStore } = await import('./identity');
+    useIdentityStore.setState({
+      identity: {
+        id: '1',
+        sk: 'ff',
+        commitmentHex: 'c1',
+        roleCode: 0,
+        nodeId: 'n1',
+        serverSlug: null,
+        leafIndex: null,
+        pseudonymId: null,
+        sessionToken: null,
+        zkProofPayload: null,
+        createdAt: '',
+      } as never,
+    });
+
+    await useIdentityStore.getState().registerWithServer('srv');
+
+    const { phase, error } = useIdentityStore.getState();
+    expect(phase).toBe('error');
+    expect(error).toMatch(/timed out/i);
+    expect(error).toMatch(/first proof can take longer/i);
   });
 });

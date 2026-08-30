@@ -390,14 +390,22 @@ export function StartupGate(props: StartupGateProps) {
           {phase === 'error' && error && (
             <>
               {/* One alert around the whole failure, not one per line. These
-                  render together — the error, an optional hint, an optional
-                  "proof still running" — and three sibling alerts would be
-                  three separate interruptions describing one event. */}
+                  render together — the error and an optional "proof still
+                  running" — and sibling alerts would be separate
+                  interruptions describing one event.
+
+                  There used to be a third line here: a hint, shown when the
+                  error text contained "Proof generation timed out", saying
+                  the first proof can take longer on slower hardware. The
+                  only producer of that string (`stores/identity.ts`, on
+                  `zk.ZkProofTimeoutError`) already ends its message with
+                  "(the first proof can take longer on slow hardware)", so
+                  the condition could never be true without the advice
+                  already being on screen. It printed the same sentence
+                  twice, reworded, at the moment the user is least patient
+                  with being told things. */}
               <div role="alert">
                 <div className="error-message">{error}</div>
-                {error.includes('Proof generation timed out') && (
-                  <div className="error-message">Hint: the first proof can take longer on slower hardware.</div>
-                )}
                 {proofInFlight && (
                   <div className="error-message">proof still running.</div>
                 )}
