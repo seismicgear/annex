@@ -183,6 +183,28 @@ describe('StartupModeSelector', () => {
   });
 
 
+  it('says why an address was refused, using the reason the parser gave', async () => {
+    // `normalizeServerUrl` throws "Only http and https URLs are supported."
+    // and that was replaced with a bare "Invalid URL format." — a message
+    // that names nothing the user typed and does not say what a valid
+    // address looks like, while the unreachable and timeout branches beside
+    // it both echo the address and say what to do.
+    getStartupModeMock.mockResolvedValue(null);
+    render(<StartupModeSelector onReady={vi.fn()} />);
+
+    const input = await screen.findByPlaceholderText('annex.example.com');
+    fireEvent.change(input, { target: { value: 'ftp://not-a-web-server' } });
+    fireEvent.submit(input.closest('form')!);
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('ftp://not-a-web-server');
+    expect(alert.textContent).toContain('Only http and https URLs are supported.');
+    expect(alert.textContent).toContain('annex.example.com');
+    // The form keeps what was typed, so it can be corrected rather than
+    // retyped — same as the unreachable branch.
+    expect((input as HTMLInputElement).value).toBe('ftp://not-a-web-server');
+  });
+
   it('says what failed and offers a way out, on the screen a failed start lands on', async () => {
     // This is the whole app for a user whose chosen mode will not start, and
     // it used to be `<h1>Annex</h1>`, a bare exception string, and a button

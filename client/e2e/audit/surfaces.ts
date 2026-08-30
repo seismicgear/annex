@@ -160,6 +160,27 @@ export const SURFACES: Surface[] = [
   },
 
   {
+    id: 'startup-remote-bad-address',
+    stage: '03-server-startup',
+    title: 'Server selection — the address is not one',
+    role: 'fresh',
+    intent:
+      'The third failure on this screen and the commonest: a typo, or a pasted URL with a ' +
+      'scheme the app does not speak. It never reaches the network, so it is the one branch ' +
+      'that can only be judged on what it says — and it used to say "Invalid URL format." ' +
+      'while its two siblings echoed the address and explained what to do.',
+    navigate: async (page) => {
+      await page.getByRole('button', { name: 'Create New Identity' }).click();
+      await expect(page.getByRole('button', { name: 'Continue' })).toBeVisible({
+        timeout: 60_000,
+      });
+      await page.getByPlaceholder('annex.example.com').fill('ftp://not-a-web-server');
+      await page.getByRole('button', { name: 'Connect' }).click();
+      await expect(page.locator('.form-error')).toBeVisible({ timeout: 15_000 });
+    },
+  },
+
+  {
     id: 'startup-remote-unreachable',
     stage: '03-server-startup',
     title: 'Server selection — the address entered does not respond',
@@ -298,6 +319,41 @@ export const SURFACES: Surface[] = [
       await expect(page.locator('.dialog')).toBeVisible();
     },
     clip: '.dialog',
+  },
+  {
+    id: 'create-channel-rejected',
+    stage: '05-channels',
+    title: 'The server refused the channel',
+    role: 'founder',
+    intent:
+      'A name that collides with an existing channel is the ordinary way this fails, and the ' +
+      'dialog has to stay open with the typed values intact — closing on a refusal would ' +
+      'throw away what the user wrote and leave them guessing whether it worked.',
+    setup: async (page) => {
+      // POST only. The dialog also GETs the channel list after a successful
+      // create, and stubbing every method would break the list behind it.
+      await page.route('**/api/channels', (route) =>
+        route.request().method() === 'POST'
+          ? route.fulfill({
+              status: 409,
+              contentType: 'application/json',
+              body: JSON.stringify({ error: 'A channel with that name already exists.' }),
+            })
+          : route.fallback(),
+      );
+    },
+    navigate: async (page) => {
+      await page.locator('.create-channel-btn').click();
+      await expect(page.locator('.dialog')).toBeVisible();
+      await page.locator('#channel-name, .dialog input[type="text"]').first().fill('general');
+      await page.getByRole('button', { name: /^create$/i }).click();
+      await expect(page.locator('.dialog .error-message')).toBeVisible({ timeout: 15_000 });
+    },
+    clip: '.dialog',
+    waive: {
+      network: 'the 409 is the stub this surface installs — it is the condition under test.',
+      console: 'the browser logs the injected 409 to the console as well',
+    },
   },
 
   // ─────────────────────── 06 · messaging ───────────────────────
