@@ -89,6 +89,12 @@ authorise senders by pubkey since slugs are blank.)
 - E2E key distribution is O(members) sealed blobs per channel, fetched lazily and
   cached per device; convergence avoids rival keys.
 - At-rest encryption is per-message AEAD with negligible overhead; only search
-  pays a bounded decrypt-scan cost.
+  pays a bounded decrypt-scan cost. The bound is real and visible to users:
+  `GET /api/messages/search` decrypts the most recent `SEARCH_SCAN_CAP` (1000)
+  messages per channel in scope and filters in memory, so older matches are
+  not found. The response says which happened — `{results, complete,
+  scanned_per_channel}` — because an empty `results` with `complete: false`
+  means "not in the part we read", not "not here", and the client must not
+  render the two the same way.
 - Rotating tags + padding + cover traffic keep the relay from building a social
   graph or timing profile regardless of how many servers federate through it.

@@ -93,11 +93,20 @@ async fn search(app: &axum::Router, caller: &str, query: &str) -> (StatusCode, S
 
 fn contents(body: &str) -> Vec<String> {
     let json: Value = serde_json::from_str(body).unwrap_or_else(|e| panic!("{e}: {body}"));
-    json.as_array()
-        .unwrap_or_else(|| panic!("expected an array: {body}"))
+    json["results"]
+        .as_array()
+        .unwrap_or_else(|| panic!("expected a results array: {body}"))
         .iter()
         .map(|m| m["content"].as_str().unwrap_or_default().to_string())
         .collect()
+}
+
+/// Whether the server says it read every channel in scope to the end.
+fn complete(body: &str) -> bool {
+    let json: Value = serde_json::from_str(body).unwrap_or_else(|e| panic!("{e}: {body}"));
+    json["complete"]
+        .as_bool()
+        .unwrap_or_else(|| panic!("expected a complete flag: {body}"))
 }
 
 // ── Scope: the thing that must never leak ────────────────────────────────
@@ -431,4 +440,169 @@ async fn an_unauthenticated_search_is_refused() {
         StatusCode::OK,
         "search served a caller with no identity",
     );
+}
+
+// ── How far back the search actually looked ───────────────────────────────
+//
+// Message bodies are encrypted at rest, so a SQL `LIKE` cannot match them.
+// The server decrypts the most recent `SEARCH_SCAN_CAP` (1000) messages per
+// channel and filters in memory; anything older is never examined. That is a
+// deliberate trade for content-at-rest confidentiality without a second
+// searchable index — but the response used to be a bare array, so a term
+// sitting in message 1001 came back indistinguishable from a term nobody has
+// ever typed, and the client said "No messages found". The scan window is now
+// part of the answer.
+
+/// Seeds `count` filler messages, oldest first, one per second.
+fn fill(pool: &DbPool, channel_id: &str, count: usize) {
+    let conn = pool.get().unwrap();
+    let tx = conn.unchecked_transaction().unwrap();
+    for i in 0..count {
+        tx.execute(
+            "INSERT INTO messages (server_id, channel_id, message_id, sender_pseudonym, content, created_at)
+             VALUES (1, ?1, ?2, 'alice', ?3, datetime('2026-02-01 00:00:00', ?4))",
+            rusqlite::params![
+                channel_id,
+                format!("fill-{channel_id}-{i}"),
+                format!("filler {i}"),
+                format!("+{i} seconds"),
+            ],
+        )
+        .unwrap();
+    }
+    tx.commit().unwrap();
+}
+
+#[tokio::test]
+async fn a_search_that_read_the_whole_channel_says_so() {
+    let (app, pool) = setup_test_app().await;
+    add_member(&pool, "alice");
+    add_channel(&pool, "chan");
+    join(&pool, "chan", "alice");
+    say(
+        &pool,
+        "chan",
+        "alice",
+        "m1",
+        "the sole message",
+        "2026-01-01 10:00:00",
+    );
+
+    let (status, body) = search(&app, "alice", "q=zzzznotpresent&channel_id=chan").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(contents(&body).is_empty());
+    assert!(
+        complete(&body),
+        "a channel of one message was read to its end, so this miss is a fact \
+         about the archive and the client may say so: {body}",
+    );
+}
+
+#[tokio::test]
+async fn a_miss_past_the_scan_window_is_not_reported_as_an_empty_archive() {
+    // The whole point. The needle is the OLDEST message in the channel, with
+    // a full scan window of filler on top of it, so the scan never reaches it.
+    let (app, pool) = setup_test_app().await;
+    add_member(&pool, "alice");
+    add_channel(&pool, "chan");
+    join(&pool, "chan", "alice");
+    say(
+        &pool,
+        "chan",
+        "alice",
+        "needle",
+        "quarterly retrospective",
+        "2026-01-01 10:00:00",
+    );
+    fill(&pool, "chan", 1000);
+
+    let (status, body) = search(&app, "alice", "q=retrospective&channel_id=chan").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        contents(&body).is_empty(),
+        "the fixture is wrong if the scan reached the needle: {body}",
+    );
+    assert!(
+        !complete(&body),
+        "the message IS there and the server did not look — answering with a \
+         bare empty list lets the client state the opposite: {body}",
+    );
+}
+
+#[tokio::test]
+async fn a_hit_inside_the_window_still_reports_the_window_was_not_finished() {
+    // Finding something does not mean everything was searched, and a user
+    // scanning a partial result set should be told the same thing whether or
+    // not the first page happened to be satisfying.
+    let (app, pool) = setup_test_app().await;
+    add_member(&pool, "alice");
+    add_channel(&pool, "chan");
+    join(&pool, "chan", "alice");
+    fill(&pool, "chan", 1000);
+    say(
+        &pool,
+        "chan",
+        "alice",
+        "recent",
+        "quarterly retrospective",
+        "2026-03-01 10:00:00",
+    );
+
+    let (status, body) = search(&app, "alice", "q=retrospective&channel_id=chan").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(contents(&body).len(), 1);
+    assert!(
+        !complete(&body),
+        "1001 messages, a 1000-message window: {body}"
+    );
+}
+
+#[tokio::test]
+async fn one_unfinished_channel_makes_the_whole_unscoped_search_unfinished() {
+    // An unscoped search sweeps every channel the caller is in. If any one of
+    // them was cut off, the result set as a whole is partial — reporting
+    // `complete` because most channels were small would be the same lie in a
+    // quieter voice.
+    let (app, pool) = setup_test_app().await;
+    add_member(&pool, "alice");
+    for chan in ["small", "big"] {
+        add_channel(&pool, chan);
+        join(&pool, chan, "alice");
+    }
+    say(
+        &pool,
+        "small",
+        "alice",
+        "s1",
+        "hello there",
+        "2026-01-01 10:00:00",
+    );
+    fill(&pool, "big", 1000);
+
+    let (status, body) = search(&app, "alice", "q=hello").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(contents(&body), vec!["hello there".to_string()]);
+    assert!(
+        !complete(&body),
+        "`big` was cut off, so the sweep did not cover everything: {body}",
+    );
+}
+
+#[tokio::test]
+async fn a_caller_in_no_channels_gets_a_complete_answer_not_a_partial_one() {
+    // Nothing was skipped, because nothing was in scope. Reporting this as
+    // partial would put a "we did not look everywhere" caveat on the one
+    // answer that is exhaustively true.
+    let (app, pool) = setup_test_app().await;
+    add_member(&pool, "alice");
+
+    let (status, body) = search(&app, "alice", "q=anything").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(contents(&body).is_empty());
+    assert!(complete(&body), "{body}");
 }

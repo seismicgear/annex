@@ -4242,6 +4242,18 @@
   text-align: center;
 }
 
+/* Says how far back the search reached, when it did not reach the end.
+   Sits under the results rather than above them: it qualifies what is
+   there, and putting a caveat first would read as a failure. */
+.search-coverage-note {
+  margin: 0;
+  padding: 0.4rem 0.6rem;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
 /* Channel end-to-end encryption bar */
 .channel-encryption-bar {
   display: flex;

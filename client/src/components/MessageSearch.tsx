@@ -25,6 +25,14 @@ export function MessageSearch() {
   // It also outlived the query it belonged to — edit a search that found
   // nothing and the verdict stayed up under the new text.
   const [answered, setAnswered] = useState<string | null>(null);
+  // How much of the archive the last answer actually covers.
+  //
+  // Message bodies are encrypted at rest, so the server cannot match them in
+  // SQL — it decrypts a bounded recent window per channel and filters there.
+  // Anything older is never examined. That was invisible from here: an empty
+  // array became "No messages found", a claim about the whole archive, when
+  // the server had only read the top of it.
+  const [coverage, setCoverage] = useState<{ complete: boolean; perChannel: number } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const identity = useIdentityStore((s) => s.identity);
   const activeChannelId = useChannelsStore((s) => s.activeChannelId);
@@ -43,6 +51,7 @@ export function MessageSearch() {
         setResults([]);
         setQuery('');
         setAnswered(null);
+        setCoverage(null);
       }
     };
     document.addEventListener('keydown', handler);
@@ -55,13 +64,14 @@ export function MessageSearch() {
     setSearching(true);
     setError(null);
     try {
-      const msgs = await api.searchMessages(
+      const found = await api.searchMessages(
         identity.pseudonymId,
         term,
         activeChannelId ?? undefined,
         20,
       );
-      setResults(msgs);
+      setResults(found.results);
+      setCoverage({ complete: found.complete, perChannel: found.scanned_per_channel });
       setAnswered(term);
     } catch (err) {
       // A failed request is not an empty result set. Rendering it as "No
@@ -70,6 +80,7 @@ export function MessageSearch() {
       // the server never actually reported.
       console.warn('[search] request failed:', err);
       setResults([]);
+      setCoverage(null);
       setAnswered(term);
       setError('Search failed. Check your connection and try again.');
     } finally {
@@ -85,11 +96,15 @@ export function MessageSearch() {
     setResults([]);
     setQuery('');
     setAnswered(null);
+    setCoverage(null);
   };
 
   // Results and the empty verdict both belong to `answered`, not to whatever
   // is in the box now — edit the text and neither is an answer to it any more.
   const isAnswered = answered !== null && answered === query.trim();
+  // Only worth saying when the window actually cut the archive short.
+  const partial = isAnswered && coverage !== null && !coverage.complete;
+  const windowSize = coverage?.perChannel.toLocaleString() ?? '';
 
   if (!open) {
     return (
@@ -124,7 +139,7 @@ export function MessageSearch() {
         <button type="submit" disabled={searching || !query.trim()}>
           {searching ? '...' : 'Search'}
         </button>
-        <button type="button" onClick={() => { setOpen(false); setResults([]); setQuery(''); setAnswered(null); }} aria-label="Close search">
+        <button type="button" onClick={() => { setOpen(false); setResults([]); setQuery(''); setAnswered(null); setCoverage(null); }} aria-label="Close search">
           &times;
         </button>
       </form>
@@ -154,8 +169,24 @@ export function MessageSearch() {
           <button type="button" onClick={() => void handleSearch()}>Retry</button>
         </div>
       )}
+      {partial && !error && results.length > 0 && !searching && (
+        <p className="search-coverage-note">
+          Covers the most recent {windowSize} messages in each channel. Anything
+          older was not searched.
+        </p>
+      )}
       {isAnswered && !error && results.length === 0 && !searching && (
-        <div className="search-no-results">No messages found</div>
+        <div className="search-no-results">
+          {partial ? (
+            <>
+              No matches in the most recent {windowSize} messages of each
+              channel. Older messages were not searched, so this is not a
+              guarantee the term is absent.
+            </>
+          ) : (
+            'No messages found'
+          )}
+        </div>
       )}
     </div>
   );

@@ -955,6 +955,75 @@ export const SURFACES: Surface[] = [
     mask: ['.message-view'],
   },
   {
+    id: 'message-search-partial-no-results',
+    stage: '06-messaging',
+    title: 'Message search that did not reach the whole archive',
+    role: 'founder',
+    intent:
+      'The third empty-result state, and the one the panel used to get wrong. Bodies are ' +
+      'encrypted at rest, so the server decrypts a bounded recent window per channel and ' +
+      'filters in memory — a match older than the window is never seen. Rendered as "No ' +
+      'messages found", that is the client stating something about the archive on behalf of ' +
+      'a server that read only the top of it.',
+    // Stubbed rather than seeded: reaching this state for real needs 1000
+    // messages in a channel every later surface then shares.
+    setup: stub('**/api/messages/search*', {
+      results: [],
+      complete: false,
+      scanned_per_channel: 1000,
+    }),
+    navigate: async (page) => {
+      await selectChannel(page, SEED.defaultChannel);
+      await page.locator('.search-toggle-btn').click();
+      await page.locator('.search-form input').fill('retrospective');
+      await page.locator('.search-form input').press('Enter');
+      await expect(page.locator('.search-no-results')).toBeVisible({ timeout: 15_000 });
+    },
+    clip: '.message-search',
+    mask: ['.message-view'],
+  },
+  {
+    id: 'message-search-partial-with-results',
+    stage: '06-messaging',
+    title: 'Message search with results it cannot vouch for',
+    role: 'founder',
+    intent:
+      'Same partial scan, but it found something. Someone reading a short list and concluding ' +
+      '"that is all of it" needs the same caveat the empty case gets — the note sits under the ' +
+      'results, qualifying them, rather than above where it would read as a failure.',
+    setup: stub('**/api/messages/search*', {
+      results: [
+        {
+          id: 4242,
+          server_id: 1,
+          channel_id: SEED.defaultChannel,
+          message_id: 'audit-partial-search-hit',
+          sender_pseudonym: 'psn-audit-partial-search-0001',
+          content: 'quarterly retrospective notes are in the shared drive',
+          reply_to_message_id: null,
+          created_at: '2026-02-01 09:00:00',
+          expires_at: null,
+          edited_at: null,
+          deleted_at: null,
+        },
+      ],
+      complete: false,
+      scanned_per_channel: 1000,
+    }),
+    navigate: async (page) => {
+      await selectChannel(page, SEED.defaultChannel);
+      await page.locator('.search-toggle-btn').click();
+      await page.locator('.search-form input').fill('retrospective');
+      await page.locator('.search-form input').press('Enter');
+      await expect(page.locator('.search-coverage-note')).toBeVisible({ timeout: 15_000 });
+    },
+    clip: '.message-search',
+    // `.search-result-time` renders through `toLocaleString`, and the sender
+    // is a pseudonym in a proportional font — both are masked on
+    // `message-search-results` for the same reasons.
+    mask: ['.search-result-time', '.search-result-sender', '.message-view'],
+  },
+  {
     id: 'message-edit-history-empty',
     stage: '06-messaging',
     title: 'Edit history the server says is genuinely empty',

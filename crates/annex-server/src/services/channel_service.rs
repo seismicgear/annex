@@ -207,6 +207,28 @@ pub struct VoiceStatusResponse {
     pub active: bool,
 }
 
+/// Response body for `GET /api/messages/search`.
+///
+/// This used to be a bare `Vec<Message>`, which could not express the one
+/// thing a searcher most needs to know: whether the search actually looked
+/// everywhere. Message bodies are encrypted at rest, so a SQL `LIKE` cannot
+/// match and the server decrypts a bounded recent window per channel
+/// ([`SEARCH_SCAN_CAP`]) and filters in memory. Anything older was never
+/// examined — and the client, handed an empty array, said "No messages
+/// found", which is a statement about the archive the server had not made.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct SearchResponse {
+    pub results: Vec<Message>,
+    /// True when every channel in scope was searched to its end.
+    ///
+    /// False means at least one channel had more messages than the scan
+    /// window, so a non-match is "not in the part we read", not "not here".
+    pub complete: bool,
+    /// How far back the scan reached in each channel, so the client can say
+    /// so in the user's units without hardcoding a server constant.
+    pub scanned_per_channel: u32,
+}
+
 /// Outcome of a successful `POST /api/channels` call.
 ///
 /// The handler turns this into the usual `{"status": "created"}` response
@@ -693,7 +715,7 @@ impl ChannelService {
         query: String,
         channel_id: Option<String>,
         limit: Option<u32>,
-    ) -> Result<Vec<Message>, ChannelServiceError> {
+    ) -> Result<SearchResponse, ChannelServiceError> {
         // Search returns decrypted message content, so it needs the same gate
         // as reading that content directly.
         //
@@ -739,10 +761,16 @@ impl ChannelService {
             // memory, and substring-filter here. `query` is matched
             // case-insensitively to mirror SQLite's default LIKE semantics.
             let needle = query.to_lowercase();
-            let scan = |cid: &str| -> Result<Vec<Message>, ChannelServiceError> {
+            // Returns the hits and whether this channel was read to its end.
+            // A short candidate list means the channel ran out before the
+            // window did; a full one means there is older history nobody
+            // looked at, which is the difference between "no match" and "no
+            // match in the part we read".
+            let scan = |cid: &str| -> Result<(Vec<Message>, bool), ChannelServiceError> {
                 let mut hits = Vec::new();
                 let candidates = annex_channels::scan_messages(&conn, server_id, cid, SEARCH_SCAN_CAP)
                     .map_err(map_channel_err)?;
+                let exhausted = (candidates.len() as u32) < SEARCH_SCAN_CAP;
                 for mut m in candidates {
                     cipher.decrypt_in_place(&mut m.content);
                     if m.content.to_lowercase().contains(&needle) {
@@ -752,7 +780,7 @@ impl ChannelService {
                         }
                     }
                 }
-                Ok(hits)
+                Ok((hits, exhausted))
             };
 
             // Without a target channel, restrict the sweep to channels the
@@ -771,18 +799,39 @@ impl ChannelService {
                     .collect();
 
                 if member_channels.is_empty() {
-                    return Ok(vec![]);
+                    return Ok(SearchResponse {
+                        results: vec![],
+                        // Nothing was skipped: there was nothing in scope.
+                        complete: true,
+                        scanned_per_channel: SEARCH_SCAN_CAP,
+                    });
                 }
 
                 let mut all_results = Vec::new();
+                let mut complete = true;
                 for cid in &member_channels {
-                    all_results.append(&mut scan(cid)?);
+                    let (mut hits, exhausted) = scan(cid)?;
+                    complete &= exhausted;
+                    all_results.append(&mut hits);
                 }
-                all_results.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+                // `id` breaks the tie because `created_at` is `datetime('now')`
+                // at one-second resolution, so messages sent in the same second
+                // compare equal and their order across channels would otherwise
+                // depend on which channel happened to be walked first.
+                all_results.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(b.id.cmp(&a.id)));
                 all_results.truncate(limit as usize);
-                Ok(all_results)
+                Ok(SearchResponse {
+                    results: all_results,
+                    complete,
+                    scanned_per_channel: SEARCH_SCAN_CAP,
+                })
             } else {
-                scan(channel_id.as_deref().unwrap())
+                let (results, complete) = scan(channel_id.as_deref().unwrap())?;
+                Ok(SearchResponse {
+                    results,
+                    complete,
+                    scanned_per_channel: SEARCH_SCAN_CAP,
+                })
             }
         })
         .await

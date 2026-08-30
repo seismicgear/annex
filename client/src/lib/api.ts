@@ -44,6 +44,7 @@ export {
   listChannels,
 } from '@/api/channels';
 
+export type { MessageSearchResult } from '@/api/messages';
 export {
   getMessageEdits,
   getMessages,

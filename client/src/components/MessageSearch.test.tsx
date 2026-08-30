@@ -36,6 +36,11 @@ const HIT = {
   deleted_at: null,
 };
 
+/** A complete search answer — the server read every channel to its end. */
+function answer(results: unknown[], complete = true) {
+  return { results, complete, scanned_per_channel: 1000 };
+}
+
 async function openSearch() {
   vi.resetModules();
   const { useIdentityStore } = await import('@/stores/identity');
@@ -58,7 +63,7 @@ describe('MessageSearch', () => {
   });
 
   it('does not answer a search that has not run', async () => {
-    mockSearchMessages.mockResolvedValue([]);
+    mockSearchMessages.mockResolvedValue(answer([]));
     const { user, input } = await openSearch();
 
     await user.type(input, 'fox');
@@ -68,7 +73,7 @@ describe('MessageSearch', () => {
   });
 
   it('says nothing matched once the server has actually said so', async () => {
-    mockSearchMessages.mockResolvedValue([]);
+    mockSearchMessages.mockResolvedValue(answer([]));
     const { user, input } = await openSearch();
 
     await user.type(input, 'fox{Enter}');
@@ -80,7 +85,7 @@ describe('MessageSearch', () => {
   it('withdraws that verdict when the query is edited', async () => {
     // The user reads "No messages found" under whatever is in the box. If the
     // box no longer holds the term that was searched, the sentence is false.
-    mockSearchMessages.mockResolvedValue([]);
+    mockSearchMessages.mockResolvedValue(answer([]));
     const { user, input } = await openSearch();
 
     await user.type(input, 'fox{Enter}');
@@ -91,7 +96,7 @@ describe('MessageSearch', () => {
   });
 
   it('withdraws results when the query is edited', async () => {
-    mockSearchMessages.mockResolvedValue([HIT]);
+    mockSearchMessages.mockResolvedValue(answer([HIT]));
     const { user, input } = await openSearch();
 
     await user.type(input, 'fox{Enter}');
@@ -104,7 +109,7 @@ describe('MessageSearch', () => {
   it('trims the query, and a whitespace edit does not withdraw the answer', async () => {
     // `handleSearch` searches the trimmed term, so trailing whitespace is not
     // a different query and must not invalidate the answer to it.
-    mockSearchMessages.mockResolvedValue([]);
+    mockSearchMessages.mockResolvedValue(answer([]));
     const { user, input } = await openSearch();
 
     await user.type(input, '  fox  {Enter}');
@@ -129,7 +134,7 @@ describe('MessageSearch', () => {
 
   it('re-answers after a retry succeeds', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
-    mockSearchMessages.mockRejectedValueOnce(new Error('boom')).mockResolvedValueOnce([HIT]);
+    mockSearchMessages.mockRejectedValueOnce(new Error('boom')).mockResolvedValueOnce(answer([HIT]));
     const { user, input } = await openSearch();
 
     await user.type(input, 'fox{Enter}');
@@ -139,5 +144,82 @@ describe('MessageSearch', () => {
 
     expect(await screen.findByRole('listbox', { name: 'Search results' })).toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * How far back the search actually looked.
+ *
+ * Bodies are encrypted at rest, so the server decrypts a bounded recent
+ * window per channel and filters in memory; older messages are never
+ * examined. Handed a bare empty array, this panel said "No messages found" —
+ * a claim about the whole archive, made on behalf of a server that had read
+ * the top of it. The response now carries `complete`, and the panel is only
+ * allowed to make the absolute claim when the server made it first.
+ */
+describe('MessageSearch coverage', () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it('does not claim the archive is empty when it was not fully read', async () => {
+    mockSearchMessages.mockResolvedValue(answer([], false));
+    const { user, input } = await openSearch();
+
+    await user.type(input, 'retrospective{Enter}');
+
+    const verdict = await screen.findByText(/no matches in the most recent/i);
+    expect(verdict).toHaveTextContent('1,000');
+    expect(verdict).toHaveTextContent(/older messages were not searched/i);
+    expect(screen.queryByText('No messages found')).not.toBeInTheDocument();
+  });
+
+  it('qualifies a partial result set that did find something', async () => {
+    // Finding a hit does not mean everything was searched, and someone
+    // deciding "it is not in here" off a short list needs to know that.
+    mockSearchMessages.mockResolvedValue(answer([HIT], false));
+    const { user, input } = await openSearch();
+
+    await user.type(input, 'fox{Enter}');
+
+    await screen.findByRole('listbox', { name: 'Search results' });
+    expect(screen.getByText(/covers the most recent/i)).toHaveTextContent('1,000');
+  });
+
+  it('says nothing about coverage when the search was exhaustive', async () => {
+    mockSearchMessages.mockResolvedValue(answer([HIT]));
+    const { user, input } = await openSearch();
+
+    await user.type(input, 'fox{Enter}');
+
+    await screen.findByRole('listbox', { name: 'Search results' });
+    expect(screen.queryByText(/covers the most recent/i)).not.toBeInTheDocument();
+  });
+
+  it('takes the window size from the server rather than naming its own', async () => {
+    // The cap is a server constant. Hardcoding it here would be a second
+    // copy that drifts silently the day someone tunes it.
+    mockSearchMessages.mockResolvedValue({
+      results: [],
+      complete: false,
+      scanned_per_channel: 250,
+    });
+    const { user, input } = await openSearch();
+
+    await user.type(input, 'anything{Enter}');
+
+    expect(await screen.findByText(/no matches in the most recent/i)).toHaveTextContent('250');
+  });
+
+  it('drops the coverage note when the query is edited', async () => {
+    mockSearchMessages.mockResolvedValue(answer([HIT], false));
+    const { user, input } = await openSearch();
+
+    await user.type(input, 'fox{Enter}');
+    await screen.findByText(/covers the most recent/i);
+
+    await user.type(input, 'trot');
+    expect(screen.queryByText(/covers the most recent/i)).not.toBeInTheDocument();
   });
 });

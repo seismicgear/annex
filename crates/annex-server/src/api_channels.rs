@@ -32,7 +32,7 @@ use std::sync::Arc;
 // tests that name these types directly continue to compile unchanged.
 pub use crate::services::channel_service::{
     ChannelWithMembership, CreateChannelRequest, IceServerResponse, JoinVoiceResponse,
-    VoiceStatusResponse,
+    SearchResponse, VoiceStatusResponse,
 };
 
 #[derive(Deserialize)]
@@ -304,9 +304,9 @@ pub async fn search_messages_handler(
     Extension(IdentityContext(identity)): Extension<IdentityContext>,
     headers: HeaderMap,
     Query(params): Query<SearchParams>,
-) -> Result<Json<Vec<Message>>, StatusCode> {
+) -> Result<Json<SearchResponse>, StatusCode> {
     let svc = ChannelService::new(state);
-    let messages = svc
+    let found = svc
         .search_messages(
             &identity,
             &headers,
@@ -316,5 +316,5 @@ pub async fn search_messages_handler(
         )
         .await
         .map_err(err_to_status)?;
-    Ok(Json(messages))
+    Ok(Json(found))
 }
