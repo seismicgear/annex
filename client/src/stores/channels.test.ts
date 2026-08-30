@@ -581,7 +581,7 @@ describe('failures that used to look like success', () => {
         { message_id: 'm1', channel_id: 'chan-1', sender_pseudonym: 'me',
           content: 'origianl typo', created_at: '2026-01-01 00:00:00' } as never,
       ],
-      editError: null,
+      messageActionError: null,
     });
 
     useChannelsStore.getState().editMessage('m1', 'original typo fixed');
@@ -591,7 +591,7 @@ describe('failures that used to look like success', () => {
     // looking applied — it came back on the next reload and the user had no
     // idea their fix was lost.
     expect(state.messages[0].content).toBe('origianl typo');
-    expect(state.editError).toBeTruthy();
+    expect(state.messageActionError).toBeTruthy();
   });
 
   it('keeps the optimistic edit when the send succeeds', async () => {
@@ -605,14 +605,122 @@ describe('failures that used to look like success', () => {
         { message_id: 'm1', channel_id: 'chan-1', sender_pseudonym: 'me',
           content: 'before', created_at: '2026-01-01 00:00:00' } as never,
       ],
-      editError: null,
+      messageActionError: null,
     });
 
     useChannelsStore.getState().editMessage('m1', 'after');
 
     const state = useChannelsStore.getState();
     expect(state.messages[0].content).toBe('after');
-    expect(state.editError).toBeNull();
+    expect(state.messageActionError).toBeNull();
+  });
+
+  it('undoes an edit the server refused, using the reason it gave', async () => {
+    // The socket-down case above was already handled. This is the one an
+    // ordinary user hits: the 60-second edit window closes, the server says
+    // no, and the error frame carried no way to tell which operation it was
+    // about — so the correction stayed on screen looking saved and came back
+    // undone on the next reload.
+    const { AnnexWebSocket } = await import('@/lib/ws');
+    const onMessageHandlers: Array<(f: import('@/types').WsReceiveFrame) => void> = [];
+    const editMessage = vi.fn();
+    vi.mocked(AnnexWebSocket).mockImplementationOnce(function mock() {
+      return {
+        onStatus: vi.fn(),
+        onMessage: vi.fn((cb: (f: import('@/types').WsReceiveFrame) => void) => { onMessageHandlers.push(cb); }),
+        connect: vi.fn(), disconnect: vi.fn(), subscribe: vi.fn(), unsubscribe: vi.fn(),
+        send: vi.fn(), setSessionToken: vi.fn(), reconnectForAuthRefresh: vi.fn(),
+        editMessage, connected: true,
+      } as unknown as import('@/lib/ws').AnnexWebSocket;
+    });
+
+    const { useChannelsStore } = await import('./channels');
+    useChannelsStore.getState().connectWs('p1');
+    useChannelsStore.setState({
+      activeChannelId: 'chan-1',
+      messages: [
+        { message_id: 'm1', channel_id: 'chan-1', sender_pseudonym: 'me',
+          content: 'origianl typo', created_at: '2026-01-01 00:00:00' } as never,
+      ],
+      messageActionError: null,
+    });
+
+    useChannelsStore.getState().editMessage('m1', 'original typo fixed');
+    expect(useChannelsStore.getState().messages[0].content).toBe('original typo fixed');
+
+    // The id the client sent is the id the server echoes back.
+    const clientRequestId = editMessage.mock.calls[0][3] as string;
+    expect(clientRequestId).toBeTruthy();
+
+    onMessageHandlers[0]?.({
+      type: 'error',
+      clientRequestId,
+      message: 'Edit window has expired',
+    } as import('@/types').WsReceiveFrame);
+
+    const state = useChannelsStore.getState();
+    expect(state.messages[0].content).toBe('origianl typo');
+    expect(state.messageActionError).toContain('Edit window has expired');
+    // And it must not be mistaken for a failed *send*: the message keeps
+    // existing, it is not marked failed, and the composer says nothing.
+    expect(state.messages[0].failed).toBeFalsy();
+    expect(state.composerError).toBeNull();
+  });
+
+  it('says so when a delete never left the device', async () => {
+    // This one had no optimistic change to undo. It logged to a console
+    // nobody has open and stopped: the confirm dialog closed, the message
+    // stayed, and nothing said the request had not been made.
+    const { useChannelsStore } = await import('./channels');
+    const ws = { deleteMessage: vi.fn(() => { throw new Error('socket is closed'); }) };
+    useChannelsStore.setState({
+      ws: ws as never,
+      activeChannelId: 'chan-1',
+      messageActionError: null,
+    });
+
+    useChannelsStore.getState().deleteMessage('m1');
+
+    expect(useChannelsStore.getState().messageActionError).toBeTruthy();
+  });
+
+  it('forgets a pending edit once the server confirms it', async () => {
+    // Otherwise the correlation map grows for the life of the channel.
+    const { AnnexWebSocket } = await import('@/lib/ws');
+    const onMessageHandlers: Array<(f: import('@/types').WsReceiveFrame) => void> = [];
+    const editMessage = vi.fn();
+    vi.mocked(AnnexWebSocket).mockImplementationOnce(function mock() {
+      return {
+        onStatus: vi.fn(),
+        onMessage: vi.fn((cb: (f: import('@/types').WsReceiveFrame) => void) => { onMessageHandlers.push(cb); }),
+        connect: vi.fn(), disconnect: vi.fn(), subscribe: vi.fn(), unsubscribe: vi.fn(),
+        send: vi.fn(), setSessionToken: vi.fn(), reconnectForAuthRefresh: vi.fn(),
+        editMessage, connected: true,
+      } as unknown as import('@/lib/ws').AnnexWebSocket;
+    });
+
+    const { useChannelsStore } = await import('./channels');
+    useChannelsStore.getState().connectWs('p1');
+    useChannelsStore.setState({
+      activeChannelId: 'chan-1',
+      messages: [
+        { message_id: 'm1', channel_id: 'chan-1', sender_pseudonym: 'me',
+          content: 'before', created_at: '2026-01-01 00:00:00' } as never,
+      ],
+    });
+
+    useChannelsStore.getState().editMessage('m1', 'after');
+    expect(useChannelsStore.getState().pendingMessageOps.size).toBe(1);
+
+    onMessageHandlers[0]?.({
+      type: 'message_edited',
+      channelId: 'chan-1',
+      messageId: 'm1',
+      content: 'after',
+      editedAt: '2026-01-01 00:01:00',
+    } as import('@/types').WsReceiveFrame);
+
+    expect(useChannelsStore.getState().pendingMessageOps.size).toBe(0);
   });
 
   it('a failed scrollback page does not claim the history has ended', async () => {

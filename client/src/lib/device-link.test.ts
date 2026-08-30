@@ -1,5 +1,50 @@
 import { describe, expect, it } from 'vitest';
-import { generateQrSvg } from './device-link';
+import {
+  decryptIdentity,
+  encryptIdentity,
+  generateQrSvg,
+} from './device-link';
+import type { StoredIdentity } from '@/types';
+
+const COMPLETE: StoredIdentity = {
+  id: 'local-1',
+  sk: '0a1b2c',
+  roleCode: 1,
+  nodeId: 7,
+  commitmentHex: '0xdeadbeef',
+  pseudonymId: 'p-1',
+  sessionToken: null,
+  serverSlug: 'alpha',
+  leafIndex: 3,
+} as StoredIdentity;
+
+describe('device link import', () => {
+  it('round-trips a complete identity', async () => {
+    const payload = await encryptIdentity(COMPLETE, '123456');
+    const back = await decryptIdentity(payload, '123456');
+    expect(back.sk).toBe(COMPLETE.sk);
+    expect(back.commitmentHex).toBe(COMPLETE.commitmentHex);
+  });
+
+  it('refuses a transfer that decrypts but is not an identity', async () => {
+    // AES-GCM authenticates the bytes, so this cannot come from a wrong
+    // pairing code — it is what a payload from a build with a different
+    // identity record, or one truncated before encryption, looks like. It
+    // used to import cleanly and the dialog reported success over a record
+    // the app could not sign with.
+    const withoutKey: Record<string, unknown> = { ...COMPLETE };
+    delete withoutKey.sk;
+    delete withoutKey.roleCode;
+    const payload = await encryptIdentity(withoutKey as never, '123456');
+
+    await expect(decryptIdentity(payload, '123456')).rejects.toThrow(/missing identity fields/i);
+  });
+
+  it('refuses a transfer whose payload is not an object at all', async () => {
+    const payload = await encryptIdentity('not-an-identity' as never, '123456');
+    await expect(decryptIdentity(payload, '123456')).rejects.toThrow(/did not contain an identity/i);
+  });
+});
 
 describe('generateQrSvg', () => {
   it('emits one path rather than a node per module', () => {

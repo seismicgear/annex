@@ -240,6 +240,46 @@ mod tests {
     use super::*;
     use annex_channels::Message;
 
+    /// The field is optional and defaulted, so a client that predates it
+    /// still edits and deletes. Getting this wrong would break every older
+    /// client at once, which is the whole reason it is not required.
+    #[test]
+    fn edit_and_delete_accept_a_client_request_id_and_do_not_require_one() {
+        use crate::ws::protocol::IncomingMessage;
+
+        let with = serde_json::json!({
+            "type": "edit_message", "channelId": "c1", "messageId": "m1",
+            "content": "fixed", "clientRequestId": "req-7"
+        });
+        match serde_json::from_value::<IncomingMessage>(with).expect("parses") {
+            IncomingMessage::EditMessage {
+                client_request_id, ..
+            } => assert_eq!(client_request_id.as_deref(), Some("req-7")),
+            other => panic!("expected EditMessage, got {other:?}"),
+        }
+
+        let without = serde_json::json!({
+            "type": "edit_message", "channelId": "c1", "messageId": "m1", "content": "fixed"
+        });
+        match serde_json::from_value::<IncomingMessage>(without).expect("parses without the id") {
+            IncomingMessage::EditMessage {
+                client_request_id, ..
+            } => assert!(client_request_id.is_none()),
+            other => panic!("expected EditMessage, got {other:?}"),
+        }
+
+        let del = serde_json::json!({
+            "type": "delete_message", "channelId": "c1", "messageId": "m1",
+            "clientRequestId": "req-8"
+        });
+        match serde_json::from_value::<IncomingMessage>(del).expect("parses") {
+            IncomingMessage::DeleteMessage {
+                client_request_id, ..
+            } => assert_eq!(client_request_id.as_deref(), Some("req-8")),
+            other => panic!("expected DeleteMessage, got {other:?}"),
+        }
+    }
+
     #[test]
     fn ws_message_payload_serializes_camel_case() {
         let payload = WsMessagePayload {

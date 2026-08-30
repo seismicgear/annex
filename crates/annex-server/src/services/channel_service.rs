@@ -897,8 +897,26 @@ impl ChannelService {
                 // with the same (sender, request_id) will lose on the
                 // UNIQUE constraint and fall back to the lookup branch on
                 // its next attempt.
+                // BEGIN IMMEDIATE, not DEFERRED.
+                //
+                // `create_message` reads before it writes — it resolves the
+                // channel's retention days first. Under a DEFERRED
+                // transaction that read takes a WAL snapshot, and the INSERT
+                // that follows has to upgrade to a writer. If any other
+                // connection has committed in between, SQLite returns
+                // SQLITE_BUSY_SNAPSHOT *immediately*: the busy handler is
+                // never invoked, because waiting cannot resolve a snapshot
+                // conflict, so `busy_timeout` does nothing. The send failed
+                // with "database is locked" and the user was told
+                // "Failed to send message: internal error".
+                //
+                // `edit_message` and `delete_message` were fixed for exactly
+                // this (see the [F31] regression test in annex-channels);
+                // sending was missed. IMMEDIATE takes the RESERVED lock at
+                // BEGIN, so contention becomes a wait bounded by
+                // `busy_timeout` instead of an instant failure.
                 let tx = conn
-                    .transaction()
+                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
                     .map_err(|e| ChannelServiceError::Internal(format!("tx begin: {e}")))?;
 
                 let message_id = uuid::Uuid::new_v4().to_string();

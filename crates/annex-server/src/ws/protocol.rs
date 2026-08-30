@@ -50,6 +50,16 @@ pub enum IncomingMessage {
         #[serde(rename = "messageId")]
         message_id: String,
         content: String,
+        /// Correlates an error frame back to this operation.
+        ///
+        /// `Message` has carried one from the start; these two did not, so a
+        /// rejected edit or delete came back as an error the client could not
+        /// attribute to anything. It could only show a generic message and
+        /// leave the optimistic change it had already painted on screen.
+        /// Optional, and defaulted: a client that omits it still edits and
+        /// deletes exactly as before.
+        #[serde(rename = "clientRequestId", default)]
+        client_request_id: Option<String>,
     },
     #[serde(rename = "delete_message")]
     DeleteMessage {
@@ -57,6 +67,16 @@ pub enum IncomingMessage {
         channel_id: String,
         #[serde(rename = "messageId")]
         message_id: String,
+        /// Correlates an error frame back to this operation.
+        ///
+        /// `Message` has carried one from the start; these two did not, so a
+        /// rejected edit or delete came back as an error the client could not
+        /// attribute to anything. It could only show a generic message and
+        /// leave the optimistic change it had already painted on screen.
+        /// Optional, and defaulted: a client that omits it still edits and
+        /// deletes exactly as before.
+        #[serde(rename = "clientRequestId", default)]
+        client_request_id: Option<String>,
     },
     #[serde(rename = "voice_intent")]
     VoiceIntent {

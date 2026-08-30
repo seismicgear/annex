@@ -206,7 +206,6 @@ test.describe('surface manifest', () => {
         'logic is covered by a store test instead.',
       'loading-text': 'transient — federation summary fetch, same reason',
       'startup-loading': 'transient — resolves as fast as the effect that sets it',
-      'edit-error': 'the edit goes over the WebSocket, which route stubbing cannot reach',
       'device-link-success': 'needs two contexts completing a real link handshake',
       'server-switch-error': 'needs a second registered server to switch away from',
       'server-hub-failed-actions': 'same — reached only after a failed switch',

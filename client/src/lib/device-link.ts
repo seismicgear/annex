@@ -98,7 +98,36 @@ export async function decryptIdentity(
     ciphertext.buffer as ArrayBuffer,
   );
 
-  return JSON.parse(new TextDecoder().decode(plaintext)) as StoredIdentity;
+  const parsed: unknown = JSON.parse(new TextDecoder().decode(plaintext));
+  assertStoredIdentity(parsed);
+  return parsed;
+}
+
+/**
+ * Narrow a decrypted blob to a `StoredIdentity`, or throw.
+ *
+ * AES-GCM authenticates the ciphertext, so a wrong pairing code cannot get
+ * this far — but authentication says the bytes are the ones that were sent,
+ * not that they describe a usable identity. `as StoredIdentity` asserted the
+ * shape without checking it, so a payload from a build whose identity record
+ * differed, or one truncated before encryption, imported cleanly and the
+ * dialog said "Identity imported successfully!" over a record the app could
+ * not sign with. The failure surfaced later, somewhere else, as an identity
+ * that simply did not work.
+ */
+function assertStoredIdentity(value: unknown): asserts value is StoredIdentity {
+  const v = value as Record<string, unknown> | null;
+  if (!v || typeof v !== 'object') {
+    throw new Error('Transfer did not contain an identity');
+  }
+  const missing = (['sk', 'commitmentHex', 'serverSlug'] as const).filter(
+    (k) => typeof v[k] !== 'string' || !(v[k] as string),
+  );
+  if (typeof v.roleCode !== 'number') missing.push('roleCode' as never);
+  if (typeof v.nodeId !== 'number') missing.push('nodeId' as never);
+  if (missing.length > 0) {
+    throw new Error(`Transfer is missing identity fields: ${missing.join(', ')}`);
+  }
 }
 
 /** Encode a DeviceLinkPayload as a compact string suitable for QR code. */

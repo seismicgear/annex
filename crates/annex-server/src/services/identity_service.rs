@@ -672,7 +672,11 @@ impl IdentityService {
             };
 
             // 6. Atomic mutation block.
-            let tx = conn.transaction().map_err(|e| {
+            // IMMEDIATE — this block reads the nullifier and the tree before
+            // writing both, which is the snapshot-conflict shape.
+            let tx = conn
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .map_err(|e| {
                 IdentityServiceError::Internal(format!("failed to start transaction: {e}"))
             })?;
 

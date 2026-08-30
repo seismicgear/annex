@@ -831,7 +831,12 @@ impl FederationService {
                 }
             };
 
-            let tx = conn.transaction().map_err(FederationError::DbError)?;
+            // IMMEDIATE for the same reason as the send path: this reads
+            // before it writes, and a DEFERRED snapshot conflict fails
+            // instantly rather than waiting out `busy_timeout`.
+            let tx = conn
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .map_err(FederationError::DbError)?;
 
             repo::upsert_federated_identity(
                 &tx,
@@ -2009,7 +2014,10 @@ impl FederationService {
                 let provenance_json = serde_json::to_string(&envelope.provenance)
                     .map_err(FederationError::Serialization)?;
 
-                let tx = conn.transaction().map_err(FederationError::DbError)?;
+                // IMMEDIATE — read-then-write, as in the send path.
+                let tx = conn
+                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                    .map_err(FederationError::DbError)?;
 
                 // Store bundle with provenance (idempotent on duplicate bundle_id).
                 let inserted = repo::insert_rtx_bundle(

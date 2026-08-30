@@ -426,7 +426,10 @@ impl RtxService {
                 };
 
                 {
-                    let tx = conn.transaction().map_err(|e| {
+                    // IMMEDIATE — read-then-write, as in the send path.
+                    let tx = conn
+                        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                        .map_err(|e| {
                         ApiError::InternalServerError(format!("failed to begin transaction: {e}"))
                     })?;
 

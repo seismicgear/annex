@@ -4601,7 +4601,7 @@
 .scrollback-error,
 .edit-history-error,
 .peer-detail-error,
-.edit-error {
+.message-action-error {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -4620,7 +4620,7 @@
 .scrollback-error button,
 .edit-history-error button,
 .peer-detail-error button,
-.edit-error button {
+.message-action-error button {
   flex-shrink: 0;
   padding: 0.2rem 0.6rem;
   font-size: 0.75rem;
@@ -4636,7 +4636,7 @@
 .scrollback-error button:hover,
 .edit-history-error button:hover,
 .peer-detail-error button:hover,
-.edit-error button:hover {
+.message-action-error button:hover {
   background: var(--overlay-white-20);
   border-color: var(--border-emphasis);
 }

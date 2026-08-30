@@ -198,8 +198,8 @@ export class AnnexWebSocket {
     this.ws.send(JSON.stringify(frame));
   }
 
-  editMessage(channelId: string, messageId: string, content: string): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) throw new Error('WebSocket is not connected'); this.ws.send(JSON.stringify({ type: 'edit_message', channelId, messageId, content } as WsSendFrame)); }
-  deleteMessage(channelId: string, messageId: string): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) throw new Error('WebSocket is not connected'); this.ws.send(JSON.stringify({ type: 'delete_message', channelId, messageId } as WsSendFrame)); }
+  editMessage(channelId: string, messageId: string, content: string, clientRequestId?: string): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) throw new Error('WebSocket is not connected'); this.ws.send(JSON.stringify({ type: 'edit_message', channelId, messageId, content, clientRequestId } as WsSendFrame)); }
+  deleteMessage(channelId: string, messageId: string, clientRequestId?: string): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) throw new Error('WebSocket is not connected'); this.ws.send(JSON.stringify({ type: 'delete_message', channelId, messageId, clientRequestId } as WsSendFrame)); }
   trackLastMessageId(channelId: string, messageId: string): void { this.lastMessageIds.set(channelId, messageId); }
   sendTyping(channelId: string): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return; this.ws.send(JSON.stringify({ type: 'typing', channelId })); }
   sendWebRtcOffer(channelId: string, sdp: string): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return; this.ws.send(JSON.stringify({ type: 'webrtc_offer', channelId, sdp } as WsSendFrame)); }

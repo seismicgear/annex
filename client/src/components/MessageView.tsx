@@ -537,7 +537,7 @@ function MessageBubble({
 
 export function MessageView() {
   const identity = useIdentityStore((s) => s.identity);
-  const { messages, activeChannelId, loadOlderMessages, loadingOlder, hasMoreMessages, historyLoading, historyError, typingUsers, olderError, retryOlderMessages, editError, clearEditError } = useChannelsStore();
+  const { messages, activeChannelId, loadOlderMessages, loadingOlder, hasMoreMessages, historyLoading, historyError, typingUsers, olderError, retryOlderMessages, messageActionError, clearMessageActionError } = useChannelsStore();
   // Whether the channel LIST itself failed to load, as opposed to this
   // channel's history. Without it the no-channel-selected branch below tells
   // the user to pick from a list that is empty because the request failed.
@@ -745,10 +745,10 @@ export function MessageView() {
         <div ref={bottomRef} />
       </div>
 
-      {editError && (
-        <div className="edit-error" role="alert">
-          <span>{editError}</span>
-          <button type="button" onClick={clearEditError} aria-label="Dismiss">&times;</button>
+      {messageActionError && (
+        <div className="message-action-error" role="alert">
+          <span>{messageActionError}</span>
+          <button type="button" onClick={clearMessageActionError} aria-label="Dismiss">&times;</button>
         </div>
       )}
 

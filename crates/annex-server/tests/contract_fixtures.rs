@@ -223,6 +223,7 @@ fn contract_ws_incoming_edit_message_fixture_deserializes() {
             channel_id,
             message_id,
             content,
+            ..
         } => {
             assert_eq!(channel_id, "general");
             assert_eq!(message_id, "msg-018dSCao");
@@ -241,6 +242,7 @@ fn contract_ws_incoming_delete_message_fixture_deserializes() {
         IncomingMessage::DeleteMessage {
             channel_id,
             message_id,
+            ..
         } => {
             assert_eq!(channel_id, "general");
             assert_eq!(message_id, "msg-018dSCao");

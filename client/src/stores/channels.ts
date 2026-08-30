@@ -105,7 +105,20 @@ interface ChannelsState {
    */
   olderError: string | null;
   /** Set when an edit could not be sent, so the user is not shown a false save. */
-  editError: string | null;
+  messageActionError: string | null;
+  /**
+   * Edits and deletes that have left the device and not yet been answered,
+   * keyed by the `clientRequestId` sent with them.
+   *
+   * Sends have had this correlation from the start; edits and deletes did
+   * not, so a server that refused one came back with an error frame the
+   * client could not attribute to anything. It showed a generic composer
+   * error and left the optimistic edit on screen looking saved — the exact
+   * failure `editMessage`'s own comment says was fixed for the socket-down
+   * case, still open for the far commoner one. The 60-second edit window
+   * closing is a rejection an ordinary user hits by being slow.
+   */
+  pendingMessageOps: Map<string, { messageId: string; revert: (reason: string) => void }>;
   /** The WebSocket instance (internal). */
   ws: AnnexWebSocket | null;
   /** Messages awaiting server acknowledgement, keyed by clientRequestId. */
@@ -138,7 +151,7 @@ interface ChannelsState {
   /** Edit a message in the active channel. */
   editMessage: (messageId: string, content: string) => void;
   /** Dismiss the "edit not saved" notice. */
-  clearEditError: () => void;
+  clearMessageActionError: () => void;
   /** Retry a scrollback page that failed, clearing the error first. */
   retryOlderMessages: (pseudonymId: string) => Promise<void>;
   /** Delete a message in the active channel. */
@@ -153,6 +166,8 @@ interface ChannelsState {
   leaveChannel: (pseudonymId: string, channelId: string) => Promise<void>;
   /** Clear the composer error (on successful send, channel switch, or dismissal). */
   clearComposerError: () => void;
+  /** Drop any pending edit/delete for this message — the server answered. */
+  resolveMessageOp: (messageId?: string) => void;
   /** Disconnect WebSocket. */
   disconnectWs: () => void;
   /** Update the active WebSocket's session token (for reconnect freshness). */
@@ -192,7 +207,8 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
   loadingOlder: false,
   hasMoreMessages: true,
   olderError: null,
-  editError: null,
+  messageActionError: null,
+  pendingMessageOps: new Map(),
   ws: null,
   pendingSends: new Map<string, PendingSend>(),
   typingUsers: [],
@@ -229,7 +245,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     // Staying subscribed to all joined channels lets us receive messages
     // for non-active channels and increment unread counts accurately.
 
-    set({ activeChannelId: channelId, activeChannelE2e: false, activeChannelKeyState: 'ready', activeChannelKeyError: null, messages: [], loadingOlder: false, hasMoreMessages: true, olderError: null, editError: null, historyLoading: true, historyError: null, composerError: null, typingUsers: [], replyToMessage: null });
+    set({ activeChannelId: channelId, activeChannelE2e: false, activeChannelKeyState: 'ready', activeChannelKeyError: null, messages: [], loadingOlder: false, hasMoreMessages: true, olderError: null, messageActionError: null, pendingMessageOps: new Map(), historyLoading: true, historyError: null, composerError: null, typingUsers: [], replyToMessage: null });
 
     // Auto-join the channel (idempotent — no-op if already a member).
     // Must be a member before fetching messages or joining voice.
@@ -395,6 +411,17 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       // and mark the optimistic message as failed.
       if (frame.type === 'error') {
         const errorMsg = frame.message ?? frame.error ?? 'Unknown WebSocket error';
+        // An edit or delete the server refused, matched back to the operation
+        // that caused it. Undoing the optimistic change is the whole point:
+        // without this the user reads their correction on screen, and only
+        // discovers on the next reload that it never happened.
+        const op = frame.clientRequestId
+          ? get().pendingMessageOps.get(frame.clientRequestId)
+          : undefined;
+        if (op) {
+          op.revert(errorMsg);
+          return;
+        }
         if (frame.clientRequestId) {
           get().resolvePendingSend(frame.clientRequestId);
           // Mark the optimistic message as failed
@@ -592,6 +619,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
           }));
         }
       } else if (frame.type === 'message_edited') {
+        get().resolveMessageOp(frame.messageId);
         const editedContent = frame.content ?? '';
         set((state) => ({
           messages: state.messages.map((m) =>
@@ -613,6 +641,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
           });
         }
       } else if (frame.type === 'message_deleted') {
+        get().resolveMessageOp(frame.messageId);
         set((state) => ({
           messages: state.messages.map((m) =>
             m.message_id === frame.messageId
@@ -761,46 +790,97 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       ),
     }));
 
-    const revert = (err: unknown) => {
-      console.error('[channels] editMessage failed:', err);
-      if (previousContent === undefined) return;
-      set((s) => ({
-        messages: s.messages.map((m) =>
-          m.message_id === messageId
-            ? { ...m, content: previousContent, edited_at: previousEditedAt }
-            : m,
-        ),
-        // Surfaced in the composer area rather than swallowed: the whole
-        // point is that the user finds out now, while they still have the
-        // text they meant to send.
-        editError: 'Edit not saved — you appear to be offline. Try again.',
-      }));
+    const clientRequestId = crypto.randomUUID();
+
+    // Surfaced where the message is rather than swallowed: the whole point is
+    // that the user finds out now, while the text they meant to keep is still
+    // in front of them. Takes the reason so the server's own words are used
+    // when it is the server that refused.
+    const revert = (reason: string, err?: unknown) => {
+      if (err !== undefined) console.error('[channels] editMessage failed:', err);
+      set((s) => {
+        const pendingMessageOps = new Map(s.pendingMessageOps);
+        pendingMessageOps.delete(clientRequestId);
+        if (previousContent === undefined) return { pendingMessageOps };
+        return {
+          pendingMessageOps,
+          messages: s.messages.map((m) =>
+            m.message_id === messageId
+              ? { ...m, content: previousContent, edited_at: previousEditedAt }
+              : m,
+          ),
+          messageActionError: reason,
+        };
+      });
     };
+    const OFFLINE = 'Edit not saved — you appear to be offline. Try again.';
+
+    set((s) => {
+      const pendingMessageOps = new Map(s.pendingMessageOps);
+      pendingMessageOps.set(clientRequestId, { messageId, revert });
+      return { pendingMessageOps };
+    });
 
     try {
       if (!isChannelE2e(channelId)) {
-        ws.editMessage(channelId, messageId, content);
+        ws.editMessage(channelId, messageId, content, clientRequestId);
       } else {
         // Encrypt the edited body before it leaves the device.
         void encryptForWire(channelId, content)
-          .then((cipher) => ws.editMessage(channelId, messageId, cipher))
-          .catch(revert);
+          .then((cipher) => ws.editMessage(channelId, messageId, cipher, clientRequestId))
+          .catch((err) => revert(OFFLINE, err));
       }
     } catch (err) {
-      revert(err);
+      revert(OFFLINE, err);
     }
   },
 
-  clearEditError: () => set({ editError: null }),
+  clearMessageActionError: () => set({ messageActionError: null }),
 
   deleteMessage: (messageId: string) => {
     const { ws, activeChannelId } = get();
     if (!ws || !activeChannelId) return;
+
+    // A delete that never left the device used to log to a console nobody has
+    // open and stop there: the confirm dialog closed, the message stayed, and
+    // nothing on screen said the request had not been made. Unlike an edit
+    // there is no optimistic change to undo — the whole defect was silence.
+    const clientRequestId = crypto.randomUUID();
+    const fail = (reason: string, err?: unknown) => {
+      if (err !== undefined) console.error('[channels] deleteMessage failed:', err);
+      set((s) => {
+        const pendingMessageOps = new Map(s.pendingMessageOps);
+        pendingMessageOps.delete(clientRequestId);
+        return { pendingMessageOps, messageActionError: reason };
+      });
+    };
+
+    set((s) => {
+      const pendingMessageOps = new Map(s.pendingMessageOps);
+      pendingMessageOps.set(clientRequestId, { messageId, revert: fail });
+      return { pendingMessageOps };
+    });
+
     try {
-      ws.deleteMessage(activeChannelId, messageId);
+      ws.deleteMessage(activeChannelId, messageId, clientRequestId);
     } catch (err) {
-      console.error('[channels] deleteMessage threw:', err);
+      fail('Message not deleted — you appear to be offline. Try again.', err);
     }
+  },
+
+  resolveMessageOp: (messageId?: string) => {
+    if (!messageId) return;
+    set((s) => {
+      let changed = false;
+      const pendingMessageOps = new Map(s.pendingMessageOps);
+      for (const [id, op] of pendingMessageOps) {
+        if (op.messageId === messageId) {
+          pendingMessageOps.delete(id);
+          changed = true;
+        }
+      }
+      return changed ? { pendingMessageOps } : {};
+    });
   },
 
   retryOlderMessages: async (pseudonymId: string) => {
@@ -965,6 +1045,8 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       hasMoreMessages: true,
       ws: null,
       pendingSends: new Map<string, PendingSend>(),
+      pendingMessageOps: new Map(),
+      messageActionError: null,
       typingUsers: [],
       unreadCounts: {},
       lastReadMessageIds: {},

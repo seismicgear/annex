@@ -18,6 +18,7 @@ import {
   generateQrSvg,
 } from '@/lib/device-link';
 import * as db from '@/lib/db';
+import * as zk from '@/lib/zk';
 import { Modal } from '@/components/Modal';
 import { useDialogTitleId } from '@/lib/use-dialog-title-id';
 
@@ -82,6 +83,26 @@ export function DeviceLinkDialog({ onClose }: Props) {
     try {
       const payload = decodePayload(inputPayload.trim());
       const imported = await decryptIdentity(payload, inputCode);
+
+      // The same check social recovery does before it claims to have
+      // recovered anything: derive the commitment from the key that arrived
+      // and compare it to the one that came with it. Decryption proves the
+      // bytes are intact; only this proves they are an identity that still
+      // works. Without it the dialog reported success over anything that
+      // parsed, and the user found out later and elsewhere.
+      await zk.initPoseidon();
+      const recomputed = await zk.computeCommitment(
+        BigInt('0x' + imported.sk),
+        imported.roleCode,
+        imported.nodeId,
+      );
+      if (recomputed.toLowerCase() !== imported.commitmentHex.toLowerCase()) {
+        setError(
+          'This transfer did not carry a working identity — its key does not match its ' +
+            'commitment. Generate a fresh transfer code on the other device and try again.',
+        );
+        return;
+      }
 
       // Generate a new local ID to avoid collisions
       imported.id = crypto.randomUUID();

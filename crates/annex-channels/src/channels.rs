@@ -3,7 +3,7 @@
 //! cleanup since SQLite cannot retrofit `ON DELETE CASCADE` via
 //! `ALTER TABLE`).
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
 use crate::error::ChannelError;
 use crate::types::{map_row_to_channel, Channel, CreateChannelParams, UpdateChannelParams};
@@ -181,7 +181,11 @@ pub fn update_channel(
 pub fn delete_channel(conn: &Connection, channel_id: &str) -> Result<(), ChannelError> {
     // Wrap in a transaction so partial failures don't lose messages
     // while leaving the channel intact.
-    let tx = conn.unchecked_transaction()?;
+    // IMMEDIATE — `unchecked_transaction()` is DEFERRED, and this reads the
+    // channel's rows before deleting them. A snapshot conflict there fails
+    // instantly instead of waiting, which is the shape that made sends
+    // intermittently report "database is locked".
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
 
     // Delete child rows first to satisfy FK constraints.
     //

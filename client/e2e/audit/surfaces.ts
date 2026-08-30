@@ -49,6 +49,15 @@ async function postFreshMessage(page: import('@playwright/test').Page, text: str
   await page.getByRole('button', { name: 'Send' }).click();
   const bubble = page.locator('.message', { hasText: text }).first();
   await expect(bubble).toBeVisible({ timeout: 20_000 });
+  // Visible is not sent. The bubble is optimistic — it appears the moment the
+  // frame leaves the device and stays there, marked `failed`, if the server
+  // refuses. So this used to pass on a send that had not landed, and the
+  // surface then photographed a failed message plus a composer error and
+  // recorded it as the baseline. That is how an intermittent server-side
+  // "database is locked" got into a committed screenshot instead of failing
+  // the run: the harness could not tell a send from a non-send.
+  await expect(bubble.locator('.failed-status')).toHaveCount(0, { timeout: 20_000 });
+  await expect(page.locator('.composer-error')).toHaveCount(0);
   return bubble;
 }
 
@@ -418,6 +427,58 @@ export const SURFACES: Surface[] = [
     },
     clip: '.chat-area',
     mask: ['.edit-countdown'],
+  },
+  {
+    id: 'message-edit-refused',
+    stage: '06-messaging',
+    title: 'An edit the server would not accept',
+    role: 'founder',
+    intent:
+      'The commonest way an edit fails is the 60-second window closing, and until the frame ' +
+      'carried a correlation id there was no way to tell which operation an error belonged ' +
+      'to. The correction stayed on screen looking saved and came back undone on the next ' +
+      'reload. What this photographs is the undo: the original text, and the reason.',
+    setup: async (page) => {
+      // Same shape as `message-send-failed`: proxy everything, answer the
+      // edit with the refusal the server would send, and never forward it —
+      // the channel is shared, so an edit that landed would be visible to
+      // every messaging surface captured after this one.
+      await page.routeWebSocket(/\/ws/, (ws) => {
+        const server = ws.connectToServer();
+        ws.onMessage((raw) => {
+          const text = typeof raw === 'string' ? raw : raw.toString();
+          let frame: { type?: string; clientRequestId?: string };
+          try {
+            frame = JSON.parse(text);
+          } catch {
+            server.send(raw);
+            return;
+          }
+          if (frame.type === 'edit_message') {
+            ws.send(
+              JSON.stringify({
+                type: 'error',
+                clientRequestId: frame.clientRequestId,
+                message: 'Edit window has expired',
+              }),
+            );
+            return;
+          }
+          server.send(raw);
+        });
+        server.onMessage((raw) => ws.send(raw));
+      });
+    },
+    navigate: async (page) => {
+      await selectChannel(page, SEED.defaultChannel);
+      const bubble = await postFreshMessage(page, 'Message posted for the refused-edit capture.');
+      await bubble.hover();
+      await bubble.locator('.edit-btn').click();
+      await page.locator('.message-edit-input').fill('this correction is refused');
+      await page.locator('.msg-edit-save').click();
+      await expect(page.locator('.message-action-error')).toBeVisible({ timeout: 20_000 });
+    },
+    clip: '.chat-area',
   },
   {
     id: 'message-delete-confirm',
