@@ -114,7 +114,25 @@ invalidating one:
 - **Never run `cargo` alongside a run.** The server is built at run start; a
   concurrent cargo command takes the build lock and starves it. Once
   `Server ready` appears in the log the lock is free, but CPU contention can
-  still push a capture past its 45s budget.
+  still push a capture past its 45s budget. Both halves of that are real: a
+  `cargo check` started by accident mid-run did not starve the build, it
+  starved the CPU, and `channel-empty-state @ mobile` photographed
+  "Loading channel history…" and failed by 19,190 pixels — 0.058 against a
+  0.005 tolerance, which looks nothing like noise and is not a regression.
+- **The audit lock now guards the PORT, not just a second audit.**
+  `e2e-server.sh` consults `${TMPDIR:-/tmp}/annex-ui-audit.lock` before
+  touching port 3000 and refuses while a run holds it; `ui-audit.sh` exports
+  `ANNEX_AUDIT_CHILD=1` so its own server calls pass. This was added after
+  `e2e-all.sh bogus` — a mistyped lane, which that script validated only
+  AFTER starting a server — killed a run at surface 52 of 415. The argument
+  is validated first now, and both fixes exist because either alone leaves
+  the hole open.
+- **`flock <file> -c '<cmd>'` does not release the lock when you kill
+  flock.** The command runs as a child and inherits the locked descriptor, so
+  a `flock lock -c 'sleep 25'` you kill keeps the lock for the rest of the
+  25s — and the next `ui-audit.sh` refuses to start for no visible reason.
+  Hold a lock from a process that can be killed directly (a `python3 -c`
+  doing `fcntl.flock` then sleeping) instead.
 - **Never edit `client/src` mid-run.** `e2e-server.sh start` builds the client
   once, at the beginning. Editing after that means the run no longer
   corresponds to the working tree, and its result means nothing.
@@ -308,6 +326,51 @@ matches nothing then exits 1, aborts the EXIT trap under `pipefail`, and
 takes the script's exit status with it, so it reported "0 failed" and
 exited 1.
 
+#### The report is not the run
+
+`docs/ui-audit/index.html` said "103 surfaces captured · 0 findings" —  the
+phrase this project reads as proof of health — after a run that captured
+nothing at all. `loadShots()` counted the TRACKED baselines directory, which
+no run clears, so the previous run's pictures were presented as this one's
+evidence, and the same run overwrote the tracked `findings.json` with an empty
+list. Reproduced by deleting the ledger and running the generator alone.
+
+`capture.spec.ts` now appends one line per surface it STARTS to
+`docs/ui-audit/captured.jsonl` (gitignored, cleared at run start), and the
+report says "N of M surfaces exercised in this run", banners a partial or
+empty run, labels the cards it did not reach, and refuses to rewrite the
+tracked `findings.json` unless the run was full. Recorded at start rather
+than after a successful screenshot on purpose: the run whose surfaces mostly
+FAILED is the one whose findings matter most, and it must not be mistaken for
+a partial sweep. Pinned by `scripts/tests/ui-audit-report.test.sh`.
+
+#### Lanes that exist but run nowhere
+
+`playwright.config.ts` defines four projects. `ui-audit.sh` runs
+`--project=audit`; `npm run test:e2e` runs `--project=chromium`. Until this
+was checked, **neither of the other two ran in CI at all**:
+
+- the functional suite (`client/e2e/*.spec.ts`) — identity creation, the
+  in-browser Groth16 proof, channel join, send, edit, delete, reply, admin
+  channel CRUD, A-to-B delivery over the WebSocket;
+- `group-call`, which is the guard that REPLACED the pinning test deleted
+  when the SFU rearchitecture landed, and was named by no script, no
+  workflow and no doc.
+
+The puppeteer harness (`client/e2e-puppeteer/`) was the third. It was very
+nearly dismissed here as "a screenshot tour with no assertions to fail" —
+reading it disproved that in one grep: `fail()` prints and calls
+`process.exit(1)`, it is used a dozen times, and `main()` ends
+`.catch((err) => fail(...))`. It drives the same journey through a different
+browser driver, including a cold start, and it needs no browser of its own
+because `resolveChrome()` finds the Playwright-installed one.
+
+All three are steps in the `ui-audit` CI job now, each against its own fresh
+server, and `group-call` has an entry point in `e2e-all.sh`. Two lessons: a
+project in a Playwright config is not a lane until something names it, and a
+suite is not decorative because you assumed it was — check before writing the
+assumption into a comment that outlives you.
+
 #### Tests that stop testing what they claim
 
 A third corollary, and the one that hides longest: **a test can pass for the
@@ -328,6 +391,21 @@ absence was.
 The tell is a test whose fixture is a *path* rather than a *file*, and any test
 that asserts on the absence of something the code under test may create. Give
 it a unique path, assert the absence before the call, and clean up after.
+
+#### Sourcing a script to test it imports its variables too
+
+`scripts/tests/*.test.sh` drive shell helpers by `source`-ing the script under
+test (each one stops at a `BASH_SOURCE` guard before its body). Two things
+come across with the functions and both have bitten:
+
+- **Its shell options.** `e2e-server.sh` sets `set -euo pipefail`, so the test
+  inherited errexit; an `lsof` that matched nothing then exited 1, aborted the
+  EXIT trap under `pipefail`, and took the script's exit status with it — it
+  printed "0 failed" and exited 1. Re-set the options you want after sourcing.
+- **Its variables.** `desktop-audit.sh` keeps counters called `PASS` and
+  `FAIL` and its `step` increments them, so a test using the same names had
+  its tally silently absorb the assertions. Name the test's counters something
+  else.
 
 #### Restoring a file with `mv` can leave you running the old binary
 

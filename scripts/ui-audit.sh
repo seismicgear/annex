@@ -46,6 +46,16 @@ cd "$REPO_ROOT"
 # `flock` is used without a timeout on purpose: failing fast with a clear
 # message is more useful than a queued run that starts unattended twenty
 # minutes later against a tree that has moved on.
+#
+# The lock guards more than a second audit now: `e2e-server.sh` consults it
+# before touching port 3000, so `e2e-all.sh`, a bare `e2e-server.sh start` or
+# a mistyped command can no longer stop this run's server either. That was not
+# hypothetical — it happened while the guard was being written.
+# `e2e-server.sh` refuses to touch port 3000 while this lock is held, which is
+# what stops anything else from killing a run mid-capture. This run's own
+# server calls have to be exempt, or the audit could not start its server.
+export ANNEX_AUDIT_CHILD=1
+
 AUDIT_LOCK="${TMPDIR:-/tmp}/annex-ui-audit.lock"
 exec {AUDIT_LOCK_FD}>"$AUDIT_LOCK"
 if ! flock -n "$AUDIT_LOCK_FD"; then
@@ -102,11 +112,13 @@ fi
 # and still writes the ledger, so the contact sheet is the fastest way to see
 # what broke. The capture's exit status is preserved and re-applied at the end
 # so CI still fails.
-# The ledger is append-only within a run, so it has to start empty or the
-# report would mix this run's findings with the previous one's. Diagnostics
+# The ledgers are append-only within a run, so they have to start empty or the
+# report would mix this run's findings with the previous one's. `captured.jsonl`
+# is how the report knows what this run exercised at all — stale, it would let a
+# run that captured nothing inherit the last one's clean sweep. Diagnostics
 # go the same way — a stale screenshot of a surface that has since been fixed
 # is worse than none, because it looks like current evidence.
-rm -f docs/ui-audit/findings.jsonl
+rm -f docs/ui-audit/findings.jsonl docs/ui-audit/captured.jsonl
 rm -rf client/e2e/audit/diagnostics
 
 echo "[ui-audit] capturing surfaces"

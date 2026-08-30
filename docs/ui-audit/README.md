@@ -22,8 +22,9 @@ Outputs:
 | Path | What it is |
 |---|---|
 | `client/e2e/audit/baselines/<viewport>/<surface>.png` | Approved screenshots. **Tracked** — these are the diff target. |
-| `docs/ui-audit/findings.json` | Machine-readable ledger. **Tracked** — sorted so it diffs cleanly, and a reviewer can read what the audit currently finds without running it. |
-| `docs/ui-audit/index.html` | Contact sheet: every surface, every viewport, with its findings. |
+| `docs/ui-audit/findings.json` | Machine-readable ledger. **Tracked** — sorted so it diffs cleanly, and a reviewer can read what the audit currently finds without running it. Only a FULL run rewrites it: a `--grep` run would narrow it to its subset and a run that captured nothing would empty it, and both look like a clean sweep in `git diff`. |
+| `docs/ui-audit/index.html` | Contact sheet: every surface, every viewport, with its findings. Its header says how many surfaces **this run** exercised, and banners a partial or empty one. |
+| `docs/ui-audit/captured.jsonl` | One line per surface the run started, written by `capture.spec.ts`. Gitignored, cleared at run start. It is the only thing that tells the report what the run in front of it did — without it the report counted the tracked baselines directory, which no run clears, and announced "103 surfaces captured · 0 findings" after a run that captured nothing. |
 | `client/e2e/audit/diagnostics/` | Screenshots of surfaces the run could not reach. Gitignored. |
 
 ### Why the server restarts by default

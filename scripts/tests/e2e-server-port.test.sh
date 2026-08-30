@@ -165,6 +165,55 @@ else
 fi
 
 echo ""
+echo ">>> start_server refuses while a UI audit holds the lock"
+# A clean port, so a refusal below can only have come from the lock: an
+# earlier case leaves a listener behind on purpose.
+lsof -ti "tcp:$SCRATCH_PORT" 2>/dev/null | xargs -r kill -9 2>/dev/null
+sleep 0.5
+AUDIT_LOCK="${TMPDIR:-/tmp}/annex-ui-audit.lock"
+# Somebody else's audit, holding the lock for the length of its run.
+#
+# Held in-process rather than with `flock <file> -c 'sleep N'`: that runs the
+# command as a CHILD which inherits the locked descriptor, so killing flock
+# leaves the sleep holding the lock for the rest of its duration. This test
+# would then keep the machine's audit lock held for 25s after it exited, and
+# the next `ui-audit.sh` would refuse to start for no visible reason — which
+# is exactly what happened once while writing it.
+HOLD_PY='import fcntl,sys,time
+f=open(sys.argv[1],"a"); fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB); time.sleep(25)'
+python3 -c "$HOLD_PY" "$AUDIT_LOCK" >/dev/null 2>&1 &
+LOCK_HOLDER=$!
+sleep 1
+if flock -n "$AUDIT_LOCK" -c true >/dev/null 2>&1; then
+    bad "could not simulate a held audit lock — the rest of this case is meaningless"
+else
+    ok "the audit lock is held"
+    stop_server() { :; }
+    out=$(start_server 2>&1); rc=$?
+    if [ "$rc" -ne 0 ] && echo "$out" | grep -q "UI audit"; then
+        ok "start_server refused and said an audit is running"
+    else
+        bad "start_server did not refuse (rc=$rc): $(echo "$out" | head -3 | tr '\n' ' ')"
+    fi
+    # The audit's own call must still get through, or the audit cannot start
+    # its server. It should fail LATER, on the port precondition, not here.
+    LISTENER4=$(start_listener) || { echo "  FAIL — listener never came up"; exit 1; }
+    out=$(ANNEX_AUDIT_CHILD=1 start_server 2>&1); rc=$?
+    if echo "$out" | grep -q "UI audit"; then
+        bad "the audit's own call was refused by its own lock"
+    else
+        ok "ANNEX_AUDIT_CHILD passes the lock guard"
+    fi
+    if echo "$out" | grep -q "still held"; then
+        ok "and still stops at the port precondition"
+    else
+        bad "got past the port precondition too: $(echo "$out" | head -3 | tr '\n' ' ')"
+    fi
+fi
+kill -9 "$LOCK_HOLDER" 2>/dev/null
+wait "$LOCK_HOLDER" 2>/dev/null   # reap it, or the shell reports "Killed" after the summary
+
+echo ""
 echo "=== $PASS passed, $FAIL failed ==="
 # Explicit, because the EXIT trap runs after this and would otherwise decide
 # the script's status.

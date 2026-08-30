@@ -24,6 +24,12 @@ const CAPTURE_DIR = path.join(AUDIT_ROOT, 'captures');
 const DOCS_DIR = path.join(REPO_ROOT, 'docs', 'ui-audit');
 const LEDGER_JSONL = path.join(DOCS_DIR, 'findings.jsonl');
 const LEDGER_JSON = path.join(DOCS_DIR, 'findings.json');
+// One line per surface the capture run STARTED, written by capture.spec.ts.
+// Without it this script had no idea what the run in front of it had done: it
+// counted the tracked baselines directory, which no run clears, so a run that
+// captured nothing announced "103 surfaces captured · 0 findings" — the exact
+// phrase this project reads as proof of health — over last run's pictures.
+const CAPTURED_JSONL = path.join(DOCS_DIR, 'captured.jsonl');
 
 const SEVERITY_ORDER = { p1: 0, p2: 1, p3: 2 };
 
@@ -51,6 +57,28 @@ function loadLedger() {
     }
   }
   return findings;
+}
+
+/**
+ * The surface ids this run exercised.
+ *
+ * Recorded when a surface STARTS, not when its screenshot succeeds: a run
+ * whose surfaces mostly failed is the run whose findings matter most, and it
+ * must not be mistaken for a partial one.
+ */
+function loadCaptured() {
+  const ids = new Set();
+  if (!existsSync(CAPTURED_JSONL)) return ids;
+  for (const line of readFileSync(CAPTURED_JSONL, 'utf8').split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const id = JSON.parse(line).surfaceId;
+      if (id) ids.add(id);
+    } catch {
+      /* a torn last line from a killed run; the count is a floor either way */
+    }
+  }
+  return ids;
 }
 
 function writeConsolidated(findings) {
@@ -93,7 +121,7 @@ function loadShots() {
 const esc = (s) =>
   String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
-function render(findings, shots) {
+function render(findings, shots, captured) {
   const byStage = new Map();
   const stageOf = new Map();
   for (const f of findings) stageOf.set(f.surfaceId, f.stage);
@@ -112,6 +140,14 @@ function render(findings, shots) {
 
   const counts = { p1: 0, p2: 0, p3: 0 };
   for (const f of findings) counts[f.severity]++;
+
+  const total = Object.keys(shots).length;
+  const runBanner =
+    captured.size === 0
+      ? `<p class="run-warning">This run captured nothing — every picture below is a baseline from an earlier run, and the finding count says nothing about the current tree.</p>`
+      : captured.size < total
+        ? `<p class="run-warning">Partial run: ${captured.size} of ${total} surfaces were exercised. The rest are baselines from an earlier run.</p>`
+        : '';
 
   const stages = [...byStage.keys()].sort();
 
@@ -147,7 +183,14 @@ function render(findings, shots) {
             ? `<table><thead><tr><th></th><th>Audit</th><th>Rule</th><th>Detail</th><th>Viewports</th></tr></thead><tbody>${rows}</tbody></table>`
             : `<p class="clean">No findings.</p>`;
 
-          return `<section class="surface" id="${esc(id)}"><h3>${esc(id)}</h3><div class="shots">${imgs}</div>${findingsBlock}</section>`;
+          // A surface this run never reached still shows its baseline — that
+          // is the current picture of it — but it is labelled, so nothing on
+          // this page reads as evidence the run did not produce.
+          const stale = captured.size > 0 && !captured.has(id);
+          const staleNote = stale
+            ? `<p class="stale-note">Not exercised in this run — baseline from an earlier one.</p>`
+            : '';
+          return `<section class="surface${stale ? ' stale' : ''}" id="${esc(id)}"><h3>${esc(id)}</h3>${staleNote}<div class="shots">${imgs}</div>${findingsBlock}</section>`;
         })
         .join('');
       return `<section class="stage"><h2>${esc(stage)}</h2>${cards}</section>`;
@@ -166,6 +209,10 @@ function render(findings, shots) {
   h1 { margin:0 0 .25rem; font-size:1.6rem; }
   .sub { color:var(--muted); margin:0 0 2rem; }
   .totals { display:flex; gap:.5rem; flex-wrap:wrap; margin-bottom:2rem; }
+  .run-warning { margin:0 0 1rem; padding:.6rem .8rem; border-left:3px solid #e0a33c;
+    background:rgba(224,163,60,.12); color:#e8c489; font-size:.9rem; }
+  .surface.stale { opacity:.72; }
+  .stale-note { margin:.2rem 0 .6rem; font-size:.78rem; color:#e8c489; }
   .pill { display:inline-block; padding:.15rem .5rem; border-radius:999px; font-size:.72rem; font-weight:600; letter-spacing:.03em; }
   .pill.p1 { background:#7f1d1d; color:#fee2e2; } .pill.p2 { background:#78350f; color:#fef3c7; } .pill.p3 { background:#334155; color:#e2e8f0; }
   .stage { margin:0 0 3rem; } .stage > h2 { font-size:1.05rem; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); border-bottom:1px solid var(--line); padding-bottom:.5rem; }
@@ -183,7 +230,8 @@ function render(findings, shots) {
   .clean { color:#4ade80; font-size:.85rem; margin:.75rem 0 0; }
 </style></head><body>
 <h1>Annex UI Audit</h1>
-<p class="sub">${Object.keys(shots).length} surfaces captured · ${findings.length} findings</p>
+<p class="sub">${captured.size} of ${Object.keys(shots).length} surfaces exercised in this run · ${findings.length} findings</p>
+${runBanner}
 <div class="totals">
   <span class="pill p1">P1 ${counts.p1}</span>
   <span class="pill p2">P2 ${counts.p2}</span>
@@ -194,10 +242,24 @@ ${sections}
 `;
 }
 
-const findings = writeConsolidated(loadLedger());
+const rawFindings = loadLedger();
 const shots = loadShots();
+const captured = loadCaptured();
 mkdirSync(DOCS_DIR, { recursive: true });
-writeFileSync(path.join(DOCS_DIR, 'index.html'), render(findings, shots));
+
+// `findings.json` is TRACKED — it is the reviewable record of a full sweep.
+// Only a full run may rewrite it. A partial run (`--grep`) would narrow it to
+// its subset and a run that captured nothing would empty it, and in both cases
+// the result looks exactly like a clean full sweep in `git diff`.
+const isFullRun = captured.size > 0 && captured.size >= Object.keys(shots).length;
+const findings = isFullRun ? writeConsolidated(rawFindings) : rawFindings;
+if (!isFullRun) {
+  console.warn(
+    `[ui-audit-report] ${captured.size} of ${Object.keys(shots).length} surfaces exercised — leaving the tracked findings.json alone`,
+  );
+}
+
+writeFileSync(path.join(DOCS_DIR, 'index.html'), render(findings, shots, captured));
 console.log(
-  `[ui-audit-report] ${Object.keys(shots).length} surfaces, ${findings.length} findings → docs/ui-audit/index.html`,
+  `[ui-audit-report] ${captured.size} of ${Object.keys(shots).length} surfaces exercised, ${findings.length} findings → docs/ui-audit/index.html`,
 );

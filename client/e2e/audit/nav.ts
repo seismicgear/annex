@@ -301,6 +301,19 @@ export async function selectChannel(page: Page, name: string): Promise<void> {
   await row.locator('.channel-select').click();
   await expect(row).toHaveClass(/active/, { timeout: 10_000 });
 
+  // Wait for the history, which is a SEPARATE request from the selection.
+  // Nothing above waits for it: the row goes `active` as soon as the store
+  // switches channel, and `MessageView` renders "Loading channel history..."
+  // until the fetch resolves. `stabilize`'s 150ms is not a wait, it is a guess
+  // that happens to be right on an idle machine — under CPU contention
+  // `channel-empty-state @ mobile` photographed the loading placeholder and
+  // failed its baseline by 19,190 pixels, 0.058 against a 0.005 tolerance.
+  // That looks exactly like a real regression and is not one, and every
+  // surface that selects a channel could produce it.
+  await expect(page.getByText('Loading channel history...')).toHaveCount(0, {
+    timeout: 20_000,
+  });
+
   // Pin the channel strip's horizontal scroll.
   //
   // Under 760px `.channel-list` is a horizontal strip, and where it sits is

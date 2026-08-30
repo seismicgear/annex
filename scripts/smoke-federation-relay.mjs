@@ -25,7 +25,9 @@
 
 import { generateKeyPairSync, sign as edSign } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createDecipheriv, hkdfSync, randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 
 function parseArgs(argv) {
   const out = { db: null, url: null };
@@ -44,7 +46,54 @@ function fail(m, e) {
 
 function sqlite(db, sql) {
   // -batch -bail: fail hard on any SQL error.
-  return execFileSync('sqlite3', ['-batch', '-bail', db, sql], { encoding: 'utf8' });
+  try {
+    return execFileSync('sqlite3', ['-batch', '-bail', db, sql], { encoding: 'utf8' });
+  } catch (e) {
+    if (e.code === 'ENOENT') {
+      fail('the `sqlite3` command is required by this smoke and is not installed');
+    }
+    throw e;
+  }
+}
+
+// ── Encryption at rest ────────────────────────────────────────────────────
+//
+// Message bodies for non-E2E channels are stored as
+// `"\x01ar1:" + base64(nonce(12) || ChaCha20Poly1305(content))` — see
+// `crates/annex-server/src/at_rest.rs`. It is transparent through the
+// server's own read path, but this smoke reads the SQLite file directly, so
+// it has to unwrap the value itself. It did not, and compared the ciphertext
+// against the plaintext it had relayed: the whole smoke failed with
+// "persisted content mismatch: ar1:…" on a server that had done everything
+// right. Decrypting rather than skipping the check makes the assertion
+// stronger than the string compare it replaces — it now also proves the
+// at-rest layer round-trips content that arrived over federation.
+const AT_REST_MARKER = Buffer.from([0x01, 0x61, 0x72, 0x31, 0x3a]); // \x01 a r 1 :
+
+function atRestKey(dbPath) {
+  // The server derives this from its Ed25519 signing key, which
+  // `resolve_signing_key` keeps beside the database as hex.
+  const keyFile = path.join(path.dirname(path.resolve(dbPath)), 'signing.key');
+  const signingKey = Buffer.from(readFileSync(keyFile, 'utf8').trim(), 'hex');
+  if (signingKey.length !== 32) fail(`signing key at ${keyFile} is not 32 bytes`);
+  return Buffer.from(
+    hkdfSync('sha256', signingKey, Buffer.from('annex-message-at-rest'), Buffer.from('annex-message-at-rest-v1'), 32),
+  );
+}
+
+function decryptAtRest(stored, key) {
+  // Legacy-tolerant in the same way the server is: anything without the
+  // marker is returned unchanged, so a plaintext row still reads correctly.
+  if (!stored.subarray(0, AT_REST_MARKER.length).equals(AT_REST_MARKER)) {
+    return stored.toString('utf8');
+  }
+  const blob = Buffer.from(stored.subarray(AT_REST_MARKER.length).toString('utf8'), 'base64');
+  const nonce = blob.subarray(0, 12);
+  const tag = blob.subarray(blob.length - 16);
+  const ct = blob.subarray(12, blob.length - 16);
+  const d = createDecipheriv('chacha20-poly1305', key, nonce, { authTagLength: 16 });
+  d.setAuthTag(tag);
+  return Buffer.concat([d.update(ct), d.final()]).toString('utf8');
 }
 
 // Raw 32-byte Ed25519 public key from a Node KeyObject (DER SPKI suffix).
@@ -142,12 +191,21 @@ async function main() {
   log(`accepted: ${r1.status} ${r1.text.trim()}`);
 
   // ── 2. Verify persistence under the attested local pseudonym ───────
+  // hex(), not the raw column: the stored value is binary-prefixed and
+  // base64, and round-tripping it through the sqlite3 CLI as text is a way to
+  // lose bytes for no reason.
   const row = sqlite(
     db,
-    `SELECT content || '|' || sender_pseudonym FROM messages WHERE message_id='${esc(messageId)}';`,
+    `SELECT hex(content) || '|' || sender_pseudonym FROM messages WHERE message_id='${esc(messageId)}';`,
   ).trim();
   if (!row) fail('message was not persisted on B');
-  const [gotContent, gotSender] = row.split('|');
+  const [contentHex, gotSender] = row.split('|');
+  let gotContent;
+  try {
+    gotContent = decryptAtRest(Buffer.from(contentHex, 'hex'), atRestKey(db));
+  } catch (e) {
+    fail('stored content did not decrypt with the server at-rest key', e);
+  }
   if (gotContent !== content) fail(`persisted content mismatch: ${gotContent}`);
   if (gotSender !== localPseudonym) {
     fail(`expected message mapped to attested local pseudonym ${localPseudonym}, got ${gotSender}`);

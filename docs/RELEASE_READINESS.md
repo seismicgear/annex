@@ -9,8 +9,12 @@ backed by a command you can re-run.
 | Suite | Count | How to run |
 |-------|-------|------------|
 | Rust workspace (excl. annex-desktop) | 1055 tests / 116 binaries, 0 clippy warnings | `cargo test --workspace --exclude annex-desktop` |
-| Frontend (vitest) | 469 tests + eslint | `cd client && npm test && npm run lint` |
+| Frontend (vitest) | 476 tests + eslint + `tsc -b` | `cd client && npm test && npm run lint && npx tsc -b` |
 | Playwright functional suite | 13 tests | `bash scripts/e2e-server.sh start && cd client && npm run test:e2e` |
+| Group call (3 real browser contexts, fake media) | 2 tests | `bash scripts/e2e-all.sh group-call` |
+| Harness scripts | 3 files | `for t in scripts/tests/*.test.sh; do bash "$t"; done` |
+| Live federation relay (signed envelope, second server) | 1 end-to-end path | `bash scripts/smoke-federation.sh` |
+| Puppeteer journey (cold start → identity → proof → chat → channel create) | 1 driver-independent pass | `bash scripts/e2e-all.sh puppeteer` |
 | UI audit (screenshots + a11y + console + network + overflow + keyboard) | 103 surfaces × 4 viewports, 415 checks, 0 findings | `bash scripts/ui-audit.sh` |
 | Desktop install → run → uninstall | 9 checks | `bash scripts/desktop-audit.sh` |
 | ZK artifact gate | dev-fixture rejection under production profile | `cd zk && npm test` |
@@ -25,6 +29,12 @@ against actuals of 1055 and 469.
 CI (`.github/workflows/ci.yml`, `workflow_dispatch` with `include_macos=true`)
 defines the server checks, the **Linux + Windows + macOS** desktop builds, the
 frontend tests, the UI audit lane, and the server smoke on **Linux + Windows**.
+
+Five of the rows above were, until recently, run by nothing at all: the
+Playwright functional suite, the group-call lane and the puppeteer journey
+were named by no workflow, `scripts/smoke-federation.sh` was referenced by no
+workflow, script or doc, and the harness scripts had no tests. Defining a
+suite is not running it — every row here now names a command AND a job.
 
 > **What CI currently proves: nothing.** Every job on the open PR completes in
 > three to four seconds with `runner_id: 0`, an empty `runner_name`, no steps

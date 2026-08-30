@@ -38,6 +38,9 @@ PACKAGE=1
 
 PASS=0
 FAIL=0
+# Returns the command's outcome as well as recording it, so a caller can gate
+# on it. It always returned 0 before, which is why the package cycle below ran
+# whether or not the build that was meant to produce the .deb had succeeded.
 step() {
     local name="$1"; shift
     echo ""
@@ -45,11 +48,29 @@ step() {
     if "$@"; then
         echo "   ok"
         PASS=$((PASS + 1))
-    else
-        echo "   FAILED"
-        FAIL=$((FAIL + 1))
+        return 0
     fi
+    echo "   FAILED"
+    FAIL=$((FAIL + 1))
+    return 1
 }
+
+# The newest .deb under $1 that is newer than the epoch second $2.
+#
+# The timestamp is the guard: this was `find target -name '*.deb' | head -1`,
+# which happily returned an artifact from an earlier run. A failed bundle build
+# then installed that one and the install, PATH, scheme-handler, launch and
+# uninstall steps all reported passing — about a package this run did not
+# build.
+newest_deb() {
+    find "$1" \( -name 'Annex_*.deb' -o -name 'annex_*.deb' \) \
+        -newermt "@$2" -printf '%T@ %p\n' 2>/dev/null |
+        sort -rn | head -1 | cut -d' ' -f2-
+}
+
+# Sourcing stops here — `scripts/tests/desktop-audit-deb.test.sh` exercises the
+# helpers above without running an audit (which would compile the Tauri crate).
+[ "${BASH_SOURCE[0]}" = "$0" ] || return 0
 
 # ── Preconditions ────────────────────────────────────────────────────────
 if ! pkg-config --exists webkit2gtk-4.1; then
@@ -115,12 +136,21 @@ else
     # binary; packaging correctness does not depend on it being present.
     # `cargo tauri` resolves tauri.conf.json relative to the working directory
     # and rejects --manifest-path, so it has to run from inside the crate.
+    build_started=$(date +%s)
+    build_ok=1
     step "cargo tauri build --debug --bundles deb" bash -c \
-        'cd crates/annex-desktop && SKIP_PIPER=1 ANNEX_BUILD_PROFILE=dev cargo tauri build --debug --bundles deb'
+        'cd crates/annex-desktop && SKIP_PIPER=1 ANNEX_BUILD_PROFILE=dev cargo tauri build --debug --bundles deb' \
+        || build_ok=0
 
-    deb=$(find target -name 'Annex_*.deb' -o -name 'annex_*.deb' 2>/dev/null | head -1)
-    if [ -z "$deb" ]; then
-        echo "   FAILED: no .deb produced"
+    deb=""
+    [ "$build_ok" -eq 1 ] && deb=$(newest_deb target "$build_started")
+    if [ "$build_ok" -eq 0 ]; then
+        echo ""
+        echo "[desktop-audit] bundle build failed — not running the install cycle."
+        echo "[desktop-audit] (it would install whatever .deb an earlier run left in"
+        echo "[desktop-audit]  target/ and report every install step as passing)"
+    elif [ -z "$deb" ]; then
+        echo "   FAILED: the build reported success but produced no .deb"
         FAIL=$((FAIL + 1))
     else
         echo "[desktop-audit] built $deb"

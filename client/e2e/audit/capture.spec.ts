@@ -36,6 +36,19 @@ const CAPTURE_DIR = path.join(AUDIT_ROOT, 'captures');
 const DIAG_DIR = path.join(AUDIT_ROOT, 'diagnostics');
 const LEDGER_DIR = path.join(process.cwd(), '..', 'docs', 'ui-audit');
 const LEDGER = path.join(LEDGER_DIR, 'findings.jsonl');
+/**
+ * One line per surface this run STARTS, so the report knows what the run in
+ * front of it actually did.
+ *
+ * Without it `scripts/ui-audit-report.mjs` counted the tracked baselines
+ * directory — which no run clears — and a run that captured nothing announced
+ * "103 surfaces captured · 0 findings" over the previous run's pictures.
+ *
+ * Written at the start rather than after a successful screenshot on purpose:
+ * a run whose surfaces mostly FAILED is the run whose findings matter most,
+ * and it must not be reported as a partial sweep.
+ */
+const CAPTURED = path.join(LEDGER_DIR, 'captured.jsonl');
 
 /**
  * Append findings to disk as they are produced, one JSON object per line.
@@ -54,6 +67,11 @@ function record(...items: Finding[]): void {
   if (items.length === 0) return;
   mkdirSync(LEDGER_DIR, { recursive: true });
   appendFileSync(LEDGER, items.map((f) => JSON.stringify(f)).join('\n') + '\n');
+}
+
+function recordAttempt(surfaceId: string, viewport: string): void {
+  mkdirSync(LEDGER_DIR, { recursive: true });
+  appendFileSync(CAPTURED, `${JSON.stringify({ surfaceId, viewport })}\n`);
 }
 
 function shotPath(surfaceId: string, viewport: Viewport, reportOnly = false): string {
@@ -87,6 +105,7 @@ for (const surface of ORDERED_SURFACES) {
 
   for (const viewport of viewports) {
     test(`${surface.stage} · ${surface.id} @ ${viewport.id}`, async ({ browser }) => {
+      recordAttempt(surface.id, viewport.id);
       const context = await browser.newContext({
         viewport: { width: viewport.width, height: viewport.height },
         storageState:

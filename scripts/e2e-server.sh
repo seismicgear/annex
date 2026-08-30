@@ -28,7 +28,47 @@ listener_pids() {
     lsof -ti "tcp:$PORT" -sTCP:LISTEN 2>/dev/null || true
 }
 
+# Refuse to take the port out from under a UI audit run.
+#
+# `scripts/ui-audit.sh` holds an exclusive flock for the length of a run, but
+# that lock only ever stopped a second AUDIT. Anything else that reaches this
+# script — `e2e-all.sh`, a bare `e2e-server.sh start`, a mistyped argument —
+# stopped the audit's server mid-capture, and neither side reports a
+# collision: the audit just fails every remaining surface in a few hundred
+# milliseconds each.
+#
+# Proven by doing it, while writing this: `e2e-all.sh bogus` starts a server
+# before it validates its argument, and killed a run at surface 52 of 415.
+#
+# The audit's own call is let through by ANNEX_AUDIT_CHILD, which ui-audit.sh
+# exports; everything else is refused while the lock is held.
+audit_run_in_progress() {
+    [ -n "${ANNEX_AUDIT_CHILD:-}" ] && return 1
+    command -v flock >/dev/null 2>&1 || return 1
+    local lock="${TMPDIR:-/tmp}/annex-ui-audit.lock"
+    [ -e "$lock" ] || return 1
+    # Taking the lock in a subshell releases it on exit, so this only ever
+    # asks the question.
+    if ( flock -n 9 || exit 1 ) 9>>"$lock" 2>/dev/null; then
+        return 1
+    fi
+    return 0
+}
+
+refuse_during_audit() {
+    if audit_run_in_progress; then
+        echo "[e2e] ERROR: a UI audit run holds ${TMPDIR:-/tmp}/annex-ui-audit.lock"
+        echo "[e2e] refusing to touch port $PORT — it would kill that run mid-capture."
+        echo "[e2e] wait for it to finish (record AND verify), or set ANNEX_AUDIT_CHILD=1"
+        echo "[e2e] if you are certain the lock is stale."
+        return 1
+    fi
+    return 0
+}
+
 start_server() {
+    refuse_during_audit || return 1
+
     # Every port decision below goes through lsof. Without it listener_pids
     # returns nothing, which reads as "the port is free" — the one answer that
     # is never safe to guess.
@@ -226,8 +266,8 @@ stop_server() {
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     case "${1:-}" in
         start)   start_server ;;
-        stop)    stop_server ;;
-        restart) stop_server; start_server ;;
+        stop)    refuse_during_audit && stop_server ;;
+        restart) refuse_during_audit && stop_server && start_server ;;
         *)
             echo "Usage: $0 {start|stop|restart}"
             exit 1

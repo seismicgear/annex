@@ -349,10 +349,28 @@ jobs:
       - name: Run server smoke
         run: bash scripts/smoke-server.sh
 
-  # UI audit — the browser lane. Until this job existed, NOTHING in CI drove a
-  # real browser: client/e2e/, client/e2e-puppeteer/ and scripts/e2e-server.sh
-  # were referenced by zero workflows, so every UI regression had to be caught
-  # by hand.
+      # The live federation proof: a second server is played by
+      # scripts/smoke-federation-relay.mjs, which signs a real
+      # FederatedMessageEnvelope with a peer's Ed25519 key and relays it over
+      # HTTP, and the server under test verifies signature, agreement and
+      # membership before persisting and broadcasting it.
+      #
+      # It was referenced by nothing at all — no workflow, no script, no doc —
+      # so the only end-to-end evidence that two servers federate ran when
+      # somebody remembered it existed. Federation is a shipped feature with a
+      # UI; this is its only cross-server test.
+      - name: Run federation smoke
+        run: bash scripts/smoke-federation.sh
+
+  # The browser lane. Until this job existed, NOTHING in CI drove a real
+  # browser: client/e2e/, client/e2e-puppeteer/ and scripts/e2e-server.sh were
+  # referenced by zero workflows, so every UI regression had to be caught by
+  # hand.
+  #
+  # The audit step below closed that for `--project=audit` only, and the
+  # comment here claimed more than it did: the functional suite, the
+  # group-call lane and the puppeteer harness went on running nowhere. All
+  # three are steps in this job now.
   #
   # This job boots a real server with a fresh database, walks the surface
   # manifest, screenshots each surface at four viewports, and runs axe-core,
@@ -401,6 +419,53 @@ jobs:
 
       - name: Run UI audit
         run: bash scripts/ui-audit.sh
+
+      # The functional lane — `client/e2e/*.spec.ts`, the `chromium` project.
+      # It ran in NO workflow until this step: identity creation, server
+      # selection, the in-browser Groth16 proof, channel join, send, edit,
+      # delete, reply, admin channel CRUD and A-to-B delivery over the
+      # WebSocket were all covered by a suite nothing executed. The audit lane
+      # above is `--project=audit` and photographs screens; it asserts almost
+      # nothing about behaviour.
+      #
+      # A fresh server per lane, because both need to be the first to register
+      # (`ensure_founder` promotes the earliest registrant, and the audit's
+      # roles are already in the database by now).
+      - name: Functional browser suite
+        if: ${{ !cancelled() }}
+        run: |
+          bash scripts/e2e-server.sh start
+          (cd client && npm run test:e2e)
+          bash scripts/e2e-server.sh stop
+
+      # The group-call lane. `16a76b7` rearchitected the SFU to one outbound
+      # track per (receiver, sender) pair and deleted the test that existed to
+      # fail when it landed; this is its replacement, and it was referenced by
+      # no script, no workflow and no doc — it ran only if someone typed the
+      # project name by hand. It holds a real multi-party call with fake media
+      # devices, so it is minutes rather than seconds, and its failures mean
+      # "a call cannot be held" rather than "a screen changed".
+      - name: Group call lane
+        if: ${{ !cancelled() }}
+        run: |
+          bash scripts/e2e-server.sh start
+          (cd client && npx playwright test --project=group-call --reporter=list)
+          bash scripts/e2e-server.sh stop
+
+      # The puppeteer harness. A second driver over the same journey — cold
+      # start, identity, in-browser proof, chat, channel create — and it does
+      # assert: `fail()` prints and exits 1, and the script ends with
+      # `.catch((err) => fail(...))`. It was almost dismissed here as "a
+      # screenshot tour with no assertions", which reading it disproved.
+      #
+      # It needs no browser of its own: `resolveChrome()` looks in
+      # PLAYWRIGHT_BROWSERS_PATH, which the install step above populated.
+      - name: Puppeteer journey
+        if: ${{ !cancelled() }}
+        run: |
+          bash scripts/e2e-server.sh start
+          (cd client && npm run test:e2e:puppeteer)
+          bash scripts/e2e-server.sh stop
 
       - name: Upload audit report
         if: always()

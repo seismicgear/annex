@@ -78,6 +78,7 @@ client/e2e/audit/captures/
 # docs/ui-audit/findings.json, IS tracked — it is the reviewable record of what
 # the audit currently finds, and it diffs cleanly.
 docs/ui-audit/findings.jsonl
+docs/ui-audit/captured.jsonl
 docs/ui-audit/index.html
 
 # The server's runtime data directory: `ANNEX_UPLOAD_DIR` defaults to
