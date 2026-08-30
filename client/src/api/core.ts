@@ -168,21 +168,34 @@ export async function fetchWithTimeout(
   }
 }
 
-export async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const url = _apiBaseUrl ? `${_apiBaseUrl}${path}` : path;
+/**
+ * The request headers, with a JSON content type when the request carries a
+ * body and the caller has not named one itself.
+ *
+ * Shared because `request` and `requestRemote` held byte-identical copies of
+ * it, and the pair has already drifted once elsewhere — see `throwApiError`.
+ * The upload helpers deliberately do not use this: a multipart body must not
+ * be labelled JSON.
+ */
+function jsonHeaders(options?: RequestInit): Headers {
   const method = (options?.method ?? 'GET').toUpperCase();
   const hasBody = options?.body !== undefined && options?.body !== null;
-  const shouldSetJsonContentType =
-    ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && hasBody;
   const headers = new Headers(options?.headers);
-
-  if (shouldSetJsonContentType && !headers.has('Content-Type')) {
+  if (
+    ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) &&
+    hasBody &&
+    !headers.has('Content-Type')
+  ) {
     headers.set('Content-Type', 'application/json');
   }
+  return headers;
+}
 
+export async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const url = _apiBaseUrl ? `${_apiBaseUrl}${path}` : path;
   const res = await fetch(url, {
     ...options,
-    headers,
+    headers: jsonHeaders(options),
   });
   if (!res.ok) await throwApiError(res);
   return res.json() as Promise<T>;
@@ -223,24 +236,23 @@ export async function requestRemote<T>(
   options?: RequestInit,
 ): Promise<T> {
   const url = `${baseUrl.replace(/\/+$/, '')}${path}`;
-  const method = (options?.method ?? 'GET').toUpperCase();
-  const hasBody = options?.body !== undefined && options?.body !== null;
-  const shouldSetJsonContentType =
-    ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && hasBody;
-  const headers = new Headers(options?.headers);
-
-  if (shouldSetJsonContentType && !headers.has('Content-Type')) {
-    headers.set('Content-Type', 'application/json');
-  }
-
   const res = await fetch(url, {
     ...options,
-    headers,
+    headers: jsonHeaders(options),
   });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new ApiError(res.status, extractErrorMessage(res.status, body), body);
-  }
+  // Through `throwApiError`, not an inline throw.
+  //
+  // This used to build the `ApiError` itself, which is the same thing for
+  // every status except 429: `throwApiError` short-circuits that one before
+  // reading the body and adds the `Retry-After` seconds, while
+  // `extractErrorMessage` prefers whatever the body says and never sees the
+  // header. So a rate-limited request to a remote server — federation
+  // discovery is all remote — told the user to wait without saying how long,
+  // and said it in different words from every other request in the app.
+  //
+  // That is the same gap `throwApiError` was extracted to close for the
+  // upload helpers, as its own doc comment says. This caller was left behind.
+  if (!res.ok) await throwApiError(res);
   return res.json() as Promise<T>;
 }
 
