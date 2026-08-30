@@ -83,6 +83,7 @@ export {
   getServer,
   getStorageHealth,
   retryFederationOutboxRow,
+  revokeFederationAgreement,
   listMembers,
   renameServer,
   setPublicUrl,

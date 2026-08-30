@@ -3228,6 +3228,64 @@
   color: var(--warning-color);
 }
 
+/* ── Federation agreements (admin) ── */
+
+.agreements-empty {
+  margin: 0;
+  padding: 0.5rem 0;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.agreement-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.agreement-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--surface-2);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+}
+
+.agreement-info {
+  flex: 1;
+  min-width: 8rem;
+  display: flex;
+  flex-direction: column;
+}
+
+.agreement-label {
+  font-size: 0.9rem;
+  color: var(--text-primary);
+}
+
+.agreement-url {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.agreement-alignment,
+.agreement-scope {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.agreement-revoke-btn {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+}
+
 /* ── Federation delivery queue (admin) ── */
 
 .outbox-counts {

@@ -1795,11 +1795,13 @@ export const SURFACES: Surface[] = [
     title: 'Admin — federation delivery queue with nothing in it',
     role: 'founder',
     intent:
-      'The `.outbox-empty` state, on the real server, which federates with nobody. It has to ' +
-      'read as "nothing has been queued" rather than as a screen that failed to load — the two ' +
-      'are the same picture unless the code keeps them apart.',
+      'The `.outbox-empty` and `.agreements-empty` states together, on the real server, which ' +
+      'federates with nobody. Both have to read as "there is nothing here" rather than as a ' +
+      'screen that failed to load — the two are the same picture unless the code keeps them ' +
+      'apart.',
     navigate: async (page) => {
       await openAdminSection(page, 'Federation Delivery');
+      await expect(page.locator('.agreements-empty')).toBeVisible({ timeout: 15_000 });
       await expect(page.locator('.outbox-empty')).toBeVisible({ timeout: 15_000 });
     },
     clip: '.admin-panel',
@@ -1826,6 +1828,74 @@ export const SURFACES: Surface[] = [
       console: 'the browser logs the injected 500 to the console as well',
     },
     clip: '.admin-panel',
+  },
+  {
+    id: 'admin-federation-agreements',
+    stage: '09-admin',
+    title: 'Admin — federation agreements',
+    role: 'founder',
+    intent:
+      'The list an operator severs a peer from. `DELETE /api/admin/federation/{id}` takes an ' +
+      'agreement id and, until now, nothing a client could see returned one — so cutting off a ' +
+      'peer you had stopped trusting was not possible from anywhere in the app. Two rows for ' +
+      'one instance, because the schema allows it and the id is the only thing telling them ' +
+      'apart.',
+    setup: stub('**/api/public/federation/peers*', {
+      peers: [
+        {
+          agreement_id: 11,
+          base_url: 'https://alpha.audit.test',
+          label: 'Alpha Station',
+          alignment_status: 'Aligned',
+          transfer_scope: 'FullKnowledgeBundle',
+          active: true,
+        },
+        {
+          agreement_id: 12,
+          base_url: 'https://alpha.audit.test',
+          label: 'Alpha Station',
+          alignment_status: 'Partial',
+          transfer_scope: 'ReflectionSummariesOnly',
+          active: true,
+        },
+      ],
+      count: 2,
+    }),
+    navigate: async (page) => {
+      await openAdminSection(page, 'Federation Delivery');
+      await expect(page.locator('.agreement-row')).toHaveCount(2, { timeout: 15_000 });
+    },
+    clip: '.federation-agreements',
+  },
+  {
+    id: 'admin-federation-sever-confirm',
+    stage: '09-admin',
+    title: 'Admin — confirming a federation sever',
+    role: 'founder',
+    intent:
+      'Severing is not reversible from this screen — a new agreement needs the other server to ' +
+      'hand shake again — so the dialog says what it costs instead of asking "are you sure".',
+    setup: stub('**/api/public/federation/peers*', {
+      peers: [
+        {
+          agreement_id: 11,
+          base_url: 'https://alpha.audit.test',
+          label: 'Alpha Station',
+          alignment_status: 'Aligned',
+          transfer_scope: 'FullKnowledgeBundle',
+          active: true,
+        },
+      ],
+      count: 1,
+    }),
+    navigate: async (page) => {
+      await openAdminSection(page, 'Federation Delivery');
+      await page.locator('.agreement-revoke-btn').first().click();
+      await expect(page.getByRole('dialog')).toContainText('Sever federation with', {
+        timeout: 15_000,
+      });
+    },
+    clip: '.dialog',
   },
   {
     id: 'admin-server-policy',
@@ -1934,25 +2004,34 @@ export const SURFACES: Surface[] = [
     title: 'Federation panel with peers',
     role: 'founder',
     intent: 'Peer rows with alignment and transfer-scope badges. Stubbed — no second server in this lane.',
+    // The real shape of `GET /api/public/federation/peers`
+    // (`FederationPeerEntry` in api_observe.rs). This stub used to send
+    // `instance_id` (a string), `url` and `joined` — three fields the server
+    // has never sent, and none of the three names the client reads. The
+    // committed baseline therefore showed peer rows with no URL line at all,
+    // because `.peer-url` renders `peer.base_url`, and it could never have
+    // caught the real bug: `instance_id` did not exist on the wire either, so
+    // every row keyed on `undefined`.
     setup: stub('**/api/public/federation/peers*', {
       peers: [
         {
-          instance_id: 'peer-alpha',
+          agreement_id: 1,
+          base_url: 'https://alpha.example',
           label: 'Alpha Station',
-          url: 'https://alpha.example',
           alignment_status: 'Aligned',
           transfer_scope: 'FullKnowledgeBundle',
-          joined: false,
+          active: true,
         },
         {
-          instance_id: 'peer-beta',
+          agreement_id: 2,
+          base_url: 'https://beta.example',
           label: 'Beta Relay',
-          url: 'https://beta.example',
           alignment_status: 'Partial',
           transfer_scope: 'ReflectionSummariesOnly',
-          joined: true,
+          active: true,
         },
       ],
+      count: 2,
     }),
     navigate: async (page) => {
       await openTab(page, 'Federation');
@@ -2048,11 +2127,12 @@ export const SURFACES: Surface[] = [
           body: JSON.stringify({
             peers: [
               {
-                instance_id: 'peer-alpha',
+                agreement_id: 1,
                 label: 'Alpha Station',
                 base_url: 'https://alpha.example',
                 alignment_status: 'Aligned',
                 transfer_scope: 'FullKnowledgeBundle',
+                active: true,
               },
             ],
           }),
@@ -2102,11 +2182,12 @@ export const SURFACES: Surface[] = [
           body: JSON.stringify({
             peers: [
               {
-                instance_id: 'peer-alpha',
+                agreement_id: 1,
                 label: 'Alpha Station',
                 base_url: 'https://alpha.example',
                 alignment_status: 'Aligned',
                 transfer_scope: 'FullKnowledgeBundle',
+                active: true,
               },
             ],
           }),
@@ -2162,11 +2243,12 @@ export const SURFACES: Surface[] = [
           body: JSON.stringify({
             peers: [
               {
-                instance_id: 'peer-alpha',
+                agreement_id: 1,
                 label: 'Alpha Station',
                 base_url: 'https://alpha.example',
                 alignment_status: 'Aligned',
                 transfer_scope: 'FullKnowledgeBundle',
+                active: true,
               },
             ],
           }),
@@ -2240,11 +2322,12 @@ export const SURFACES: Surface[] = [
           body: JSON.stringify({
             peers: [
               {
-                instance_id: 'peer-alpha',
+                agreement_id: 1,
                 label: 'Alpha Station',
                 base_url: 'https://alpha.example',
                 alignment_status: 'Aligned',
                 transfer_scope: 'FullKnowledgeBundle',
+                active: true,
               },
             ],
           }),
@@ -2327,6 +2410,11 @@ export const SURFACES: Surface[] = [
     // room for it and the channel list matters more. There is nothing to
     // click there, so capturing it would assert a layout we chose against.
     viewports: ['desktop', 'laptop'],
+    // Masked for the reason `error-boundary` is, and pre-emptively: this is
+    // the other unclipped surface whose picture contains the auto-scrolling
+    // message column, and the two are named together in the docs as the pair
+    // that depends on what ran before them. The subject is the overlay.
+    mask: ['.message-view'],
   },
   // ── Link previews ──
   //
@@ -2444,6 +2532,20 @@ export const SURFACES: Surface[] = [
     },
     // The member rail — and so the agent list — is hidden below 1100px.
     viewports: ['desktop', 'laptop'],
+    // The message column is masked, not clipped away.
+    //
+    // The subject is the whole page — one column crashed and the rest of the
+    // app is intact — so it cannot be clipped to the boundary. But the column
+    // beside it auto-scrolls, and where it has settled by capture time is not
+    // fixed: this surface failed a verify at desktop and laptop with 18,078
+    // differing pixels, all of them the message list shifted by one row,
+    // against a baseline recorded fifteen minutes earlier from the same
+    // manifest. It is the fragility `docs` already names for this surface and
+    // `agent-detail-overlay`, and the fix is the one its siblings use — one
+    // rectangle whose position follows a layout container instead of a scroll
+    // offset. The columns either side of it are still diffed, which is the
+    // containment claim.
+    mask: ['.message-view'],
     waive: {
       console: 'React logs the caught render error, which is the point of the surface',
       a11y: 'the crashed subtree is what is being captured; auditing it audits the crash',

@@ -8,6 +8,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { useIdentityStore } from '@/stores/identity';
 import { useChannelsStore } from '@/stores/channels';
 import { useServersStore } from '@/stores/servers';
+import { FederationAgreements } from '@/components/FederationAgreements';
 import { FederationOutbox } from '@/components/FederationOutbox';
 import { InfoTip } from '@/components/InfoTip';
 import { Modal } from '@/components/Modal';
@@ -1124,7 +1125,12 @@ export function AdminPanel({
       )}
       {active === 'policy' && <PolicyEditor pseudonymId={identity.pseudonymId} />}
       {active === 'members' && <MemberManager pseudonymId={identity.pseudonymId} />}
-      {active === 'federation' && <FederationOutbox pseudonymId={identity.pseudonymId} />}
+      {active === 'federation' && (
+        <>
+          <FederationAgreements pseudonymId={identity.pseudonymId} />
+          <FederationOutbox pseudonymId={identity.pseudonymId} />
+        </>
+      )}
       {active === 'channels' && <ChannelManager pseudonymId={identity.pseudonymId} />}
     </div>
   );

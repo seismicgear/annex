@@ -256,7 +256,7 @@ export function FederationPanel() {
         </p>
         <ul className="peer-list">
           {peers.map((peer) => (
-            <li key={peer.instance_id} className="peer-item">
+            <li key={peer.agreement_id} className="peer-item">
               <div className="peer-info">
                 <div className="peer-label">{peer.label}</div>
                 <div className="peer-url">{peer.base_url}</div>

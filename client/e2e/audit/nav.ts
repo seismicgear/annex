@@ -300,6 +300,39 @@ export async function selectChannel(page: Page, name: string): Promise<void> {
 
   await row.locator('.channel-select').click();
   await expect(row).toHaveClass(/active/, { timeout: 10_000 });
+
+  // Pin the channel strip's horizontal scroll.
+  //
+  // Under 760px `.channel-list` is a horizontal strip, and where it sits is
+  // decided by Playwright: `click()` scrolls the target into view only if it
+  // judges it not already visible. That judgement is a width measurement, and
+  // the widths here move — the chips carry emoji icons whose advance depends
+  // on when the system emoji font resolves, the same swing that made three
+  // other surfaces flaky. A run where the chips came out narrow left the
+  // strip at scrollLeft 0 with "CHANNELS +" leading; a run where they came
+  // out wide scrolled General to the left edge. `mobile/chat-main` flipped
+  // between the two after five clean runs, 12,422 differing pixels — 0.038
+  // against a 0.005 tolerance, so nothing about it looked like noise.
+  //
+  // Aligning the selected chip to the start makes the position a decision
+  // rather than a measurement. It costs no coverage: the strip is still
+  // photographed, just from a defined origin.
+  await row.evaluate((el) => {
+    const list = el.closest('.channel-list') as HTMLElement | null;
+    if (!list) return;
+    // Arithmetic, not `scrollIntoView`: that one only scrolls when the
+    // browser judges the element not already visible, so it can silently do
+    // nothing — which is how the position came to depend on a measurement in
+    // the first place.
+    list.scrollLeft += el.getBoundingClientRect().left - list.getBoundingClientRect().left;
+  });
+
+  // Put the pointer back on the row it was on before the strip moved under
+  // it. A channel chip reveals its info and close affordances on hover, so
+  // the pointer's resting place is in the picture; after the scroll it was
+  // resting on whichever chip had slid beneath it, and `mobile/chat-main`
+  // came out showing General selected and its neighbour hovered.
+  await row.hover();
 }
 
 // ─────────────────────────── dialogs ───────────────────────────

@@ -199,11 +199,22 @@ export interface AgentInfo {
 
 /** Federation peer info from GET /api/public/federation/peers. */
 export interface FederationPeer {
-  instance_id: number;
+  /**
+   * Id of the federation agreement, and the only stable key for a row here.
+   *
+   * This field was `instance_id`, which `GET /api/public/federation/peers`
+   * has never sent — so `FederationPanel` keyed every row on `undefined`.
+   * There is no unique constraint on (server, remote instance), so `base_url`
+   * is not a safe substitute; the agreement id is what identifies the row,
+   * and it is also what `DELETE /api/admin/federation/{id}` takes.
+   */
+  agreement_id: number;
   base_url: string;
   label: string;
   alignment_status: AlignmentStatus;
   transfer_scope: TransferScope;
+  /** Always true on this endpoint — it returns only active agreements. */
+  active: boolean;
 }
 
 /** Server summary from GET /api/public/server/summary. */

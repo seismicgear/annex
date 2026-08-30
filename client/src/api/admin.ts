@@ -60,6 +60,26 @@ export async function clearStorageGate(
   );
 }
 
+// ── Federation agreements ──
+
+/**
+ * Sever a federation agreement.
+ *
+ * Takes the agreement id, which is why `GET /api/public/federation/peers`
+ * now returns one: before that, nothing a client could see named the row
+ * this endpoint deletes, so an operator could not cut off a peer they had
+ * stopped trusting without calling the API by hand.
+ */
+export async function revokeFederationAgreement(
+  pseudonymId: string,
+  agreementId: number,
+): Promise<{ status: string }> {
+  return request<{ status: string }>(`/api/admin/federation/${agreementId}`, {
+    method: 'DELETE',
+    headers: authHeaders(pseudonymId),
+  });
+}
+
 // ── Federation outbox ──
 
 /** One queued cross-server delivery. */

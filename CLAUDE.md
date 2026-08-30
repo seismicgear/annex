@@ -160,6 +160,33 @@ invalidating one:
   reading blamed a username-resolution race, and the actual cause was a
   stale baseline the recording run had declined to rewrite.
 
+- **A capture's scroll position can be a measurement rather than a decision.**
+  Under 760px the channel list is a horizontal strip. Playwright's `click()`
+  scrolls its target into view *only if it judges it not already visible*, and
+  that judgement is a width comparison — against chips whose emoji icons have
+  a font-dependent advance, the same swing that made three other surfaces
+  flaky. `mobile/chat-main` sat still for five runs and then flipped to the
+  unscrolled position: 12,422 differing pixels, 0.038 against a 0.005
+  tolerance, nothing about it resembling noise. `scrollIntoView` is not the
+  fix — it has the same "only if needed" clause and can silently no-op, which
+  is how it was diagnosed as working when it was not. Set `scrollLeft` from
+  two `getBoundingClientRect()` calls instead: arithmetic cannot decline.
+- **The emoji-width swing also decides whether a column overflows.** The
+  encryption bar's height is the documented case; the consequence downstream
+  is that the message column either does or does not need a scrollbar, and a
+  scrollbar's gutter moves every right-aligned bubble by its width.
+  `mobile/message-edit-refused` came back with its bubbles 20px to the left
+  and the reply affordance — which sits outside the bubble — inside the frame
+  for the first time. Nothing had changed in the messaging code.
+- **The pointer's resting place is in the picture.** It stays where the last
+  click left it, and hover affordances render. Moving a strip under a resting
+  pointer re-hovers whatever slid beneath it, so `mobile/chat-main` came out
+  with one channel selected and its neighbour showing hover controls. After
+  any programmatic scroll, put the pointer back.
+- **`pgrep -f "ui-audit.sh"` matches the watching shell itself**, so
+  `until ! pgrep -f "ui-audit.sh"; do sleep …; done` never exits. Watch the
+  log for `[ui-audit] done`.
+
 #### Writing a surface
 
 The surfaces share one server and one database, in manifest order, and three
