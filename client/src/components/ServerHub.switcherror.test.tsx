@@ -44,6 +44,29 @@ async function renderHub(overrides: Record<string, unknown>) {
   return useServersStore;
 }
 
+describe('joining a server that will not take you', () => {
+  afterEach(() => cleanup());
+
+  it('says why an address was refused rather than "Invalid URL format."', async () => {
+    // The second dialog that asks for a server address. `StartupModeSelector`
+    // was fixed for this and this one was not, so the same typo produced a
+    // useful message on one screen and five useless words on the other.
+    const { useServersStore } = await import('@/stores/servers');
+    const { ServerHub } = await import('./ServerHub');
+    useServersStore.setState({ servers: [SERVER], activeServerId: 's1' } as never);
+    render(<ServerHub />);
+
+    await userEvent.click(screen.getByRole('button', { name: /add|join|\+/i }));
+    const input = await screen.findByPlaceholderText(/annex\.example\.com|server/i);
+    await userEvent.type(input, 'ftp://not-a-web-server');
+    await userEvent.click(screen.getByRole('button', { name: 'Join Server' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('ftp://not-a-web-server');
+    expect(alert.textContent).toContain('Only http and https URLs are supported.');
+  });
+});
+
 describe('server switch failure', () => {
   afterEach(() => cleanup());
 

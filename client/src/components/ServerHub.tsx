@@ -34,12 +34,22 @@ function AddServerDialog({ onClose, onAdd }: AddServerDialogProps) {
     const trimmed = url.trim();
     if (!trimmed) return;
 
-    // Normalize and validate URL
+    // Normalize and validate URL.
+    //
+    // `normalizeServerUrl` says why it refused — "Only http and https URLs are
+    // supported." — and this threw that away for a bare "Invalid URL format."
+    // that names nothing and describes nothing. The same fix landed in
+    // `StartupModeSelector`; this is the second dialog asking the same
+    // question and it had the same gap.
     let baseUrl: string;
     try {
       baseUrl = normalizeServerUrl(trimmed);
-    } catch {
-      setError('Invalid URL format.');
+    } catch (err) {
+      const why = err instanceof Error ? err.message : 'It could not be parsed.';
+      setError(
+        `Could not use "${trimmed}" as a server address. ${why} ` +
+          'Enter a hostname like annex.example.com, optionally with a port.',
+      );
       return;
     }
 
@@ -48,8 +58,16 @@ function AddServerDialog({ onClose, onAdd }: AddServerDialogProps) {
     try {
       await onAdd(baseUrl);
       onClose();
-    } catch {
-      setError(`Could not reach server at ${baseUrl}. Check the URL and try again.`);
+    } catch (err) {
+      // `onAdd` throws the reason the registration actually failed, which is
+      // not always reachability — a local identity clone can fail with the
+      // network perfectly fine. Overwriting it with "Could not reach server"
+      // put the guess back that the layer below had just stopped making.
+      setError(
+        err instanceof Error && err.message
+          ? err.message
+          : `Could not reach server at ${baseUrl}. Check the URL and try again.`,
+      );
     } finally {
       setAdding(false);
     }

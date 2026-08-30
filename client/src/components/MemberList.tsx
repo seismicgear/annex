@@ -92,10 +92,14 @@ export function MemberList() {
         setAgents(a.agents);
         setError(null);
       })
-      .catch((err) => {
+      .catch((err: unknown) => {
         if (cancelled) return;
         console.warn('[member-list] load failed:', err);
-        setError('Could not load members.');
+        // The reason was already in hand and went only to a console nobody
+        // has open. There is a Retry beside this message, and whether to
+        // press it depends on what failed.
+        const why = err instanceof Error && err.message ? `: ${err.message}` : '.';
+        setError(`Could not load the member list${why}`);
       });
     return () => { cancelled = true; };
   }, [activeServerId, reloadKey]);
