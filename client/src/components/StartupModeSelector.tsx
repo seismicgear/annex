@@ -372,11 +372,25 @@ export function StartupModeSelector({ onReady }: Props) {
   }
 
   if (phase === 'error') {
+    // The same screen `StartupGate` renders for a failed bootstrap, and it
+    // used to drop three things that one has: the label saying WHAT failed
+    // (a bare exception string on an otherwise empty page tells a user
+    // nothing), the primary-button styling every other action on this
+    // screen has, and an honest name for the button — `handleReset` clears
+    // the saved startup mode and returns to the chooser, which is not what
+    // "Try Again" leads anyone to expect.
     return (
       <div className="startup-mode-selector">
         <h1>Annex</h1>
-        <div className="error-message" role="alert">{error}</div>
-        <button onClick={handleReset}>Try Again</button>
+        <div className="error-message" role="alert">Startup failed: {error}</div>
+        <p className="startup-description">
+          The way you chose to run Annex could not start. Going back to the
+          chooser lets you pick a different one — connecting to an existing
+          server does not depend on anything on this machine.
+        </p>
+        <button className="primary-btn" onClick={handleReset}>
+          Back to setup options
+        </button>
       </div>
     );
   }

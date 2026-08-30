@@ -183,6 +183,37 @@ describe('StartupModeSelector', () => {
   });
 
 
+  it('says what failed and offers a way out, on the screen a failed start lands on', async () => {
+    // This is the whole app for a user whose chosen mode will not start, and
+    // it used to be `<h1>Annex</h1>`, a bare exception string, and a button
+    // labelled "Try Again" that actually returns to the chooser. The sibling
+    // screen in `StartupGate` labels its error and styles its button; this
+    // one is reached more often, because it covers every way a local server
+    // can fail to come up.
+    getStartupModeMock
+      .mockResolvedValueOnce({ startup_mode: { mode: 'host' } })
+      .mockResolvedValue(null);
+    startEmbeddedServerMock.mockRejectedValueOnce(new Error('port 3000 in use'));
+
+    render(<StartupModeSelector onReady={vi.fn()} />);
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('Startup failed');
+    expect(alert.textContent).toContain('port 3000 in use');
+
+    // Named for what it does. It clears the saved mode and returns to the
+    // chooser — it does not retry anything.
+    const back = screen.getByRole('button', { name: /back to setup options/i });
+    expect(back).toHaveClass('primary-btn');
+
+    fireEvent.click(back);
+    await waitFor(() => {
+      expect(
+        screen.getByText('Choose how to use Annex. Remembered values are shown as suggestions.'),
+      ).toBeInTheDocument();
+    });
+  });
+
   it('clears persisted host startup mode after auto-host failure and does not auto-retry on next render', async () => {
     getStartupModeMock
       .mockResolvedValueOnce({ startup_mode: { mode: 'host' } })
@@ -192,8 +223,10 @@ describe('StartupModeSelector', () => {
     const onReady = vi.fn();
     const { unmount } = render(<StartupModeSelector onReady={onReady} />);
 
+    // The message is now composed as "Startup failed: <reason>", so match
+    // the alert's text rather than an exact standalone node.
     await waitFor(() => {
-      expect(screen.getByText('boot failed')).toBeInTheDocument();
+      expect(screen.getByRole('alert').textContent).toContain('boot failed');
     });
 
     await waitFor(() => {
