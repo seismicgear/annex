@@ -2739,6 +2739,46 @@
   position: relative;
 }
 
+/* Retry and remove, for a server whose registration failed.
+   
+   None of these three classes had a rule, so the two buttons took the base
+   `button` style — 0.5em 1em of padding — inside a 72px rail with
+   `overflow-x: hidden`. "Retry" was cut off mid-word, and the pair sat on one
+   line with nowhere to go. This is the recovery path for a registration that
+   did not complete, so the controls have to be legible; the error message
+   itself was moved out of the rail for the same reason.
+   
+   Stacked and sized for the width that is actually available. */
+.server-hub-failed-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.2rem;
+  margin-top: 0.25rem;
+  width: 100%;
+}
+
+.server-hub-retry-btn,
+.server-hub-remove-btn {
+  padding: 0.15rem 0.3rem;
+  font-size: 0.65rem;
+  line-height: 1.3;
+  border-radius: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+}
+
+.server-hub-retry-btn:hover,
+.server-hub-remove-btn:hover {
+  background: var(--surface-1);
+  border-color: var(--text-quiet);
+}
+
+.server-hub-remove-btn {
+  color: var(--error-text);
+}
+
 .server-hub-pill {
   position: absolute;
   left: 0;
@@ -4417,6 +4457,50 @@
 }
 
 /* ── Reply Bar (above composer) ── */
+
+/* The composer's two error bars.
+   
+   Neither class had a rule, so both rendered as plain white text flush at
+   x=0 — no padding, no error colour, nothing to distinguish "Message
+   rejected: you are not a member of this channel" from the placeholder text
+   below it. The failed message bubble directly above is marked in red with a
+   left border, so the two halves of the same failure did not look related.
+   
+   Same shape as `.reply-bar` beneath, which is the other thing that appears
+   in this strip: a tinted row with a coloured left edge. */
+.upload-error-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.8rem;
+  background: var(--error-tint-12);
+  border-left: 3px solid var(--error-text);
+  color: var(--error-text);
+}
+
+.upload-error-bar span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Same treatment as the other dismiss buttons in the app: the × is a
+   control, not a box. */
+.composer-error-dismiss {
+  flex-shrink: 0;
+  padding: 0 0.25rem;
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.composer-error-dismiss:hover {
+  color: var(--text-strong);
+}
 
 .reply-bar {
   display: flex;
