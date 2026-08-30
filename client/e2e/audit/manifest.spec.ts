@@ -207,8 +207,16 @@ test.describe('surface manifest', () => {
       'loading-text': 'transient — federation summary fetch, same reason',
       'startup-loading': 'transient — resolves as fast as the effect that sets it',
       'device-link-success': 'needs two contexts completing a real link handshake',
-      'server-switch-error': 'needs a second registered server to switch away from',
-      'server-hub-failed-actions': 'same — reached only after a failed switch',
+      'server-switch-error':
+        'harder to reach than it looks, and the reason is worth keeping. A second server ' +
+        'CAN be seeded — `seedSecondServer` in surfaces.ts does it, and ' +
+        '`server-hub-registration-failed` uses it — but seeding one and clicking it does not ' +
+        'produce this state: `switchServer` has almost nothing left in it that throws. ' +
+        '`loadChannels` and `loadPermissions` both catch internally and set their own error ' +
+        'state, and `selectIdentity` on an unknown id leaves the previous identity in place, ' +
+        'so the switch reports success. Reaching it needs a stored identity with no ' +
+        'pseudonymId, which is a state the app does not otherwise produce. The banner is ' +
+        'pinned by four tests in ServerHub.switcherror.test.tsx instead.',
       'clear-state-error':
         'needs an IndexedDB delete to fail, which the harness has no way to force',
       'voice-error': 'covered in substance by voice-join-failure; the in-call variant is not',

@@ -38,6 +38,51 @@ function stub(pattern: string | RegExp, body: unknown, status = 200) {
 }
 
 /**
+ * Put an extra server in the hub before the app boots.
+ *
+ * Two states in `KNOWN_UNCOVERED` needed a second registered server and so
+ * had never been photographed: a placeholder whose registration failed, and
+ * a switch that does not complete. The hub reads `annex-servers` from
+ * IndexedDB, so seeding it directly is the whole trick — no server-side
+ * state is touched and nothing leaks into the surfaces that follow.
+ *
+ * `identityId: ''` marks a placeholder the hub renders as failed once the
+ * identity phase settles; a non-empty id that names no stored identity makes
+ * `switchServer` throw on selection, which is the failure users hit when a
+ * server's identity has been cleared out from under it.
+ */
+function seedSecondServer(identityId: string) {
+  return async (page: import('@playwright/test').Page) => {
+    await page.addInitScript((id) => {
+      const req = indexedDB.open('annex-servers', 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains('servers')) {
+          const store = db.createObjectStore('servers', { keyPath: 'id' });
+          store.createIndex('identityId', 'identityId', { unique: false });
+          store.createIndex('slug', 'slug', { unique: false });
+        }
+      };
+      req.onsuccess = () => {
+        const tx = req.result.transaction('servers', 'readwrite');
+        tx.objectStore('servers').put({
+          id: 'seeded-second-server',
+          baseUrl: 'https://beta.example',
+          slug: 'beta',
+          label: 'Beta Station',
+          identityId: id,
+          personaId: null,
+          accentColor: '#4c7fd4',
+          vrpTopic: 'annex:server:beta:v1',
+          lastConnectedAt: '2026-01-01T00:00:00.000Z',
+          cachedSummary: null,
+        });
+      };
+    }, identityId);
+  };
+}
+
+/**
  * Post a message and return its bubble.
  *
  * Edit and delete are only offered within `EDIT_WINDOW_MS` (60s) of posting
@@ -157,6 +202,25 @@ export const SURFACES: Surface[] = [
         timeout: 60_000,
       });
     },
+  },
+
+  {
+    id: 'server-hub-registration-failed',
+    stage: '03-server-startup',
+    title: 'A server whose registration never completed',
+    role: 'founder',
+    intent:
+      'A placeholder left behind when joining a server did not finish. It has to be visibly ' +
+      'distinct from a working server and it has to offer a way out — a dead icon you can ' +
+      'neither enter nor remove is worse than no icon.',
+    setup: seedSecondServer(''),
+    navigate: async (page) => {
+      const failed = page.locator('.server-hub-icon.failed');
+      await expect(failed).toBeVisible({ timeout: 20_000 });
+      await failed.hover();
+      await expect(page.locator('.server-hub-failed-actions')).toBeVisible({ timeout: 10_000 });
+    },
+    clip: '.server-hub',
   },
 
   {
