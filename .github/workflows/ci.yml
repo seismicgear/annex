@@ -291,6 +291,14 @@ jobs:
           cache-dependency-path: client/package-lock.json
 
       - run: npm ci
+      # Typecheck before the tests, because vitest cannot fail on a type
+      # error: it transpiles with esbuild, which strips types without
+      # checking them. Verified locally by adding `const x: number = "s"` to
+      # a source file — `tsc -b` fails and all 470 tests still pass. Without
+      # this step the job is green on a tree that cannot be built, and the
+      # error only surfaces later in the ui-audit or desktop lanes, where it
+      # reads as an audit failure rather than as a type error.
+      - run: npx tsc -b
       - run: npm test
       - run: npm run lint
 
