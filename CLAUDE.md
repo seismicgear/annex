@@ -192,7 +192,16 @@ of these. Look for them first:
 5. **A non-happy-path branch that drops structure the happy path provides** —
    an error state rendered without the landmark, heading, or list the normal
    state has. Found 4×.
-6. **A read-then-write transaction opened DEFERRED.** Under WAL the read takes
+6. **A generic failure branch standing beside specific siblings.** One
+   `catch` collapses several distinct causes into one message, or discards a
+   message the layer below already produced. It reads as merely terse and is
+   usually worse than that: `beginRemoteRegistration` returned `null` for
+   both an unreachable server and a failed local identity clone, so five
+   callers told the user to check a network that was fine.
+   `normalizeServerUrl` threw "Only http and https URLs are supported." and
+   the caller replaced it with "Invalid URL format." Look for a branch whose
+   neighbours name the thing that failed while it does not. Found 3×.
+7. **A read-then-write transaction opened DEFERRED.** Under WAL the read takes
    a snapshot and the write has to upgrade; a concurrent commit turns that into
    `SQLITE_BUSY_SNAPSHOT` *immediately*, with the busy handler never invoked,
    so `busy_timeout` cannot help. It surfaces as an intermittent
