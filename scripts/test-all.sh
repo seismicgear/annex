@@ -65,6 +65,13 @@ if [ "$QUICK" = false ]; then
     run_step "eslint (Frontend)" bash -c "cd client && npm run lint"
 fi
 
+# ---------- Harness scripts ----------
+# scripts/e2e-server.sh decides which process owns port 3000, and both of the
+# ways it got that wrong were silent: it reported "Killing stray process" and
+# killed nothing, then reported "Server ready" against the survivor. Seconds
+# to run, and nothing else covers a shell script.
+run_step "e2e-server port handling" bash scripts/tests/e2e-server-port.test.sh
+
 # ---------- Rust tests ----------
 if [ -n "$CARGO_TEST_EXTRA" ]; then
     run_step "cargo test (Rust)" cargo test --workspace --exclude annex-desktop $CARGO_TEST_EXTRA

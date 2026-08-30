@@ -7,7 +7,10 @@
 #   bash scripts/e2e-server.sh restart # Stop + start
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# BASH_SOURCE, not $0: under `source` $0 is the CALLER's path, so this would
+# resolve the repo root relative to whoever sourced it and cd somewhere else
+# entirely.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 PID_FILE="/tmp/annex-e2e-server.pid"
@@ -15,9 +18,36 @@ LOG_FILE="/tmp/annex-e2e-server.log"
 DB_DIR_FILE="/tmp/annex-e2e-server.dbdir"
 PORT=3000
 
+# The pids LISTENING on $PORT — not everything with a socket on it.
+#
+# `lsof -ti :$PORT` also matches every CLIENT connected to the port: a browser
+# context with an open connection to the server is a second pid in that list.
+# See scripts/tests/e2e-server-port.test.sh, which fails without the
+# restriction.
+listener_pids() {
+    lsof -ti "tcp:$PORT" -sTCP:LISTEN 2>/dev/null || true
+}
+
 start_server() {
+    # Every port decision below goes through lsof. Without it listener_pids
+    # returns nothing, which reads as "the port is free" — the one answer that
+    # is never safe to guess.
+    if ! command -v lsof >/dev/null 2>&1; then
+        echo "[e2e] ERROR: lsof is required to identify the process holding port $PORT"
+        return 1
+    fi
+
     # Stop any existing server
     stop_server 2>/dev/null || true
+
+    # And refuse to build for ten minutes if that did not work. Everything
+    # below assumes this process ends up owning the port.
+    local held
+    held=$(listener_pids)
+    if [ -n "$held" ]; then
+        echo "[e2e] ERROR: port $PORT is still held by PID $(echo $held | tr '\n' ' ') after stop"
+        return 1
+    fi
 
     # Prepare ZK artifacts for the client
     echo "[e2e] Preparing ZK artifacts..."
@@ -94,9 +124,24 @@ start_server() {
     local pid=$!
     echo "$pid" > "$PID_FILE"
 
-    # Wait for ready
+    # Wait for ready — and for the server that is ready to be OURS.
+    #
+    # `curl /health` on its own cannot tell this server from a leftover on the
+    # same port. When the port was already held, the survivor answered "ok" on
+    # the first iteration and this printed "Server ready on port 3000 (PID N)"
+    # one second after launch, while PID N was on its way to exiting with
+    # AddrInUse. The run then drove a database this script never created,
+    # which surfaces much later and much less legibly as "founder must be the
+    # earliest registrant". `cargo run` execs the binary on Unix, so $pid is
+    # the server itself and the listening pid is a direct identity check.
     for i in $(seq 1 90); do
-        if curl -s "http://127.0.0.1:$PORT/health" 2>/dev/null | grep -q '"ok"'; then
+        if ! kill -0 "$pid" 2>/dev/null; then
+            echo "[e2e] ERROR: server process $pid exited during startup"
+            tail -20 "$LOG_FILE"
+            return 1
+        fi
+        if [ "$(listener_pids)" = "$pid" ] &&
+           curl -s "http://127.0.0.1:$PORT/health" 2>/dev/null | grep -q '"ok"'; then
             echo "[e2e] Server ready on port $PORT (PID $pid) after ${i}s"
             return 0
         fi
@@ -135,21 +180,57 @@ stop_server() {
         rm -f "$DB_DIR_FILE"
     fi
 
-    # Also kill any stray server processes on the E2E port
-    local stray_pid
-    stray_pid=$(lsof -ti :$PORT 2>/dev/null || true)
-    if [ -n "$stray_pid" ]; then
-        echo "[e2e] Killing stray process on port $PORT (PID $stray_pid)"
-        kill "$stray_pid" 2>/dev/null || true
+    # Also kill any stray server still listening on the E2E port — a run
+    # whose pidfile was lost, or a server started by hand.
+    #
+    # This used to read `lsof -ti :$PORT` and pass the result to `kill` as one
+    # word. With any client connected the value is multi-line, and `kill`
+    # rejects such a string outright ("arguments must be process or job IDs")
+    # without signalling anything; the message above still printed. The stray
+    # then survived, `start_server` could not bind, and its readiness curl was
+    # answered by the survivor — so the run proceeded against a database it
+    # had not created, which surfaces much later as "founder must be the
+    # earliest registrant".
+    local stray p
+    stray=$(listener_pids)
+    if [ -n "$stray" ]; then
+        echo "[e2e] Killing stray process on port $PORT (PID $(echo $stray | tr '\n' ' '))"
+        for p in $stray; do
+            kill "$p" 2>/dev/null || true
+        done
+        for _ in $(seq 1 10); do
+            if [ -z "$(listener_pids)" ]; then
+                break
+            fi
+            sleep 1
+        done
+        stray=$(listener_pids)
+        if [ -n "$stray" ]; then
+            for p in $stray; do
+                kill -9 "$p" 2>/dev/null || true
+            done
+            sleep 1
+        fi
     fi
+
+    if [ -n "$(listener_pids)" ]; then
+        echo "[e2e] ERROR: port $PORT is still held after stop"
+        return 1
+    fi
+    return 0
 }
 
-case "${1:-}" in
-    start)   start_server ;;
-    stop)    stop_server ;;
-    restart) stop_server; start_server ;;
-    *)
-        echo "Usage: $0 {start|stop|restart}"
-        exit 1
-        ;;
-esac
+# Only dispatch when executed. Sourcing exposes the functions above without
+# running anything, which is how scripts/tests/e2e-server-port.test.sh drives
+# the port handling against a scratch port.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    case "${1:-}" in
+        start)   start_server ;;
+        stop)    stop_server ;;
+        restart) stop_server; start_server ;;
+        *)
+            echo "Usage: $0 {start|stop|restart}"
+            exit 1
+            ;;
+    esac
+fi

@@ -277,6 +277,37 @@ above) lived inside a committed screenshot. When a helper waits for something
 to *appear*, ask what it looks like when the operation failed; if the answer is
 "the same, plus a badge", the helper is asserting nothing.
 
+The same question applies to the harness's own process handling.
+`e2e-server.sh` reported `Killing stray process on port 3000 (PID …)` and
+killed nothing, then reported `Server ready on port 3000 (PID …)` two seconds
+later — naming a process that was on its way to exiting with `AddrInUse`,
+while the survivor answered the health check. The run then drove a database
+the script had not created, and the symptom arrived much later as
+**"founder must be the earliest registrant"** — the failure CLAUDE.md already
+described as looking like an ordinary capture problem from both sides. Two
+causes, each silent:
+
+- **`lsof -ti :PORT` matches CLIENT sockets, not just the listener.** Any
+  browser context with an open connection is a second pid, so the value is
+  multi-line — and `kill` rejects such a string whole ("arguments must be
+  process or job IDs") without signalling anyone. Verified: with one
+  connection open the list was `<server> <client>` and the kill was a no-op.
+  Use `lsof -ti tcp:$PORT -sTCP:LISTEN`, and signal each pid separately.
+- **`curl /health` cannot tell your server from someone else's.** Liveness of
+  the pid you launched is not enough either: a server still starting up is
+  alive while the stranger answers. `cargo run` uses `exec_replace` on Unix,
+  so `$!` *is* the server — compare it against the listening pid.
+
+Pinned by `scripts/tests/e2e-server-port.test.sh`, which is in
+`scripts/test-all.sh` and in the `Check (Server)` CI job. Two things that
+test taught, both of which made it lie before they were fixed: a killed
+background child is a **zombie** until the shell reaps it and `kill -0`
+succeeds on a zombie (read the state field of `/proc/<pid>/stat` instead),
+and **sourcing a script imports its `set -euo pipefail`** — an `lsof` that
+matches nothing then exits 1, aborts the EXIT trap under `pipefail`, and
+takes the script's exit status with it, so it reported "0 failed" and
+exited 1.
+
 #### Tests that stop testing what they claim
 
 A third corollary, and the one that hides longest: **a test can pass for the
