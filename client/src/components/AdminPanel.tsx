@@ -573,7 +573,18 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
 
       <div className="policy-grid">
         <label title="Minimum VRP alignment score (0.0–1.0) required for AI agents to join this server. Higher values require stronger value alignment.">
-          Min Alignment Score<InfoTip text="An AI safety score from 0 to 1. Higher values mean AI agents must be more closely aligned with human values to participate on this server. Most servers use 0.5 or above." />
+          {/* The label and its tip in one row.
+              
+              `.policy-grid label` is a COLUMN flexbox, so a bare `<InfoTip>`
+              beside the text becomes its own line: every other tip in this
+              form sits inside an `<h3>` and flows inline, and this one — the
+              only tip on a plain field label — hung under "Min Alignment
+              Score" on its own centred line, at every viewport including the
+              widest. */}
+          <span className="field-label-row">
+            Min Alignment Score
+            <InfoTip text="An AI safety score from 0 to 1. Higher values mean AI agents must be more closely aligned with human values to participate on this server. Most servers use 0.5 or above." />
+          </span>
           <input
             type="number"
             step="0.1"
@@ -622,7 +633,10 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
             checked={policy.federation_enabled}
             onChange={(e) => setPolicy({ ...policy, federation_enabled: e.target.checked })}
           />
-          Federation Enabled<InfoTip text="Federation lets your server connect to other Annex servers so users can discover and chat across communities — like email servers that can message each other." />
+          <span className="checkbox-label-text">
+            Federation Enabled
+            <InfoTip text="Federation lets your server connect to other Annex servers so users can discover and chat across communities — like email servers that can message each other." />
+          </span>
           <span className="field-hint">Allow connecting to other Annex servers to share channels and messages.</span>
         </label>
 
@@ -632,7 +646,7 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
             checked={policy.voice_enabled}
             onChange={(e) => setPolicy({ ...policy, voice_enabled: e.target.checked })}
           />
-          Voice Enabled
+          <span className="checkbox-label-text">Voice Enabled</span>
           <span className="field-hint">Allow voice and video calls on this server.</span>
         </label>
 
@@ -642,7 +656,10 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
             checked={policy.usernames_enabled}
             onChange={(e) => setPolicy({ ...policy, usernames_enabled: e.target.checked })}
           />
-          Usernames Enabled<InfoTip text="When on, users can pick a display name that's encrypted on the server. They control exactly who sees it — everyone else sees only an anonymous ID." />
+          <span className="checkbox-label-text">
+            Usernames Enabled
+            <InfoTip text="When on, users can pick a display name that's encrypted on the server. They control exactly who sees it — everyone else sees only an anonymous ID." />
+          </span>
           <span className="field-hint">Allow users to set encrypted display names with per-user visibility grants.</span>
         </label>
       </div>

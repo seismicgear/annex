@@ -1382,6 +1382,34 @@
   flex-direction: row !important;
   align-items: center;
   gap: 0.5rem !important;
+  flex-wrap: wrap;
+}
+
+/* The control's name, kept on one line.
+   
+   `.checkbox-label` is a row flexbox and the name was a bare text node in it,
+   so it competed for width with the hint beside it and broke — "Federation
+   Enabled" rendered as "Federation / Enabled" at every viewport including the
+   widest, where there was room for both. */
+.checkbox-label-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  white-space: nowrap;
+}
+
+/* The hint takes what is left, and drops to its own line rather than
+   squeezing the name when there is not enough. */
+.checkbox-label .field-hint {
+  flex: 1 1 12rem;
+}
+
+/* A field label and its InfoTip on one line. `.policy-grid label` is a COLUMN
+   flexbox, so a tip beside the text becomes a row of its own. */
+.field-label-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
 }
 
 .dialog-actions {
@@ -4277,6 +4305,22 @@
   color: var(--warning-color, #f0ad4e);
   margin-left: 0.2rem;
   font-weight: 600;
+  /* Reserve the widest value so the row does not resize as it counts.
+     
+     It runs 60s → 1s inside a right-aligned action row, so losing a digit at
+     "9s" narrowed the row and shifted the whole message bubble sideways —
+     once, visibly, while the user has the edit window open. The audit found
+     it as a flake rather than as jitter: `mobile/message-delete-confirm`
+     failed a verify by 5,915 pixels, the bubble 13px off, against a baseline
+     recorded sixteen minutes earlier. The surface masks this element, but a
+     mask hides pixels and not geometry.
+     
+     `ch` is the width of "0" in the current font, and tabular numerals keep
+     every digit that width. */
+  min-width: 3ch;
+  display: inline-block;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── Reconnection Banner ── */

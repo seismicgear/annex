@@ -97,7 +97,10 @@ export function CreateChannelDialog({ onClose }: { onClose: () => void }) {
             checked={federated}
             onChange={(e) => setFederated(e.target.checked)}
           />
-          Federated<InfoTip text="When on, messages in this channel are shared with partner servers your admin has connected to. Turn off to keep conversations private to this server." />
+          <span className="checkbox-label-text">
+            Federated
+            <InfoTip text="When on, messages in this channel are shared with partner servers your admin has connected to. Turn off to keep conversations private to this server." />
+          </span>
           <span className="field-hint">
             {federated
               ? 'Messages will be shared with connected partner servers.'

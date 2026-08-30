@@ -51,11 +51,14 @@ are the first things a real user touches, so they get their own lane.
 Three layers, cheapest first:
 
 1. **compile** — `cargo check` and `clippy -D warnings` on the Tauri crate.
-2. **logic** — `cargo test -p annex-desktop` (15 tests: deep-link parsing,
-   startup prefs, config, media detection). The desktop *build* jobs skip
-   these because the test binary links every Tauri dep a second time and
-   exhausts a standard runner's disk; this script checks for ~8 GB of headroom
-   and reports a skip rather than dying mid-link.
+2. **logic** — `cargo test -p annex-desktop`, covering deep-link parsing,
+   startup prefs, config and media detection. (No count here on purpose: this
+   said "15 tests" when the crate had 19, and a number in prose is a claim
+   nothing re-checks. `grep -rc '#\[test\]' crates/annex-desktop/src` is the
+   answer that cannot go stale.) The desktop *build* jobs skip these because
+   the test binary links every Tauri dep a second time and exhausts a standard
+   runner's disk; this script checks for ~8 GB of headroom and reports a skip
+   rather than dying mid-link.
 3. **package** — build the `.deb`, `dpkg -i`, assert the binary lands on PATH
    and that `x-scheme-handler/annex` is registered (without it every invite
    link a user clicks goes nowhere), launch headless under Xvfb and confirm it
