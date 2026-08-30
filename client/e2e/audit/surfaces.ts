@@ -1198,6 +1198,9 @@ export const SURFACES: Surface[] = [
       await expect(page.locator('.media-controls')).toBeVisible({ timeout: 30_000 });
       await page.getByTitle('Turn on camera').click();
       await expect(page.locator('.stale-camera-recovery')).toBeVisible({ timeout: 30_000 });
+      // The recovery block is only useful if it offers the way out, so name
+      // the actions rather than leaving them as an unnamed gap.
+      await expect(page.locator('.stale-camera-actions')).toBeVisible();
     },
     clip: '.voice-panel',
   },
@@ -2141,6 +2144,14 @@ export const SURFACES: Surface[] = [
       // the list renders fine and the throw happens on open.
       await page.locator('.agent-item').first().click();
       await expect(page.locator('.error-boundary')).toBeVisible({ timeout: 20_000 });
+      // Name the three parts, not just the container. The coverage contract
+      // matches on class names, and these were sitting in KNOWN_UNCOVERED as
+      // "photographed, just not named" — which is a gap in the bookkeeping,
+      // not in the coverage. Asserting them also pins that a contained crash
+      // still tells the user what happened, where, and how to see the detail.
+      await expect(page.locator('.error-boundary-title')).toBeVisible();
+      await expect(page.locator('.error-boundary-hint')).toBeVisible();
+      await expect(page.locator('.error-details')).toBeVisible();
     },
     // The member rail — and so the agent list — is hidden below 1100px.
     viewports: ['desktop', 'laptop'],

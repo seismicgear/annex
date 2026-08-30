@@ -101,6 +101,14 @@ invalidating one:
   to a database that is not the one it created. Launching record+verify as one
   background command is not enough — wait for the VERIFY to finish, not just
   the record.
+- **`--grep` cannot validate every surface.** The surfaces share one database
+  and several post messages, so an unclipped capture — `error-boundary` and
+  `agent-detail-overlay` are the two — shows a message column whose contents
+  depend on which surfaces ran BEFORE it. Under `--grep` those never ran, so
+  the picture legitimately differs from a baseline recorded in a full run and
+  the surface fails for a reason that is not a defect. Use `--grep` to check
+  that a surface is REACHABLE and that its assertions hold; use a full run to
+  judge its pixels.
 - **Never run `cargo` alongside a run.** The server is built at run start; a
   concurrent cargo command takes the build lock and starves it. Once
   `Server ready` appears in the log the lock is free, but CPU contention can

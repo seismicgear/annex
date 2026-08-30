@@ -209,18 +209,8 @@ test.describe('surface manifest', () => {
       'device-link-success': 'needs two contexts completing a real link handshake',
       'server-switch-error': 'needs a second registered server to switch away from',
       'server-hub-failed-actions': 'same — reached only after a failed switch',
-      'stale-camera-actions':
-        'inside the `.stale-camera-recovery` block, which `call-camera-device-missing` now ' +
-        'captures — photographed, just not named in the manifest',
       'clear-state-error':
         'needs an IndexedDB delete to fail, which the harness has no way to force',
-      'error-boundary-title':
-        'inside the error-boundary surface, which reaches it by a different selector — ' +
-        'photographed, just not named in the manifest',
-      'error-boundary-hint': 'same — inside the error-boundary surface',
-      'error-details':
-        'the <details> block inside registration-error and error-boundary; both are ' +
-        'captured, neither names this class',
       'voice-error': 'covered in substance by voice-join-failure; the in-call variant is not',
       'voice-status-error': 'the StatusBar mirror of the same in-call voice error',
       'pending-status': 'the optimistic in-flight moment, gone before a capture settles',
