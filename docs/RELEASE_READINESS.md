@@ -9,7 +9,7 @@ backed by a command you can re-run.
 | Suite | Count | How to run |
 |-------|-------|------------|
 | Rust workspace (excl. annex-desktop) | 1055 tests / 116 binaries, 0 clippy warnings | `cargo test --workspace --exclude annex-desktop` |
-| Frontend (vitest) | 476 tests + eslint + `tsc -b` | `cd client && npm test && npm run lint && npx tsc -b` |
+| Frontend (vitest) | 478 tests + eslint + `tsc -b` | `cd client && npm test && npm run lint && npx tsc -b` |
 | Playwright functional suite | 13 tests | `bash scripts/e2e-server.sh start && cd client && npm run test:e2e` |
 | Group call (3 real browser contexts, fake media) | 2 tests | `bash scripts/e2e-all.sh group-call` |
 | Harness scripts | 3 files | `for t in scripts/tests/*.test.sh; do bash "$t"; done` |
