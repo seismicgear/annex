@@ -224,9 +224,6 @@ test.describe('surface manifest', () => {
       'voice-error': 'covered in substance by voice-join-failure; the in-call variant is not',
       'voice-status-error': 'the StatusBar mirror of the same in-call voice error',
       'pending-status': 'the optimistic in-flight moment, gone before a capture settles',
-      'success-message':
-        'shared by four dialogs; each success path writes real server state, so a surface ' +
-        'for it has to be the last to touch that state',
     };
 
     /**

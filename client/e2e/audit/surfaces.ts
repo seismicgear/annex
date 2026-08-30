@@ -1419,6 +1419,36 @@ export const SURFACES: Surface[] = [
   },
 
   {
+    id: 'social-recovery-shards-generated',
+    stage: '08-user-settings',
+    title: 'Recovery shards, generated',
+    role: 'founder',
+    intent:
+      'The success state of the only flow that can get a lost identity back, and the one place ' +
+      'the shards themselves are ever shown. `success-message` is used by five dialogs and had ' +
+      'never been photographed in any of them — the confirmations were the half of the app the ' +
+      'audit had no picture of.',
+    navigate: async (page) => {
+      await openStatusBarDialog(page, 'Recovery');
+      await page.getByRole('button', { name: /Set Up Recovery/ }).click();
+      const guardians = page.locator('.guardian-entry input:not(.guardian-pseudo)');
+      const count = await guardians.count();
+      for (let i = 0; i < count; i += 1) {
+        await guardians.nth(i).fill(`Guardian ${i + 1}`);
+      }
+      await page.getByRole('button', { name: 'Generate Shards' }).click();
+      await expect(page.locator('.recovery-complete .success-message')).toBeVisible({
+        timeout: 20_000,
+      });
+    },
+    clip: '.dialog',
+    // The shards are a Shamir split of this run's secret key, so their bytes
+    // differ every time. The label and the copy control beside them are the
+    // part worth diffing.
+    mask: ['.shard-data'],
+  },
+
+  {
     id: 'identity-settings-persona-form',
     stage: '08-user-settings',
     title: 'Persona editor (name, bio, colour picker)',

@@ -143,8 +143,12 @@ invalidating one:
   recording run still carrying its previous baseline — and then fail a later
   run when ordinary anti-aliasing noise tips it over. It looks exactly like
   flakiness, and it is not. When you have changed something and want its
-  baseline definitely regenerated, `rm` the file first; a missing snapshot is
-  always written. This cost two full cycles and a wrong diagnosis: the first
+  baseline definitely regenerated, `rm` the file first (with an ABSOLUTE
+  path — a relative one from `client/` silently deletes nothing); a missing
+  snapshot is always written. The tolerance is looser than it sounds:
+  rewriting a whole sentence of body text inside a 520x576 dialog came in
+  UNDER 0.005 and left the old PNG in place, so the capture showed the new
+  wording and the baseline kept the old. Text changes always need the delete. This cost two full cycles and a wrong diagnosis: the first
   reading blamed a username-resolution race, and the actual cause was a
   stale baseline the recording run had declined to rewrite.
 

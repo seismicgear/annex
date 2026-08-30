@@ -422,10 +422,16 @@ export function SocialRecoveryDialog({ onClose }: Props) {
           <div className="success-message" role="status">
             Recovery shards generated successfully!
           </div>
+          {/* `{' '}` is load-bearing: JSX drops the newline between a text
+              line and an expression that starts the next one, so this
+              rendered as "...store it securely.3 of 5 shards..." — two
+              sentences run together, in the flow that gets a lost identity
+              back. */}
           <p className="recovery-hint">
-            Send each shard to the designated guardian. They should store it securely.
-            {recoveryConfig.threshold} of {recoveryConfig.totalShards} shards
-            are needed to recover.
+            Send each shard to the designated guardian. They should store it
+            securely.{' '}
+            Any {recoveryConfig.threshold} of the {recoveryConfig.totalShards}{' '}
+            shards will recover your identity.
           </p>
 
           <div className="shard-list">
