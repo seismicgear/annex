@@ -24,8 +24,8 @@ installs frontend npm deps, and verifies Rust compilation.
 
 ### Run all tests (recommended)
 ```bash
-bash scripts/test-all.sh           # fmt + clippy + cargo test + npm test
-bash scripts/test-all.sh --quick   # skip fmt/clippy, just run tests
+bash scripts/test-all.sh           # fmt + clippy + eslint + cargo test + tsc + npm test
+bash scripts/test-all.sh --quick   # skip fmt/clippy/eslint; still typechecks
 bash scripts/test-all.sh --verbose # show test output (--nocapture)
 ```
 

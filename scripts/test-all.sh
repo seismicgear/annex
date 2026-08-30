@@ -58,12 +58,30 @@ if [ "$QUICK" = false ]; then
     run_step "cargo clippy" cargo clippy --workspace --exclude annex-desktop --all-targets -- -D warnings
 fi
 
+# ---------- Frontend lint ----------
+# With clippy, not with the tests: it is the frontend's linter and `--quick`
+# is documented as skipping linting.
+if [ "$QUICK" = false ]; then
+    run_step "eslint (Frontend)" bash -c "cd client && npm run lint"
+fi
+
 # ---------- Rust tests ----------
 if [ -n "$CARGO_TEST_EXTRA" ]; then
     run_step "cargo test (Rust)" cargo test --workspace --exclude annex-desktop $CARGO_TEST_EXTRA
 else
     run_step "cargo test (Rust)" cargo test --workspace --exclude annex-desktop
 fi
+
+# ---------- Frontend typecheck ----------
+# Always, including under --quick, because this is the frontend's COMPILE
+# step and `--quick` skips linting, not compiling.
+#
+# Vitest transpiles with esbuild, which strips types without checking them, so
+# `npm test` passes on a tree that does not compile — verified by adding
+# `const x: number = "s"` to a source file: `tsc -b` failed and all 469 tests
+# passed. This script is what CLAUDE.md calls the recommended way to test, and
+# it was reporting "All steps passed" on code that could not be built.
+run_step "tsc (Frontend types)" bash -c "cd client && npx tsc -b"
 
 # ---------- Frontend tests ----------
 run_step "npm test (Frontend)" bash -c "cd client && npm test"
