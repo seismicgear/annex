@@ -214,9 +214,6 @@ test.describe('surface manifest', () => {
         'captures — photographed, just not named in the manifest',
       'clear-state-error':
         'needs an IndexedDB delete to fail, which the harness has no way to force',
-      'error-text':
-        'FederationPanel renders this twice; the peer-unreachable half IS captured, the ' +
-        'join-failure half is not',
       'error-boundary-title':
         'inside the error-boundary surface, which reaches it by a different selector — ' +
         'photographed, just not named in the manifest',

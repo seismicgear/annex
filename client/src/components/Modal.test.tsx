@@ -7,8 +7,8 @@
  */
 
 import { useState } from 'react';
-import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Modal } from './Modal';
 
@@ -310,5 +310,44 @@ describe('Modal focus recovery', () => {
     await user.click(screen.getByRole('button', { name: 'last' }));
     await settle();
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'last' }));
+  });
+});
+
+describe('focus does not land on a tooltip trigger', () => {
+  // Both `identity-settings` and the peer-detail dialog begin with an
+  // InfoTip. `FOCUSABLE` matches it — it carries `tabIndex={0}` so a keyboard
+  // user can read it — so the dialog focused it on open and its popup covered
+  // the dialog's own heading. Three committed baselines had recorded that as
+  // the correct appearance.
+  afterEach(() => cleanup());
+
+  it('prefers a real control over an InfoTip when the dialog opens', () => {
+    render(
+      <Modal onClose={() => {}} label="Test">
+        <span className="info-tip" tabIndex={0} role="button" aria-label="What this means" />
+        <button type="button">Save</button>
+      </Modal>,
+    );
+
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Save' }));
+  });
+
+  it('still focuses the tip when it is the only thing there', () => {
+    // Skipping it is a preference, not a ban — focus must end up inside the
+    // dialog either way, or the trap has nothing to work with.
+    render(
+      <Modal onClose={() => {}} label="Test">
+        <span
+          className="info-tip"
+          tabIndex={0}
+          role="button"
+          aria-label="Only focusable thing"
+        />
+      </Modal>,
+    );
+
+    expect(document.activeElement).toBe(
+      screen.getByRole('button', { name: 'Only focusable thing' }),
+    );
   });
 });

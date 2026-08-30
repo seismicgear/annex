@@ -49,6 +49,24 @@ const FOCUSABLE = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(",");
 
+/**
+ * Where focus may be sent when the element holding it disappears.
+ *
+ * A tooltip trigger is focusable — deliberately, so a keyboard user can read
+ * it — but it is the wrong place to *land*. Focusing one opens its popup, and
+ * the popup covers the dialog. That is not hypothetical: the peer-detail and
+ * identity-settings dialogs both begin with an InfoTip, so submitting either
+ * one disabled its button, the browser blurred it, this recovery ran, and the
+ * user's reward for a failed action was an explanatory panel over the error
+ * they were trying to read. Four audit surfaces caught it at once.
+ *
+ * The trigger stays in the tab order; it is only skipped as a fallback
+ * destination, and only while something better exists.
+ */
+const FOCUS_FALLBACK = FOCUSABLE.split(",")
+  .map((sel) => `${sel}:not(.info-tip)`)
+  .join(",");
+
 export interface ModalProps {
   onClose: () => void;
   children: ReactNode;
@@ -117,7 +135,14 @@ export function Modal({
     if (dialog) {
       // Prefer the first genuinely focusable control; fall back to the dialog
       // itself so focus is at least inside rather than left behind it.
-      const first = dialog.querySelector<HTMLElement>(FOCUSABLE);
+      //
+      // "Genuinely" is doing work here: `identity-settings` and the peer
+      // detail dialog both START with an InfoTip, so this line focused it on
+      // open and its popup covered the dialog's own heading — on every open,
+      // for every user, recorded as correct in three committed baselines.
+      const first =
+        dialog.querySelector<HTMLElement>(FOCUS_FALLBACK) ??
+        dialog.querySelector<HTMLElement>(FOCUSABLE);
       (first ?? dialog).focus({ preventScroll: true });
     }
 
@@ -183,7 +208,9 @@ export function Modal({
         departed.focus({ preventScroll: true });
         return;
       }
-      const first = current.querySelector<HTMLElement>(FOCUSABLE);
+      const first =
+        current.querySelector<HTMLElement>(FOCUS_FALLBACK) ??
+        current.querySelector<HTMLElement>(FOCUSABLE);
       (first ?? current).focus({ preventScroll: true });
     };
 

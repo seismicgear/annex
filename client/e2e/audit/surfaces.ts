@@ -1763,6 +1763,143 @@ export const SURFACES: Surface[] = [
     clip: '.dialog',
   },
   {
+    id: 'info-tip-near-edge',
+    stage: '09-admin',
+    title: 'An InfoTip opened next to the edge it has to avoid',
+    role: 'founder',
+    intent:
+      'The open state is captured elsewhere, in the middle of a wide panel where its ' +
+      'viewport-overflow correction never runs. This one opens the rightmost tip in a narrow ' +
+      'dialog, which is the case that correction exists for — and the only way to see whether ' +
+      'it lands somewhere readable.',
+    setup: async (page) => {
+      await page.route('**/api/public/federation/peers*', (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            peers: [
+              {
+                instance_id: 'peer-alpha',
+                label: 'Alpha Station',
+                base_url: 'https://alpha.example',
+                alignment_status: 'Aligned',
+                transfer_scope: 'FullKnowledgeBundle',
+              },
+            ],
+          }),
+        }),
+      );
+      await page.route('https://alpha.example/**', (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            slug: 'alpha',
+            label: 'Alpha Station',
+            description: '',
+            public_url: 'https://alpha.example',
+            members_by_type: { HUMAN: 42 },
+            total_active_members: 42,
+            channel_count: 9,
+            federation_peer_count: 3,
+            active_agent_count: 2,
+            access_mode: 'public',
+          }),
+        }),
+      );
+    },
+    navigate: async (page) => {
+      await openTab(page, 'Federation');
+      await page.getByRole('button', { name: /Explore|View Upstream/ }).first().click();
+      await expect(page.locator('.peer-detail-dialog')).toBeVisible({ timeout: 15_000 });
+      await page.locator('.peer-detail-dialog .info-tip').last().focus();
+      await expect(page.locator('.info-tip-popup')).toBeVisible({ timeout: 10_000 });
+    },
+    // Deliberately NOT clipped to the dialog: the whole question is whether
+    // the popup stays inside the viewport, and clipping to the dialog would
+    // crop away the evidence either way.
+    viewports: ['mobile', 'narrow'],
+  },
+  {
+    id: 'federation-join-failed',
+    stage: '10-federation',
+    title: 'Joining a peer that stops answering',
+    role: 'founder',
+    intent:
+      'The dialog loaded the peer fine and then the join failed — a peer that went down between ' +
+      'looking and joining, which is the ordinary way this fails. The message used to be the ' +
+      'four words "Could not reach server." for two unrelated causes; it now carries whichever ' +
+      'one happened. The Retry label matters too: the dialog must stay usable rather than ' +
+      'becoming a dead end.',
+    setup: async (page) => {
+      await page.route('**/api/public/federation/peers*', (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            peers: [
+              {
+                instance_id: 'peer-alpha',
+                label: 'Alpha Station',
+                base_url: 'https://alpha.example',
+                alignment_status: 'Aligned',
+                transfer_scope: 'FullKnowledgeBundle',
+              },
+            ],
+          }),
+        }),
+      );
+      // The dialog's own summary fetch and the join's both call
+      // `getRemoteServerSummary` on the same URL, so they cannot be told
+      // apart by pattern. Answer the first (the dialog opens normally) and
+      // refuse the rest (the join fails) — which is also exactly the
+      // sequence a peer going down between the two looks like.
+      let answered = 0;
+      await page.route('https://alpha.example/**', (route) => {
+        answered += 1;
+        if (answered > 1) return route.abort('connectionrefused');
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            slug: 'alpha',
+            label: 'Alpha Station',
+            description: '',
+            public_url: 'https://alpha.example',
+            members_by_type: { HUMAN: 42 },
+            total_active_members: 42,
+            channel_count: 9,
+            federation_peer_count: 3,
+            active_agent_count: 2,
+            access_mode: 'public',
+          }),
+        });
+      });
+    },
+    navigate: async (page) => {
+      await openTab(page, 'Federation');
+      await page.getByRole('button', { name: /Explore|View Upstream/ }).first().click();
+      await expect(page.locator('.peer-detail-dialog')).toBeVisible({ timeout: 15_000 });
+      await page.getByRole('button', { name: 'Join this Server' }).click();
+      await expect(page.locator('.peer-detail-dialog .error-text')).toBeVisible({
+        timeout: 20_000,
+      });
+      // A click leaves the pointer where it clicked, and the error text
+      // reflows the dialog underneath it — on the first recording that put
+      // the cursor over an InfoTip and photographed a tooltip nobody asked
+      // for. Park it somewhere harmless so the capture shows the state under
+      // test and not an artifact of where the mouse happened to land.
+      await page.mouse.move(0, 0);
+      await expect(page.locator('.info-tip-popup')).toHaveCount(0);
+    },
+    clip: '.dialog',
+    waive: {
+      network: 'the refused join request is the condition under test, installed by this surface.',
+      console: 'the browser logs the aborted request to the console as well',
+    },
+  },
+  {
     id: 'federation-peer-unreachable',
     stage: '10-federation',
     title: 'A peer that will not answer',

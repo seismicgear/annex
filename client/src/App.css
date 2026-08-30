@@ -3273,11 +3273,14 @@
   box-shadow: 0 4px 12px var(--shadow-medium);
 }
 
+/* `--tip-shift` is set by InfoTip when it has to move the popup to keep it
+   inside the viewport. Subtracting it here holds the arrow over the icon,
+   so a popup that had to slide sideways still points at what it explains. */
 .info-tip-popup::after {
   content: '';
   position: absolute;
   top: 100%;
-  left: 50%;
+  left: calc(50% - var(--tip-shift, 0px));
   transform: translateX(-50%);
   border: 5px solid transparent;
   border-top-color: var(--border-strong);
