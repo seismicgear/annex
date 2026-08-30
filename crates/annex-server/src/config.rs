@@ -1373,15 +1373,22 @@ mod tests {
         }
     }
 
-    fn write_temp_config(contents: &str) -> String {
+    /// A unique path in the temp dir. Nothing is written to it.
+    fn temp_config_path() -> String {
         let unique_suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system time should be after unix epoch")
             .as_nanos();
-        let file_name = format!("annex-config-{unique_suffix}.toml");
-        let path = std::env::temp_dir().join(file_name);
+        std::env::temp_dir()
+            .join(format!("annex-config-{unique_suffix}.toml"))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    fn write_temp_config(contents: &str) -> String {
+        let path = temp_config_path();
         fs::write(&path, contents).expect("failed to write temp config");
-        path.to_string_lossy().into_owned()
+        path
     }
 
     #[test]
@@ -1389,7 +1396,43 @@ mod tests {
         let _guard = env_lock().lock().expect("env lock poisoned");
         clear_env();
 
-        let cfg = load_config(Some("this-file-does-not-exist.toml")).expect("load should succeed");
+        // A unique path in the temp dir, and nothing is written to it.
+        //
+        // This was the relative literal "this-file-does-not-exist.toml", which
+        // `load_config` then CREATED in the crate root — the documented
+        // first-run bootstrap, writing the derived slug back so the server
+        // keeps its identity across restarts. The leftover was gitignored and
+        // left in place, on the reasoning that "the path name is load-bearing
+        // for the test (it's the very fixture string)".
+        //
+        // It is not load-bearing; the only requirement is that the path does
+        // not exist. And leaving the file disarmed this test: from the second
+        // run onward `load_config` found it and took the parse branch, so the
+        // missing-file branch the test exists to cover was never executed
+        // again on that machine. It kept passing because the file it was now
+        // reading happened to hold defaults. Append `[logging] level =
+        // "trace"` to the leftover and the test fails — which is the proof it
+        // was reading a file rather than the absence of one, and the reason
+        // its result depended on an untracked file in the source tree.
+        let path = temp_config_path();
+        assert!(
+            !std::path::Path::new(&path).exists(),
+            "fixture path must not exist before the load"
+        );
+
+        let cfg = load_config(Some(path.as_str())).expect("load should succeed");
+
+        // `load_config` bootstraps the file it was pointed at, so this test
+        // owns the cleanup. Read it back first: the write is the other half of
+        // the missing-file behaviour and had no coverage at all — it was only
+        // ever observed as litter.
+        let written = fs::read_to_string(&path).expect("missing config should be bootstrapped");
+        fs::remove_file(&path).expect("failed to clean up bootstrapped config");
+        assert!(
+            written.contains("server_slug"),
+            "bootstrap must persist the derived slug, or it is regenerated on \
+             every restart and every pseudonym on the server changes: {written}"
+        );
 
         assert_eq!(cfg.server.host, default_host());
         assert_eq!(cfg.server.port, default_port());

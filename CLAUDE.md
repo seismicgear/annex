@@ -236,6 +236,37 @@ above) lived inside a committed screenshot. When a helper waits for something
 to *appear*, ask what it looks like when the operation failed; if the answer is
 "the same, plus a badge", the helper is asserting nothing.
 
+#### Tests that stop testing what they claim
+
+A third corollary, and the one that hides longest: **a test can pass for the
+wrong reason from its second run onward.**
+
+`config::tests::defaults_are_loaded_when_file_missing` passed the relative
+literal `"this-file-does-not-exist.toml"` to `load_config`, which — by design,
+as the first-run bootstrap — *created* it in the crate root, complete with a
+freshly derived `server_slug`. From then on the file existed, `load_config`
+took the parse branch, and the missing-file branch the test exists to cover was
+never executed again on that machine. It still passed, because the file it was
+now reading happened to hold defaults. Append `[logging] level = "trace"` to
+the leftover and the test fails: proof that its result depended on an untracked
+file in the source tree. The leftover had been gitignored with a note claiming
+"the path name is load-bearing for the test", which it was not — only its
+absence was.
+
+The tell is a test whose fixture is a *path* rather than a *file*, and any test
+that asserts on the absence of something the code under test may create. Give
+it a unique path, assert the absence before the call, and clean up after.
+
+#### Restoring a file with `mv` can leave you running the old binary
+
+`mv config.rs.bak config.rs` preserves the backup's mtime, which predates the
+compile of the version you were experimenting with. Cargo's freshness check is
+mtime-based, so it decides nothing changed and reuses the stale artifact: three
+consecutive runs reported a failure from code that was no longer on disk, and
+the reading of it was wrong in an interesting-sounding way. Restore with `cp`,
+or `touch` the file afterwards. The same applies to any revert-to-confirm-red
+cycle, which is most of them here.
+
 ### Linting
 ```bash
 cargo fmt --all --check

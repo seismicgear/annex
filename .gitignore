@@ -53,13 +53,6 @@ client/e2e-puppeteer/screenshots/
 # Server signing keys (auto-generated)
 signing.key
 
-# Test-leakage artifact: `annex_server::config::tests::defaults_are_loaded_when_file_missing`
-# passes a relative path to load_config(), which then writes default
-# config to that path on disk in the crate root. The path name is
-# load-bearing for the test (it's the very fixture string), so we
-# gitignore the leftover instead of relocating the test.
-crates/annex-server/this-file-does-not-exist.toml
-
 # Client ZK artifacts (copied from zk/ by prepare-zk-dev.js)
 client/public/zk/
 
