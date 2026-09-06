@@ -17,6 +17,7 @@ import { useChannelsStore } from '@/stores/channels';
 import { useIdentityStore } from '@/stores/identity';
 import { useServersStore } from '@/stores/servers';
 import { useVoiceStore } from '@/stores/voice';
+import { VoiceCaptions } from './VoiceCaptions';
 import { VoiceRoomProvider } from './VoiceRoomProvider';
 import { PlatformMediaWarning } from './VoiceDiagnostics';
 
@@ -123,9 +124,30 @@ export function VoicePanel() {
   const permissionsError = permissionsStatus === 'error';
   const permissionsDenied = permissionsStatus === 'denied';
   const permissionsReady = permissionsStatus === 'ready';
+  // Ask the server whether voice can work here BEFORE offering the button.
+  // The readiness check is server-global, so one request covers every voice
+  // channel; `loadVoiceConfig` no-ops once resolved and is reset on server
+  // switch by `forceReset`.
+  const voiceConfig = useVoiceStore((s) => s.voiceConfig);
+  const voiceConfigStatus = useVoiceStore((s) => s.voiceConfigStatus);
+  const loadVoiceConfig = useVoiceStore((s) => s.loadVoiceConfig);
+  useEffect(() => {
+    if (!isVoiceCapable) return;
+    void loadVoiceConfig();
+  }, [isVoiceCapable, loadVoiceConfig]);
+
+  // Only a POSITIVE answer that the server is not ready blocks the button. A
+  // failed or pending check says nothing, and must not turn into a spurious
+  // "voice is unavailable" on a server where it works.
+  const serverVoiceUnready =
+    voiceConfigStatus === 'ready' &&
+    voiceConfig !== null &&
+    !(voiceConfig.policy_enabled && voiceConfig.infrastructure_ready);
+
   // Voice join requires: permissions loaded successfully AND can_voice === true
-  // AND voice was not disabled at startup.
-  const canJoinVoice = isVoiceAllowed && permissionsReady && !voiceSessionDisabled;
+  // AND voice was not disabled at startup AND the server can actually serve it.
+  const canJoinVoice =
+    isVoiceAllowed && permissionsReady && !voiceSessionDisabled && !serverVoiceUnready;
 
   // Clear stale call state when switching away from a channel so the next
   // channel does not inherit the previous channel's status or errors.
@@ -144,17 +166,50 @@ export function VoicePanel() {
   const lastJoinErrorDetails = activeChannelId ? getJoinError(activeChannelId) : null;
   const lastJoinError = lastJoinErrorDetails?.display ?? null;
 
-  // Poll voice status to determine if a call is active (Create vs Join).
-  useEffect(() => {
-    if (!isVoiceCapable || !activeChannelId || !identity?.pseudonymId || voiceToken) return;
+  // Poll voice status: before a call, to choose between "Create" and "Join";
+  // during one, to keep the participant roster current.
+  //
+  // This used to stop the moment `voiceToken` was set — that is, the moment
+  // you were actually in the call. That was fine when the response was only a
+  // count used to label a button, but the roster now names the tiles, so
+  // freezing it at the pre-join poll meant the person who created a call held
+  // an empty roster forever and nobody who joined afterwards ever appeared.
+  // The poll continues while connected; it is one small request every ten
+  // seconds against a route the client already calls.
+  //
+  // Polling is the right shape here rather than join/leave events, because a
+  // participant can also vanish without an event the client sees — a dropped
+  // connection, a reaped peer — and a poll converges on the truth either way.
+  //
+  // Two channels are polled, not one. The channel being *looked at* decides
+  // whether the button reads "Create Call" or "Join Call". The channel whose
+  // call you are *in* keeps the roster that names the tiles, and those are
+  // only the same channel until you click another one to read something
+  // while staying in the call — at which point the previous version stopped
+  // polling the call entirely and the roster froze.
+  const pollChannels = useMemo(() => {
+    const ids: string[] = [];
+    if (isVoiceCapable && activeChannelId) ids.push(activeChannelId);
+    if (connectedChannelId && connectedChannelId !== activeChannelId) {
+      ids.push(connectedChannelId);
+    }
+    return ids;
+  }, [isVoiceCapable, activeChannelId, connectedChannelId]);
+  // Joined into a primitive so the effect below re-runs when the SET changes
+  // rather than on every render — an array literal is a new reference each
+  // time and would restart the interval continuously.
+  const pollKey = pollChannels.join(',');
 
-    checkCallActive(identity.pseudonymId!, activeChannelId);
-    const interval = setInterval(
-      () => checkCallActive(identity.pseudonymId!, activeChannelId),
-      10_000,
-    );
+  useEffect(() => {
+    const pseudonymId = identity?.pseudonymId;
+    if (!pseudonymId || !pollKey) return;
+    const ids = pollKey.split(',');
+
+    const poll = () => ids.forEach((id) => checkCallActive(pseudonymId, id));
+    poll();
+    const interval = setInterval(poll, 10_000);
     return () => clearInterval(interval);
-  }, [isVoiceCapable, activeChannelId, identity?.pseudonymId, voiceToken, checkCallActive]);
+  }, [pollKey, identity?.pseudonymId, checkCallActive]);
 
   const pseudonymId = identity?.pseudonymId ?? null;
 
@@ -174,6 +229,13 @@ export function VoicePanel() {
     // Prefer the structured setup_hint from the join response
     if (lastJoinErrorDetails?.setupHint) {
       setSetupHint(lastJoinErrorDetails.setupHint);
+      return;
+    }
+
+    // Readiness is known up front now, so its hint can be shown without a
+    // failed join first.
+    if (serverVoiceUnready && voiceConfig?.setup_hint) {
+      setSetupHint(voiceConfig.setup_hint);
       return;
     }
 
@@ -200,7 +262,7 @@ export function VoicePanel() {
     return () => {
       cancelled = true;
     };
-  }, [lastJoinError, lastJoinErrorDetails]);
+  }, [lastJoinError, lastJoinErrorDetails, serverVoiceUnready, voiceConfig]);
 
   // Build RTCIceServer array from the server-provided config.
   const rtcIceServers = useMemo(() => {
@@ -228,8 +290,12 @@ export function VoicePanel() {
         ? 'Voice Disconnected'
         : 'Voice Connected';
 
+    // A <section> with a name, not a bare <div>: the call is a distinct region
+    // of the page, and a screen-reader user navigating by landmark otherwise
+    // has no way to jump to it — or to tell where it ends and the message
+    // history begins. axe reports the bare div as `region`.
     return (
-      <div className="voice-panel connected">
+      <section className="voice-panel connected" aria-label="Voice call">
         <div className="voice-connected-header">
           {headerText} — <strong>{channelLabel}</strong>
         </div>
@@ -238,6 +304,7 @@ export function VoicePanel() {
             <p>{connectionError}</p>
           </div>
         )}
+        <VoiceCaptions />
         <VoiceRoomProvider
           channelId={connectedChannelId}
           iceServers={rtcIceServers}
@@ -246,7 +313,7 @@ export function VoicePanel() {
           mediaStatus={mediaStatus}
           platformWarnings={platformWarnings}
         />
-      </div>
+      </section>
     );
   }
 
@@ -278,17 +345,23 @@ export function VoicePanel() {
       ? 'Join Call'
       : 'Create Call';
 
-  const unavailableReason = voiceSessionDisabled
-    ? (voiceSessionDisabledReason ?? 'Voice is not available for this session.')
-    : permissionsDenied
-      ? 'Voice is not allowed for your identity on this server.'
-      : permissionsError
-        ? null // Handled by the inline retry UI below
-        : !permissionsReady
-          ? 'Checking voice permissions…'
-          : !isVoiceAllowed
-            ? 'Voice is disabled by server policy for your identity.'
-            : null;
+  // Most specific first: a server that cannot do voice at all is more useful
+  // to say than anything about this identity's permissions on it.
+  const unavailableReason = serverVoiceUnready
+    ? voiceConfig?.policy_enabled === false
+      ? 'Voice is turned off for this server.'
+      : 'Voice is not set up on this server yet.'
+    : voiceSessionDisabled
+      ? (voiceSessionDisabledReason ?? 'Voice is not available for this session.')
+      : permissionsDenied
+        ? 'Voice is not allowed for your identity on this server.'
+        : permissionsError
+          ? null // Handled by the inline retry UI below
+          : !permissionsReady
+            ? 'Checking voice permissions…'
+            : !isVoiceAllowed
+              ? 'Voice is disabled by server policy for your identity.'
+              : null;
 
   // Show connectionError when the active channel matches the last failed channel
   const showConnectionError = !!(connectionError && lastFailedChannelId && lastFailedChannelId === activeChannelId);

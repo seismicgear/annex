@@ -93,7 +93,29 @@ export function useAppBootstrap({
       try {
         await loadIdentities();
         const firstRunDone = inTauri ? await checkFirstRunCompleted().catch(() => true) : undefined;
-        if (inTauri && firstRunDone === false) {
+
+        // Existing identities are direct evidence that this is NOT a fresh
+        // install, and they outrank a missing marker file.
+        //
+        // The marker is written by `markFirstRunCompleted()`, whose failure
+        // is swallowed at its call site. One failed write — a full disk, a
+        // permissions problem, an IPC hiccup — and the marker never appears,
+        // so the NEXT launch takes this branch and destroys every identity,
+        // server, persona, message and upload the user has. Silently, and
+        // irreversibly, because absence of a marker was being treated as
+        // proof of a fresh install.
+        //
+        // The check above already fails safe (`.catch(() => true)`). This
+        // makes the decision itself fail safe: wiping is only defensible
+        // when there is demonstrably nothing to lose. A genuinely fresh
+        // install has no identities, so it still gets its cleanup.
+        const hasExistingIdentities = useIdentityStore.getState().storedIdentities.length > 0;
+        if (inTauri && firstRunDone === false && hasExistingIdentities) {
+          console.warn(
+            'first-run marker missing but identities exist — skipping destructive cleanup',
+          );
+        }
+        if (inTauri && firstRunDone === false && !hasExistingIdentities) {
           // Fresh install detected (no first_run_completed marker). Clear
           // ALL stale data from a previous installation so the user starts
           // clean:

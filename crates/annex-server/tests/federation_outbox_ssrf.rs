@@ -26,6 +26,9 @@ fn build_state(pool: annex_db::DbPool, local_server_id: i64) -> AppState {
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: load_dummy_vkey(),
         membership_vkey_v2: None,
+        channel_eligibility_vkey: None,
+        link_pseudonyms_vkey: None,
+        federation_attestation_vkey: None,
         server_id: local_server_id,
         signing_key: Arc::new(signing_key),
         public_url: Arc::new(RwLock::new("http://localhost:3000".to_string())),
@@ -124,7 +127,7 @@ async fn outbox_worker_refuses_to_post_to_private_peer_url() {
     );
     let err = last_error.unwrap_or_default();
     assert!(
-        err.contains("private/reserved"),
+        err.contains("not an allowed peer address"),
         "last_error should attribute the failure to the SSRF gate; got: {err}"
     );
 }
@@ -191,7 +194,7 @@ async fn outbox_worker_does_not_drop_public_peer_url() {
     );
     let err = last_error.unwrap_or_default();
     assert!(
-        !err.contains("private/reserved"),
+        !err.contains("not an allowed peer address"),
         "public peer URL must not trip the SSRF gate; got: {err}"
     );
 }

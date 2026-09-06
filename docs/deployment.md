@@ -33,10 +33,10 @@ Authoritative env-var names live in `crates/annex-server/src/config.rs::load_con
 | `ANNEX_DB_PATH` | `annex.db` | SQLite database file path |
 | `ANNEX_CONFIG_PATH` | `config.toml` | Config file path |
 | `ANNEX_ZK_KEY_PATH` | `zk/keys/membership_vkey.json` | Groth16 verification key |
-| `ANNEX_WEBRTC_URL` | (none) | Internal WebRTC media URL (dev sidecar only; native SFU does not require this) |
-| `ANNEX_WEBRTC_PUBLIC_URL` | (none) | Public WebRTC URL announced to remote clients |
-| `ANNEX_WEBRTC_API_KEY` | (none) | Dev-mode WebRTC API key |
-| `ANNEX_WEBRTC_API_SECRET` | (none) | Dev-mode WebRTC API secret |
+| `ANNEX_WEBRTC_URL` | `ws://localhost:7880` | **Vestigial value, but do not clear it.** Nothing dials this address — the SFU is in-process. It survives only as the on/off gate: `VoiceService::is_enabled()` is false when it is empty, and `join_voice` then refuses every call with `voice_not_configured`. Leave it at the default unless you mean to disable voice. |
+| `ANNEX_WEBRTC_PUBLIC_URL` | (none) | Public URL announced to remote voice clients. Overridden at startup by `ANNEX_PUBLIC_URL` / the persisted server URL when either is set — see [Reverse proxy](#reverse-proxy-recommended). |
+| `ANNEX_WEBRTC_API_KEY` | `devkey` | Signalling auth key |
+| `ANNEX_WEBRTC_API_SECRET` | `secret` | Signalling auth secret. Change it for any deployment reachable off-host. |
 | `ANNEX_PUBLIC_URL` | (auto-derived) | Publicly-reachable server URL (for invites, federation) |
 | `ANNEX_LOG_LEVEL` | `info` | Log level (trace/debug/info/warn/error) |
 | `ANNEX_LOG_JSON` | `false` | JSON log output for log aggregation |
@@ -45,13 +45,54 @@ Authoritative env-var names live in `crates/annex-server/src/config.rs::load_con
 | `ANNEX_DB_MAINTENANCE_VACUUM` | `false` | Run `VACUUM` during the maintenance window (off by default; blocks writers) |
 | `ANNEX_IDEMPOTENCY_TTL_SECONDS` | `604800` (7 days) | Age past which WS-idempotency ledger rows (`clientRequestId` dedupe) are evicted |
 | `ANNEX_CORS_ALLOW_DEV_LOCALHOST` | unset (= build type) | Force the dev-localhost CORS relaxation on/off. Always off under `ANNEX_BUILD_PROFILE=production`/`release` |
-| `ANNEX_STORAGE_WARN_FREE_BYTES` | `536870912` (512 MiB) | Free-disk threshold for warning |
-| `ANNEX_STORAGE_BLOCK_FREE_BYTES` | `67108864` (64 MiB) | Free-disk threshold below which writes are rejected with HTTP 507 |
+| `ANNEX_STORAGE_MAX_DB_BYTES` | `0` (uncapped) | Size cap for the SQLite database file. **The two thresholds below are headroom beneath this number, so without it neither does anything.** |
+| `ANNEX_STORAGE_WARN_FREE_BYTES` | `536870912` (512 MiB) | Headroom beneath the cap at which the server logs a warning. Writes still flow |
+| `ANNEX_STORAGE_BLOCK_FREE_BYTES` | `67108864` (64 MiB) | Headroom beneath the cap below which writes are rejected with HTTP 507. Must be smaller than the warning threshold |
+
+These three are not free-*disk* measurements, despite what the two older
+names suggest. The server has no portable way to ask the OS how much space
+is left (see the `storage_health` module header for why adding `libc` /
+`windows_sys` for it was refused), so it measures the database file against
+a cap you set. Uncapped is the default: a guessed cap that is too low would
+refuse writes on a healthy machine. Leaving it unset means only the reactive
+path — SQLite itself returning `SQLITE_FULL` — can close the gate, which is
+the late signal the proactive probe exists to get ahead of.
+
+Both thresholds are validated at startup: the blocking threshold must be
+smaller than the warning one, and the cap must exceed the blocking
+threshold, or the server refuses to start rather than running with a gate
+that can never warn or one that closes on an empty database.
 | `ANNEX_FEDERATION_FRESHNESS_SECONDS` | `300` | Max age (seconds) of a live federated envelope's `created_at` |
 | `ANNEX_FEDERATION_FUTURE_SKEW_SECONDS` | `60` | Max future skew (seconds) of a live federated envelope's `created_at` |
 | `ANNEX_FEDERATION_OUTBOX_MAX_ATTEMPTS` | `12` | Max delivery attempts before an outbox row is marked `failed` |
 | `ANNEX_FEDERATION_OUTBOX_INTERVAL_SECONDS` | `5` | Outbox worker tick interval |
 | `ANNEX_FEDERATION_OUTBOX_PER_PEER_BATCH` | `8` | Max outbox rows drained per peer per tick (fairness cap) |
+| `ANNEX_FEDERATION_ALLOW_PRIVATE_PEERS` | `false` | Permit federation peers at private / loopback / link-local addresses — see below |
+| `ANNEX_FEDERATION_RELAY_TRANSPORT_ENABLED` | `false` | **Accepted and validated, but not yet wired.** The relay transport exists in `annex-federation` and no server code starts it; setting this logs a warning at startup and changes nothing. Under a production profile it additionally requires `ANNEX_SIGNAL_TRUSTED_PEERS`. Federation runs over the HTTP outbox either way |
+
+#### Federating over a private network
+
+`ANNEX_FEDERATION_ALLOW_PRIVATE_PEERS` defaults to `false`, which refuses any
+peer whose `base_url` resolves to a private, loopback or link-local address.
+That is the right default for peers reachable over the public internet, but it
+makes three ordinary topologies silently undeliverable — every outbox row to
+such a peer is dropped at dequeue, with only a log line to say so:
+
+- two servers on the same LAN (`10.*`, `192.168.*`, `172.16-31.*`),
+- two containers addressing each other by Compose service name (the name
+  resolves to a private IP, and `*.internal` is refused by hostname),
+- peers across a VPN — Tailscale's `100.64.0.0/10` is explicitly rejected.
+
+Set `ANNEX_FEDERATION_ALLOW_PRIVATE_PEERS=true` on **both** servers for those
+deployments. It relaxes only the private-address rule, and only for federation
+peers: malformed and non-`http(s)` peer URLs stay refused, and link previews —
+where the URL genuinely comes from untrusted message content — are unaffected.
+
+The check it relaxes is defence-in-depth rather than a trust boundary: nothing
+in the server writes an `instances` row, so a peer's `base_url` is only ever
+what an operator put there. What you give up is protection against an
+`instances` row later edited to point at an internal service. The server logs a
+warning at startup whenever the setting is on.
 
 ### Config File
 
@@ -85,7 +126,22 @@ json = true
 - **Annex Server**: HTTP API, WebSocket messaging, identity, federation, observability, and the native WebRTC SFU for voice rooms.
 - **SQLite**: Single-file database with WAL mode for concurrent reads.
 
-Older versions of this guide and `docker-compose.yml` ran a LiveKit sidecar for voice. The in-tree code in `crates/annex-voice` is a native WebRTC SFU and does not require LiveKit. The Docker Compose file is being updated accordingly; if you operate an older deployment with a LiveKit sidecar, treat that path as legacy and migrate when convenient.
+### Voice transport
+
+Voice is served by a native WebRTC SFU built on `webrtc-rs`, compiled into the
+Annex binary (`crates/annex-voice/src/service.rs`). There is no media server to
+deploy, no second process to supervise, and no extra port to open for
+signalling: offer/answer and ICE candidates ride the app's own `/ws` WebSocket
+alongside chat traffic, so anything that already proxies the API also proxies
+voice signalling. Media itself is ordinary WebRTC — UDP to the ICE candidates
+the server advertises, which is what STUN/TURN configuration is for.
+
+Older versions of this guide and `docker-compose.yml` ran a LiveKit sidecar.
+That is gone: `docker-compose.yml` no longer defines the service and the server
+never dials an external SFU. `docker-compose.livekit.yml` still exists in the
+repo root but nothing includes it — do not use it. If you operate a deployment
+that still runs the sidecar, stop it; it has had no traffic since the native SFU
+landed.
 
 ## Voice Setup
 
@@ -210,13 +266,43 @@ Run behind a reverse proxy (nginx, Caddy) with TLS. Set `ANNEX_PUBLIC_URL` to yo
 ANNEX_PUBLIC_URL=https://annex.example.com
 ```
 
-If LiveKit is also publicly accessible, set:
+That one variable is normally enough for voice too. Because the SFU is
+in-process and signals over the app's own WebSocket, **the address a remote
+client needs for voice is the address it is already talking to.** At startup the
+server takes `ANNEX_PUBLIC_URL` (or, if unset, the public URL persisted in the
+`servers` table during zero-config bootstrap) and pushes it into the voice
+service, so setting it correctly configures both planes.
+
+`ANNEX_WEBRTC_PUBLIC_URL` remains for the unusual case where voice must be
+announced at a different address:
 
 ```bash
-ANNEX_LIVEKIT_PUBLIC_URL=wss://livekit.example.com
+ANNEX_WEBRTC_PUBLIC_URL=wss://voice.example.com
 ```
 
-The server uses `ANNEX_PUBLIC_URL` for invite links and federation signatures. It uses `ANNEX_LIVEKIT_PUBLIC_URL` for the WebSocket URL sent to remote voice clients. Both are auto-detected from trusted forwarded headers (`X-Forwarded-Host`, `X-Forwarded-Proto`) when present.
+Note the precedence, which is not what the variable name suggests: the value
+pushed in at startup **wins over** `ANNEX_WEBRTC_PUBLIC_URL`. So on any server
+that has a public URL — which, after first boot, is nearly all of them —
+`ANNEX_WEBRTC_PUBLIC_URL` has no effect. Overriding it in practice means an
+authenticated `PUT /api/admin/webrtc-public-url` (moderator capability
+required), which is also what the desktop host mode uses to push its
+router-issued URL into the running server. Note that this is a *different*
+route from `PUT /api/admin/public-url`, which updates only the HTTP layer's
+public URL and does not touch the voice service.
+
+> **Auto-detection does not cover voice.** The proxy-header fallback
+> (`X-Forwarded-Host` / `X-Forwarded-Proto`) fills in the server's public URL on
+> the first trusted request, but it writes only to the HTTP layer's state — it
+> does not reach the voice service. A deployment that sets nothing and relies on
+> forwarded headers will get working invite links and **broken remote voice**:
+> the voice service still holds the default `ws://localhost:7880`, which it
+> deliberately reports as empty rather than hand a remote client a loopback
+> address, so `join_voice` returns `voice_not_configured`. Set
+> `ANNEX_PUBLIC_URL` explicitly if anyone will call from off-host.
+
+> Earlier revisions of this page named `ANNEX_LIVEKIT_PUBLIC_URL`. No such variable exists — nothing in the codebase reads it, so a deployment configured from those instructions silently had no SFU URL set at all. The voice settings are the `ANNEX_WEBRTC_*` family (`_URL`, `_PUBLIC_URL`, `_API_KEY`, `_API_SECRET`), matching the `[webrtc]` section of `config.toml`.
+
+`ANNEX_PUBLIC_URL` must be **HTTPS** for invite links to work: the invite format requires it, because the link carries a join secret that must not be readable in transit. On an `http://` public URL the admin panel says so and does not offer the invite action.
 
 ### Desktop host mode
 

@@ -53,6 +53,7 @@ vi.mock('@/lib/api', () => ({
   resolveUrl: (url: string) => url,
 }));
 
+const mockCloneForServer = vi.fn(async (): Promise<string | null> => 'cloned-identity-1');
 vi.mock('./identity', () => ({
   useIdentityStore: Object.assign(
     () => ({}),
@@ -61,6 +62,7 @@ vi.mock('./identity', () => ({
         identity: { pseudonymId: 'p1', sessionToken: 'session-tok-1' },
         selectIdentity: (...args: unknown[]) => mockSelectIdentity(...args),
         loadPermissions: (...args: unknown[]) => mockLoadPermissions(...args),
+        cloneForServer: () => mockCloneForServer(),
       }),
       setState: vi.fn(),
     },
@@ -380,5 +382,127 @@ describe('servers store', () => {
     expect(useServersStore.getState().activeServerId).toBe('srv-a');
     expect(useServersStore.getState().serverImageUrl).toBe('/a.png');
     expect(mockUpdateCachedSummary).not.toHaveBeenCalledWith('srv-b', expect.anything());
+  });
+});
+
+describe('switchServer rollback is scoped to the switch that owns the context', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  /// A switch that fails after being overtaken must not undo the one that
+  /// overtook it.
+  ///
+  /// Every mutation on the success path is guarded by `switchEpoch === epoch`.
+  /// The rollback was not, so a slow failure landed after the user had
+  /// started another switch and unconditionally repointed the API base URL,
+  /// the identity and the WebSocket at ITS previous server — leaving the user
+  /// on a server they did not choose, with the wrong channels listed and no
+  /// error that explains it.
+  it('a superseded switch does not repoint the app on failure', async () => {
+    const { useServersStore } = await import('./servers');
+
+    const server = {
+      id: 'srv-slow', baseUrl: 'https://slow.example.com', slug: 'slow', label: 'Slow',
+      identityId: 'id-slow', personaId: null, accentColor: '#e63946',
+      vrpTopic: '', lastConnectedAt: '2025-01-01', cachedSummary: null,
+    };
+    useServersStore.setState({
+      servers: [server],
+      activeServerId: 'srv-original',
+      switchEpoch: 0,
+    });
+    mockListServers.mockResolvedValue([server]);
+
+    // Fail the switch, and while it is failing, let a newer switch bump the
+    // epoch — exactly what a second click does.
+    mockLoadPermissions.mockImplementationOnce(async () => {
+      useServersStore.setState((s) => ({ switchEpoch: s.switchEpoch + 1 }));
+      throw new Error('permissions failed');
+    });
+
+    mockSetApiBaseUrl.mockClear();
+    mockConnectWs.mockClear();
+
+    await expect(useServersStore.getState().switchServer('srv-slow')).rejects.toThrow();
+
+    // The failure is still reported to the caller (the rejection above), but
+    // nothing shared was touched on the way out.
+    const setBaseUrlCalls = mockSetApiBaseUrl.mock.calls.map((c) => c[0]);
+    expect(
+      setBaseUrlCalls.filter((u) => u !== 'https://slow.example.com'),
+    ).toEqual([]);
+    expect(useServersStore.getState().activeServerId).not.toBe('srv-original');
+  });
+
+  /// The rollback still has to work when the switch is the current one —
+  /// the guard must not disable error recovery.
+  it('a current switch still rolls back on failure', async () => {
+    const { useServersStore } = await import('./servers');
+
+    const server = {
+      id: 'srv-fail', baseUrl: 'https://fail.example.com', slug: 'fail', label: 'Fail',
+      identityId: 'id-fail', personaId: null, accentColor: '#e63946',
+      vrpTopic: '', lastConnectedAt: '2025-01-01', cachedSummary: null,
+    };
+    useServersStore.setState({
+      servers: [server],
+      activeServerId: 'srv-prev',
+      switchEpoch: 0,
+    });
+    mockListServers.mockResolvedValue([server]);
+    mockLoadPermissions.mockImplementationOnce(async () => {
+      throw new Error('permissions failed');
+    });
+
+    await expect(useServersStore.getState().switchServer('srv-fail')).rejects.toThrow();
+
+    expect(useServersStore.getState().activeServerId).toBe('srv-prev');
+    expect(useServersStore.getState().switchError).toBeTruthy();
+  });
+});
+
+describe('a registration that fails says which of the two things failed', () => {
+  // `beginRemoteRegistration` returns null for an unreachable server AND for
+  // a local identity clone that could not be made, and all five callers
+  // rendered their own wording of "could not reach the server". For the
+  // second case that is a misdiagnosis: nothing was unreachable, and the
+  // user is sent to check a network that is working.
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockListServers.mockResolvedValue([]);
+    mockCloneForServer.mockResolvedValue('cloned-identity-1');
+    mockGetRemoteServerSummary.mockResolvedValue({
+      slug: 'remote',
+      label: 'Remote Server',
+      total_active_members: 5,
+    });
+  });
+
+  it('names the address and the reason when the server cannot be reached', async () => {
+    mockGetRemoteServerSummary.mockRejectedValueOnce(new Error('Failed to fetch'));
+    const { useServersStore } = await import('./servers');
+    useServersStore.setState({ servers: [], registrationError: null });
+
+    const result = await useServersStore.getState().beginRemoteRegistration('https://peer.example');
+
+    expect(result).toBeNull();
+    const why = useServersStore.getState().registrationError ?? '';
+    expect(why).toContain('https://peer.example');
+    expect(why).toContain('Failed to fetch');
+  });
+
+  it('does not blame the network when the local identity clone fails', async () => {
+    mockCloneForServer.mockResolvedValueOnce(null);
+    const { useServersStore } = await import('./servers');
+    useServersStore.setState({ servers: [], registrationError: null });
+
+    const result = await useServersStore.getState().beginRemoteRegistration('https://peer.example');
+
+    expect(result).toBeNull();
+    const why = useServersStore.getState().registrationError ?? '';
+    expect(why).toMatch(/local identity/i);
+    expect(why).not.toMatch(/could not reach/i);
+    expect(why).toMatch(/existing identity is unchanged/i);
   });
 });

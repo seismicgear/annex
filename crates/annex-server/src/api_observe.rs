@@ -491,6 +491,26 @@ pub async fn get_server_summary_handler(
 /// A single federation peer in the public summary.
 #[derive(Debug, Serialize)]
 pub struct FederationPeerEntry {
+    /// Id of the agreement this peer row comes from.
+    ///
+    /// Two things needed it and neither could have it. The client's
+    /// `FederationPeer` type declared an `instance_id` that this struct has
+    /// never sent, and `FederationPanel` used it as the React key — so every
+    /// row in the peer list rendered with `key={undefined}`. And
+    /// `DELETE /api/admin/federation/{id}` takes an agreement id, which no
+    /// endpoint returned, so revoking a federation agreement was unreachable
+    /// from any client.
+    ///
+    /// There is no unique constraint on `(local_server_id, remote_instance_id)`,
+    /// so `base_url` is not a safe key either: a re-handshake can leave two
+    /// active rows for one instance. The agreement id is the only thing that
+    /// identifies a row here.
+    ///
+    /// This endpoint is public. The id is an autoincrement row id for a peer
+    /// whose URL, label, alignment and transfer scope are already published
+    /// beside it; it reveals only a lower bound on how many agreements this
+    /// server has made.
+    pub agreement_id: i64,
     /// The base URL of the remote instance.
     pub base_url: String,
     /// The display label of the remote instance.
@@ -527,22 +547,24 @@ pub async fn get_federation_peers_handler(
 
         let mut stmt = conn
             .prepare(
-                "SELECT i.base_url, i.label, fa.alignment_status, fa.transfer_scope, fa.active
+                "SELECT fa.id, i.base_url, i.label, fa.alignment_status, fa.transfer_scope, \
+                 fa.active
                  FROM federation_agreements fa
                  JOIN instances i ON fa.remote_instance_id = i.id
                  WHERE fa.local_server_id = ?1 AND fa.active = 1
-                 ORDER BY i.label ASC",
+                 ORDER BY i.label ASC, fa.id ASC",
             )
             .map_err(|e| format!("failed to prepare federation query: {e}"))?;
 
         let rows = stmt
             .query_map(params![server_id], |row| {
                 Ok(FederationPeerEntry {
-                    base_url: row.get(0)?,
-                    label: row.get(1)?,
-                    alignment_status: row.get(2)?,
-                    transfer_scope: row.get(3)?,
-                    active: row.get::<_, i64>(4)? == 1,
+                    agreement_id: row.get(0)?,
+                    base_url: row.get(1)?,
+                    label: row.get(2)?,
+                    alignment_status: row.get(3)?,
+                    transfer_scope: row.get(4)?,
+                    active: row.get::<_, i64>(5)? == 1,
                 })
             })
             .map_err(|e| format!("failed to query federation peers: {e}"))?;

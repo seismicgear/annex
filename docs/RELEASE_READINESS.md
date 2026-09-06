@@ -8,16 +8,43 @@ backed by a command you can re-run.
 
 | Suite | Count | How to run |
 |-------|-------|------------|
-| Rust workspace (excl. annex-desktop) | 770 tests / 85 binaries, 0 clippy warnings | `cargo test --workspace --exclude annex-desktop` |
-| Frontend (vitest) | 171 tests + eslint | `cd client && npm test && npm run lint` |
+| Rust workspace (excl. annex-desktop) | 1055 tests / 116 binaries, 0 clippy warnings | `cargo test --workspace --exclude annex-desktop` |
+| Frontend (vitest) | 478 tests + eslint + `tsc -b` | `cd client && npm test && npm run lint && npx tsc -b` |
+| Playwright functional suite | 13 tests | `bash scripts/e2e-server.sh start && cd client && npm run test:e2e` |
+| Group call (3 real browser contexts, fake media) | 2 tests | `bash scripts/e2e-all.sh group-call` |
+| Harness scripts | 3 files | `for t in scripts/tests/*.test.sh; do bash "$t"; done` |
+| Live federation relay (signed envelope, second server) | 1 end-to-end path | `bash scripts/smoke-federation.sh` |
+| Puppeteer journey (cold start → identity → proof → chat → channel create) | 1 driver-independent pass | `bash scripts/e2e-all.sh puppeteer` |
+| UI audit (screenshots + a11y + console + network + overflow + keyboard) | 104 surfaces × 4 viewports, 419 checks, 0 findings | `bash scripts/ui-audit.sh` |
+| Desktop install → run → uninstall | 9 checks | `bash scripts/desktop-audit.sh` |
 | ZK artifact gate | dev-fixture rejection under production profile | `cd zk && npm test` |
 | Marketing-site invite router (`monolith-annex`) | 62 tests | `cd ../monolith-annex && npm test` |
 | Server smoke (register → Merkle → Groth16 → verify → channel) | Linux + Windows | `bash scripts/smoke-server.sh` / `scripts/smoke-server.ps1` |
 
+The counts above are what the commands beside them printed, not a target. If a
+number here disagrees with a run, the run is right and this table is stale —
+that has already happened once, when it claimed 770 Rust and 171 frontend tests
+against actuals of 1055 and 469.
+
 CI (`.github/workflows/ci.yml`, `workflow_dispatch` with `include_macos=true`)
-runs the server checks, the **Linux + Windows + macOS** desktop builds, the
-frontend tests, and the server smoke on **Linux + Windows** — all required jobs
-green.
+defines the server checks, the **Linux + Windows + macOS** desktop builds, the
+frontend tests, the UI audit lane, and the server smoke on **Linux + Windows**.
+
+Five of the rows above were, until recently, run by nothing at all: the
+Playwright functional suite, the group-call lane and the puppeteer journey
+were named by no workflow, `scripts/smoke-federation.sh` was referenced by no
+workflow, script or doc, and the harness scripts had no tests. Defining a
+suite is not running it — every row here now names a command AND a job.
+
+> **What CI currently proves: nothing.** Every job on the open PR completes in
+> three to four seconds with `runner_id: 0`, an empty `runner_name`, no steps
+> and no downloadable logs — GitHub is not allocating runners for this
+> repository. That is infrastructure, not the diff, and it means the jobs
+> listed above are *defined* and not *executing*. Every claim in this document
+> is currently backed by a local run only. Check with
+> `gh api repos/seismicgear/annex/actions/jobs/<id>` (or the MCP equivalent)
+> and look at `runner_id` before treating a red check as a real failure — or a
+> green one as real proof.
 
 ## Desktop packaging (Tauri 2)
 
@@ -98,7 +125,7 @@ characters in the code, and HTTP/private-IP rejection.
 
 ```bash
 bash scripts/e2e-server.sh start            # builds client + server, fresh DB, :3000
-cd client && npm run test:e2e               # Playwright: 12/12
+cd client && npm run test:e2e               # Playwright functional suite: 13/13
 node e2e-puppeteer/run.mjs                   # core flow + cold-start, screenshots
 node e2e-puppeteer/voice.mjs                 # single-party WebRTC voice/video
 node e2e-puppeteer/voice-video.mjs           # two-party VIDEO fan-out (getStats proves inbound VP8)

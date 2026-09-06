@@ -23,7 +23,7 @@ pub mod types;
 
 pub use db::{
     create_agreement, expire_stale_agreements, get_agreement, list_active_agreements,
-    revoke_agreement,
+    revoke_agreement, touch_agreement,
 };
 pub use handshake::{process_incoming_handshake, HandshakeError};
 pub use types::{

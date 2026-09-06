@@ -44,6 +44,7 @@ export {
   listChannels,
 } from '@/api/channels';
 
+export type { MessageSearchResult } from '@/api/messages';
 export {
   getMessageEdits,
   getMessages,
@@ -74,10 +75,15 @@ export {
   getPublicEvents,
 } from '@/api/rtx';
 
-export type { MemberInfo } from '@/api/admin';
+export type { MemberInfo, OutboxEntry, OutboxPage, StorageHealth } from '@/api/admin';
 export {
+  clearStorageGate,
+  getFederationOutbox,
   getPolicy,
   getServer,
+  getStorageHealth,
+  retryFederationOutboxRow,
+  revokeFederationAgreement,
   listMembers,
   renameServer,
   setPublicUrl,

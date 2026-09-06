@@ -297,7 +297,7 @@ The **Value Resonance Protocol** is the cryptographic trust negotiation layer. T
 | `Partial` | `ReflectionSummariesOnly` | Restricted channels, text only, limited knowledge transfer |
 | `Conflict` | `NoTransfer` | Rejected |
 
-Alignment is determined in two stages: (1) exact hash match of principles/prohibited-actions yields `Aligned`; (2) if hashes differ, a bag-of-words semantic similarity check over the original principle texts determines whether the score meets the `min_alignment_score` threshold for `Partial`. This means servers with similar-but-not-identical policies can still federate at reduced trust.
+Alignment is determined in two stages: (1) exact hash match of principles/prohibited-actions yields `Aligned`; (2) if hashes differ, a **concept-embedding** semantic similarity check over the original principle texts determines whether the score meets the `min_alignment_score` threshold for `Partial`. The embedder (`semantic::ConceptEmbedder`) maps synonym families to shared concept dimensions (so "privacy" ≈ "confidentiality") and uses character-trigram hashing for morphology; it is fixed-dimension, so federated peers embed principles into the same space with no shared vocabulary. It is a deterministic lexical-concept model, not a learned neural one — the `SemanticEmbedder` trait keeps a learned model pluggable (ROADMAP 3.3). This means servers with similar-but-not-identical policies can still federate at reduced trust.
 
 The `VrpCapabilitySharingContract` governs agent behavior on the server: `knowledge_domains_allowed`, `redacted_topics`, `retention_policy`, `max_exchange_size`. Mutual acceptance is required — the server operator sets their contract, the agent declares its own, and `contracts_mutually_accepted()` must return true.
 
@@ -415,10 +415,11 @@ Full Circom / Groth16 pipeline:
 zk/
 ├── circuits/
 │   ├── identity.circom              # Poseidon(sk, roleCode, nodeId) commitment
-│   ├── membership.circom            # Merkle membership proof
-│   ├── link-pseudonyms.circom       # Opt-in cross-server identity linking
-│   ├── channel-eligibility.circom   # Prove capability flags without revealing full identity
-│   └── federation-attestation.circom # Multi-hop federation membership proof
+│   ├── membership.circom            # Merkle membership proof (v1)
+│   ├── membership_v2.circom         # Membership proof with secret-derived nullifier (opt-in)
+│   ├── channel_eligibility.circom   # Role-gated channel access, identity hidden
+│   ├── link_pseudonyms.circom       # Opt-in same-identity pseudonym linkage
+│   └── federation_attestation.circom # Hidden-member cross-server attestation
 ├── build/                           # Compiled R1CS / WASM / sym
 ├── keys/                            # Groth16 trusted setup artifacts, verification keys
 └── scripts/
@@ -429,11 +430,36 @@ zk/
 
 **`identity.circom`** — Binds secret key + role + node identity into a single field element.
 
-**`membership.circom`** — Proves a commitment is a leaf in a Merkle tree under a given root, without revealing the secret or leaf index.
+**`membership.circom`** — Proves a commitment is a leaf in a Merkle tree under a given root, without revealing the secret or leaf index. This is the v1 circuit every shipped client uses today.
 
-**`channel-eligibility.circom`** — Proves the holder has required capability flags for a channel without revealing the full identity record.
+**`membership_v2.circom`** — Same membership proof but with a secret-derived nullifier (so a topic pseudonym is not derivable from the public commitment). This is now the **default** path: the shipped client generates v2 proofs and the server accepts both v1 and v2 (`security.enabled_zk_versions = ["v1","v2"]`) for migration.
 
-**`federation-attestation.circom`** — Proves cross-server membership to a third server without revealing which originating server the user belongs to (multi-hop federation privacy).
+**`channel_eligibility.circom`** — Proves the holder is a member whose
+committed role equals the role a channel admits, emitting a channel-scoped
+secret-derived nullifier, **without revealing which member**. Public signals:
+`[root, nullifier, requiredRoleCode, channelTopicHash]`. Backs role-gated
+channel access in zero knowledge instead of reading plaintext role flags.
+
+**`link_pseudonyms.circom`** — Lets a holder voluntarily prove two
+topic-scoped pseudonyms derive from the same secret key (the same identity)
+**without revealing the key** — the opt-in cross-context linkage referenced
+above. Public signals: `[nullifierA, nullifierB, topicHashA, topicHashB]`. Uses
+the same nullifier domain (1) as `membership_v2`, so the linked nullifiers
+equal the registered pseudonyms.
+
+**`federation_attestation.circom`** — Proves a hidden member of this server's
+tree is attesting in a federation context, verifiable against the server's
+published root, **without exposing the identity database**. Public signals:
+`[root, nullifier, federationContextHash]`.
+
+These three are wired end to end: server verification keys load at startup
+(`AppState`), the endpoints `POST /api/zk/{channel-eligibility,link-pseudonyms,
+federation-attestation}` verify proofs and bind topic/role/context, the client
+generates the proofs (`client/src/lib/zk.ts`), and the build/bundle pipeline
+ships the wasm/zkey/vkey artifacts. Like the membership keys they currently use
+a **dev-fixture trusted setup** (random-entropy, documented as dev-only in
+`docs/refactor/zk-merkle-production.md`); a multi-party ceremony is the
+remaining production-grade step, tracked there.
 
 ---
 

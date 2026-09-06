@@ -26,8 +26,8 @@ pub(crate) struct DeepLinkInvite {
 
 /// Parse an `annex://invite?server=...&code=...` URL.
 ///
-/// Returns `None` if the URL is not a valid annex://invite URL or if the
-/// server is not HTTPS.
+/// Returns `None` unless the URL is a well-formed `annex://invite` carrying
+/// both parameters, and `server` parses as an `https` URL with a host.
 pub(crate) fn parse_deep_link_invite(raw_url: &str) -> Option<DeepLinkInvite> {
     let parsed = url::Url::parse(raw_url).ok()?;
 
@@ -53,7 +53,37 @@ pub(crate) fn parse_deep_link_invite(raw_url: &str) -> Option<DeepLinkInvite> {
     let server = server?;
     let code = code?;
 
-    if !server.starts_with("https://") {
+    // Parse it rather than matching a prefix. `starts_with("https://")` accepts
+    // the bare string `"https://"`, which has no host at all, and says nothing
+    // about what follows — the app then carries the value into a confirmation
+    // banner and, on approval, into every request it makes. A URL that does not
+    // parse, is not https, or names no host is not a server.
+    //
+    // The confirmation banner is still the real gate: this URL arrives from
+    // whatever asked the OS to open an `annex://` link, which is not a trusted
+    // source. This only ensures what reaches that banner is a server address.
+    let parsed_server = url::Url::parse(&server).ok()?;
+    if parsed_server.scheme() != "https" {
+        return None;
+    }
+    if parsed_server.host_str().is_none_or(str::is_empty) {
+        return None;
+    }
+    // Credentials in the address make the banner lie. In
+    // `https://annex.trusted.example@evil.com` the host is `evil.com` and the
+    // part that reads as the hostname is the username — and this string is
+    // what the confirmation banner renders ("Invite received for …") while the
+    // accept handler passes it straight to `redeemInvite` and
+    // `beginRemoteRegistration`. The server the user approves and the server
+    // the app contacts would be different machines, which is precisely what
+    // the banner exists to prevent. Annex never sends credentials in a URL, so
+    // there is nothing here to support.
+    if !parsed_server.username().is_empty() || parsed_server.password().is_some() {
+        return None;
+    }
+    // An empty `code=` reaches the banner and then a redeem request that can
+    // only fail. It is not a code.
+    if code.is_empty() {
         return None;
     }
 
@@ -105,6 +135,53 @@ mod tests {
     fn parse_deep_link_invite_missing_code() {
         let url = "annex://invite?server=https%3A%2F%2Fannex.example.com";
         assert!(parse_deep_link_invite(url).is_none());
+    }
+
+    #[test]
+    fn parse_deep_link_invite_rejects_a_scheme_with_no_host() {
+        // `starts_with("https://")` accepted this.
+        let url = "annex://invite?server=https%3A%2F%2F&code=abc123";
+        assert!(parse_deep_link_invite(url).is_none());
+    }
+
+    #[test]
+    fn parse_deep_link_invite_rejects_credentials_in_the_server() {
+        // `https://annex.trusted.example@evil.com` has host `evil.com`; the
+        // part that reads as the hostname is the username. The confirmation
+        // banner renders this string verbatim ("Invite received for …") and
+        // the accept handler passes it to `redeemInvite` and
+        // `beginRemoteRegistration`, so the server the user approves and the
+        // server the app contacts would be different machines.
+        let url =
+            "annex://invite?server=https%3A%2F%2Fannex.trusted.example%40evil.com&code=abc123";
+        assert!(parse_deep_link_invite(url).is_none());
+    }
+
+    #[test]
+    fn parse_deep_link_invite_rejects_a_password_in_the_server() {
+        let url = "annex://invite?server=https%3A%2F%2Fuser%3Apass%40evil.com&code=abc123";
+        assert!(parse_deep_link_invite(url).is_none());
+    }
+
+    #[test]
+    fn parse_deep_link_invite_rejects_an_empty_code() {
+        // An empty code reaches the banner and then the redeem request, which
+        // can only fail. `code=` is not a code.
+        let url = "annex://invite?server=https%3A%2F%2Fannex.example.com&code=";
+        assert!(parse_deep_link_invite(url).is_none());
+    }
+
+    #[test]
+    fn parse_deep_link_invite_rejects_an_unparseable_server() {
+        let url = "annex://invite?server=https%3A%2F%2F%5B&code=abc123";
+        assert!(parse_deep_link_invite(url).is_none());
+    }
+
+    #[test]
+    fn parse_deep_link_invite_keeps_a_port_and_path() {
+        let url = "annex://invite?server=https%3A%2F%2Fannex.example.com%3A8443&code=abc123";
+        let invite = parse_deep_link_invite(url).unwrap();
+        assert_eq!(invite.server, "https://annex.example.com:8443");
     }
 
     #[test]

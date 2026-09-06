@@ -77,6 +77,45 @@ pub(crate) async fn handle_offer(ctx: &CommandContext<'_>, channel_id: String, s
     }
 }
 
+/// The client's answer to an offer the SERVER initiated.
+///
+/// The server offers when a peer's track set changes — somebody joined or left
+/// the call — because adding a track to an established connection needs a
+/// fresh offer/answer. Membership is re-checked here for the same reason it is
+/// on the initial offer: the answer mutates a live peer connection, and a
+/// member can be removed from a channel while a call is in progress.
+pub(crate) async fn handle_answer(ctx: &CommandContext<'_>, channel_id: String, sdp: String) {
+    // A non-member is dropped silently: an answer responds to something the
+    // server asked for, so a refusal is not something the user did and not
+    // something they can act on. The offer simply goes unanswered and the peer
+    // keeps the track set it had.
+    if !matches!(
+        check_ws_membership(
+            ctx.state.pool.clone(),
+            ctx.state.server_id,
+            &channel_id,
+            ctx.pseudonym,
+        )
+        .await,
+        MembershipResult::Allowed
+    ) {
+        return;
+    }
+
+    if let Err(e) = ctx
+        .state
+        .voice_service
+        .handle_renegotiation_answer(&channel_id, ctx.pseudonym, &sdp)
+        .await
+    {
+        tracing::debug!(
+            pseudonym = %ctx.pseudonym,
+            error = %e,
+            "renegotiation answer rejected",
+        );
+    }
+}
+
 pub(crate) async fn handle_ice(
     ctx: &CommandContext<'_>,
     channel_id: String,

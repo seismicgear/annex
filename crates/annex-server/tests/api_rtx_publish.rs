@@ -38,6 +38,9 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool) {
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: common::load_vkey_or_dummy(),
         membership_vkey_v2: None,
+        channel_eligibility_vkey: None,
+        link_pseudonyms_vkey: None,
+        federation_attestation_vkey: None,
         server_id: 1,
         signing_key: Arc::new(ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng)),
         public_url: std::sync::Arc::new(std::sync::RwLock::new(
@@ -96,6 +99,37 @@ fn register_agent(pool: &annex_db::DbPool, pseudonym: &str, transfer_scope: &str
             capability_contract_json, reputation_score, last_handshake_at
         ) VALUES (1, ?1, 'ALIGNED', ?2, ?3, 1.0, datetime('now'))",
         rusqlite::params![pseudonym, transfer_scope, contract_json],
+    )
+    .unwrap();
+}
+
+/// Creates an aligned agent registration carrying an Ed25519 signing pubkey,
+/// so the publish path enforces the per-agent author signature (P4-FED-1).
+fn register_agent_with_pubkey(
+    pool: &annex_db::DbPool,
+    pseudonym: &str,
+    transfer_scope: &str,
+    signing_pubkey_hex: &str,
+) {
+    let conn = pool.get().unwrap();
+    conn.execute(
+        "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active)
+         VALUES (1, ?1, 'AI_AGENT', 1)",
+        [pseudonym],
+    )
+    .unwrap();
+    let contract_json = serde_json::json!({
+        "required_capabilities": [],
+        "offered_capabilities": ["TEXT", "VRP"],
+        "redacted_topics": []
+    })
+    .to_string();
+    conn.execute(
+        "INSERT INTO agent_registrations (
+            server_id, pseudonym_id, alignment_status, transfer_scope,
+            capability_contract_json, reputation_score, last_handshake_at, signing_pubkey
+        ) VALUES (1, ?1, 'ALIGNED', ?2, ?3, 1.0, datetime('now'), ?4)",
+        rusqlite::params![pseudonym, transfer_scope, contract_json, signing_pubkey_hex],
     )
     .unwrap();
 }
@@ -604,5 +638,101 @@ async fn test_publish_skips_subscriber_with_unparseable_scope() {
     assert_eq!(
         body["delivered_to"], 0,
         "subscriber with unparseable transfer scope must be skipped"
+    );
+}
+
+// ============================================================================
+// Per-agent author signature enforcement (AUDIT P4-FED-1)
+// ============================================================================
+
+/// Builds a bundle and signs it with `sk` using the canonical author payload
+/// (independently re-derived here via the public `author_signing_payload`, so
+/// this proves the server's verifier matches an external signer).
+fn signed_bundle(pseudonym: &str, sk: &ed25519_dalek::SigningKey) -> Value {
+    use ed25519_dalek::Signer;
+    use sha2::{Digest, Sha256};
+
+    let mut bundle = annex_rtx::ReflectionSummaryBundle {
+        bundle_id: format!("bundle-{}", uuid::Uuid::new_v4()),
+        source_pseudonym: pseudonym.to_string(),
+        source_server: "http://localhost:3000".to_string(),
+        domain_tags: vec!["rust".into(), "systems".into()],
+        summary: "Rust ownership prevents data races at compile time.".into(),
+        reasoning_chain: Some("ownership; borrow checker; lifetimes".into()),
+        caveats: vec!["safe Rust only".into()],
+        created_at: 1_700_000_000_000,
+        signature: String::new(),
+        vrp_handshake_ref: "server1:instance1:agreement1".into(),
+    };
+    let digest = Sha256::digest(annex_rtx::author_signing_payload(&bundle).as_bytes());
+    bundle.signature = hex::encode(sk.sign(&digest).to_bytes());
+    serde_json::to_value(&bundle).unwrap()
+}
+
+#[tokio::test]
+async fn test_publish_accepts_valid_author_signature() {
+    let (app, pool) = setup_app().await;
+    let sk = ed25519_dalek::SigningKey::from_bytes(&[3u8; 32]);
+    let pubkey_hex = hex::encode(sk.verifying_key().to_bytes());
+    register_agent_with_pubkey(&pool, "agent-signed", "FULL_KNOWLEDGE_BUNDLE", &pubkey_hex);
+
+    let bundle = signed_bundle("agent-signed", &sk);
+    let req = build_publish_request("agent-signed", &bundle);
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "a correctly author-signed bundle must publish"
+    );
+}
+
+#[tokio::test]
+async fn test_publish_rejects_tampered_content_when_pubkey_registered() {
+    let (app, pool) = setup_app().await;
+    let sk = ed25519_dalek::SigningKey::from_bytes(&[4u8; 32]);
+    let pubkey_hex = hex::encode(sk.verifying_key().to_bytes());
+    register_agent_with_pubkey(&pool, "agent-tamper", "FULL_KNOWLEDGE_BUNDLE", &pubkey_hex);
+
+    // Sign a bundle, then alter the summary AFTER signing — the author
+    // signature no longer covers the content the server receives.
+    let mut bundle = signed_bundle("agent-tamper", &sk);
+    bundle["summary"] = serde_json::json!("MALICIOUSLY rewritten content");
+    let req = build_publish_request("agent-tamper", &bundle);
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "tampered content must fail author-signature verification"
+    );
+}
+
+#[tokio::test]
+async fn test_publish_rejects_garbage_signature_when_pubkey_registered() {
+    let (app, pool) = setup_app().await;
+    let sk = ed25519_dalek::SigningKey::from_bytes(&[5u8; 32]);
+    let pubkey_hex = hex::encode(sk.verifying_key().to_bytes());
+    register_agent_with_pubkey(&pool, "agent-garbage", "FULL_KNOWLEDGE_BUNDLE", &pubkey_hex);
+
+    // A structurally-valid but cryptographically-bogus signature.
+    let mut bundle = signed_bundle("agent-garbage", &sk);
+    bundle["signature"] = serde_json::json!(hex::encode([0u8; 64]));
+    let req = build_publish_request("agent-garbage", &bundle);
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_publish_legacy_agent_without_pubkey_still_works() {
+    // Backward compat: an agent that never advertised a signing key keeps the
+    // legacy structural-only check (no author signature enforced).
+    let (app, pool) = setup_app().await;
+    register_agent(&pool, "agent-legacy", "FULL_KNOWLEDGE_BUNDLE");
+    let bundle = make_bundle("agent-legacy");
+    let req = build_publish_request("agent-legacy", &bundle);
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "legacy agent with no pubkey on file must still publish"
     );
 }

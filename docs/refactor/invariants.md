@@ -21,9 +21,14 @@ forbidden.
 
 **Enforced by:**
 - `crates/annex-server/src/config.rs` — field declaration and default.
-- `crates/annex-server/src/middleware.rs::verify_zk_proof_payload` (and call sites guarded by `state.enforce_zk_proofs`).
-- `crates/annex-server/src/api_ws.rs` — raw-pseudonym auth gate at line ~710 (search `enforce_zk_proofs`).
-- Test: `config::tests::default_security_settings` (asserts `enforce_zk_proofs` defaults to `true`).
+- `crates/annex-server/src/middleware.rs::verify_zk_membership_header` (and call sites guarded by `state.enforce_zk_proofs`).
+- `crates/annex-server/src/api_ws.rs` — raw-pseudonym auth gate; search `enforce_zk_proofs`.
+- Test: `config::tests::defaults_are_loaded_when_file_missing` — its final assertion (tagged `FINDING-001`) is what pins the default to `true`.
+
+*Verify these by symbol, not by line number.* Earlier revisions of this file cited
+`verify_zk_proof_payload`, a `default_security_settings` test, and "line ~710" —
+none of the three existed. A reader checking this invariant against those names
+finds nothing and cannot tell whether the guard was renamed or deleted.
 
 **Failure mode forbidden:** "Tests fail because of ZK; let me flip the flag in
 the test fixture" — the right answer is to provide a real proof (or, for a
@@ -110,7 +115,7 @@ session token backed by a verified ZK membership proof. The hot path is
 `if state.enforce_zk_proofs` block.
 
 **Enforced by:**
-- `crates/annex-server/src/api_ws.rs` (search `state.enforce_zk_proofs`, currently around line 710).
+- `crates/annex-server/src/api_ws.rs` (search `state.enforce_zk_proofs` — the gate, not a line number; it has moved before).
 - `crates/annex-server/src/middleware.rs::auth_middleware`.
 - Integration tests in `crates/annex-server/tests/api_zk_verify.rs` and `tests/ws_*.rs`.
 

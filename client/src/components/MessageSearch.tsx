@@ -14,6 +14,25 @@ export function MessageSearch() {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<Message[]>([]);
   const [searching, setSearching] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // The exact query the current `results` / `error` answer.
+  //
+  // Without this, "No messages found" was gated on `results.length === 0 &&
+  // query.trim() && !searching` — all three of which are true on the FIRST
+  // KEYSTROKE, before any request has been made. Typing into the box
+  // answered the search before running it, and the wrong way: a definitive
+  // "your term is not in the archive" for a term the server had never seen.
+  // It also outlived the query it belonged to — edit a search that found
+  // nothing and the verdict stayed up under the new text.
+  const [answered, setAnswered] = useState<string | null>(null);
+  // How much of the archive the last answer actually covers.
+  //
+  // Message bodies are encrypted at rest, so the server cannot match them in
+  // SQL — it decrypts a bounded recent window per channel and filters there.
+  // Anything older is never examined. That was invisible from here: an empty
+  // array became "No messages found", a claim about the whole archive, when
+  // the server had only read the top of it.
+  const [coverage, setCoverage] = useState<{ complete: boolean; perChannel: number } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const identity = useIdentityStore((s) => s.identity);
   const activeChannelId = useChannelsStore((s) => s.activeChannelId);
@@ -31,6 +50,8 @@ export function MessageSearch() {
         setOpen(false);
         setResults([]);
         setQuery('');
+        setAnswered(null);
+        setCoverage(null);
       }
     };
     document.addEventListener('keydown', handler);
@@ -38,18 +59,30 @@ export function MessageSearch() {
   }, [open]);
 
   const handleSearch = useCallback(async () => {
-    if (!query.trim() || !identity?.pseudonymId) return;
+    const term = query.trim();
+    if (!term || !identity?.pseudonymId) return;
     setSearching(true);
+    setError(null);
     try {
-      const msgs = await api.searchMessages(
+      const found = await api.searchMessages(
         identity.pseudonymId,
-        query.trim(),
+        term,
         activeChannelId ?? undefined,
         20,
       );
-      setResults(msgs);
-    } catch {
+      setResults(found.results);
+      setCoverage({ complete: found.complete, perChannel: found.scanned_per_channel });
+      setAnswered(term);
+    } catch (err) {
+      // A failed request is not an empty result set. Rendering it as "No
+      // messages found" tells the user their search worked and the thing
+      // they are looking for does not exist — which is the one conclusion
+      // the server never actually reported.
+      console.warn('[search] request failed:', err);
       setResults([]);
+      setCoverage(null);
+      setAnswered(term);
+      setError('Search failed. Check your connection and try again.');
     } finally {
       setSearching(false);
     }
@@ -62,7 +95,16 @@ export function MessageSearch() {
     setOpen(false);
     setResults([]);
     setQuery('');
+    setAnswered(null);
+    setCoverage(null);
   };
+
+  // Results and the empty verdict both belong to `answered`, not to whatever
+  // is in the box now — edit the text and neither is an answer to it any more.
+  const isAnswered = answered !== null && answered === query.trim();
+  // Only worth saying when the window actually cut the archive short.
+  const partial = isAnswered && coverage !== null && !coverage.complete;
+  const windowSize = coverage?.perChannel.toLocaleString() ?? '';
 
   if (!open) {
     return (
@@ -97,12 +139,12 @@ export function MessageSearch() {
         <button type="submit" disabled={searching || !query.trim()}>
           {searching ? '...' : 'Search'}
         </button>
-        <button type="button" onClick={() => { setOpen(false); setResults([]); setQuery(''); }} aria-label="Close search">
+        <button type="button" onClick={() => { setOpen(false); setResults([]); setQuery(''); setAnswered(null); setCoverage(null); }} aria-label="Close search">
           &times;
         </button>
       </form>
-      {results.length > 0 && (
-        <div className="search-results" role="listbox">
+      {isAnswered && results.length > 0 && (
+        <div className="search-results" role="listbox" aria-label="Search results">
           {results.map((msg) => {
             const ts = parseMessageTimestamp(msg.created_at);
             const time = isNaN(ts) ? '' : new Date(ts).toLocaleString();
@@ -121,8 +163,30 @@ export function MessageSearch() {
           })}
         </div>
       )}
-      {results.length === 0 && query.trim() && !searching && (
-        <div className="search-no-results">No messages found</div>
+      {isAnswered && error && !searching && (
+        <div className="search-error" role="alert">
+          <span>{error}</span>
+          <button type="button" onClick={() => void handleSearch()}>Retry</button>
+        </div>
+      )}
+      {partial && !error && results.length > 0 && !searching && (
+        <p className="search-coverage-note">
+          Covers the most recent {windowSize} messages in each channel. Anything
+          older was not searched.
+        </p>
+      )}
+      {isAnswered && !error && results.length === 0 && !searching && (
+        <div className="search-no-results">
+          {partial ? (
+            <>
+              No matches in the most recent {windowSize} messages of each
+              channel. Older messages were not searched, so this is not a
+              guarantee the term is absent.
+            </>
+          ) : (
+            'No messages found'
+          )}
+        </div>
       )}
     </div>
   );

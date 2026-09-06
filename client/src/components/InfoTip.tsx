@@ -7,6 +7,9 @@
 
 import { useState, useRef, useEffect } from 'react';
 
+/** Keep this much clear of the viewport edge. */
+const MARGIN = 8;
+
 interface InfoTipProps {
   text: string;
 }
@@ -16,18 +19,32 @@ export function InfoTip({ text }: InfoTipProps) {
   const tipRef = useRef<HTMLSpanElement>(null);
   const popupRef = useRef<HTMLSpanElement>(null);
 
-  // Reposition popup if it overflows the viewport
+  /**
+   * Keep the popup inside the viewport, by exactly as much as it overflows.
+   *
+   * The previous version set `right: 0` (or `left: 0`) and left the base
+   * `transform: translateX(-50%)` in place, so the popup moved an EXTRA half
+   * of its own width past where it was aimed. On a phone, opening the
+   * rightmost tip in the peer dialog threw a 280px popup clean off the left
+   * edge of a 390px screen: the text was cut at x=0, unreadable, and nowhere
+   * near the icon it belonged to. The correction meant to prevent overflow
+   * caused it, on the opposite side.
+   *
+   * Shifting the existing transform by the measured overflow is bounded —
+   * the popup is at most 280px wide against any supported viewport, so one
+   * pass always lands it inside. The arrow is pinned back to the icon with
+   * `--tip-shift` so it still points at what it describes.
+   */
   useEffect(() => {
-    if (!visible || !popupRef.current) return;
-    const rect = popupRef.current.getBoundingClientRect();
-    if (rect.right > window.innerWidth - 8) {
-      popupRef.current.style.left = 'auto';
-      popupRef.current.style.right = '0';
-    }
-    if (rect.left < 8) {
-      popupRef.current.style.left = '0';
-      popupRef.current.style.right = 'auto';
-    }
+    const el = popupRef.current;
+    if (!visible || !el) return;
+    const rect = el.getBoundingClientRect();
+    const overflowRight = rect.right - (window.innerWidth - MARGIN);
+    const overflowLeft = MARGIN - rect.left;
+    const shift = overflowRight > 0 ? -overflowRight : overflowLeft > 0 ? overflowLeft : 0;
+    if (shift === 0) return;
+    el.style.transform = `translateX(calc(-50% + ${shift}px))`;
+    el.style.setProperty('--tip-shift', `${shift}px`);
   }, [visible]);
 
   return (

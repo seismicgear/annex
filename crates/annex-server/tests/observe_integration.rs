@@ -23,6 +23,9 @@ fn make_state(pool: annex_db::DbPool) -> AppState {
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: common::load_vkey_or_dummy(),
         membership_vkey_v2: None,
+        channel_eligibility_vkey: None,
+        link_pseudonyms_vkey: None,
+        federation_attestation_vkey: None,
         server_id: 1,
         signing_key: Arc::new(ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng)),
         public_url: std::sync::Arc::new(std::sync::RwLock::new(
@@ -843,6 +846,84 @@ async fn federation_peers_returns_active_agreements() {
     assert_eq!(peers[0]["active"], true);
     assert_eq!(peers[1]["label"], "Beta Node");
     assert_eq!(peers[1]["alignment_status"], "Partial");
+
+    // Every row carries the agreement id.
+    //
+    // Without it the list is not addressable. The client's `FederationPeer`
+    // declared an `instance_id` this endpoint has never sent, so
+    // `FederationPanel` keyed every row on `undefined`; and
+    // `DELETE /api/admin/federation/{id}` takes an agreement id no endpoint
+    // returned, so revoking one was unreachable from any client.
+    //
+    // `base_url` is not a substitute: there is no unique constraint on
+    // (local_server_id, remote_instance_id), so two active rows can name the
+    // same instance — which `two_agreements_with_one_instance_stay_distinct`
+    // below actually does.
+    let ids: Vec<i64> = peers
+        .iter()
+        .map(|p| {
+            p["agreement_id"]
+                .as_i64()
+                .unwrap_or_else(|| panic!("peer row has no agreement_id: {p}"))
+        })
+        .collect();
+    assert_eq!(ids.len(), 2);
+    assert_ne!(ids[0], ids[1], "two agreements shared one id: {ids:?}");
+}
+
+#[tokio::test]
+async fn two_agreements_with_one_instance_stay_distinct() {
+    // The schema permits it — no unique constraint on
+    // (local_server_id, remote_instance_id) — so a re-handshake can leave two
+    // active rows pointing at one peer. They are two revocable agreements and
+    // must not collapse into one row or share a key.
+    let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
+    {
+        let conn = pool.get().unwrap();
+        annex_db::run_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO instances (base_url, public_key, label, status) VALUES ('https://twice.example.com', 'key1', 'Twice Node', 'ACTIVE')",
+            [],
+        ).unwrap();
+        let instance_id = conn.last_insert_rowid();
+
+        for scope in ["FULL_KNOWLEDGE_BUNDLE", "REFLECTION_SUMMARIES_ONLY"] {
+            conn.execute(
+                "INSERT INTO federation_agreements (local_server_id, remote_instance_id, alignment_status, transfer_scope, agreement_json, active)
+                 VALUES (1, ?1, 'Aligned', ?2, '{}', 1)",
+                rusqlite::params![instance_id, scope],
+            ).unwrap();
+        }
+    }
+
+    let state = make_state(pool.clone());
+    let application = app(state);
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+
+    let mut request = Request::builder()
+        .uri("/api/public/federation/peers")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
+
+    let response = application.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let resp: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    let peers = resp["peers"].as_array().unwrap();
+    assert_eq!(peers.len(), 2, "both agreements should be listed: {resp}");
+    assert_eq!(peers[0]["base_url"], peers[1]["base_url"]);
+    assert_ne!(
+        peers[0]["agreement_id"], peers[1]["agreement_id"],
+        "same base_url, so the agreement id is the only thing telling these \
+         two rows apart: {resp}",
+    );
 }
 
 #[tokio::test]

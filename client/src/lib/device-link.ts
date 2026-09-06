@@ -98,7 +98,36 @@ export async function decryptIdentity(
     ciphertext.buffer as ArrayBuffer,
   );
 
-  return JSON.parse(new TextDecoder().decode(plaintext)) as StoredIdentity;
+  const parsed: unknown = JSON.parse(new TextDecoder().decode(plaintext));
+  assertStoredIdentity(parsed);
+  return parsed;
+}
+
+/**
+ * Narrow a decrypted blob to a `StoredIdentity`, or throw.
+ *
+ * AES-GCM authenticates the ciphertext, so a wrong pairing code cannot get
+ * this far — but authentication says the bytes are the ones that were sent,
+ * not that they describe a usable identity. `as StoredIdentity` asserted the
+ * shape without checking it, so a payload from a build whose identity record
+ * differed, or one truncated before encryption, imported cleanly and the
+ * dialog said "Identity imported successfully!" over a record the app could
+ * not sign with. The failure surfaced later, somewhere else, as an identity
+ * that simply did not work.
+ */
+function assertStoredIdentity(value: unknown): asserts value is StoredIdentity {
+  const v = value as Record<string, unknown> | null;
+  if (!v || typeof v !== 'object') {
+    throw new Error('Transfer did not contain an identity');
+  }
+  const missing = (['sk', 'commitmentHex', 'serverSlug'] as const).filter(
+    (k) => typeof v[k] !== 'string' || !(v[k] as string),
+  );
+  if (typeof v.roleCode !== 'number') missing.push('roleCode' as never);
+  if (typeof v.nodeId !== 'number') missing.push('nodeId' as never);
+  if (missing.length > 0) {
+    throw new Error(`Transfer is missing identity fields: ${missing.join(', ')}`);
+  }
 }
 
 /** Encode a DeviceLinkPayload as a compact string suitable for QR code. */
@@ -132,19 +161,29 @@ export function generateQrSvg(data: string, size = 256): string {
   // not possible. The `size` and coordinates are always finite numbers.
   const moduleSize = size / moduleCount;
 
-  const parts: string[] = [
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}">`,
-    `<rect width="${size}" height="${size}" fill="white"/>`,
-  ];
-
+  // Every dark module is emitted into ONE path rather than its own <rect>.
+  // The per-rect version produced thousands of DOM nodes for a decorative
+  // graphic, which was slow to lay out and slow for anything that walks the
+  // DOM — it timed out Playwright's trace snapshotter outright. A single
+  // path renders identically at a fraction of the node count.
+  const segments: string[] = [];
   for (let row = 0; row < moduleCount; row++) {
     for (let col = 0; col < moduleCount; col++) {
       if (modules[row][col]) {
         const x = col * moduleSize;
         const y = row * moduleSize;
-        parts.push(`<rect x="${x}" y="${y}" width="${moduleSize}" height="${moduleSize}" fill="black"/>`);
+        // `h`/`v`/`h`/`z` draws the square relative to the `M` origin.
+        segments.push(`M${x} ${y}h${moduleSize}v${moduleSize}h-${moduleSize}z`);
       }
     }
+  }
+
+  const parts: string[] = [
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}">`,
+    `<rect width="${size}" height="${size}" fill="white"/>`,
+  ];
+  if (segments.length > 0) {
+    parts.push(`<path d="${segments.join('')}" fill="black"/>`);
   }
 
   parts.push('</svg>');

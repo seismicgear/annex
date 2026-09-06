@@ -91,7 +91,17 @@ if (!fs.existsSync(buildPath)) {
     fs.mkdirSync(buildPath);
 }
 
-const circuits = ['identity', 'membership', 'membership_v2'];
+const circuits = [
+    'identity',
+    'membership',
+    'membership_v2',
+    // Capability/linkage/federation ZK circuits (AUDIT P4-ID-1). These prove
+    // channel role-eligibility, voluntary pseudonym linkage, and federated
+    // attestation in zero knowledge instead of via plaintext DB role flags.
+    'channel_eligibility',
+    'link_pseudonyms',
+    'federation_attestation',
+];
 
 circuits.forEach(circuit => {
     console.log(`Building ${circuit}...`);

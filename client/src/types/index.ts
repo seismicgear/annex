@@ -121,7 +121,7 @@ export interface MessageEdit {
 /** WebSocket frame for sending messages. */
 export interface WsSendFrame {
   type: 'message' | 'edit_message' | 'delete_message' | 'typing' | 'resume'
-    | 'webrtc_offer' | 'webrtc_ice_candidate';
+    | 'webrtc_offer' | 'webrtc_answer' | 'webrtc_ice_candidate';
   channelId: string;
   content?: string;
   replyTo?: string | null;
@@ -142,7 +142,7 @@ export interface WsSendFrame {
 export interface WsReceiveFrame {
   type: 'message' | 'message_edited' | 'message_deleted' | 'rtx_bundle' | 'transcription' | 'error'
     | 'channel_created' | 'channel_updated' | 'channel_deleted' | 'channel_e2e_changed' | 'typing' | 'resumed'
-    | 'webrtc_answer' | 'webrtc_ice_candidate' | 'internal_error';
+    | 'webrtc_answer' | 'webrtc_offer' | 'webrtc_ice_candidate' | 'internal_error';
   // Message fields (camelCase from WsMessagePayload)
   channelId?: string;
   messageId?: string;
@@ -160,6 +160,15 @@ export interface WsReceiveFrame {
   pseudonymId?: string;
   // Resume fields
   missedCount?: number;
+  /**
+   * The server could not resolve the `lastMessageId` this client resumed
+   * from, so `missedCount` means nothing and the replay was empty. Set when
+   * retention has deleted the message the cursor names — routine on any
+   * channel with a retention window — or when the id belongs to a different
+   * channel. A client that treats this as "you missed nothing" keeps a
+   * timeline with an unknown-sized hole in it.
+   */
+  cursorLost?: boolean;
   // Transcription fields
   speakerPseudonym?: string;
   text?: string;
@@ -190,11 +199,22 @@ export interface AgentInfo {
 
 /** Federation peer info from GET /api/public/federation/peers. */
 export interface FederationPeer {
-  instance_id: number;
+  /**
+   * Id of the federation agreement, and the only stable key for a row here.
+   *
+   * This field was `instance_id`, which `GET /api/public/federation/peers`
+   * has never sent — so `FederationPanel` keyed every row on `undefined`.
+   * There is no unique constraint on (server, remote instance), so `base_url`
+   * is not a safe substitute; the agreement id is what identifies the row,
+   * and it is also what `DELETE /api/admin/federation/{id}` takes.
+   */
+  agreement_id: number;
   base_url: string;
   label: string;
   alignment_status: AlignmentStatus;
   transfer_scope: TransferScope;
+  /** Always true on this endpoint — it returns only active agreements. */
+  active: boolean;
 }
 
 /** Server summary from GET /api/public/server/summary. */

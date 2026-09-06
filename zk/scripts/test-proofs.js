@@ -335,6 +335,194 @@ async function run() {
     );
 
     // ═══════════════════════════════════════════
+    // Channel-Eligibility Circuit — role-gated access, identity hidden
+    // ═══════════════════════════════════════════
+    const eligVKey = JSON.parse(
+        fs.readFileSync(path.join(keysPath, "channel_eligibility_vkey.json")),
+    );
+    const eligWasm = path.join(buildPath, "channel_eligibility_js/channel_eligibility.wasm");
+    const eligZkey = path.join(keysPath, "channel_eligibility_final.zkey");
+    const DOMAIN_ELIGIBILITY = 2n;
+    const channelTopicHash = 5555555555555555n;
+
+    function expectedEligNullifier(skVal, topicVal) {
+        return poseidon.F.toString(poseidon([skVal, topicVal, DOMAIN_ELIGIBILITY]));
+    }
+
+    console.log("\n=== Channel-Eligibility: Valid Proof (role matches) ===");
+
+    const eligInput = {
+        sk: sk.toString(),
+        roleCode: roleCode.toString(),
+        nodeId: nodeId.toString(),
+        leafIndex: "0",
+        pathElements: pathElements0,
+        pathIndexBits: pathIndexBits0,
+        requiredRoleCode: roleCode.toString(),
+        channelTopicHash: channelTopicHash.toString(),
+    };
+    const { proof: eligProof, publicSignals: eligSignals } =
+        await snarkjs.groth16.fullProve(eligInput, eligWasm, eligZkey);
+
+    // Public signals layout: [root, nullifier, requiredRoleCode, channelTopicHash].
+    assert(eligSignals.length === 4, "eligibility publicSignals.length === 4");
+    const eligVerified = await snarkjs.groth16.verify(eligVKey, eligSignals, eligProof);
+    assert(eligVerified, "valid channel-eligibility proof verifies");
+    assert(eligSignals[0] === expectedRoot0, "eligibility root matches member's tree root");
+    assert(
+        eligSignals[1] === expectedEligNullifier(sk, channelTopicHash),
+        "eligibility nullifier = Poseidon(sk, channelTopicHash, DOMAIN_ELIGIBILITY)",
+    );
+    assert(eligSignals[2] === roleCode.toString(), "eligibility echoes requiredRoleCode");
+    assert(eligSignals[3] === channelTopicHash.toString(), "eligibility echoes channelTopicHash");
+
+    console.log("\n=== Channel-Eligibility: Wrong role fails witness generation ===");
+    try {
+        await snarkjs.groth16.fullProve(
+            { ...eligInput, requiredRoleCode: (roleCode + 1n).toString() },
+            eligWasm,
+            eligZkey,
+        );
+        assert(false, "member whose role != requiredRoleCode should fail witness generation");
+    } catch (e) {
+        assert(true, "role mismatch rejected at witness generation (roleCode === requiredRoleCode)");
+    }
+
+    console.log("\n=== Channel-Eligibility: Tampered nullifier rejected ===");
+    const tamperedEligSignals = [...eligSignals];
+    tamperedEligSignals[1] = "424242";
+    assert(
+        !(await snarkjs.groth16.verify(eligVKey, tamperedEligSignals, eligProof)),
+        "eligibility proof with tampered nullifier is rejected",
+    );
+
+    // ═══════════════════════════════════════════
+    // Link-Pseudonyms Circuit — voluntary same-identity linkage
+    // ═══════════════════════════════════════════
+    const linkVKey = JSON.parse(
+        fs.readFileSync(path.join(keysPath, "link_pseudonyms_vkey.json")),
+    );
+    const linkWasm = path.join(buildPath, "link_pseudonyms_js/link_pseudonyms.wasm");
+    const linkZkey = path.join(keysPath, "link_pseudonyms_final.zkey");
+
+    console.log("\n=== Link-Pseudonyms: Valid Proof ===");
+    const linkInput = {
+        sk: sk.toString(),
+        topicHashA: topicHashA.toString(),
+        topicHashB: topicHashB.toString(),
+    };
+    const { proof: linkProof, publicSignals: linkSignals } =
+        await snarkjs.groth16.fullProve(linkInput, linkWasm, linkZkey);
+
+    // Public signals layout: [nullifierA, nullifierB, topicHashA, topicHashB].
+    assert(linkSignals.length === 4, "link publicSignals.length === 4");
+    assert(
+        await snarkjs.groth16.verify(linkVKey, linkSignals, linkProof),
+        "valid link-pseudonyms proof verifies",
+    );
+    assert(
+        linkSignals[0] === expectedNullifier(sk, topicHashA),
+        "link nullifierA = Poseidon(sk, topicHashA, 1)",
+    );
+    assert(
+        linkSignals[1] === expectedNullifier(sk, topicHashB),
+        "link nullifierB = Poseidon(sk, topicHashB, 1)",
+    );
+    // The decisive cross-check: link-pseudonyms uses the SAME domain (1) as
+    // membership v2, so the linked nullifier is byte-identical to the pseudonym
+    // the user actually registered with. Without this, a link proof would not
+    // correspond to any real on-server pseudonym.
+    assert(
+        linkSignals[0] === v2SignalsA[2],
+        "link nullifierA equals the registered v2 membership nullifier for topic A",
+    );
+
+    console.log("\n=== Link-Pseudonyms: Different sk yields unlinkable nullifiers ===");
+    const { publicSignals: linkSignalsOther } = await snarkjs.groth16.fullProve(
+        { sk: "777777777", topicHashA: topicHashA.toString(), topicHashB: topicHashB.toString() },
+        linkWasm,
+        linkZkey,
+    );
+    assert(
+        linkSignalsOther[0] !== linkSignals[0] && linkSignalsOther[1] !== linkSignals[1],
+        "a different sk produces different (unlinkable) nullifiers for the same topics",
+    );
+
+    console.log("\n=== Link-Pseudonyms: Tampered nullifier rejected ===");
+    const tamperedLinkSignals = [...linkSignals];
+    tamperedLinkSignals[0] = "999";
+    assert(
+        !(await snarkjs.groth16.verify(linkVKey, tamperedLinkSignals, linkProof)),
+        "link proof with tampered nullifierA is rejected",
+    );
+
+    // ═══════════════════════════════════════════
+    // Federation-Attestation Circuit — hidden-member cross-server attestation
+    // ═══════════════════════════════════════════
+    const fedVKey = JSON.parse(
+        fs.readFileSync(path.join(keysPath, "federation_attestation_vkey.json")),
+    );
+    const fedWasm = path.join(buildPath, "federation_attestation_js/federation_attestation.wasm");
+    const fedZkey = path.join(keysPath, "federation_attestation_final.zkey");
+    const DOMAIN_FEDERATION = 3n;
+    const federationContextHash = channelTopicHash; // deliberately reuse to test domain separation
+
+    function expectedFedNullifier(skVal, ctxVal) {
+        return poseidon.F.toString(poseidon([skVal, ctxVal, DOMAIN_FEDERATION]));
+    }
+
+    console.log("\n=== Federation-Attestation: Valid Proof ===");
+    const fedInput = {
+        sk: sk.toString(),
+        roleCode: roleCode.toString(),
+        nodeId: nodeId.toString(),
+        leafIndex: "0",
+        pathElements: pathElements0,
+        pathIndexBits: pathIndexBits0,
+        federationContextHash: federationContextHash.toString(),
+    };
+    const { proof: fedProof, publicSignals: fedSignals } =
+        await snarkjs.groth16.fullProve(fedInput, fedWasm, fedZkey);
+
+    // Public signals layout: [root, nullifier, federationContextHash].
+    assert(fedSignals.length === 3, "federation publicSignals.length === 3");
+    assert(
+        await snarkjs.groth16.verify(fedVKey, fedSignals, fedProof),
+        "valid federation-attestation proof verifies",
+    );
+    assert(fedSignals[0] === expectedRoot0, "federation root matches member's tree root");
+    assert(
+        fedSignals[1] === expectedFedNullifier(sk, federationContextHash),
+        "federation nullifier = Poseidon(sk, federationContextHash, DOMAIN_FEDERATION)",
+    );
+    assert(
+        fedSignals[2] === federationContextHash.toString(),
+        "federation echoes federationContextHash",
+    );
+
+    console.log("\n=== Federation-Attestation: Tampered root rejected ===");
+    const tamperedFedSignals = [...fedSignals];
+    tamperedFedSignals[0] = "13371337";
+    assert(
+        !(await snarkjs.groth16.verify(fedVKey, tamperedFedSignals, fedProof)),
+        "federation proof with tampered root is rejected",
+    );
+
+    // ═══════════════════════════════════════════
+    // Cross-circuit domain separation — the three nullifiers over the SAME
+    // (sk, context) MUST all differ, or a nullifier minted by one circuit
+    // could be replayed against another.
+    // ═══════════════════════════════════════════
+    console.log("\n=== Domain Separation across circuits ===");
+    const nElig = expectedEligNullifier(sk, channelTopicHash);   // domain 2
+    const nFed = expectedFedNullifier(sk, federationContextHash); // domain 3 (same context value)
+    const nMem = expectedNullifier(sk, channelTopicHash);        // domain 1
+    assert(
+        nElig !== nFed && nElig !== nMem && nFed !== nMem,
+        "eligibility/federation/membership nullifiers over identical (sk,context) are pairwise distinct",
+    );
+
+    // ═══════════════════════════════════════════
     // Summary
     // ═══════════════════════════════════════════
     console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);

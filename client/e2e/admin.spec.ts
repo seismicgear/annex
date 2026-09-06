@@ -48,7 +48,9 @@ test.describe('Admin & channel management (founder)', () => {
         // link is generated AND routes through the marketing site
         // (monolithannex.com) — the end-to-end invite-router deliverable.
         await urlInput.fill('https://annex.demo.example');
-        await page.getByRole('button', { name: 'Save', exact: true }).click();
+        // By what it saves, not by its visible label: the Server Name field
+        // beside it has a Save too, and `{ name: 'Save' }` matched both.
+        await page.getByRole('button', { name: 'Save public URL' }).click();
         const inviteLink = page.locator('.share-link-input');
         await expect(inviteLink).toBeVisible({ timeout: 15_000 });
         await expect(inviteLink).toHaveValue(/^https:\/\/monolithannex\.com\/invite\//, {
@@ -87,13 +89,21 @@ test.describe('Admin & channel management (founder)', () => {
     await expect(page.getByText(message).first()).toBeVisible({ timeout: 15_000 });
 
     // ── Delete the channel via Admin → Channel Management ──
-    // The delete uses window.confirm(); accept it the way a user clicking "OK" would.
-    page.on('dialog', (d) => void d.accept());
+    // Deletion is confirmed in an in-app dialog, not `window.confirm()`. This
+    // used to register a `page.on('dialog')` handler and click Delete once,
+    // which stopped deleting anything the day the native confirm was
+    // replaced — the click opened the dialog and nothing pressed its button.
+    // The failure was invisible because `npm run test:e2e` ran every
+    // Playwright project, so nobody ran this suite on its own.
     await adminBtn.click();
     await page.getByRole('button', { name: 'Channel Management' }).click();
     const row = page.locator('.channel-manager-item', { hasText: channelName });
     await expect(row).toBeVisible({ timeout: 15_000 });
     await row.getByRole('button', { name: 'Delete' }).click();
+
+    const confirm = page.getByRole('dialog');
+    await expect(confirm).toBeVisible({ timeout: 10_000 });
+    await confirm.getByRole('button', { name: 'Delete channel' }).click();
 
     // It disappears from the manager and from the chat sidebar.
     await expect(page.locator('.channel-manager-item', { hasText: channelName })).toHaveCount(0, { timeout: 15_000 });

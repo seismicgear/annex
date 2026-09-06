@@ -18,11 +18,12 @@ import { useIdentityStore } from '@/stores/identity';
 import { useServersStore } from '@/stores/servers';
 import {
   getApiBaseUrl,
+  getServer,
   getServerSummary,
   setPublicUrl,
   setWebrtcPublicUrl,
 } from '@/lib/api';
-import { createInviteLink } from '@/lib/invite';
+import { canCreateInviteLink, createInviteLink } from '@/lib/invite';
 import { getPersonasForIdentity } from '@/lib/personas';
 import { clearWebStartupMode } from '@/lib/startup-prefs';
 import {
@@ -31,9 +32,27 @@ import {
   isTauri,
   markFirstRunCompleted,
 } from '@/lib/tauri';
+import { ApiError } from '@/lib/api';
 import type { DegradedStartupInfo } from '@/components/StartupModeSelector';
 import type { IdentityPhase } from '@/stores/identity';
 import type { StoredIdentity } from '@/types';
+
+/**
+ * Did the server answer and refuse us, as opposed to being unreachable?
+ *
+ * A refusal is a decision — wrong password, bad invite, server full, not
+ * permitted — and will be made identically however many times we ask. Only a
+ * transport-level failure is worth retrying.
+ *
+ * 429 is deliberately excluded: being rate limited means we have already asked
+ * too often, so hammering it further is exactly the wrong response.
+ */
+function isRefusal(err: unknown): boolean {
+  return (
+    err instanceof ApiError &&
+    [400, 401, 403, 409, 413, 429].includes(err.status)
+  );
+}
 
 interface UseServerSelectionArgs {
   phase: IdentityPhase;
@@ -130,6 +149,15 @@ export function useServerSelection({
             maxRetries: MAX_RETRIES,
             error: err,
           });
+
+          // Retrying only makes sense when the server could not be reached.
+          // A server that answered and REFUSED us — wrong password, invalid
+          // invite, server full, not allowed — will refuse identically five
+          // more times. Retrying anyway burned six of the ten-per-minute
+          // registration budget on a single wrong password, so a second
+          // attempt hit the rate limiter instead of the login.
+          if (isRefusal(err)) break;
+
           if (attempt < MAX_RETRIES) {
             await new Promise((r) => setTimeout(r, BASE_DELAY_MS * 2 ** attempt));
           }
@@ -225,8 +253,13 @@ export function useServerSelection({
             publicEndpointError: prev?.publicEndpointError,
           }));
         }
-        // Pre-create an invite link so it's ready when the user visits settings
-        await createInviteLink(getApiBaseUrl(), identity.pseudonymId!).catch(() => {});
+        // Pre-create an invite link so it's ready when the user visits
+        // settings — but only when the server's public URL can actually
+        // produce one, otherwise this is a request that always 400s.
+        const server = await getServer(identity.pseudonymId!).catch(() => null);
+        if (canCreateInviteLink(server?.public_url)) {
+          await createInviteLink(getApiBaseUrl(), identity.pseudonymId!).catch(() => {});
+        }
       } catch {
         // Non-fatal — invite links may be unavailable without a public URL
       }
@@ -261,7 +294,17 @@ export function useServerSelection({
         }
 
         // Mark first-run as completed so subsequent launches skip cleanup
-        if (inTauri) markFirstRunCompleted().catch(() => {});
+        // Not swallowed: this marker is the only thing standing between the
+        // next launch and the fresh-install cleanup, which deletes every
+        // identity, server and upload. A failure here is not cosmetic.
+        if (inTauri) {
+          markFirstRunCompleted().catch((e) => {
+            console.error(
+              'failed to write the first-run marker — the next launch may treat this as a fresh install:',
+              e,
+            );
+          });
+        }
 
         const personas = await getPersonasForIdentity(identity.id);
         if (personas.length > 0) {

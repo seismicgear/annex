@@ -3,8 +3,15 @@ name: CI
 on:
   push:
     branches: [main]
+  # Every pull request, not only those targeting main.
+  #
+  # With `branches: [main]` a PR opened against any other base — a stacked
+  # branch, a release train, a long-lived feature line — got **zero** checks,
+  # and GitHub renders that identically to a PR whose checks all passed. The
+  # verification lanes in this file only protect what they actually run on, so
+  # restricting them by base branch quietly exempted the PRs most likely to
+  # need them.
   pull_request:
-    branches: [main]
   workflow_dispatch:
     inputs:
       include_macos:
@@ -52,6 +59,17 @@ jobs:
       - name: ZK script tests
         run: npm test
         working-directory: zk
+
+      # The scripts everything else runs through. Their failures were the
+      # silent kind: e2e-server.sh reported "Server ready" about a server it
+      # had not started, and claude-setup.sh ended on a failed apt-get with
+      # no statement of what failed. Seconds each.
+      - name: Harness script tests
+        run: |
+          for t in scripts/tests/*.test.sh; do
+            echo "== $t"
+            bash "$t" || exit 1
+          done
 
       - name: cargo fmt
         run: cargo fmt --all --check
@@ -284,6 +302,14 @@ jobs:
           cache-dependency-path: client/package-lock.json
 
       - run: npm ci
+      # Typecheck before the tests, because vitest cannot fail on a type
+      # error: it transpiles with esbuild, which strips types without
+      # checking them. Verified locally by adding `const x: number = "s"` to
+      # a source file — `tsc -b` fails and all 470 tests still pass. Without
+      # this step the job is green on a tree that cannot be built, and the
+      # error only surfaces later in the ui-audit or desktop lanes, where it
+      # reads as an audit failure rather than as a type error.
+      - run: npx tsc -b
       - run: npm test
       - run: npm run lint
 
@@ -322,6 +348,213 @@ jobs:
 
       - name: Run server smoke
         run: bash scripts/smoke-server.sh
+
+      # The live federation proof: a second server is played by
+      # scripts/smoke-federation-relay.mjs, which signs a real
+      # FederatedMessageEnvelope with a peer's Ed25519 key and relays it over
+      # HTTP, and the server under test verifies signature, agreement and
+      # membership before persisting and broadcasting it.
+      #
+      # It was referenced by nothing at all — no workflow, no script, no doc —
+      # so the only end-to-end evidence that two servers federate ran when
+      # somebody remembered it existed. Federation is a shipped feature with a
+      # UI; this is its only cross-server test.
+      - name: Run federation smoke
+        run: bash scripts/smoke-federation.sh
+
+  # The browser lane. Until this job existed, NOTHING in CI drove a real
+  # browser: client/e2e/, client/e2e-puppeteer/ and scripts/e2e-server.sh were
+  # referenced by zero workflows, so every UI regression had to be caught by
+  # hand.
+  #
+  # The audit step below closed that for `--project=audit` only, and the
+  # comment here claimed more than it did: the functional suite, the
+  # group-call lane and the puppeteer harness went on running nowhere. All
+  # three are steps in this job now.
+  #
+  # This job boots a real server with a fresh database, walks the surface
+  # manifest, screenshots each surface at four viewports, and runs axe-core,
+  # console/pageerror capture, failed-request capture, overflow detection and
+  # the dialog keyboard contract against every one. Baselines committed under
+  # client/e2e/audit/baselines/ are diffed, so an unintended visual change
+  # fails here rather than shipping.
+  #
+  # Artifacts are uploaded on failure: the contact sheet plus the diagnostic
+  # screenshots of anything the run could not reach are usually enough to
+  # diagnose without reproducing locally.
+  ui-audit:
+    name: UI Audit (Linux)
+    runs-on: ubuntu-latest
+    needs: check-server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ui-audit
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install client deps
+        run: npm ci
+        working-directory: client
+
+      - name: Install Chromium for Playwright
+        run: npx playwright install --with-deps chromium
+        working-directory: client
+
+      # The audit drives a real in-browser Groth16 proof per role, so the
+      # circuits and dev keys have to exist before the server starts.
+      - name: Generate ZK keys
+        run: |
+          npm ci
+          node scripts/build-circuits.js
+          node scripts/setup-groth16.js
+        working-directory: zk
+
+      - name: Run UI audit
+        run: bash scripts/ui-audit.sh
+
+      # The functional lane — `client/e2e/*.spec.ts`, the `chromium` project.
+      # It ran in NO workflow until this step: identity creation, server
+      # selection, the in-browser Groth16 proof, channel join, send, edit,
+      # delete, reply, admin channel CRUD and A-to-B delivery over the
+      # WebSocket were all covered by a suite nothing executed. The audit lane
+      # above is `--project=audit` and photographs screens; it asserts almost
+      # nothing about behaviour.
+      #
+      # A fresh server per lane, because both need to be the first to register
+      # (`ensure_founder` promotes the earliest registrant, and the audit's
+      # roles are already in the database by now).
+      - name: Functional browser suite
+        if: ${{ !cancelled() }}
+        run: |
+          bash scripts/e2e-server.sh start
+          (cd client && npm run test:e2e)
+          bash scripts/e2e-server.sh stop
+
+      # The group-call lane. `16a76b7` rearchitected the SFU to one outbound
+      # track per (receiver, sender) pair and deleted the test that existed to
+      # fail when it landed; this is its replacement, and it was referenced by
+      # no script, no workflow and no doc — it ran only if someone typed the
+      # project name by hand. It holds a real multi-party call with fake media
+      # devices, so it is minutes rather than seconds, and its failures mean
+      # "a call cannot be held" rather than "a screen changed".
+      - name: Group call lane
+        if: ${{ !cancelled() }}
+        run: |
+          bash scripts/e2e-server.sh start
+          (cd client && npx playwright test --project=group-call --reporter=list)
+          bash scripts/e2e-server.sh stop
+
+      # The puppeteer harness. A second driver over the same journey — cold
+      # start, identity, in-browser proof, chat, channel create — and it does
+      # assert: `fail()` prints and exits 1, and the script ends with
+      # `.catch((err) => fail(...))`. It was almost dismissed here as "a
+      # screenshot tour with no assertions", which reading it disproved.
+      #
+      # It needs no browser of its own: `resolveChrome()` looks in
+      # PLAYWRIGHT_BROWSERS_PATH, which the install step above populated.
+      - name: Puppeteer journey
+        if: ${{ !cancelled() }}
+        run: |
+          bash scripts/e2e-server.sh start
+          (cd client && npm run test:e2e:puppeteer)
+          bash scripts/e2e-server.sh stop
+
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-audit-report
+          path: |
+            docs/ui-audit/
+            client/e2e/audit/diagnostics/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # Desktop audit — journey stage 01, "app install".
+  #
+  # `check-desktop-linux` proves the bundle *builds*. This job proves the
+  # bundle **installs and runs**: dpkg -i, the binary landing on PATH, the
+  # `annex://` scheme handler being registered with the OS (without which
+  # every invite link a user clicks goes nowhere), a headless launch that
+  # survives startup, then dpkg -r and confirmed removal. None of that is
+  # reachable from the browser lane, and all of it is the first thing a real
+  # user touches.
+  #
+  # It also runs `cargo test -p annex-desktop`, which check-desktop-linux
+  # deliberately skips — the script gates that on ~8 GB of free disk and
+  # reports a skip rather than dying mid-link, so a tight runner degrades
+  # instead of failing.
+  desktop-audit:
+    name: Desktop Audit (install → launch → uninstall)
+    runs-on: ubuntu-latest
+    needs: check-desktop-linux
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop-audit
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            libgtk-3-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            libpipewire-0.3-dev \
+            patchelf \
+            xvfb
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: |
+            client/package-lock.json
+            zk/package-lock.json
+
+      - name: Install client dependencies
+        run: npm ci
+        working-directory: client
+
+      # The bundler declares zk/keys/membership_vkey.json as a resource and
+      # validates it at build time, so the keys have to exist first.
+      - name: Generate ZK keys (dev-fixture entropy)
+        run: |
+          npm ci
+          node scripts/build-circuits.js
+          node scripts/setup-groth16.js
+        working-directory: zk
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli@2.11.2 --locked
+
+      - name: Run desktop audit
+        run: bash scripts/desktop-audit.sh
+
+      - name: Upload launch log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-audit-launch-log
+          path: /tmp/annex-desktop-launch.log
+          retention-days: 14
+          if-no-files-found: ignore
 
   # Server smoke — Windows. Same flow as the Linux smoke, exercised on
   # PowerShell so the .ps1 doesn't regress.

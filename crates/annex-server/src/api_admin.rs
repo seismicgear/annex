@@ -4,7 +4,7 @@ use crate::{
     api::ApiError, config::derive_server_slug_from_public_url, middleware::IdentityContext,
     policy::recalculate_all_alignments, AppState,
 };
-use annex_identity::update_capabilities;
+use annex_identity::{update_capabilities, would_remove_last_moderator};
 use annex_observe::EventPayload;
 use annex_types::{Capabilities, ServerPolicy};
 use axum::{
@@ -83,7 +83,16 @@ pub async fn update_policy_handler(
             ApiError::InternalServerError(format!("db connection failed: {e}"))
         })?;
 
-        let tx = conn.transaction().map_err(|e| {
+        // IMMEDIATE. Every write transaction in this codebase takes the
+        // RESERVED lock at BEGIN: a DEFERRED one reads a WAL snapshot first
+        // and then has to upgrade, and if another connection committed in
+        // between SQLite answers SQLITE_BUSY_SNAPSHOT immediately — the busy
+        // handler is never called, so `busy_timeout` cannot help. That is
+        // what made message sends fail intermittently with "database is
+        // locked"; see `ws_send_immediate_tx.rs`.
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| {
             ApiError::InternalServerError(format!("failed to start transaction: {e}"))
         })?;
 
@@ -684,6 +693,20 @@ pub async fn update_member_capabilities_handler(
         let conn = state_clone.pool.get().map_err(|e| {
             ApiError::InternalServerError(format!("db connection failed: {e}"))
         })?;
+
+        // Refuse to remove the last active moderator. Without this guard a
+        // moderator can clear `can_moderate` on the founder, every other
+        // moderator, and themselves, leaving the server with zero admins —
+        // an irreversible lockout that also drops the server into the
+        // no-moderator self-heal state where an unauthenticated identity read
+        // re-promotes the lowest-id account.
+        if would_remove_last_moderator(&conn, state_clone.server_id, &target, caps).map_err(
+            |e| ApiError::InternalServerError(format!("failed to check moderator count: {e}")),
+        )? {
+            return Err(ApiError::Conflict(
+                "cannot remove moderator capability from the last active moderator".to_string(),
+            ));
+        }
 
         update_capabilities(&conn, state_clone.server_id, &target, caps).map_err(|e| {
             ApiError::InternalServerError(format!("failed to update capabilities: {e}"))

@@ -40,6 +40,9 @@ fn setup_test_app() -> (axum::Router, annex_db::DbPool, tempfile::NamedTempFile)
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: Arc::new(vk),
         membership_vkey_v2: None,
+        channel_eligibility_vkey: None,
+        link_pseudonyms_vkey: None,
+        federation_attestation_vkey: None,
         server_id: 1,
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,
@@ -80,6 +83,16 @@ async fn test_get_degrees() {
     let conn = pool.get().unwrap();
     let server_id = 1;
 
+    // The degrees route is member-only, so the caller needs a real identity
+    // and not just a graph node — the two are separate tables.
+    conn.execute(
+        "INSERT INTO platform_identities
+           (server_id, pseudonym_id, participant_type, active)
+         VALUES (1, 'user_a', 'HUMAN', 1)",
+        [],
+    )
+    .unwrap();
+
     // A -> B -> C
     ensure_graph_node(&conn, server_id, "user_a", NodeType::Human, None).unwrap();
     ensure_graph_node(&conn, server_id, "user_b", NodeType::Human, None).unwrap();
@@ -106,7 +119,11 @@ async fn test_get_degrees() {
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
     let uri = "/api/graph/degrees?from=user_a&to=user_c&maxDepth=5";
-    let req = Request::builder().uri(uri).body(Body::empty()).unwrap();
+    let req = Request::builder()
+        .uri(uri)
+        .header("X-Annex-Pseudonym", "user_a")
+        .body(Body::empty())
+        .unwrap();
     let req = {
         let mut r = req;
         r.extensions_mut().insert(ConnectInfo(addr));
@@ -131,7 +148,11 @@ async fn test_get_degrees() {
 
     // 5. Test API: A -> C (Depth 1) - Should fail
     let uri = "/api/graph/degrees?from=user_a&to=user_c&maxDepth=1";
-    let req = Request::builder().uri(uri).body(Body::empty()).unwrap();
+    let req = Request::builder()
+        .uri(uri)
+        .header("X-Annex-Pseudonym", "user_a")
+        .body(Body::empty())
+        .unwrap();
     let req = {
         let mut r = req;
         r.extensions_mut().insert(ConnectInfo(addr));
@@ -244,4 +265,36 @@ async fn test_get_profile_visibility() {
 
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// The trust graph is not public.
+///
+/// `GET /api/graph/degrees?from=X&to=Y` returns `BfsPath { found, path,
+/// length }`, and `path` is the sequence of pseudonyms linking the two — so
+/// it names the INTERMEDIATES, people who are party to neither end of the
+/// query and who never consented to being disclosed. It sat in
+/// `public_routes`, unauthenticated, on a platform whose entire premise is
+/// ZK identity and pseudonymity. Anyone able to reach the server could walk
+/// pairs and reconstruct the social graph.
+///
+/// Nothing in the client ever called it, so nothing depended on it being
+/// open; the previous test asserted the unauthenticated behaviour, which is
+/// how it stayed that way.
+#[tokio::test]
+async fn the_trust_graph_is_not_readable_without_an_identity() {
+    let (app, _pool, _temp) = setup_test_app();
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+    let mut req = Request::builder()
+        .uri("/api/graph/degrees?from=user_a&to=user_c&maxDepth=5")
+        .body(Body::empty())
+        .unwrap();
+    req.extensions_mut().insert(ConnectInfo(addr));
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_ne!(
+        resp.status(),
+        StatusCode::OK,
+        "the social graph was served to an anonymous caller",
+    );
 }

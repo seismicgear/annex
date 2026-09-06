@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { StatusBar } from './StatusBar';
 
 // ── Mock state ──
@@ -41,8 +41,9 @@ vi.mock('@/stores/voice', () => ({
   useVoiceStore: () => voiceState,
 }));
 
+const getPersonasForIdentityMock = vi.fn(async () => [] as unknown[]);
 vi.mock('@/lib/personas', () => ({
-  getPersonasForIdentity: vi.fn(async () => []),
+  getPersonasForIdentity: () => getPersonasForIdentityMock(),
 }));
 
 vi.mock('@/lib/tauri', () => ({
@@ -165,4 +166,34 @@ it('shows auth refresh reconnect banner', () => {
   render(<StatusBar />);
   expect(screen.getByText('Reconnecting')).toBeInTheDocument();
   expect(screen.getByText('Refreshing session authentication…')).toBeInTheDocument();
+});
+
+describe('a persona load that resolves after the identity changed', () => {
+  // This app is built on keeping identities apart, so showing one identity's
+  // persona name and colour while another is active is the one mistake the
+  // status bar must not make. The read is local and fast, which is exactly
+  // why it went unguarded — a fast race is still a race.
+  it('does not paint the previous identity persona after a switch', async () => {
+    let releaseFirst: (v: unknown[]) => void = () => {};
+    getPersonasForIdentityMock.mockImplementationOnce(
+      () => new Promise((resolve) => { releaseFirst = resolve as (v: unknown[]) => void; }),
+    );
+
+    identityState.identity = { id: 'identity-A', pseudonymId: 'p-A' } as never;
+    const { rerender } = render(<StatusBar />);
+
+    // The user switches identity before the first read comes back.
+    identityState.identity = { id: 'identity-B', pseudonymId: 'p-B' } as never;
+    getPersonasForIdentityMock.mockResolvedValueOnce([
+      { id: 'persona-B', displayName: 'Bravo', accentColor: '#00ff00' },
+    ]);
+    rerender(<StatusBar />);
+
+    // Now identity A's read lands.
+    releaseFirst([{ id: 'persona-A', displayName: 'Alpha', accentColor: '#ff0000' }]);
+    await waitFor(() => {
+      expect(screen.queryByText('Alpha')).toBeNull();
+    });
+    expect(screen.queryByText('Alpha')).toBeNull();
+  });
 });

@@ -19,7 +19,9 @@ as authoritative for CI and update this file.
 | Frontend          | `fe-deps`, `fe-lint`, `fe-test`, `fe-build`                                                 |
 | ZK artifacts      | `zk-deps`, `zk-circuit`, `zk-setup`, `zk-proof`, `zk-vkey-shipped`                          |
 | Migrations        | `mig-numbered`, `mig-no-edit`, `mig-applies`                                                |
-| Smoke / E2E       | `e2e-server-up`, `e2e-startup-flow`, `e2e-no-console-errors`, `smoke-server`, `smoke-desktop-build` |
+| Smoke / E2E       | `e2e-server-up`, `e2e-startup-flow`, `e2e-group-call`, `e2e-puppeteer`, `e2e-no-console-errors`, `smoke-server`, `smoke-federation`, `smoke-desktop-build` |
+| UI audit          | `ui-audit-surfaces`, `ui-audit-baselines`, `ui-audit-a11y`                                    |
+| Desktop install   | `desktop-audit-package`                                                                       |
 
 ---
 
@@ -169,7 +171,27 @@ as authoritative for CI and update this file.
 ### e2e-startup-flow
 - Command: `cd client && npm run test:e2e` (Playwright Chromium headless against `http://127.0.0.1:3000`)
 - Tests live in `client/e2e/` (e.g., `e2e/startup.spec.ts`). Each test gets a fresh browser context so IndexedDB is clean. The flow under test: IdentitySetup → StartupModeSelector → ZK proof → Chat UI.
+- Workflow: `ui-audit` job, step `Functional browser suite`, against its own fresh server. Until that step existed this suite ran in NO workflow — it is the `chromium` Playwright project, and the audit job runs `--project=audit`, so defining both in one config had hidden the fact that only one of them was executed.
 - Failure artifacts: screenshots in `client/e2e-results/`, HTML report in `client/e2e-report/`.
+
+### e2e-group-call
+- Command: `bash scripts/e2e-all.sh group-call`
+- Workflow: `ui-audit` job, step `Group call lane`, against its own fresh server.
+- Three real browser contexts with fake media devices join one channel serially, so each join exercises renegotiation against a room that already has peers in it. Asserts every participant sees itself plus two DISTINCT others — the property the SFU rearchitecture (`16a76b7`) exists to provide, and which the single-track fan-out could not.
+- This is the guard that REPLACED the pinning test deleted when that landing happened. It was named by no script, no workflow and no doc until this entry, so between the rearchitecture and now, nothing ran it.
+
+### e2e-puppeteer
+- Command: `bash scripts/e2e-all.sh puppeteer`
+- Workflow: `ui-audit` job, step `Puppeteer journey`, against its own fresh server.
+- A second driver over the same journey — cold start, identity, in-browser proof, chat, channel create. It asserts: `fail()` prints and exits 1, and `main()` ends `.catch((err) => fail(...))`. Needs no browser of its own; `resolveChrome()` finds the Playwright-installed one.
+- Run it with its OWN server, not shared: channel creation needs a moderator and `ensure_founder` grants that to the earliest registrant, so a shared server leaves this lane an ordinary member and it silently skips that check. `e2e-all.sh both` restarts between lanes for this reason.
+
+### smoke-federation
+- Command: `bash scripts/smoke-federation.sh`
+- Workflow: `smoke-server-linux` job, step `Run federation smoke`.
+- Boots a server and plays a remote peer whose Ed25519 key we control: seeds the post-handshake state, signs a real `FederatedMessageEnvelope`, POSTs it, and asserts it is accepted, persisted under the attested local pseudonym, idempotent on re-POST, and REJECTED when the signature is tampered with.
+- Requires the `sqlite3` CLI. It reads the stored row directly and decrypts it with the server's at-rest key (HKDF-SHA256 over `signing.key` beside the database) — a plain string compare against `messages.content` fails, because non-E2E bodies are stored as `\x01ar1:base64(...)`.
+- This is the only end-to-end evidence that two servers federate, and it was referenced by no workflow, script or doc before this entry.
 
 ### e2e-no-console-errors
 - Manual / per-PR: when running locally against an embedded desktop server (`cargo tauri dev` from `crates/annex-desktop/`), no `[error]` lines from `tracing` and no console errors in the webview during the golden flow:
@@ -188,11 +210,36 @@ as authoritative for CI and update this file.
 - Failure modes: server fails to bind / fails to reach `/health`; ZK artifacts missing or corrupt; proof verification rejected by `enforce_zk_proofs`; founder bootstrap regressed so `POST /api/channels` returns 403; binary leaks across runs (the script execs the built binary directly so the captured PID is the server itself, not the `cargo run` wrapper).
 - Knobs: `ANNEX_SMOKE_PORT` (default `7321`), `ANNEX_SMOKE_HOST` (default `127.0.0.1`).
 
+### ui-audit-surfaces
+- Command: `bash scripts/ui-audit.sh`
+- Workflow: `.github/workflows/ci.yml::ui-audit`
+- Catches: a surface in `client/e2e/audit/surfaces.ts` that can no longer be reached — either the navigation recipe drifted from the UI, or the UI is broken. Also enforces manifest hygiene via `client/e2e/audit/manifest.spec.ts`: unique ids, known stages/roles/viewports, a non-empty `intent` per surface, a justified reason on every audit waiver, and — the important one — that every component rendering a `.dialog-overlay` is reached by some surface. A new dialog cannot silently go unaudited.
+- Failure artifacts: `client/e2e/audit/diagnostics/<viewport>/<surface>.png` (screenshot of wherever the run ended up), uploaded by CI.
+
+### ui-audit-baselines
+- Command: same run; comparison is `toHaveScreenshot` against `client/e2e/audit/baselines/`.
+- Catches: unintended visual drift, at a 0.5% pixel tolerance across four viewports (1440x900, 1280x800, 1024x768, 390x844). This is the guard that makes a CSS refactor safe: change a token, see exactly which screens moved.
+- Updating: `bash scripts/ui-audit.sh --update-baselines`, committed separately and reviewed as a diff of images. Never update baselines in the same commit as the change that moved them without saying so.
+- Note: baselines are recorded on Linux/Chromium. Font hinting differs enough across platforms that re-recording on macOS or Windows will produce spurious diffs — record on Linux.
+
+### ui-audit-a11y
+- Command: same run; axe-core (WCAG 2.1 A/AA + best-practice) per surface per viewport.
+- Catches: missing accessible names, contrast failures, heading-order breaks, duplicate landmarks, and — via a separate check — dialogs that do not move focus in, do not trap it, or do not close on Escape.
+- Findings are recorded to `docs/ui-audit/findings.json` rather than asserted, so the run completes and reports everything; the ledger is reviewed as part of the PR.
+
+### desktop-audit-package
+- Command: `bash scripts/desktop-audit.sh`
+- Workflow: `.github/workflows/ci.yml::desktop-audit`
+- Catches what "does it build" cannot: a `.deb` that installs but leaves no binary on PATH; a `.desktop` entry that drops `x-scheme-handler/annex`, so every invite link a user clicks silently goes nowhere; a bundle that crashes during startup rather than at compile time; and an uninstall that leaves the binary behind. This is journey stage 01 — the first thing a real user touches — and none of it is reachable from the browser lane.
+- Also runs `cargo test -p annex-desktop`, which `check-desktop-linux` skips. The script gates it on ~8 GB of free disk and reports a skip rather than dying mid-link, because the test binary links every Tauri Linux dep a second time.
+- Layer 3 needs root or passwordless sudo for dpkg and is skipped cleanly without either; `--no-package` skips it explicitly.
+- Failure artifacts: `/tmp/annex-desktop-launch.log`, uploaded by CI on failure.
+
 ### smoke-desktop-build
 - Linux command: `bash scripts/smoke-desktop-build.sh`
 - Windows command: `pwsh scripts/smoke-desktop-build.ps1`
 - Workflow: not currently a separate CI job — `lin-build` / `win-build` plus the Tauri bundle gates in `release-desktop.yml` are a strict superset. Use this script locally as a fast pass/fail before pushing.
-- What it covers: verifies the three release-critical ZK artifacts are present and that `membership_vkey.json` parses as JSON; runs `npm --prefix client run build`; runs `cargo build -p annex-desktop --release`; confirms `client/dist/`, `client/public/zk/`, `zk/keys/membership_vkey.json`, and `target/release/annex-desktop[.exe]` exist as non-empty files.
+- What it covers: verifies the three release-critical ZK artifacts are present and that `membership_vkey.json` parses as JSON; runs `node scripts/build-desktop.js` (the same entry point Tauri's `beforeBuildCommand` uses, so the smoke stays on the bundle path rather than beside it); runs `cargo build -p annex-desktop --release`; confirms `client/dist/`, `client/public/zk/`, `zk/keys/membership_vkey.json`, and `target/release/annex-desktop[.exe]` exist as non-empty files.
 - Dev-only knob: `SKIP_CLIENT_BUILD=1` (bash) / `-SkipClientBuild` (pwsh) skips the client build step. **Not for release / CI** — the script labels the branch dev-only and refuses to continue if `client/dist/index.html` is missing.
 
 ---

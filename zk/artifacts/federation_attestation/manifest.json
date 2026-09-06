@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "circuit": "federation_attestation",
+  "circuitVersion": "1.0.0",
+  "curve": "bn254",
+  "provingSystem": "groth16",
+  "treeDepth": 20,
+  "publicSignals": ["root", "nullifier", "federationContextHash"],
+  "wasm_sha256": "00d5101463a746032791a4379f36434f2a8f940adde7d34be2a6901a955d43a7",
+  "zkey_sha256": "5264847574918a37d9e16a968cd75ae34fa4f28f71fd8dbc1d7a95429d9b3858",
+  "vkey_sha256": "469744730b82b98c704a71d9e0935408ffd1736b3b115238b15493f1a7383b1f",
+  "r1cs_sha256": "2a1e30ca801f03ee76ba99ce14f446fdf5f6bc398adbc61ae928b6e386ba268c",
+  "paths": {
+    "wasm": "../../build/federation_attestation_js/federation_attestation.wasm",
+    "zkey": "../../keys/federation_attestation_final.zkey",
+    "vkey": "../../keys/federation_attestation_vkey.json",
+    "r1cs": "../../build/federation_attestation.r1cs"
+  },
+  "ceremony": {
+    "type": "dev-fixture",
+    "generatedAt": "2026-06-20",
+    "note": "These hashes pin the federation-attestation artifacts produced by zk/scripts/dev-setup-groth16.js with random entropy. NOT a multi-party ceremony; replace artifacts AND hashes before a public production release, regenerating ALL circuit manifests together. See docs/refactor/zk-merkle-production.md."
+  }
+}

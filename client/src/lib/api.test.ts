@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getServerSummary, register, setApiBaseUrl, verifyMembership, joinVoice, leaveVoice, getVoiceStatus, setSessionToken, setZkProofPayload, joinChannel } from '@/lib/api';
+import { extractErrorMessage } from '@/api/core';
 
 function okJsonResponse(body: unknown): Response {
   return {
@@ -165,5 +166,36 @@ describe('voice endpoints use _apiBaseUrl', () => {
 
     const url = vi.mocked(global.fetch).mock.calls[0][0] as string;
     expect(url).toBe(`${REMOTE_URL}/api/channels/chan-1/voice/status`);
+  });
+});
+
+describe('extractErrorMessage', () => {
+  it('unwraps the {"error": ...} shape most handlers return', () => {
+    expect(
+      extractErrorMessage(409, '{"error":"nullifier already exists for topic \'annex:server:x:v2\'"}'),
+    ).toBe("nullifier already exists for topic 'annex:server:x:v2'");
+  });
+
+  it('prefers "message" over the machine-readable "error" code', () => {
+    // The voice-join handler returns both: `error` is a code
+    // (`voice_disabled`), `message` is the sentence meant for a person.
+    expect(
+      extractErrorMessage(403, '{"error":"voice_disabled","message":"Voice is disabled on this server."}'),
+    ).toBe('Voice is disabled on this server.');
+  });
+
+  it('falls back to status wording when the body is empty', () => {
+    // Every route in api_channels.rs returns a bare status with no body,
+    // which previously surfaced to users as an empty error message.
+    expect(extractErrorMessage(403, '')).toBe('You do not have permission to do that.');
+    expect(extractErrorMessage(404, '   ')).toBe('That item no longer exists.');
+  });
+
+  it('passes plain-text bodies through unchanged', () => {
+    expect(extractErrorMessage(500, 'internal server error')).toBe('internal server error');
+  });
+
+  it('describes unmapped statuses rather than returning nothing', () => {
+    expect(extractErrorMessage(418, '')).toBe('Request failed (HTTP 418).');
   });
 });

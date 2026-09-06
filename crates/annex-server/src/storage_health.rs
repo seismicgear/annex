@@ -143,7 +143,8 @@ pub fn interpret_sqlite_error(health: &StorageHealth, e: &rusqlite::Error) -> bo
     trip
 }
 
-/// Inspect the DB file's size against the operator's thresholds and
+/// Inspect the database's on-disk size — the main file plus its WAL
+/// sidecars — against the operator's thresholds and
 /// flip the gate accordingly. The `block_free_bytes` and
 /// `warn_free_bytes` config values are interpreted here as
 /// "headroom" — i.e. "the DB file may grow until it is within
@@ -158,10 +159,27 @@ pub fn evaluate_db_file_size(
     block_free_bytes: u64,
     max_bytes: Option<u64>,
 ) -> StorageState {
-    let size = match std::fs::metadata(db_path) {
+    let main = match std::fs::metadata(db_path) {
         Ok(m) => m.len(),
         Err(_) => return health.state(),
     };
+    // Plus the WAL sidecars. The pool opens the database in WAL mode, so
+    // between checkpoints `-wal` can reach hundreds of megabytes — on the
+    // same filesystem, counting against the same disk. A cap that measured
+    // only the main file would let that fill the disk while the gate went
+    // on reporting healthy, which is the exact failure this module exists
+    // to get ahead of. Absent sidecars contribute nothing, so a non-WAL
+    // database reads the same as before.
+    let sidecars: u64 = ["-wal", "-shm"]
+        .iter()
+        .filter_map(|suffix| {
+            let mut name = db_path.as_os_str().to_os_string();
+            name.push(suffix);
+            std::fs::metadata(std::path::PathBuf::from(name)).ok()
+        })
+        .map(|m| m.len())
+        .sum();
+    let size = main.saturating_add(sidecars);
 
     let max = match max_bytes {
         Some(m) if m > 0 => m,
@@ -231,6 +249,33 @@ mod tests {
         h.mark_healthy();
         assert_eq!(h.state(), StorageState::Healthy);
         assert_eq!(h.reason(), "");
+    }
+
+    /// The WAL is on the same filesystem and counts against the same
+    /// disk, so a cap that ignored it would be measuring the wrong thing.
+    #[test]
+    fn evaluate_db_file_size_counts_the_wal_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("annex.db");
+        std::fs::write(&db, vec![0u8; 600]).unwrap();
+
+        // 600 bytes against a 1000-byte cap leaves 400 of headroom, which
+        // clears a 200-byte blocking threshold.
+        let h = StorageHealth::new();
+        assert_eq!(
+            evaluate_db_file_size(&h, &db, 400, 200, Some(1000)),
+            StorageState::Warn
+        );
+
+        // The same database with a 300-byte WAL occupies 900, leaving 100
+        // — inside the blocking threshold.
+        std::fs::write(dir.path().join("annex.db-wal"), vec![0u8; 300]).unwrap();
+        let h = StorageHealth::new();
+        assert_eq!(
+            evaluate_db_file_size(&h, &db, 400, 200, Some(1000)),
+            StorageState::Degraded
+        );
+        assert!(h.writes_blocked());
     }
 
     #[test]

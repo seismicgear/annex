@@ -18,6 +18,10 @@ const FRAME_TYPES_REQUIRING_CHANNEL_ID = new Set<WsReceiveFrame['type']>([
   'resumed',
   'transcription',
   'webrtc_answer',
+  // The server offers when a peer joins or leaves a call and this peer's
+  // track set changes. Without this in the allow-list the frame is dropped
+  // before it reaches the session and the call never grows.
+  'webrtc_offer',
   'webrtc_ice_candidate',
 ]);
 
@@ -194,11 +198,12 @@ export class AnnexWebSocket {
     this.ws.send(JSON.stringify(frame));
   }
 
-  editMessage(channelId: string, messageId: string, content: string): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) throw new Error('WebSocket is not connected'); this.ws.send(JSON.stringify({ type: 'edit_message', channelId, messageId, content } as WsSendFrame)); }
-  deleteMessage(channelId: string, messageId: string): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) throw new Error('WebSocket is not connected'); this.ws.send(JSON.stringify({ type: 'delete_message', channelId, messageId } as WsSendFrame)); }
+  editMessage(channelId: string, messageId: string, content: string, clientRequestId?: string): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) throw new Error('WebSocket is not connected'); this.ws.send(JSON.stringify({ type: 'edit_message', channelId, messageId, content, clientRequestId } as WsSendFrame)); }
+  deleteMessage(channelId: string, messageId: string, clientRequestId?: string): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) throw new Error('WebSocket is not connected'); this.ws.send(JSON.stringify({ type: 'delete_message', channelId, messageId, clientRequestId } as WsSendFrame)); }
   trackLastMessageId(channelId: string, messageId: string): void { this.lastMessageIds.set(channelId, messageId); }
   sendTyping(channelId: string): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return; this.ws.send(JSON.stringify({ type: 'typing', channelId })); }
   sendWebRtcOffer(channelId: string, sdp: string): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return; this.ws.send(JSON.stringify({ type: 'webrtc_offer', channelId, sdp } as WsSendFrame)); }
+  sendWebRtcAnswer(channelId: string, sdp: string): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return; this.ws.send(JSON.stringify({ type: 'webrtc_answer', channelId, sdp } as WsSendFrame)); }
   sendIceCandidate(channelId: string, candidate: string, sdpMid: string | null = null, sdpMLineIndex: number | null = null): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return; this.ws.send(JSON.stringify({ type: 'webrtc_ice_candidate', channelId, candidate, sdpMid, sdpMLineIndex } as WsSendFrame)); }
 
   onMessage(handler: WsMessageHandler): () => void { this.messageHandlers.add(handler); return () => this.messageHandlers.delete(handler); }

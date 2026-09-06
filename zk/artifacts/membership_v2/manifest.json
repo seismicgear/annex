@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "circuit": "membership_v2",
+  "circuitVersion": "1.0.0",
+  "curve": "bn254",
+  "provingSystem": "groth16",
+  "treeDepth": 20,
+  "publicSignals": ["root", "commitment", "nullifier", "topicHash"],
+  "wasm_sha256": "385454698294c08587069c01f95399103dfb6983a1f9a665285ffcfa6819626c",
+  "zkey_sha256": "4c95355a6f9c13aa4c5983c9ed018d518b0944d316fdea7c642633dcc19caa9d",
+  "vkey_sha256": "7f9f542db22ed153c226b524f151f75795950005b9a545958feca3537e6cdf40",
+  "r1cs_sha256": "fd29b65ae0972fdc1f367499dc47e25144930a4449eea92815ee79dd1c11a548",
+  "paths": {
+    "wasm": "../../build/membership_v2_js/membership_v2.wasm",
+    "zkey": "../../keys/membership_v2_final.zkey",
+    "vkey": "../../keys/membership_v2_vkey.json",
+    "r1cs": "../../build/membership_v2.r1cs"
+  },
+  "ceremony": {
+    "type": "dev-fixture",
+    "generatedAt": "2026-06-20",
+    "note": "These hashes pin the membership_v2 (secret-derived nullifier) artifacts produced by zk/scripts/dev-setup-groth16.js with random entropy. v2 is the DEFAULT identity path, so a production release MUST replace these artifacts AND hashes with multi-party trusted-setup ceremony output before going public. Regenerate ALL circuit manifests together so their provenance matches. See docs/refactor/zk-merkle-production.md."
+  }
+}

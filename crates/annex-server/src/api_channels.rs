@@ -21,7 +21,7 @@ use crate::AppState;
 use annex_channels::{Channel, Message, MessageEdit};
 use axum::{
     extract::{Extension, Path, Query},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::Json,
 };
 use serde::Deserialize;
@@ -32,7 +32,7 @@ use std::sync::Arc;
 // tests that name these types directly continue to compile unchanged.
 pub use crate::services::channel_service::{
     ChannelWithMembership, CreateChannelRequest, IceServerResponse, JoinVoiceResponse,
-    VoiceStatusResponse,
+    SearchResponse, VoiceStatusResponse,
 };
 
 #[derive(Deserialize)]
@@ -267,16 +267,21 @@ pub async fn voice_status_handler(
     Extension(state): Extension<Arc<AppState>>,
     Extension(IdentityContext(identity)): Extension<IdentityContext>,
     Path(channel_id): Path<String>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Result<Json<VoiceStatusResponse>, StatusCode> {
+    // Return the struct rather than hand-building the JSON.
+    //
+    // This used to re-list the fields in a `json!` literal, so adding
+    // `participant_ids` to `VoiceStatusResponse` compiled, serialized in the
+    // service, and was then silently dropped here — the client never saw it.
+    // Nothing failed: the client defaults a missing roster to `[]`, which is
+    // indistinguishable from an empty call. A typed response cannot drift from
+    // its own struct.
     let svc = ChannelService::new(state);
     let resp = svc
         .voice_status(&identity, &channel_id)
         .await
         .map_err(err_to_status)?;
-    Ok(Json(json!({
-        "participants": resp.participants,
-        "active": resp.active,
-    })))
+    Ok(Json(resp))
 }
 
 /// `GET /api/channels/:channelId/messages/:messageId/edits`
@@ -297,12 +302,19 @@ pub async fn get_message_edits_handler(
 pub async fn search_messages_handler(
     Extension(state): Extension<Arc<AppState>>,
     Extension(IdentityContext(identity)): Extension<IdentityContext>,
+    headers: HeaderMap,
     Query(params): Query<SearchParams>,
-) -> Result<Json<Vec<Message>>, StatusCode> {
+) -> Result<Json<SearchResponse>, StatusCode> {
     let svc = ChannelService::new(state);
-    let messages = svc
-        .search_messages(&identity, params.q, params.channel_id, params.limit)
+    let found = svc
+        .search_messages(
+            &identity,
+            &headers,
+            params.q,
+            params.channel_id,
+            params.limit,
+        )
         .await
         .map_err(err_to_status)?;
-    Ok(Json(messages))
+    Ok(Json(found))
 }

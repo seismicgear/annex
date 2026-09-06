@@ -81,7 +81,7 @@ crates/
 ├── annex-vrp         # Value Resonance Protocol, trust negotiation
 ├── annex-graph       # Social/presence graph, pseudonym profiles
 ├── annex-channels    # Channel management, message storage
-├── annex-voice       # LiveKit integration, Piper TTS, Whisper STT
+├── annex-voice       # Native WebRTC SFU (webrtc-rs), Piper TTS, Whisper STT
 ├── annex-federation  # Server-to-server protocol, attestations
 ├── annex-rtx         # Recursive Thought Exchange transport
 ├── annex-observe     # Observability, event streams, public APIs

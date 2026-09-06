@@ -135,33 +135,46 @@ pub(crate) async fn acquire_public_endpoint(
     Ok(public_url)
 }
 
-/// Release the public endpoint and end the router session.
-#[tauri::command]
-pub(crate) fn release_public_endpoint(
-    state: tauri::State<'_, AppManagedState>,
-) -> Result<(), String> {
-    let mut guard = state.router_session.lock().map_err(|e| e.to_string())?;
-    if let Some(session) = guard.take() {
+/// Release the router public-endpoint session, if one is active. Idempotent.
+///
+/// Shared by the `release_public_endpoint` command and the application-exit
+/// handler in `main`. Uses a blocking client because it must run to completion
+/// synchronously during shutdown — the Tauri event-loop thread is not inside
+/// the async runtime, so `reqwest::blocking` is safe (and the async client
+/// would never get a chance to drive its futures as the process tears down).
+/// Best-effort: the router also expires sessions on its own timeout.
+pub(crate) fn release_router_session(state: &AppManagedState) {
+    let session = state
+        .router_session
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.take());
+    if let Some(session) = session {
         tracing::info!(
             public_url = %session.public_url,
             session_id = %session.session_id,
             "releasing public endpoint"
         );
-        // Fire-and-forget release to the router. Non-fatal if it fails —
-        // the router will expire the session on its own timeout.
         let router_url = router_base_url();
         let release_url = format!("{router_url}/v1/release");
-        let client = reqwest::blocking::Client::builder()
+        if let Ok(client) = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(5))
             .build()
-            .ok();
-        if let Some(client) = client {
+        {
             let _ = client
                 .post(&release_url)
                 .json(&serde_json::json!({ "session_id": session.session_id }))
                 .send();
         }
     }
+}
+
+/// Release the public endpoint and end the router session (frontend command).
+#[tauri::command]
+pub(crate) fn release_public_endpoint(
+    state: tauri::State<'_, AppManagedState>,
+) -> Result<(), String> {
+    release_router_session(state.inner());
     Ok(())
 }
 

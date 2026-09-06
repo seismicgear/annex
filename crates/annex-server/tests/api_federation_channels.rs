@@ -62,6 +62,9 @@ async fn setup_app() -> (axum::Router, Arc<AppState>, TempDir) {
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: Arc::new(membership_vkey),
         membership_vkey_v2: None,
+        channel_eligibility_vkey: None,
+        link_pseudonyms_vkey: None,
+        federation_attestation_vkey: None,
         server_id,
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,
@@ -256,4 +259,177 @@ async fn test_join_federated_channel() {
     ).unwrap();
 
     assert!(is_member, "Remote user should be added to channel members");
+}
+
+/// A peer must not be able to join a channel the operator kept local.
+///
+/// `receive_federated_message` verifies the channel exists AND that its
+/// `federation_scope` is `Federated`, refusing anything else. The join path
+/// next to it did neither: it checked the instance, the agreement, the
+/// signature and the attestation, then called `add_member` on whatever
+/// `channel_id` was in the URL. So `federation_scope` — the operator's
+/// declaration of which channels leave this server — governed messages and
+/// not membership, and a peer could enrol its users in a `LOCAL_ONLY`
+/// channel. Those pseudonyms then show up in the member list, in
+/// `list_members`, and in the trust graph.
+///
+/// The message path's scope check still blocked injected content, so this
+/// was contained rather than catastrophic — but a gate that only half the
+/// sibling paths apply is exactly the shape that eventually lets something
+/// through.
+#[tokio::test]
+async fn a_peer_cannot_join_a_local_only_channel() {
+    let (app, state, _temp_dir) = setup_app().await;
+    let channel_id = "local-only-chan";
+    let pseudonym_id = "remote-user-x";
+
+    let payload = {
+        let conn = state.pool.get().unwrap();
+
+        // The operator marked this channel local. That is the whole point.
+        conn.execute(
+            r#"INSERT INTO channels (
+                server_id, channel_id, name, channel_type, federation_scope
+            ) VALUES (?1, ?2, 'Private Ops', '"Text"', '"Local"')"#,
+            rusqlite::params![state.server_id, channel_id],
+        )
+        .unwrap();
+
+        let mut csprng = OsRng;
+        let mut key_bytes = [0u8; 32];
+        csprng.fill_bytes(&mut key_bytes);
+        let signing_key = SigningKey::from_bytes(&key_bytes);
+        let public_key_hex = hex::encode(signing_key.verifying_key().as_bytes());
+
+        let remote_base_url = "https://remote.example.com";
+        conn.execute(
+            "INSERT INTO instances (base_url, public_key, label, status) VALUES (?1, ?2, 'Remote', 'ACTIVE')",
+            rusqlite::params![remote_base_url, public_key_hex],
+        )
+        .unwrap();
+        let remote_instance_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO federation_agreements (
+                local_server_id, remote_instance_id, alignment_status, transfer_scope, agreement_json, active
+            ) VALUES (?1, ?2, 'ALIGNED', 'REFLECTION_SUMMARIES_ONLY', '{}', 1)",
+            rusqlite::params![state.server_id, remote_instance_id],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO federated_identities (server_id, remote_instance_id, commitment_hex, pseudonym_id, vrp_topic) VALUES (?1, ?2, 'commit-hex', ?3, 'topic')",
+            rusqlite::params![state.server_id, remote_instance_id, pseudonym_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active) VALUES (?1, ?2, 'HUMAN', 1)",
+            rusqlite::params![state.server_id, pseudonym_id],
+        ).unwrap();
+
+        // Everything else about this request is legitimate — a real peer,
+        // a real agreement, a valid signature, an attested identity. Only
+        // the channel's scope should stop it.
+        let message = format!("{channel_id}\n{pseudonym_id}");
+        let signature_hex = hex::encode(signing_key.sign(message.as_bytes()).to_bytes());
+
+        json!({
+            "originating_server": remote_base_url,
+            "pseudonym_id": pseudonym_id,
+            "signature": signature_hex
+        })
+    };
+
+    let uri = format!("/api/federation/channels/{channel_id}/join");
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("Content-Type", "application/json")
+                .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 8080))))
+                .body(Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_ne!(
+        response.status(),
+        StatusCode::OK,
+        "a peer joined a LOCAL_ONLY channel",
+    );
+
+    let conn = state.pool.get().unwrap();
+    let members: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM channel_members WHERE channel_id = ?1",
+            [channel_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(members, 0, "a membership row was written anyway");
+}
+
+/// And a channel that does not exist at all must not gain a member.
+#[tokio::test]
+async fn a_peer_cannot_join_a_channel_that_does_not_exist() {
+    let (app, state, _temp_dir) = setup_app().await;
+    let channel_id = "no-such-channel";
+    let pseudonym_id = "remote-user-y";
+
+    let payload = {
+        let conn = state.pool.get().unwrap();
+        let mut csprng = OsRng;
+        let mut key_bytes = [0u8; 32];
+        csprng.fill_bytes(&mut key_bytes);
+        let signing_key = SigningKey::from_bytes(&key_bytes);
+        let public_key_hex = hex::encode(signing_key.verifying_key().as_bytes());
+
+        let remote_base_url = "https://remote.example.com";
+        conn.execute(
+            "INSERT INTO instances (base_url, public_key, label, status) VALUES (?1, ?2, 'Remote', 'ACTIVE')",
+            rusqlite::params![remote_base_url, public_key_hex],
+        )
+        .unwrap();
+        let remote_instance_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO federation_agreements (
+                local_server_id, remote_instance_id, alignment_status, transfer_scope, agreement_json, active
+            ) VALUES (?1, ?2, 'ALIGNED', 'REFLECTION_SUMMARIES_ONLY', '{}', 1)",
+            rusqlite::params![state.server_id, remote_instance_id],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO federated_identities (server_id, remote_instance_id, commitment_hex, pseudonym_id, vrp_topic) VALUES (?1, ?2, 'commit-hex', ?3, 'topic')",
+            rusqlite::params![state.server_id, remote_instance_id, pseudonym_id],
+        )
+        .unwrap();
+
+        let message = format!("{channel_id}\n{pseudonym_id}");
+        let signature_hex = hex::encode(signing_key.sign(message.as_bytes()).to_bytes());
+        json!({
+            "originating_server": remote_base_url,
+            "pseudonym_id": pseudonym_id,
+            "signature": signature_hex
+        })
+    };
+
+    let uri = format!("/api/federation/channels/{channel_id}/join");
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("Content-Type", "application/json")
+                .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 8080))))
+                .body(Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_ne!(
+        response.status(),
+        StatusCode::OK,
+        "joined a phantom channel"
+    );
 }

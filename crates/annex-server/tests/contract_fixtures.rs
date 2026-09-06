@@ -42,6 +42,8 @@ const FX_WS_INCOMING_DELETE: &str =
 const FX_WS_INCOMING_TYPING: &str = include_str!("../../../fixtures/ws/incoming-typing.json");
 const FX_WS_OUTGOING_MESSAGE: &str = include_str!("../../../fixtures/ws/outgoing-message.json");
 const FX_WS_OUTGOING_RESUMED: &str = include_str!("../../../fixtures/ws/outgoing-resumed.json");
+const FX_WS_OUTGOING_RESUMED_CURSOR_LOST: &str =
+    include_str!("../../../fixtures/ws/outgoing-resumed-cursor-lost.json");
 const FX_WS_OUTGOING_ERROR: &str = include_str!("../../../fixtures/ws/outgoing-error.json");
 const FX_WS_VOICE_OFFER: &str = include_str!("../../../fixtures/ws/voice-offer.json");
 const FX_WS_WEBRTC_ICE: &str = include_str!("../../../fixtures/ws/webrtc-ice-candidate.json");
@@ -221,6 +223,7 @@ fn contract_ws_incoming_edit_message_fixture_deserializes() {
             channel_id,
             message_id,
             content,
+            ..
         } => {
             assert_eq!(channel_id, "general");
             assert_eq!(message_id, "msg-018dSCao");
@@ -239,6 +242,7 @@ fn contract_ws_incoming_delete_message_fixture_deserializes() {
         IncomingMessage::DeleteMessage {
             channel_id,
             message_id,
+            ..
         } => {
             assert_eq!(channel_id, "general");
             assert_eq!(message_id, "msg-018dSCao");
@@ -329,9 +333,29 @@ fn contract_ws_outgoing_resumed_fixture_matches_serialized_struct() {
     let frame = OutgoingMessage::Resumed {
         channel_id: "general".to_string(),
         missed_count: 3,
+        cursor_lost: false,
     };
     let serialized = serde_json::to_value(&frame).expect("OutgoingMessage::Resumed serializes");
     assert_eq!(serialized, parse_value(FX_WS_OUTGOING_RESUMED));
+}
+
+/// The other resume outcome, pinned as its own wire fixture because the whole
+/// point of the field is that a client can tell the two apart. A lost cursor
+/// and an up-to-date client used to serialize to the identical frame.
+#[test]
+fn contract_ws_outgoing_resumed_cursor_lost_fixture_matches_serialized_struct() {
+    let frame = OutgoingMessage::Resumed {
+        channel_id: "general".to_string(),
+        missed_count: 0,
+        cursor_lost: true,
+    };
+    let serialized = serde_json::to_value(&frame).expect("OutgoingMessage::Resumed serializes");
+    assert_eq!(serialized, parse_value(FX_WS_OUTGOING_RESUMED_CURSOR_LOST));
+    assert_ne!(
+        serialized,
+        parse_value(FX_WS_OUTGOING_RESUMED),
+        "a lost cursor must not be indistinguishable from a completed resume"
+    );
 }
 
 #[test]

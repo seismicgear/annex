@@ -34,6 +34,9 @@ async fn test_rate_limiting_registration() {
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: common::load_vkey_or_dummy(),
         membership_vkey_v2: None,
+        channel_eligibility_vkey: None,
+        link_pseudonyms_vkey: None,
+        federation_attestation_vkey: None,
         server_id: 1,
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,
@@ -103,8 +106,22 @@ async fn test_rate_limiting_registration() {
                 StatusCode::TOO_MANY_REQUESTS,
                 "Request {i} should be rate limited"
             );
+            // The VALUE matters, not just the presence. It used to be a
+            // separate `HeaderValue::from_static("60")` that agreed with
+            // `RATE_LIMIT_WINDOW` by coincidence; changing the window would
+            // have left the server telling clients to wait a length of time
+            // it no longer enforced.
             let headers = response.headers();
-            assert!(headers.contains_key("retry-after"));
+            let retry_after = headers
+                .get("retry-after")
+                .expect("a 429 must say when to try again")
+                .to_str()
+                .expect("Retry-After is a bare integer");
+            assert_eq!(
+                retry_after,
+                annex_server::middleware::RATE_LIMIT_WINDOW_SECS.to_string(),
+                "Retry-After must state the window the limiter actually enforces",
+            );
         }
     }
 }

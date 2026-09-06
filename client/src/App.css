@@ -12,8 +12,8 @@
   align-items: center;
   padding: 0 1rem;
   height: 48px;
-  background: #0a0a0a;
-  border-bottom: 1px solid #1a1a1a;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--surface-2);
   flex-shrink: 0;
   position: relative;
 }
@@ -31,7 +31,7 @@
   border-radius: 6px;
   object-fit: cover;
   margin-right: 0.5rem;
-  border: 1px solid #222;
+  border: 1px solid var(--border);
 }
 
 /* ── Header Tabs ── */
@@ -46,7 +46,7 @@
   padding: 0.35rem 0.75rem;
   background: transparent;
   border: none;
-  color: #888;
+  color: var(--text-muted);
   cursor: pointer;
   font-size: 0.8rem;
   border-radius: 4px;
@@ -54,13 +54,13 @@
 }
 
 .tab-btn:hover {
-  background: rgba(255, 255, 255, 0.05);
-  color: #ddd;
+  background: var(--bg-hover);
+  color: var(--text-dim);
 }
 
 .tab-btn.active {
-  background: rgba(255, 255, 255, 0.2);
-  color: #fff;
+  background: var(--overlay-white-20);
+  color: var(--text-strong);
 }
 
 /* ── Admin Menu (gear dropdown) ── */
@@ -79,19 +79,19 @@
   padding: 0;
   background: transparent;
   border: none;
-  color: #888;
+  color: var(--text-muted);
   cursor: pointer;
   border-radius: 4px;
   transition: background 0.15s, color 0.15s;
 }
 
 .admin-menu-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: #ddd;
+  background: var(--overlay-white-08);
+  color: var(--text-dim);
 }
 
 .admin-menu-btn.active {
-  color: #fff;
+  color: var(--text-strong);
 }
 
 .admin-menu-btn.loading {
@@ -111,12 +111,12 @@
   right: 0;
   margin-top: 4px;
   min-width: 180px;
-  background: #0a0a0a;
-  border: 1px solid #222;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 4px 0;
   z-index: 200;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 8px 24px var(--shadow-medium);
 }
 
 .admin-dropdown-item {
@@ -125,7 +125,7 @@
   padding: 0.5rem 0.75rem;
   background: transparent;
   border: none;
-  color: #ccc;
+  color: var(--text-quiet);
   cursor: pointer;
   font-size: 0.8rem;
   text-align: left;
@@ -133,12 +133,12 @@
 }
 
 .admin-dropdown-item:hover {
-  background: rgba(255, 255, 255, 0.15);
-  color: #fff;
+  background: var(--border-subtle);
+  color: var(--text-strong);
 }
 
 .admin-dropdown-item.active {
-  color: #fff;
+  color: var(--text-strong);
 }
 
 /* Setup screen */
@@ -159,16 +159,16 @@
 
 .sidebar-left {
   width: 240px;
-  background: #080808;
-  border-right: 1px solid #1a1a1a;
+  background: var(--surface-sunken);
+  border-right: 1px solid var(--surface-2);
   overflow-y: auto;
   flex-shrink: 0;
 }
 
 .sidebar-right {
   width: 260px;
-  background: #080808;
-  border-left: 1px solid #1a1a1a;
+  background: var(--surface-sunken);
+  border-left: 1px solid var(--surface-2);
   overflow-y: auto;
   flex-shrink: 0;
 }
@@ -188,7 +188,7 @@
   text-align: center;
 }
 
-.identity-setup h2 {
+.identity-setup h1, .identity-setup h2 {
   margin-bottom: 1.5rem;
 }
 
@@ -197,6 +197,47 @@
   border-radius: 4px;
   margin-bottom: 1rem;
   font-size: 0.9rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.phase-label {
+  /* keep the label baseline-aligned with the spinner */
+}
+
+/* Animated spinner so a long (30–60s) first-run ZK proof never looks frozen. */
+.startup-spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(176, 124, 255, 0.25);
+  border-top-color: #b07cff;
+  border-radius: 50%;
+  animation: startup-spin 0.8s linear infinite;
+  flex: 0 0 auto;
+}
+
+@keyframes startup-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.phase-elapsed {
+  flex-basis: 100%;
+  text-align: center;
+  font-size: 0.75rem;
+  opacity: 0.6;
+  margin-top: 0.25rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .startup-spinner {
+    animation-duration: 2s;
+  }
 }
 
 .password-prompt {
@@ -206,7 +247,7 @@
 
 .password-prompt p {
   margin-bottom: 0.75rem;
-  color: #ccc;
+  color: var(--text-quiet);
 }
 
 .password-prompt form {
@@ -226,17 +267,25 @@
 .phase-proving,
 .phase-verifying {
   background: #0a1520;
-  color: #aaa;
+  color: var(--text-secondary);
 }
 
+/* The two terminal states of one status block, painted the same colour.
+
+   `.phase-ready` sat on `--danger-surface` in `--accent` — the brand red —
+   and `.phase-error` sits on that same background in a muted red, so the
+   block that reports how startup ended said "danger" either way.
+   `.phase-ready` is reachable: `showStartupGate` also requires a
+   `pseudonymId`, so the window between the store reaching `ready` and the
+   pseudonym landing renders Gate 3 with this class. */
 .phase-ready {
-  background: #200a0a;
-  color: #e63946;
+  background: var(--success-surface);
+  color: var(--success-text);
 }
 
 .phase-error {
-  background: #200a0a;
-  color: #da7e7e;
+  background: var(--danger-surface);
+  color: var(--error-muted);
 }
 
 .error-message {
@@ -253,15 +302,15 @@
 
 .error-details summary {
   cursor: pointer;
-  color: #aaa;
+  color: var(--text-secondary);
 }
 
 .error-details pre {
   margin-top: 0.5rem;
   padding: 0.5rem;
   border-radius: 4px;
-  background: #111;
-  border: 1px solid #222;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
   color: #c7c7c7;
   white-space: pre-wrap;
   word-break: break-word;
@@ -285,8 +334,8 @@
 .create-form input {
   padding: 0.5rem;
   border-radius: 4px;
-  border: 1px solid #222;
-  background: #1a1a1a;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
   color: inherit;
 }
 
@@ -309,7 +358,7 @@
 }
 
 .identity-option .server {
-  color: #888;
+  color: var(--text-muted);
   font-size: 0.8rem;
 }
 
@@ -317,8 +366,19 @@
   text-align: left;
 }
 
-.import-section input[type='file'] {
-  margin-bottom: 0.5rem;
+/* The native input is hidden now and driven by a button, so the rule that
+   spaced it is gone. These two lay out the pair that replaced it. */
+.import-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.35rem;
+}
+
+.import-filename {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--text-subtle);
 }
 
 /* ── Channel List ── */
@@ -334,13 +394,26 @@
   padding: 0 0.25rem;
 }
 
-.channel-list h3 {
+.channel-list h2 {
   font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: #888;
+  color: var(--text-muted);
   padding: 0.5rem;
   margin: 0;
+}
+
+/* Body of the channel list while it is loading or has failed. Sits under the
+   same header the loaded list uses, so the column keeps its width and its
+   landmark instead of collapsing and reflowing. */
+.channel-list-status {
+  padding: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--text-subtle);
+}
+
+.channel-list-status .error-message {
+  margin: 0 0 0.5rem;
 }
 
 .create-channel-btn {
@@ -350,16 +423,16 @@
   font-size: 1rem;
   line-height: 1;
   background: transparent;
-  border: 1px solid #2a2a2a;
-  color: #888;
+  border: 1px solid var(--surface-3);
+  color: var(--text-muted);
   border-radius: 4px;
   cursor: pointer;
 }
 
 .create-channel-btn:hover {
-  background: rgba(255, 255, 255, 0.2);
-  color: #fff;
-  border-color: #fff;
+  background: var(--overlay-white-20);
+  color: var(--text-strong);
+  border-color: var(--border-emphasis);
 }
 
 .channel-item {
@@ -372,11 +445,11 @@
 }
 
 .channel-item:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--bg-hover);
 }
 
 .channel-item.active {
-  background: rgba(255, 255, 255, 0.15);
+  background: var(--border-subtle);
 }
 
 .channel-select {
@@ -387,18 +460,18 @@
   padding: 0.25rem 0.25rem;
   border: none;
   background: transparent;
-  color: #aaa;
+  color: var(--text-secondary);
   cursor: pointer;
   text-align: left;
   font-size: 0.9rem;
 }
 
 .channel-item.active .channel-select {
-  color: #fff;
+  color: var(--text-strong);
 }
 
 .channel-item:hover .channel-select {
-  color: #ddd;
+  color: var(--text-dim);
 }
 
 .channel-icon {
@@ -412,7 +485,7 @@
   font-size: 0.65rem;
   padding: 0.1em 0.35em;
   background: #0f0a1a;
-  color: #ccc;
+  color: var(--text-quiet);
   border-radius: 2px;
 }
 
@@ -428,7 +501,7 @@
   line-height: 1;
   background: transparent;
   border: 1px solid transparent;
-  color: #666;
+  color: var(--text-subtle);
   border-radius: 3px;
   cursor: pointer;
   opacity: 0;
@@ -440,19 +513,19 @@
 }
 
 .channel-action-btn.join-btn:hover {
-  background: rgba(230, 57, 70, 0.15);
-  color: #e63946;
-  border-color: #e63946;
+  background: var(--accent-tint-15);
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 .channel-action-btn.leave-btn:hover {
-  background: rgba(248, 113, 113, 0.15);
-  color: #f87171;
-  border-color: #f87171;
+  background: var(--error-tint-15);
+  color: var(--error-text);
+  border-color: var(--error-text);
 }
 
 .no-channels {
-  color: #666;
+  color: var(--text-subtle);
   font-size: 0.85rem;
   padding: 0.5rem;
 }
@@ -466,18 +539,34 @@
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+  /* Reserve the scrollbar's space whether or not it is showing.
+     `::-webkit-scrollbar` is 6px wide with a transparent track and a
+     `#1a1a1a` thumb, so on this near-black ground it is close to invisible —
+     but it still takes width out of the content box when it appears. Own
+     messages are right-aligned, so the whole conversation jumps sideways the
+     moment the history grows long enough to scroll: a real jitter a user sees
+     when they send one more message.
+     It is also a flake source. `message-edit-refused`,
+     `message-delete-confirm` and `message-image-lightbox` at the mobile
+     viewport — the narrowest, so the first to cross the threshold — moved 8px
+     between two record/verify pairs with no code change between them, because
+     which side of the threshold the shared, accumulating message column lands
+     on depends on the run's history. Reserving the gutter makes the picture
+     independent of that. Unsupported engines ignore the property and get
+     today's behaviour, so it cannot regress. */
+  scrollbar-gutter: stable;
 }
 
 .message-view.empty {
   align-items: center;
   justify-content: center;
-  color: #666;
+  color: var(--text-subtle);
 }
 
 .message {
   max-width: 70%;
   padding: 0.5rem 0.75rem;
-  background: #111;
+  background: var(--surface-1);
   border-radius: 8px;
   border-top-left-radius: 2px;
 }
@@ -494,7 +583,7 @@
   align-items: center;
   gap: 0.5rem;
   font-size: 0.75rem;
-  color: #888;
+  color: var(--text-muted);
   margin-bottom: 0.25rem;
 }
 
@@ -513,8 +602,8 @@
   width: 20px;
   height: 20px;
   border-radius: 50%;
-  background: #222;
-  color: #ccc;
+  background: var(--border);
+  color: var(--text-quiet);
   font-size: 0.6rem;
   font-weight: 600;
   flex-shrink: 0;
@@ -522,12 +611,20 @@
 
 .message-header .sender {
   font-weight: 600;
-  color: #aaa;
+  color: var(--text-secondary);
+}
+
+/* A sender with no persona or username resolved falls back to a truncated
+   cryptographic id. Set it the way every other id in the app is set, so it
+   reads as machine output rather than as somebody's name. */
+.message-header .sender-pseudonym {
+  font-family: monospace;
+  font-weight: 500;
 }
 
 .message-header .timestamp {
   margin-left: auto;
-  color: #666;
+  color: var(--text-subtle);
 }
 
 .message-content {
@@ -542,8 +639,8 @@
   display: flex;
   gap: 0.5rem;
   padding: 0.75rem 1rem;
-  border-top: 1px solid #1a1a1a;
-  background: #0a0a0a;
+  border-top: 1px solid var(--surface-2);
+  background: var(--bg-secondary);
 }
 
 .message-input textarea {
@@ -551,8 +648,8 @@
   resize: none;
   padding: 0.5rem 0.75rem;
   border-radius: 4px;
-  border: 1px solid #222;
-  background: #000;
+  border: 1px solid var(--border);
+  background: var(--bg);
   color: inherit;
   font-family: inherit;
   font-size: 0.9rem;
@@ -560,7 +657,7 @@
 
 .message-input textarea:focus {
   outline: none;
-  border-color: #fff;
+  border-color: var(--border-emphasis);
 }
 
 .message-input button {
@@ -575,8 +672,8 @@
 /* ── Voice / Media Panel ── */
 
 .voice-panel {
-  border-bottom: 1px solid #1a1a1a;
-  background: #0a0a0a;
+  border-bottom: 1px solid var(--surface-2);
+  background: var(--bg-secondary);
 }
 
 .voice-panel.disconnected {
@@ -590,12 +687,12 @@
 }
 
 .voice-join-btn {
-  background: #200a0a;
-  color: #e63946;
+  background: var(--danger-surface);
+  color: var(--accent);
 }
 
 .voice-error {
-  color: #e63946;
+  color: var(--accent);
   font-size: 0.8rem;
   padding: 0.25rem 0.5rem;
 }
@@ -605,7 +702,7 @@
 }
 
 .voice-setup-hint {
-  color: #888;
+  color: var(--text-muted);
   font-size: 0.75rem;
   font-style: italic;
 }
@@ -619,7 +716,7 @@
   gap: 0.5rem;
   padding: 0.5rem 1rem;
   background: rgba(0, 0, 0, 0.3);
-  border-top: 1px solid #1a1a1a;
+  border-top: 1px solid var(--surface-2);
 }
 
 .media-control-btn {
@@ -629,62 +726,62 @@
   width: 36px;
   height: 36px;
   padding: 0;
-  border: 1px solid #222;
+  border: 1px solid var(--border);
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.05);
-  color: #aaa;
+  background: var(--bg-hover);
+  color: var(--text-secondary);
   cursor: pointer;
   transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 
 .media-control-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: #fff;
+  background: var(--overlay-white-10);
+  color: var(--text-strong);
 }
 
 .media-control-btn.active {
-  background: rgba(255, 255, 255, 0.2);
-  border-color: #fff;
-  color: #ddd;
+  background: var(--overlay-white-20);
+  border-color: var(--border-emphasis);
+  color: var(--text-dim);
 }
 
 .media-control-btn.muted {
-  color: #888;
-  border-color: #2a2a2a;
+  color: var(--text-muted);
+  border-color: var(--surface-3);
 }
 
 .media-control-btn.muted:hover {
-  border-color: #888;
-  color: #ccc;
+  border-color: var(--text-muted);
+  color: var(--text-quiet);
 }
 
 .media-control-btn.screen-btn.sharing {
   background: rgba(230, 57, 70, 0.2);
-  border-color: #e63946;
-  color: #e63946;
+  border-color: var(--accent);
+  color: var(--accent);
   animation: screen-share-pulse 2s infinite;
 }
 
 @keyframes screen-share-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(230, 57, 70, 0.3); }
+  0%, 100% { box-shadow: 0 0 0 0 var(--accent-tint-30); }
   50% { box-shadow: 0 0 0 4px rgba(230, 57, 70, 0); }
 }
 
 .media-control-btn.leave-call-btn {
-  background: #200a0a;
-  border-color: #da7e7e;
-  color: #da7e7e;
+  background: var(--danger-surface);
+  border-color: var(--error-muted);
+  color: var(--error-muted);
 }
 
 .media-control-btn.leave-call-btn:hover {
   background: #2a0a0a;
-  color: #fff;
+  color: var(--text-strong);
 }
 
 .media-controls-divider {
   width: 1px;
   height: 24px;
-  background: #222;
+  background: var(--border);
   margin: 0 0.25rem;
 }
 
@@ -696,8 +793,8 @@
   justify-content: center;
   gap: 0.5rem;
   padding: 0.35rem 1rem;
-  background: rgba(0, 0, 0, 0.2);
-  border-bottom: 1px solid #1a1a1a;
+  background: var(--shadow-soft);
+  border-bottom: 1px solid var(--surface-2);
 }
 
 .status-pill {
@@ -710,12 +807,12 @@
 
 .status-pill.on {
   background: rgba(100, 200, 100, 0.2);
-  color: #7eda7e;
+  color: var(--success-text);
 }
 
 .status-pill.off {
-  background: rgba(255, 255, 255, 0.06);
-  color: #888;
+  background: var(--border-faint);
+  color: var(--text-muted);
 }
 
 .status-pill.sharing {
@@ -752,7 +849,7 @@
   border-radius: 12px;
   overflow: hidden;
   background: linear-gradient(135deg, #15151a, #0e0e12);
-  border: 2px solid rgba(255, 255, 255, 0.06);
+  border: 2px solid var(--border-faint);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
   display: flex;
   align-items: center;
@@ -760,8 +857,8 @@
   transition: border-color 0.18s ease, box-shadow 0.18s ease;
 }
 .call-tile.speaking {
-  border-color: var(--persona-accent, #4ade80);
-  box-shadow: 0 0 0 2px var(--persona-accent, #4ade80), 0 2px 12px rgba(0, 0, 0, 0.4);
+  border-color: var(--persona-accent, var(--success-color));
+  box-shadow: 0 0 0 2px var(--persona-accent, var(--success-color)), 0 2px 12px var(--shadow-medium);
 }
 .call-tile.screen {
   border-color: rgba(248, 113, 113, 0.5);
@@ -772,7 +869,7 @@
   height: 100%;
   object-fit: cover;
   display: block;
-  background: #000;
+  background: var(--bg);
 }
 .call-tile.screen .tile-video {
   object-fit: contain;
@@ -782,8 +879,8 @@
   width: 72px;
   height: 72px;
   border-radius: 50%;
-  background: var(--persona-accent, #e63946);
-  color: #fff;
+  background: var(--persona-accent, var(--accent));
+  color: var(--text-strong);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -797,7 +894,7 @@
   left: 0.5rem;
   padding: 0.15rem 0.5rem;
   font-size: 0.72rem;
-  color: #fff;
+  color: var(--text-strong);
   background: rgba(0, 0, 0, 0.55);
   border-radius: 6px;
   max-width: calc(100% - 1rem);
@@ -806,13 +903,25 @@
   white-space: nowrap;
 }
 
+/* Who is in the call, shown when there is more than one other participant and
+   the tiles therefore cannot be attributed to individuals. Spans the grid so
+   it reads as a caption for the whole call rather than as another tile. */
+.call-roster {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 0.35rem 0.5rem 0;
+  font-size: 0.72rem;
+  color: var(--text-subtle);
+  text-align: center;
+}
+
 /* ── Screen Share View ── */
 
 .screen-share-view {
   display: flex;
   flex-direction: column;
-  background: #000;
-  border-bottom: 1px solid #1a1a1a;
+  background: var(--bg);
+  border-bottom: 1px solid var(--surface-2);
 }
 
 .screen-share-header {
@@ -820,14 +929,14 @@
   align-items: center;
   gap: 0.5rem;
   padding: 0.35rem 0.75rem;
-  background: rgba(0, 0, 0, 0.6);
+  background: var(--scrim);
   font-size: 0.75rem;
 }
 
 .screen-share-badge {
   padding: 0.1em 0.4em;
-  background: #f87171;
-  color: #fff;
+  background: var(--error-text);
+  color: var(--text-strong);
   border-radius: 3px;
   font-size: 0.65rem;
   font-weight: bold;
@@ -841,7 +950,7 @@
 }
 
 .screen-share-label {
-  color: #aaa;
+  color: var(--text-secondary);
 }
 
 .screen-share-content {
@@ -852,7 +961,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #111;
+  background: var(--surface-1);
 }
 
 .screen-share-content video {
@@ -891,7 +1000,7 @@
   align-items: center;
   gap: 0.35rem;
   padding: 0.25rem 0.5rem;
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--bg-hover);
   border-radius: 4px;
   font-size: 0.8rem;
   border: 1px solid transparent;
@@ -899,7 +1008,7 @@
 }
 
 .participant-tile.audio-tile.speaking {
-  background: rgba(74, 222, 128, 0.08);
+  background: var(--success-tint-08);
   border-color: rgba(74, 222, 128, 0.3);
 }
 
@@ -907,13 +1016,13 @@
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  background: #1a1a1a;
+  background: var(--surface-2);
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 0.75rem;
   font-weight: bold;
-  color: #aaa;
+  color: var(--text-secondary);
   flex-shrink: 0;
 }
 
@@ -923,14 +1032,14 @@
   position: relative;
   border-radius: 8px;
   overflow: hidden;
-  background: #111;
+  background: var(--surface-1);
   aspect-ratio: 16 / 9;
   border: 2px solid transparent;
   transition: border-color 0.2s;
 }
 
 .participant-tile.video.speaking {
-  border-color: #4ade80;
+  border-color: var(--success-color);
 }
 
 .participant-tile.video video {
@@ -944,7 +1053,7 @@
   align-items: center;
   gap: 0.25rem;
   font-size: 0.75rem;
-  color: #aaa;
+  color: var(--text-secondary);
 }
 
 .participant-tile.video .participant-label {
@@ -954,7 +1063,7 @@
   right: 0;
   padding: 0.25rem 0.5rem;
   background: linear-gradient(transparent, rgba(0, 0, 0, 0.7));
-  color: #fff;
+  color: var(--text-strong);
   font-size: 0.7rem;
 }
 
@@ -962,7 +1071,7 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #4ade80;
+  background: var(--success-color);
   animation: pulse 1s infinite;
   flex-shrink: 0;
 }
@@ -983,7 +1092,7 @@
   padding: 0.75rem;
 }
 
-.server-summary h3 {
+.server-summary h2 {
   font-size: 0.9rem;
   margin: 0 0 0.5rem;
 }
@@ -999,22 +1108,22 @@
   display: flex;
   justify-content: space-between;
   font-size: 0.8rem;
-  color: #aaa;
+  color: var(--text-secondary);
 }
 
 .stats {
   display: flex;
   gap: 1rem;
   font-size: 0.75rem;
-  color: #666;
+  color: var(--text-subtle);
   margin-bottom: 1rem;
 }
 
-.agent-list h4 {
+.agent-list h3 {
   font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: #888;
+  color: var(--text-muted);
   margin: 0.5rem 0;
 }
 
@@ -1026,7 +1135,7 @@
   padding: 0.35rem 0.5rem;
   border: none;
   background: transparent;
-  color: #aaa;
+  color: var(--text-secondary);
   cursor: pointer;
   border-radius: 4px;
   font-size: 0.8rem;
@@ -1035,7 +1144,7 @@
 }
 
 .agent-item:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--bg-hover);
 }
 
 .agent-badge {
@@ -1044,42 +1153,37 @@
   border-radius: 2px;
 }
 
+/* The trust scale runs aligned -> partial -> conflict, and its best and worst
+   ends were both red: `aligned` took `--accent` (the brand red) while
+   `conflict` takes `--error-text`. A colour-coded trust badge whose good and
+   bad states are the same colour is doing nothing at all, which matters here
+   more than most places — deciding whether to federate with a peer is the
+   judgement this badge exists to inform. */
 .alignment-aligned .agent-badge,
 .alignment-aligned {
-  color: #e63946;
+  color: var(--success-text);
 }
 
 .alignment-partial .agent-badge,
 .alignment-partial {
-  color: #fbbf24;
+  color: var(--warning-color);
 }
 
 .alignment-conflict .agent-badge,
 .alignment-conflict {
-  color: #f87171;
+  color: var(--error-text);
 }
 
 /* Agent detail overlay */
-.agent-detail-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.6);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 100;
-}
-
-.agent-detail {
-  background: #0a0a0a;
-  border: 1px solid #222;
-  border-radius: 8px;
-  padding: 1.5rem;
+/* `.agent-detail-overlay` used to live here, byte-for-byte identical to
+   `.dialog-overlay`, and `.agent-detail` repeated the whole `.dialog` card.
+   The component now uses the `Modal` primitive, so both come from there and
+   only the one value that actually differed is kept. */
+.dialog.agent-detail {
   max-width: 400px;
-  width: 90%;
 }
 
-.agent-detail h3 {
+.agent-detail h2 {
   margin: 0 0 1rem;
   font-size: 1rem;
 }
@@ -1092,7 +1196,7 @@
 }
 
 .agent-detail dt {
-  color: #888;
+  color: var(--text-muted);
 }
 
 .agent-detail ul {
@@ -1102,7 +1206,7 @@
 
 /* ── Federation Panel ── */
 
-.federation-panel h3 {
+.federation-panel h2 {
   font-size: 0.85rem;
   margin: 0 0 0.5rem;
 }
@@ -1115,7 +1219,7 @@
 
 .peer-item {
   padding: 0.5rem;
-  border-bottom: 1px solid #1a1a1a;
+  border-bottom: 1px solid var(--surface-2);
   font-size: 0.8rem;
 }
 
@@ -1124,12 +1228,12 @@
 }
 
 .peer-url {
-  color: #666;
+  color: var(--text-subtle);
   font-size: 0.75rem;
 }
 
 .peer-scope {
-  color: #888;
+  color: var(--text-muted);
   font-size: 0.7rem;
 }
 
@@ -1141,8 +1245,8 @@
   align-items: center;
   padding: 0.25rem 1rem;
   height: 32px;
-  background: #000;
-  border-top: 1px solid #1a1a1a;
+  background: var(--bg);
+  border-top: 1px solid var(--surface-2);
   font-size: 0.75rem;
   flex-shrink: 0;
 }
@@ -1160,16 +1264,16 @@
 }
 
 .ws-indicator.connected {
-  background: #4ade80;
+  background: var(--success-color);
 }
 
 .ws-indicator.disconnected {
-  background: #f87171;
+  background: var(--error-text);
 }
 
 .pseudonym {
   font-family: monospace;
-  color: #aaa;
+  color: var(--text-secondary);
 }
 
 .tunnel-status {
@@ -1177,7 +1281,7 @@
   align-items: center;
   gap: 0.35rem;
   font-size: 0.7rem;
-  color: #aaa;
+  color: var(--text-secondary);
   margin-left: auto;
   margin-right: 0.75rem;
 }
@@ -1197,15 +1301,15 @@
 .tunnel-copy-btn {
   padding: 0.1rem 0.4rem;
   font-size: 0.65rem;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: var(--overlay-white-08);
+  border: 1px solid var(--border-subtle);
   border-radius: 3px;
-  color: #ccc;
+  color: var(--text-quiet);
   cursor: pointer;
 }
 
 .tunnel-copy-btn:hover {
-  background: rgba(255, 255, 255, 0.15);
+  background: var(--border-subtle);
 }
 
 .status-actions {
@@ -1239,7 +1343,7 @@
 .dialog-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.6);
+  background: var(--scrim);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1247,15 +1351,15 @@
 }
 
 .dialog {
-  background: #0a0a0a;
-  border: 1px solid #222;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 1.5rem;
   max-width: 420px;
   width: 90%;
 }
 
-.dialog h3 {
+.dialog h2 {
   margin: 0 0 1rem;
   font-size: 1.1rem;
 }
@@ -1271,15 +1375,15 @@
   flex-direction: column;
   gap: 0.25rem;
   font-size: 0.85rem;
-  color: #aaa;
+  color: var(--text-secondary);
 }
 
 .dialog input[type='text'],
 .dialog select {
   padding: 0.5rem;
   border-radius: 4px;
-  border: 1px solid #222;
-  background: #000;
+  border: 1px solid var(--border);
+  background: var(--bg);
   color: inherit;
   font-size: 0.9rem;
 }
@@ -1287,13 +1391,41 @@
 .dialog input[type='text']:focus,
 .dialog select:focus {
   outline: none;
-  border-color: #fff;
+  border-color: var(--border-emphasis);
 }
 
 .checkbox-label {
   flex-direction: row !important;
   align-items: center;
   gap: 0.5rem !important;
+  flex-wrap: wrap;
+}
+
+/* The control's name, kept on one line.
+   
+   `.checkbox-label` is a row flexbox and the name was a bare text node in it,
+   so it competed for width with the hint beside it and broke — "Federation
+   Enabled" rendered as "Federation / Enabled" at every viewport including the
+   widest, where there was room for both. */
+.checkbox-label-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  white-space: nowrap;
+}
+
+/* The hint takes what is left, and drops to its own line rather than
+   squeezing the name when there is not enough. */
+.checkbox-label .field-hint {
+  flex: 1 1 12rem;
+}
+
+/* A field label and its InfoTip on one line. `.policy-grid label` is a COLUMN
+   flexbox, so a tip beside the text becomes a row of its own. */
+.field-label-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
 }
 
 .dialog-actions {
@@ -1304,8 +1436,8 @@
 }
 
 .primary-btn {
-  background: #fff;
-  color: #000;
+  background: var(--text-strong);
+  color: var(--bg);
   border: none;
   padding: 0.5rem 1rem;
   border-radius: 4px;
@@ -1314,10 +1446,43 @@
 }
 
 .primary-btn:hover {
-  background: #ccc;
+  background: var(--text-quiet);
 }
 
 .primary-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* The quieter of the two button weights — and, until now, the invisible one.
+   
+   `.secondary-btn` is used in six components and had no rule anywhere, so it
+   fell through to the base `button` in index.css: `background-color: #0a0a0a`
+   with a transparent border. That is the same colour as the dialogs and
+   panels it sits on, so every secondary button in the app rendered as bare
+   text. "Copy transfer code" — the one action on the device-link screen —
+   looked like a caption, and the Server Name "Save" in admin settings looked
+   like a label beside the Public URL "Save" that has a box round it.
+   
+   A visible surface and a border, one step down from `.primary-btn`'s filled
+   treatment. Found by listing every className in the JSX with no matching CSS
+   rule. */
+.secondary-btn {
+  background: var(--surface-2);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.secondary-btn:hover {
+  background: var(--surface-1);
+  border-color: var(--text-quiet);
+}
+
+.secondary-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
@@ -1350,8 +1515,8 @@
 .domain-filter {
   padding: 0.35rem 0.5rem;
   border-radius: 4px;
-  border: 1px solid #222;
-  background: #000;
+  border: 1px solid var(--border);
+  background: var(--bg);
   color: inherit;
   font-size: 0.8rem;
 }
@@ -1362,22 +1527,63 @@
 }
 
 .event-log-empty {
-  color: #666;
+  color: var(--text-subtle);
   text-align: center;
   padding: 2rem;
 }
 
+/*
+ * A failed fetch used to render as "No events found", so a dead backend was
+ * indistinguishable from a quiet server — on an auto-refreshing audit log,
+ * which is exactly where that matters most. This is deliberately styled as an
+ * alert, not as an empty state.
+ */
+.event-log-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin: 0.75rem 0;
+  padding: 0.6rem 0.9rem;
+  border: 1px solid var(--danger-surface-strong);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  background: var(--danger-surface);
+  color: var(--error-text);
+  font-size: 0.85rem;
+}
+
 .event-table {
   font-size: 0.8rem;
+  /* Scroll the table rather than compressing it.
+     
+     The columns are flex items with fixed widths, and a flex item shrinks by
+     default — so on a phone they did not overflow, they squeezed: Time,
+     Domain and Type survived, Entity was crushed to a sliver at the edge and
+     Detail got nothing at all. Those last two are what say who an event
+     happened to and what it was, so the narrow layout kept the scaffolding
+     and dropped the content. Nothing flagged it either, because a row that
+     compresses never exceeds the viewport.
+     
+     A `min-width` on the rows stops the squeeze and this scrolls instead,
+     which keeps every column under the heading that names it. Inert at any
+     width that already fits. */
+  overflow-x: auto;
+}
+
+.event-table-header,
+.event-row {
+  min-width: 36rem;
 }
 
 .event-table-header {
   display: flex;
   gap: 0.5rem;
   padding: 0.5rem;
-  border-bottom: 1px solid #222;
+  border-bottom: 1px solid var(--border);
   font-size: 0.7rem;
-  color: #888;
+  color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
@@ -1386,18 +1592,34 @@
   display: flex;
   gap: 0.5rem;
   padding: 0.4rem 0.5rem;
-  border-bottom: 1px solid #222;
-  color: #aaa;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
 }
 
 .event-row:hover {
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--overlay-white-02);
+}
+
+/* Every fixed-width column clips rather than wraps.
+   `.event-col-detail` already did this; the other four did not, so a value
+   too long for its column wrapped to a second line and grew the whole flex
+   row. Row height therefore depended on the longest pseudonym or timestamp
+   in the table, which is both a jumpy read for a user scanning an audit
+   trail and a source of run-to-run variation in the screenshot audit — the
+   masked columns hide the text but not the layout it forces. */
+.event-col-time,
+.event-col-domain,
+.event-col-type,
+.event-col-entity {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .event-col-time {
   width: 80px;
   flex-shrink: 0;
-  color: #666;
+  color: var(--text-subtle);
 }
 
 .event-col-domain {
@@ -1406,11 +1628,11 @@
   font-weight: 500;
 }
 
-.domain-identity { color: #aaa; }
-.domain-presence { color: #e63946; }
-.domain-federation { color: #ccc; }
-.domain-agent { color: #fbbf24; }
-.domain-moderation { color: #f87171; }
+.domain-identity { color: var(--text-secondary); }
+.domain-presence { color: var(--accent); }
+.domain-federation { color: var(--text-quiet); }
+.domain-agent { color: var(--warning-color); }
+.domain-moderation { color: var(--error-text); }
 
 .event-col-type {
   width: 140px;
@@ -1445,9 +1667,9 @@
 .policy-editor {
   margin-bottom: 2rem;
   padding: 1rem;
-  background: #080808;
+  background: var(--surface-sunken);
   border-radius: 8px;
-  border: 1px solid #1a1a1a;
+  border: 1px solid var(--surface-2);
 }
 
 .policy-editor h3 {
@@ -1460,7 +1682,7 @@
   flex-direction: column;
   gap: 0.25rem;
   font-size: 0.8rem;
-  color: #aaa;
+  color: var(--text-secondary);
   margin-bottom: 0.5rem;
 }
 
@@ -1470,8 +1692,8 @@
 .policy-editor select {
   padding: 0.4rem 0.5rem;
   border-radius: 4px;
-  border: 1px solid #222;
-  background: #000;
+  border: 1px solid var(--border);
+  background: var(--bg);
   color: inherit;
   font-size: 0.85rem;
   width: 100%;
@@ -1483,7 +1705,7 @@
 .policy-editor input[type='number']:focus,
 .policy-editor select:focus {
   outline: none;
-  border-color: #fff;
+  border-color: var(--border-emphasis);
 }
 
 .policy-grid {
@@ -1498,14 +1720,14 @@
   flex-direction: column;
   gap: 0.25rem;
   font-size: 0.8rem;
-  color: #aaa;
+  color: var(--text-secondary);
 }
 
 .policy-grid input[type='number'] {
   padding: 0.4rem 0.5rem;
   border-radius: 4px;
-  border: 1px solid #222;
-  background: #000;
+  border: 1px solid var(--border);
+  background: var(--bg);
   color: inherit;
   font-size: 0.85rem;
   width: 100%;
@@ -1514,18 +1736,24 @@
 
 .policy-grid input[type='number']:focus {
   outline: none;
-  border-color: #fff;
+  border-color: var(--border-emphasis);
 }
 
 .policy-section {
   margin-bottom: 1rem;
   padding-top: 0.75rem;
-  border-top: 1px solid #1a1a1a;
+  border-top: 1px solid var(--surface-2);
 }
 
+/* Subsection headings inside a policy section. Two levels, because the
+   correct heading level depends on what precedes the section: AdminPanel
+   nests them under an h3, the identity dialog under its h2. Styling both
+   keeps the visual weight identical while each document outline stays
+   contiguous — axe's heading-order rule fires on a skipped level. */
+.policy-section h3,
 .policy-section h4 {
   font-size: 0.8rem;
-  color: #888;
+  color: var(--text-muted);
   margin: 0 0 0.5rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -1545,16 +1773,16 @@
   align-items: center;
   gap: 0.25rem;
   padding: 0.2rem 0.5rem;
-  background: rgba(255, 255, 255, 0.15);
+  background: var(--border-subtle);
   border-radius: 3px;
   font-size: 0.8rem;
-  color: #ddd;
+  color: var(--text-dim);
 }
 
 .tag-item button {
   background: transparent;
   border: none;
-  color: #888;
+  color: var(--text-muted);
   cursor: pointer;
   padding: 0;
   font-size: 0.75rem;
@@ -1562,15 +1790,15 @@
 }
 
 .tag-item button:hover {
-  color: #f87171;
+  color: var(--error-text);
 }
 
 .tag-input input {
   width: 100%;
   padding: 0.35rem 0.5rem;
   border-radius: 4px;
-  border: 1px solid #222;
-  background: #000;
+  border: 1px solid var(--border);
+  background: var(--bg);
   color: inherit;
   font-size: 0.8rem;
   box-sizing: border-box;
@@ -1578,7 +1806,7 @@
 
 .tag-input input:focus {
   outline: none;
-  border-color: #fff;
+  border-color: var(--border-emphasis);
 }
 
 .save-policy-btn {
@@ -1590,9 +1818,9 @@
 
 .channel-manager {
   padding: 1rem;
-  background: #080808;
+  background: var(--surface-sunken);
   border-radius: 8px;
-  border: 1px solid #1a1a1a;
+  border: 1px solid var(--surface-2);
 }
 
 .channel-manager h3 {
@@ -1611,7 +1839,7 @@
   justify-content: space-between;
   align-items: center;
   padding: 0.5rem 0.75rem;
-  background: rgba(0, 0, 0, 0.2);
+  background: var(--shadow-soft);
   border-radius: 4px;
 }
 
@@ -1627,21 +1855,41 @@
 
 .channel-manager-meta {
   font-size: 0.7rem;
-  color: #666;
+  color: var(--text-subtle);
 }
 
 .delete-btn {
   padding: 0.25rem 0.5rem;
   font-size: 0.75rem;
   background: transparent;
-  border: 1px solid #200a0a;
-  color: #da7e7e;
+  border: 1px solid var(--danger-surface);
+  color: var(--error-muted);
   border-radius: 3px;
   cursor: pointer;
 }
 
 .delete-btn:hover {
-  background: #200a0a;
+  background: var(--danger-surface);
+}
+
+/* The affirmative button in a destructive confirmation. Filled rather than
+   outlined, because it is the action the dialog exists to confirm — but in the
+   danger colour, so it never reads as the safe default. */
+.danger-btn {
+  /* NOT `--danger` (#e63946): white on it is 4.17:1, under the 4.5 floor for
+     normal text, and this is a button whose whole job is being read correctly
+     before something irreversible happens. `--danger-strong` is the same hue
+     darkened to 5.4:1. The lighter red stays correct for borders and icons,
+     which are not contrast-bound. */
+  background: var(--danger-strong);
+  border: 1px solid var(--danger-strong);
+  color: var(--text-strong);
+  font-weight: 600;
+}
+
+.danger-btn:hover {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
 }
 
 /* ── Invite Banner ── */
@@ -1649,8 +1897,8 @@
 .invite-banner {
   margin-left: 1rem;
   padding: 0.2rem 0.6rem;
-  background: rgba(255, 255, 255, 0.2);
-  color: #ddd;
+  background: var(--overlay-white-20);
+  color: var(--text-dim);
   border-radius: 4px;
   font-size: 0.75rem;
   animation: fadeIn 0.3s ease;
@@ -1664,9 +1912,9 @@
 /* ── Invite Button in Channel List ── */
 
 .channel-action-btn.invite-btn:hover {
-  background: rgba(255, 255, 255, 0.15);
-  color: #fff;
-  border-color: #fff;
+  background: var(--border-subtle);
+  color: var(--text-strong);
+  border-color: var(--border-emphasis);
 }
 
 /* ── Device Link Dialog ── */
@@ -1676,7 +1924,7 @@
 }
 
 .device-link-description {
-  color: #aaa;
+  color: var(--text-secondary);
   font-size: 0.85rem;
   margin-bottom: 1rem;
   line-height: 1.5;
@@ -1693,8 +1941,8 @@
   align-items: center;
   gap: 0.75rem;
   padding: 0.75rem 1rem;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid #1a1a1a;
+  background: var(--overlay-white-03);
+  border: 1px solid var(--surface-2);
   border-radius: 8px;
   cursor: pointer;
   text-align: left;
@@ -1703,8 +1951,8 @@
 }
 
 .device-link-option:hover {
-  border-color: #fff;
-  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--border-emphasis);
+  background: var(--bg-hover);
 }
 
 .device-link-option:disabled {
@@ -1731,7 +1979,7 @@
 
 .device-link-option-text span {
   font-size: 0.75rem;
-  color: #888;
+  color: var(--text-muted);
 }
 
 /* QR Display */
@@ -1760,7 +2008,7 @@
 
 .pairing-code-label {
   font-size: 0.75rem;
-  color: #888;
+  color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.1em;
 }
@@ -1770,13 +2018,13 @@
   font-size: 2rem;
   font-weight: bold;
   letter-spacing: 0.3em;
-  color: #fff;
+  color: var(--text-strong);
 }
 
 .pairing-code-hint {
   text-align: center;
   font-size: 0.8rem;
-  color: #888;
+  color: var(--text-muted);
 }
 
 /* Device Link Receive */
@@ -1786,15 +2034,15 @@
   flex-direction: column;
   gap: 0.25rem;
   font-size: 0.85rem;
-  color: #aaa;
+  color: var(--text-secondary);
   margin-bottom: 0.75rem;
 }
 
 .device-link-receive textarea {
   padding: 0.5rem;
   border-radius: 4px;
-  border: 1px solid #222;
-  background: #000;
+  border: 1px solid var(--border);
+  background: var(--bg);
   color: inherit;
   font-family: monospace;
   font-size: 0.8rem;
@@ -1804,8 +2052,8 @@
 .device-link-receive input {
   padding: 0.5rem;
   border-radius: 4px;
-  border: 1px solid #222;
-  background: #000;
+  border: 1px solid var(--border);
+  background: var(--bg);
   color: inherit;
   font-family: monospace;
   font-size: 1.2rem;
@@ -1818,7 +2066,7 @@
 }
 
 .device-link-success p {
-  color: #aaa;
+  color: var(--text-secondary);
   font-size: 0.85rem;
 }
 
@@ -1829,7 +2077,7 @@
   align-items: center;
   gap: 0.75rem;
   margin: 1rem 0;
-  color: #666;
+  color: var(--text-subtle);
   font-size: 0.8rem;
 }
 
@@ -1838,16 +2086,16 @@
   content: '';
   flex: 1;
   height: 1px;
-  background: #1a1a1a;
+  background: var(--surface-2);
 }
 
 .device-link-setup-btn {
   width: 100%;
   padding: 0.6rem;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid #222;
+  background: var(--overlay-white-03);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  color: #aaa;
+  color: var(--text-secondary);
   cursor: pointer;
   font-size: 0.85rem;
   transition: border-color 0.15s, color 0.15s;
@@ -1855,8 +2103,8 @@
 }
 
 .device-link-setup-btn:hover {
-  border-color: #fff;
-  color: #fff;
+  border-color: var(--border-emphasis);
+  color: var(--text-strong);
 }
 
 /* ── Profile Switcher ── */
@@ -1866,7 +2114,7 @@
 }
 
 .profile-description {
-  color: #aaa;
+  color: var(--text-secondary);
   font-size: 0.8rem;
   line-height: 1.5;
   margin-bottom: 1rem;
@@ -1877,25 +2125,25 @@
   align-items: center;
   gap: 0.5rem;
   padding: 0.5rem 0.75rem;
-  background: rgba(0, 0, 0, 0.2);
+  background: var(--shadow-soft);
   border-radius: 4px;
   font-size: 0.8rem;
   margin-bottom: 1rem;
 }
 
 .current-identity-ref .label {
-  color: #888;
+  color: var(--text-muted);
 }
 
 .current-identity-ref .pseudonym {
   font-family: monospace;
-  color: #aaa;
+  color: var(--text-secondary);
 }
 
 .server-badge {
   padding: 0.1em 0.35em;
-  background: rgba(255, 255, 255, 0.15);
-  color: #ddd;
+  background: var(--border-subtle);
+  color: var(--text-dim);
   border-radius: 2px;
   font-size: 0.7rem;
 }
@@ -1907,7 +2155,7 @@
 }
 
 .no-personas {
-  color: #666;
+  color: var(--text-subtle);
   font-size: 0.85rem;
   text-align: center;
   padding: 1rem;
@@ -1924,7 +2172,7 @@
 }
 
 .persona-item:hover {
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--overlay-white-03);
 }
 
 .persona-avatar {
@@ -1936,7 +2184,7 @@
   justify-content: center;
   font-weight: bold;
   font-size: 0.9rem;
-  color: #fff;
+  color: var(--text-strong);
   flex-shrink: 0;
 }
 
@@ -1955,7 +2203,7 @@
 
 .persona-meta {
   font-size: 0.75rem;
-  color: #888;
+  color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1967,25 +2215,27 @@
   flex-shrink: 0;
 }
 
+.persona-activate-btn,
 .persona-edit-btn,
 .persona-delete-btn {
   padding: 0.2rem 0.4rem;
   font-size: 0.7rem;
   background: transparent;
   border: 1px solid transparent;
-  color: #666;
+  color: var(--text-subtle);
   border-radius: 3px;
   cursor: pointer;
 }
 
+.persona-activate-btn:hover,
 .persona-edit-btn:hover {
-  border-color: #fff;
-  color: #fff;
+  border-color: var(--border-emphasis);
+  color: var(--text-strong);
 }
 
 .persona-delete-btn:hover {
-  border-color: #f87171;
-  color: #f87171;
+  border-color: var(--error-text);
+  color: var(--error-text);
 }
 
 /* Persona Form */
@@ -1995,7 +2245,7 @@
   flex-direction: column;
   gap: 0.75rem;
   padding-top: 0.75rem;
-  border-top: 1px solid #1a1a1a;
+  border-top: 1px solid var(--surface-2);
 }
 
 .persona-form label {
@@ -2003,21 +2253,21 @@
   flex-direction: column;
   gap: 0.25rem;
   font-size: 0.85rem;
-  color: #aaa;
+  color: var(--text-secondary);
 }
 
 .persona-form input[type='text'] {
   padding: 0.5rem;
   border-radius: 4px;
-  border: 1px solid #222;
-  background: #000;
+  border: 1px solid var(--border);
+  background: var(--bg);
   color: inherit;
   font-size: 0.9rem;
 }
 
 .persona-form input[type='text']:focus {
   outline: none;
-  border-color: #fff;
+  border-color: var(--border-emphasis);
 }
 
 /* Color Picker */
@@ -2044,7 +2294,7 @@
 }
 
 .color-swatch.active {
-  border-color: #fff;
+  border-color: var(--border-emphasis);
 }
 
 /* StatusBar persona indicator */
@@ -2058,7 +2308,7 @@
   justify-content: center;
   font-size: 0.65rem;
   font-weight: bold;
-  color: #fff;
+  color: var(--text-strong);
   flex-shrink: 0;
 }
 
@@ -2076,14 +2326,14 @@
 }
 
 .pseudonym-btn:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--bg-hover);
 }
 
 .server-slug {
   font-size: 0.65rem;
-  color: #666;
+  color: var(--text-subtle);
   padding: 0.05em 0.3em;
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--bg-hover);
   border-radius: 2px;
 }
 
@@ -2103,7 +2353,7 @@
 
 .link-preview-shimmer {
   height: 60px;
-  background: linear-gradient(90deg, #111 25%, #243545 50%, #111 75%);
+  background: linear-gradient(90deg, var(--surface-1) 25%, #243545 50%, var(--surface-1) 75%);
   background-size: 200% 100%;
   animation: shimmer 1.5s infinite;
   border-radius: 6px;
@@ -2119,33 +2369,33 @@
   flex-direction: column;
   gap: 0.15rem;
   padding: 0.4rem 0.6rem;
-  background: rgba(255, 255, 255, 0.03);
-  border-left: 2px solid #222;
+  background: var(--overlay-white-03);
+  border-left: 2px solid var(--border);
   border-radius: 0 4px 4px 0;
   text-decoration: none;
   color: inherit;
 }
 
 .link-preview-minimal:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--border-faint);
 }
 
 .link-preview-domain {
   font-size: 0.7rem;
-  color: #888;
+  color: var(--text-muted);
 }
 
 .link-preview-url {
   font-size: 0.75rem;
-  color: #aaa;
+  color: var(--text-secondary);
   word-break: break-all;
 }
 
 .link-preview-card {
   display: flex;
   overflow: hidden;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid #1a1a1a;
+  background: var(--overlay-white-03);
+  border: 1px solid var(--surface-2);
   border-radius: 6px;
   text-decoration: none;
   color: inherit;
@@ -2154,7 +2404,7 @@
 }
 
 .link-preview-card:hover {
-  border-color: #fff;
+  border-color: var(--border-emphasis);
 }
 
 .link-preview-image {
@@ -2181,7 +2431,7 @@
 
 .link-preview-site {
   font-size: 0.65rem;
-  color: #888;
+  color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
@@ -2189,7 +2439,7 @@
 .link-preview-title {
   font-size: 0.8rem;
   font-weight: 500;
-  color: #aaa;
+  color: var(--text-secondary);
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -2198,7 +2448,7 @@
 
 .link-preview-desc {
   font-size: 0.75rem;
-  color: #aaa;
+  color: var(--text-secondary);
   line-height: 1.3;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -2219,7 +2469,7 @@
 }
 
 .recovery-description {
-  color: #aaa;
+  color: var(--text-secondary);
   font-size: 0.85rem;
   line-height: 1.5;
   margin-bottom: 0.5rem;
@@ -2239,26 +2489,26 @@
   flex-direction: column;
   gap: 0.25rem;
   font-size: 0.85rem;
-  color: #aaa;
+  color: var(--text-secondary);
 }
 
 .recovery-params input[type='number'] {
   padding: 0.4rem 0.5rem;
   border-radius: 4px;
-  border: 1px solid #222;
-  background: #000;
+  border: 1px solid var(--border);
+  background: var(--bg);
   color: inherit;
   font-size: 0.9rem;
 }
 
 .recovery-params input:focus {
   outline: none;
-  border-color: #fff;
+  border-color: var(--border-emphasis);
 }
 
 .recovery-hint {
   font-size: 0.8rem;
-  color: #888;
+  color: var(--text-muted);
   margin-bottom: 0.75rem;
 }
 
@@ -2268,11 +2518,11 @@
   margin-bottom: 0.75rem;
 }
 
-.guardian-list h4 {
+.guardian-list h3 {
   font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: #888;
+  color: var(--text-muted);
   margin: 0 0 0.5rem;
 }
 
@@ -2284,17 +2534,25 @@
 
 .guardian-entry input {
   flex: 1;
+  /* `flex: 1` is `flex: 1 1 0%`, but a flex item's `min-width` is `auto`, and
+     for an <input> that floor is its intrinsic size — around 177px — not
+     zero. Two of them plus the gap need ~360px, and the dialog's content box
+     on a phone is about 318, so the second input ran past the padding and was
+     cut off at the dialog's edge. Same shape as the message-bubble rule in
+     the phone block: a percentage cap does nothing when the item refuses to
+     go below its own content width. */
+  min-width: 0;
   padding: 0.35rem 0.5rem;
   border-radius: 4px;
-  border: 1px solid #222;
-  background: #000;
+  border: 1px solid var(--border);
+  background: var(--bg);
   color: inherit;
   font-size: 0.8rem;
 }
 
 .guardian-entry input:focus {
   outline: none;
-  border-color: #fff;
+  border-color: var(--border-emphasis);
 }
 
 .guardian-pseudo {
@@ -2313,7 +2571,7 @@
 
 .shard-item {
   padding: 0.5rem 0.75rem;
-  background: rgba(0, 0, 0, 0.2);
+  background: var(--shadow-soft);
   border-radius: 4px;
 }
 
@@ -2333,21 +2591,21 @@
   padding: 0.15rem 0.4rem;
   font-size: 0.7rem;
   background: transparent;
-  border: 1px solid #222;
-  color: #aaa;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
   border-radius: 3px;
   cursor: pointer;
 }
 
 .shard-copy-btn:hover {
-  border-color: #fff;
-  color: #fff;
+  border-color: var(--border-emphasis);
+  color: var(--text-strong);
 }
 
 .shard-data {
   font-family: monospace;
   font-size: 0.7rem;
-  color: #666;
+  color: var(--text-subtle);
   word-break: break-all;
 }
 
@@ -2365,12 +2623,14 @@
   gap: 0.5rem;
 }
 
+/* Wide enough for the spinner arrows Chromium draws inside a number input
+   plus the value; at 60px the arrows sat on top of the text. */
 .recovery-shard-index {
-  width: 60px;
+  width: 72px;
   padding: 0.35rem 0.5rem;
   border-radius: 4px;
-  border: 1px solid #222;
-  background: #000;
+  border: 1px solid var(--border);
+  background: var(--bg);
   color: inherit;
   font-size: 0.8rem;
   text-align: center;
@@ -2380,8 +2640,8 @@
   flex: 1;
   padding: 0.35rem 0.5rem;
   border-radius: 4px;
-  border: 1px solid #222;
-  background: #000;
+  border: 1px solid var(--border);
+  background: var(--bg);
   color: inherit;
   font-family: monospace;
   font-size: 0.8rem;
@@ -2390,13 +2650,13 @@
 .recovery-shard-index:focus,
 .recovery-shard-data:focus {
   outline: none;
-  border-color: #fff;
+  border-color: var(--border-emphasis);
 }
 
 .add-shard-btn {
   background: transparent;
-  border: 1px dashed #222;
-  color: #888;
+  border: 1px dashed var(--border);
+  color: var(--text-muted);
   padding: 0.35rem;
   border-radius: 4px;
   cursor: pointer;
@@ -2404,8 +2664,8 @@
 }
 
 .add-shard-btn:hover {
-  border-color: #fff;
-  color: #fff;
+  border-color: var(--border-emphasis);
+  color: var(--text-strong);
 }
 
 .recovery-result {
@@ -2432,8 +2692,8 @@
   flex-direction: column;
   align-items: center;
   width: 72px;
-  background: #030303;
-  border-right: 1px solid #222;
+  background: var(--bg-deep);
+  border-right: 1px solid var(--border);
   padding: 12px 0;
   flex-shrink: 0;
   overflow-y: auto;
@@ -2444,6 +2704,40 @@
 .server-hub.switching {
   opacity: 0.7;
   pointer-events: none;
+}
+
+/* The server-switch failure. Fixed rather than in the rail because the
+   rail is 72px wide and clips horizontally, and this message has to be
+   readable without hovering — a `title` tooltip is unreachable on touch,
+   which is where the previous version left phone users with a bare "!". */
+.server-switch-error {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: var(--z-toast);
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  max-width: min(32rem, calc(100vw - 24px));
+  padding: 0.65rem 0.9rem;
+  border: 1px solid var(--danger-surface-strong);
+  border-radius: var(--radius-lg);
+  background: var(--danger-surface);
+  color: var(--error-text);
+  font-size: 0.85rem;
+  line-height: 1.4;
+  box-shadow: 0 8px 24px var(--shadow-medium);
+}
+.server-switch-error-dismiss {
+  margin-left: 0.2rem;
+  padding: 0 0.3rem;
+  border: none;
+  background: none;
+  color: inherit;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
 }
 
 .server-hub-list {
@@ -2461,12 +2755,52 @@
   position: relative;
 }
 
+/* Retry and remove, for a server whose registration failed.
+   
+   None of these three classes had a rule, so the two buttons took the base
+   `button` style — 0.5em 1em of padding — inside a 72px rail with
+   `overflow-x: hidden`. "Retry" was cut off mid-word, and the pair sat on one
+   line with nowhere to go. This is the recovery path for a registration that
+   did not complete, so the controls have to be legible; the error message
+   itself was moved out of the rail for the same reason.
+   
+   Stacked and sized for the width that is actually available. */
+.server-hub-failed-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.2rem;
+  margin-top: 0.25rem;
+  width: 100%;
+}
+
+.server-hub-retry-btn,
+.server-hub-remove-btn {
+  padding: 0.15rem 0.3rem;
+  font-size: 0.65rem;
+  line-height: 1.3;
+  border-radius: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+}
+
+.server-hub-retry-btn:hover,
+.server-hub-remove-btn:hover {
+  background: var(--surface-1);
+  border-color: var(--text-quiet);
+}
+
+.server-hub-remove-btn {
+  color: var(--error-text);
+}
+
 .server-hub-pill {
   position: absolute;
   left: 0;
   width: 4px;
   border-radius: 0 4px 4px 0;
-  background: #fff;
+  background: var(--text-strong);
   transition: height 0.2s, opacity 0.2s;
   height: 8px;
   opacity: 0;
@@ -2490,9 +2824,9 @@
   height: 48px;
   margin: 0 auto;
   border-radius: 50%;
-  background: #0a0a0a;
+  background: var(--bg-secondary);
   border: 2px solid transparent;
-  color: #aaa;
+  color: var(--text-secondary);
   cursor: pointer;
   transition: border-radius 0.25s, background 0.25s, border-color 0.25s, color 0.15s;
   font-size: 0;
@@ -2501,15 +2835,15 @@
 
 .server-hub-icon:hover {
   border-radius: 35%;
-  background: var(--server-accent, #222);
-  color: #fff;
+  background: var(--server-accent, var(--border));
+  color: var(--text-strong);
 }
 
 .server-hub-icon.active {
   border-radius: 35%;
-  background: var(--server-accent, #222);
-  color: #fff;
-  border-color: rgba(255, 255, 255, 0.2);
+  background: var(--server-accent, var(--border));
+  color: var(--text-strong);
+  border-color: var(--overlay-white-20);
 }
 
 .server-hub-initial {
@@ -2534,20 +2868,20 @@
 .server-hub-separator {
   width: 32px;
   height: 2px;
-  background: #1a1a1a;
+  background: var(--surface-2);
   border-radius: 1px;
   margin: 8px 0;
 }
 
 .server-hub-icon.add-server-btn {
   background: transparent;
-  border: 2px dashed #222;
-  color: #e63946;
+  border: 2px dashed var(--border);
+  color: var(--accent);
 }
 
 .server-hub-icon.add-server-btn:hover {
   background: rgba(230, 57, 70, 0.1);
-  border-color: #e63946;
+  border-color: var(--accent);
   border-style: solid;
   border-radius: 35%;
 }
@@ -2571,16 +2905,16 @@
 /* ── Persona Isolation — Dynamic Theming ── */
 
 .app-header {
-  border-bottom-color: var(--persona-border-tint, #1a1a1a);
+  border-bottom-color: var(--persona-border-tint, var(--surface-2));
 }
 
 .app-header h1 {
-  color: var(--persona-accent, #e63946);
+  color: var(--accent-text);
 }
 
 .tab-btn.active {
-  background: var(--persona-bg-tint, rgba(255, 255, 255, 0.2));
-  color: var(--persona-accent, #e63946);
+  background: var(--persona-bg-tint, var(--overlay-white-20));
+  color: var(--accent-text);
 }
 
 /* Active persona context indicator in the header */
@@ -2603,12 +2937,12 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--persona-accent, #e63946);
+  background: var(--persona-accent, var(--accent));
 }
 
 .persona-context-name {
   font-size: 0.75rem;
-  color: #ccc;
+  color: var(--text-quiet);
   max-width: 120px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2617,31 +2951,31 @@
 
 .persona-context-server {
   font-size: 0.65rem;
-  color: #888;
+  color: var(--text-muted);
   margin-left: 0.25rem;
 }
 
 /* Sidebar accent tinting for persona isolation */
 .sidebar-left {
-  border-right-color: var(--persona-border-tint, #1a1a1a);
+  border-right-color: var(--persona-border-tint, var(--surface-2));
 }
 
 .sidebar-right {
-  border-left-color: var(--persona-border-tint, #1a1a1a);
+  border-left-color: var(--persona-border-tint, var(--surface-2));
 }
 
 /* ── Add Server Dialog ── */
 
 .add-server-dialog .dialog-description {
   font-size: 0.8rem;
-  color: #888;
+  color: var(--text-muted);
   margin: 0.5rem 0 1rem;
 }
 
 .add-server-dialog label {
   display: block;
   font-size: 0.8rem;
-  color: #aaa;
+  color: var(--text-secondary);
   margin-bottom: 1rem;
 }
 
@@ -2650,20 +2984,20 @@
   width: 100%;
   margin-top: 0.35rem;
   padding: 0.5rem 0.75rem;
-  background: #0a0a0a;
-  border: 1px solid #222;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
   border-radius: 4px;
-  color: #eee;
+  color: var(--text-bright);
   font-size: 0.9rem;
 }
 
 .add-server-dialog input:focus {
   outline: none;
-  border-color: #fff;
+  border-color: var(--border-emphasis);
 }
 
 .form-error {
-  color: #f87171;
+  color: var(--error-text);
   font-size: 0.8rem;
   margin: 0.5rem 0;
 }
@@ -2672,13 +3006,13 @@
 
 .federation-description {
   font-size: 0.8rem;
-  color: #888;
+  color: var(--text-muted);
   margin: -0.5rem 0 1rem;
 }
 
 .federation-hint {
   font-size: 0.8rem;
-  color: #666;
+  color: var(--text-subtle);
   margin-top: 0.5rem;
 }
 
@@ -2687,8 +3021,8 @@
   align-items: center;
   gap: 1rem;
   padding: 0.75rem 1rem;
-  background: #0a0a0a;
-  border: 1px solid #1a1a1a;
+  background: var(--bg-secondary);
+  border: 1px solid var(--surface-2);
   border-radius: 6px;
   margin-bottom: 0.5rem;
 }
@@ -2707,9 +3041,9 @@
 
 .peer-explore-btn {
   padding: 0.3rem 0.6rem;
-  background: rgba(255, 255, 255, 0.15);
+  background: var(--border-subtle);
   border: 1px solid rgba(255, 255, 255, 0.3);
-  color: #fff;
+  color: var(--text-strong);
   border-radius: 4px;
   font-size: 0.75rem;
   cursor: pointer;
@@ -2737,13 +3071,13 @@
 .peer-detail-label {
   font-size: 1.15rem;
   font-weight: 600;
-  color: #eee;
+  color: var(--text-bright);
 }
 
 .peer-detail-slug {
   font-size: 0.75rem;
-  color: #888;
-  background: #0a0a0a;
+  color: var(--text-muted);
+  background: var(--bg-secondary);
   padding: 0.15rem 0.4rem;
   border-radius: 3px;
 }
@@ -2760,19 +3094,19 @@
   flex-direction: column;
   align-items: center;
   padding: 0.5rem;
-  background: #0a0a0a;
+  background: var(--bg-secondary);
   border-radius: 6px;
 }
 
 .peer-detail-stats .stat-value {
   font-size: 1.25rem;
   font-weight: 600;
-  color: #eee;
+  color: var(--text-bright);
 }
 
 .peer-detail-stats .stat-label {
   font-size: 0.65rem;
-  color: #888;
+  color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
@@ -2791,43 +3125,43 @@
 }
 
 .alignment-badge.alignment-aligned {
-  background: rgba(230, 57, 70, 0.15);
-  color: #e63946;
+  background: var(--success-tint-15);
+  color: var(--success-text);
 }
 
 .alignment-badge.alignment-partial {
-  background: rgba(251, 191, 36, 0.15);
-  color: #fbbf24;
+  background: var(--warning-tint-15);
+  color: var(--warning-color);
 }
 
 .alignment-badge.alignment-conflict {
-  background: rgba(248, 113, 113, 0.15);
-  color: #f87171;
+  background: var(--error-tint-15);
+  color: var(--error-text);
 }
 
 .scope-badge {
   padding: 0.2rem 0.5rem;
   border-radius: 3px;
   font-size: 0.75rem;
-  background: rgba(255, 255, 255, 0.1);
-  color: #ccc;
+  background: var(--overlay-white-10);
+  color: var(--text-quiet);
 }
 
 .joined-badge {
   font-size: 0.8rem;
-  color: #e63946;
+  color: var(--accent);
   padding: 0.35rem 0.75rem;
 }
 
 .loading-text,
 .error-text {
   font-size: 0.85rem;
-  color: #888;
+  color: var(--text-muted);
   padding: 1rem 0;
 }
 
 .error-text {
-  color: #f87171;
+  color: var(--error-text);
 }
 
 /* ── Server switching transition ── */
@@ -2846,14 +3180,14 @@
 .voice-connected-header {
   padding: 0.35rem 0.75rem;
   font-size: 0.75rem;
-  color: #4ade80;
-  background: rgba(74, 222, 128, 0.08);
+  color: var(--success-color);
+  background: var(--success-tint-08);
   border-bottom: 1px solid rgba(74, 222, 128, 0.2);
   text-align: center;
 }
 
 .voice-connected-header strong {
-  color: #7eda7e;
+  color: var(--success-text);
 }
 
 /* ── Persistent Voice Status Strip (Discord-style) ── */
@@ -2879,7 +3213,7 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #4ade80;
+  background: var(--success-color);
   animation: voice-dot-pulse 2s infinite;
 }
 
@@ -2895,13 +3229,13 @@
 }
 
 .voice-status-label {
-  color: #4ade80;
+  color: var(--success-color);
   font-weight: 600;
   font-size: 0.7rem;
 }
 
 .voice-status-channel {
-  color: #aaa;
+  color: var(--text-secondary);
   font-size: 0.65rem;
 }
 
@@ -2920,20 +3254,20 @@
   padding: 0;
   border: none;
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.06);
-  color: #ccc;
+  background: var(--border-faint);
+  color: var(--text-quiet);
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
 }
 
 .voice-status-btn:hover {
   background: rgba(255, 255, 255, 0.12);
-  color: #fff;
+  color: var(--text-strong);
 }
 
 .voice-status-btn.muted {
-  color: #f87171;
-  background: rgba(248, 113, 113, 0.12);
+  color: var(--error-text);
+  background: var(--error-tint-12);
 }
 
 .voice-status-btn.muted:hover {
@@ -2941,8 +3275,8 @@
 }
 
 .voice-status-btn.disconnect {
-  background: rgba(248, 113, 113, 0.12);
-  color: #f87171;
+  background: var(--error-tint-12);
+  color: var(--error-text);
 }
 
 .voice-status-btn.disconnect:hover {
@@ -2959,7 +3293,7 @@
 .settings-section {
   margin-bottom: 1rem;
   padding-bottom: 1rem;
-  border-bottom: 1px solid #1a1a1a;
+  border-bottom: 1px solid var(--surface-2);
 }
 
 .settings-section:last-of-type {
@@ -2968,7 +3302,7 @@
 
 .settings-note {
   font-size: 0.75rem;
-  color: #888;
+  color: var(--text-muted);
   margin: 0.25rem 0 0;
 }
 
@@ -2981,13 +3315,13 @@
 .volume-slider {
   flex: 1;
   height: 4px;
-  accent-color: #fff;
+  accent-color: var(--text-strong);
   cursor: pointer;
 }
 
 .volume-value {
   font-size: 0.8rem;
-  color: #aaa;
+  color: var(--text-secondary);
   min-width: 3ch;
   text-align: right;
   font-variant-numeric: tabular-nums;
@@ -2998,10 +3332,285 @@
 .field-hint {
   display: block;
   font-size: 0.7rem;
-  color: #777;
+  color: var(--text-subtle);
   margin-top: 0.15rem;
   line-height: 1.3;
   font-weight: normal;
+}
+
+/* A hint that explains why an action is unavailable, rather than describing an
+   available one. Was an inline style on one element; it belongs here so the
+   next one reads the same. */
+.field-hint.warning-hint {
+  color: var(--warning-color);
+}
+
+/* ── Live call captions ── */
+
+.voice-captions {
+  max-height: 7rem;
+  overflow-y: auto;
+  margin: 0.4rem 0.5rem 0;
+  padding: 0.35rem 0.5rem;
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+}
+
+.voice-caption-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.voice-caption {
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.voice-caption-speaker {
+  margin-right: 0.35rem;
+  color: var(--text-muted);
+}
+
+.voice-caption-speaker::after {
+  content: ':';
+}
+
+/* ── Federation agreements (admin) ── */
+
+.agreements-empty {
+  margin: 0;
+  padding: 0.5rem 0;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.agreement-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.agreement-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--surface-2);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+}
+
+.agreement-info {
+  flex: 1;
+  min-width: 8rem;
+  display: flex;
+  flex-direction: column;
+}
+
+.agreement-label {
+  font-size: 0.9rem;
+  color: var(--text-primary);
+}
+
+.agreement-url {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.agreement-alignment,
+.agreement-scope {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.agreement-revoke-btn {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  /* Pinned to the right edge, so a destructive control does not move with the
+     length of the text beside it. `.agreement-row` wraps, and below ~500px the
+     alignment and scope drop to a second line with the button after them —
+     which put Sever at a different x on every row, decided by whether the
+     scope was `FullKnowledgeBundle` or `ReflectionSummariesOnly`. On a wide
+     row this changes nothing: `.agreement-info` already takes the slack. */
+  margin-left: auto;
+}
+
+/* ── Federation delivery queue (admin) ── */
+
+.outbox-counts {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0 0 0.75rem;
+  padding: 0;
+  list-style: none;
+  flex-wrap: wrap;
+}
+
+.outbox-count {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 4.5rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--surface-2);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+}
+
+.outbox-count-n {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.outbox-count-label {
+  font-size: 0.65rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.outbox-count-failed.outbox-count-nonzero .outbox-count-n {
+  color: var(--error-text);
+}
+
+.outbox-filter {
+  margin-bottom: 0.75rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.outbox-filter select {
+  margin-left: 0.4rem;
+}
+
+.outbox-empty {
+  margin: 0;
+  padding: 0.75rem 0;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.outbox-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.outbox-row {
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--surface-2);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+}
+
+.outbox-row-failed {
+  border-color: var(--error-tint-15);
+}
+
+.outbox-row-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.outbox-status {
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: var(--surface-2);
+  color: var(--text-muted);
+}
+
+.outbox-status-failed {
+  background: var(--error-tint-15);
+  color: var(--error-text);
+}
+
+.outbox-status-delivered {
+  background: var(--success-tint-15);
+  color: var(--success-color);
+}
+
+.outbox-status-paused {
+  background: var(--warning-tint-15);
+  color: var(--warning-color);
+}
+
+.outbox-peer {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.85rem;
+  color: var(--text-primary);
+}
+
+.outbox-retry-btn {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+}
+
+.outbox-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 0.35rem;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.outbox-row-error {
+  margin: 0.4rem 0 0;
+  font-size: 0.75rem;
+  color: var(--error-text);
+  overflow-wrap: anywhere;
+}
+
+/* Storage gate state line. The badge carries the colour so the state word
+   itself is what changes, rather than tinting a whole paragraph. */
+.storage-gate-state {
+  margin: 0 0 0.4rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.storage-gate-badge {
+  display: inline-block;
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.storage-gate-healthy .storage-gate-badge {
+  background: var(--success-tint-15);
+  color: var(--success-color);
+}
+
+.storage-gate-tripped .storage-gate-badge {
+  background: var(--warning-tint-15);
+  color: var(--warning-color);
 }
 
 /* ── InfoTip (i) icon tooltip ── */
@@ -3013,14 +3622,14 @@
   position: relative;
   margin-left: 0.35rem;
   vertical-align: middle;
-  color: #666;
+  color: var(--text-subtle);
   cursor: help;
   outline: none;
 }
 
 .info-tip:hover,
 .info-tip:focus {
-  color: #aaa;
+  color: var(--text-secondary);
 }
 
 .info-tip-icon {
@@ -3032,9 +3641,9 @@
   bottom: calc(100% + 6px);
   left: 50%;
   transform: translateX(-50%);
-  background: #1a1a1a;
-  color: #ccc;
-  border: 1px solid #333;
+  background: var(--surface-2);
+  color: var(--text-quiet);
+  border: 1px solid var(--border-strong);
   border-radius: 6px;
   padding: 0.5rem 0.65rem;
   font-size: 0.75rem;
@@ -3046,17 +3655,20 @@
   white-space: normal;
   z-index: 1000;
   pointer-events: none;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 4px 12px var(--shadow-medium);
 }
 
+/* `--tip-shift` is set by InfoTip when it has to move the popup to keep it
+   inside the viewport. Subtracting it here holds the arrow over the icon,
+   so a popup that had to slide sideways still points at what it explains. */
 .info-tip-popup::after {
   content: '';
   position: absolute;
   top: 100%;
-  left: 50%;
+  left: calc(50% - var(--tip-shift, 0px));
   transform: translateX(-50%);
   border: 5px solid transparent;
-  border-top-color: #333;
+  border-top-color: var(--border-strong);
 }
 
 /* ── Share Link ── */
@@ -3067,13 +3679,20 @@
   align-items: center;
 }
 
+/* Same floor as the guardian inputs: a flex item's `min-width` is `auto`, so
+   an <input> will not shrink below its intrinsic size and pushes the button
+   out of the row on a narrow screen. */
+.share-link-row input {
+  min-width: 0;
+}
+
 .share-link-input {
   flex: 1;
   font-family: monospace;
   font-size: 0.75rem;
-  color: #aaa;
+  color: var(--text-secondary);
   background: rgba(255, 255, 255, 0.04);
-  border: 1px solid #222;
+  border: 1px solid var(--border);
   border-radius: 4px;
   padding: 0.4rem 0.5rem;
 }
@@ -3091,8 +3710,8 @@
   flex-direction: column;
   gap: 0.35rem;
   padding: 0.6rem 0.75rem;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid #1a1a1a;
+  background: var(--overlay-white-03);
+  border: 1px solid var(--surface-2);
   border-radius: 6px;
 }
 
@@ -3105,12 +3724,12 @@
 .member-pseudonym {
   font-family: monospace;
   font-size: 0.8rem;
-  color: #ccc;
+  color: var(--text-quiet);
 }
 
 .member-meta {
   font-size: 0.7rem;
-  color: #777;
+  color: var(--text-subtle);
 }
 
 .member-caps {
@@ -3125,7 +3744,7 @@
   align-items: center !important;
   gap: 0.25rem !important;
   font-size: 0.75rem !important;
-  color: #aaa !important;
+  color: var(--text-secondary) !important;
   cursor: pointer;
 }
 
@@ -3147,19 +3766,19 @@
   height: 80px;
   border-radius: 12px;
   object-fit: cover;
-  border: 2px solid #1a1a1a;
+  border: 2px solid var(--surface-2);
 }
 
 .server-image-placeholder {
   width: 80px;
   height: 80px;
   border-radius: 12px;
-  border: 2px dashed #222;
+  border: 2px dashed var(--border);
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 0.7rem;
-  color: #666;
+  color: var(--text-subtle);
   text-align: center;
 }
 
@@ -3168,7 +3787,7 @@
 .message-input-wrapper {
   display: flex;
   flex-direction: column;
-  border-top: 1px solid #1a1a1a;
+  border-top: 1px solid var(--surface-2);
 }
 
 .image-preview-bar {
@@ -3176,8 +3795,8 @@
   align-items: center;
   gap: 0.5rem;
   padding: 0.5rem 0.75rem;
-  background: #0a0a0a;
-  border-bottom: 1px solid #1a1a1a;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--surface-2);
 }
 
 .image-preview-thumb {
@@ -3185,12 +3804,12 @@
   height: 40px;
   object-fit: cover;
   border-radius: 4px;
-  border: 1px solid #222;
+  border: 1px solid var(--border);
 }
 
 .image-preview-name {
   font-size: 0.75rem;
-  color: #aaa;
+  color: var(--text-secondary);
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3199,8 +3818,8 @@
 
 .image-preview-cancel {
   background: transparent;
-  border: 1px solid #2a2a2a;
-  color: #aaa;
+  border: 1px solid var(--surface-3);
+  color: var(--text-secondary);
   border-radius: 3px;
   cursor: pointer;
   padding: 0.1rem 0.4rem;
@@ -3208,14 +3827,14 @@
 }
 
 .image-preview-cancel:hover {
-  background: #1a1a1a;
-  color: #fff;
+  background: var(--surface-2);
+  color: var(--text-strong);
 }
 
 .image-upload-btn {
   background: transparent;
   border: none;
-  color: #888;
+  color: var(--text-muted);
   cursor: pointer;
   padding: 0.4rem;
   display: flex;
@@ -3226,8 +3845,8 @@
 }
 
 .image-upload-btn:hover:not(:disabled) {
-  color: #fff;
-  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-strong);
+  background: var(--overlay-white-10);
 }
 
 .image-upload-btn:disabled {
@@ -3245,7 +3864,7 @@
   max-width: 320px;
   max-height: 240px;
   border-radius: 8px;
-  border: 1px solid #1a1a1a;
+  border: 1px solid var(--surface-2);
   cursor: pointer;
   display: block;
   margin-top: 0.25rem;
@@ -3258,15 +3877,30 @@
 
 /* ── Image Lightbox ── */
 
-.image-lightbox {
-  position: fixed;
-  inset: 0;
+/* The lightbox is a `Modal` now, so the backdrop comes from
+   `.dialog-overlay` and only the two values that differ are overridden: a
+   darker scrim, because a photograph needs the room dimmed further than a
+   settings card does, and a stacking order above everything else. */
+.image-lightbox-overlay {
   z-index: 10000;
   background: rgba(0, 0, 0, 0.85);
+  cursor: pointer;
+}
+
+/* `.dialog` is a card — background, border, padding, a 420px cap. None of
+   that belongs around a full-bleed image, so the surface is reset to a bare
+   flex box and the image below keeps its own 90vw/90vh limits. */
+.dialog.image-lightbox {
+  position: static;
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  max-width: none;
+  width: auto;
   display: flex;
   align-items: center;
   justify-content: center;
-  cursor: pointer;
 }
 
 .image-lightbox img {
@@ -3277,13 +3911,16 @@
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
 }
 
-.lightbox-close {
-  position: absolute;
+/* Positioned against the overlay, not the surface: the surface now shrinks
+   to the image, so `top/right` on it would put the close control on the
+   picture instead of in the corner of the screen. */
+.image-lightbox-overlay .lightbox-close {
+  position: fixed;
   top: 1rem;
   right: 1rem;
-  background: rgba(0, 0, 0, 0.6);
-  color: #fff;
-  border: 1px solid #2a2a2a;
+  background: var(--scrim);
+  color: var(--text-strong);
+  border: 1px solid var(--surface-3);
   border-radius: 50%;
   width: 36px;
   height: 36px;
@@ -3296,13 +3933,20 @@
 
 /* ── Message Edit / Delete ── */
 
-.message.deleted {
-  opacity: 0.6;
-}
+/* A tombstone exists to keep a record: someone said something, at a time.
+   The row was dimmed whole with `opacity: 0.6`, which took the sender name
+   below the WCAG contrast threshold on every surface where a deleted message
+   is visible — 25 axe findings, all of them this one element — and erased
+   the only information the tombstone still carries. Moving the dimming onto
+   the content moved the failure with it: `.message-deleted-text` is already
+   `--text-subtle`, which passes on its own and does not survive being
+   multiplied by 0.6.
 
+   So there is no opacity here at all. The italic and the subdued colour are
+   the de-emphasis, and both stay readable. */
 .message-deleted-text {
   font-style: italic;
-  color: #666;
+  color: var(--text-subtle);
 }
 
 .message-actions {
@@ -3326,28 +3970,28 @@
   padding: 0;
   background: transparent;
   border: 1px solid transparent;
-  color: #666;
+  color: var(--text-subtle);
   border-radius: 3px;
   cursor: pointer;
   transition: color 0.1s, border-color 0.1s, background 0.1s;
 }
 
 .msg-action-btn.edit-btn:hover {
-  color: #aaa;
-  border-color: #444;
-  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-secondary);
+  border-color: var(--border-stronger);
+  background: var(--bg-hover);
 }
 
 .msg-action-btn.delete-btn:hover {
-  color: #f87171;
-  border-color: #f87171;
-  background: rgba(248, 113, 113, 0.1);
+  color: var(--error-text);
+  border-color: var(--error-text);
+  background: var(--error-tint-10);
 }
 
 .msg-action-btn.delete-btn.confirming {
-  color: #f87171;
-  border-color: #f87171;
-  background: rgba(248, 113, 113, 0.15);
+  color: var(--error-text);
+  border-color: var(--error-text);
+  background: var(--error-tint-15);
 }
 
 .delete-confirm-text {
@@ -3358,7 +4002,7 @@
 .edited-badge {
   background: transparent;
   border: none;
-  color: #666;
+  color: var(--text-subtle);
   font-size: 0.7rem;
   cursor: pointer;
   padding: 0;
@@ -3366,7 +4010,7 @@
 }
 
 .edited-badge:hover {
-  color: #aaa;
+  color: var(--text-secondary);
   text-decoration: underline;
 }
 
@@ -3384,8 +4028,8 @@
   resize: none;
   padding: 0.4rem 0.6rem;
   border-radius: 4px;
-  border: 1px solid #333;
-  background: #0a0a0a;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-secondary);
   color: inherit;
   font-family: inherit;
   font-size: 0.85rem;
@@ -3394,7 +4038,7 @@
 
 .message-edit-input:focus {
   outline: none;
-  border-color: #fff;
+  border-color: var(--border-emphasis);
 }
 
 .message-edit-actions {
@@ -3409,20 +4053,20 @@
   font-size: 0.7rem;
   border-radius: 3px;
   cursor: pointer;
-  border: 1px solid #333;
+  border: 1px solid var(--border-strong);
   background: transparent;
-  color: #aaa;
+  color: var(--text-secondary);
   transition: background 0.1s, color 0.1s;
 }
 
 .msg-edit-save:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: #fff;
+  background: var(--overlay-white-10);
+  color: var(--text-strong);
 }
 
 .msg-edit-cancel:hover {
-  background: rgba(248, 113, 113, 0.1);
-  color: #f87171;
+  background: var(--error-tint-10);
+  color: var(--error-text);
 }
 
 /* ── Edit History ── */
@@ -3430,8 +4074,8 @@
 .edit-history {
   margin-top: 0.5rem;
   padding: 0.5rem 0.6rem;
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid #1a1a1a;
+  background: var(--overlay-white-02);
+  border: 1px solid var(--surface-2);
   border-radius: 6px;
 }
 
@@ -3440,7 +4084,7 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: #888;
+  color: var(--text-muted);
   margin-bottom: 0.4rem;
 }
 
@@ -3452,31 +4096,31 @@
 
 .edit-history-item {
   padding: 0.3rem 0.5rem;
-  background: rgba(0, 0, 0, 0.2);
+  background: var(--shadow-soft);
   border-radius: 4px;
-  border-left: 2px solid #333;
+  border-left: 2px solid var(--border-strong);
 }
 
 .edit-history-item.edit-history-current {
-  border-left-color: #e63946;
+  border-left-color: var(--accent);
 }
 
 .edit-history-content {
   font-size: 0.8rem;
-  color: #aaa;
+  color: var(--text-secondary);
   word-break: break-word;
 }
 
 .edit-history-time {
   font-size: 0.65rem;
-  color: #666;
+  color: var(--text-subtle);
   margin-top: 0.15rem;
 }
 
 .edit-history-loading,
 .edit-history-empty {
   font-size: 0.75rem;
-  color: #666;
+  color: var(--text-subtle);
   padding: 0.25rem 0;
 }
 
@@ -3497,17 +4141,17 @@
 .startup-mode-selector h2 {
   font-size: 1.6rem;
   margin: 0 0 0.5rem;
-  color: #eee;
+  color: var(--text-bright);
 }
 
 .startup-description {
-  color: #888;
+  color: var(--text-muted);
   margin: 0 0 1.5rem;
   font-size: 0.9rem;
 }
 
 .startup-loading {
-  color: #888;
+  color: var(--text-muted);
   font-size: 0.9rem;
   padding: 2rem 0;
 }
@@ -3520,8 +4164,8 @@
 }
 
 .startup-option {
-  background: #1a1a1a;
-  border: 1px solid #333;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
   border-radius: 8px;
   padding: 1.25rem;
   text-align: left;
@@ -3530,13 +4174,13 @@
 .startup-option h3 {
   margin: 0 0 0.4rem;
   font-size: 1rem;
-  color: #eee;
+  color: var(--text-bright);
 }
 
 .startup-option p {
   margin: 0 0 0.75rem;
   font-size: 0.85rem;
-  color: #888;
+  color: var(--text-muted);
   line-height: 1.4;
 }
 
@@ -3547,28 +4191,28 @@
 }
 
 .startup-option input[type="text"] {
-  background: #111;
-  border: 1px solid #444;
+  background: var(--surface-1);
+  border: 1px solid var(--border-stronger);
   border-radius: 4px;
   padding: 0.5rem 0.6rem;
-  color: #eee;
+  color: var(--text-bright);
   font-size: 0.85rem;
   outline: none;
 }
 
 .startup-option input[type="text"]:focus {
-  border-color: #e63946;
+  border-color: var(--accent);
 }
 
 .startup-option input[type="text"]::placeholder {
-  color: #555;
+  color: var(--text-subtle);
 }
 
 .startup-divider {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  color: #555;
+  color: var(--text-subtle);
   font-size: 0.8rem;
 }
 
@@ -3577,17 +4221,25 @@
   content: '';
   flex: 1;
   height: 1px;
-  background: #333;
+  background: var(--border-strong);
 }
 
 .startup-mode-selector .error-message {
-  color: #e63946;
+  color: var(--accent);
   font-size: 0.85rem;
   margin-bottom: 0.75rem;
 }
 
+/* Inherits `.form-error`'s colour rather than overriding it.
+
+   This said `color: var(--accent)` — the brand red, #e63946 — where the
+   generic rule two thousand lines above uses `--error-text` (#f87171).
+   On the dark card that lands at about 3.3:1, under the 4.5:1 AA floor for
+   normal text, so the one message telling a new user their server address is
+   wrong was the least readable text on the screen. `--error-text` reaches
+   ~6.7:1 there. Found by `startup-remote-unreachable`, the first surface ever
+   to photograph this state. */
 .startup-mode-selector .form-error {
-  color: #e63946;
   font-size: 0.8rem;
   margin: 0;
 }
@@ -3596,15 +4248,15 @@
 
 .tunnel-hint,
 .endpoint-hint {
-  color: #666;
+  color: var(--text-subtle);
   font-size: 0.8rem;
   margin: 0.5rem 0 0;
 }
 
 .tunnel-url-card {
   width: 100%;
-  background: #1a1a1a;
-  border: 1px solid #333;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
   border-radius: 8px;
   padding: 1rem;
   margin-bottom: 1.5rem;
@@ -3620,9 +4272,9 @@
   flex: 1;
   font-family: monospace;
   font-size: 0.85rem;
-  color: #4ade80;
-  background: #0a0a0a;
-  border: 1px solid #333;
+  color: var(--success-color);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-strong);
   border-radius: 4px;
   padding: 0.6rem 0.75rem;
   outline: none;
@@ -3630,15 +4282,15 @@
 }
 
 .tunnel-url-input:focus {
-  border-color: #4ade80;
+  border-color: var(--success-color);
 }
 
 .tunnel-copy-btn {
   padding: 0.6rem 1rem;
-  background: #222;
-  border: 1px solid #444;
+  background: var(--border);
+  border: 1px solid var(--border-stronger);
   border-radius: 4px;
-  color: #eee;
+  color: var(--text-bright);
   cursor: pointer;
   font-size: 0.8rem;
   white-space: nowrap;
@@ -3646,14 +4298,14 @@
 }
 
 .tunnel-copy-btn:hover {
-  background: #333;
-  border-color: #666;
+  background: var(--border-strong);
+  border-color: var(--text-subtle);
 }
 
 .tunnel-url-note {
   margin: 0.5rem 0 0;
   font-size: 0.75rem;
-  color: #888;
+  color: var(--text-muted);
 }
 
 .tunnel-continue-btn {
@@ -3664,13 +4316,23 @@
 
 /* ── Optimistic / Failed Message States ── */
 
-.message.pending {
-  opacity: 0.6;
-}
-
+/* Neither of these dims itself any more.
+ *
+ * `opacity` multiplies every colour inside the element, text included, and
+ * these two states put their text on the wrong side of the contrast floor
+ * doing it: the timestamp is `--text-subtle` (#8a8a8a, 5.04:1 on the message
+ * background), and 0.8 opacity blends it to #747474 — 3.72:1 — while 0.6
+ * takes it to 2.64:1. The sender goes the same way. So the message became
+ * hardest to read at exactly the moment it needed attention, which is
+ * backwards: a failed send is the one message in the column the user has to
+ * act on.
+ *
+ * Nothing is lost by removing it. Both states already say what they are in
+ * words — "sending..." and "failed", the latter next to Retry and Dismiss —
+ * and failed keeps the red rule down its left edge. `message-send-failed`
+ * captures this state; axe found the 0.8 case there on its first run. */
 .message.failed {
-  border-left: 3px solid var(--error-color, #e63946);
-  opacity: 0.8;
+  border-left: 3px solid var(--error-color, var(--accent));
 }
 
 .message-status {
@@ -3679,18 +4341,18 @@
 }
 
 .pending-status {
-  color: var(--text-muted, #888);
+  color: var(--text-muted);
   font-style: italic;
 }
 
 .failed-status {
-  color: var(--error-color, #e63946);
+  color: var(--error-color, var(--accent));
 }
 
 .msg-retry-btn, .msg-dismiss-btn {
   background: none;
   border: none;
-  color: var(--persona-accent, #e63946);
+  color: var(--accent-text);
   cursor: pointer;
   font-size: 0.7rem;
   text-decoration: underline;
@@ -3699,14 +4361,14 @@
 }
 
 .msg-dismiss-btn {
-  color: var(--text-muted, #888);
+  color: var(--text-muted);
 }
 
 /* ── Typing Indicator ── */
 
 .typing-indicator {
   font-size: 0.75rem;
-  color: var(--text-muted, #888);
+  color: var(--text-muted);
   padding: 0.25rem 1rem;
   font-style: italic;
   min-height: 1.25rem;
@@ -3715,8 +4377,8 @@
 /* ── Unread Badge ── */
 
 .unread-badge {
-  background: var(--persona-accent, #e63946);
-  color: #fff;
+  background: var(--persona-accent, var(--accent));
+  color: var(--text-strong);
   font-size: 0.65rem;
   font-weight: 700;
   border-radius: 9px;
@@ -3729,7 +4391,7 @@
 
 .channel-item.has-unread .channel-name {
   font-weight: 700;
-  color: var(--text-primary, #e0e0e0);
+  color: var(--text-primary, var(--text-body));
 }
 
 /* ── Edit Countdown ── */
@@ -3739,6 +4401,22 @@
   color: var(--warning-color, #f0ad4e);
   margin-left: 0.2rem;
   font-weight: 600;
+  /* Reserve the widest value so the row does not resize as it counts.
+     
+     It runs 60s → 1s inside a right-aligned action row, so losing a digit at
+     "9s" narrowed the row and shifted the whole message bubble sideways —
+     once, visibly, while the user has the edit window open. The audit found
+     it as a flake rather than as jitter: `mobile/message-delete-confirm`
+     failed a verify by 5,915 pixels, the bubble 13px off, against a baseline
+     recorded sixteen minutes earlier. The surface masks this element, but a
+     mask hides pixels and not geometry.
+     
+     `ch` is the width of "0" in the current font, and tabular numerals keep
+     every digit that width. */
+  min-width: 3ch;
+  display: inline-block;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── Reconnection Banner ── */
@@ -3753,14 +4431,14 @@
 }
 
 .reconnection-banner.disconnected {
-  background: var(--error-color, #e63946);
-  color: #fff;
+  background: var(--error-color, var(--accent));
+  color: var(--text-strong);
   animation: pulse-bg 2s ease-in-out infinite;
 }
 
 .reconnection-banner.reconnected {
   background: #2a9d5c;
-  color: #fff;
+  color: var(--text-strong);
 }
 
 @keyframes pulse-bg {
@@ -3771,7 +4449,7 @@
 /* ── Drag-and-Drop ── */
 
 .message-input-wrapper.drag-over {
-  outline: 2px dashed var(--persona-accent, #e63946);
+  outline: 2px dashed var(--persona-accent, var(--accent));
   outline-offset: -2px;
   background: rgba(230, 57, 70, 0.05);
 }
@@ -3780,8 +4458,8 @@
 
 .reply-context {
   font-size: 0.75rem;
-  color: var(--text-muted, #888);
-  border-left: 2px solid var(--persona-accent, #e63946);
+  color: var(--text-muted);
+  border-left: 2px solid var(--persona-accent, var(--accent));
   padding: 0.15rem 0.5rem;
   margin: 0.15rem 0;
   display: flex;
@@ -3791,7 +4469,7 @@
 
 .reply-context-author {
   font-weight: 600;
-  color: var(--persona-accent, #e63946);
+  color: var(--accent-text);
   white-space: nowrap;
 }
 
@@ -3803,19 +4481,71 @@
 
 /* ── Reply Bar (above composer) ── */
 
+/* The composer's two error bars.
+   
+   Neither class had a rule, so both rendered as plain white text flush at
+   x=0 — no padding, no error colour, nothing to distinguish "Message
+   rejected: you are not a member of this channel" from the placeholder text
+   below it. The failed message bubble directly above is marked in red with a
+   left border, so the two halves of the same failure did not look related.
+   
+   Same shape as `.reply-bar` beneath, which is the other thing that appears
+   in this strip: a tinted row with a coloured left edge. */
+.upload-error-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.8rem;
+  background: var(--error-tint-12);
+  border-left: 3px solid var(--error-text);
+  color: var(--error-text);
+}
+
+.upload-error-bar span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Same treatment as the other dismiss buttons in the app: the × is a
+   control, not a box. */
+.composer-error-dismiss {
+  flex-shrink: 0;
+  padding: 0 0.25rem;
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.composer-error-dismiss:hover {
+  color: var(--text-strong);
+}
+
 .reply-bar {
   display: flex;
   align-items: center;
   gap: 0.4rem;
   padding: 0.3rem 0.75rem;
   font-size: 0.75rem;
-  background: var(--bg-secondary, #2a2a3a);
-  border-left: 3px solid var(--persona-accent, #e63946);
-  color: var(--text-muted, #888);
+  background: var(--bg-secondary, var(--surface-cool-1));
+  border-left: 3px solid var(--persona-accent, var(--accent));
+  color: var(--text-muted);
+}
+
+/* An unresolved reply author is a raw cryptographic id, so it is set like
+   every other one in the app rather than like a person's name. */
+.reply-bar-author-pseudonym,
+.reply-context-author-pseudonym {
+  font-family: monospace;
+  font-weight: 500;
 }
 
 .reply-bar-label {
-  color: var(--persona-accent, #e63946);
+  color: var(--accent-text);
   font-weight: 600;
   white-space: nowrap;
 }
@@ -3835,7 +4565,7 @@
 .reply-bar-cancel {
   background: none;
   border: none;
-  color: var(--text-muted, #888);
+  color: var(--text-muted);
   cursor: pointer;
   font-size: 1rem;
   padding: 0 0.25rem;
@@ -3843,7 +4573,7 @@
 }
 
 .reply-bar-cancel:hover {
-  color: var(--text-primary, #e0e0e0);
+  color: var(--text-primary, var(--text-body));
 }
 
 .reply-btn {
@@ -3861,9 +4591,9 @@
   position: absolute;
   top: 0.5rem;
   right: 0.5rem;
-  background: var(--bg-secondary, #2a2a3a);
-  border: 1px solid var(--border-color, #3a3a4a);
-  color: var(--text-muted, #888);
+  background: var(--bg-secondary, var(--surface-cool-1));
+  border: 1px solid var(--border-color, var(--surface-cool-2));
+  color: var(--text-muted);
   cursor: pointer;
   border-radius: 4px;
   padding: 0.3rem 0.4rem;
@@ -3873,8 +4603,8 @@
 }
 
 .search-toggle-btn:hover {
-  color: var(--text-primary, #e0e0e0);
-  border-color: var(--persona-accent, #e63946);
+  color: var(--text-primary, var(--text-body));
+  border-color: var(--accent-text);
 }
 
 .chat-area {
@@ -3883,8 +4613,8 @@
 
 .message-search {
   padding: 0.4rem 0.75rem;
-  background: var(--bg-secondary, #2a2a3a);
-  border-bottom: 1px solid var(--border-color, #3a3a4a);
+  background: var(--bg-secondary, var(--surface-cool-1));
+  border-bottom: 1px solid var(--border-color, var(--surface-cool-2));
 }
 
 .search-form {
@@ -3912,8 +4642,8 @@
   width: 100%;
   background: none;
   border: none;
-  border-bottom: 1px solid var(--border-color, #3a3a4a);
-  color: var(--text-primary, #e0e0e0);
+  border-bottom: 1px solid var(--border-color, var(--surface-cool-2));
+  color: var(--text-primary, var(--text-body));
   cursor: pointer;
   font-size: 0.8rem;
 }
@@ -3922,10 +4652,21 @@
   background: var(--bg-hover, #333345);
 }
 
+/* Same reason as the event table: a sender or timestamp long enough to wrap
+   changes the height of every result below it. At the mobile width there is
+   least room, so that is where it showed up. `.search-result-content`
+   already clipped; these two did not. */
+.search-result-sender,
+.search-result-time {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .search-result-sender {
   font-weight: 600;
   font-size: 0.75rem;
-  color: var(--persona-accent, #e63946);
+  color: var(--accent-text);
 }
 
 .search-result-content {
@@ -3936,14 +4677,26 @@
 
 .search-result-time {
   font-size: 0.7rem;
-  color: var(--text-muted, #888);
+  color: var(--text-muted);
 }
 
 .search-no-results {
   padding: 0.5rem;
-  color: var(--text-muted, #888);
+  color: var(--text-muted);
   font-size: 0.8rem;
   text-align: center;
+}
+
+/* Says how far back the search reached, when it did not reach the end.
+   Sits under the results rather than above them: it qualifies what is
+   there, and putting a caveat first would read as a failure. */
+.search-coverage-note {
+  margin: 0;
+  padding: 0.4rem 0.6rem;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  line-height: 1.4;
 }
 
 /* Channel end-to-end encryption bar */
@@ -3951,15 +4704,45 @@
   display: flex;
   align-items: center;
   gap: 0.6rem;
-  padding: 0.5rem 0.9rem;
+  /* Right padding clears the search toggle, which is `position: absolute`
+     at the top-right of `.chat-area` with `z-index: 10` — so it floats over
+     whatever is up there, and when a channel is not encrypted that is this
+     bar's wrapping paragraph. On a phone the text reaches the button's edge
+     with nothing reserved for it. Cheaper to keep the text out of its way
+     than to make the two agree about where the line ends. */
+  padding: 0.5rem 2.9rem 0.5rem 0.9rem;
   font-size: 0.85rem;
-  border-bottom: 1px solid var(--border, #2a2a2a);
+  border-bottom: 1px solid var(--border, var(--surface-3));
   background: var(--surface-2, #1b1b1f);
   color: var(--text-muted, #b9b9c3);
   flex-wrap: wrap;
 }
+/* `--success-text`, not `--accent`. This said `var(--accent, #7bd88f)`: a
+   green literal with the brand accent in front of it. The accent is
+   `#e63946` — red — so the token migration silently repainted "End-to-end
+   encrypted, the server can't read these messages" from a confirmation into
+   something that reads as an alarm, and landed it at 4.2:1, under the 4.5:1
+   this 0.85rem text needs. The palette states the rule two files over: the
+   accent is a FILL behind white text, `--accent-text` is the tint for accent
+   text. Neither is right here — the state is success, and `--success-text`
+   (#7eda7e) is within a hair of the green the fallback was reaching for.
+
+   It went unseen because no surface captured an encrypted channel. The one
+   added alongside this found it on its first run. */
 .channel-encryption-bar.encrypted {
-  color: var(--accent, #7bd88f);
+  color: var(--success-text);
+}
+/* Encrypted, but not readable by this client. Deliberately not the accent
+   green of `.encrypted`: that colour reads as "everything is fine", and in
+   both of these states the user cannot read the channel. `pending` resolves
+   on its own, so it is a notice; `failed` does not, so it is a warning. */
+.channel-encryption-bar.key-pending {
+  color: var(--text-strong);
+  background: var(--overlay-white-08);
+}
+.channel-encryption-bar.key-failed {
+  color: var(--error-text);
+  background: var(--error-tint-10);
 }
 .channel-encryption-bar button {
   margin-left: auto;
@@ -3972,7 +4755,368 @@
   opacity: 0.6;
   cursor: default;
 }
+/* `--error-text`, not `--danger` — the same substitution the `.encrypted`
+   rule above was fixed for, missed here because nothing captured a failed
+   enable. `--danger` (#e63946) is the FILL colour, and as text on
+   `--surface-2` it lands at 4.15:1, under the 4.5:1 this 0.85rem line needs;
+   the literal it replaced (#e06c75) had been passing at 5.4:1. `--error-text`
+   is what `.key-failed` two rules up already uses for exactly this job. */
 .channel-encryption-error {
   width: 100%;
-  color: var(--danger, #e06c75);
+  color: var(--error-text);
+}
+
+
+/* Contained render crash. Styled as a self-contained panel because it sits
+   inside whatever region failed, next to an app that still works. */
+.error-boundary {
+  margin: 1rem;
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--danger-surface-strong);
+  border-left: 3px solid var(--danger);
+  border-radius: var(--radius-lg);
+  background: var(--danger-surface);
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.error-boundary-title {
+  margin: 0 0 0.35rem;
+  font-weight: 600;
+  color: var(--error-text);
+}
+
+.error-boundary-hint {
+  margin: 0 0 0.75rem;
+  color: var(--text-muted);
+}
+
+/* Device-link transfer code — the payload the receiving device pastes.
+   Selectable and copyable, because the graphic above it is decorative: it is
+   explicitly not a scannable QR (see generateQrSvg), so this field is the
+   only way the transfer can actually be completed. */
+.transfer-code-label {
+  display: block;
+  margin: 0.75rem 0 0.25rem;
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.transfer-code-value {
+  width: 100%;
+  resize: vertical;
+  padding: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.7rem;
+  line-height: 1.4;
+  word-break: break-all;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * Responsive layout
+ *
+ * The app was built as a fixed three-column desktop layout: a 240px channel
+ * rail, a fluid chat column, and a 260px member rail, inside a header/footer
+ * that assume horizontal room. At a phone width that left the chat column
+ * roughly 60px wide, so message text wrapped to ONE CHARACTER PER LINE, the
+ * member list was pushed off-screen, the header tabs overlapped the persona
+ * chip, and the composer was unusable.
+ *
+ * Until this block, the entire stylesheet contained exactly one media query
+ * (`prefers-reduced-motion`) and zero width breakpoints.
+ *
+ * The approach is deliberately conservative — collapse rather than redesign:
+ *   ≤1100px  drop the member rail; it is contextual, not load-bearing.
+ *   ≤760px   drop the channel rail to a horizontal strip above the messages,
+ *            let the header and status bar wrap, and give the chat column the
+ *            full width.
+ * Nothing above 1100px changes, so the desktop baselines stay byte-identical
+ * and this block is verifiable on its own.
+ * ══════════════════════════════════════════════════════════════════════ */
+
+@media (max-width: 1100px) {
+  /* Contextual, and the first thing worth spending width on. */
+  .sidebar-right {
+    display: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .app-layout {
+    flex-direction: column;
+  }
+
+  /* The channel list becomes a horizontal, scrollable strip.
+     
+     That is what this block always claimed, and only the container was ever
+     turned. `.channel-list` stayed a stack of `width: 100%` rows inside it,
+     so the "strip" was a full-width vertical list capped at 34vh — a third of
+     a phone screen spent on a channel picker, above a message column that got
+     about a quarter. Same half-applied turn as the server rail two rules
+     down. Turning the list as well makes it one row, which is what frees the
+     screen for the conversation. */
+  .sidebar-left {
+    width: 100%;
+    max-height: none;
+    border-right: none;
+    border-bottom: 1px solid var(--surface-2);
+    flex-shrink: 0;
+    overflow-y: hidden;
+  }
+
+  .channel-list {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.4rem 0.5rem;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  /* The heading and the create button lead the strip instead of sitting
+     above it. `h2` keeps its text for the document outline; hiding it would
+     take the landmark's name with it. */
+  .channel-list-header {
+    flex-shrink: 0;
+    gap: 0.35rem;
+  }
+
+  .channel-list h2 {
+    padding: 0 0.25rem 0 0;
+  }
+
+  .channel-item {
+    width: auto;
+    flex-shrink: 0;
+  }
+
+  /* An error inside a row of chips has nowhere to wrap to, so it keeps its
+     own line under the strip rather than stretching it. */
+  .channel-action-error {
+    flex-basis: 100%;
+  }
+
+  .chat-area {
+    /* Without an explicit min-height a flex child refuses to shrink below its
+       content, which is what pushed the composer off-screen. */
+    min-height: 0;
+    flex: 1;
+  }
+
+  /* Header: let the tabs wrap under the wordmark instead of colliding with
+     the persona chip, which is absolutely positioned on wide screens. */
+  .app-header {
+    height: auto;
+    min-height: 48px;
+    flex-wrap: wrap;
+    gap: 0.25rem 0.5rem;
+    padding: 0.4rem 0.75rem;
+  }
+
+  .header-tabs {
+    margin-left: 0;
+    order: 3;
+    width: 100%;
+  }
+
+  .persona-context-indicator {
+    position: static;
+    transform: none;
+    order: 2;
+    margin-left: auto;
+    max-width: 55%;
+  }
+
+  /* Status bar: two rows rather than one overflowing row. */
+  .status-bar {
+    height: auto;
+    flex-wrap: wrap;
+    gap: 0.25rem 0.5rem;
+    padding: 0.4rem 0.75rem;
+  }
+
+  .status-actions {
+    flex-wrap: wrap;
+    gap: 0.25rem;
+  }
+
+  /* The policy grid collapses to one column.
+     
+     It is `1fr 1fr` and each cell carries a field plus its explanation, so on
+     a 390px screen a string like "Allow connecting to other Annex servers to
+     share channels and messages." wrapped to one or two words per line in a
+     column about fifty pixels wide, and the field below it was pushed out of
+     the card. Nothing flagged it: the text is not clipped and nothing
+     overflows the viewport, so the overflow audit passes. It is simply
+     unreadable, which only shows up in the screenshot.
+
+     Only this grid. `.recovery-params` is also `1fr 1fr` but holds two short
+     numeric fields, and `.peer-detail-stats` is `repeat(4, 1fr)` holding four
+     one-word stats — both read better across than stacked, which the mobile
+     baselines show. A rule that collapsed every fixed grid would have made
+     those two worse to fix this one. */
+  .policy-grid {
+    grid-template-columns: 1fr;
+  }
+
+  /* Dialogs were sized for a desktop viewport and overflowed the screen. */
+  .dialog {
+    width: calc(100vw - 1.5rem);
+    max-width: none;
+    max-height: calc(100vh - 2rem);
+    overflow-y: auto;
+  }
+
+  /* A message bubble capped at a percentage of a narrow column ends up
+     narrower than its own words. */
+  .message-content,
+  .message-bubble {
+    max-width: 100%;
+  }
+
+  /* The server rail becomes a horizontal strip.
+     
+     Turning the outer container was not enough, and stopping there left the
+     strip laid out as a rail: `.server-hub-list` was still a column, every
+     `.server-hub-item-wrapper` was still `width: 100%`, and the active pill
+     — a 4px vertical bar pinned to `left: 0` — became a sliver down the far
+     left edge of a full-width row. The icons stacked vertically inside a
+     strip that was supposed to hold them side by side, which is what made
+     this the ugliest thing on the phone layout. */
+  .server-hub {
+    flex-direction: row;
+    align-items: center;
+    width: 100%;
+    height: auto;
+    padding: 8px 12px;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .server-hub-list {
+    flex-direction: row;
+    width: auto;
+  }
+
+  .server-hub-item-wrapper {
+    width: auto;
+    flex-shrink: 0;
+  }
+
+  /* The selected-server marker moves with the axis: the rail's leading edge
+     is its left side, the strip's is its bottom. Hover and active differ by
+     opacity here rather than by length, because a 36px-tall bar under a
+     32px icon is not a subtler version of the same thing. */
+  .server-hub-pill {
+    top: auto;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: auto;
+    height: 3px;
+    border-radius: 4px 4px 0 0;
+  }
+
+  .server-hub-item-wrapper:hover .server-hub-pill,
+  .server-hub-pill.active {
+    height: 3px;
+  }
+
+  .server-hub-icon.add-server-btn {
+    flex-shrink: 0;
+  }
+
+  /* The separator between the joined servers and "add a server" is a 32x2
+     rule with vertical margins — a horizontal line drawn to divide a stack.
+     In a strip it has to turn with everything else, or it stretches out as a
+     dash floating in the middle of the row. */
+  .server-hub-separator {
+    width: 2px;
+    height: 24px;
+    margin: 0 8px;
+  }
+
+  .app-with-hub {
+    flex-direction: column;
+  }
+}
+
+/* ── Recoverable failures ──────────────────────────────────────────────
+   Four places that used to render a failed request as an empty result:
+   a search that found nothing, a member list for an empty server, a
+   channel whose history had ended, and an edit that saved. Each now says
+   what happened and — where a retry is meaningful — offers one. Shared
+   shape so they read as the same kind of event wherever they appear. */
+.search-error,
+.member-list-error,
+.scrollback-error,
+.edit-history-error,
+.peer-detail-error,
+.message-action-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  margin: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--error-text);
+  background: var(--error-tint-10);
+  border: 1px solid var(--error-tint-15);
+  border-radius: var(--radius-md);
+}
+
+.search-error button,
+.member-list-error button,
+.scrollback-error button,
+.edit-history-error button,
+.peer-detail-error button,
+.message-action-error button {
+  flex-shrink: 0;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.75rem;
+  color: var(--text-strong);
+  background: var(--overlay-white-08);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.search-error button:hover,
+.member-list-error button:hover,
+.scrollback-error button:hover,
+.edit-history-error button:hover,
+.peer-detail-error button:hover,
+.message-action-error button:hover {
+  background: var(--overlay-white-20);
+  border-color: var(--border-emphasis);
+}
+
+/* The scrollback notice sits at the top of the history, where the user is
+   looking when the page they scrolled for fails to arrive. */
+.scrollback-error {
+  margin: 0.5rem auto;
+  max-width: 32rem;
+}
+
+/* The recovery button's failure notice. Shares the shape of the other
+   recoverable-failure strips — this one matters most, because it appears on
+   the screen a user reaches when nothing else has worked. */
+.clear-state-error {
+  padding: 0.5rem 0.75rem;
+  margin: 0.5rem 0;
+  font-size: 0.8rem;
+  color: var(--error-text);
+  background: var(--error-tint-10);
+  border: 1px solid var(--error-tint-15);
+  border-radius: var(--radius-md);
 }

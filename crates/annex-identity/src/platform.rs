@@ -48,16 +48,31 @@ pub fn create_platform_identity(
     pseudonym_id: &str,
     participant_type: RoleCode,
 ) -> Result<PlatformIdentity, IdentityError> {
-    // The first identity on a server becomes the founder and gets core capabilities
-    // (voice, moderate, invite, federate). The founder check and insert are combined
-    // into a single SQL statement to eliminate the TOCTOU race between SELECT COUNT(*)
-    // and INSERT that would allow concurrent registrations to both become founders.
+    // The first identity on a server becomes the founder and gets the three
+    // PRIVILEGES — moderate, invite, federate. The founder check and insert are
+    // combined into a single SQL statement to eliminate the TOCTOU race between
+    // SELECT COUNT(*) and INSERT that would let concurrent registrations both
+    // become founders.
+    //
+    // `can_voice` is NOT one of them. It used to be, which meant every member
+    // except the very first silently could not join any call: the button
+    // rendered disabled reading "Voice is disabled by server policy for your
+    // identity", on a server whose `ServerPolicy::voice_enabled` defaults to
+    // true. The operator's switch said voice was on and nobody but the owner
+    // could use it — an internal contradiction, and one that hid every other
+    // voice defect behind it, because two ordinary members could never get into
+    // a call together to find them.
+    //
+    // Speaking is participation, not privilege. The server-level
+    // `voice_enabled` is the operator's control; the per-identity flag exists
+    // so a moderator can revoke voice from a *specific* person via
+    // `PATCH /api/admin/members/{id}/capabilities`.
     conn.execute(
         "INSERT INTO platform_identities (
             server_id, pseudonym_id, participant_type,
             can_voice, can_moderate, can_invite, can_federate
         ) VALUES (?1, ?2, ?3,
-            (SELECT CASE WHEN COUNT(*) = 0 THEN 1 ELSE 0 END FROM platform_identities WHERE server_id = ?1),
+            1,
             (SELECT CASE WHEN COUNT(*) = 0 THEN 1 ELSE 0 END FROM platform_identities WHERE server_id = ?1),
             (SELECT CASE WHEN COUNT(*) = 0 THEN 1 ELSE 0 END FROM platform_identities WHERE server_id = ?1),
             (SELECT CASE WHEN COUNT(*) = 0 THEN 1 ELSE 0 END FROM platform_identities WHERE server_id = ?1)
@@ -201,6 +216,56 @@ pub fn ensure_founder(conn: &Connection, server_id: i64) -> Result<bool, Identit
     )?;
 
     Ok(promoted > 0)
+}
+
+/// Returns `true` if applying `new_caps` to `pseudonym_id` would remove the
+/// **last** active moderator from the server.
+///
+/// This is the case when all of the following hold:
+///   * `new_caps.can_moderate` is `false` (the update drops moderation), and
+///   * the target is currently an active moderator, and
+///   * no *other* active moderator exists.
+///
+/// Callers must refuse such an update: a server with zero moderators is locked
+/// out of all administrative control and drops into the no-moderator self-heal
+/// path in [`ensure_founder`], where the next identity read re-promotes the
+/// lowest-id active account. A moderator may still demote other moderators (or
+/// themselves) as long as at least one active moderator remains.
+///
+/// # Errors
+///
+/// Returns `IdentityError::DatabaseError` on query failure.
+pub fn would_remove_last_moderator(
+    conn: &Connection,
+    server_id: i64,
+    pseudonym_id: &str,
+    new_caps: Capabilities,
+) -> Result<bool, IdentityError> {
+    // Granting or retaining moderation can never drop the moderator count.
+    if new_caps.can_moderate {
+        return Ok(false);
+    }
+
+    let target_is_active_moderator: bool = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM platform_identities
+            WHERE server_id = ?1 AND pseudonym_id = ?2 AND can_moderate = 1 AND active = 1
+        )",
+        params![server_id, pseudonym_id],
+        |row| row.get(0),
+    )?;
+    if !target_is_active_moderator {
+        return Ok(false);
+    }
+
+    let active_moderators: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM platform_identities
+         WHERE server_id = ?1 AND can_moderate = 1 AND active = 1",
+        params![server_id],
+        |row| row.get(0),
+    )?;
+
+    Ok(active_moderators <= 1)
 }
 
 /// Deactivates a platform identity (sets active = 0).

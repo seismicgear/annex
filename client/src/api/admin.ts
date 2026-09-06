@@ -25,6 +25,120 @@ export async function updatePolicy(
   });
 }
 
+// ── Storage health gate (ADR-0009) ──
+
+/**
+ * The storage gate's current state.
+ *
+ * `degraded` means the server is answering every mutating request with a 507
+ * and will keep doing so until an operator clears it — there is no automatic
+ * recovery, by design. Both this and the clear below existed on the server
+ * with no caller here, so from the UI the only recovery was still a process
+ * restart.
+ */
+export interface StorageHealth {
+  /** `"healthy"`, `"warn"`, or `"degraded"`. */
+  state: string;
+  /** Why the gate left `healthy`. Empty while healthy. */
+  reason: string;
+  /** True while mutating requests are being rejected with HTTP 507. */
+  writes_blocked: boolean;
+}
+
+export async function getStorageHealth(pseudonymId: string): Promise<StorageHealth> {
+  return request<StorageHealth>('/api/admin/storage', {
+    headers: authHeaders(pseudonymId),
+  });
+}
+
+export async function clearStorageGate(
+  pseudonymId: string,
+): Promise<{ status: string; previous_state: string; state: string }> {
+  return request<{ status: string; previous_state: string; state: string }>(
+    '/api/admin/storage/clear',
+    { method: 'POST', headers: authHeaders(pseudonymId) },
+  );
+}
+
+// ── Federation agreements ──
+
+/**
+ * Sever a federation agreement.
+ *
+ * Takes the agreement id, which is why `GET /api/public/federation/peers`
+ * now returns one: before that, nothing a client could see named the row
+ * this endpoint deletes, so an operator could not cut off a peer they had
+ * stopped trusting without calling the API by hand.
+ */
+export async function revokeFederationAgreement(
+  pseudonymId: string,
+  agreementId: number,
+): Promise<{ status: string }> {
+  return request<{ status: string }>(`/api/admin/federation/${agreementId}`, {
+    method: 'DELETE',
+    headers: authHeaders(pseudonymId),
+  });
+}
+
+// ── Federation outbox ──
+
+/** One queued cross-server delivery. */
+export interface OutboxEntry {
+  id: number;
+  peer_instance_id: number;
+  /** Null when the peer instance row has since been removed. */
+  peer_base_url: string | null;
+  peer_label: string | null;
+  message_id: string;
+  /** `pending` | `delivered` | `failed` | `paused`. */
+  status: string;
+  attempts: number;
+  next_retry_at: string;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+  envelope_bytes: number;
+}
+
+export interface OutboxPage {
+  entries: OutboxEntry[];
+  /** Row count per status across the whole queue, not just this page. */
+  counts: Record<string, number>;
+  limit: number;
+  offset: number;
+}
+
+export async function getFederationOutbox(
+  pseudonymId: string,
+  opts: { status?: string; limit?: number; offset?: number } = {},
+): Promise<OutboxPage> {
+  const params = new URLSearchParams();
+  if (opts.status) params.set('status', opts.status);
+  if (opts.limit != null) params.set('limit', String(opts.limit));
+  if (opts.offset != null) params.set('offset', String(opts.offset));
+  const qs = params.toString();
+  return request<OutboxPage>(`/api/admin/federation/outbox${qs ? '?' + qs : ''}`, {
+    headers: authHeaders(pseudonymId),
+  });
+}
+
+/**
+ * Return a `failed` or `paused` row to the retry rotation.
+ *
+ * The server rejects `pending` and `delivered` rows with a 409 rather than
+ * silently doing nothing — retrying a delivered envelope would duplicate the
+ * work even though the receiver's ledger drops it.
+ */
+export async function retryFederationOutboxRow(
+  pseudonymId: string,
+  outboxId: number,
+): Promise<{ status: string; outbox_id: number; message_id: string; new_status: string }> {
+  return request<{ status: string; outbox_id: number; message_id: string; new_status: string }>(
+    `/api/admin/federation/outbox/${outboxId}/retry`,
+    { method: 'POST', headers: authHeaders(pseudonymId) },
+  );
+}
+
 // ── Server Settings ──
 
 export async function getServer(

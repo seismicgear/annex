@@ -7,7 +7,7 @@ use std::sync::{Arc, RwLock};
 use tokio::sync::broadcast;
 use tracing::{debug, error, warn};
 use webrtc::api::interceptor_registry::register_default_interceptors;
-use webrtc::api::media_engine::MediaEngine;
+use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_OPUS, MIME_TYPE_VP8};
 use webrtc::api::{APIBuilder, API};
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::ice_transport::ice_server::RTCIceServer;
@@ -19,8 +19,9 @@ use webrtc::rtcp::packet::Packet;
 use webrtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
 use webrtc::rtcp::transport_feedbacks::transport_layer_nack::{NackPair, TransportLayerNack};
 use webrtc::rtp::packet::Packet as RtpPacket;
-use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::rtp_transceiver::rtp_codec::RTPCodecType;
+use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters};
+use webrtc::rtp_transceiver::RTCPFeedback;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 use webrtc::track::track_local::TrackLocal;
@@ -38,6 +39,19 @@ pub struct SttTapFrame {
     pub pcm_s16le: Vec<u8>,
 }
 
+/// An offer the SERVER initiated, for a peer already in a call.
+///
+/// Adding a track to an established connection requires a new offer/answer.
+/// The existing signalling is client-offers / server-answers, so this rides
+/// the same broadcast-and-filter path as `IceCandidateEvent`: the WS session
+/// for `peer_id` picks it up and forwards it as `webrtc_offer`.
+#[derive(Debug, Clone)]
+pub struct RenegotiateEvent {
+    pub channel_id: String,
+    pub peer_id: String,
+    pub sdp: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct IceCandidateEvent {
     pub channel_id: String,
@@ -45,14 +59,160 @@ pub struct IceCandidateEvent {
     pub candidate: RTCIceCandidateInit,
 }
 
+/// The pair of tracks carrying ONE sender's media to ONE receiver.
+///
+/// Audio and video are separate tracks because video RTP landing on an audio
+/// track corrupts the audio stream.
+struct OutboundTracks {
+    audio: Arc<TrackLocalStaticRTP>,
+    video: Arc<TrackLocalStaticRTP>,
+}
+
 struct PeerSession {
     pc: Arc<RTCPeerConnection>,
-    /// Per-peer outbound track the SFU writes OTHER peers' audio into.
-    audio_outbound_track: Arc<TrackLocalStaticRTP>,
-    /// Per-peer outbound track the SFU writes OTHER peers' video into
-    /// (camera). Routed separately so video RTP never lands on the audio
-    /// track (which would corrupt the audio stream).
-    video_outbound_track: Arc<TrackLocalStaticRTP>,
+    /// One track pair per OTHER peer in the room, keyed by that peer's
+    /// pseudonym.
+    ///
+    /// This used to be a single audio track and a single video track per
+    /// receiver, into which `fan_out_rtp` wrote every other peer's RTP. With
+    /// one remote peer that is correct. With two, their streams — different
+    /// SSRCs, independent encoder state — were interleaved onto one track, and
+    /// a receiver cannot demultiplex that: VP8 carries inter-frame references,
+    /// so alternating packets from two encoders decodes to neither. Calls were
+    /// structurally limited to two participants, and the client had no
+    /// per-sender track to attribute a tile to, which is why every remote tile
+    /// read "Participant".
+    ///
+    /// Each track's id is the sender's pseudonym, so it reaches the browser as
+    /// the MSID and the client can name the tile without a side channel.
+    outbound: DashMap<String, OutboundTracks>,
+}
+
+/// The track a given sender's RTP is written into, for a given receiver.
+///
+/// Returns `None` when the receiver has no track pair for that sender yet —
+/// a publisher whose media arrives in the window between joining and
+/// renegotiation completing. Dropping those packets is correct: there is
+/// nowhere to put them, and the sender's encoder will produce a keyframe once
+/// the track exists.
+fn outbound_track_for(
+    session: &PeerSession,
+    sender: &str,
+    want_video: bool,
+) -> Option<Arc<TrackLocalStaticRTP>> {
+    session.outbound.get(sender).map(|tracks| {
+        if want_video {
+            tracks.video.clone()
+        } else {
+            tracks.audio.clone()
+        }
+    })
+}
+
+/// Register exactly the codecs this SFU can forward.
+///
+/// The relay does not transcode: inbound RTP is written verbatim onto an
+/// outbound `TrackLocalStaticRTP`, which rewrites the SSRC and payload type to
+/// that track's own negotiated values and leaves the payload bytes alone. Both
+/// outbound tracks are built with a fixed capability — `audio/opus` and
+/// `video/VP8` (see `make_outbound_tracks`) — so anything else arriving
+/// inbound is relabelled as Opus or VP8 and handed to a decoder that cannot
+/// read it.
+///
+/// `register_default_codecs()` advertised G722, PCMU, PCMA, VP9, six H.264
+/// profiles and AV1 alongside them. Any of those could win negotiation on the
+/// publish leg, and two things then broke without a word: remote video decoded
+/// as VP8 when it was VP9 or H.264, and — because `relay_inbound_track` builds
+/// an `OpusDecoder` for every audio track unconditionally — the STT tap fed
+/// G.711 bytes to an Opus decoder.
+///
+/// Advertising only what the relay handles makes both assumptions true by
+/// construction. The cost is H.264 hardware decode, which is worth less than
+/// video that is intermittently unreadable depending on which codec the
+/// browser happened to pick.
+fn register_relay_codecs(media_engine: &mut MediaEngine) -> Result<(), webrtc::Error> {
+    media_engine.register_codec(
+        RTCRtpCodecParameters {
+            capability: RTCRtpCodecCapability {
+                mime_type: MIME_TYPE_OPUS.to_owned(),
+                clock_rate: 48_000,
+                channels: 2,
+                sdp_fmtp_line: "minptime=10;useinbandfec=1".to_owned(),
+                rtcp_feedback: vec![],
+            },
+            payload_type: 111,
+            ..Default::default()
+        },
+        RTPCodecType::Audio,
+    )?;
+    media_engine.register_codec(
+        RTCRtpCodecParameters {
+            capability: RTCRtpCodecCapability {
+                mime_type: MIME_TYPE_VP8.to_owned(),
+                clock_rate: 90_000,
+                channels: 0,
+                sdp_fmtp_line: String::new(),
+                // Matches what `register_default_codecs` attaches to VP8. The
+                // relay actively sends PLI and NACK, so the browser has to be
+                // told it may send them too.
+                rtcp_feedback: vec![
+                    RTCPFeedback {
+                        typ: "goog-remb".to_owned(),
+                        parameter: String::new(),
+                    },
+                    RTCPFeedback {
+                        typ: "ccm".to_owned(),
+                        parameter: "fir".to_owned(),
+                    },
+                    RTCPFeedback {
+                        typ: "nack".to_owned(),
+                        parameter: String::new(),
+                    },
+                    RTCPFeedback {
+                        typ: "nack".to_owned(),
+                        parameter: "pli".to_owned(),
+                    },
+                ],
+            },
+            payload_type: 96,
+            ..Default::default()
+        },
+        RTPCodecType::Video,
+    )?;
+    Ok(())
+}
+
+/// Build the track pair carrying `sender`'s media into a receiver's
+/// connection.
+///
+/// The track id is the sender's pseudonym so the browser sees it as the MSID
+/// and can attribute the tile; the stream id groups a sender's audio and video
+/// into one MediaStream, which is what lets a client pair them.
+fn make_outbound_tracks(channel_id: &str, sender: &str) -> OutboundTracks {
+    OutboundTracks {
+        audio: Arc::new(TrackLocalStaticRTP::new(
+            RTCRtpCodecCapability {
+                mime_type: "audio/opus".to_string(),
+                clock_rate: 48_000,
+                channels: 1,
+                sdp_fmtp_line: "minptime=10;useinbandfec=1".to_string(),
+                rtcp_feedback: vec![],
+            },
+            format!("audio-{sender}"),
+            format!("{channel_id}-{sender}"),
+        )),
+        video: Arc::new(TrackLocalStaticRTP::new(
+            RTCRtpCodecCapability {
+                mime_type: "video/VP8".to_string(),
+                clock_rate: 90_000,
+                channels: 0,
+                sdp_fmtp_line: String::new(),
+                rtcp_feedback: vec![],
+            },
+            format!("video-{sender}"),
+            format!("{channel_id}-{sender}"),
+        )),
+    }
 }
 
 struct Room {
@@ -68,6 +228,7 @@ pub struct VoiceService {
     runtime_disabled: RwLock<bool>,
     stt_tap_tx: broadcast::Sender<SttTapFrame>,
     ice_candidate_tx: broadcast::Sender<IceCandidateEvent>,
+    renegotiate_tx: broadcast::Sender<RenegotiateEvent>,
 }
 
 impl std::fmt::Debug for VoiceService {
@@ -82,8 +243,8 @@ impl std::fmt::Debug for VoiceService {
 impl VoiceService {
     pub fn new(config: WebRtcConfig) -> Self {
         let mut media_engine = MediaEngine::default();
-        if let Err(e) = media_engine.register_default_codecs() {
-            warn!(error = %e, "failed to register default codecs");
+        if let Err(e) = register_relay_codecs(&mut media_engine) {
+            warn!(error = %e, "failed to register relay codecs");
         }
 
         let registry = match register_default_interceptors(Registry::new(), &mut media_engine) {
@@ -98,6 +259,7 @@ impl VoiceService {
 
         let (stt_tap_tx, _) = broadcast::channel(1024);
         let (ice_candidate_tx, _) = broadcast::channel(1024);
+        let (renegotiate_tx, _) = broadcast::channel(256);
 
         Self {
             config,
@@ -107,6 +269,7 @@ impl VoiceService {
             runtime_disabled: RwLock::new(false),
             stt_tap_tx,
             ice_candidate_tx,
+            renegotiate_tx,
         }
     }
 
@@ -227,6 +390,23 @@ impl VoiceService {
             .map_err(|e| VoiceError::Config(format!("voice token: {e}")))
     }
 
+    /// The pseudonyms currently connected to `room_name`, sorted.
+    ///
+    /// The SFU has always keyed peers by pseudonym; only the count was ever
+    /// exposed, so the client knew how many people were in a call but not who,
+    /// and every remote tile in `RemoteParticipants.tsx` read "Participant".
+    /// Sorted so a caller rendering the roster gets a stable order rather than
+    /// `DashMap` iteration order, which reshuffles between reads.
+    pub async fn participant_ids(&self, room_name: &str) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .rooms
+            .get(room_name)
+            .map(|r| r.peers.iter().map(|p| p.key().clone()).collect())
+            .unwrap_or_default();
+        ids.sort();
+        ids
+    }
+
     pub async fn participant_count(&self, room_name: &str) -> Result<u32, VoiceError> {
         Ok(self
             .rooms
@@ -235,11 +415,40 @@ impl VoiceService {
             .unwrap_or(0))
     }
 
+    /// Remove `identity` from every room it is in.
+    ///
+    /// Called when a WebSocket session ends. Until this existed, a peer was
+    /// only ever removed by an explicit leave — so closing a tab, losing a
+    /// network, or crashing left them in the room forever: still on the
+    /// roster, still holding a track slot on every other peer's connection,
+    /// and keeping the room alive so it was never reaped. Other participants
+    /// saw a tile for someone who had gone.
+    ///
+    /// Returns the channels it removed them from, so the caller can
+    /// renegotiate with whoever is left.
+    pub async fn remove_participant_everywhere(&self, identity: &str) -> Vec<String> {
+        let rooms: Vec<String> = self
+            .rooms
+            .iter()
+            .filter(|r| r.peers.contains_key(identity))
+            .map(|r| r.key().clone())
+            .collect();
+
+        for channel_id in &rooms {
+            let _ = self.remove_participant(channel_id, identity).await;
+        }
+        rooms
+    }
+
     pub async fn remove_participant(&self, room: &str, identity: &str) -> Result<(), VoiceError> {
         if let Some(peer) = self.drop_peer_and_maybe_reap(room, identity) {
             if let Err(e) = peer.pc.close().await {
                 debug!(error = %e, "failed to close peer connection");
             }
+            // Everyone still in the room held a track pair for the departed
+            // peer. Drop it and re-offer, or their grid keeps a tile for
+            // somebody who has gone.
+            self.drop_sender_from_remaining_peers(room, identity).await;
         }
         Ok(())
     }
@@ -299,6 +508,124 @@ impl VoiceService {
         self.ice_candidate_tx.subscribe()
     }
 
+    pub fn subscribe_renegotiations(&self) -> broadcast::Receiver<RenegotiateEvent> {
+        self.renegotiate_tx.subscribe()
+    }
+
+    /// Accept a peer's answer to an offer the server initiated.
+    ///
+    /// The counterpart to the `webrtc_offer` pushed by
+    /// [`Self::renegotiate_with`]. Unknown room or peer is not an error — both
+    /// mean the peer left while the offer was in flight.
+    pub async fn handle_renegotiation_answer(
+        &self,
+        channel_id: &str,
+        peer_id: &str,
+        answer_sdp: &str,
+    ) -> Result<(), VoiceError> {
+        let Some(room) = self.rooms.get(channel_id) else {
+            return Ok(());
+        };
+        let Some(peer) = room.peers.get(peer_id).map(|p| p.clone()) else {
+            return Ok(());
+        };
+        drop(room);
+
+        let answer = RTCSessionDescription::answer(answer_sdp.to_string())
+            .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
+        peer.pc
+            .set_remote_description(answer)
+            .await
+            .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Offer `receiver` an updated session description after its track set
+    /// changed.
+    ///
+    /// Best-effort by design: a peer that has gone away, or whose connection
+    /// is closing, must not fail the join of the peer that triggered this.
+    async fn renegotiate_with(&self, channel_id: &str, receiver: &str, peer: &Arc<PeerSession>) {
+        let offer = match peer.pc.create_offer(None).await {
+            Ok(o) => o,
+            Err(e) => {
+                debug!(peer = %receiver, error = %e, "could not create renegotiation offer");
+                return;
+            }
+        };
+        if let Err(e) = peer.pc.set_local_description(offer.clone()).await {
+            debug!(peer = %receiver, error = %e, "could not set local description");
+            return;
+        }
+        // No receiver is not an error: it just means nobody is listening on the
+        // broadcast yet, which is normal in tests and during shutdown.
+        let _ = self.renegotiate_tx.send(RenegotiateEvent {
+            channel_id: channel_id.to_string(),
+            peer_id: receiver.to_string(),
+            sdp: offer.sdp,
+        });
+    }
+
+    /// Drop the departed peer's track pair from everyone still in the room and
+    /// offer them the updated description.
+    async fn drop_sender_from_remaining_peers(&self, channel_id: &str, departed: &str) {
+        let Some(room) = self.rooms.get(channel_id) else {
+            return;
+        };
+        let remaining: Vec<(String, Arc<PeerSession>)> = room
+            .peers
+            .iter()
+            .map(|p| (p.key().clone(), p.value().clone()))
+            .collect();
+        drop(room);
+
+        for (receiver_id, peer) in remaining {
+            if peer.outbound.remove(departed).is_some() {
+                self.renegotiate_with(channel_id, &receiver_id, &peer).await;
+            }
+        }
+    }
+
+    /// Give every existing peer a track pair for the newcomer, and offer them
+    /// the updated description.
+    ///
+    /// Runs after the newcomer is in the room, so it deliberately skips them:
+    /// nobody receives their own media back.
+    async fn add_sender_to_existing_peers(&self, channel_id: &str, newcomer: &str) {
+        let Some(room) = self.rooms.get(channel_id) else {
+            return;
+        };
+        let receivers: Vec<(String, Arc<PeerSession>)> = room
+            .peers
+            .iter()
+            .filter(|p| p.key() != newcomer)
+            .map(|p| (p.key().clone(), p.value().clone()))
+            .collect();
+        drop(room);
+
+        for (receiver_id, peer) in receivers {
+            let tracks = make_outbound_tracks(channel_id, newcomer);
+            let added_audio = peer
+                .pc
+                .add_track(tracks.audio.clone() as Arc<dyn TrackLocal + Send + Sync>)
+                .await;
+            let added_video = peer
+                .pc
+                .add_track(tracks.video.clone() as Arc<dyn TrackLocal + Send + Sync>)
+                .await;
+            if let (Ok(_), Ok(_)) = (added_audio, added_video) {
+                peer.outbound.insert(newcomer.to_string(), tracks);
+                self.renegotiate_with(channel_id, &receiver_id, &peer).await;
+            } else {
+                debug!(
+                    receiver = %receiver_id,
+                    sender = %newcomer,
+                    "could not add tracks for the new peer",
+                );
+            }
+        }
+    }
+
     pub async fn handle_sdp_offer(
         self: &Arc<Self>,
         channel_id: &str,
@@ -313,41 +640,28 @@ impl VoiceService {
                 .map_err(|e| VoiceError::WebRtc(e.to_string()))?,
         );
 
-        let audio_outbound_track = Arc::new(TrackLocalStaticRTP::new(
-            RTCRtpCodecCapability {
-                mime_type: "audio/opus".to_string(),
-                clock_rate: 48_000,
-                channels: 1,
-                sdp_fmtp_line: "minptime=10;useinbandfec=1".to_string(),
-                rtcp_feedback: vec![],
-            },
-            format!("audio-{peer_id}"),
-            channel_id.to_string(),
-        ));
-        // Per-peer VP8 outbound track so the SFU can forward other peers'
-        // camera video. VP8 is registered by `register_default_codecs()`.
-        let video_outbound_track = Arc::new(TrackLocalStaticRTP::new(
-            RTCRtpCodecCapability {
-                mime_type: "video/VP8".to_string(),
-                clock_rate: 90_000,
-                channels: 0,
-                sdp_fmtp_line: String::new(),
-                rtcp_feedback: vec![],
-            },
-            format!("video-{peer_id}"),
-            channel_id.to_string(),
-        ));
+        // One track pair per peer ALREADY in the room, so this connection
+        // receives each of them on its own track. The agent (TTS) track is
+        // added last, as before.
+        let existing: Vec<String> = room
+            .peers
+            .iter()
+            .filter(|p| p.key() != peer_id)
+            .map(|p| p.key().clone())
+            .collect();
 
-        // Order matters: the client offers m=audio then m=video, so add the
-        // audio outbound track first, then the video one, so webrtc-rs maps
-        // them to the matching m-lines. The agent (TTS) audio track is added
-        // last, as before.
-        pc.add_track(audio_outbound_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
-            .await
-            .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
-        pc.add_track(video_outbound_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
-            .await
-            .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
+        let outbound: DashMap<String, OutboundTracks> = DashMap::new();
+        for sender in &existing {
+            let tracks = make_outbound_tracks(channel_id, sender);
+            pc.add_track(tracks.audio.clone() as Arc<dyn TrackLocal + Send + Sync>)
+                .await
+                .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
+            pc.add_track(tracks.video.clone() as Arc<dyn TrackLocal + Send + Sync>)
+                .await
+                .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
+            outbound.insert(sender.clone(), tracks);
+        }
+
         pc.add_track(room.agent_track.clone() as Arc<dyn TrackLocal + Send + Sync>)
             .await
             .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
@@ -435,14 +749,13 @@ impl VoiceService {
             .await
             .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
 
-        room.peers.insert(
-            peer_id.to_string(),
-            Arc::new(PeerSession {
-                pc,
-                audio_outbound_track,
-                video_outbound_track,
-            }),
-        );
+        room.peers
+            .insert(peer_id.to_string(), Arc::new(PeerSession { pc, outbound }));
+
+        // Now that the newcomer is in the room, give everyone else a track for
+        // them and offer the updated description. Done after the insert so the
+        // set of receivers is exactly "everyone but the newcomer".
+        self.add_sender_to_existing_peers(channel_id, peer_id).await;
 
         Ok(answer)
     }
@@ -619,14 +932,14 @@ impl VoiceService {
                 .peers
                 .iter()
                 .filter(|peer| peer.key().as_str() != publisher_id)
-                .map(|peer| {
-                    let session = peer.value();
-                    let track = if want_video {
-                        session.video_outbound_track.clone()
-                    } else {
-                        session.audio_outbound_track.clone()
-                    };
-                    (peer.key().clone(), track)
+                // `filter_map`: a receiver with no track pair for this
+                // publisher yet — the window between joining and renegotiation
+                // completing — has nowhere to put the packet. Dropping it is
+                // correct; the encoder produces a keyframe once the track
+                // exists.
+                .filter_map(|peer| {
+                    outbound_track_for(peer.value(), publisher_id, want_video)
+                        .map(|track| (peer.key().clone(), track))
                 })
                 .collect();
 
@@ -700,6 +1013,49 @@ mod tests {
         })
     }
 
+    /// The default config, as a fresh install actually gets it.
+    fn default_service() -> VoiceService {
+        VoiceService::new(WebRtcConfig::default())
+    }
+
+    #[test]
+    fn the_default_config_alone_cannot_serve_a_remote_client() {
+        // Not a bug in itself — `WebRtcConfig::default()` points at
+        // `ws://localhost:7880`, and handing a remote client a loopback
+        // address would be worse than refusing. This is pinned so the
+        // blanking is understood as deliberate, and so the test below reads
+        // as the fix rather than as a coincidence.
+        assert_eq!(
+            default_service().get_public_url(),
+            "",
+            "a loopback URL must not be handed to a remote client",
+        );
+    }
+
+    #[test]
+    fn the_servers_public_url_makes_voice_reachable() {
+        // The SFU is in-process and signals over the app's own WebSocket, so
+        // the address a remote client needs for voice IS the address of the
+        // server. `startup.rs` propagates the resolved public URL here at
+        // boot; before it did, `voice_enabled: true` was the default and
+        // every remote join was refused with `VoiceNotConfigured`, on a
+        // server whose ANNEX_PUBLIC_URL was set correctly.
+        let svc = default_service();
+        svc.set_public_url("https://annex.example.com".to_string());
+        assert_eq!(svc.get_public_url(), "https://annex.example.com");
+    }
+
+    #[test]
+    fn a_loopback_public_url_is_still_refused_for_remote_clients() {
+        // A single-machine dev setup sets ANNEX_PUBLIC_URL to localhost.
+        // Propagating it must not turn the blanking off: the value is still
+        // useless to anyone off-box, and pretending otherwise would trade a
+        // clear "voice not configured" for a call that fails to connect.
+        let svc = default_service();
+        svc.set_public_url("http://localhost:3000".to_string());
+        assert_eq!(svc.get_public_url(), "");
+    }
+
     fn empty_room(channel_id: &str) -> Arc<Room> {
         Arc::new(Room {
             peers: DashMap::new(),
@@ -715,6 +1071,176 @@ mod tests {
                 channel_id.to_string(),
             )),
         })
+    }
+
+    #[tokio::test]
+    async fn participant_ids_names_who_is_in_the_call() {
+        let svc = test_service();
+        let room = empty_room("ch-roster");
+        for peer in ["carol", "alice", "bob"] {
+            room.peers
+                .insert(peer.to_string(), peer_session("ch-roster", &[]).await);
+        }
+        svc.rooms.insert("ch-roster".to_string(), room);
+
+        // Sorted, not DashMap iteration order — a roster that reshuffles
+        // between polls makes the participant list jump around on screen.
+        assert_eq!(
+            svc.participant_ids("ch-roster").await,
+            vec!["alice", "bob", "carol"],
+        );
+        assert_eq!(
+            svc.participant_count("ch-roster").await.unwrap(),
+            3,
+            "the count and the roster must agree",
+        );
+    }
+
+    #[tokio::test]
+    async fn participant_ids_is_empty_for_a_room_that_does_not_exist() {
+        let svc = test_service();
+        assert!(svc.participant_ids("no-such-channel").await.is_empty());
+    }
+
+    /// A `PeerSession` carrying a track pair for each named sender.
+    async fn peer_session(channel_id: &str, senders: &[&str]) -> Arc<PeerSession> {
+        let pc = APIBuilder::new()
+            .build()
+            .new_peer_connection(Default::default())
+            .await
+            .expect("peer connection");
+        let outbound = DashMap::new();
+        for sender in senders {
+            outbound.insert(sender.to_string(), make_outbound_tracks(channel_id, sender));
+        }
+        Arc::new(PeerSession {
+            pc: Arc::new(pc),
+            outbound,
+        })
+    }
+
+    /// The SDP we put on the wire must offer exactly what the relay can
+    /// forward.
+    ///
+    /// `make_outbound_tracks` hardcodes `audio/opus` and `video/VP8`, and
+    /// `relay_inbound_track` builds an `OpusDecoder` for every audio track.
+    /// Neither can hold unless negotiation is incapable of settling on
+    /// anything else — the relay does not transcode, and
+    /// `TrackLocalStaticRTP` rewrites the payload type while leaving the
+    /// payload bytes alone, so a VP9 frame relabelled as VP8 reaches the
+    /// receiver as noise.
+    ///
+    /// `register_default_codecs()` also advertised G722, PCMU, PCMA, VP9, six
+    /// H.264 profiles and AV1. Asserting on the generated SDP rather than on
+    /// the MediaEngine is deliberate: the SDP is what a browser actually
+    /// negotiates against.
+    #[tokio::test]
+    async fn the_offer_advertises_only_the_codecs_the_relay_can_forward() {
+        let svc = test_service();
+        let pc = svc
+            .api
+            .new_peer_connection(RTCConfiguration::default())
+            .await
+            .expect("peer connection");
+        pc.add_transceiver_from_kind(RTPCodecType::Audio, None)
+            .await
+            .expect("audio transceiver");
+        pc.add_transceiver_from_kind(RTPCodecType::Video, None)
+            .await
+            .expect("video transceiver");
+        let offer = pc.create_offer(None).await.expect("offer");
+
+        let advertised: Vec<String> = offer
+            .sdp
+            .lines()
+            .filter_map(|l| l.strip_prefix("a=rtpmap:"))
+            .filter_map(|l| l.split_once(' '))
+            .map(|(_, codec)| codec.split('/').next().unwrap_or("").to_lowercase())
+            .filter(|c| !c.is_empty() && c != "rtx" && c != "red" && c != "ulpfec")
+            .collect();
+
+        for banned in ["g722", "pcmu", "pcma", "vp9", "h264", "av1", "av1x"] {
+            assert!(
+                !advertised.iter().any(|c| c == banned),
+                "{banned} was advertised, but the relay can only forward Opus and VP8 \
+                 — got {advertised:?}"
+            );
+        }
+        assert!(
+            advertised.iter().any(|c| c == "opus"),
+            "Opus must be offered — got {advertised:?}"
+        );
+        assert!(
+            advertised.iter().any(|c| c == "vp8"),
+            "VP8 must be offered — got {advertised:?}"
+        );
+
+        let _ = pc.close().await;
+    }
+
+    /// And the outbound tracks must declare that same pair.
+    #[test]
+    fn the_outbound_tracks_declare_the_codecs_that_were_advertised() {
+        let tracks = make_outbound_tracks("ch", "alice");
+        assert_eq!(tracks.audio.codec().mime_type, "audio/opus");
+        assert_eq!(tracks.video.codec().mime_type, "video/VP8");
+    }
+
+    /// Each sender reaches a receiver on its OWN track.
+    ///
+    /// This replaces `fan_out_collapses_every_sender_onto_one_track_per_receiver`,
+    /// which pinned the opposite and was written to start failing when this
+    /// landed. Previously `PeerSession` held one audio track and one video
+    /// track per receiver and `fan_out_rtp` wrote every other peer's RTP into
+    /// them, so two senders' streams — different SSRCs, independent encoder
+    /// state — were interleaved onto a single track. A receiver cannot
+    /// demultiplex that; VP8 in particular carries inter-frame references, so
+    /// alternating packets from two encoders decodes to neither stream. Calls
+    /// were structurally limited to two participants.
+    #[tokio::test]
+    async fn each_sender_reaches_a_receiver_on_its_own_track() {
+        let bob = peer_session("ch-group", &["alice", "carol"]).await;
+
+        let from_alice = outbound_track_for(&bob, "alice", true).expect("alice track");
+        let from_carol = outbound_track_for(&bob, "carol", true).expect("carol track");
+
+        assert!(
+            !Arc::ptr_eq(&from_alice, &from_carol),
+            "two senders must not share one track on the receiving side",
+        );
+
+        // Audio is separate from video for the same sender, so video RTP can
+        // never land on the audio track and corrupt it.
+        let alice_audio = outbound_track_for(&bob, "alice", false).expect("alice audio");
+        assert!(!Arc::ptr_eq(&from_alice, &alice_audio));
+
+        // Asking twice for the same (sender, kind) gives the same track.
+        let again = outbound_track_for(&bob, "alice", true).expect("alice track again");
+        assert!(Arc::ptr_eq(&from_alice, &again));
+    }
+
+    /// The track id carries the sender's pseudonym.
+    ///
+    /// It reaches the browser as the MSID, which is how a client attributes a
+    /// tile to a person without a side channel. Every remote tile used to read
+    /// the literal string "Participant" because there was nothing to read.
+    #[tokio::test]
+    async fn track_ids_name_the_sender() {
+        let tracks = make_outbound_tracks("ch-group", "alice-pseudonym");
+        assert_eq!(tracks.audio.id(), "audio-alice-pseudonym");
+        assert_eq!(tracks.video.id(), "video-alice-pseudonym");
+        assert_eq!(
+            tracks.audio.stream_id(),
+            tracks.video.stream_id(),
+            "a sender's audio and video share a stream id so a client can pair them",
+        );
+    }
+
+    /// A publisher a receiver has no track for yet is dropped, not panicked on.
+    #[tokio::test]
+    async fn a_sender_with_no_track_yet_yields_none() {
+        let bob = peer_session("ch-group", &["alice"]).await;
+        assert!(outbound_track_for(&bob, "someone-who-just-joined", false).is_none());
     }
 
     #[tokio::test]

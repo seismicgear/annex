@@ -200,6 +200,8 @@ pub enum ApiError {
     NotFound(String),
     #[error("conflict: {0}")]
     Conflict(String),
+    #[error("service unavailable: {0}")]
+    ServiceUnavailable(String),
     #[error("internal server error: {0}")]
     InternalServerError(String),
 }
@@ -212,6 +214,7 @@ impl IntoResponse for ApiError {
             ApiError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg),
             ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
             ApiError::Conflict(msg) => (StatusCode::CONFLICT, msg),
+            ApiError::ServiceUnavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg),
             ApiError::InternalServerError(msg) => {
                 // Log the real error server-side but return a generic message
                 // to the client to prevent leaking internal implementation details

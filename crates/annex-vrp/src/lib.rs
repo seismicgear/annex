@@ -5,11 +5,29 @@
 //! tracking. Adapted from the MABOS `value_resonance` module for the Annex
 //! server-agent and server-server contexts.
 //!
-//! VRP is the mechanism by which Annex enforces cryptographic trust rather than
-//! administrative trust. Every agent connection and every federation agreement
-//! is mediated by a VRP handshake that compares ethical/policy roots, evaluates
-//! capability contracts, checks longitudinal reputation, and produces an
-//! alignment classification (`Aligned`, `Partial`, or `Conflict`).
+//! VRP is the mechanism by which Annex mediates agent and federation trust.
+//! Every agent connection and every federation agreement is mediated by a VRP
+//! handshake that compares ethical/policy roots and evaluates capability
+//! contracts to produce an alignment classification (`Aligned`, `Partial`, or
+//! `Conflict`).
+//!
+//! NOTE on reputation: the base verdict from [`validate_federation_handshake`]
+//! is gated by longitudinal reputation via [`apply_reputation_gate`] — a peer
+//! whose history of `Partial`/`Conflict` outcomes has driven its reputation
+//! below [`MIN_REPUTATION_FOR_FULL_ALIGNMENT`] is downgraded one alignment step.
+//! Callers (see `api_vrp`) read the reputation score from prior history before
+//! recording the current outcome, then apply the gate.
+//!
+//! NOTE on "semantic" alignment: the default embedder is
+//! [`semantic::ConceptEmbedder`] — a fixed-dimension, paraphrase-aware concept
+//! embedding (synonym families share a concept dimension, plus char-trigram
+//! hashing for morphology). It is deterministic and dependency-free, so two
+//! federated peers embed principles into the same space with no shared
+//! vocabulary, and paraphrased-but-aligned principles are no longer reflexively
+//! `Conflict`. It is honestly NOT a learned neural model; the
+//! [`semantic::SemanticEmbedder`] trait keeps one pluggable for deployments
+//! that accept the size/latency cost (ROADMAP 3.3). The legacy
+//! [`semantic::BagOfWordsEmbedder`] is retained for comparison/tests.
 //!
 //! # Phase 3 implementation
 //!
@@ -81,11 +99,25 @@ pub fn compare_peer_anchor(
     remote: &VrpAnchorSnapshot,
     config: &VrpAlignmentConfig,
 ) -> VrpAlignmentStatus {
+    compare_peer_anchor_scored(local, remote, config).0
+}
+
+/// Like [`compare_peer_anchor`] but also returns the *measured* anchor
+/// similarity (0.0–1.0), so callers can record the real number rather than a
+/// status-derived placeholder. The score is `1.0` on an exact match, `0.0` on a
+/// prohibited-action divergence (or when no semantic comparison is possible),
+/// and the bag-of-words cosine value in the semantic branch — independent of
+/// whether that value cleared `min_alignment_score`.
+pub fn compare_peer_anchor_scored(
+    local: &VrpAnchorSnapshot,
+    remote: &VrpAnchorSnapshot,
+    config: &VrpAlignmentConfig,
+) -> (VrpAlignmentStatus, f32) {
     // Fast path: exact hash match
     if local.principles_hash == remote.principles_hash
         && local.prohibited_actions_hash == remote.prohibited_actions_hash
     {
-        return VrpAlignmentStatus::Aligned;
+        return (VrpAlignmentStatus::Aligned, 1.0);
     }
 
     // Prohibited-action divergence is an immediate conflict regardless of
@@ -93,7 +125,28 @@ pub fn compare_peer_anchor(
     // let peers with conflicting safety boundaries negotiate transfer scopes
     // they shouldn't have.
     if local.prohibited_actions_hash != remote.prohibited_actions_hash {
-        return VrpAlignmentStatus::Conflict;
+        return (VrpAlignmentStatus::Conflict, 0.0);
+    }
+
+    // A server that has declared no principles has stated no requirement.
+    //
+    // `ServerPolicy::default()` ships `principles: []` alongside
+    // `agent_min_alignment_score: 0.8`, and the handshake hardcodes
+    // `semantic_alignment_required: true`. With an empty local list the
+    // semantic branch below was unreachable, so control fell to the
+    // `Conflict` at the end of this function and every agent that declared
+    // an ethical anchor was rejected — on a stock server, the only agent
+    // that could ever be admitted was one whose principles AND prohibited
+    // actions were both empty, matching the empty local anchor by hash.
+    // The threshold was never consulted, and nothing told the operator why
+    // agent registration always failed.
+    //
+    // Rejecting on a comparison that cannot be made is not fail-closed, it
+    // is arbitrary: there is no declared value for the agent to conflict
+    // with. Prohibited actions are different and are still enforced above —
+    // those are a boundary the operator actually stated.
+    if local.principles.is_empty() {
+        return (VrpAlignmentStatus::Aligned, 1.0);
     }
 
     // Semantic alignment: compare original principle text when available.
@@ -102,26 +155,25 @@ pub fn compare_peer_anchor(
         && !local.principles.is_empty()
         && !remote.principles.is_empty()
     {
-        let mut embedder = semantic::BagOfWordsEmbedder::new();
-        // Build shared vocabulary from both sides
-        let all_texts: Vec<String> = local
-            .principles
-            .iter()
-            .chain(remote.principles.iter())
-            .cloned()
-            .collect();
-        embedder.build_vocab(&all_texts);
+        // Concept embedding: fixed-dimension, no jointly-built vocabulary, and
+        // paraphrase-aware (synonym families share a concept dimension). A
+        // federated peer's principles embed into the SAME space as ours
+        // natively, and "users deserve privacy" ≈ "people are entitled to
+        // confidentiality" instead of scoring ~0 as bag-of-words did.
+        let embedder = semantic::ConceptEmbedder::new();
 
         if let Ok(score) =
             semantic::calculate_semantic_alignment(&local.principles, &remote.principles, &embedder)
         {
             if score >= config.min_alignment_score {
-                return VrpAlignmentStatus::Partial;
+                return (VrpAlignmentStatus::Partial, score);
             }
+            // Below threshold → Conflict, but surface the real measured score.
+            return (VrpAlignmentStatus::Conflict, score);
         }
     }
 
-    VrpAlignmentStatus::Conflict
+    (VrpAlignmentStatus::Conflict, 0.0)
 }
 
 /// Validates that capability contracts are mutually compatible.
@@ -183,9 +235,9 @@ pub fn validate_federation_handshake(
     alignment_config: &VrpAlignmentConfig,
     transfer_config: &VrpTransferAcceptanceConfig,
 ) -> VrpValidationReport {
-    // 1. Compare anchors
-    let alignment_status =
-        compare_peer_anchor(local_anchor, &handshake.anchor_snapshot, alignment_config);
+    // 1. Compare anchors — keep the *measured* similarity, not just the status.
+    let (alignment_status, alignment_score) =
+        compare_peer_anchor_scored(local_anchor, &handshake.anchor_snapshot, alignment_config);
 
     // 2. Check capability contracts
     let contracts_ok = contracts_mutually_accepted(local_contract, &handshake.capability_contract);
@@ -204,19 +256,62 @@ pub fn validate_federation_handshake(
     // 3. Resolve transfer scope
     let transfer_scope = resolve_transfer_scope(final_status, transfer_config);
 
-    // Score is 1.0 for Aligned, 0.0 for Conflict (placeholder for now)
-    let alignment_score = match final_status {
-        VrpAlignmentStatus::Aligned => 1.0,
-        VrpAlignmentStatus::Partial => 0.5,
-        VrpAlignmentStatus::Conflict => 0.0,
-    };
-
+    // `alignment_score` is the measured anchor similarity from step 1 — it is
+    // NOT recomputed from `final_status`. The status is the verdict (anchors +
+    // contracts); the score reports how similar the anchors actually were.
     VrpValidationReport {
         alignment_status: final_status,
         transfer_scope,
         alignment_score,
         negotiation_notes: notes,
     }
+}
+
+/// Minimum longitudinal reputation a peer must retain to be admitted at the
+/// alignment its anchors/contracts earned this round.
+///
+/// The reputation score is neutral at 0.5 and only falls below this after a
+/// *sustained* history of `Partial`/`Conflict` outcomes — a single bad
+/// handshake from a fresh peer stays well above it — so the gate targets
+/// repeat offenders, not newcomers.
+pub const MIN_REPUTATION_FOR_FULL_ALIGNMENT: f32 = 0.25;
+
+/// Applies the longitudinal-reputation gate to a freshly-computed report.
+///
+/// When `reputation_score` is healthy (>= [`MIN_REPUTATION_FOR_FULL_ALIGNMENT`])
+/// the report is returned unchanged. Otherwise the alignment is downgraded one
+/// step — `Aligned` → `Partial`, `Partial` → `Conflict` — and the transfer
+/// scope and score are recomputed for the new status.
+///
+/// This is what makes reputation actually affect the outcome (ROADMAP Phase 3
+/// completion criterion): a peer with a poor track record cannot be freely
+/// re-admitted as `Aligned` on the strength of a single good anchor comparison.
+/// Callers must read `reputation_score` from history *before* recording the
+/// current outcome so it reflects past behaviour.
+pub fn apply_reputation_gate(
+    mut report: VrpValidationReport,
+    reputation_score: f32,
+    transfer_config: &VrpTransferAcceptanceConfig,
+) -> VrpValidationReport {
+    if reputation_score >= MIN_REPUTATION_FOR_FULL_ALIGNMENT {
+        return report;
+    }
+    let downgraded = match report.alignment_status {
+        VrpAlignmentStatus::Aligned => Some(VrpAlignmentStatus::Partial),
+        VrpAlignmentStatus::Partial => Some(VrpAlignmentStatus::Conflict),
+        VrpAlignmentStatus::Conflict => None,
+    };
+    if let Some(new_status) = downgraded {
+        report.negotiation_notes.push(format!(
+            "alignment downgraded {} -> {} due to low longitudinal reputation ({reputation_score:.2} < {MIN_REPUTATION_FOR_FULL_ALIGNMENT:.2})",
+            report.alignment_status, new_status
+        ));
+        report.alignment_status = new_status;
+        report.transfer_scope = resolve_transfer_scope(new_status, transfer_config);
+        // `alignment_score` is the measured anchor similarity and is left
+        // untouched — only the verdict (status/scope) is downgraded.
+    }
+    report
 }
 
 /// Validates whether a validation report meets the requirements for a specific transfer scope.

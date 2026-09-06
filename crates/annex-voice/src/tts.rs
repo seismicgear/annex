@@ -54,6 +54,75 @@ impl TtsService {
         self.profiles.read().await.get(id).cloned()
     }
 
+    /// Number of registered profiles (observability / tests).
+    pub async fn profile_count(&self) -> usize {
+        self.profiles.read().await.len()
+    }
+
+    /// Returns the first `.onnx` voice model in `voices_dir`, if any. Used to
+    /// pick a concrete model for the Piper default profile.
+    fn first_piper_model(&self) -> Option<(String, Option<String>)> {
+        let entries = std::fs::read_dir(&self.voices_dir).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("onnx") {
+                let model = path.file_name()?.to_string_lossy().into_owned();
+                let cfg = format!("{model}.json");
+                let cfg_opt = if self.voices_dir.join(&cfg).exists() {
+                    Some(cfg)
+                } else {
+                    None
+                };
+                return Some((model, cfg_opt));
+            }
+        }
+        None
+    }
+
+    /// Whether a usable Piper backend is present (binary + at least one model).
+    pub fn piper_available(&self) -> bool {
+        self.piper_binary.exists() && self.first_piper_model().is_some()
+    }
+
+    /// Registers a built-in `"default"` voice profile if one is not already
+    /// present, so agent speech always has a profile to synthesize with.
+    ///
+    /// This closes the P4-VOICE-3 gap: the WS voice handler falls back to the
+    /// profile id `"default"` when an agent has no per-agent profile, but
+    /// nothing ever registered that id, so synthesis failed with
+    /// `ProfileNotFound` (the "TTS failed" path) before any backend was tried.
+    ///
+    /// Backend selection: prefer **Piper** when its binary and a voice model
+    /// are present (the production default); otherwise fall back to **System**
+    /// (espeak-ng), which needs no model file and works on a fresh install.
+    /// Returns the [`VoiceModel`] chosen.
+    pub async fn provision_default_profile(&self) -> VoiceModel {
+        if let Some(existing) = self.get_profile("default").await {
+            return existing.model;
+        }
+        let (model, model_path, config_path) = if self.piper_available() {
+            let (m, c) = self
+                .first_piper_model()
+                .expect("piper_available checked a model exists");
+            (VoiceModel::Piper, m, c)
+        } else {
+            // System/espeak-ng ignores model_path; leave it empty.
+            (VoiceModel::System, String::new(), None)
+        };
+        self.add_profile(VoiceProfile {
+            id: "default".to_string(),
+            name: "Default".to_string(),
+            model,
+            model_path,
+            config_path,
+            speed: 1.0,
+            pitch: 1.0,
+            speaker_id: None,
+        })
+        .await;
+        model
+    }
+
     /// Synthesizes speech from the given text using the specified profile.
     ///
     /// Returns raw PCM audio data (s16le, usually 22050Hz depending on model).
@@ -416,6 +485,60 @@ mod tests {
             out.extend_from_slice(&amp.to_le_bytes());
         }
         out
+    }
+
+    fn espeak_available() -> bool {
+        std::process::Command::new("espeak-ng")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    #[tokio::test]
+    async fn provision_default_profile_registers_default() {
+        // No piper binary/model present → System default. The "default" id MUST
+        // exist afterwards (the P4-VOICE-3 fix: the WS handler's "default"
+        // fallback now resolves instead of ProfileNotFound).
+        let tts = TtsService::new("nonexistent_voices_dir", "nonexistent_piper", "bark");
+        assert!(tts.get_profile("default").await.is_none());
+        let model = tts.provision_default_profile().await;
+        assert_eq!(model, VoiceModel::System);
+        let profile = tts
+            .get_profile("default")
+            .await
+            .expect("default profile must exist after provisioning");
+        assert_eq!(profile.id, "default");
+        // Idempotent.
+        tts.provision_default_profile().await;
+        assert_eq!(tts.profile_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn agent_voice_synthesizes_via_default_profile() {
+        // End-to-end agent voice: provision the default profile, then
+        // synthesize — proving an agent's speech actually produces audio
+        // (closes P4-VOICE-3, whose old integration test asserted the failure).
+        if !espeak_available() {
+            eprintln!("[tts] skipping: espeak-ng not installed");
+            return;
+        }
+        let tts = TtsService::new("nonexistent_voices_dir", "nonexistent_piper", "bark");
+        tts.provision_default_profile().await;
+        let pcm = tts
+            .synthesize("Hello from an Annex agent.", "default")
+            .await
+            .expect("agent voice synthesis via the default profile must succeed");
+        assert!(
+            !pcm.is_empty(),
+            "synthesized agent audio must be non-empty PCM"
+        );
+        // And it must be encodable into the opus frames the SFU mixer consumes
+        // (espeak-ng emits 22.05kHz mono s16le).
+        let frames = encode_pcm_to_opus_frames(&pcm, 22_050, 1).expect("encode agent audio");
+        assert!(!frames.is_empty(), "agent audio must yield ≥1 opus frame");
     }
 
     #[test]

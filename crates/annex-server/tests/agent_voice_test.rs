@@ -30,18 +30,25 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool, Arc<AppState>) {
     let webrtc_config =
         annex_voice::WebRtcConfig::new("http://localhost:7880", "devkey", "devsecret");
     let voice_service = annex_voice::VoiceService::new(webrtc_config);
-    // Use dummy paths for TTS
+    // Use dummy paths for TTS (no piper model present → System/espeak-ng
+    // default). Provision the built-in "default" profile exactly as
+    // `startup::prepare_server` does, so the WS handler's "default" fallback
+    // resolves and agent synthesis is actually attempted (P4-VOICE-3).
     let tts_service = annex_voice::TtsService::new(
         "assets/voices",
         "assets/piper/piper",
         "assets/bark/bark_tts.py",
     );
+    tts_service.provision_default_profile().await;
 
     let state = AppState {
         pool: pool.clone(),
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: common::load_vkey_or_dummy(),
         membership_vkey_v2: None,
+        channel_eligibility_vkey: None,
+        link_pseudonyms_vkey: None,
+        federation_attestation_vkey: None,
         server_id: 1,
         signing_key: std::sync::Arc::new(ed25519_dalek::SigningKey::generate(
             &mut rand::rngs::OsRng,
@@ -134,35 +141,61 @@ async fn test_agent_voice_intent_pipeline() {
         .await
         .expect("Failed to send");
 
-    // Wait for response (expecting error due to missing TTS models)
-    let msg = tokio::time::timeout(std::time::Duration::from_secs(2), socket.next()).await;
+    // With the "default" profile provisioned, TTS now SUCCEEDS (P4-VOICE-3).
+    // The remaining variability is the voice TRANSPORT stage: connecting to /
+    // publishing into the in-process SFU room. So the valid outcomes are:
+    //   - timeout / no message  → synthesis + publish progressed with no error
+    //     reply (the handler sends nothing on full success);
+    //   - an error that is a VOICE-TRANSPORT error ("Failed to connect voice" /
+    //     "Failed to publish audio") — synthesis already succeeded.
+    // The one thing that must NOT happen any more is a TTS-stage failure.
+    let espeak_available = std::process::Command::new("espeak-ng")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    let msg = tokio::time::timeout(std::time::Duration::from_secs(3), socket.next()).await;
 
     match msg {
         Ok(Some(Ok(WsMessage::Text(text)))) => {
             println!("Received: {text}");
             let v: Value = serde_json::from_str(text.as_str()).unwrap();
-
-            // Should be an error message because TTS failed
-            assert_eq!(v.get("type").unwrap().as_str().unwrap(), "error");
-            let message = v.get("message").unwrap().as_str().unwrap();
-
-            // Verify it failed at TTS stage (proving pipeline integration)
-            assert!(message.contains("TTS failed") || message.contains("Model file not found"));
+            if v.get("type").and_then(|t| t.as_str()) == Some("error") {
+                let message = v.get("message").and_then(|m| m.as_str()).unwrap_or("");
+                if espeak_available {
+                    // TTS must have succeeded: any error is downstream transport.
+                    assert!(
+                        !message.contains("TTS failed")
+                            && !message.to_lowercase().contains("profile"),
+                        "agent voice must get PAST the TTS stage now, but failed with: {message}"
+                    );
+                    assert!(
+                        message.contains("voice")
+                            || message.contains("publish")
+                            || message.contains("connect"),
+                        "expected a voice-transport error, got: {message}"
+                    );
+                } else {
+                    // No espeak-ng on this host: a TTS error is acceptable, but
+                    // it must be a backend-spawn failure, NOT ProfileNotFound —
+                    // proving the profile resolved and synthesis was attempted.
+                    assert!(
+                        !message.to_lowercase().contains("profile"),
+                        "default profile should resolve even without espeak: {message}"
+                    );
+                }
+            }
+            // A non-error message (e.g. a transcription) is also fine.
         }
-        Ok(Some(Ok(WsMessage::Close(_)))) => {
-            panic!("Socket closed unexpectedly");
-        }
-        Ok(Some(Err(e))) => {
-            panic!("Socket error: {e}");
-        }
-        Ok(None) => {
-            panic!("Stream ended unexpectedly");
-        }
-        Err(_) => {
-            panic!("Timeout waiting for response");
-        }
-        _ => {
-            panic!("Unexpected message type");
-        }
+        // Full success: the handler sends no confirmation, so a timeout here
+        // means synthesis + publish progressed without an error reply.
+        Err(_) => {}
+        Ok(Some(Ok(WsMessage::Close(_)))) => panic!("Socket closed unexpectedly"),
+        Ok(Some(Err(e))) => panic!("Socket error: {e}"),
+        Ok(None) => panic!("Stream ended unexpectedly"),
+        _ => panic!("Unexpected message type"),
     }
 }

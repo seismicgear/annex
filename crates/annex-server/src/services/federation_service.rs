@@ -58,7 +58,7 @@ use rusqlite::{OptionalExtension, Transaction, TransactionBehavior};
 use thiserror::Error;
 
 use crate::api::GetRootResponse;
-use crate::api_rtx::rtx_relay_signing_payload;
+use crate::api_rtx::{rtx_bundle_content_hash, rtx_relay_signing_payload};
 use crate::api_ws::OutgoingMessage;
 use crate::parse_transfer_scope;
 use crate::services::federation_repository as repo;
@@ -727,7 +727,13 @@ impl FederationService {
         // known instance row (administrator-controlled), block private /
         // loopback / link-local hosts so a misconfigured peer entry cannot
         // turn this endpoint into an SSRF probe of internal services.
-        if crate::api_link_preview::is_url_private_or_reserved(&payload.originating_server) {
+        // `federation.allow_private_peer_addresses` lifts the private-address
+        // half for deployments whose peers really are on a LAN, container
+        // network or VPN; malformed and non-http(s) URLs stay refused.
+        if crate::api_link_preview::is_peer_url_disallowed(
+            &payload.originating_server,
+            self.state.federation_config.allow_private_peer_addresses,
+        ) {
             return Err(FederationError::Forbidden(format!(
                 "originating_server {} resolves to a private or reserved address",
                 payload.originating_server
@@ -825,7 +831,12 @@ impl FederationService {
                 }
             };
 
-            let tx = conn.transaction().map_err(FederationError::DbError)?;
+            // IMMEDIATE for the same reason as the send path: this reads
+            // before it writes, and a DEFERRED snapshot conflict fails
+            // instantly rather than waiting out `busy_timeout`.
+            let tx = conn
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .map_err(FederationError::DbError)?;
 
             repo::upsert_federated_identity(
                 &tx,
@@ -911,6 +922,12 @@ impl FederationService {
                     payload.originating_server
                 )));
             }
+            // Traffic is the liveness signal the expiry task was documented to
+            // rely on and never actually received: nothing else moves
+            // `updated_at` on a healthy link, so every agreement deactivated
+            // itself `agreement_ttl_days` after first contact. Guarded to at
+            // most one write per peer per day.
+            let _ = annex_federation::touch_agreement(&conn, state.server_id, instance.id);
 
             // 2. Verify Signature (newline-delimited to prevent field-boundary ambiguity)
             let message = format!("{}\n{}", channel_id, payload.pseudonym_id);
@@ -930,7 +947,34 @@ impl FederationService {
                 )));
             }
 
-            // 4. Add Member
+            // 4. Verify the channel exists and is actually federated.
+            //
+            // `receive_federated_message` performs exactly this check before
+            // accepting content; the join path next to it did not, so
+            // `federation_scope` — the operator's declaration of which
+            // channels leave this server — governed messages but not
+            // membership. A peer with a valid agreement, a valid signature
+            // and an attested identity could enrol its users into a channel
+            // marked `Local`, after which those pseudonyms appear in the
+            // member list, in `list_members` and in the trust graph.
+            //
+            // The message path's own scope check still refused their
+            // content, so this was contained — but a gate that only some of
+            // a set of sibling paths apply is the shape that eventually lets
+            // something through, and containment by a second check is not a
+            // reason to leave the first one missing.
+            let channel = annex_channels::get_channel(&conn, &channel_id)
+                .map_err(FederationError::Channel)?;
+            if !matches!(
+                channel.federation_scope,
+                annex_types::FederationScope::Federated
+            ) {
+                return Err(FederationError::Forbidden(format!(
+                    "Channel {channel_id} is not federated"
+                )));
+            }
+
+            // 5. Add Member
             add_member(&conn, state.server_id, &channel_id, &payload.pseudonym_id)
                 .map_err(FederationError::Channel)?;
 
@@ -1029,6 +1073,12 @@ impl FederationService {
                         envelope.originating_server
                     )));
                 }
+                // Traffic is the liveness signal the expiry task was documented to
+                // rely on and never actually received: nothing else moves
+                // `updated_at` on a healthy link, so every agreement deactivated
+                // itself `agreement_ttl_days` after first contact. Guarded to at
+                // most one write per peer per day.
+                let _ = annex_federation::touch_agreement(&conn, state.server_id, instance.id);
 
                 // 2. Verify Signature
                 let signing_input = message_signing_input(&envelope);
@@ -1057,8 +1107,9 @@ impl FederationService {
                 // since attestation, so the proof may no longer be valid.
                 //
                 // SSRF defence-in-depth: skip the freshness callback if the
-                // peer's base_url resolves to a private/loopback/link-local
-                // host. Peers are administratively trusted, but a misconfigured
+                // peer's base_url is not an allowed peer address — by default
+                // that includes private/loopback/link-local hosts, unless
+                // `federation.allow_private_peer_addresses` is set. Peers are administratively trusted, but a misconfigured
                 // peer entry (e.g. `http://localhost:9090`) would otherwise
                 // turn this code path into an outbound probe of internal
                 // services on every received message. We log the skip rather
@@ -1066,8 +1117,9 @@ impl FederationService {
                 // a soft "log on mismatch / continue on network error" gate,
                 // not a hard authorization step.
                 if !identity.root_hex_at_verification.is_empty()
-                    && !crate::api_link_preview::is_url_private_or_reserved(
+                    && !crate::api_link_preview::is_peer_url_disallowed(
                         &envelope.originating_server,
+                        state.federation_config.allow_private_peer_addresses,
                     )
                 {
                     let root_url =
@@ -1364,6 +1416,12 @@ impl FederationService {
                         envelope.originating_server
                     )));
                 }
+                // Traffic is the liveness signal the expiry task was documented to
+                // rely on and never actually received: nothing else moves
+                // `updated_at` on a healthy link, so every agreement deactivated
+                // itself `agreement_ttl_days` after first contact. Guarded to at
+                // most one write per peer per day.
+                let _ = annex_federation::touch_agreement(&conn, state.server_id, instance.id);
 
                 // 3. Freshness gate.
                 let fed_cfg = &state.federation_config;
@@ -1623,6 +1681,12 @@ impl FederationService {
                         envelope.originating_server
                     )));
                 }
+                // Traffic is the liveness signal the expiry task was documented to
+                // rely on and never actually received: nothing else moves
+                // `updated_at` on a healthy link, so every agreement deactivated
+                // itself `agreement_ttl_days` after first contact. Guarded to at
+                // most one write per peer per day.
+                let _ = annex_federation::touch_agreement(&conn, state.server_id, instance.id);
 
                 // 3. Freshness gate.
                 let fed_cfg = &state.federation_config;
@@ -1902,12 +1966,19 @@ impl FederationService {
                     ));
                 }
 
-                // 3. Verify server signature on the envelope
+                // 3. Verify server signature on the envelope. The signing
+                //    payload binds a hash of the bundle content we actually
+                //    received (computed here, before any scope stripping), so a
+                //    relaying / MITM peer that altered the bundle's content,
+                //    tags, author, or timestamp produces a different hash and
+                //    fails verification — it cannot forge the origin's signature.
+                let content_hash = rtx_bundle_content_hash(&envelope.bundle);
                 let signing_payload = rtx_relay_signing_payload(
                     &envelope.bundle.bundle_id,
                     &envelope.relaying_server,
                     &envelope.provenance.origin_server,
                     &envelope.provenance.relay_path,
+                    &content_hash,
                 );
                 verify_ed25519(
                     &instance.public_key_hex,
@@ -1943,7 +2014,10 @@ impl FederationService {
                 let provenance_json = serde_json::to_string(&envelope.provenance)
                     .map_err(FederationError::Serialization)?;
 
-                let tx = conn.transaction().map_err(FederationError::DbError)?;
+                // IMMEDIATE — read-then-write, as in the send path.
+                let tx = conn
+                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                    .map_err(FederationError::DbError)?;
 
                 // Store bundle with provenance (idempotent on duplicate bundle_id).
                 let inserted = repo::insert_rtx_bundle(
@@ -2153,6 +2227,7 @@ pub async fn relay_message(
     channel_id: String,
     message: annex_channels::Message,
 ) {
+    let allow_private_peers = state.federation_config.allow_private_peer_addresses;
     let peers_result = tokio::task::spawn_blocking({
         let state = state.clone();
         let sender = message.sender_pseudonym.clone();
@@ -2252,10 +2327,10 @@ pub async fn relay_message(
                 tracing::debug!(peer = %p.base_url, "skipping outbox enqueue: NO_TRANSFER");
                 return false;
             }
-            if crate::api_link_preview::is_url_private_or_reserved(&p.base_url) {
+            if crate::api_link_preview::is_peer_url_disallowed(&p.base_url, allow_private_peers) {
                 tracing::warn!(
                     peer = %p.base_url,
-                    "skipping outbox enqueue: peer base_url resolves to a private or reserved host"
+                    "skipping outbox enqueue: peer base_url is not an allowed federation peer address"
                 );
                 return false;
             }
@@ -2327,6 +2402,7 @@ pub async fn relay_redaction(
     redacted_by: String,
     redaction_reason: &'static str,
 ) {
+    let allow_private_peers = state.federation_config.allow_private_peer_addresses;
     let peers_result = tokio::task::spawn_blocking({
         let state = state.clone();
         let redactor = redacted_by.clone();
@@ -2399,10 +2475,10 @@ pub async fn relay_redaction(
             if p.transfer_scope == "NO_TRANSFER" {
                 return false;
             }
-            if crate::api_link_preview::is_url_private_or_reserved(&p.base_url) {
+            if crate::api_link_preview::is_peer_url_disallowed(&p.base_url, allow_private_peers) {
                 tracing::warn!(
                     peer = %p.base_url,
-                    "skipping redaction enqueue: peer base_url resolves to a private or reserved host"
+                    "skipping redaction enqueue: peer base_url is not an allowed federation peer address"
                 );
                 return false;
             }
@@ -2466,6 +2542,7 @@ pub async fn relay_edit(
     edited_by: String,
     content: String,
 ) {
+    let allow_private_peers = state.federation_config.allow_private_peer_addresses;
     let peers_result = tokio::task::spawn_blocking({
         let state = state.clone();
         let editor = edited_by.clone();
@@ -2540,10 +2617,10 @@ pub async fn relay_edit(
             if p.transfer_scope == "NO_TRANSFER" {
                 return false;
             }
-            if crate::api_link_preview::is_url_private_or_reserved(&p.base_url) {
+            if crate::api_link_preview::is_peer_url_disallowed(&p.base_url, allow_private_peers) {
                 tracing::warn!(
                     peer = %p.base_url,
-                    "skipping edit enqueue: peer base_url resolves to a private or reserved host"
+                    "skipping edit enqueue: peer base_url is not an allowed federation peer address"
                 );
                 return false;
             }

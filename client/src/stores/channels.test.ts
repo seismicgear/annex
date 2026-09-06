@@ -6,6 +6,7 @@ vi.mock('@/lib/api', () => ({
   joinChannel: vi.fn(async () => {}),
   leaveChannel: vi.fn(async () => {}),
   createChannel: vi.fn(async () => ({ status: 'created' })),
+  getChannelE2e: vi.fn(async () => false),
 }));
 
 vi.mock('@/lib/ws', () => ({
@@ -26,6 +27,7 @@ vi.mock('@/lib/ws', () => ({
 const mockLeaveCall = vi.fn(async () => {});
 const mockForceReset = vi.fn();
 const mockClearChannelCallState = vi.fn();
+const mockAppendTranscript = vi.fn();
 vi.mock('@/stores/voice', () => ({
   useVoiceStore: {
     getState: () => ({
@@ -33,6 +35,7 @@ vi.mock('@/stores/voice', () => ({
       leaveCall: mockLeaveCall,
       forceReset: mockForceReset,
       clearChannelCallState: mockClearChannelCallState,
+      appendTranscript: mockAppendTranscript,
     }),
   },
 }));
@@ -43,6 +46,7 @@ describe('channels store', () => {
     mockLeaveCall.mockClear();
     mockForceReset.mockClear();
     mockClearChannelCallState.mockClear();
+    mockAppendTranscript.mockClear();
   });
 
   it('resetServerState clears all per-server transient state', async () => {
@@ -465,6 +469,115 @@ describe('channels store', () => {
     });
     expect(useChannelsStore.getState().unreadCounts.B).toBe(1);
   });
+
+  it('routes a transcription frame to the voice store instead of dropping it', async () => {
+    // The boundary that was not crossed. The server transcribes call audio
+    // and sends `transcription` frames to every participant; `handleFrame`
+    // had no branch for them, so each one arrived, passed validation, matched
+    // nothing, and fell through to the active-channel guard and out.
+    //
+    // Handled ABOVE that guard on purpose: a transcript belongs to the call
+    // the user is in, which is not necessarily the channel they are reading —
+    // this frame names a channel that is not the active one, and still lands.
+    const { AnnexWebSocket } = await import('@/lib/ws');
+    const onStatusHandlers: Array<(connected: boolean) => void> = [];
+    const onMessageHandlers: Array<(f: import('@/types').WsReceiveFrame) => void> = [];
+    vi.mocked(AnnexWebSocket).mockImplementationOnce(function mockAnnexWebSocket() {
+      return {
+        onStatus: vi.fn((cb: (connected: boolean) => void) => { onStatusHandlers.push(cb); }),
+        onMessage: vi.fn((cb: (f: import('@/types').WsReceiveFrame) => void) => { onMessageHandlers.push(cb); }),
+        connect: vi.fn(),
+        disconnect: vi.fn(),
+        subscribe: vi.fn(),
+        unsubscribe: vi.fn(),
+        send: vi.fn(),
+        setSessionToken: vi.fn(),
+        reconnectForAuthRefresh: vi.fn(),
+        connected: false,
+      } as unknown as import('@/lib/ws').AnnexWebSocket;
+    });
+
+    const { useChannelsStore } = await import('./channels');
+    useChannelsStore.setState({ activeChannelId: 'A', joinedChannelIds: new Set(['A']) });
+    useChannelsStore.getState().connectWs('p1');
+    onStatusHandlers[0]?.(true);
+
+    onMessageHandlers[0]?.({
+      type: 'transcription',
+      channelId: 'voice-1',
+      speakerPseudonym: 'p2',
+      text: 'can everyone hear me',
+    });
+
+    expect(mockAppendTranscript).toHaveBeenCalledTimes(1);
+    expect(mockAppendTranscript.mock.calls[0][0]).toMatchObject({
+      channelId: 'voice-1',
+      speakerPseudonym: 'p2',
+      text: 'can everyone hear me',
+    });
+  });
+
+  it('keeps clientRequestId on the confirmed message so its React key is stable', async () => {
+    // MessageView keys rows `msg.clientRequestId ?? msg.message_id`. Dropping
+    // the field on confirmation flips the key, and React unmounts the row and
+    // mounts a fresh one — taking an open edit textarea with it and resetting
+    // the half-typed edit to the original content, with nothing said. Edit is
+    // only offered for 60s after posting, which is exactly the window in which
+    // the confirmation is still in flight.
+    const { AnnexWebSocket } = await import('@/lib/ws');
+    const onStatusHandlers: Array<(connected: boolean) => void> = [];
+    const onMessageHandlers: Array<(frame: import('@/types').WsReceiveFrame) => void> = [];
+    vi.mocked(AnnexWebSocket).mockImplementationOnce(function mockAnnexWebSocket() {
+      return {
+        onStatus: vi.fn((cb: (connected: boolean) => void) => { onStatusHandlers.push(cb); }),
+        onMessage: vi.fn((cb: (frame: import('@/types').WsReceiveFrame) => void) => { onMessageHandlers.push(cb); }),
+        connect: vi.fn(),
+        disconnect: vi.fn(),
+        subscribe: vi.fn(),
+        unsubscribe: vi.fn(),
+        send: vi.fn(),
+        setSessionToken: vi.fn(),
+        reconnectForAuthRefresh: vi.fn(),
+        trackLastMessageId: vi.fn(),
+        connected: false,
+      } as unknown as import('@/lib/ws').AnnexWebSocket;
+    });
+
+    const { useChannelsStore } = await import('./channels');
+    useChannelsStore.setState({
+      joinedChannelIds: new Set(['A']),
+      activeChannelId: 'A',
+      unreadCounts: {},
+      messages: [{
+        message_id: '',
+        channel_id: 'A',
+        sender_pseudonym: 'p1',
+        content: 'hello',
+        reply_to_message_id: null,
+        created_at: new Date().toISOString(),
+        pending: true,
+        clientRequestId: 'req-key',
+      }],
+    });
+    useChannelsStore.getState().connectWs('p1');
+    onStatusHandlers[0]?.(true);
+
+    onMessageHandlers[0]?.({
+      type: 'message',
+      channelId: 'A',
+      messageId: 'server-id-1',
+      senderPseudonym: 'p1',
+      content: 'hello',
+      createdAt: new Date().toISOString(),
+      clientRequestId: 'req-key',
+    });
+
+    const msgs = useChannelsStore.getState().messages;
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].message_id).toBe('server-id-1');
+    expect(msgs[0].pending).toBeFalsy();
+    expect(msgs[0].clientRequestId).toBe('req-key');
+  });
 });
 
 
@@ -498,3 +611,299 @@ describe('channels store', () => {
     expect(ws.reconnectForAuthRefresh).not.toHaveBeenCalled();
     expect(useChannelsStore.getState().wsAuthRefreshing).toBe(false);
   });
+
+describe('failures that used to look like success', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+  });
+
+  it('reverts an edit that could not be sent, instead of showing it saved', async () => {
+    const { useChannelsStore } = await import('./channels');
+
+    const ws = {
+      editMessage: vi.fn(() => { throw new Error('socket is closed'); }),
+    };
+    useChannelsStore.setState({
+      ws: ws as never,
+      activeChannelId: 'chan-1',
+      messages: [
+        { message_id: 'm1', channel_id: 'chan-1', sender_pseudonym: 'me',
+          content: 'origianl typo', created_at: '2026-01-01 00:00:00' } as never,
+      ],
+      messageActionError: null,
+    });
+
+    useChannelsStore.getState().editMessage('m1', 'original typo fixed');
+
+    const state = useChannelsStore.getState();
+    // The correction never reached the server, so it must not be on screen
+    // looking applied — it came back on the next reload and the user had no
+    // idea their fix was lost.
+    expect(state.messages[0].content).toBe('origianl typo');
+    expect(state.messageActionError).toBeTruthy();
+  });
+
+  it('keeps the optimistic edit when the send succeeds', async () => {
+    const { useChannelsStore } = await import('./channels');
+
+    const ws = { editMessage: vi.fn() };
+    useChannelsStore.setState({
+      ws: ws as never,
+      activeChannelId: 'chan-1',
+      messages: [
+        { message_id: 'm1', channel_id: 'chan-1', sender_pseudonym: 'me',
+          content: 'before', created_at: '2026-01-01 00:00:00' } as never,
+      ],
+      messageActionError: null,
+    });
+
+    useChannelsStore.getState().editMessage('m1', 'after');
+
+    const state = useChannelsStore.getState();
+    expect(state.messages[0].content).toBe('after');
+    expect(state.messageActionError).toBeNull();
+  });
+
+  it('undoes an edit the server refused, using the reason it gave', async () => {
+    // The socket-down case above was already handled. This is the one an
+    // ordinary user hits: the 60-second edit window closes, the server says
+    // no, and the error frame carried no way to tell which operation it was
+    // about — so the correction stayed on screen looking saved and came back
+    // undone on the next reload.
+    const { AnnexWebSocket } = await import('@/lib/ws');
+    const onMessageHandlers: Array<(f: import('@/types').WsReceiveFrame) => void> = [];
+    const editMessage = vi.fn();
+    vi.mocked(AnnexWebSocket).mockImplementationOnce(function mock() {
+      return {
+        onStatus: vi.fn(),
+        onMessage: vi.fn((cb: (f: import('@/types').WsReceiveFrame) => void) => { onMessageHandlers.push(cb); }),
+        connect: vi.fn(), disconnect: vi.fn(), subscribe: vi.fn(), unsubscribe: vi.fn(),
+        send: vi.fn(), setSessionToken: vi.fn(), reconnectForAuthRefresh: vi.fn(),
+        editMessage, connected: true,
+      } as unknown as import('@/lib/ws').AnnexWebSocket;
+    });
+
+    const { useChannelsStore } = await import('./channels');
+    useChannelsStore.getState().connectWs('p1');
+    useChannelsStore.setState({
+      activeChannelId: 'chan-1',
+      messages: [
+        { message_id: 'm1', channel_id: 'chan-1', sender_pseudonym: 'me',
+          content: 'origianl typo', created_at: '2026-01-01 00:00:00' } as never,
+      ],
+      messageActionError: null,
+    });
+
+    useChannelsStore.getState().editMessage('m1', 'original typo fixed');
+    expect(useChannelsStore.getState().messages[0].content).toBe('original typo fixed');
+
+    // The id the client sent is the id the server echoes back.
+    const clientRequestId = editMessage.mock.calls[0][3] as string;
+    expect(clientRequestId).toBeTruthy();
+
+    onMessageHandlers[0]?.({
+      type: 'error',
+      clientRequestId,
+      message: 'Edit window has expired',
+    } as import('@/types').WsReceiveFrame);
+
+    const state = useChannelsStore.getState();
+    expect(state.messages[0].content).toBe('origianl typo');
+    expect(state.messageActionError).toContain('Edit window has expired');
+    // And it must not be mistaken for a failed *send*: the message keeps
+    // existing, it is not marked failed, and the composer says nothing.
+    expect(state.messages[0].failed).toBeFalsy();
+    expect(state.composerError).toBeNull();
+  });
+
+  it('says so when a delete never left the device', async () => {
+    // This one had no optimistic change to undo. It logged to a console
+    // nobody has open and stopped: the confirm dialog closed, the message
+    // stayed, and nothing said the request had not been made.
+    const { useChannelsStore } = await import('./channels');
+    const ws = { deleteMessage: vi.fn(() => { throw new Error('socket is closed'); }) };
+    useChannelsStore.setState({
+      ws: ws as never,
+      activeChannelId: 'chan-1',
+      messageActionError: null,
+    });
+
+    useChannelsStore.getState().deleteMessage('m1');
+
+    expect(useChannelsStore.getState().messageActionError).toBeTruthy();
+  });
+
+  it('forgets a pending edit once the server confirms it', async () => {
+    // Otherwise the correlation map grows for the life of the channel.
+    const { AnnexWebSocket } = await import('@/lib/ws');
+    const onMessageHandlers: Array<(f: import('@/types').WsReceiveFrame) => void> = [];
+    const editMessage = vi.fn();
+    vi.mocked(AnnexWebSocket).mockImplementationOnce(function mock() {
+      return {
+        onStatus: vi.fn(),
+        onMessage: vi.fn((cb: (f: import('@/types').WsReceiveFrame) => void) => { onMessageHandlers.push(cb); }),
+        connect: vi.fn(), disconnect: vi.fn(), subscribe: vi.fn(), unsubscribe: vi.fn(),
+        send: vi.fn(), setSessionToken: vi.fn(), reconnectForAuthRefresh: vi.fn(),
+        editMessage, connected: true,
+      } as unknown as import('@/lib/ws').AnnexWebSocket;
+    });
+
+    const { useChannelsStore } = await import('./channels');
+    useChannelsStore.getState().connectWs('p1');
+    useChannelsStore.setState({
+      activeChannelId: 'chan-1',
+      messages: [
+        { message_id: 'm1', channel_id: 'chan-1', sender_pseudonym: 'me',
+          content: 'before', created_at: '2026-01-01 00:00:00' } as never,
+      ],
+    });
+
+    useChannelsStore.getState().editMessage('m1', 'after');
+    expect(useChannelsStore.getState().pendingMessageOps.size).toBe(1);
+
+    onMessageHandlers[0]?.({
+      type: 'message_edited',
+      channelId: 'chan-1',
+      messageId: 'm1',
+      content: 'after',
+      editedAt: '2026-01-01 00:01:00',
+    } as import('@/types').WsReceiveFrame);
+
+    expect(useChannelsStore.getState().pendingMessageOps.size).toBe(0);
+  });
+
+  it('a failed scrollback page does not claim the history has ended', async () => {
+    const api = await import('@/lib/api');
+    const { useChannelsStore } = await import('./channels');
+
+    vi.mocked(api.getMessages).mockRejectedValueOnce(new Error('network'));
+    useChannelsStore.setState({
+      activeChannelId: 'chan-1',
+      messages: [
+        { message_id: 'm1', channel_id: 'chan-1', sender_pseudonym: 'me',
+          content: 'hi', created_at: '2026-01-01 00:00:00' } as never,
+      ],
+      loadingOlder: false,
+      hasMoreMessages: true,
+      olderError: null,
+    });
+
+    await useChannelsStore.getState().loadOlderMessages('me');
+
+    const state = useChannelsStore.getState();
+    // `hasMoreMessages: false` here would render as "you have reached the
+    // beginning of this channel" — a claim the server never made.
+    expect(state.hasMoreMessages).toBe(true);
+    expect(state.olderError).toBeTruthy();
+  });
+
+  it('does not retry automatically after a failed page, but retry works', async () => {
+    const api = await import('@/lib/api');
+    const { useChannelsStore } = await import('./channels');
+
+    vi.mocked(api.getMessages).mockRejectedValueOnce(new Error('network'));
+    useChannelsStore.setState({
+      activeChannelId: 'chan-1',
+      messages: [
+        { message_id: 'm1', channel_id: 'chan-1', sender_pseudonym: 'me',
+          content: 'hi', created_at: '2026-01-01 00:00:00' } as never,
+      ],
+      loadingOlder: false,
+      hasMoreMessages: true,
+      olderError: null,
+    });
+
+    await useChannelsStore.getState().loadOlderMessages('me');
+    expect(vi.mocked(api.getMessages)).toHaveBeenCalledTimes(1);
+
+    // Every subsequent scroll event must NOT re-fire the request — that
+    // loop is what the old `hasMoreMessages: false` was preventing.
+    await useChannelsStore.getState().loadOlderMessages('me');
+    await useChannelsStore.getState().loadOlderMessages('me');
+    expect(vi.mocked(api.getMessages)).toHaveBeenCalledTimes(1);
+
+    // An explicit retry does re-fire it.
+    vi.mocked(api.getMessages).mockResolvedValueOnce([]);
+    await useChannelsStore.getState().retryOlderMessages('me');
+    expect(vi.mocked(api.getMessages)).toHaveBeenCalledTimes(2);
+    expect(useChannelsStore.getState().olderError).toBeNull();
+  });
+
+  it('a genuinely short page still ends the history', async () => {
+    const api = await import('@/lib/api');
+    const { useChannelsStore } = await import('./channels');
+
+    // Fewer than PAGE_SIZE rows means the start of the channel, which is a
+    // real end and must stay distinguishable from the failure above.
+    vi.mocked(api.getMessages).mockResolvedValueOnce([]);
+    useChannelsStore.setState({
+      activeChannelId: 'chan-1',
+      messages: [
+        { message_id: 'm1', channel_id: 'chan-1', sender_pseudonym: 'me',
+          content: 'hi', created_at: '2026-01-01 00:00:00' } as never,
+      ],
+      loadingOlder: false,
+      hasMoreMessages: true,
+      olderError: null,
+    });
+
+    await useChannelsStore.getState().loadOlderMessages('me');
+
+    const state = useChannelsStore.getState();
+    expect(state.hasMoreMessages).toBe(false);
+    expect(state.olderError).toBeNull();
+  });
+});
+
+describe('an unresolved encryption state fails closed', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+  });
+
+  it('a failed encryption check does not put plaintext on the wire', async () => {
+    const api = await import('@/lib/api');
+    const { useChannelsStore } = await import('./channels');
+    const { isChannelE2e, isChannelE2eUnknown } = await import('@/lib/message-crypto');
+
+    // The check fails. Previously this recorded `false` — the same value a
+    // genuinely plaintext channel has — and every send for the rest of the
+    // session went out unencrypted in a channel the user had encrypted.
+    vi.mocked(api.getChannelE2e).mockRejectedValueOnce(new Error('network'));
+    vi.mocked(api.getMessages).mockResolvedValue([]);
+
+    const ws = { send: vi.fn(() => 'req-1'), subscribe: vi.fn(), connected: true };
+    useChannelsStore.setState({ ws: ws as never, wsConnected: true });
+
+    await useChannelsStore.getState().selectChannel('me', 'chan-secret');
+
+    expect(isChannelE2eUnknown('chan-secret')).toBe(true);
+    expect(isChannelE2e('chan-secret')).toBe(false);
+
+    const id = useChannelsStore.getState().sendMessage('secret text', 'me');
+
+    expect(id).toBeNull();
+    expect(ws.send).not.toHaveBeenCalled();
+    expect(useChannelsStore.getState().composerError).toMatch(/encrypted/i);
+  });
+
+  it('a channel the server confirms is plaintext still sends normally', async () => {
+    const api = await import('@/lib/api');
+    const { useChannelsStore } = await import('./channels');
+
+    // The fix must not turn every plaintext channel into a refusal — only an
+    // unresolved one. This is the half that would break the whole app.
+    vi.mocked(api.getChannelE2e).mockResolvedValueOnce(false);
+    vi.mocked(api.getMessages).mockResolvedValue([]);
+
+    const ws = { send: vi.fn(() => 'req-1'), subscribe: vi.fn(), connected: true };
+    useChannelsStore.setState({ ws: ws as never, wsConnected: true });
+
+    await useChannelsStore.getState().selectChannel('me', 'chan-open');
+    const id = useChannelsStore.getState().sendMessage('hello', 'me');
+
+    expect(id).toBe('req-1');
+    expect(ws.send).toHaveBeenCalled();
+  });
+});

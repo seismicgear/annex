@@ -272,7 +272,7 @@ pub async fn post_channel_key_wraps_handler(
         };
 
         let tx = conn
-            .transaction()
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
         let mut inserted = 0usize;
         for w in &wraps {
@@ -473,19 +473,37 @@ pub async fn set_channel_e2e_handler(
 
 /// `GET /api/channels/{channelId}/e2e` — read the E2E flag so the client knows
 /// whether to encrypt outgoing bodies and expect ciphertext on inbound ones.
+///
+/// Member-or-moderator, like every other handler in this module and like
+/// `get_channel_handler`, whose doc states the rule the server keeps:
+/// moderators may view any channel, everyone else must be a member, so that
+/// private channels do not leak metadata. Whether a channel is encrypted is
+/// that metadata — `list_channels`, which any authenticated user may call,
+/// deliberately omits it — and this was the one route that answered for any
+/// channel to anyone holding a pseudonym.
 pub async fn get_channel_e2e_handler(
     Extension(state): Extension<Arc<AppState>>,
-    Extension(IdentityContext(_identity)): Extension<IdentityContext>,
+    Extension(IdentityContext(identity)): Extension<IdentityContext>,
     Path(channel_id): Path<String>,
 ) -> Result<Response, ApiError> {
     let server_id = state.server_id;
     let state_clone = state.clone();
+    let pseudonym = identity.pseudonym_id.clone();
+    let can_moderate = identity.can_moderate;
 
     let enabled = tokio::task::spawn_blocking(move || {
         let conn = state_clone
             .pool
             .get()
             .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
+
+        if !can_moderate
+            && !annex_channels::is_member(&conn, server_id, &channel_id, &pseudonym)
+                .map_err(|e| ApiError::InternalServerError(e.to_string()))?
+        {
+            return Err(ApiError::Forbidden("not a member of this channel".into()));
+        }
+
         conn.query_row(
             "SELECT e2e_enabled FROM channels WHERE channel_id = ?1 AND server_id = ?2",
             rusqlite::params![channel_id, server_id],

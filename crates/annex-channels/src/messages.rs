@@ -103,7 +103,16 @@ pub fn list_messages(
         None
     };
 
-    if let (Some(_), Some((before_ts, before_row_id))) = (&before, cursor) {
+    // A `before` cursor that does not resolve to a known message must yield an
+    // empty page — NOT the newest page. Falling through to the newest-page
+    // query here makes a "load older messages" pagination loop restart from the
+    // top and never terminate (and could surface messages the caller already
+    // has). An unknown cursor means "there is nothing before this".
+    if before.is_some() && cursor.is_none() {
+        return Ok(Vec::new());
+    }
+
+    if let Some((before_ts, before_row_id)) = cursor {
         let sql = format!(
             "SELECT
                 id, server_id, channel_id, message_id, sender_pseudonym, content,
@@ -262,23 +271,52 @@ pub fn delete_message(
         params![message_id],
     )?;
 
+    // And drop every earlier version of it.
+    //
+    // Blanking `content` alone hid the final text and left all the drafts
+    // behind: `message_edits` kept `old_content` verbatim and
+    // `get_edit_history` did not filter on `deleted_at`, so a message the
+    // sender had deleted still served every prior version through
+    // `GET /api/channels/{id}/messages/{mid}/edits`. Someone who mistyped a
+    // password, a name or an address, corrected it, then deleted the
+    // message, had published the mistake and hidden only the correction —
+    // which is the opposite of what "delete" is asked to do, and the one
+    // case where deleting matters most.
+    tx.execute(
+        "DELETE FROM message_edits WHERE message_id = ?1",
+        params![message_id],
+    )?;
+
     tx.commit()?;
     get_message(conn, message_id)
 }
 
-/// Returns the edit history for a message (oldest first).
+/// Returns the edit history for a message in a channel (oldest first).
+///
+/// The channel is part of the query rather than something the caller is
+/// trusted to have checked, because `message_edits` has no channel column
+/// and the only route that reads it takes the channel and the message as
+/// two independent path segments. Scoped by message id alone, a caller who
+/// is a member of *any* channel could name a message from a channel they
+/// are not in and receive every prior version of it. The membership check
+/// upstream still runs and still matters — it just cannot be the only thing
+/// standing between the two identifiers, because it can only speak about
+/// one of them.
 pub fn get_edit_history(
     conn: &Connection,
+    server_id: i64,
+    channel_id: &str,
     message_id: &str,
 ) -> Result<Vec<MessageEdit>, ChannelError> {
     let mut stmt = conn.prepare(
-        "SELECT id, message_id, old_content, edited_at
-         FROM message_edits
-         WHERE message_id = ?1
-         ORDER BY edited_at ASC",
+        "SELECT e.id, e.message_id, e.old_content, e.edited_at
+         FROM message_edits e
+         JOIN messages m ON m.message_id = e.message_id
+         WHERE e.message_id = ?1 AND m.channel_id = ?2 AND m.server_id = ?3
+         ORDER BY e.edited_at ASC",
     )?;
 
-    let rows = stmt.query_map([message_id], |row| {
+    let rows = stmt.query_map(params![message_id, channel_id, server_id], |row| {
         Ok(MessageEdit {
             id: row.get(0)?,
             message_id: row.get(1)?,
@@ -334,4 +372,58 @@ fn resolve_retention_days(
         }
     };
     Ok((server_id, Some(policy.default_retention_days)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use annex_db::run_migrations;
+    use rusqlite::Connection;
+
+    fn insert_message(conn: &Connection, message_id: &str) {
+        conn.execute(
+            "INSERT INTO messages (server_id, channel_id, message_id, sender_pseudonym, content)
+             VALUES (1, 'chan', ?1, 'pseudo', 'hello')",
+            [message_id],
+        )
+        .expect("insert message");
+    }
+
+    #[test]
+    fn list_messages_unresolved_before_cursor_returns_empty_page() {
+        // Foreign keys are off on a bare in-memory connection (the pool enables
+        // them), so we can seed `messages` rows directly without parent rows.
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        run_migrations(&conn).expect("run migrations");
+        // Seed `messages` directly without parent server/channel rows — this is
+        // a focused test of the pagination query, not of referential integrity.
+        conn.execute_batch("PRAGMA foreign_keys = OFF;")
+            .expect("disable fk enforcement for seeding");
+
+        insert_message(&conn, "m1");
+        insert_message(&conn, "m2");
+
+        // No cursor → newest page returns the seeded messages.
+        let newest = list_messages(&conn, 1, "chan", None, None).expect("list newest");
+        assert_eq!(newest.len(), 2, "newest page should return both messages");
+
+        // A `before` cursor that resolves excludes the cursor message itself.
+        let before_valid =
+            list_messages(&conn, 1, "chan", Some("m2".to_string()), None).expect("list before m2");
+        assert!(
+            before_valid.iter().all(|m| m.message_id != "m2"),
+            "a resolved cursor must not include the cursor message"
+        );
+
+        // The regression guard: a `before` cursor that does NOT resolve to a
+        // known message must return an EMPTY page — not silently fall through
+        // to the newest page (which makes a load-older loop never terminate).
+        let before_unknown = list_messages(&conn, 1, "chan", Some("nope".to_string()), None)
+            .expect("list before unknown");
+        assert!(
+            before_unknown.is_empty(),
+            "an unresolved before cursor must yield an empty page, got {} rows",
+            before_unknown.len()
+        );
+    }
 }

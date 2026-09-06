@@ -133,7 +133,7 @@ export async function importIdentity(json: string): Promise<StoredIdentity> {
  * from a previous installation is fully removed. Also resets internal
  * connection handles so subsequent calls re-open fresh databases.
  */
-export async function clearAllDatabases(): Promise<void> {
+export async function clearAllDatabases(): Promise<{ unremoved: string[] }> {
   const DB_NAMES = ['annex-identity', 'annex-servers', 'annex-personas', 'annex-e2e'];
   // Close all cached connection handles so subsequent calls re-open fresh databases.
   dbPromise = null;
@@ -151,16 +151,35 @@ export async function clearAllDatabases(): Promise<void> {
     const { resetE2eDbHandle } = await import('@/lib/e2e-store');
     resetE2eDbHandle();
   } catch { /* module may not be loaded yet */ }
+  // Report what could not be removed instead of claiming success for it.
+  //
+  // `onblocked` fires when another connection still holds the database open
+  // — most often a second Annex tab. It used to `resolve()`, so a deletion
+  // that did not happen was indistinguishable from one that did, and every
+  // caller carried on as though the data were gone. The "Clear local state"
+  // recovery button is the sharpest case: it wipes the in-memory stores and
+  // re-runs bootstrap, which reloads the identities that were never deleted,
+  // returning the user to the identical failure with nothing said. That is
+  // the escape hatch, so it failing silently leaves no way forward at all.
+  const unremoved: string[] = [];
   for (const name of DB_NAMES) {
     try {
       await new Promise<void>((resolve, reject) => {
         const req = indexedDB.deleteDatabase(name);
         req.onsuccess = () => resolve();
         req.onerror = () => reject(req.error);
-        req.onblocked = () => resolve(); // Best-effort
+        req.onblocked = () => {
+          // Still resolve: blocking is not an exception, and hanging here
+          // would be worse than reporting. But record it.
+          unremoved.push(name);
+          resolve();
+        };
       });
-    } catch {
-      // Non-fatal — database may not exist yet.
+    } catch (e) {
+      // A missing database is not a failure; anything else is.
+      console.warn(`[db] could not delete ${name}:`, e);
+      unremoved.push(name);
     }
   }
+  return { unremoved };
 }

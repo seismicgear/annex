@@ -5,9 +5,10 @@ use annex_graph::update_node_activity;
 use annex_observe::EventPayload;
 use annex_types::PresenceEvent;
 use annex_vrp::{
-    check_reputation_score, record_vrp_outcome, validate_federation_handshake, ServerPolicyRoot,
-    VrpAlignmentConfig, VrpAlignmentStatus, VrpCapabilitySharingContract, VrpFederationHandshake,
-    VrpTransferAcceptanceConfig, VrpValidationReport,
+    apply_reputation_gate, check_reputation_score, record_vrp_outcome,
+    validate_federation_handshake, ServerPolicyRoot, VrpAlignmentConfig, VrpAlignmentStatus,
+    VrpCapabilitySharingContract, VrpFederationHandshake, VrpTransferAcceptanceConfig,
+    VrpValidationReport,
 };
 use axum::{
     extract::Extension,
@@ -26,6 +27,14 @@ pub struct AgentHandshakeRequest {
     pub pseudonym_id: String,
     /// The VRP handshake payload (anchor + contract).
     pub handshake: VrpFederationHandshake,
+    /// The agent's Ed25519 signing public key (64-char hex). When present and
+    /// valid, the server stores it on the agent registration and thereafter
+    /// requires every RTX bundle this agent publishes to carry a valid author
+    /// signature over its content (AUDIT P4-FED-1). Optional for backward
+    /// compatibility; agents that omit it keep the legacy structural-only
+    /// signature check.
+    #[serde(rename = "signingPubkey", default)]
+    pub signing_pubkey: Option<String>,
 }
 
 /// Verifies a `Authorization: Bearer <session-token>` header and returns the
@@ -66,6 +75,24 @@ pub async fn agent_handshake_handler(
     // optional here — pre-registration handshakes do not have one yet —
     // but if present it must be valid.
     let token_pseudonym = pseudonym_from_authorization_header(&headers, &state.ws_token_secret)?;
+
+    // Validate the optional agent signing pubkey up-front: it must be a
+    // well-formed 32-byte Ed25519 public key (64-char hex) before we persist
+    // it, so a malformed key can never end up gating RTX author verification.
+    let validated_signing_pubkey: Option<String> = match payload.signing_pubkey.as_deref() {
+        None => None,
+        Some(hex_str) => {
+            let bytes = hex::decode(hex_str.trim())
+                .map_err(|_| ApiError::BadRequest("signingPubkey is not valid hex".to_string()))?;
+            let arr: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
+                ApiError::BadRequest("signingPubkey must be 32 bytes (64 hex chars)".to_string())
+            })?;
+            ed25519_dalek::VerifyingKey::from_bytes(&arr).map_err(|_| {
+                ApiError::BadRequest("signingPubkey is not a valid Ed25519 public key".to_string())
+            })?;
+            Some(hex::encode(arr))
+        }
+    };
 
     let pseudonym_id_for_disconnect = payload.pseudonym_id.clone();
     let state_for_disconnect = state.clone();
@@ -201,11 +228,33 @@ pub async fn agent_handshake_handler(
         );
 
         // 8-10. Record outcome, check reputation, and upsert registration atomically.
-        let tx = conn.transaction().map_err(|e| {
+        // IMMEDIATE. Every write transaction in this codebase takes the
+        // RESERVED lock at BEGIN: a DEFERRED one reads a WAL snapshot first
+        // and then has to upgrade, and if another connection committed in
+        // between SQLite answers SQLITE_BUSY_SNAPSHOT immediately — the busy
+        // handler is never called, so `busy_timeout` cannot help. That is
+        // what made message sends fail intermittently with "database is
+        // locked"; see `ws_send_immediate_tx.rs`.
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| {
             ApiError::InternalServerError(format!("failed to begin transaction: {e}"))
         })?;
 
-        // 8. Record Outcome
+        // 9. Check longitudinal reputation FROM PRIOR HISTORY — before the
+        // current outcome is recorded — so a sustained history of
+        // Partial/Conflict outcomes can gate this handshake's verdict.
+        let reputation_score =
+            check_reputation_score(&tx, state.server_id, &payload.pseudonym_id).map_err(
+                |e| ApiError::InternalServerError(format!("failed to check reputation: {e}")),
+            )?;
+
+        // Gate the freshly-computed alignment by reputation: a poor track
+        // record downgrades the verdict one step (Aligned->Partial->Conflict).
+        // This is what makes reputation actually affect the outcome.
+        let report = apply_reputation_gate(report, reputation_score, &transfer_config);
+
+        // 8. Record the FINAL (gated) outcome to the handshake log.
         record_vrp_outcome(
             &tx,
             state.server_id,
@@ -214,12 +263,6 @@ pub async fn agent_handshake_handler(
             &report,
         )
         .map_err(|e| ApiError::InternalServerError(format!("failed to log vrp outcome: {e}")))?;
-
-        // 9. Check Longitudinal Reputation
-        let reputation_score =
-            check_reputation_score(&tx, state.server_id, &payload.pseudonym_id).map_err(
-                |e| ApiError::InternalServerError(format!("failed to check reputation: {e}")),
-            )?;
 
         // 10. Upsert Agent Registration
         if report.alignment_status == VrpAlignmentStatus::Aligned
@@ -271,8 +314,8 @@ pub async fn agent_handshake_handler(
             tx.execute(
                 "INSERT INTO agent_registrations (
                     server_id, pseudonym_id, alignment_status, transfer_scope,
-                    capability_contract_json, anchor_snapshot_json, reputation_score, last_handshake_at, active, created_at, updated_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, datetime('now'), datetime('now'))
+                    capability_contract_json, anchor_snapshot_json, reputation_score, last_handshake_at, signing_pubkey, active, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, datetime('now'), datetime('now'))
                 ON CONFLICT(server_id, pseudonym_id) DO UPDATE SET
                     alignment_status = excluded.alignment_status,
                     transfer_scope = excluded.transfer_scope,
@@ -280,6 +323,10 @@ pub async fn agent_handshake_handler(
                     anchor_snapshot_json = excluded.anchor_snapshot_json,
                     reputation_score = excluded.reputation_score,
                     last_handshake_at = excluded.last_handshake_at,
+                    -- Preserve an existing signing key when a re-handshake omits
+                    -- one, so an agent cannot silently drop author-signature
+                    -- enforcement by re-handshaking without its key.
+                    signing_pubkey = COALESCE(excluded.signing_pubkey, agent_registrations.signing_pubkey),
                     active = 1,
                     updated_at = datetime('now')
                 ",
@@ -291,7 +338,8 @@ pub async fn agent_handshake_handler(
                     contract_json,
                     anchor_json,
                     reputation_score,
-                    now
+                    now,
+                    validated_signing_pubkey,
                 ],
             )
             .map_err(|e| {

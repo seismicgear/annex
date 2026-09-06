@@ -24,13 +24,51 @@ mod startup_mode;
 mod webrtc;
 mod window;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use tauri::{Emitter, Listener, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
 
 use crate::app_state::AppManagedState;
+
+/// Resolve the on-disk locations a Tauri `bundle.resources` entry can occupy
+/// at runtime once the app is *installed* (not just `cargo run`).
+///
+/// Tauri mangles resource paths that escape the project directory: each leading
+/// `../` becomes a `_up_` path component, rooted at the platform resource
+/// directory. Annex declares `../../zk/keys/membership_vkey.json`,
+/// `../../assets/piper`, and `../../assets/voices`, so at runtime they live
+/// under `<resource_root>/_up_/_up_/{zk,assets}/...`.
+///
+/// Crucially, the resource root is NOT simply the executable's directory:
+///   * Windows (NSIS/MSI): beside the exe          -> `<exe_dir>`
+///   * Linux (deb/AppImage): `<prefix>/lib/Annex`  -> `<exe_dir>/../lib/Annex`
+///   * macOS (.app):       `Contents/Resources`    -> `<exe_dir>/../Resources`
+///
+/// `suffix` is the path *after* the `../../` prefix (e.g.
+/// `["zk", "keys", "membership_vkey.json"]`). Returns one candidate per
+/// platform root; callers probe each with `.exists()` / `.is_dir()`.
+fn bundled_resource_paths(exe_dir: &Path, suffix: &[&str]) -> Vec<PathBuf> {
+    let roots: Vec<PathBuf> = [
+        Some(exe_dir.to_path_buf()), // Windows: beside exe
+        exe_dir.parent().map(|p| p.join("lib").join("Annex")), // Linux deb/AppImage
+        exe_dir.parent().map(|p| p.join("Resources")), // macOS .app Contents/Resources
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    roots
+        .into_iter()
+        .map(|root| {
+            let mut p = root.join("_up_").join("_up_");
+            for c in suffix {
+                p = p.join(c);
+            }
+            p
+        })
+        .collect()
+}
 
 fn main() {
     // Tauri's async runtime drives `start_embedded_server` (which calls
@@ -94,22 +132,24 @@ fn main() {
     //   - Dev override (enforce_zk_proofs = false in the user's config): the
     //     server falls back to the in-memory dummy vkey and accepts no real
     //     proofs. That's documented and only meaningful for local dev.
-    let vkey_candidates = [
-        // Tauri bundle resources (beside exe on Windows/Linux)
+    let mut vkey_candidates: Vec<PathBuf> = vec![
+        // Flat layout beside the exe (legacy / loose copies).
         exe_dir.join("membership_vkey.json"),
-        // Legacy object-map layout
         exe_dir.join("zk").join("keys").join("membership_vkey.json"),
-        // macOS .app bundle Resources directory
-        exe_dir
-            .parent()
-            .map(|p| p.join("Resources").join("membership_vkey.json"))
-            .unwrap_or_default(),
-        // Workspace root (development)
+        // Workspace root (development / `cargo run`).
         resource_base
             .join("zk")
             .join("keys")
             .join("membership_vkey.json"),
     ];
+    // Installed-bundle locations (deb/AppImage/NSIS/.app) — these are where the
+    // resource actually lands and were previously unhandled, which left the
+    // packaged desktop app unable to find its vkey and (with the default
+    // enforce_zk_proofs=true) refusing to start the embedded server.
+    vkey_candidates.extend(bundled_resource_paths(
+        &exe_dir,
+        &["zk", "keys", "membership_vkey.json"],
+    ));
     let zk_vkey = vkey_candidates.iter().find(|p| p.exists());
     if zk_vkey.is_none() {
         eprintln!(
@@ -127,34 +167,91 @@ fn main() {
         );
     }
 
+    // Resolve the v2 membership vkey the same way. With the default
+    // `enabled_zk_versions = ["v1","v2"]`, the embedded server loads this at
+    // startup; under `enforce_zk_proofs=true` a missing v2 vkey is a hard
+    // StartupError, so it must be bundled (see tauri.conf.json bundle.resources)
+    // and resolved here just like v1.
+    let mut vkey_v2_candidates: Vec<PathBuf> = vec![
+        exe_dir.join("membership_v2_vkey.json"),
+        exe_dir
+            .join("zk")
+            .join("keys")
+            .join("membership_v2_vkey.json"),
+        resource_base
+            .join("zk")
+            .join("keys")
+            .join("membership_v2_vkey.json"),
+    ];
+    vkey_v2_candidates.extend(bundled_resource_paths(
+        &exe_dir,
+        &["zk", "keys", "membership_v2_vkey.json"],
+    ));
+    let zk_vkey_v2 = vkey_v2_candidates.iter().find(|p| p.exists());
+    if zk_vkey_v2.is_none() {
+        eprintln!(
+            "[annex-desktop] WARNING: no membership_v2_vkey.json found; v2 ZK proofs \
+             will be unavailable and the embedded server will refuse to start if \
+             v2 is enabled under enforce_zk_proofs."
+        );
+    }
+
+    // Resolve the capability / linkage / federation circuit vkeys (AUDIT
+    // P4-ID-1) exactly like the membership keys, and set the per-circuit env
+    // override the embedded server reads. Under `enforce_zk_proofs=true` a
+    // missing one is a hard StartupError, so each must be bundled
+    // (tauri.conf.json bundle.resources) and resolvable here.
+    let resolve_circuit_vkey = |file: &str| -> Option<PathBuf> {
+        let mut candidates: Vec<PathBuf> = vec![
+            exe_dir.join(file),
+            exe_dir.join("zk").join("keys").join(file),
+            resource_base.join("zk").join("keys").join(file),
+        ];
+        candidates.extend(bundled_resource_paths(&exe_dir, &["zk", "keys", file]));
+        candidates.into_iter().find(|p| p.exists())
+    };
+    let zk_vkey_channel_eligibility = resolve_circuit_vkey("channel_eligibility_vkey.json");
+    let zk_vkey_link_pseudonyms = resolve_circuit_vkey("link_pseudonyms_vkey.json");
+    let zk_vkey_federation_attestation = resolve_circuit_vkey("federation_attestation_vkey.json");
+    for (label, found) in [
+        ("channel_eligibility", &zk_vkey_channel_eligibility),
+        ("link_pseudonyms", &zk_vkey_link_pseudonyms),
+        ("federation_attestation", &zk_vkey_federation_attestation),
+    ] {
+        if found.is_none() {
+            eprintln!(
+                "[annex-desktop] WARNING: no {label}_vkey.json found; that ZK circuit's \
+                 endpoint will be unavailable (503) and the embedded server will refuse \
+                 to start under enforce_zk_proofs."
+            );
+        }
+    }
+
     // Resolve Piper TTS binary from bundled resources or dev workspace.
     let piper_bin_name = if cfg!(target_os = "windows") {
         "piper.exe"
     } else {
         "piper"
     };
-    let piper_candidates = [
+    let mut piper_candidates: Vec<PathBuf> = vec![
         exe_dir.join("piper").join(piper_bin_name),
-        exe_dir
-            .parent()
-            .map(|p| p.join("Resources").join("piper").join(piper_bin_name))
-            .unwrap_or_default(),
         resource_base
             .join("assets")
             .join("piper")
             .join(piper_bin_name),
     ];
+    piper_candidates.extend(bundled_resource_paths(
+        &exe_dir,
+        &["assets", "piper", piper_bin_name],
+    ));
     let piper_binary = piper_candidates.iter().find(|p| p.exists());
 
     // Resolve voice models directory.
-    let voices_candidates = [
+    let mut voices_candidates: Vec<PathBuf> = vec![
         exe_dir.join("voices"),
-        exe_dir
-            .parent()
-            .map(|p| p.join("Resources").join("voices"))
-            .unwrap_or_default(),
         resource_base.join("assets").join("voices"),
     ];
+    voices_candidates.extend(bundled_resource_paths(&exe_dir, &["assets", "voices"]));
     let voices_dir = voices_candidates.iter().find(|p| p.is_dir());
 
     // Pre-compute every value that the env::set_var block needs *before*
@@ -205,6 +302,18 @@ fn main() {
         if let Some(vkey_path) = zk_vkey {
             std::env::set_var("ANNEX_ZK_KEY_PATH", vkey_path);
         }
+        if let Some(vkey_path_v2) = zk_vkey_v2 {
+            std::env::set_var("ANNEX_ZK_KEY_PATH_V2", vkey_path_v2);
+        }
+        if let Some(p) = zk_vkey_channel_eligibility {
+            std::env::set_var("ANNEX_ZK_KEY_PATH_CHANNEL_ELIGIBILITY", p);
+        }
+        if let Some(p) = zk_vkey_link_pseudonyms {
+            std::env::set_var("ANNEX_ZK_KEY_PATH_LINK_PSEUDONYMS", p);
+        }
+        if let Some(p) = zk_vkey_federation_attestation {
+            std::env::set_var("ANNEX_ZK_KEY_PATH_FEDERATION_ATTESTATION", p);
+        }
         if let Some(piper_path) = piper_binary {
             std::env::set_var("ANNEX_TTS_BINARY_PATH", piper_path);
         }
@@ -242,6 +351,32 @@ fn main() {
     }
 
     tauri::Builder::default()
+        // Single instance MUST be registered before the deep-link plugin.
+        //
+        // Without it, clicking an `annex://` link while Annex is already
+        // running does not deliver `deep-link://new-url` to the running
+        // process on Linux or Windows — the OS simply starts a second one.
+        // Two Annex processes then share a data directory: two embedded
+        // servers racing for the same port, and two SQLite connections to
+        // the same file from separate processes, where WAL locking is the
+        // only thing standing between them and a corrupted database.
+        //
+        // The `deep-link` feature makes the plugin forward the argv of the
+        // second launch — which is where the URL is — into the first, so the
+        // existing `deep-link://new-url` listener below receives it and the
+        // invite is handled by the instance the user already has open.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            tracing::info!(
+                ?argv,
+                "second instance launched — forwarding to the running one"
+            );
+            // Raise the existing window: the user clicked something and
+            // expects Annex to come forward, not to be silently ignored.
+            if let Some(window) = app.webview_windows().values().next() {
+                let _ = window.set_focus();
+                let _ = window.unminimize();
+            }
+        }))
         .plugin(tauri_plugin_deep_link::init())
         .manage(AppManagedState {
             data_dir,
@@ -340,6 +475,57 @@ fn main() {
             media::get_platform_media_status,
             media::set_media_keepalive,
         ])
-        .run(tauri::generate_context!())
-        .expect("error running Annex desktop");
+        .build(tauri::generate_context!())
+        .expect("error building Annex desktop")
+        .run(|app_handle, event| {
+            // Clean up out-of-process / external state when the event loop is
+            // about to exit. `RunEvent::Exit` fires on every normal shutdown
+            // (last window closed, quit, OS terminate) after the loop stops.
+            if let tauri::RunEvent::Exit = event {
+                let state = app_handle.state::<AppManagedState>();
+                // The spawned webrtc-server is a `std::process::Child`, whose
+                // Drop does NOT terminate the process — without this it orphans
+                // and keeps holding its port across restarts.
+                webrtc::shutdown_local_webrtc(state.inner());
+                // Release the Annex router public-endpoint session so the public
+                // HTTPS tunnel isn't left advertised after the local server dies.
+                public_endpoint::release_router_session(state.inner());
+            }
+        });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bundled_resource_paths_cover_installed_layouts() {
+        // Mirrors the real deb/AppImage layout: exe at <prefix>/bin, resources
+        // under <prefix>/lib/Annex/_up_/_up_/... (verified against the actual
+        // `Annex_0.0.1_amd64.deb` bundle contents).
+        let exe_dir = Path::new("/usr/bin");
+        let paths = bundled_resource_paths(exe_dir, &["zk", "keys", "membership_vkey.json"]);
+
+        // Linux deb/AppImage
+        assert!(
+            paths.contains(&PathBuf::from(
+                "/usr/lib/Annex/_up_/_up_/zk/keys/membership_vkey.json"
+            )),
+            "must cover Linux <prefix>/lib/Annex resource root, got {paths:?}"
+        );
+        // Windows beside-exe
+        assert!(
+            paths.contains(&PathBuf::from(
+                "/usr/bin/_up_/_up_/zk/keys/membership_vkey.json"
+            )),
+            "must cover Windows beside-exe resource root, got {paths:?}"
+        );
+        // macOS Contents/Resources
+        assert!(
+            paths.contains(&PathBuf::from(
+                "/usr/Resources/_up_/_up_/zk/keys/membership_vkey.json"
+            )),
+            "must cover macOS Contents/Resources resource root, got {paths:?}"
+        );
+    }
 }

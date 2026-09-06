@@ -38,14 +38,35 @@ export interface TrackPublication {
 
 // ── Remote audio track info ──
 
+/**
+ * Pull the sender's pseudonym out of a track id.
+ *
+ * The SFU names each outbound track `audio-<pseudonym>` / `video-<pseudonym>`
+ * for the peer whose media it carries, and that reaches the browser as the
+ * MSID. It is the only per-track attribution available: before it existed the
+ * client had a bag of anonymous tracks and every remote tile rendered the
+ * literal string "Participant".
+ *
+ * Returns null for the agent (TTS) track and anything else not matching, so an
+ * unrecognised track degrades to an unnamed tile rather than a wrong name.
+ */
+export function senderFromTrackId(trackId: string): string | null {
+  const m = /^(?:audio|video)-(.+)$/.exec(trackId);
+  return m ? m[1] : null;
+}
+
 export interface RemoteAudioTrack {
   id: string;
+  /** Pseudonym of the peer whose media this carries, if attributable. */
+  sender: string | null;
   track: MediaStreamTrack;
   stream: MediaStream;
 }
 
 export interface RemoteVideoTrack {
   id: string;
+  /** Pseudonym of the peer whose media this carries, if attributable. */
+  sender: string | null;
   track: MediaStreamTrack;
   stream: MediaStream;
 }
@@ -54,6 +75,8 @@ export interface RemoteVideoTrack {
 
 export interface SignalingCallbacks {
   sendOffer(channelId: string, sdp: string): void;
+  /** Answer an offer the SERVER initiated — see `handleRemoteOffer`. */
+  sendAnswer(channelId: string, sdp: string): void;
   sendIceCandidate(
     channelId: string,
     candidate: string,
@@ -231,6 +254,7 @@ export class WebRtcSession {
       if (track.kind === 'audio') {
         const remoteTrack: RemoteAudioTrack = {
           id: track.id,
+          sender: senderFromTrackId(track.id),
           track,
           stream,
         };
@@ -246,7 +270,12 @@ export class WebRtcSession {
         // the real video tile (not a "?" avatar). A muted track id (the SFU
         // sends a placeholder until a peer publishes) still creates the slot;
         // the <video> simply shows nothing until frames arrive.
-        const remoteVideo: RemoteVideoTrack = { id: track.id, track, stream };
+        const remoteVideo: RemoteVideoTrack = {
+          id: track.id,
+          sender: senderFromTrackId(track.id),
+          track,
+          stream,
+        };
         this.remoteVideoTracks = [...this.remoteVideoTracks, remoteVideo];
         this.onRemoteTracksChanged?.();
 
@@ -294,6 +323,33 @@ export class WebRtcSession {
   }
 
   /** Handle an SDP answer from the SFU. */
+  /**
+   * Answer an offer the SERVER initiated.
+   *
+   * Normal setup is this client offering and the SFU answering. This is the
+   * other direction: when somebody joins or leaves the call, the SFU's track
+   * set for this connection changes, and adding a track to an established
+   * connection requires a fresh offer/answer. Without answering, the new
+   * tracks never become live — a call stays frozen at whoever was in it when
+   * this peer joined.
+   */
+  async handleRemoteOffer(sdp: string): Promise<void> {
+    if (!this.pc) return;
+    await this.pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp }));
+    this.remoteDescriptionSet = true;
+
+    // Candidates that arrived before a remote description could not be added
+    // then; the renegotiation is the first chance for some of them.
+    for (const candidate of this.pendingCandidates) {
+      await this.pc.addIceCandidate(new RTCIceCandidate(candidate));
+    }
+    this.pendingCandidates = [];
+
+    const answer = await this.pc.createAnswer();
+    await this.pc.setLocalDescription(answer);
+    this.signaling.sendAnswer(this.channelId, answer.sdp!);
+  }
+
   async handleAnswer(sdp: string): Promise<void> {
     if (!this.pc) return;
     await this.pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp }));
@@ -363,7 +419,16 @@ export class WebRtcSession {
         echoCancellation: true,
         noiseSuppression: true,
       };
-      if (opts?.deviceId) constraints.deviceId = opts.deviceId;
+      // `exact`, not a bare value.
+      //
+      // A bare `deviceId` is an IDEAL constraint: the browser uses that device
+      // when it is present and silently substitutes any other when it is not.
+      // So a microphone the user chose in settings and later unplugged was
+      // quietly replaced by a different one, with nothing said — on the call
+      // sites whose own comments say they "respect the selected device".
+      // `exact` makes the request mean what those comments claim; the caller
+      // decides what to do when it cannot be met.
+      if (opts?.deviceId) constraints.deviceId = { exact: opts.deviceId };
 
       const stream = await navigator.mediaDevices.getUserMedia({ audio: constraints });
       const newTrack = stream.getAudioTracks()[0];
@@ -405,7 +470,13 @@ export class WebRtcSession {
         height: { ideal: 480 },
         frameRate: { ideal: 24 },
       };
-      if (opts?.deviceId) constraints.deviceId = opts.deviceId;
+      // `exact` for the same reason as the microphone above — and here it also
+      // makes an existing recovery path reachable. `useLocalMedia` catches
+      // `NotFoundError`/`OverconstrainedError` to raise "Saved camera not
+      // found or disconnected" with a "Use default camera" button; a bare
+      // constraint never produces either error, so that prompt could not
+      // appear no matter which camera was missing.
+      if (opts?.deviceId) constraints.deviceId = { exact: opts.deviceId };
 
       const stream = await navigator.mediaDevices.getUserMedia({ video: constraints });
       const newTrack = stream.getVideoTracks()[0];

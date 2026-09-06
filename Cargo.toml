@@ -80,7 +80,18 @@ annex-observe = { path = "crates/annex-observe" }
 
 [profile.dev]
 opt-level = 0
-debug = true
+# `debug = true` emits full DWARF into every artifact. annex-server alone has
+# ~40 integration-test binaries, each statically linking the whole
+# webrtc-rs + arkworks + axum graph, so a full `cargo test --workspace` was
+# producing a target/ over 37 GB and dying in the linker with "final link
+# failed: No space left on device" — on CI runners and in this container alike.
+# The workspace's own release gate was therefore unrunnable.
+#
+# "line-tables-only" keeps the part developers actually use — file and line
+# numbers in panic backtraces — and drops variable/type DWARF, which is the
+# bulk of it. Step-through debugging in a debugger needs `debug = true`; set it
+# per-invocation with CARGO_PROFILE_DEV_DEBUG=true when you need that.
+debug = "line-tables-only"
 
 [profile.release]
 opt-level = 3

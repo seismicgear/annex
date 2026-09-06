@@ -53,13 +53,6 @@ client/e2e-puppeteer/screenshots/
 # Server signing keys (auto-generated)
 signing.key
 
-# Test-leakage artifact: `annex_server::config::tests::defaults_are_loaded_when_file_missing`
-# passes a relative path to load_config(), which then writes default
-# config to that path on disk in the crate root. The path name is
-# load-bearing for the test (it's the very fixture string), so we
-# gitignore the leftover instead of relocating the test.
-crates/annex-server/this-file-does-not-exist.toml
-
 # Client ZK artifacts (copied from zk/ by prepare-zk-dev.js)
 client/public/zk/
 
@@ -71,3 +64,31 @@ client/public/zk/
 Thumbs.db
 client/e2e-puppeteer/screenshots-voice/
 client/e2e-puppeteer/screenshots-edge/
+
+# UI audit: per-run warm auth state (binds to a per-run Merkle root, never committed)
+client/e2e/audit/.auth/
+# UI audit: failure evidence, regenerated each run
+client/e2e/audit/diagnostics/
+# UI audit: captures of surfaces that are audited but never pixel-diffed
+# (reportOnly). Not baselines — nothing compares against them, so tracking
+# them would just dirty the tree after every green run.
+client/e2e/audit/captures/
+# UI audit: the raw per-run ledger (append order, cleared at the start of each
+# run) and the rendered contact sheet. The sorted ledger,
+# docs/ui-audit/findings.json, IS tracked — it is the reviewable record of what
+# the audit currently finds, and it diffs cleanly.
+docs/ui-audit/findings.jsonl
+docs/ui-audit/captured.jsonl
+docs/ui-audit/index.html
+
+# The server's runtime data directory: `ANNEX_UPLOAD_DIR` defaults to
+# `data/uploads`, so every real upload lands here — including the ones the UI
+# audit's `message-image-lightbox` surface makes, four per run.
+#
+# It was never ignored, and 96 of those PNGs were committed across six
+# commits before anyone noticed, because the surface was changed to upload for
+# real (so the URL in the message it leaves behind actually resolves) and the
+# commits that followed used `git add -A`. Nothing here is source: it is one
+# server instance's stored files.
+data/
+

@@ -92,6 +92,32 @@ pub struct FederationConfig {
     /// before the sender flips to v2.
     #[serde(default = "default_outbound_envelope_version")]
     pub default_outbound_envelope_version: String,
+
+    /// Allow federation peers at private, loopback or link-local addresses.
+    ///
+    /// Default `false`, which is the behaviour that shipped. Peer URLs are
+    /// operator-provisioned — nothing in the server writes an `instances`
+    /// row — so this gate is defence-in-depth against an edited peer row
+    /// rather than a boundary against untrusted input, and leaving it
+    /// unconditional made three ordinary topologies impossible: two servers
+    /// on a LAN, two containers addressing each other by Compose service
+    /// name, and peers across a VPN (Tailscale's 100.64/10 is rejected).
+    /// Every outbox row to such a peer was dropped at dequeue.
+    ///
+    /// Enabling it relaxes ONLY the private-address check, and only for
+    /// federation peers. Malformed and non-http(s) URLs stay refused, and
+    /// link previews — where the URL really is attacker-supplied — are
+    /// unaffected.
+    #[serde(default = "default_allow_private_peer_addresses")]
+    pub allow_private_peer_addresses: bool,
+
+    /// Auto-expire (deactivate) federation agreements whose `updated_at` is
+    /// older than this many days. An agreement's `updated_at` is refreshed on
+    /// every re-handshake / policy re-evaluation, so this only reaps peers that
+    /// have gone silent — not actively-maintained relationships. `0` disables
+    /// automatic expiry. Default: 30 days.
+    #[serde(default = "default_agreement_ttl_days")]
+    pub agreement_ttl_days: u32,
 }
 
 impl Default for FederationConfig {
@@ -103,8 +129,18 @@ impl Default for FederationConfig {
             outbox_max_attempts: default_outbox_max_attempts(),
             outbox_per_peer_batch: default_outbox_per_peer_batch(),
             default_outbound_envelope_version: default_outbound_envelope_version(),
+            allow_private_peer_addresses: default_allow_private_peer_addresses(),
+            agreement_ttl_days: default_agreement_ttl_days(),
         }
     }
+}
+
+fn default_allow_private_peer_addresses() -> bool {
+    false
+}
+
+fn default_agreement_ttl_days() -> u32 {
+    30
 }
 
 fn default_freshness_window_seconds() -> i64 {
@@ -116,8 +152,24 @@ fn default_future_skew_seconds() -> i64 {
 fn default_outbox_interval_seconds() -> u64 {
     5
 }
+/// Retries that can actually be accepted, not retries that fit in a clock.
+///
+/// The outbox posts to the live ingest endpoint, which rejects an envelope
+/// older than `freshness_window_seconds` (default 300). The envelope is
+/// signed at enqueue and its `created_at` never moves, so the schedule
+/// (60s, 120s, 240s, …) leaves the window after the second retry. The old
+/// default of 12 spent the remaining nine attempts on requests the receiver
+/// was obliged to reject, over roughly three hours, before dropping the
+/// message anyway.
+///
+/// Three sends — immediate, +60s, +180s — is what fits. A peer down for
+/// longer than five minutes already loses the message; this stops the server
+/// pretending otherwise, and stops it hammering a recovering peer with
+/// envelopes that cannot be accepted. Operators who raise
+/// `freshness_window_seconds` should raise this to match; the server warns at
+/// startup when the two disagree.
 fn default_outbox_max_attempts() -> u32 {
-    12
+    3
 }
 fn default_outbox_per_peer_batch() -> u32 {
     8
@@ -129,17 +181,38 @@ fn default_outbound_envelope_version() -> String {
 /// Storage health + SQLite maintenance.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StorageConfig {
-    /// Free disk bytes at which the server logs a warning. Reads still
-    /// flow; writes still flow. Operational signal only.
+    /// Headroom, in bytes, beneath `max_db_bytes` at which the server
+    /// logs a warning. Reads still flow; writes still flow. Operational
+    /// signal only.
+    ///
+    /// These two thresholds used to be documented as *free disk* bytes.
+    /// They have never been that: `storage_health::evaluate_db_file_size`
+    /// measures them against `max_db_bytes`, because there is no portable
+    /// way to ask the OS for real free space and the module header
+    /// explains why adding `libc` / `windows_sys` for it was refused.
     #[serde(default = "default_storage_warn_free_bytes")]
     pub warn_free_bytes: u64,
 
-    /// Free disk bytes at which the server refuses writes with HTTP
-    /// 507 / a WS storage-error frame. Reads continue to flow. The
+    /// Headroom, in bytes, beneath `max_db_bytes` at which the server
+    /// refuses writes with HTTP 507. Reads continue to flow. The
     /// retention sweep and maintenance VACUUM are still allowed to run
     /// because they can reduce storage pressure.
     #[serde(default = "default_storage_block_free_bytes")]
     pub block_free_bytes: u64,
+
+    /// Cap on the SQLite database file size, in bytes. The two
+    /// thresholds above are headroom beneath this number, so it is what
+    /// makes them mean anything: at `0` — the default — the proactive
+    /// probe is disabled and only the reactive `SQLITE_FULL` path can
+    /// close the gate.
+    ///
+    /// Uncapped is the right default because the server cannot know how
+    /// much disk an operator intends to give it, and a guessed cap that
+    /// is too low blocks writes on a healthy machine. It is a default
+    /// that turns a feature off, so `start_storage_probe_task` says so
+    /// at startup rather than being silently inert.
+    #[serde(default)]
+    pub max_db_bytes: u64,
 
     /// Enable periodic SQLite maintenance. Runs
     /// `PRAGMA wal_checkpoint(TRUNCATE)`, `ANALYZE`, and optionally
@@ -164,6 +237,7 @@ impl Default for StorageConfig {
         Self {
             warn_free_bytes: default_storage_warn_free_bytes(),
             block_free_bytes: default_storage_block_free_bytes(),
+            max_db_bytes: 0,
             maintenance_enabled: false,
             maintenance_interval_hours: default_maintenance_interval_hours(),
             maintenance_vacuum: false,
@@ -213,7 +287,13 @@ fn default_enforce_zk_proofs() -> bool {
 }
 
 fn default_enabled_zk_versions() -> Vec<String> {
-    vec!["v1".to_string()]
+    // Accept BOTH protocol versions by default. v2 (secret-derived nullifier)
+    // is what shipped clients generate; v1 is retained so older clients and
+    // existing registrations keep working during migration. Enabling v2
+    // requires the v2 vkey to load at startup (under `enforce_zk_proofs`), so
+    // deployments must ship `membership_v2_vkey.json` (the desktop bundle and
+    // dev/e2e setup both do).
+    vec!["v1".to_string(), "v2".to_string()]
 }
 
 impl Default for SecurityConfig {
@@ -642,6 +722,42 @@ fn validate_config(config: &Config) -> Result<(), ConfigError> {
         });
     }
 
+    // The thresholds are headroom beneath the cap, and the gate reads
+    // them in order: block first, then warn. So `block` has to be the
+    // tighter of the two or the warning is dead code — the gate jumps
+    // straight from healthy to refusing writes with no earlier signal,
+    // which is precisely the "disk full arrives as a surprise" failure
+    // this whole module exists to prevent.
+    if config.storage.max_db_bytes > 0
+        && config.storage.block_free_bytes >= config.storage.warn_free_bytes
+    {
+        return Err(ConfigError::InvalidValue {
+            field: "storage.block_free_bytes",
+            reason: format!(
+                "must be < storage.warn_free_bytes ({}), got {} — writes would be \
+                 blocked before the warning could ever fire",
+                config.storage.warn_free_bytes, config.storage.block_free_bytes
+            ),
+        });
+    }
+
+    // A cap at or beneath the blocking threshold has no headroom to
+    // spend: the gate closes the moment the probe first runs, on an
+    // empty database, and the server refuses every write it ever
+    // receives.
+    if config.storage.max_db_bytes > 0
+        && config.storage.max_db_bytes <= config.storage.block_free_bytes
+    {
+        return Err(ConfigError::InvalidValue {
+            field: "storage.max_db_bytes",
+            reason: format!(
+                "must be > storage.block_free_bytes ({}), got {} — the storage gate \
+                 would close on an empty database",
+                config.storage.block_free_bytes, config.storage.max_db_bytes
+            ),
+        });
+    }
+
     validate_cors_for_build_profile(&config.cors)?;
     validate_deployment_for_build_profile(&config.deployment)?;
 
@@ -871,6 +987,10 @@ fn parse_env_bool(name: &'static str) -> Result<Option<bool>, ConfigError> {
 ///
 /// Returns `ConfigError` if the file exists but cannot be read or parsed.
 pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
+    // Where to write back any value we generate, and what the file held when
+    // we read it. `None` when there is no config file in play at all.
+    let mut persist_to: Option<(String, String)> = None;
+
     let mut config = match path {
         Some(p) => match std::fs::read_to_string(p) {
             Ok(contents) => {
@@ -894,49 +1014,22 @@ pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
                 } else {
                     contents
                 };
-                let mut config: Config = toml::from_str(&sanitized)?;
-                let mut wrote_defaults = false;
-
-                if config.server.server_slug.is_empty() {
-                    config.server.server_slug =
-                        derive_server_slug_from_public_url(&config.server.public_url);
-                    wrote_defaults = true;
-                }
-
-                if wrote_defaults {
-                    if let Err(e) = sync_config_defaults_to_disk(p, &sanitized, &config) {
-                        tracing::warn!(
-                            path = p,
-                            error = %e,
-                            "failed to persist autogenerated configuration defaults"
-                        );
-                    }
-                }
-
+                let config: Config = toml::from_str(&sanitized)?;
+                // The slug is filled in AFTER the environment overrides
+                // below, not here — see the `config.server.server_slug
+                // .is_empty()` block at the end of this function, which
+                // explains why. Remember where to persist it once it exists.
+                persist_to = Some((p.to_string(), sanitized.clone()));
                 config
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                tracing::info!(path = p, "config file not found, using defaults");
-                let mut config = Config::default();
-                config.server.server_slug =
-                    derive_server_slug_from_public_url(&config.server.public_url);
-                if let Err(e) = sync_config_defaults_to_disk(p, "", &config) {
-                    tracing::warn!(
-                        path = p,
-                        error = %e,
-                        "failed to write default config file"
-                    );
-                }
-                config
+                tracing::info!(path = p, error = %e, "config file not found, using defaults");
+                persist_to = Some((p.to_string(), String::new()));
+                Config::default()
             }
             Err(e) => return Err(ConfigError::FileRead(e)),
         },
-        None => {
-            let mut config = Config::default();
-            config.server.server_slug =
-                derive_server_slug_from_public_url(&config.server.public_url);
-            config
-        }
+        None => Config::default(),
     };
 
     // Environment variable overrides
@@ -1034,6 +1127,9 @@ pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
     if let Some(v) = parse_env_var::<u32>("ANNEX_FEDERATION_OUTBOX_PER_PEER_BATCH")? {
         config.federation.outbox_per_peer_batch = v;
     }
+    if let Some(v) = parse_env_bool("ANNEX_FEDERATION_ALLOW_PRIVATE_PEERS")? {
+        config.federation.allow_private_peer_addresses = v;
+    }
     if let Some(v) = parse_env_var::<String>("ANNEX_FEDERATION_DEFAULT_ENVELOPE_VERSION")? {
         config.federation.default_outbound_envelope_version = v;
     }
@@ -1042,6 +1138,9 @@ pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
     }
     if let Some(v) = parse_env_var::<u64>("ANNEX_STORAGE_BLOCK_FREE_BYTES")? {
         config.storage.block_free_bytes = v;
+    }
+    if let Some(v) = parse_env_var::<u64>("ANNEX_STORAGE_MAX_DB_BYTES")? {
+        config.storage.max_db_bytes = v;
     }
     if let Some(v) = parse_env_bool("ANNEX_DB_MAINTENANCE_ENABLED")? {
         config.storage.maintenance_enabled = v;
@@ -1063,6 +1162,39 @@ pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
     }
     if let Some(v) = parse_env_bool("ANNEX_FEDERATION_RELAY_TRANSPORT_ENABLED")? {
         config.deployment.experimental_relay_transport_enabled = v;
+    }
+
+    // The server slug is derived here, AFTER the environment overrides, rather
+    // than when the file was parsed.
+    //
+    // It used to be derived at parse time from whatever `public_url` the TOML
+    // held — which is empty on a fresh deployment — so
+    // `derive_server_slug_from_public_url` fell through to
+    // `generate_server_slug()` and produced a random value. `ANNEX_PUBLIC_URL`
+    // was then applied a few lines later and could no longer affect it, so the
+    // entire class of deployments that configure by environment (Docker,
+    // systemd units, CI, container platforms) silently got a random slug
+    // instead of one derived from their URL, and the random value was
+    // persisted to disk as though it had been chosen.
+    //
+    // That matters beyond tidiness: the slug is the server's stable identity.
+    // It is baked into the VRP topic (`annex-server:<slug>:v2`) that pseudonyms
+    // derive from, and the admin panel tells operators it "cannot be changed
+    // after creation". Deriving it from the public URL is what makes it
+    // reproducible — redeploy against a wiped config directory and you get the
+    // same server identity back. With a random slug you do not, and every
+    // pseudonym on the server changes.
+    if config.server.server_slug.is_empty() {
+        config.server.server_slug = derive_server_slug_from_public_url(&config.server.public_url);
+        if let Some((path, original)) = persist_to.as_ref() {
+            if let Err(e) = sync_config_defaults_to_disk(path, original, &config) {
+                tracing::warn!(
+                    path = %path,
+                    error = %e,
+                    "failed to persist autogenerated configuration defaults"
+                );
+            }
+        }
     }
 
     validate_config(&config)?;
@@ -1192,6 +1324,7 @@ mod tests {
             "ANNEX_RETENTION_CHECK_INTERVAL_SECONDS",
             "ANNEX_IDEMPOTENCY_TTL_SECONDS",
             "ANNEX_FEDERATION_OUTBOX_PER_PEER_BATCH",
+            "ANNEX_FEDERATION_ALLOW_PRIVATE_PEERS",
             "ANNEX_INACTIVITY_THRESHOLD_SECONDS",
             "ANNEX_PUBLIC_URL",
             "ANNEX_MERKLE_TREE_DEPTH",
@@ -1220,20 +1353,43 @@ mod tests {
             "ANNEX_FEDERATION_RELAY_TRANSPORT_ENABLED",
             "ANNEX_SIGNAL_TRUSTED_PEERS",
             "ANNEX_SIGNING_KEY",
+            // Ten of these had drifted out of the list the comment above
+            // claims to be complete. Nothing had noticed because no test
+            // set them; the first one that did would have leaked into
+            // every test after it. `clear_env_covers_every_var_load_config_reads`
+            // now holds the claim to account.
+            "ANNEX_STORAGE_WARN_FREE_BYTES",
+            "ANNEX_STORAGE_BLOCK_FREE_BYTES",
+            "ANNEX_STORAGE_MAX_DB_BYTES",
+            "ANNEX_DB_MAINTENANCE_ENABLED",
+            "ANNEX_DB_MAINTENANCE_INTERVAL_HOURS",
+            "ANNEX_DB_MAINTENANCE_VACUUM",
+            "ANNEX_FEDERATION_DEFAULT_ENVELOPE_VERSION",
+            "ANNEX_FEDERATION_FRESHNESS_SECONDS",
+            "ANNEX_FEDERATION_FUTURE_SKEW_SECONDS",
+            "ANNEX_FEDERATION_OUTBOX_INTERVAL_SECONDS",
+            "ANNEX_FEDERATION_OUTBOX_MAX_ATTEMPTS",
         ] {
             std::env::remove_var(name);
         }
     }
 
-    fn write_temp_config(contents: &str) -> String {
+    /// A unique path in the temp dir. Nothing is written to it.
+    fn temp_config_path() -> String {
         let unique_suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system time should be after unix epoch")
             .as_nanos();
-        let file_name = format!("annex-config-{unique_suffix}.toml");
-        let path = std::env::temp_dir().join(file_name);
+        std::env::temp_dir()
+            .join(format!("annex-config-{unique_suffix}.toml"))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    fn write_temp_config(contents: &str) -> String {
+        let path = temp_config_path();
         fs::write(&path, contents).expect("failed to write temp config");
-        path.to_string_lossy().into_owned()
+        path
     }
 
     #[test]
@@ -1241,7 +1397,43 @@ mod tests {
         let _guard = env_lock().lock().expect("env lock poisoned");
         clear_env();
 
-        let cfg = load_config(Some("this-file-does-not-exist.toml")).expect("load should succeed");
+        // A unique path in the temp dir, and nothing is written to it.
+        //
+        // This was the relative literal "this-file-does-not-exist.toml", which
+        // `load_config` then CREATED in the crate root — the documented
+        // first-run bootstrap, writing the derived slug back so the server
+        // keeps its identity across restarts. The leftover was gitignored and
+        // left in place, on the reasoning that "the path name is load-bearing
+        // for the test (it's the very fixture string)".
+        //
+        // It is not load-bearing; the only requirement is that the path does
+        // not exist. And leaving the file disarmed this test: from the second
+        // run onward `load_config` found it and took the parse branch, so the
+        // missing-file branch the test exists to cover was never executed
+        // again on that machine. It kept passing because the file it was now
+        // reading happened to hold defaults. Append `[logging] level =
+        // "trace"` to the leftover and the test fails — which is the proof it
+        // was reading a file rather than the absence of one, and the reason
+        // its result depended on an untracked file in the source tree.
+        let path = temp_config_path();
+        assert!(
+            !std::path::Path::new(&path).exists(),
+            "fixture path must not exist before the load"
+        );
+
+        let cfg = load_config(Some(path.as_str())).expect("load should succeed");
+
+        // `load_config` bootstraps the file it was pointed at, so this test
+        // owns the cleanup. Read it back first: the write is the other half of
+        // the missing-file behaviour and had no coverage at all — it was only
+        // ever observed as litter.
+        let written = fs::read_to_string(&path).expect("missing config should be bootstrapped");
+        fs::remove_file(&path).expect("failed to clean up bootstrapped config");
+        assert!(
+            written.contains("server_slug"),
+            "bootstrap must persist the derived slug, or it is regenerated on \
+             every restart and every pseudonym on the server changes: {written}"
+        );
 
         assert_eq!(cfg.server.host, default_host());
         assert_eq!(cfg.server.port, default_port());
@@ -1388,6 +1580,82 @@ json = true
         }
 
         clear_env();
+    }
+
+    /// The server slug must derive from the public URL wherever that URL came
+    /// from — including the environment.
+    ///
+    /// It used to be derived while the config file was being parsed, before
+    /// `ANNEX_PUBLIC_URL` was read, so a deployment configured entirely by
+    /// environment got `generate_server_slug()`'s random value instead. The
+    /// slug is the server's stable identity: it is baked into the VRP topic
+    /// (`annex-server:<slug>:v2`) that pseudonyms derive from, and the admin
+    /// panel tells operators it cannot be changed after creation. Random means
+    /// a redeploy against a wiped config directory comes back as a different
+    /// server and every pseudonym on it changes.
+    #[test]
+    fn server_slug_derives_from_the_public_url_given_in_the_environment() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+
+        std::env::set_var("ANNEX_PUBLIC_URL", "https://annex.example.com");
+        let cfg = load_config(None).expect("load should succeed");
+        clear_env();
+
+        assert_eq!(
+            cfg.server.server_slug,
+            derive_server_slug_from_public_url("https://annex.example.com"),
+            "the slug must come from the URL the server actually ends up using",
+        );
+    }
+
+    /// Two deployments given the same public URL must agree on the slug —
+    /// that is the entire reason it is derived rather than generated.
+    #[test]
+    fn the_same_public_url_yields_the_same_slug_every_time() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+
+        let load = || {
+            clear_env();
+            std::env::set_var("ANNEX_PUBLIC_URL", "https://annex.example.com/");
+            let cfg = load_config(None).expect("load should succeed");
+            clear_env();
+            cfg.server.server_slug
+        };
+
+        assert_eq!(load(), load());
+    }
+
+    /// With no public URL there is nothing to derive from, so a random slug is
+    /// the correct fallback — just not the behaviour for the case above.
+    #[test]
+    fn no_public_url_still_falls_back_to_a_generated_slug() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+
+        let cfg = load_config(None).expect("load should succeed");
+        assert!(!cfg.server.server_slug.is_empty());
+        assert_eq!(cfg.server.server_slug.len(), 12);
+    }
+
+    /// A slug already written to the config file is the server's identity and
+    /// must survive, even if the public URL later changes.
+    #[test]
+    fn an_existing_slug_is_never_overwritten() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+
+        let dir = std::env::temp_dir().join(format!("annex-slug-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[server]\nserver_slug = \"deadbeefcafe\"\n").expect("write");
+
+        std::env::set_var("ANNEX_PUBLIC_URL", "https://somewhere-else.example.com");
+        let cfg = load_config(Some(path.to_str().unwrap())).expect("load should succeed");
+        clear_env();
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert_eq!(cfg.server.server_slug, "deadbeefcafe");
     }
 
     #[test]
@@ -1835,6 +2103,129 @@ port = 3000
 
         let err = load_config(None).expect_err("unimplemented backend must fail");
         assert!(matches!(err, ConfigError::InvalidValue { .. }));
+    }
+
+    /// The thresholds only mean something relative to the cap, and the
+    /// cap is what an operator has to set for any of it to do anything.
+    #[test]
+    fn storage_cap_env_override_is_read() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+        std::env::set_var(concat!("ANNEX_STORAGE", "_MAX_DB_BYTES"), "8589934592");
+
+        let config = load_config(None).expect("valid config");
+        assert_eq!(config.storage.max_db_bytes, 8_589_934_592);
+    }
+
+    /// Uncapped has to stay the default: the server cannot know how much
+    /// disk it was given, and a guessed cap blocks writes on a healthy
+    /// machine.
+    #[test]
+    fn storage_cap_defaults_to_uncapped() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+
+        let config = load_config(None).expect("valid config");
+        assert_eq!(config.storage.max_db_bytes, 0);
+    }
+
+    /// Block is the tighter threshold. Inverted, the warning is dead code
+    /// and the gate jumps from healthy straight to refusing writes.
+    #[test]
+    fn storage_thresholds_must_leave_room_for_the_warning() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+        std::env::set_var(concat!("ANNEX_STORAGE", "_MAX_DB_BYTES"), "1000000");
+        std::env::set_var(concat!("ANNEX_STORAGE", "_WARN_FREE_BYTES"), "1000");
+        std::env::set_var(concat!("ANNEX_STORAGE", "_BLOCK_FREE_BYTES"), "5000");
+
+        let err = load_config(None).expect_err("inverted thresholds must fail");
+        match err {
+            ConfigError::InvalidValue { field, .. } => {
+                assert_eq!(field, "storage.block_free_bytes");
+            }
+            other => panic!("expected InvalidValue, got {other:?}"),
+        }
+    }
+
+    /// A cap at or beneath the blocking threshold has no headroom to
+    /// spend, so the gate closes on an empty database and the server
+    /// refuses every write it will ever receive.
+    #[test]
+    fn storage_cap_beneath_the_block_threshold_is_rejected() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+        std::env::set_var(concat!("ANNEX_STORAGE", "_MAX_DB_BYTES"), "1000");
+        std::env::set_var(concat!("ANNEX_STORAGE", "_BLOCK_FREE_BYTES"), "5000");
+        std::env::set_var(concat!("ANNEX_STORAGE", "_WARN_FREE_BYTES"), "9000");
+
+        let err = load_config(None).expect_err("a cap under the block threshold must fail");
+        match err {
+            ConfigError::InvalidValue { field, .. } => {
+                assert_eq!(field, "storage.max_db_bytes");
+            }
+            other => panic!("expected InvalidValue, got {other:?}"),
+        }
+    }
+
+    /// `clear_env` says it mirrors every variable `load_config` reads, and
+    /// ten had drifted out of it. That is invisible until a test sets one
+    /// — then it leaks into every test that runs after, and the failure
+    /// shows up somewhere unrelated. The claim is cheap to check, so it
+    /// is checked rather than trusted.
+    #[test]
+    fn clear_env_covers_every_var_load_config_reads() {
+        const SRC: &str = include_str!("config.rs");
+        // Split so this test's own literals cannot match themselves.
+        let quoted_prefix = concat!("\"ANN", "EX_");
+
+        fn names(haystack: &str, quoted_prefix: &str) -> std::collections::BTreeSet<String> {
+            let mut out = std::collections::BTreeSet::new();
+            let mut rest = haystack;
+            while let Some(i) = rest.find(quoted_prefix) {
+                let after = &rest[i + 1..];
+                match after.find('"') {
+                    Some(end) => {
+                        // A bare name only. Several diagnostics quote a
+                        // variable at the start of a sentence — "ANNEX_...
+                        // =clustered under ..." — and those are prose, not
+                        // something to remove from the environment.
+                        let candidate = &after[..end];
+                        if candidate
+                            .chars()
+                            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+                        {
+                            out.insert(candidate.to_string());
+                        }
+                        rest = &after[end..];
+                    }
+                    None => break,
+                }
+            }
+            out
+        }
+
+        let tests_at = SRC
+            .find(concat!("mod ", "tests"))
+            .expect("config.rs has a test module");
+        let read = names(&SRC[..tests_at], quoted_prefix);
+
+        let after_tests = &SRC[tests_at..];
+        let clear_at = after_tests
+            .find(concat!("fn clear", "_env"))
+            .expect("the tests define clear_env");
+        let clear_body = &after_tests[clear_at..];
+        let clear_end = clear_body
+            .find("] {")
+            .expect("clear_env lists names in an array");
+        let cleared = names(&clear_body[..clear_end], quoted_prefix);
+
+        let missing: Vec<&String> = read.difference(&cleared).collect();
+        assert!(
+            missing.is_empty(),
+            "load_config reads these but clear_env does not remove them, so a test that \
+             sets one leaks it into every later test: {missing:?}"
+        );
     }
 
     #[test]

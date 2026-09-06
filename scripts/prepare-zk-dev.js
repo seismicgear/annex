@@ -36,6 +36,13 @@ const zkeySource = path.join(ZK_DIR, 'keys', 'membership_final.zkey');
 const wasmDest = path.join(CLIENT_DIR, 'public', 'zk', 'membership.wasm');
 const zkeyDest = path.join(CLIENT_DIR, 'public', 'zk', 'membership_final.zkey');
 
+// v2 (secret-derived nullifier) circuit artifacts. The client generates v2
+// proofs by default; these must be served alongside v1.
+const wasmV2Source = path.join(ZK_DIR, 'build', 'membership_v2_js', 'membership_v2.wasm');
+const zkeyV2Source = path.join(ZK_DIR, 'keys', 'membership_v2_final.zkey');
+const wasmV2Dest = path.join(CLIENT_DIR, 'public', 'zk', 'membership_v2.wasm');
+const zkeyV2Dest = path.join(CLIENT_DIR, 'public', 'zk', 'membership_v2_final.zkey');
+
 function log(msg) {
   console.log(`[zk-prep] ${msg}`);
 }
@@ -58,15 +65,38 @@ function exists(filePath) {
   return fs.existsSync(filePath);
 }
 
+// Every source artifact the dev client needs. The default registration path is
+// now v2 (`generateMembershipProofV2`), so a checkout that has only the v1
+// source must STILL rebuild — otherwise dev boots with no `/zk/membership_v2.*`
+// and identity registration fails at proof generation. The capability circuits
+// are included too so their endpoints aren't silently 503 in dev.
+function requiredSourceArtifacts() {
+  const list = [
+    { label: 'membership.wasm', path: wasmSource },
+    { label: 'membership_final.zkey', path: zkeySource },
+    { label: 'membership_v2.wasm', path: wasmV2Source },
+    { label: 'membership_v2_final.zkey', path: zkeyV2Source },
+  ];
+  for (const name of CAPABILITY_CIRCUITS) {
+    const p = capabilityArtifactPaths(name);
+    list.push({ label: `${name}.wasm`, path: p.wasmSource });
+    list.push({ label: `${name}_final.zkey`, path: p.zkeySource });
+  }
+  return list;
+}
+
 function ensureSourceArtifacts() {
-  if (exists(wasmSource) && exists(zkeySource)) {
+  const required = requiredSourceArtifacts();
+  const missing = required.filter((a) => !exists(a.path));
+  if (missing.length === 0) {
     log('ZK source artifacts already exist — skipping rebuild.');
     return;
   }
 
-  warn('Missing ZK source artifacts required for desktop dev.');
-  warn(`Expected: ${wasmSource}`);
-  warn(`Expected: ${zkeySource}`);
+  warn('Missing ZK source artifacts required for desktop dev:');
+  for (const a of missing) {
+    warn(`  Missing ${a.label}: ${a.path}`);
+  }
   log('Building ZK artifacts (one-time, may take a while)...');
 
   if (!exists(path.join(ZK_DIR, 'node_modules'))) {
@@ -77,9 +107,12 @@ function ensureSourceArtifacts() {
   run('node scripts/build-circuits.js', ZK_DIR);
   run('node scripts/dev-setup-groth16.js', ZK_DIR);
 
-  if (!exists(wasmSource) || !exists(zkeySource)) {
+  const stillMissing = requiredSourceArtifacts().filter((a) => !exists(a.path));
+  if (stillMissing.length > 0) {
     fail(
-      'ZK build completed but required artifacts are still missing. Check zk/scripts output above.'
+      'ZK build completed but required artifacts are still missing (' +
+        stillMissing.map((a) => a.label).join(', ') +
+        '). Check zk/scripts output above.'
     );
   }
 }
@@ -103,10 +136,66 @@ function copyArtifactsToClient() {
     );
   }
 
+  // v2 artifacts (best-effort: warn rather than fail so a v1-only checkout
+  // still works, but the default client path is v2 so this should be present).
+  if (exists(wasmV2Source) && exists(zkeyV2Source)) {
+    fs.copyFileSync(wasmV2Source, wasmV2Dest);
+    fs.copyFileSync(zkeyV2Source, zkeyV2Dest);
+    log('Prepared client/public/zk v2 artifacts.');
+  } else {
+    warn('membership_v2 artifacts missing in zk/ — v2 proofs would fail.');
+    warn(`Expected: ${wasmV2Source}`);
+    warn(`Expected: ${zkeyV2Source}`);
+  }
+
+  // Capability / linkage / federation circuits (AUDIT P4-ID-1). Best-effort:
+  // these endpoints return 503 if absent, so a checkout without them still
+  // boots — but the default client ships them.
+  copyCapabilityCircuits();
+
   log('Prepared client/public/zk artifacts for desktop dev.');
 }
 
-if (exists(wasmDest) && exists(zkeyDest)) {
+// Capability / linkage / federation circuits (AUDIT P4-ID-1).
+const CAPABILITY_CIRCUITS = ['channel_eligibility', 'link_pseudonyms', 'federation_attestation'];
+
+function capabilityArtifactPaths(name) {
+  return {
+    wasmSource: path.join(ZK_DIR, 'build', `${name}_js`, `${name}.wasm`),
+    zkeySource: path.join(ZK_DIR, 'keys', `${name}_final.zkey`),
+    wasmDest: path.join(CLIENT_DIR, 'public', 'zk', `${name}.wasm`),
+    zkeyDest: path.join(CLIENT_DIR, 'public', 'zk', `${name}_final.zkey`),
+  };
+}
+
+function copyCapabilityCircuits() {
+  for (const name of CAPABILITY_CIRCUITS) {
+    const p = capabilityArtifactPaths(name);
+    if (exists(p.wasmSource) && exists(p.zkeySource)) {
+      fs.mkdirSync(path.dirname(p.wasmDest), { recursive: true });
+      fs.copyFileSync(p.wasmSource, p.wasmDest);
+      fs.copyFileSync(p.zkeySource, p.zkeyDest);
+      log(`Prepared client/public/zk ${name} artifacts.`);
+    } else {
+      warn(`${name} artifacts missing in zk/ — that circuit's endpoint will 503.`);
+    }
+  }
+}
+
+function capabilityArtifactsPresent() {
+  return CAPABILITY_CIRCUITS.every((name) => {
+    const p = capabilityArtifactPaths(name);
+    return exists(p.wasmDest) && exists(p.zkeyDest);
+  });
+}
+
+if (
+  exists(wasmDest) &&
+  exists(zkeyDest) &&
+  exists(wasmV2Dest) &&
+  exists(zkeyV2Dest) &&
+  capabilityArtifactsPresent()
+) {
   log('client/public/zk artifacts already exist. Nothing to do.');
   process.exit(0);
 }

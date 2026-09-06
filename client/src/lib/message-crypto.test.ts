@@ -24,12 +24,15 @@ import {
   decryptForDisplay,
   encryptForWire,
   ensureChannelReady,
+  getChannelKeyError,
+  getChannelKeyState,
   isChannelE2e,
   markChannelE2e,
   resetE2eChannels,
   setE2eIdentity,
   UNDECRYPTABLE_PLACEHOLDER,
 } from './message-crypto';
+import { E2eKeyPendingError } from './e2e-channel';
 
 describe('message-crypto', () => {
   beforeEach(() => {
@@ -104,5 +107,64 @@ describe('message-crypto', () => {
     resetE2eChannels();
     expect(isChannelE2e('a')).toBe(false);
     expect(isChannelE2e('b')).toBe(false);
+  });
+});
+
+/**
+ * `ensureChannelReady` swallowed every `resolveChannelKey` failure in one bare
+ * `catch`, which erased a distinction the layer below had already drawn.
+ * `E2eKeyPendingError` means the channel is keyed and we are simply waiting to
+ * be admitted — it resolves without anyone doing anything, because any
+ * key-holder admits every member on channel open. Anything else is a real
+ * failure that will not resolve. Collapsing them left the UI with nothing to
+ * say in either case, so both rendered as a wall of "no key" placeholders
+ * under a bar reporting that all was well.
+ */
+describe('message-crypto — waiting for the key is not the same as failing to get it', () => {
+  beforeEach(() => {
+    resetE2eChannels();
+    setE2eIdentity('p-self');
+    vi.clearAllMocks();
+    fakeManager.resolveChannelKey.mockResolvedValue({ epoch: 1, cek: new Uint8Array(32) });
+  });
+
+  it('records a pending key when the channel is keyed but we are not admitted', async () => {
+    markChannelE2e('ch-pending', true);
+    fakeManager.resolveChannelKey.mockRejectedValueOnce(new E2eKeyPendingError('ch-pending'));
+
+    await ensureChannelReady('ch-pending');
+
+    expect(getChannelKeyState('ch-pending')).toBe('pending');
+    expect(getChannelKeyError('ch-pending')).toBeNull();
+  });
+
+  it('records a failure, with its reason, for anything else', async () => {
+    markChannelE2e('ch-broken', true);
+    fakeManager.resolveChannelKey.mockRejectedValueOnce(new Error('network down'));
+
+    await ensureChannelReady('ch-broken');
+
+    expect(getChannelKeyState('ch-broken')).toBe('failed');
+    expect(getChannelKeyError('ch-broken')).toBe('network down');
+  });
+
+  it('reports ready when the key resolves, and clears a prior pending state', async () => {
+    markChannelE2e('ch-ok', true);
+    fakeManager.resolveChannelKey.mockRejectedValueOnce(new E2eKeyPendingError('ch-ok'));
+    await ensureChannelReady('ch-ok');
+    expect(getChannelKeyState('ch-ok')).toBe('pending');
+
+    // Admitted since — a second attempt must not stay stuck on the old answer.
+    await ensureChannelReady('ch-ok');
+    expect(getChannelKeyState('ch-ok')).toBe('ready');
+  });
+
+  it('forgets both states on identity switch', async () => {
+    markChannelE2e('ch-pending', true);
+    fakeManager.resolveChannelKey.mockRejectedValueOnce(new E2eKeyPendingError('ch-pending'));
+    await ensureChannelReady('ch-pending');
+
+    resetE2eChannels();
+    expect(getChannelKeyState('ch-pending')).toBe('ready');
   });
 });

@@ -69,6 +69,9 @@ fn build_state(db_path: &str, initial_policy: ServerPolicy) -> (Arc<AppState>, a
         merkle_tree: Arc::new(Mutex::new(tree)),
         membership_vkey: Arc::new(annex_identity::zk::generate_dummy_vkey()),
         membership_vkey_v2: None,
+        channel_eligibility_vkey: None,
+        link_pseudonyms_vkey: None,
+        federation_attestation_vkey: None,
         server_id: 1,
         signing_key: Arc::new(SigningKey::generate(&mut OsRng)),
         public_url: std::sync::Arc::new(std::sync::RwLock::new(

@@ -10,6 +10,8 @@ import { useChannelsStore } from '@/stores/channels';
 import { useIdentityStore } from '@/stores/identity';
 import { InfoTip } from '@/components/InfoTip';
 import type { ChannelType } from '@/types';
+import { Modal } from '@/components/Modal';
+import { useDialogTitleId } from '@/lib/use-dialog-title-id';
 
 const CHANNEL_TYPES: { value: ChannelType; label: string; description: string }[] = [
   { value: 'Text', label: 'Text', description: 'A text-only chat channel for messages' },
@@ -20,6 +22,7 @@ const CHANNEL_TYPES: { value: ChannelType; label: string; description: string }[
 ];
 
 export function CreateChannelDialog({ onClose }: { onClose: () => void }) {
+  const titleId = useDialogTitleId();
   const identity = useIdentityStore((s) => s.identity);
   const { createChannel, loadChannels } = useChannelsStore();
 
@@ -48,71 +51,72 @@ export function CreateChannelDialog({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div className="dialog-overlay" onClick={onClose}>
-      <div className="dialog" onClick={(e) => e.stopPropagation()}>
-        <h3>Create Channel</h3>
-        <form onSubmit={handleSubmit}>
-          <label>
-            Name
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="general"
-              required
-              autoFocus
-            />
-          </label>
-          <label>
-            Type
-            <select
-              value={channelType}
-              onChange={(e) => setChannelType(e.target.value as ChannelType)}
-              title={CHANNEL_TYPES.find((t) => t.value === channelType)?.description}
-            >
-              {CHANNEL_TYPES.map((t) => (
-                <option key={t.value} value={t.value} title={t.description}>
-                  {t.label}
-                </option>
-              ))}
-            </select>
-            <span className="field-hint">
-              {CHANNEL_TYPES.find((t) => t.value === channelType)?.description}
-            </span>
-          </label>
-          <label>
-            Topic (optional)
-            <input
-              type="text"
-              value={topic}
-              onChange={(e) => setTopic(e.target.value)}
-              placeholder="What this channel is about"
-            />
-          </label>
-          <label className="checkbox-label" title="When enabled, messages in this channel are shared with connected partner servers. Leave off to keep conversations local to this server only.">
-            <input
-              type="checkbox"
-              checked={federated}
-              onChange={(e) => setFederated(e.target.checked)}
-            />
-            Federated<InfoTip text="When on, messages in this channel are shared with partner servers your admin has connected to. Turn off to keep conversations private to this server." />
-            <span className="field-hint">
-              {federated
-                ? 'Messages will be shared with connected partner servers.'
-                : 'Messages stay on this server only.'}
-            </span>
-          </label>
-          {error && <div className="error-message">{error}</div>}
-          <div className="dialog-actions">
-            <button type="button" onClick={onClose} disabled={submitting}>
-              Cancel
-            </button>
-            <button type="submit" disabled={submitting || !name.trim()} className="primary-btn">
-              {submitting ? 'Creating...' : 'Create'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+    <Modal onClose={onClose} titleId={titleId}>
+      <h2 id={titleId}>Create Channel</h2>
+      <form onSubmit={handleSubmit}>
+        <label>
+          Name
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="general"
+            required
+            autoFocus
+          />
+        </label>
+        <label>
+          Type
+          <select
+            value={channelType}
+            onChange={(e) => setChannelType(e.target.value as ChannelType)}
+            title={CHANNEL_TYPES.find((t) => t.value === channelType)?.description}
+          >
+            {CHANNEL_TYPES.map((t) => (
+              <option key={t.value} value={t.value} title={t.description}>
+                {t.label}
+              </option>
+            ))}
+          </select>
+          <span className="field-hint">
+            {CHANNEL_TYPES.find((t) => t.value === channelType)?.description}
+          </span>
+        </label>
+        <label>
+          Topic (optional)
+          <input
+            type="text"
+            value={topic}
+            onChange={(e) => setTopic(e.target.value)}
+            placeholder="What this channel is about"
+          />
+        </label>
+        <label className="checkbox-label" title="When enabled, messages in this channel are shared with connected partner servers. Leave off to keep conversations local to this server only.">
+          <input
+            type="checkbox"
+            checked={federated}
+            onChange={(e) => setFederated(e.target.checked)}
+          />
+          <span className="checkbox-label-text">
+            Federated
+            <InfoTip text="When on, messages in this channel are shared with partner servers your admin has connected to. Turn off to keep conversations private to this server." />
+          </span>
+          <span className="field-hint">
+            {federated
+              ? 'Messages will be shared with connected partner servers.'
+              : 'Messages stay on this server only.'}
+          </span>
+        </label>
+        {error && <div className="error-message" role="alert">{error}</div>}
+        <div className="dialog-actions">
+          <button type="button" onClick={onClose} disabled={submitting}>
+            Cancel
+          </button>
+          <button type="submit" disabled={submitting || !name.trim()} className="primary-btn">
+            {submitting ? 'Creating...' : 'Create'}
+          </button>
+        </div>
+      </form>
+    </Modal>
   );
 }

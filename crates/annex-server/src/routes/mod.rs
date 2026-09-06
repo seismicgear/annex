@@ -32,6 +32,7 @@ use crate::api_upload;
 use crate::api_usernames;
 use crate::api_vrp;
 use crate::api_ws;
+use crate::api_zk_circuits;
 use crate::http::cors::build_cors_layer;
 use crate::http::layers::apply_global_layers;
 use crate::http::static_files::{attach_client_dist, attach_uploads};
@@ -229,6 +230,13 @@ pub fn app(state: AppState) -> Router {
             "/api/usernames/visible",
             get(api_usernames::get_visible_usernames_handler),
         )
+        // The trust graph is member-only. `BfsPath.path` names the
+        // pseudonyms BETWEEN two people — parties to neither end of the query
+        // — so serving it anonymously let anyone who could reach the server
+        // walk pairs and reconstruct the social graph of a platform built on
+        // pseudonymity. It was in `public_routes`; no client code ever called
+        // it, so nothing depended on that.
+        .route("/api/graph/degrees", get(api_graph::get_degrees_handler))
         .route(
             "/api/link-preview",
             get(api_link_preview::link_preview_handler),
@@ -325,6 +333,19 @@ pub fn app(state: AppState) -> Router {
             "/api/zk/verify-membership",
             post(api::verify_membership_handler),
         )
+        // Capability / linkage / federation ZK circuits (AUDIT P4-ID-1).
+        .route(
+            "/api/zk/channel-eligibility",
+            post(api_zk_circuits::channel_eligibility_handler),
+        )
+        .route(
+            "/api/zk/link-pseudonyms",
+            post(api_zk_circuits::link_pseudonyms_handler),
+        )
+        .route(
+            "/api/zk/federation-attestation",
+            post(api_zk_circuits::federation_attestation_handler),
+        )
         .route(
             "/api/session/refresh",
             post(api_ws::refresh_session_handler),
@@ -379,7 +400,6 @@ pub fn app(state: AppState) -> Router {
             "/api/federation/rtx",
             post(api_federation::receive_federated_rtx_handler),
         )
-        .route("/api/graph/degrees", get(api_graph::get_degrees_handler))
         .route("/api/public/events", get(api_observe::get_events_handler))
         .route(
             "/api/public/events/chain",

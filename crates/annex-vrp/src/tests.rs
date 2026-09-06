@@ -463,3 +463,216 @@ fn test_vrp_error_display() {
         "Error message should mention UNIX epoch, got: {msg}"
     );
 }
+
+fn report(status: VrpAlignmentStatus, scope: VrpTransferScope, score: f32) -> VrpValidationReport {
+    VrpValidationReport {
+        alignment_status: status,
+        transfer_scope: scope,
+        alignment_score: score,
+        negotiation_notes: vec![],
+    }
+}
+
+fn full_accept() -> VrpTransferAcceptanceConfig {
+    VrpTransferAcceptanceConfig {
+        allow_reflection_summaries: true,
+        allow_full_knowledge: true,
+    }
+}
+
+#[test]
+fn reputation_gate_is_noop_when_healthy() {
+    let r = report(
+        VrpAlignmentStatus::Aligned,
+        VrpTransferScope::FullKnowledgeBundle,
+        1.0,
+    );
+    let out = apply_reputation_gate(r, 0.6, &full_accept());
+    assert_eq!(out.alignment_status, VrpAlignmentStatus::Aligned);
+    assert!(out.negotiation_notes.is_empty());
+}
+
+#[test]
+fn reputation_gate_threshold_is_inclusive() {
+    // Exactly at the threshold counts as healthy (>=) — no downgrade.
+    let r = report(
+        VrpAlignmentStatus::Aligned,
+        VrpTransferScope::FullKnowledgeBundle,
+        1.0,
+    );
+    let out = apply_reputation_gate(r, MIN_REPUTATION_FOR_FULL_ALIGNMENT, &full_accept());
+    assert_eq!(out.alignment_status, VrpAlignmentStatus::Aligned);
+}
+
+#[test]
+fn reputation_gate_downgrades_aligned_to_partial_when_poor() {
+    let r = report(
+        VrpAlignmentStatus::Aligned,
+        VrpTransferScope::FullKnowledgeBundle,
+        1.0,
+    );
+    let out = apply_reputation_gate(r, 0.1, &full_accept());
+    assert_eq!(out.alignment_status, VrpAlignmentStatus::Partial);
+    assert_eq!(
+        out.transfer_scope,
+        VrpTransferScope::ReflectionSummariesOnly
+    );
+    // The measured similarity is preserved — only the verdict is downgraded.
+    assert_eq!(out.alignment_score, 1.0);
+    assert!(out
+        .negotiation_notes
+        .iter()
+        .any(|n| n.contains("downgraded")));
+}
+
+#[test]
+fn reputation_gate_downgrades_partial_to_conflict_and_conflict_is_terminal() {
+    let cfg = VrpTransferAcceptanceConfig {
+        allow_reflection_summaries: true,
+        allow_full_knowledge: false,
+    };
+    let partial = report(
+        VrpAlignmentStatus::Partial,
+        VrpTransferScope::ReflectionSummariesOnly,
+        0.5,
+    );
+    let out = apply_reputation_gate(partial, 0.0, &cfg);
+    assert_eq!(out.alignment_status, VrpAlignmentStatus::Conflict);
+    assert_eq!(out.transfer_scope, VrpTransferScope::NoTransfer);
+
+    // Conflict cannot be downgraded further.
+    let conflict = report(
+        VrpAlignmentStatus::Conflict,
+        VrpTransferScope::NoTransfer,
+        0.0,
+    );
+    let out2 = apply_reputation_gate(conflict, 0.0, &cfg);
+    assert_eq!(out2.alignment_status, VrpAlignmentStatus::Conflict);
+    assert!(out2.negotiation_notes.is_empty());
+}
+
+#[test]
+fn compare_peer_anchor_scored_returns_measured_similarity() {
+    let cfg = VrpAlignmentConfig {
+        semantic_alignment_required: true,
+        min_alignment_score: 0.8,
+    };
+
+    // Exact match → status Aligned, score 1.0.
+    let a = VrpAnchorSnapshot::new(&["p1".to_string()], &["no1".to_string()]).unwrap();
+    let (status, score) = compare_peer_anchor_scored(&a, &a.clone(), &cfg);
+    assert_eq!(status, VrpAlignmentStatus::Aligned);
+    assert_eq!(score, 1.0);
+
+    // Prohibited-action divergence → Conflict, score 0.0 (no continuous score).
+    let b = VrpAnchorSnapshot::new(&["p1".to_string()], &["no2".to_string()]).unwrap();
+    let (status2, score2) = compare_peer_anchor_scored(&a, &b, &cfg);
+    assert_eq!(status2, VrpAlignmentStatus::Conflict);
+    assert_eq!(score2, 0.0);
+
+    // Matching prohibitions, differing-but-overlapping principles → the real
+    // cosine value is surfaced (NOT a hardcoded 0.5/1.0/0.0), and it is in
+    // (0.0, 1.0). With a high threshold this is a Conflict that still reports
+    // its measured similarity.
+    let c = VrpAnchorSnapshot::new(
+        &["free speech".to_string(), "privacy".to_string()],
+        &["no doxxing".to_string()],
+    )
+    .unwrap();
+    let d = VrpAnchorSnapshot::new(
+        &["free speech".to_string(), "transparency".to_string()],
+        &["no doxxing".to_string()],
+    )
+    .unwrap();
+    let (status3, score3) = compare_peer_anchor_scored(&c, &d, &cfg);
+    // Conflict under the 0.8 threshold, but the score is the real measured
+    // cosine — the old placeholder would have reported exactly 0.0 for Conflict.
+    assert_eq!(status3, VrpAlignmentStatus::Conflict);
+    assert!(
+        score3 > 0.0 && score3 < 1.0,
+        "expected a measured cosine in (0,1), got {score3}"
+    );
+}
+
+/// A server running the shipped defaults must be able to admit an agent.
+///
+/// `ServerPolicy::default()` has `principles: []` and
+/// `agent_min_alignment_score: 0.8`, and the agent handshake hardcodes
+/// `semantic_alignment_required: true`. Before this, an empty local list
+/// made the semantic branch unreachable and control fell through to
+/// `Conflict` — so the only agent a stock server could admit was one with
+/// no principles and no prohibited actions at all. Agent participation, a
+/// headline feature, did not work out of the box and said nothing about
+/// why.
+mod empty_local_anchor {
+    use crate::{
+        compare_peer_anchor_scored, VrpAlignmentConfig, VrpAlignmentStatus, VrpAnchorSnapshot,
+    };
+
+    fn anchor(principles: &[&str], prohibited: &[&str]) -> VrpAnchorSnapshot {
+        VrpAnchorSnapshot::new(
+            &principles.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            &prohibited.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+        )
+        .expect("anchor")
+    }
+
+    fn strict() -> VrpAlignmentConfig {
+        VrpAlignmentConfig {
+            semantic_alignment_required: true,
+            min_alignment_score: 0.8,
+        }
+    }
+
+    #[test]
+    fn an_agent_with_principles_is_admitted_when_the_server_declares_none() {
+        let local = anchor(&[], &[]);
+        let remote = anchor(&["users deserve privacy"], &[]);
+
+        let (status, _) = compare_peer_anchor_scored(&local, &remote, &strict());
+        assert_eq!(
+            status,
+            VrpAlignmentStatus::Aligned,
+            "a server that has declared no values rejected an agent for \
+             having some — there was nothing for it to conflict with",
+        );
+    }
+
+    #[test]
+    fn prohibited_actions_are_still_enforced_with_no_local_principles() {
+        // The one boundary the operator DID state must keep working. This is
+        // the half that must not be weakened by admitting the case above.
+        let local = anchor(&[], &["no surveillance"]);
+        let remote = anchor(&["users deserve privacy"], &[]);
+
+        let (status, _) = compare_peer_anchor_scored(&local, &remote, &strict());
+        assert_eq!(
+            status,
+            VrpAlignmentStatus::Conflict,
+            "a declared prohibition was ignored",
+        );
+    }
+
+    #[test]
+    fn a_server_with_principles_still_scores_them() {
+        // The threshold has to remain live where the operator has actually
+        // configured it, or this fix would have silently disabled the gate
+        // everywhere instead of only where it could not run.
+        let local = anchor(&["users deserve privacy"], &[]);
+        let remote = anchor(&["maximise engagement at any cost"], &[]);
+
+        let (status, score) = compare_peer_anchor_scored(&local, &remote, &strict());
+        assert_eq!(status, VrpAlignmentStatus::Conflict);
+        assert!(score < 0.8, "unrelated principles scored {score}");
+    }
+
+    #[test]
+    fn identical_anchors_are_still_an_exact_match() {
+        let local = anchor(&["be kind"], &["no spam"]);
+        let remote = anchor(&["be kind"], &["no spam"]);
+
+        let (status, score) = compare_peer_anchor_scored(&local, &remote, &strict());
+        assert_eq!(status, VrpAlignmentStatus::Aligned);
+        assert_eq!(score, 1.0);
+    }
+}

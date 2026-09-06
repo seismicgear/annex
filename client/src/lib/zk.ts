@@ -11,7 +11,41 @@ import type * as snarkjs from 'snarkjs';
 
 const MEMBERSHIP_WASM_PATH = '/zk/membership.wasm';
 const MEMBERSHIP_ZKEY_PATH = '/zk/membership_final.zkey';
+const MEMBERSHIP_V2_WASM_PATH = '/zk/membership_v2.wasm';
+const MEMBERSHIP_V2_ZKEY_PATH = '/zk/membership_v2_final.zkey';
+// Capability / linkage / federation circuits (AUDIT P4-ID-1).
+const CHANNEL_ELIGIBILITY_WASM_PATH = '/zk/channel_eligibility.wasm';
+const CHANNEL_ELIGIBILITY_ZKEY_PATH = '/zk/channel_eligibility_final.zkey';
+const LINK_PSEUDONYMS_WASM_PATH = '/zk/link_pseudonyms.wasm';
+const LINK_PSEUDONYMS_ZKEY_PATH = '/zk/link_pseudonyms_final.zkey';
+const FEDERATION_ATTESTATION_WASM_PATH = '/zk/federation_attestation.wasm';
+const FEDERATION_ATTESTATION_ZKEY_PATH = '/zk/federation_attestation_final.zkey';
 const DEFAULT_PROOF_TIMEOUT_MS = 120_000;
+
+/** BN254 scalar field order (Fr). */
+const BN254_FR =
+  21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+
+/** Domain separator for the v2 topic hash — MUST match the Rust server's
+ * `annex_identity::zk::V2_TOPIC_HASH_DOMAIN`. */
+const V2_TOPIC_HASH_DOMAIN = 'annex/v2/topicHash:';
+
+/**
+ * Compute the v2 topicHash as a BN254 scalar, byte-for-byte identical to the
+ * server's `topic_hash_for_v2`: `Fr::from_be_bytes_mod_order(SHA256(domain +
+ * topic))`. The proof is bound to this value (a public input), and the server
+ * recomputes it from the `topic` field, so any mismatch is rejected.
+ */
+export async function computeTopicHashV2(topic: string): Promise<bigint> {
+  if (topic.length === 0) {
+    throw new Error('topic must not be empty for v2 topic hash');
+  }
+  const bytes = new TextEncoder().encode(V2_TOPIC_HASH_DOMAIN + topic);
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+  let acc = 0n;
+  for (const b of digest) acc = (acc << 8n) | BigInt(b);
+  return acc % BN254_FR;
+}
 
 function parseTimeoutMs(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
@@ -197,6 +231,7 @@ export async function cancelMembershipProofGeneration(reason = 'Proof generation
 function runProofInWorker(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   circuitInput: any,
+  paths: { wasmPath: string; zkeyPath: string },
   options?: GenerateMembershipProofOptions,
 ): Promise<MembershipProofOutput> {
   if (activeProofJob) {
@@ -276,8 +311,8 @@ function runProofInWorker(
       kind: 'start',
       jobId,
       input: circuitInput,
-      wasmPath: MEMBERSHIP_WASM_PATH,
-      zkeyPath: MEMBERSHIP_ZKEY_PATH,
+      wasmPath: paths.wasmPath,
+      zkeyPath: paths.zkeyPath,
     });
   });
 
@@ -310,5 +345,207 @@ export async function generateMembershipProof(
     pathIndexBits: input.pathIndexBits.map(String),
   };
 
-  return runProofInWorker(circuitInput, options);
+  return runProofInWorker(
+    circuitInput,
+    { wasmPath: MEMBERSHIP_WASM_PATH, zkeyPath: MEMBERSHIP_ZKEY_PATH },
+    options,
+  );
+}
+
+/** Result of a v2 proof: the standard output plus the extracted nullifier /
+ * topicHash (as `0x`-prefixed hex), which the verify endpoint requires. */
+export interface MembershipProofV2Output extends MembershipProofOutput {
+  nullifierHex: string;
+  topicHashHex: string;
+}
+
+/** Canonical BN254 field-element hex: 64-char zero-padded lowercase, NO `0x`
+ * prefix — byte-for-byte what the server's `fr_to_canonical_hex` /
+ * `parse_fr_from_hex` expect. */
+function fieldDecToCanonicalHex(dec: string): string {
+  return BigInt(dec).toString(16).padStart(64, '0');
+}
+
+/**
+ * Generate a v2 Groth16 membership proof with a secret-derived nullifier.
+ *
+ * Unlike v1 (where the per-topic nullifier is `sha256(commitment + topic)` and
+ * thus publicly derivable from the Merkle leaf), v2 computes the nullifier as
+ * `Poseidon(sk, topicHash, 1)` inside the circuit — observing the commitment
+ * does not reveal the topic pseudonym. `topicHash` is a public input bound to
+ * the proof; the server recomputes it from the topic string and rejects any
+ * mismatch.
+ *
+ * publicSignals ordering is `[root, commitment, nullifier, topicHash]`.
+ */
+export async function generateMembershipProofV2(
+  input: MembershipProofInput,
+  topic: string,
+  options?: GenerateMembershipProofOptions,
+): Promise<MembershipProofV2Output> {
+  const topicHash = await computeTopicHashV2(topic);
+  const circuitInput = {
+    sk: input.sk.toString(),
+    roleCode: input.roleCode.toString(),
+    nodeId: input.nodeId.toString(),
+    leafIndex: input.leafIndex.toString(),
+    pathElements: input.pathElements.map((s) => '0x' + s),
+    pathIndexBits: input.pathIndexBits.map(String),
+    topicHash: topicHash.toString(),
+  };
+
+  const out = await runProofInWorker(
+    circuitInput,
+    { wasmPath: MEMBERSHIP_V2_WASM_PATH, zkeyPath: MEMBERSHIP_V2_ZKEY_PATH },
+    options,
+  );
+
+  // publicSignals = [root, commitment, nullifier, topicHash] (decimal strings).
+  if (out.publicSignals.length < 4) {
+    throw new Error(
+      `v2 proof produced ${out.publicSignals.length} public signals, expected 4`,
+    );
+  }
+  return {
+    ...out,
+    nullifierHex: fieldDecToCanonicalHex(out.publicSignals[2]),
+    topicHashHex: fieldDecToCanonicalHex(out.publicSignals[3]),
+  };
+}
+
+// ───────────────────── capability / linkage / federation ─────────────────────
+//
+// These three back the privacy guarantees the README advertises:
+//   - channel-eligibility: prove role-gated channel access, identity hidden.
+//   - link-pseudonyms:     voluntarily prove two pseudonyms are the same person.
+//   - federation-attestation: prove a hidden member attests in a federation ctx.
+//
+// Each computes the proof in the shared worker and returns the canonical-hex
+// public signals the matching server endpoint cross-checks. The topic/context
+// public input is `computeTopicHashV2(...)`, matching the server's
+// `topic_hash_for_v2` derivation exactly.
+
+/** Result of a channel-eligibility proof. publicSignals =
+ *  `[root, nullifier, requiredRoleCode, channelTopicHash]`. */
+export interface ChannelEligibilityProofOutput extends MembershipProofOutput {
+  nullifierHex: string;
+}
+
+/**
+ * Generate a channel-eligibility proof: prove the holder is a member whose
+ * committed role equals `requiredRoleCode`, scoped to `channelTopic`, without
+ * revealing which member.
+ */
+export async function generateChannelEligibilityProof(
+  input: MembershipProofInput,
+  channelTopic: string,
+  requiredRoleCode: number,
+  options?: GenerateMembershipProofOptions,
+): Promise<ChannelEligibilityProofOutput> {
+  const channelTopicHash = await computeTopicHashV2(channelTopic);
+  const circuitInput = {
+    sk: input.sk.toString(),
+    roleCode: input.roleCode.toString(),
+    nodeId: input.nodeId.toString(),
+    leafIndex: input.leafIndex.toString(),
+    pathElements: input.pathElements.map((s) => '0x' + s),
+    pathIndexBits: input.pathIndexBits.map(String),
+    requiredRoleCode: requiredRoleCode.toString(),
+    channelTopicHash: channelTopicHash.toString(),
+  };
+  const out = await runProofInWorker(
+    circuitInput,
+    { wasmPath: CHANNEL_ELIGIBILITY_WASM_PATH, zkeyPath: CHANNEL_ELIGIBILITY_ZKEY_PATH },
+    options,
+  );
+  if (out.publicSignals.length < 4) {
+    throw new Error(
+      `channel-eligibility proof produced ${out.publicSignals.length} public signals, expected 4`,
+    );
+  }
+  return { ...out, nullifierHex: fieldDecToCanonicalHex(out.publicSignals[1]) };
+}
+
+/** Result of a link-pseudonyms proof. publicSignals =
+ *  `[nullifierA, nullifierB, topicHashA, topicHashB]`. */
+export interface LinkPseudonymsProofOutput extends MembershipProofOutput {
+  nullifierAHex: string;
+  nullifierBHex: string;
+}
+
+/**
+ * Generate a link-pseudonyms proof: voluntarily prove the holder's pseudonyms
+ * in `topicA` and `topicB` derive from the same secret key (same identity),
+ * without revealing the key. The nullifiers use the same domain (1) as
+ * membership v2, so they equal the registered pseudonyms.
+ */
+export async function generateLinkPseudonymsProof(
+  sk: bigint,
+  topicA: string,
+  topicB: string,
+  options?: GenerateMembershipProofOptions,
+): Promise<LinkPseudonymsProofOutput> {
+  const [topicHashA, topicHashB] = await Promise.all([
+    computeTopicHashV2(topicA),
+    computeTopicHashV2(topicB),
+  ]);
+  const circuitInput = {
+    sk: sk.toString(),
+    topicHashA: topicHashA.toString(),
+    topicHashB: topicHashB.toString(),
+  };
+  const out = await runProofInWorker(
+    circuitInput,
+    { wasmPath: LINK_PSEUDONYMS_WASM_PATH, zkeyPath: LINK_PSEUDONYMS_ZKEY_PATH },
+    options,
+  );
+  if (out.publicSignals.length < 4) {
+    throw new Error(
+      `link-pseudonyms proof produced ${out.publicSignals.length} public signals, expected 4`,
+    );
+  }
+  return {
+    ...out,
+    nullifierAHex: fieldDecToCanonicalHex(out.publicSignals[0]),
+    nullifierBHex: fieldDecToCanonicalHex(out.publicSignals[1]),
+  };
+}
+
+/** Result of a federation-attestation proof. publicSignals =
+ *  `[root, nullifier, federationContextHash]`. */
+export interface FederationAttestationProofOutput extends MembershipProofOutput {
+  nullifierHex: string;
+}
+
+/**
+ * Generate a federation-attestation proof: prove the holder is a member under
+ * the published root, scoped to `federationContext`, without exposing the
+ * identity. A peer verifies it against the published root.
+ */
+export async function generateFederationAttestationProof(
+  input: MembershipProofInput,
+  federationContext: string,
+  options?: GenerateMembershipProofOptions,
+): Promise<FederationAttestationProofOutput> {
+  const federationContextHash = await computeTopicHashV2(federationContext);
+  const circuitInput = {
+    sk: input.sk.toString(),
+    roleCode: input.roleCode.toString(),
+    nodeId: input.nodeId.toString(),
+    leafIndex: input.leafIndex.toString(),
+    pathElements: input.pathElements.map((s) => '0x' + s),
+    pathIndexBits: input.pathIndexBits.map(String),
+    federationContextHash: federationContextHash.toString(),
+  };
+  const out = await runProofInWorker(
+    circuitInput,
+    { wasmPath: FEDERATION_ATTESTATION_WASM_PATH, zkeyPath: FEDERATION_ATTESTATION_ZKEY_PATH },
+    options,
+  );
+  if (out.publicSignals.length < 3) {
+    throw new Error(
+      `federation-attestation proof produced ${out.publicSignals.length} public signals, expected 3`,
+    );
+  }
+  return { ...out, nullifierHex: fieldDecToCanonicalHex(out.publicSignals[1]) };
 }
