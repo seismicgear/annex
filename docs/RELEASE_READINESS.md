@@ -8,14 +8,15 @@ backed by a command you can re-run.
 
 | Suite | Count | How to run |
 |-------|-------|------------|
-| Rust workspace (excl. annex-desktop) | 1055 tests / 116 binaries, 0 clippy warnings | `cargo test --workspace --exclude annex-desktop` |
+| Rust workspace (excl. annex-desktop) | 1056 tests / 117 binaries, 0 clippy warnings | `cargo test --workspace --exclude annex-desktop` |
 | Frontend (vitest) | 478 tests + eslint + `tsc -b` | `cd client && npm test && npm run lint && npx tsc -b` |
 | Playwright functional suite | 13 tests | `bash scripts/e2e-server.sh start && cd client && npm run test:e2e` |
 | Group call (3 real browser contexts, fake media) | 2 tests | `bash scripts/e2e-all.sh group-call` |
-| Harness scripts | 3 files | `for t in scripts/tests/*.test.sh; do bash "$t"; done` |
+| Harness scripts | 4 files | `for t in scripts/tests/*.test.sh; do bash "$t"; done` |
 | Live federation relay (signed envelope, second server) | 1 end-to-end path | `bash scripts/smoke-federation.sh` |
 | Puppeteer journey (cold start → identity → proof → chat → channel create) | 1 driver-independent pass | `bash scripts/e2e-all.sh puppeteer` |
 | UI audit (screenshots + a11y + console + network + overflow + keyboard) | 104 surfaces × 4 viewports, 419 checks, 0 findings | `bash scripts/ui-audit.sh` |
+| Desktop crate (`annex-desktop`) | 24 tests, 0 clippy warnings | `cargo test -p annex-desktop && cargo clippy -p annex-desktop --all-targets -- -D warnings` |
 | Desktop install → run → uninstall | 9 checks | `bash scripts/desktop-audit.sh` |
 | ZK artifact gate | dev-fixture rejection under production profile | `cd zk && npm test` |
 | Marketing-site invite router (`monolith-annex`) | 62 tests | `cd ../monolith-annex && npm test` |
@@ -24,7 +25,8 @@ backed by a command you can re-run.
 The counts above are what the commands beside them printed, not a target. If a
 number here disagrees with a run, the run is right and this table is stale —
 that has already happened once, when it claimed 770 Rust and 171 frontend tests
-against actuals of 1055 and 469.
+against actuals that were then 1055 and 469. The frontend row has moved since
+(469 → 476 → 478); the point is that it moved because a run said so.
 
 CI (`.github/workflows/ci.yml`, `workflow_dispatch` with `include_macos=true`)
 defines the server checks, the **Linux + Windows + macOS** desktop builds, the

@@ -92,8 +92,49 @@ get caught early.
 |-------------|---------|-------|
 | **Rust** | 1.85+ | Only for source builds. Install from [rustup.rs](https://rustup.rs) |
 | **Docker** | 20+ | Only for Docker deploys |
-| **sqlite3** | Any | Optional. Used by deploy scripts to seed the database |
+| **sqlite3** | Any | Deploy scripts use it to seed the database; `scripts/smoke-federation.sh` requires it |
 | **Node.js** | 22+ | Only for client builds (Docker handles this automatically) |
+
+---
+
+## Verifying a build
+
+One command runs every gate:
+
+```bash
+bash scripts/test-all.sh            # fmt, clippy, eslint, harness tests, cargo test, tsc, vitest
+bash scripts/test-all.sh --quick    # skip fmt/clippy/eslint; still typechecks and tests
+```
+
+The lanes it does **not** run need a server or a browser, and each starts its
+own:
+
+```bash
+bash scripts/e2e-all.sh both        # Playwright functional suite + Puppeteer journey
+bash scripts/e2e-all.sh group-call  # three real browser contexts in one call
+bash scripts/ui-audit.sh            # every UI surface, four viewports, five audits each
+bash scripts/desktop-audit.sh       # build the .deb, install it, launch it, uninstall it
+bash scripts/smoke-server.sh        # register → Merkle → Groth16 → verify → channel
+bash scripts/smoke-federation.sh    # a signed envelope relayed from a second server
+```
+
+`docs/RELEASE_READINESS.md` is the index: every suite, the count it last
+printed, and the command that prints it. If a number there disagrees with a
+run, the run is right and the table is stale.
+
+Two things are worth knowing before you trust a green result:
+
+- **`scripts/ui-audit.sh` manages its own server** and refuses to start while
+  another run holds its lock. Do not start `e2e-server.sh` first, and do not
+  run `cargo` alongside it — the audit builds the server at run start and a
+  concurrent cargo command starves it.
+- **Baselines are never minted incidentally.** `updateSnapshots: 'none'` means
+  a missing baseline fails the run rather than being written; only
+  `--update-baselines` records one, and re-recording belongs in its own commit.
+
+`CLAUDE.md` documents the traps that cost real time — what a green run does and
+does not prove, why `git status` is not a measure of visual change, and the
+defect classes this codebase actually produces.
 
 ---
 

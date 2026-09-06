@@ -146,6 +146,40 @@ else
 fi
 
 echo ""
+echo ">>> an EMPTY client/node_modules still triggers the install"
+# What a reclaimed container leaves behind. The guard was `[ -d
+# "client/node_modules" ]`, so the directory merely existing was taken as
+# "dependencies are installed" and `npm ci` was skipped — and everything
+# downstream then failed a long way from the cause: `vitest: not found`, and
+# `tsc` unable to find the `vite/client` and `node` type definitions. Observed
+# for real, not hypothesised.
+reset_root
+mkdir -p "$FAKE_ROOT/client/node_modules"
+out=$(run_setup); rc=$?
+if echo "$out" | grep -qE "stub npm\] ci.*cwd=.*/client\)"; then
+    ok "npm ci ran in client/ despite the directory existing"
+else
+    bad "npm ci was skipped for an empty node_modules: $(echo "$out" | tail -3 | tr '\n' ' ')"
+fi
+if [ "$rc" -eq 0 ]; then
+    ok "setup still succeeds"
+else
+    bad "setup failed (rc=$rc)"
+fi
+
+echo ""
+echo ">>> a populated client/node_modules is left alone"
+reset_root
+mkdir -p "$FAKE_ROOT/client/node_modules/.bin"
+: > "$FAKE_ROOT/client/node_modules/.bin/vitest"
+out=$(run_setup); rc=$?
+if echo "$out" | grep -qE "stub npm\] ci.*cwd=.*/client\)"; then
+    bad "re-installed dependencies that were already present"
+else
+    ok "skipped the install, as before"
+fi
+
+echo ""
 echo ">>> a clean run still reports ready"
 reset_root
 out=$(run_setup); rc=$?

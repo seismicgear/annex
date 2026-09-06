@@ -22,7 +22,11 @@ bash ../scripts/e2e-server.sh stop
 
 ## Test
 
-Three lanes, in ascending order of how long they take and how much they need.
+Five lanes, in ascending order of how long they take and how much they need.
+All five run in CI, each against its own fresh server — which was not true
+until recently: `playwright.config.ts` defines four projects, and for a while
+only two of them were named by anything that ran. A project in a config is not
+a lane until something invokes it.
 
 ### 1. Unit — no server
 
@@ -74,6 +78,42 @@ commit.
 
 [`../docs/ui-audit/README.md`](../docs/ui-audit/README.md) explains the
 manifest, the masking rules, and why the server restarts on every run.
+
+### 4. Group call — three browsers in one room
+
+`e2e/audit/group-call.spec.ts` is a separate Playwright project, not part of
+the audit sweep. Three real browser contexts join one voice channel serially
+with fake media devices, so each join exercises renegotiation against a room
+that already has peers in it. It asserts every participant sees itself plus two
+*distinct* others.
+
+```bash
+bash ../scripts/e2e-all.sh group-call
+```
+
+That distinctness is the whole point. The SFU used to write every sender's RTP
+into a single outbound track per receiver, so two senders interleaved onto one
+track and decoded to neither — calls were structurally limited to two people
+and the client had no per-sender track to attribute a tile to. This lane is the
+guard that replaced the test which existed to fail when that was fixed. Unit
+tests can assert the track map is shaped correctly; only a real call proves the
+renegotiation reaches the peers already in it and that they answer.
+
+### 5. Puppeteer journey — a second driver over the same path
+
+`e2e-puppeteer/` drives the same journey through a different browser driver,
+including a cold start: identity, in-browser proof, chat, channel creation.
+
+```bash
+bash ../scripts/e2e-all.sh puppeteer
+bash ../scripts/e2e-all.sh both        # functional suite, then this, on a fresh server each
+```
+
+Give it its own server. Channel creation needs a moderator and `ensure_founder`
+grants that to the earliest registrant, so on a server the functional suite has
+already registered against, this lane comes up as an ordinary member and
+silently skips that check — it still passes, having tested less. `e2e-all.sh
+both` restarts between lanes for exactly this reason.
 
 ## Startup flow
 

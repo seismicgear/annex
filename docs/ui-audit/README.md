@@ -6,7 +6,24 @@ record what is wrong, and fail CI when it changes unintentionally.
 Before this existed, `client/e2e/`, `client/e2e-puppeteer/` and
 `scripts/e2e-server.sh` were referenced by **zero** CI workflows, there were no
 screenshot baselines anywhere in the repo, and the browser suites covered
-roughly 8 of the app's ~50 distinct visual states.
+roughly 8 of the app's ~50 distinct visual states. All three are wired into CI
+now, each against its own fresh server — see `client/README.md` for the full
+set of lanes.
+
+## Current coverage
+
+**104 surfaces × 4 viewports.** Four surfaces are viewport-restricted, so a
+full run takes 408 captures: **400 are pixel-diffed** against committed
+baselines and 8 are `reportOnly` — captured and audited, never diffed, because
+they are nondeterministic beyond what masking can fix (live video, animated
+media). Every capture runs five audits: axe-core, console/pageerror, failed
+requests, layout overflow, and the dialog keyboard contract.
+
+A full run currently reports **419 passed, 104 of 104 surfaces exercised, 0
+findings**, reproduced by a recording run and an independent verifying run with
+no drift between them. That last clause is the part that matters: a recording
+run rewrites whatever it sees and so cannot fail, which means it proves
+nothing on its own.
 
 ## Run it
 

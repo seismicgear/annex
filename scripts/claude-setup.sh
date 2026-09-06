@@ -98,7 +98,16 @@ mkdir -p assets/piper assets/voices
 info "Asset directories ready."
 
 # ---------- 4. Frontend npm deps ----------
-if [ -d "client/node_modules" ]; then
+# Gate on the executables, not on the directory.
+#
+# `[ -d client/node_modules ]` treats a directory that merely EXISTS as
+# "dependencies are installed", and an empty `client/node_modules` is exactly
+# what a reclaimed container leaves behind. The install was then skipped and
+# every frontend command failed a long way from the cause: `vitest: not found`,
+# and `tsc` unable to find the `vite/client` and `node` type definitions.
+# Observed for real, not hypothesised. `.bin` is the right thing to look for
+# because it is what supplies those executables.
+if [ -d "client/node_modules/.bin" ]; then
     info "Frontend node_modules already installed."
 else
     info "Installing frontend dependencies..."
