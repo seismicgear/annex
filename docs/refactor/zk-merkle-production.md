@@ -47,9 +47,9 @@ The reader is assumed to know that production-grade requires:
 ### Merkle storage (`crates/annex-identity/src/merkle.rs`, table `identities`)
 
 - Append-only Poseidon Merkle tree. Leaves are identity commitments stored in the `identities` SQL table (migrations 001+).
-- On boot, the tree is rebuilt from `identities` and the recomputed root is compared against a persisted root; mismatch raises `MerkleRootMismatch` (see `merkle.rs` around line 232–238) and panics. This is the only "tamper detection" today.
+- On boot, the tree is rebuilt from `identities` and the recomputed root is compared against a persisted root; mismatch raises `MerkleRootMismatch` (search `merkle.rs` for the variant; it is raised from two sites) and panics. This is the only "tamper detection" today.
 - Roots are formatted by encoding the Fr field element as big-endian bytes via `into_bigint().to_bytes_be()` then `hex::encode(...)` — lowercase, no `0x`, fixed width.
-- The current root is exposed at `GET /api/registry/root` (see `crates/annex-server/src/api.rs::get_current_root_handler`, route registered in `lib.rs` near line 762).
+- The current root is exposed at `GET /api/registry/current-root` (handler `crates/annex-server/src/api.rs::get_current_root_handler`; route registered in `crates/annex-server/src/routes/mod.rs`). Earlier revisions of this doc gave the path as `/api/registry/root` and put the registration in `lib.rs` — neither is correct, and a client built from that path gets a 404.
 - Path lookup for clients uses `annex_identity::registry::get_path_for_commitment`.
 
 ### Nullifier tracking (`crates/annex-identity/src/nullifier.rs`, table `zk_nullifiers`)

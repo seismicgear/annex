@@ -10,9 +10,9 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test",
-    "test:e2e:headed": "playwright test --headed",
-    "test:e2e:debug": "playwright test --debug",
+    "test:e2e": "playwright test --project=chromium",
+    "test:e2e:headed": "playwright test --project=chromium --headed",
+    "test:e2e:debug": "playwright test --project=chromium --debug",
     "test:e2e:puppeteer": "node e2e-puppeteer/run.mjs"
   },
   "dependencies": {
@@ -29,6 +29,7 @@
     "zustand": "^5.0.11"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.12.1",
     "@eslint/js": "^9.39.1",
     "@playwright/test": "^1.56.1",
     "@testing-library/jest-dom": "^6.9.1",

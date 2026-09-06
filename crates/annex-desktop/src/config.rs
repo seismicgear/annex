@@ -95,9 +95,17 @@ allowed_origins = ["tauri://localhost", "https://tauri.localhost", "http://tauri
 /// Replaces Windows backslashes with forward slashes in a config file.
 ///
 /// TOML double-quoted strings treat `\U` as an 8-digit unicode escape, so a
-/// path like `C:\Users\monty\AppData\...\annex.db` fails to parse. This
-/// function detects the drive-letter pattern `:\` and replaces all backslashes
-/// with forward slashes, which Windows APIs accept.
+/// path like `C:\Users\monty\AppData\...\annex.db` fails to parse. Lines
+/// carrying the drive-letter pattern `:\` have their backslashes replaced with
+/// forward slashes, which Windows APIs accept.
+///
+/// Scoped to those LINES, not the whole file. It used to replace every
+/// backslash in the entire config as soon as one drive-letter path appeared
+/// anywhere — and on Windows that trigger is the normal case, so this ran on
+/// every launch. Any other value containing a backslash was silently rewritten
+/// and persisted: a `[webrtc] api_secret` or a TURN `credential` is exactly the
+/// kind of value that legitimately holds one, and the failure it causes
+/// afterwards ("voice will not connect") points nowhere near this function.
 pub(crate) fn fix_backslash_paths(config_path: &Path) -> Result<(), String> {
     let contents = match std::fs::read_to_string(config_path) {
         Ok(c) => c,
@@ -111,7 +119,18 @@ pub(crate) fn fix_backslash_paths(config_path: &Path) -> Result<(), String> {
     };
 
     if contents.contains(":\\") {
-        let fixed = contents.replace('\\', "/");
+        // `split_inclusive` keeps each line's terminator, so CRLF endings and
+        // a missing final newline both survive the round trip untouched.
+        let fixed: String = contents
+            .split_inclusive('\n')
+            .map(|line| {
+                if line.contains(":\\") {
+                    line.replace('\\', "/")
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect();
         std::fs::write(config_path, fixed).map_err(|e| {
             format!(
                 "failed to fix backslash paths in config {}: {e}",
@@ -233,6 +252,37 @@ mod tests {
         assert!(
             contents.contains(&expected_db_safe),
             "config should contain db path: {expected_db_safe}"
+        );
+    }
+
+    #[test]
+    fn fix_backslash_paths_only_touches_the_path_line() {
+        // The trigger is a drive-letter path, which on Windows is the normal
+        // case — so this runs on every launch there. It used to replace EVERY
+        // backslash in the WHOLE file and write it back, so any other value
+        // containing one was silently rewritten and persisted. A WebRTC
+        // secret or a TURN credential is exactly the kind of value that
+        // legitimately contains a backslash, and the failure it produces
+        // afterwards ("voice does not connect") points nowhere near here.
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            "[database]\npath = \"C:\\Users\\monty\\AppData\\Roaming\\Annex\\annex.db\"\n\
+             \n[webrtc]\napi_secret = \"s3cr3t\\with\\slashes\"\n",
+        )
+        .expect("write config");
+
+        fix_backslash_paths(&config_path).expect("fix should succeed");
+
+        let after = std::fs::read_to_string(&config_path).expect("read config");
+        assert!(
+            after.contains("C:/Users/monty/AppData/Roaming/Annex/annex.db"),
+            "the drive-letter path should be converted: {after}"
+        );
+        assert!(
+            after.contains(r"s3cr3t\with\slashes"),
+            "a value on another line must be left exactly as it was: {after}"
         );
     }
 

@@ -24,18 +24,37 @@ import { useVoiceStore } from './voice';
  * that was active at proof time; once the tree grows and the grace window
  * passes, the server rejects it (`is_root_acceptable`), so a stale/missing
  * proof must be regenerated via the normal register flow rather than entering
- * `ready` with credentials that will 403. Best-effort: if the server is
- * unreachable we trust the cached proof (nothing works offline anyway).
+ * `ready` with credentials that will 403.
+ *
+ * The two checks below fail in opposite directions on purpose. Reading the
+ * stored payload is a LOCAL check: a payload that will not parse, or that
+ * carries no root, is a corrupt credential — it must fail closed, because
+ * entering `ready` with it means every protected call 403s and the app
+ * believes it is signed in, so nothing routes the user back to
+ * re-registration. Asking the server for the current root is a REMOTE check
+ * and is best-effort: offline, nothing works anyway, so a well-formed cached
+ * proof is trusted rather than forcing a re-prove that cannot run either.
  */
 async function cachedProofIsUsable(identity: StoredIdentity): Promise<boolean> {
   // The session token is refreshed separately (App.tsx /api/session/refresh);
   // the proof is the credential that goes stale/missing, so gate on it.
   if (!identity.zkProofPayload) return false;
+
+  let cachedRoot: string;
   try {
-    const payload = JSON.parse(identity.zkProofPayload) as { root_hex?: string };
-    if (!payload.root_hex) return false;
+    const payload = JSON.parse(identity.zkProofPayload) as { root_hex?: unknown };
+    if (typeof payload?.root_hex !== 'string' || payload.root_hex === '') return false;
+    cachedRoot = payload.root_hex;
+  } catch {
+    return false;
+  }
+
+  try {
     const current = await api.getCurrentRoot();
-    return current.rootHex.toLowerCase() === payload.root_hex.toLowerCase();
+    // An unexpected response shape is a server problem, not a corrupt local
+    // credential, so it takes the same best-effort path as being offline.
+    if (typeof current?.rootHex !== 'string') return true;
+    return current.rootHex.toLowerCase() === cachedRoot.toLowerCase();
   } catch {
     return true;
   }
@@ -356,7 +375,21 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
   },
 
   importBackup: async (json: string) => {
-    const identity = await db.importIdentity(json);
+    // A backup that will not parse, or is not an Annex backup, threw out of
+    // here with nothing catching it. The screen that calls this renders
+    // `{error && ...}` from the store, and no failure path ever set it — so
+    // picking the wrong file did nothing at all, on the one screen people
+    // reach when something has already gone wrong for them.
+    let identity: StoredIdentity;
+    try {
+      identity = await db.importIdentity(json);
+    } catch (err) {
+      set({
+        error: 'That file is not a usable Annex backup.',
+        errorDetails: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+      });
+      return;
+    }
     const identities = await db.listIdentities();
     if (identity.pseudonymId && (await cachedProofIsUsable(identity))) {
       api.setSessionToken(identity.sessionToken ?? null);

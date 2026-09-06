@@ -202,3 +202,53 @@ async fn test_federation_handshake_unknown_instance() {
     // 3. Verify Response
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
+
+/// The re-handshake body must be a `HandshakeRequest`, not something that
+/// merely resembles one.
+///
+/// `notify_federation_peers_of_policy_change` built its POST body with a
+/// `serde_json::json!` literal that re-listed the fields, and omitted
+/// `signature` — required, non-`Option`, no `serde(default)`. Every
+/// policy-change re-handshake was therefore rejected by the peer's
+/// `Json<HandshakeRequest>` extractor with a 422 before the handler ran, and
+/// nothing surfaced it: the POST is a detached `tokio::spawn` whose failure
+/// arm only warns.
+///
+/// The two handshake tests above construct their payloads by hand WITH a
+/// signature, so they exercised a shape production never sent — which is
+/// exactly why this went unnoticed. This one asserts on the body the
+/// production path actually produces.
+#[test]
+fn the_re_handshake_body_deserializes_as_a_handshake_request() {
+    use annex_server::api_federation::HandshakeRequest;
+
+    let key = SigningKey::generate(&mut rand::rngs::OsRng);
+    let handshake = VrpFederationHandshake {
+        anchor_snapshot: VrpAnchorSnapshot::new(&["be kind".to_string()], &["no spam".to_string()])
+            .unwrap(),
+        capability_contract: VrpCapabilitySharingContract {
+            required_capabilities: vec![],
+            offered_capabilities: vec!["TEXT".to_string()],
+            redacted_topics: vec![],
+        },
+    };
+
+    let body =
+        annex_server::policy::handshake_payload("https://local.example.com", &handshake, &key)
+            .expect("payload");
+
+    let parsed: HandshakeRequest = serde_json::from_value(body.clone())
+        .unwrap_or_else(|e| panic!("re-handshake body is not a HandshakeRequest: {e}: {body}"));
+
+    assert_eq!(parsed.base_url, "https://local.example.com");
+    assert!(!parsed.signature.is_empty(), "signature is empty: {body}");
+
+    // And the signature has to verify the way the receiver checks it —
+    // over `{base_url}\n{handshake_json}`. A well-formed but wrongly-scoped
+    // signature would deserialize fine and fail at the far end instead.
+    let expected = sign_handshake(&key, "https://local.example.com", &parsed.handshake);
+    assert_eq!(
+        parsed.signature, expected,
+        "the signature is not over the input the receiver verifies",
+    );
+}

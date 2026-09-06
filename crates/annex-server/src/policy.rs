@@ -62,7 +62,16 @@ pub async fn recalculate_agent_alignments(state: Arc<AppState>) -> Result<(), Ap
             .get()
             .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
 
-        let tx = conn.transaction().map_err(|e| {
+        // IMMEDIATE. Every write transaction in this codebase takes the
+        // RESERVED lock at BEGIN: a DEFERRED one reads a WAL snapshot first
+        // and then has to upgrade, and if another connection committed in
+        // between SQLite answers SQLITE_BUSY_SNAPSHOT immediately — the busy
+        // handler is never called, so `busy_timeout` cannot help. That is
+        // what made message sends fail intermittently with "database is
+        // locked"; see `ws_send_immediate_tx.rs`.
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| {
             ApiError::InternalServerError(format!("failed to begin transaction: {e}"))
         })?;
 
@@ -102,14 +111,38 @@ pub async fn recalculate_agent_alignments(state: Arc<AppState>) -> Result<(), Ap
                     }
                 };
 
-                let anchor: VrpAnchorSnapshot = serde_json::from_str(&anchor_json).map_err(|_| {
-                    ApiError::InternalServerError("failed to parse anchor".to_string())
-                })?;
+                // Skip the agent, do not abort the sweep.
+                //
+                // A MISSING anchor is tolerated two lines up with a warning and
+                // a `continue`; a malformed one used to take out the entire
+                // re-evaluation with a 500, so one corrupt row meant no agent
+                // was re-evaluated at all. It also discarded serde's message,
+                // which is the only thing that says WHICH field is wrong — so
+                // the operator got "failed to parse anchor" about a row the
+                // response did not name, from a sweep that had processed an
+                // unknown number of agents before giving up.
+                let anchor: VrpAnchorSnapshot = match serde_json::from_str(&anchor_json) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        tracing::warn!(
+                            agent = %pseudonym,
+                            "anchor snapshot is malformed, skipping re-evaluation: {e}"
+                        );
+                        continue;
+                    }
+                };
 
-                let contract: VrpCapabilitySharingContract = serde_json::from_str(&contract_json)
-                    .map_err(|_| {
-                        ApiError::InternalServerError("failed to parse contract".to_string())
-                    })?;
+                let contract: VrpCapabilitySharingContract =
+                    match serde_json::from_str(&contract_json) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            tracing::warn!(
+                                agent = %pseudonym,
+                                "capability contract is malformed, skipping re-evaluation: {e}"
+                            );
+                            continue;
+                        }
+                    };
 
                 let handshake = VrpFederationHandshake {
                     anchor_snapshot: anchor,
@@ -262,7 +295,16 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
             .get()
             .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
 
-        let tx = conn.transaction().map_err(|e| {
+        // IMMEDIATE. Every write transaction in this codebase takes the
+        // RESERVED lock at BEGIN: a DEFERRED one reads a WAL snapshot first
+        // and then has to upgrade, and if another connection committed in
+        // between SQLite answers SQLITE_BUSY_SNAPSHOT immediately — the busy
+        // handler is never called, so `busy_timeout` cannot help. That is
+        // what made message sends fail intermittently with "database is
+        // locked"; see `ws_send_immediate_tx.rs`.
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| {
             ApiError::InternalServerError(format!("failed to begin transaction: {e}"))
         })?;
 
@@ -307,10 +349,21 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
                     }
                 };
 
-                let handshake: VrpFederationHandshake = serde_json::from_str(&handshake_json)
-                    .map_err(|_| {
-                        ApiError::InternalServerError("failed to parse handshake".to_string())
-                    })?;
+                // As above: a missing handshake is skipped with a warning, so a
+                // malformed one must be too rather than aborting every other
+                // agreement's re-evaluation.
+                let handshake: VrpFederationHandshake =
+                    match serde_json::from_str(&handshake_json) {
+                        Ok(h) => h,
+                        Err(e) => {
+                            tracing::warn!(
+                                agreement = id,
+                                peer = %base_url,
+                                "handshake data is malformed, skipping re-evaluation: {e}"
+                            );
+                            continue;
+                        }
+                    };
 
                 let report = validate_federation_handshake(
                     &local_anchor,
@@ -443,6 +496,48 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
     Ok(())
 }
 
+/// Builds the signed body for `POST /api/federation/handshake`.
+///
+/// Deliberately serializes the same struct the receiver deserializes rather
+/// than a `json!` literal that re-lists its fields. The literal that used to
+/// live here omitted `signature` entirely — a required, non-`Option` field
+/// with no `serde(default)` — so the peer's `Json<HandshakeRequest>`
+/// extractor rejected every re-handshake with a 422 before the handler ran.
+/// Nothing surfaced that: the POST is a detached `tokio::spawn`, the
+/// non-success arm only warns, and no caller sees a result. Peers kept
+/// serving whatever alignment they had recorded at first contact, and every
+/// policy change after that was invisible to them.
+///
+/// Building it from the struct also means a field added to
+/// `HandshakeRequest` or to `VrpFederationHandshake` is a compile error here
+/// instead of a field silently missing on the wire.
+pub fn handshake_payload(
+    public_url: &str,
+    handshake: &VrpFederationHandshake,
+    signing_key: &ed25519_dalek::SigningKey,
+) -> Result<serde_json::Value, serde_json::Error> {
+    use ed25519_dalek::Signer;
+
+    // The receiver verifies over `{base_url}\n{handshake_json}` — see
+    // `federation_service::handle_handshake`. The two have to agree
+    // byte-for-byte, so the signing input is built the same way.
+    let handshake_json = serde_json::to_string(handshake)?;
+    let signing_payload = format!("{public_url}\n{handshake_json}");
+    let signature = hex::encode(signing_key.sign(signing_payload.as_bytes()).to_bytes());
+
+    // `handshake` is `#[serde(flatten)]` on the request struct, so its fields
+    // sit alongside `base_url` and `signature` rather than nested.
+    let mut body = serde_json::to_value(handshake)?;
+    if let Some(obj) = body.as_object_mut() {
+        obj.insert(
+            "base_url".into(),
+            serde_json::Value::String(public_url.to_string()),
+        );
+        obj.insert("signature".into(), serde_json::Value::String(signature));
+    }
+    Ok(body)
+}
+
 /// Notifies federation peers of a policy change by initiating outbound re-handshakes.
 ///
 /// For each affected peer, constructs a new VRP handshake from the current server
@@ -525,11 +620,17 @@ pub async fn notify_federation_peers_of_policy_change(
         }
 
         let url = format!("{base_url}/api/federation/handshake");
-        let payload = serde_json::json!({
-            "base_url": public_url,
-            "anchor_snapshot": local_handshake.anchor_snapshot,
-            "capability_contract": local_handshake.capability_contract,
-        });
+        let payload = match handshake_payload(&public_url, &local_handshake, &state.signing_key) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!(
+                    peer = %base_url,
+                    error = %e,
+                    "failed to build signed re-handshake payload"
+                );
+                continue;
+            }
+        };
 
         let client_clone = client.clone();
         tokio::spawn(async move {

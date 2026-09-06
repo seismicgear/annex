@@ -10,6 +10,8 @@ import * as api from '@/lib/api';
 import { useUsernameStore } from '@/stores/usernames';
 import { useServersStore } from '@/stores/servers';
 import type { AgentInfo, ServerSummary, ParticipantType } from '@/types';
+import { Modal } from '@/components/Modal';
+import { useDialogTitleId } from '@/lib/use-dialog-title-id';
 
 const TYPE_LABELS: Record<ParticipantType, string> = {
   HUMAN: 'Human',
@@ -19,39 +21,48 @@ const TYPE_LABELS: Record<ParticipantType, string> = {
   SERVICE: 'Service',
 };
 
+/**
+ * Agent detail.
+ *
+ * This hand-rolled the overlay/card pair that `Modal` exists to replace —
+ * `.agent-detail-overlay` was byte-for-byte `.dialog-overlay` — so it was a
+ * modal with no `role="dialog"`, no focus moved into it, no focus trap and no
+ * Escape. It also slipped past `manifest.spec.ts`, whose modal detector looks
+ * for `.dialog-overlay`: a copy under a different class name is invisible to a
+ * check that keys on the class name.
+ */
 function AgentDetail({ agent, onClose }: { agent: AgentInfo; onClose: () => void }) {
   const getDisplayName = useUsernameStore((s) => s.getDisplayName);
   const displayName = getDisplayName(agent.pseudonym_id);
+  const titleId = useDialogTitleId();
 
   return (
-    <div className="agent-detail-overlay" onClick={onClose}>
-      <div className="agent-detail" onClick={(e) => e.stopPropagation()}>
-        <h3>Agent: {displayName ?? agent.pseudonym_id.slice(0, 16) + '...'}</h3>
-        <dl>
-          <dt>Alignment</dt>
-          <dd className={`alignment-${agent.alignment_status.toLowerCase()}`}>
-            {agent.alignment_status}
-          </dd>
-          <dt>Transfer Scope</dt>
-          <dd>{agent.transfer_scope}</dd>
-          <dt>Reputation</dt>
-          <dd>{agent.reputation_score.toFixed(2)}</dd>
-          <dt>Capabilities</dt>
-          <dd>
-            {agent.capabilities.length > 0 ? (
-              <ul>
-                {agent.capabilities.map((c, i) => (
-                  <li key={i}>{c}</li>
-                ))}
-              </ul>
-            ) : (
-              'None declared'
-            )}
-          </dd>
-        </dl>
-        <button onClick={onClose}>Close</button>
-      </div>
-    </div>
+    <Modal onClose={onClose} className="agent-detail" titleId={titleId}>
+      <h2 id={titleId}>Agent: {displayName ?? agent.pseudonym_id.slice(0, 16) + '...'}</h2>
+      <dl>
+        <dt>Alignment</dt>
+        <dd className={`alignment-${agent.alignment_status.toLowerCase()}`}>
+          {agent.alignment_status}
+        </dd>
+        <dt>Transfer Scope</dt>
+        <dd>{agent.transfer_scope}</dd>
+        <dt>Reputation</dt>
+        <dd>{agent.reputation_score.toFixed(2)}</dd>
+        <dt>Capabilities</dt>
+        <dd>
+          {agent.capabilities.length > 0 ? (
+            <ul>
+              {agent.capabilities.map((c, i) => (
+                <li key={i}>{c}</li>
+              ))}
+            </ul>
+          ) : (
+            'None declared'
+          )}
+        </dd>
+      </dl>
+      <button onClick={onClose}>Close</button>
+    </Modal>
   );
 }
 
@@ -59,13 +70,39 @@ export function MemberList() {
   const [summary, setSummary] = useState<ServerSummary | null>(null);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [selectedAgent, setSelectedAgent] = useState<AgentInfo | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const activeServerId = useServersStore((s) => s.activeServerId);
   const getDisplayName = useUsernameStore((s) => s.getDisplayName);
 
+  // Both requests are made once per server. A failure used to go to
+  // `console.error` and nowhere else, leaving `summary` null — and the whole
+  // panel is behind `{summary && ...}`, so the sidebar rendered as an empty
+  // column. A server with no members and a server that could not be reached
+  // looked identical, and there was nothing to click to try again.
   useEffect(() => {
-    api.getServerSummary().then(setSummary).catch(console.error);
-    api.getPublicAgents().then((r) => setAgents(r.agents)).catch(console.error);
-  }, [activeServerId]);
+    let cancelled = false;
+    // The clear-on-start happens in the same callback as the result rather
+    // than synchronously in the effect body, so a retry does not schedule an
+    // extra render before the request has even been made.
+    Promise.all([api.getServerSummary(), api.getPublicAgents()])
+      .then(([s, a]) => {
+        if (cancelled) return;
+        setSummary(s);
+        setAgents(a.agents);
+        setError(null);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        console.warn('[member-list] load failed:', err);
+        // The reason was already in hand and went only to a console nobody
+        // has open. There is a Retry beside this message, and whether to
+        // press it depends on what failed.
+        const why = err instanceof Error && err.message ? `: ${err.message}` : '.';
+        setError(`Could not load the member list${why}`);
+      });
+    return () => { cancelled = true; };
+  }, [activeServerId, reloadKey]);
 
   const handleAgentClick = useCallback((agent: AgentInfo) => {
     setSelectedAgent(agent);
@@ -73,6 +110,12 @@ export function MemberList() {
 
   return (
     <aside className="member-list">
+      {error && (
+        <div className="member-list-error" role="alert">
+          <span>{error}</span>
+          <button type="button" onClick={() => setReloadKey((k) => k + 1)}>Retry</button>
+        </div>
+      )}
       {summary && (
         <div className="server-summary">
           <h3>{summary.label}</h3>
@@ -93,7 +136,7 @@ export function MemberList() {
 
       {agents.length > 0 && (
         <div className="agent-list">
-          <h4>Active Agents</h4>
+          <h3>Active Agents</h3>
           {agents.map((agent) => {
             const name = getDisplayName(agent.pseudonym_id);
             return (

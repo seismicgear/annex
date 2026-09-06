@@ -3,7 +3,7 @@
 //! cleanup since SQLite cannot retrofit `ON DELETE CASCADE` via
 //! `ALTER TABLE`).
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
 use crate::error::ChannelError;
 use crate::types::{map_row_to_channel, Channel, CreateChannelParams, UpdateChannelParams};
@@ -181,12 +181,31 @@ pub fn update_channel(
 pub fn delete_channel(conn: &Connection, channel_id: &str) -> Result<(), ChannelError> {
     // Wrap in a transaction so partial failures don't lose messages
     // while leaving the channel intact.
-    let tx = conn.unchecked_transaction()?;
+    // IMMEDIATE — `unchecked_transaction()` is DEFERRED, and this reads the
+    // channel's rows before deleting them. A snapshot conflict there fails
+    // instantly instead of waiting, which is the shape that made sends
+    // intermittently report "database is locked".
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
 
     // Delete child rows first to satisfy FK constraints.
+    //
+    // Every table with a foreign key to `channels(channel_id)` has to appear
+    // here, because none of them declare `ON DELETE`. `channel_key_wraps`
+    // arrived later, with E2E key distribution, and was not added — so
+    // deleting an *encrypted* channel raised a foreign-key violation, rolled
+    // the whole transaction back, and left the channel in place. A moderator
+    // could not delete an E2E channel at all, and the cause was invisible:
+    // it surfaces as a generic database error.
+    //
+    // `message_edits` is not listed because migration 043 gave it
+    // `ON DELETE CASCADE`, so deleting the messages takes it with them.
     tx.execute("DELETE FROM messages WHERE channel_id = ?1", [channel_id])?;
     tx.execute(
         "DELETE FROM channel_members WHERE channel_id = ?1",
+        [channel_id],
+    )?;
+    tx.execute(
+        "DELETE FROM channel_key_wraps WHERE channel_id = ?1",
         [channel_id],
     )?;
 

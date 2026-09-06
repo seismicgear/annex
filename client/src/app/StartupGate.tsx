@@ -14,10 +14,12 @@
 import type { Dispatch, SetStateAction } from 'react';
 import { useEffect, useState } from 'react';
 import { IdentitySetup } from '@/components/IdentitySetup';
+import { InviteConfirmation } from '@/app/InviteConfirmation';
 import { StartupModeSelector, type DegradedStartupInfo } from '@/components/StartupModeSelector';
 import { setSessionToken } from '@/lib/api';
 import { clearAllDatabases } from '@/lib/db';
-import { resetServerData } from '@/lib/tauri';
+import { clearStartupMode, isTauri, resetServerData } from '@/lib/tauri';
+import { clearWebStartupMode } from '@/lib/startup-prefs';
 import { useIdentityStore } from '@/stores/identity';
 import { useServersStore } from '@/stores/servers';
 import type { IdentityPhase, ProvingStatus } from '@/stores/identity';
@@ -53,7 +55,6 @@ export interface StartupGateProps {
   handleIgnoreProtocolInvite: () => void;
   serverReady: boolean;
   passwordRequired: boolean;
-  serverPassword: string;
   setServerPassword: Dispatch<SetStateAction<string>>;
   proofInFlight: boolean;
   provingStatus: ProvingStatus;
@@ -66,7 +67,64 @@ export interface StartupGateProps {
   retryBootstrap: () => void;
 }
 
+/**
+ * Password prompt for a server whose `access_mode` is `password`.
+ *
+ * The typed value is LOCAL state, and only reaches the parent on submit.
+ * That separation is the whole point of this component: the registration
+ * effect in `useServerSelection` keys off the parent's `serverPassword`, so
+ * while the input was bound directly to it, every keystroke re-ran the effect
+ * and fired a registration attempt with the partial password typed so far.
+ * Typing "hunter2" meant seven attempts against a ten-per-minute registration
+ * budget, none of them the password the user meant to send — and the "Join
+ * Server" button, whose `onClick` body was only a comment, did nothing at all.
+ */
+function PasswordPrompt({
+  onSubmit,
+  onBack,
+}: {
+  onSubmit: (password: string) => void;
+  onBack: () => void;
+}) {
+  const [draft, setDraft] = useState('');
+  const trimmed = draft.trim();
+
+  return (
+    <div className="password-prompt">
+      <p>This server requires a password to join.</p>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (trimmed) onSubmit(trimmed);
+        }}
+      >
+        <label className="visually-hidden" htmlFor="server-password">
+          Server password
+        </label>
+        <input
+          id="server-password"
+          type="password"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder="Enter server password"
+          autoComplete="current-password"
+          autoFocus
+        />
+        {/* `type` is explicit on both: without it a button inside a form
+            defaults to submit, so "Back" was submitting the form. */}
+        <button type="submit" className="primary-btn" disabled={!trimmed}>
+          Join Server
+        </button>
+        <button type="button" className="secondary-btn" onClick={onBack}>
+          Back
+        </button>
+      </form>
+    </div>
+  );
+}
+
 export function StartupGate(props: StartupGateProps) {
+  const [clearStateError, setClearStateError] = useState<string | null>(null);
   const {
     identityChecked,
     startupInitError,
@@ -82,7 +140,6 @@ export function StartupGate(props: StartupGateProps) {
     handleIgnoreProtocolInvite,
     serverReady,
     passwordRequired,
-    serverPassword,
     setServerPassword,
     proofInFlight,
     provingStatus,
@@ -104,15 +161,17 @@ export function StartupGate(props: StartupGateProps) {
     phase === 'registering' ||
     phase === 'proving' ||
     phase === 'verifying';
-  const [elapsed, setElapsed] = useState(0);
+  // Derived rather than reset. Writing `setElapsed(0)` synchronously in the
+  // effect is the cascading-render pattern `react-hooks/set-state-in-effect`
+  // exists to catch; rendering 0 whenever the work is not running says the
+  // same thing without a state write.
+  const [tick, setTick] = useState(0);
+  const elapsed = isWorking ? tick : 0;
   useEffect(() => {
-    if (!isWorking) {
-      setElapsed(0);
-      return;
-    }
+    if (!isWorking) return;
     const started = Date.now();
     const id = setInterval(() => {
-      setElapsed(Math.floor((Date.now() - started) / 1000));
+      setTick(Math.floor((Date.now() - started) / 1000));
     }, 1000);
     return () => clearInterval(id);
   }, [isWorking]);
@@ -123,7 +182,7 @@ export function StartupGate(props: StartupGateProps) {
       <div className="app">
         <main className="app-main setup">
           <div className="startup-mode-selector">
-            <h2>Annex</h2>
+            <h1>Annex</h1>
             <div className="startup-loading">Loading...</div>
           </div>
         </main>
@@ -136,8 +195,8 @@ export function StartupGate(props: StartupGateProps) {
       <div className="app">
         <main className="app-main setup">
           <div className="startup-mode-selector">
-            <h2>Annex</h2>
-            <div className="error-message">Startup failed: {startupInitError}</div>
+            <h1>Annex</h1>
+            <div className="error-message" role="alert">Startup failed: {startupInitError}</div>
             {(startupErrorDetails || errorDetails) && (
               <details className="error-details">
                 <summary>Details</summary>
@@ -147,21 +206,62 @@ export function StartupGate(props: StartupGateProps) {
             <button className="primary-btn" onClick={retryBootstrap}>
               Retry startup
             </button>
+            {clearStateError && (
+              <div className="clear-state-error" role="alert">
+                {clearStateError}
+              </div>
+            )}
             <button
               className="secondary-btn"
               onClick={() => {
                 void (async () => {
+                  // No `finally`: the reset-and-retry must run only when the
+                  // data is actually gone. It used to run unconditionally,
+                  // which is what made this button appear to work — the
+                  // in-memory stores were cleared, bootstrap re-ran, and it
+                  // reloaded the identities from the IndexedDB that had never
+                  // been deleted, landing the user back in the same failure
+                  // with nothing said. This is the escape hatch; failing it
+                  // silently leaves no way forward.
+                  let cleared = false;
                   try {
-                    await clearAllDatabases();
+                    const { unremoved } = await clearAllDatabases();
                     await resetServerData();
+                    // Also drop the saved startup mode. The Retry button
+                    // above already does this "so the user lands on the
+                    // chooser instead of auto-resuming the mode that just
+                    // failed" — and this is the stronger escape hatch, so it
+                    // has strictly more reason to. Without it, clearing
+                    // everything and re-bootstrapping walked straight back
+                    // into the mode that had failed, which is often the cause
+                    // (a saved "use this server" pointing at a dead host).
+                    if (isTauri()) {
+                      await clearStartupMode().catch(() => {});
+                    }
+                    clearWebStartupMode();
+                    if (unremoved.length > 0) {
+                      // Almost always another Annex tab holding the database
+                      // open, which the user can act on once told.
+                      setClearStateError(
+                        'Some local data could not be cleared. Close any other Annex tabs or windows, then try again.',
+                      );
+                    } else {
+                      cleared = true;
+                    }
                   } catch (e) {
                     console.warn('clear local state failed:', e);
-                  } finally {
-                    useServersStore.setState({ servers: [], activeServerId: null, serverImageUrl: null, pendingRegistrationServerId: null, switchError: null });
-                    useIdentityStore.setState({ identity: null, phase: 'uninitialized', error: null, errorDetails: null });
-                    setSessionToken(null);
-                    retryBootstrap();
+                    setClearStateError(
+                      'Could not clear local data. Close any other Annex tabs or windows, then try again.',
+                    );
                   }
+
+                  if (!cleared) return;
+
+                  setClearStateError(null);
+                  useServersStore.setState({ servers: [], activeServerId: null, serverImageUrl: null, pendingRegistrationServerId: null, switchError: null });
+                  useIdentityStore.setState({ identity: null, phase: 'uninitialized', error: null, errorDetails: null });
+                  setSessionToken(null);
+                  retryBootstrap();
                 })();
               }}
             >
@@ -191,19 +291,11 @@ export function StartupGate(props: StartupGateProps) {
             </span>
           )}
         </header>
-        {pendingProtocolInviteConfirmation && (
-          <div className="invite-confirmation-banner" role="dialog" aria-label="Invite confirmation">
-            <span>
-              Invite received for {pendingProtocolInviteConfirmation.server}
-            </span>
-            <button className="primary-btn" onClick={handleAcceptProtocolInvite}>
-              Join invite server
-            </button>
-            <button className="secondary-btn" onClick={handleIgnoreProtocolInvite}>
-              Ignore
-            </button>
-          </div>
-        )}
+        <InviteConfirmation
+          invite={pendingProtocolInviteConfirmation}
+          onAccept={handleAcceptProtocolInvite}
+          onIgnore={handleIgnoreProtocolInvite}
+        />
         <main className="app-main setup">
           <IdentitySetup />
         </main>
@@ -217,6 +309,11 @@ export function StartupGate(props: StartupGateProps) {
   if (!serverReady) {
     return (
       <div className="app">
+        <InviteConfirmation
+          invite={pendingProtocolInviteConfirmation}
+          onAccept={handleAcceptProtocolInvite}
+          onIgnore={handleIgnoreProtocolInvite}
+        />
         <main className="app-main setup">
           <StartupModeSelector
             onReady={(degraded) => {
@@ -235,38 +332,22 @@ export function StartupGate(props: StartupGateProps) {
   // this gate just shows progress while it runs.
   return (
     <div className="app">
+        <InviteConfirmation
+          invite={pendingProtocolInviteConfirmation}
+          onAccept={handleAcceptProtocolInvite}
+          onIgnore={handleIgnoreProtocolInvite}
+        />
       <main className="app-main setup">
         <div className="identity-setup">
-          <h2>Annex</h2>
+          <h1>Annex</h1>
           {passwordRequired && phase === 'keys_ready' ? (
-            <div className="password-prompt">
-              <p>This server requires a password to join.</p>
-              <form onSubmit={(e) => { e.preventDefault(); }}>
-                <input
-                  type="password"
-                  value={serverPassword}
-                  onChange={(e) => setServerPassword(e.target.value)}
-                  placeholder="Enter server password"
-                  autoFocus
-                />
-                <button
-                  className="primary-btn"
-                  disabled={!serverPassword.trim()}
-                  onClick={() => {
-                    // Trigger re-run of the auto-register effect
-                    // by updating serverPassword (already in deps)
-                  }}
-                >
-                  Join Server
-                </button>
-                <button
-                  className="secondary-btn"
-                  onClick={() => { setPasswordRequired(false); void resetToServerSelection(); }}
-                >
-                  Back
-                </button>
-              </form>
-            </div>
+            <PasswordPrompt
+              onSubmit={setServerPassword}
+              onBack={() => {
+                setPasswordRequired(false);
+                void resetToServerSelection();
+              }}
+            />
           ) : (
             <div className={`phase-status phase-${phase}`}>
               <span className="startup-spinner" aria-hidden="true" />
@@ -285,18 +366,32 @@ export function StartupGate(props: StartupGateProps) {
           )}
           {phase === 'error' && error && (
             <>
-              <div className="error-message">{error}</div>
-              {error.includes('Proof generation timed out') && (
-                <div className="error-message">Hint: the first proof can take longer on slower hardware.</div>
-              )}
+              {/* One alert around the whole failure, not one per line. These
+                  render together — the error and an optional "proof still
+                  running" — and sibling alerts would be separate
+                  interruptions describing one event.
+
+                  There used to be a third line here: a hint, shown when the
+                  error text contained "Proof generation timed out", saying
+                  the first proof can take longer on slower hardware. The
+                  only producer of that string (`stores/identity.ts`, on
+                  `zk.ZkProofTimeoutError`) already ends its message with
+                  "(the first proof can take longer on slow hardware)", so
+                  the condition could never be true without the advice
+                  already being on screen. It printed the same sentence
+                  twice, reworded, at the moment the user is least patient
+                  with being told things. */}
+              <div role="alert">
+                <div className="error-message">{error}</div>
+                {proofInFlight && (
+                  <div className="error-message">proof still running.</div>
+                )}
+              </div>
               {(startupErrorDetails || errorDetails) && (
                 <details className="error-details">
                   <summary>Details</summary>
                   <pre>{startupErrorDetails ?? errorDetails}</pre>
                 </details>
-              )}
-              {proofInFlight && (
-                <div className="error-message">proof still running.</div>
               )}
               <button
                 className="primary-btn"

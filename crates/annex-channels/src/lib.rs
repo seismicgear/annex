@@ -617,7 +617,8 @@ mod tests {
         assert!(updated.edited_at.is_some());
 
         // Check edit history
-        let history = get_edit_history(&conn, &msg.message_id).expect("history should succeed");
+        let history = get_edit_history(&conn, 1, "chan-edit", &msg.message_id)
+            .expect("history should succeed");
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].old_content, "Original content");
     }
@@ -727,7 +728,8 @@ mod tests {
         edit_message(&conn, &msg.message_id, "user-a", "Edit 2").expect("edit 2 failed");
         edit_message(&conn, &msg.message_id, "user-a", "Edit 3").expect("edit 3 failed");
 
-        let history = get_edit_history(&conn, &msg.message_id).expect("history failed");
+        let history =
+            get_edit_history(&conn, 1, "chan-edit", &msg.message_id).expect("history failed");
         assert_eq!(history.len(), 3);
         assert_eq!(history[0].old_content, "Original content");
         assert_eq!(history[1].old_content, "Edit 1");
@@ -735,6 +737,45 @@ mod tests {
 
         let current = get_message(&conn, &msg.message_id).expect("get msg failed");
         assert_eq!(current.content, "Edit 3");
+    }
+
+    /// `message_edits` has no channel column, so the scoping lives entirely
+    /// in this query's join. The route that reads it takes the channel and
+    /// the message as two independent path segments, and the membership
+    /// check upstream can only speak about the first — asking for the
+    /// history of a message under the wrong channel has to come back empty
+    /// here, or the check upstream is guarding nothing.
+    #[test]
+    fn edit_history_does_not_cross_channels() {
+        let conn = setup_db();
+        let msg = setup_editable_message(&conn);
+        edit_message(&conn, &msg.message_id, "user-a", "Edited content").expect("edit failed");
+
+        let other = CreateChannelParams {
+            server_id: 1,
+            channel_id: "chan-other".to_string(),
+            name: "Other".to_string(),
+            channel_type: ChannelType::Text,
+            topic: None,
+            vrp_topic_binding: None,
+            required_capabilities_json: None,
+            agent_min_alignment: None,
+            retention_days: None,
+            federation_scope: FederationScope::Local,
+        };
+        create_channel(&conn, &other).expect("create other channel");
+
+        let leaked = get_edit_history(&conn, 1, "chan-other", &msg.message_id).expect("history");
+        assert!(
+            leaked.is_empty(),
+            "the edit history of a message in chan-edit was returned under \
+             chan-other: {leaked:?}",
+        );
+
+        // A different server on the same database must not see it either.
+        let cross_server =
+            get_edit_history(&conn, 2, "chan-edit", &msg.message_id).expect("history");
+        assert!(cross_server.is_empty(), "history crossed servers");
     }
 
     /// Regression test for [F31]: `edit_message` must use
@@ -889,12 +930,180 @@ mod tests {
         // happened to slip through SQLite's snapshot check —
         // produce "Original" in the history).
         let final_conn = Connection::open(&db_path).expect("open final conn");
-        let history = get_edit_history(&final_conn, "msg-imm").expect("history");
+        let history = get_edit_history(&final_conn, 1, "chan-imm", "msg-imm").expect("history");
         assert_eq!(history.len(), 1, "expected exactly 1 edit history row");
         assert_eq!(
             history[0].old_content, "from-conn1",
             "audit row must be the post-conn1 snapshot, not 'Original'; \
              a value of 'Original' here indicates a DEFERRED-tx regression"
         );
+    }
+}
+
+#[cfg(test)]
+mod deletion_tests {
+    use super::*;
+    use annex_db::run_migrations;
+    use annex_types::ServerPolicy;
+    use rusqlite::Connection;
+
+    /// Migrations plus `PRAGMA foreign_keys = ON`, which is what the pool
+    /// sets in production. Without the pragma neither of these defects is
+    /// reachable, which is why they survived: the plain `Connection::open`
+    /// used by other tests here does not enforce foreign keys.
+    fn setup() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        run_migrations(&conn).unwrap();
+        let policy = serde_json::to_string(&ServerPolicy::default()).unwrap();
+        conn.execute(
+            "INSERT INTO servers (slug, label, policy_json) VALUES ('t', 'T', ?1)",
+            [policy],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channels (server_id, channel_id, name, channel_type, federation_scope)
+             VALUES (1, 'chan', 'Chan', 'Text', 'LOCAL_ONLY')",
+            [],
+        )
+        .unwrap();
+        // `channel_members` has a composite FK to platform_identities, so a
+        // membership row needs a real identity behind it.
+        conn.execute(
+            "INSERT INTO platform_identities
+               (server_id, pseudonym_id, participant_type, active)
+             VALUES (1, 'alice', 'HUMAN', 1)",
+            [],
+        )
+        .unwrap();
+        conn
+    }
+
+    fn edited_message(conn: &Connection, id: &str, expires_at: Option<&str>) {
+        conn.execute(
+            "INSERT INTO messages (server_id, channel_id, message_id, sender_pseudonym, content, expires_at)
+             VALUES (1, 'chan', ?1, 'alice', 'final', ?2)",
+            rusqlite::params![id, expires_at],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message_edits (message_id, old_content) VALUES (?1, 'the original')",
+            [id],
+        )
+        .unwrap();
+    }
+
+    /// The retention sweep deletes a BATCH in one statement, so a single
+    /// expired message with edit history used to abort the whole thing with
+    /// a foreign-key violation — and the same row was picked up again next
+    /// sweep, so message retention stopped permanently the first time an
+    /// edited message aged out. Nothing surfaced it: the sweep is a
+    /// background task that logs at warn.
+    #[test]
+    fn retention_can_delete_a_message_that_was_edited() {
+        let conn = setup();
+        edited_message(&conn, "expired", Some("2000-01-01 00:00:00"));
+
+        let deleted = delete_expired_messages(&conn).expect("the sweep must not abort");
+        assert_eq!(deleted, 1, "the expired message was not deleted");
+
+        let edits: i64 = conn
+            .query_row("SELECT COUNT(*) FROM message_edits", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(edits, 0, "orphaned edit history survived the message");
+    }
+
+    /// And one expired-but-edited message must not block the others.
+    #[test]
+    fn one_edited_message_does_not_block_the_whole_batch() {
+        let conn = setup();
+        edited_message(&conn, "expired-edited", Some("2000-01-01 00:00:00"));
+        conn.execute(
+            "INSERT INTO messages (server_id, channel_id, message_id, sender_pseudonym, content, expires_at)
+             VALUES (1, 'chan', 'expired-plain', 'alice', 'x', '2000-01-01 00:00:00')",
+            [],
+        )
+        .unwrap();
+
+        let deleted = delete_expired_messages(&conn).expect("sweep");
+        assert_eq!(deleted, 2, "the batch did not delete both expired messages");
+    }
+
+    /// Deleting a message has to take its drafts with it.
+    ///
+    /// Soft delete blanked `content` and left `message_edits` untouched, and
+    /// `get_edit_history` did not filter on `deleted_at` — so a deleted
+    /// message still served every earlier version. Someone who mistyped
+    /// something sensitive, corrected it, then deleted the message had
+    /// published the mistake and hidden only the correction.
+    #[test]
+    fn deleting_a_message_removes_its_earlier_versions() {
+        let conn = setup();
+        edited_message(&conn, "msg-1", None);
+
+        delete_message(&conn, "msg-1", "alice").expect("delete");
+
+        let history = get_edit_history(&conn, 1, "chan", "msg-1").expect("history");
+        assert!(
+            history.is_empty(),
+            "the deleted message still serves its earlier versions: {history:?}",
+        );
+    }
+
+    /// An encrypted channel must be deletable.
+    ///
+    /// `delete_channel` removes messages and members before the channel row,
+    /// to satisfy the foreign keys. `channel_key_wraps` — added later, for
+    /// E2E key distribution — references `channels(channel_id)` with no
+    /// `ON DELETE` and was never added to that list, so deleting an
+    /// encrypted channel raised a foreign-key violation and rolled the whole
+    /// transaction back. A moderator could not delete an E2E channel at all,
+    /// and the reason was invisible: the error surfaces as a generic
+    /// database failure.
+    ///
+    /// Same shape as the retention sweep that `message_edits` blocked. Both
+    /// were only reachable with `PRAGMA foreign_keys = ON`, which the pool
+    /// sets and the other tests in this file do not.
+    #[test]
+    fn an_e2e_channel_can_be_deleted() {
+        let conn = setup();
+        conn.execute(
+            "INSERT INTO messages (server_id, channel_id, message_id, sender_pseudonym, content)
+             VALUES (1, 'chan', 'm1', 'alice', 'hi')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channel_members (channel_id, pseudonym_id, server_id)
+             VALUES ('chan', 'alice', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channel_key_wraps
+               (server_id, channel_id, recipient_pseudonym_id, sender_pseudonym_id, wrapped_key_b64)
+             VALUES (1, 'chan', 'alice', 'bob', 'd3JhcHBlZA==')",
+            [],
+        )
+        .unwrap();
+
+        delete_channel(&conn, "chan").expect("an encrypted channel must be deletable");
+
+        let wraps: i64 = conn
+            .query_row("SELECT COUNT(*) FROM channel_key_wraps", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(wraps, 0, "key wraps outlived the channel they belong to");
+    }
+
+    /// An ordinary edit still keeps its history — the fix must not delete
+    /// the feature along with the leak.
+    #[test]
+    fn editing_a_message_still_keeps_its_history() {
+        let conn = setup();
+        edited_message(&conn, "msg-1", None);
+
+        let history = get_edit_history(&conn, 1, "chan", "msg-1").expect("history");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].old_content, "the original");
     }
 }

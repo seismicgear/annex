@@ -8,11 +8,144 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { useIdentityStore } from '@/stores/identity';
 import { useChannelsStore } from '@/stores/channels';
 import { useServersStore } from '@/stores/servers';
+import { FederationAgreements } from '@/components/FederationAgreements';
+import { FederationOutbox } from '@/components/FederationOutbox';
 import { InfoTip } from '@/components/InfoTip';
+import { Modal } from '@/components/Modal';
+import { useDialogTitleId } from '@/lib/use-dialog-title-id';
 import * as api from '@/lib/api';
-import { createInviteLink } from '@/lib/invite';
+import { canCreateInviteLink, createInviteLink } from '@/lib/invite';
 import type { ServerPolicy, AccessMode } from '@/types';
 import type { MemberInfo } from '@/lib/api';
+
+// ── Storage health gate ──
+
+/**
+ * The storage gate, and the only way to clear it that is not a process
+ * restart.
+ *
+ * `GET /api/admin/storage` and `POST /api/admin/storage/clear` shipped with
+ * no caller in the client at all. So a server that had tripped the gate
+ * answered every write with a 507 — the `storage-gate-507` surface is a
+ * picture of exactly that — and the admin panel, the one place an operator
+ * looks when the server stops accepting writes, said nothing about it and
+ * offered no way out. The server-side doc comment notes the clear endpoint
+ * exists because "before this endpoint existed the only recovery path was a
+ * process restart"; from the UI it still was.
+ *
+ * The gate has no automatic recovery by design, so clearing it is an
+ * assertion by a human that the underlying condition is fixed. If it is not,
+ * the next failing write re-trips it with a fresh reason — which is why this
+ * says what it is asserting rather than reading as a dismiss button.
+ */
+function StorageHealthSection({ pseudonymId }: { pseudonymId: string }) {
+  const [health, setHealth] = useState<api.StorageHealth | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [clearing, setClearing] = useState(false);
+  const [clearError, setClearError] = useState<string | null>(null);
+  const [cleared, setCleared] = useState(false);
+
+  const load = useCallback(async () => {
+    // A failed read is not a healthy server. Rendering it as one would put a
+    // green light on a panel whose whole job is to say when the light is red.
+    try {
+      const next = await api.getStorageHealth(pseudonymId);
+      setHealth(next);
+      setLoadError(null);
+    } catch (err) {
+      setHealth(null);
+      setLoadError(err instanceof Error ? err.message : String(err));
+    }
+  }, [pseudonymId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getStorageHealth(pseudonymId)
+      .then((next) => {
+        if (!cancelled) {
+          setHealth(next);
+          setLoadError(null);
+        }
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setHealth(null);
+          setLoadError(err instanceof Error ? err.message : String(err));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pseudonymId]);
+
+  const handleClear = async () => {
+    setClearing(true);
+    setClearError(null);
+    try {
+      await api.clearStorageGate(pseudonymId);
+      setCleared(true);
+      await load();
+    } catch (err) {
+      setClearError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setClearing(false);
+    }
+  };
+
+  const healthy = health?.state === 'healthy';
+
+  return (
+    <div className="policy-section">
+      <h3>
+        Storage
+        <InfoTip text="When the server runs low on disk it stops accepting writes and answers them with a 507. It does not recover on its own — an operator clears it here once the disk has been freed." />
+      </h3>
+
+      {loadError && (
+        <p className="field-hint warning-hint" role="alert">
+          Could not read storage health: {loadError}
+        </p>
+      )}
+
+      {health && (
+        <>
+          <p className={`storage-gate-state storage-gate-${healthy ? 'healthy' : 'tripped'}`}>
+            <span className="storage-gate-badge">{health.state}</span>
+            {health.writes_blocked
+              ? ' — writes are being rejected'
+              : healthy
+                ? ' — writes are being accepted'
+                : ' — writes are still being accepted'}
+          </p>
+          {health.reason && <p className="field-hint">{health.reason}</p>}
+          {!healthy && (
+            <>
+              <p className="field-hint">
+                Free space on the server&apos;s volume, then clear the gate. Clearing
+                asserts the condition is fixed; if it is not, the next failing write
+                trips it again.
+              </p>
+              <button type="button" onClick={handleClear} disabled={clearing}>
+                {clearing ? 'Clearing...' : 'Clear storage gate'}
+              </button>
+            </>
+          )}
+          {cleared && healthy && (
+            <p className="success-message" role="status">
+              Storage gate cleared. Writes are being accepted again.
+            </p>
+          )}
+          {clearError && (
+            <p className="error-message" role="alert">
+              Could not clear the storage gate: {clearError}
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
 
 // ── Server Settings ──
 
@@ -37,25 +170,41 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
   const imageInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    // Keyed on `pseudonymId`, which changes when the user switches servers.
+    // Without this guard the in-flight request for the PREVIOUS server can
+    // resolve after the switch and write its label, slug and public URL into
+    // a form that now belongs to a different server — and the Save button
+    // beside them would then write those values to it. The invite-link call
+    // below is worse: it reads `getApiBaseUrl()` at await time, so it would
+    // pair the new server's URL with the old server's pseudonym.
+    let cancelled = false;
     api
       .getServer(pseudonymId)
       .then(async (s) => {
+        if (cancelled) return;
         setLabel(s.label);
         setSlug(s.slug);
         setPublicUrl(s.public_url);
         setPublicUrlInput(s.public_url);
-        // Auto-generate an invite link if a public URL is already configured
-        if (s.public_url) {
+        // Auto-generate an invite link if the public URL can produce one.
+        if (canCreateInviteLink(s.public_url)) {
           try {
             const result = await createInviteLink(api.getApiBaseUrl(), pseudonymId);
-            setInviteUrl(result.url);
+            if (!cancelled) setInviteUrl(result.url);
           } catch {
             // Non-critical — user can create one manually
           }
         }
       })
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
-      .finally(() => setLoading(false));
+      .catch((err: unknown) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [pseudonymId]);
 
   const handleRename = async () => {
@@ -87,8 +236,8 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
       setPublicUrl(resp.public_url);
       setPublicUrlInput(resp.public_url);
       setSuccess('Public URL saved.');
-      // Auto-generate an invite link when a public URL is first set
-      if (resp.public_url && !inviteUrl) {
+      // Auto-generate an invite link when a usable public URL is first set
+      if (canCreateInviteLink(resp.public_url) && !inviteUrl) {
         try {
           const result = await createInviteLink(api.getApiBaseUrl(), pseudonymId);
           setInviteUrl(result.url);
@@ -138,7 +287,15 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
     }
   };
 
+  // An invite link embeds a join secret, so the invite format requires the
+  // server's public URL to be HTTPS — an http:// one is rejected by
+  // `InvitePayload::validate`. Checking only for a non-empty URL meant an
+  // operator on http:// was shown a "Create Invite Link" button that could
+  // never succeed; the UI audit caught the click returning HTTP 400 on
+  // `admin-server-settings` at every viewport. Distinguish the two cases so
+  // the reason is on screen before the click rather than after it.
   const hasPublicUrl = !!publicUrl;
+  const publicUrlIsSecure = canCreateInviteLink(publicUrl);
 
   const handleCreateInvite = async () => {
     setCreatingInvite(true);
@@ -170,14 +327,13 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
     }
   };
 
-  if (loading) return <p>Loading server settings...</p>;
+  if (loading) return <p className="admin-loading" role="status">Loading server settings...</p>;
 
   return (
     <div className="policy-editor">
-      <h3>Server Settings</h3>
 
       <div className="policy-section">
-        <h4>Server Image</h4>
+        <h3>Server Image</h3>
         <p className="field-hint" style={{ marginTop: 0 }}>Upload a logo or icon for your server. Metadata (EXIF, GPS) is stripped automatically.</p>
         <div className="server-image-section">
           {serverImageUrl ? (
@@ -185,9 +341,13 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
           ) : (
             <div className="server-image-placeholder">No image set</div>
           )}
+          {/* Hidden and driven by the button below, so axe does not flag it
+              today — but a name costs nothing and survives the display rule
+              changing. */}
           <input
             ref={imageInputRef}
             type="file"
+            aria-label="Upload a server image"
             accept="image/jpeg,image/png,image/gif,image/webp"
             onChange={handleImageUpload}
             style={{ display: 'none' }}
@@ -202,14 +362,44 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
         </div>
       </div>
 
+      {/*
+        The save control sits with the field it saves.
+        
+        It used to be a full-width primary button at the very bottom of the
+        form, below the Public URL and Share Server sections — the most
+        prominent control on the page, furthest from the one field it
+        affects, and reading like the form's overall submit when Public URL
+        already has its own inline Save. Anyone who edited the URL and
+        pressed the big button at the bottom would reasonably expect both to
+        be saved. Same row treatment as Public URL now, so the scope is
+        obvious from where it is.
+      */}
       <label title="The display name of your server visible to members and federation peers.">
         Server Name
-        <input
-          type="text"
-          value={label}
-          onChange={(e) => setLabel(e.target.value)}
-          maxLength={128}
-        />
+        <div className="share-link-row">
+          <input
+            type="text"
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            maxLength={128}
+          />
+          {/* Named for what it saves.
+              
+              Moving this control next to its field left the page with two
+              buttons whose only accessible name was "Save" — one for the
+              server name, one for the public URL, indistinguishable to anyone
+              navigating by control. `admin.spec.ts` found it before a user
+              did, by matching both. The visible label stays short because the
+              field it sits beside says what it is. */}
+          <button
+            className="secondary-btn"
+            aria-label="Save server name"
+            onClick={handleRename}
+            disabled={saving || !label.trim()}
+          >
+            {saving ? 'Saving...' : 'Save'}
+          </button>
+        </div>
         <span className="field-hint">The public display name of this server.</span>
       </label>
 
@@ -220,7 +410,7 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
       </label>
 
       <div className="policy-section">
-        <h4>Public URL</h4>
+        <h3>Public URL</h3>
         <p className="field-hint">
           The publicly-reachable address of this server (e.g. your domain or Annex router endpoint).
           Invite links and federation use this so anyone in the world can connect.
@@ -228,12 +418,14 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
         <div className="share-link-row">
           <input
             type="text"
+            aria-label="Public URL"
             value={publicUrlInput}
             onChange={(e) => setPublicUrlInput(e.target.value)}
             placeholder="https://your-server.example.com"
           />
           <button
             className="primary-btn"
+            aria-label="Save public URL"
             onClick={handleSavePublicUrl}
             disabled={savingUrl || publicUrlInput === publicUrl}
           >
@@ -243,13 +435,19 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
       </div>
 
       <div className="policy-section">
-        <h4>Share Server</h4>
-        {hasPublicUrl ? (
+        <h3>Share Server</h3>
+        {hasPublicUrl && publicUrlIsSecure ? (
           <>
             <p className="field-hint">Create an invite link to share with others.</p>
             {inviteUrl ? (
               <div className="share-link-row">
-                <input type="text" value={inviteUrl} readOnly className="share-link-input" />
+                <input
+                  type="text"
+                  aria-label="Invite link"
+                  value={inviteUrl}
+                  readOnly
+                  className="share-link-input"
+                />
                 <button className="primary-btn" onClick={handleCopyLink}>
                   {copied ? 'Copied!' : 'Copy Link'}
                 </button>
@@ -261,18 +459,21 @@ function ServerSettings({ pseudonymId }: { pseudonymId: string }) {
             )}
           </>
         ) : (
-          <p className="field-hint" style={{ color: 'var(--warning-color, #f0ad4e)' }}>
-            Set a Public URL above to generate a shareable invite link.
+          <p className="field-hint warning-hint">
+            {hasPublicUrl
+              ? `Invite links require an HTTPS Public URL. This server's is ${publicUrl}, ` +
+                'so an invite link cannot be created — the link carries a join secret and ' +
+                'must not be readable in transit.'
+              : 'Set a Public URL above to generate a shareable invite link.'}
           </p>
         )}
       </div>
 
-      {error && <div className="error-message">{error}</div>}
-      {success && <div className="success-message">{success}</div>}
+      <StorageHealthSection pseudonymId={pseudonymId} />
 
-      <button className="primary-btn save-policy-btn" onClick={handleRename} disabled={saving || !label.trim()}>
-        {saving ? 'Saving...' : 'Save Name'}
-      </button>
+      {error && <div className="error-message" role="alert">{error}</div>}
+      {success && <div className="success-message" role="status">{success}</div>}
+
     </div>
   );
 }
@@ -325,20 +526,19 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
     }
   };
 
-  if (loading) return <p>Loading policy...</p>;
+  if (loading) return <p className="admin-loading" role="status">Loading policy...</p>;
   if (!policy) return (
     <div>
-      <p className="error-message">{error || 'Failed to load policy'}</p>
+      <p className="error-message" role="alert">{error || 'Failed to load policy'}</p>
       <button className="primary-btn" onClick={loadPolicy}>Retry</button>
     </div>
   );
 
   return (
     <div className="policy-editor">
-      <h3>Server Policy</h3>
 
       <div className="policy-section">
-        <h4>Access Control<InfoTip text="Controls who can sign up for your server. Public means anyone, invite-only requires a link, and password-protected requires a shared secret." /></h4>
+        <h3>Access Control<InfoTip text="Controls who can sign up for your server. Public means anyone, invite-only requires a link, and password-protected requires a shared secret." /></h3>
         <p className="field-hint" style={{ marginTop: 0 }}>Determines who can register on this server.</p>
         <label title="Controls how new users can join this server.">
           Access Mode
@@ -373,7 +573,18 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
 
       <div className="policy-grid">
         <label title="Minimum VRP alignment score (0.0–1.0) required for AI agents to join this server. Higher values require stronger value alignment.">
-          Min Alignment Score<InfoTip text="An AI safety score from 0 to 1. Higher values mean AI agents must be more closely aligned with human values to participate on this server. Most servers use 0.5 or above." />
+          {/* The label and its tip in one row.
+              
+              `.policy-grid label` is a COLUMN flexbox, so a bare `<InfoTip>`
+              beside the text becomes its own line: every other tip in this
+              form sits inside an `<h3>` and flows inline, and this one — the
+              only tip on a plain field label — hung under "Min Alignment
+              Score" on its own centred line, at every viewport including the
+              widest. */}
+          <span className="field-label-row">
+            Min Alignment Score
+            <InfoTip text="An AI safety score from 0 to 1. Higher values mean AI agents must be more closely aligned with human values to participate on this server. Most servers use 0.5 or above." />
+          </span>
           <input
             type="number"
             step="0.1"
@@ -422,7 +633,10 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
             checked={policy.federation_enabled}
             onChange={(e) => setPolicy({ ...policy, federation_enabled: e.target.checked })}
           />
-          Federation Enabled<InfoTip text="Federation lets your server connect to other Annex servers so users can discover and chat across communities — like email servers that can message each other." />
+          <span className="checkbox-label-text">
+            Federation Enabled
+            <InfoTip text="Federation lets your server connect to other Annex servers so users can discover and chat across communities — like email servers that can message each other." />
+          </span>
           <span className="field-hint">Allow connecting to other Annex servers to share channels and messages.</span>
         </label>
 
@@ -432,7 +646,7 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
             checked={policy.voice_enabled}
             onChange={(e) => setPolicy({ ...policy, voice_enabled: e.target.checked })}
           />
-          Voice Enabled
+          <span className="checkbox-label-text">Voice Enabled</span>
           <span className="field-hint">Allow voice and video calls on this server.</span>
         </label>
 
@@ -442,13 +656,16 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
             checked={policy.usernames_enabled}
             onChange={(e) => setPolicy({ ...policy, usernames_enabled: e.target.checked })}
           />
-          Usernames Enabled<InfoTip text="When on, users can pick a display name that's encrypted on the server. They control exactly who sees it — everyone else sees only an anonymous ID." />
+          <span className="checkbox-label-text">
+            Usernames Enabled
+            <InfoTip text="When on, users can pick a display name that's encrypted on the server. They control exactly who sees it — everyone else sees only an anonymous ID." />
+          </span>
           <span className="field-hint">Allow users to set encrypted display names with per-user visibility grants.</span>
         </label>
       </div>
 
       <div className="policy-section">
-        <h4>Media & File Uploads</h4>
+        <h3>Media & File Uploads</h3>
         <p className="field-hint" style={{ marginTop: 0 }}>Control which upload types are allowed and their size limits. MIME types are verified server-side.</p>
         <div className="policy-grid">
           <label className="checkbox-label" title="Allow image uploads (JPEG, PNG, GIF, WebP). EXIF metadata is automatically stripped.">
@@ -520,7 +737,7 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
       </div>
 
       <div className="policy-section">
-        <h4>Rate Limits (per minute)</h4>
+        <h3>Rate Limits (per minute)</h3>
         <p className="field-hint" style={{ marginTop: 0 }}>Controls how many requests a single user can make per minute. Lower values protect against abuse but may slow down legitimate usage.</p>
         <div className="policy-grid">
           <label title="Maximum identity registrations allowed per minute from a single source.">
@@ -578,7 +795,7 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
       </div>
 
       <div className="policy-section">
-        <h4>Required Agent Capabilities<InfoTip text="AI agents must declare specific abilities (like 'summarize' or 'translate') to join this server. List the capabilities you require." /></h4>
+        <h3>Required Agent Capabilities<InfoTip text="AI agents must declare specific abilities (like 'summarize' or 'translate') to join this server. List the capabilities you require." /></h3>
         <ul className="tag-list">
           {policy.agent_required_capabilities.map((cap, i) => (
             <li key={i} className="tag-item">
@@ -601,6 +818,7 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
         <div className="tag-input">
           <input
             type="text"
+            aria-label="Add a required capability"
             value={newCapability}
             onChange={(e) => setNewCapability(e.target.value)}
             placeholder="Add capability..."
@@ -622,7 +840,7 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
       </div>
 
       <div className="policy-section">
-        <h4>Principles<InfoTip text="Guidelines that AI agents on this server must follow — for example, 'Be helpful and honest' or 'Respect user privacy'." /></h4>
+        <h3>Principles<InfoTip text="Guidelines that AI agents on this server must follow — for example, 'Be helpful and honest' or 'Respect user privacy'." /></h3>
         <ul className="tag-list">
           {policy.principles.map((p, i) => (
             <li key={i} className="tag-item">
@@ -643,6 +861,7 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
         <div className="tag-input">
           <input
             type="text"
+            aria-label="Add a principle"
             value={newPrinciple}
             onChange={(e) => setNewPrinciple(e.target.value)}
             placeholder="Add principle..."
@@ -661,7 +880,7 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
       </div>
 
       <div className="policy-section">
-        <h4>Prohibited Actions<InfoTip text="Things AI agents are explicitly forbidden from doing — for example, 'Share private messages' or 'Impersonate users'." /></h4>
+        <h3>Prohibited Actions<InfoTip text="Things AI agents are explicitly forbidden from doing — for example, 'Share private messages' or 'Impersonate users'." /></h3>
         <ul className="tag-list">
           {policy.prohibited_actions.map((p, i) => (
             <li key={i} className="tag-item">
@@ -682,6 +901,7 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
         <div className="tag-input">
           <input
             type="text"
+            aria-label="Add a prohibited action"
             value={newProhibited}
             onChange={(e) => setNewProhibited(e.target.value)}
             placeholder="Add prohibited action..."
@@ -699,8 +919,8 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
         </div>
       </div>
 
-      {error && <div className="error-message">{error}</div>}
-      {success && <div className="success-message">{success}</div>}
+      {error && <div className="error-message" role="alert">{error}</div>}
+      {success && <div className="success-message" role="status">{success}</div>}
 
       <button className="primary-btn save-policy-btn" onClick={handleSave} disabled={saving}>
         {saving ? 'Saving...' : 'Save Policy'}
@@ -726,6 +946,10 @@ function MemberManager({ pseudonymId }: { pseudonymId: string }) {
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
+    // Clear first, like every other handler in this file. Without it a failed
+    // load left its message on screen through the next successful one, so the
+    // panel showed a red error above a member list that had just loaded fine.
+    setError(null);
     try {
       const list = await api.listMembers(pseudonymId);
       setMembers(list);
@@ -740,6 +964,7 @@ function MemberManager({ pseudonymId }: { pseudonymId: string }) {
 
   const toggleCap = async (member: MemberInfo, cap: string) => {
     setUpdating(member.pseudonym_id);
+    setError(null);
     const updated = {
       can_voice: member.can_voice,
       can_moderate: member.can_moderate,
@@ -758,16 +983,15 @@ function MemberManager({ pseudonymId }: { pseudonymId: string }) {
     }
   };
 
-  if (loading) return <p>Loading members...</p>;
+  if (loading) return <p className="admin-loading" role="status">Loading members...</p>;
 
   return (
     <div className="policy-editor">
-      <h3>Member Management</h3>
       <p className="field-hint" style={{ marginBottom: '0.75rem' }}>
         Toggle capabilities for each member. The first member (founder) has all permissions by default.
       </p>
 
-      {error && <div className="error-message">{error}</div>}
+      {error && <div className="error-message" role="alert">{error}</div>}
 
       <div className="member-list">
         {members.map((m) => (
@@ -809,19 +1033,32 @@ function MemberManager({ pseudonymId }: { pseudonymId: string }) {
 function ChannelManager({ pseudonymId }: { pseudonymId: string }) {
   const { channels, loadChannels } = useChannelsStore();
   const [deleting, setDeleting] = useState<string | null>(null);
+  // Deleting a channel used to go through the browser's own `confirm()`, and
+  // report failure through `alert()`. Both are modal at the OS level, ignore
+  // every style and token in the app, cannot say which channel is about to be
+  // destroyed beyond a bare sentence, and in the Tauri webview render as a
+  // chrome-less box that does not look like part of the product. They were
+  // also the only two dialogs in the app that the audit could not reach, since
+  // a native dialog is outside the page.
+  const [pendingDelete, setPendingDelete] = useState<{ id: string; name: string } | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const confirmTitleId = useDialogTitleId();
 
   useEffect(() => {
     loadChannels(pseudonymId);
   }, [pseudonymId, loadChannels]);
 
-  const handleDelete = async (channelId: string) => {
-    if (!confirm('Delete this channel? This cannot be undone.')) return;
-    setDeleting(channelId);
+  const handleDelete = async () => {
+    if (!pendingDelete) return;
+    const { id } = pendingDelete;
+    setPendingDelete(null);
+    setDeleting(id);
+    setDeleteError(null);
     try {
-      await api.deleteChannel(pseudonymId, channelId);
+      await api.deleteChannel(pseudonymId, id);
       await loadChannels(pseudonymId);
     } catch (err) {
-      alert(err instanceof Error ? err.message : String(err));
+      setDeleteError(err instanceof Error ? err.message : String(err));
     } finally {
       setDeleting(null);
     }
@@ -829,7 +1066,6 @@ function ChannelManager({ pseudonymId }: { pseudonymId: string }) {
 
   return (
     <div className="channel-manager">
-      <h3>Channel Management</h3>
       {channels.length === 0 && <p className="no-channels">No channels</p>}
       <div className="channel-manager-list">
         {channels.map((ch) => (
@@ -842,7 +1078,7 @@ function ChannelManager({ pseudonymId }: { pseudonymId: string }) {
             </div>
             <button
               className="delete-btn"
-              onClick={() => handleDelete(ch.channel_id)}
+              onClick={() => setPendingDelete({ id: ch.channel_id, name: ch.name })}
               disabled={deleting === ch.channel_id}
             >
               {deleting === ch.channel_id ? '...' : 'Delete'}
@@ -850,13 +1086,41 @@ function ChannelManager({ pseudonymId }: { pseudonymId: string }) {
           </div>
         ))}
       </div>
+
+      {deleteError && (
+        <div className="error-message" role="alert">
+          {deleteError}
+        </div>
+      )}
+
+      {pendingDelete && (
+        <Modal onClose={() => setPendingDelete(null)} titleId={confirmTitleId}>
+          <h2 id={confirmTitleId}>Delete channel</h2>
+          <p>
+            Delete <strong>{pendingDelete.name}</strong>? Its messages go with it, and this
+            cannot be undone.
+          </p>
+          <div className="dialog-actions">
+            <button type="button" onClick={() => setPendingDelete(null)}>
+              Cancel
+            </button>
+            <button type="button" className="danger-btn" onClick={handleDelete}>
+              Delete channel
+            </button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
 
 // ── Main AdminPanel ──
 
-export function AdminPanel({ section }: { section?: 'policy' | 'channels' | 'members' | 'server' }) {
+export function AdminPanel({
+  section,
+}: {
+  section?: 'policy' | 'channels' | 'members' | 'server' | 'federation';
+}) {
   const identity = useIdentityStore((s) => s.identity);
 
   if (!identity?.pseudonymId) return null;
@@ -866,18 +1130,34 @@ export function AdminPanel({ section }: { section?: 'policy' | 'channels' | 'mem
     policy: 'Server Policy',
     members: 'Member Management',
     channels: 'Channel Management',
+    federation: 'Federation Delivery',
   };
 
   const active = section ?? 'policy';
 
   return (
     <div className="admin-panel">
+      {/*
+        The only heading naming this view. Each panel below used to repeat it
+        verbatim as an `<h3>` directly underneath, so every admin screen
+        printed its own title twice — "Server Policy" over "Server Policy".
+        Dropping the repeat would have left `h2` followed by the sections'
+        `h4`s with a level skipped, which axe's heading-order rule fires on,
+        so the sections moved up to `h3`. `.policy-section h3` and `h4` were
+        already styled identically in App.css for exactly this reason.
+      */}
       <h2>{titles[active] ?? 'Server Policy'}</h2>
       {active === 'server' && (
         <ServerSettings pseudonymId={identity.pseudonymId} />
       )}
       {active === 'policy' && <PolicyEditor pseudonymId={identity.pseudonymId} />}
       {active === 'members' && <MemberManager pseudonymId={identity.pseudonymId} />}
+      {active === 'federation' && (
+        <>
+          <FederationAgreements pseudonymId={identity.pseudonymId} />
+          <FederationOutbox pseudonymId={identity.pseudonymId} />
+        </>
+      )}
       {active === 'channels' && <ChannelManager pseudonymId={identity.pseudonymId} />}
     </div>
   );

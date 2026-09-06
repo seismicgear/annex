@@ -54,9 +54,17 @@ export function StatusBar() {
   // Load active persona for display
   useEffect(() => {
     if (!identity) return;
+    // The read is local and fast, but it is keyed on the identity — and this
+    // app is built on keeping identities apart. A late resolve after a switch
+    // would show one identity's persona name and colour while another is
+    // active, which is the one mistake it must not make.
+    let cancelled = false;
     getPersonasForIdentity(identity.id).then((list) => {
-      setActivePersona(list[0] ?? null);
+      if (!cancelled) setActivePersona(list[0] ?? null);
     });
+    return () => {
+      cancelled = true;
+    };
   }, [identity, showIdentity]);
 
   const handleExport = async () => {
@@ -122,7 +130,7 @@ export function StatusBar() {
   return (
     <>
       {wsAuthRefreshing && (
-        <div className="voice-status-strip">
+        <section className="voice-status-strip" aria-label="Voice call status">
           <div className="voice-status-info">
             <span className="voice-status-dot" />
             <div className="voice-status-text">
@@ -130,12 +138,12 @@ export function StatusBar() {
               <span className="voice-status-channel">Refreshing session authentication…</span>
             </div>
           </div>
-        </div>
+        </section>
       )}
 
       {/* ── Persistent voice status strip (Discord-style) ── */}
       {inCall && (
-        <div className="voice-status-strip">
+        <section className="voice-status-strip" aria-label="Voice call status">
           <div className="voice-status-info">
             <span className="voice-status-dot" />
             <div className="voice-status-text">
@@ -192,12 +200,12 @@ export function StatusBar() {
               </svg>
             </button>
           </div>
-        </div>
+        </section>
       )}
 
       {/* ── Persistent voice-disconnected strip ── */}
       {!inCall && connectionError && lastFailedChannelId && (
-        <div className="voice-status-strip voice-status-disconnected">
+        <section className="voice-status-strip voice-status-disconnected" aria-label="Voice status">
           <div className="voice-status-info">
             <span className="voice-status-dot disconnected" />
             <div className="voice-status-text">
@@ -214,7 +222,7 @@ export function StatusBar() {
           >
             &times;
           </button>
-        </div>
+        </section>
       )}
 
       {/* ── Main status bar ── */}

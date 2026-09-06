@@ -25,6 +25,12 @@ export function mediaErrorMessage(err: unknown, action: string): string {
     if (err.name === 'NotFoundError') {
       return `${action}: no device found. Is your device connected?`;
     }
+    // Raised when an `exact` deviceId cannot be satisfied — the saved device
+    // is gone. Without this it fell through to the raw `err.message`, which
+    // for this error is the constraint name and means nothing to a user.
+    if (err.name === 'OverconstrainedError') {
+      return `${action}: the saved device is no longer available.`;
+    }
     if (err.name === 'AbortError' || err.name === 'NotReadableError') {
       return `${action}: device may be in use by another application.`;
     }
@@ -81,6 +87,7 @@ export function useLocalMedia({
     setCameraDevice,
     inputDeviceId,
     setInputDevice,
+    setMicToggleError,
   } = useVoiceStore();
 
   const micEnabled = isMicrophoneEnabled;
@@ -131,10 +138,19 @@ export function useLocalMedia({
         console.warn('[VoicePanel] mic sync failed:', err);
         // Revert store to match the real WebRTC microphone state
         setMicMuted(!priorEnabled);
-        setMediaError(mediaErrorMessage(err, 'Microphone toggle'));
+        const message = mediaErrorMessage(err, 'Microphone toggle');
+        setMediaError(message);
+        // And into the store, because the mute this reconciles may have been
+        // pressed in the status bar rather than in the call panel.
+        // `mediaError` is `useState` inside this hook, so it renders only in
+        // `MediaControls`; a user on the Federation or Events tab saw the
+        // button flip back with no explanation anywhere on screen.
+        // `micToggleError` is what the status-bar strip renders, right next
+        // to the control that failed.
+        setMicToggleError(message);
       });
     }
-  }, [micMuted, localParticipant, setMicMuted]);
+  }, [micMuted, localParticipant, setMicMuted, setMicToggleError]);
 
   // Sync WebRTC mic state → store when WebRTC state changes externally.
   useEffect(() => {
@@ -158,7 +174,23 @@ export function useLocalMedia({
         // Enabling — pass the stored input device so first-time enable
         // and post-mute unmute both respect the selected device.
         const opts = inputDeviceId ? { deviceId: inputDeviceId } : undefined;
-        await localParticipant.setMicrophoneEnabled(true, opts);
+        try {
+          await localParticipant.setMicrophoneEnabled(true, opts);
+        } catch (deviceErr) {
+          // The saved microphone is gone. Now that the request is `exact`
+          // this raises rather than silently using a different device, so
+          // fall back on purpose and SAY so — the camera has a button for
+          // this decision, the microphone has no equivalent and leaving it
+          // muted would be worse than using the default.
+          const gone =
+            deviceErr instanceof DOMException &&
+            (deviceErr.name === 'OverconstrainedError' || deviceErr.name === 'NotFoundError');
+          if (!gone || !inputDeviceId) throw deviceErr;
+          await localParticipant.setMicrophoneEnabled(true);
+          setMediaError(
+            'Saved microphone not found or disconnected — using the default device instead.',
+          );
+        }
       }
       setMicMuted(micEnabled); // toggling: if was enabled, now muted
     } catch (err) {
@@ -279,6 +311,13 @@ export function useLocalMedia({
   const prevInputDeviceRef = useRef(inputDeviceId);
   useEffect(() => {
     const prevDeviceId = prevInputDeviceRef.current;
+    // An effect runs on mount as well as on change, and this one captured the
+    // previous device without ever comparing it. So every mount of this hook
+    // with a live microphone ran the unpublish/republish below against a
+    // device that had not changed — mounting the voice panel dropped your
+    // microphone track and put a new one up, which the other side hears as a
+    // gap. The ref exists precisely to tell those two cases apart.
+    if (prevDeviceId === inputDeviceId) return;
     prevInputDeviceRef.current = inputDeviceId;
 
     const lp = localParticipant;

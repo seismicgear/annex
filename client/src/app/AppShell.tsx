@@ -35,27 +35,51 @@ import { useSessionConnection } from './useSessionConnection';
  * Uses Zustand subscription to track connection state transitions
  * without violating React strict-mode lint rules.
  */
+/** How long the first connection may take before we say anything about it. */
+const FIRST_CONNECT_GRACE_MS = 4000;
+
 export function ReconnectionBanner() {
-  const wsConnected = useChannelsStore((s) => s.wsConnected);
-  // Initialise from the current ws state at mount so a session that boots
-  // already-disconnected shows the banner without a setState-in-effect.
-  const [banner, setBanner] = useState<'hidden' | 'disconnected' | 'reconnected'>(
-    () => (useChannelsStore.getState().wsConnected ? 'hidden' : 'disconnected'),
+  // `wsConnected` starts false on every load because the socket has not been
+  // opened yet. Treating that as "disconnected" meant EVERY page load showed
+  // "Connection lost — reconnecting..." followed by "Reconnected" two seconds
+  // later, on a session that never lost anything — alarming, and the first
+  // thing a user saw on reaching the app.
+  //
+  // So the initial connection is tracked separately from a dropped one:
+  // nothing is shown while the socket is still coming up, and only if it is
+  // still down after a grace period do we say we are connecting. A drop is
+  // reported as a drop only once a connection has actually been established.
+  const [banner, setBanner] = useState<'hidden' | 'connecting' | 'disconnected' | 'reconnected'>(
+    'hidden',
   );
 
-  // Subscribe to wsConnected changes at the store level to detect transitions
   useEffect(() => {
-    let wasConnected = useChannelsStore.getState().wsConnected;
+    let hasEverConnected = useChannelsStore.getState().wsConnected;
+    let wasConnected = hasEverConnected;
+
+    // Nothing has connected yet — give the socket a moment before saying so.
+    const graceTimer = hasEverConnected
+      ? undefined
+      : setTimeout(() => {
+          if (!useChannelsStore.getState().wsConnected) setBanner('connecting');
+        }, FIRST_CONNECT_GRACE_MS);
+
     const unsub = useChannelsStore.subscribe((state) => {
       const nowConnected = state.wsConnected;
-      if (!nowConnected && wasConnected) {
+      if (nowConnected && !wasConnected) {
+        // Only call it a reconnection if there was something to reconnect to.
+        setBanner(hasEverConnected ? 'reconnected' : 'hidden');
+        hasEverConnected = true;
+      } else if (!nowConnected && wasConnected && hasEverConnected) {
         setBanner('disconnected');
-      } else if (nowConnected && !wasConnected) {
-        setBanner('reconnected');
       }
       wasConnected = nowConnected;
     });
-    return unsub;
+
+    return () => {
+      if (graceTimer) clearTimeout(graceTimer);
+      unsub();
+    };
   }, []);
 
   // Auto-hide the "Reconnected" banner after 2 seconds
@@ -68,11 +92,16 @@ export function ReconnectionBanner() {
 
   if (banner === 'hidden') return null;
 
+  const text =
+    banner === 'reconnected'
+      ? 'Reconnected'
+      : banner === 'connecting'
+        ? 'Connecting to server...'
+        : 'Connection lost — reconnecting...';
+
   return (
     <div className={`reconnection-banner ${banner}`} role="alert">
-      {wsConnected
-        ? 'Reconnected'
-        : 'Connection lost — reconnecting...'}
+      {text}
     </div>
   );
 }
@@ -268,7 +297,6 @@ export default function App() {
         handleIgnoreProtocolInvite={handleIgnoreProtocolInvite}
         serverReady={serverReady}
         passwordRequired={passwordRequired}
-        serverPassword={serverPassword}
         setServerPassword={setServerPassword}
         proofInFlight={proofInFlight}
         provingStatus={provingStatus}

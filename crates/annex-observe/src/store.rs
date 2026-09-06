@@ -465,7 +465,15 @@ pub fn backfill_event_log_chain(conn: &Connection) -> Result<usize, ObserveError
             mapped.collect::<Result<Vec<_>, _>>()?
         };
 
-        let tx = conn.unchecked_transaction()?;
+        // IMMEDIATE. Every write transaction in this codebase takes the
+        // RESERVED lock at BEGIN: a DEFERRED one reads a WAL snapshot first
+        // and then has to upgrade, and if another connection committed in
+        // between SQLite answers SQLITE_BUSY_SNAPSHOT immediately — the busy
+        // handler is never called, so `busy_timeout` cannot help. That is
+        // what made message sends fail intermittently with "database is
+        // locked"; see `ws_send_immediate_tx.rs`.
+        let tx =
+            rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
         let mut prev_hash = "GENESIS".to_string();
         for (seq, domain, event_type, entity_type, entity_id, payload_json, occurred_at) in &rows {
             let event_hash = compute_event_hash(

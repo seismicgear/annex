@@ -10,6 +10,8 @@
 
 import { useEffect, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
 import { AdminPanel } from '@/components/AdminPanel';
+import { InviteConfirmation } from '@/app/InviteConfirmation';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { ChannelList } from '@/components/ChannelList';
 import { ChannelEncryptionBar } from '@/components/ChannelEncryptionBar';
 import { EventLog } from '@/components/EventLog';
@@ -33,7 +35,8 @@ export type AppView =
   | 'admin-policy'
   | 'admin-channels'
   | 'admin-members'
-  | 'admin-server';
+  | 'admin-server'
+  | 'admin-federation';
 
 export interface MainLayoutProps {
   activeView: AppView;
@@ -93,45 +96,66 @@ export function MainLayout({
       case 'federation':
         return (
           <main className="view-content">
-            <FederationPanel />
+            <ErrorBoundary label="Federation">
+              <FederationPanel />
+            </ErrorBoundary>
           </main>
         );
       case 'events':
         return (
           <main className="view-content">
-            <EventLog />
+            <ErrorBoundary label="Events">
+              <EventLog />
+            </ErrorBoundary>
           </main>
         );
       case 'admin-policy':
       case 'admin-channels':
       case 'admin-members':
-      case 'admin-server': {
-        const sectionMap: Record<string, 'policy' | 'channels' | 'members' | 'server'> = {
+      case 'admin-server':
+      case 'admin-federation': {
+        const sectionMap: Record<
+          string,
+          'policy' | 'channels' | 'members' | 'server' | 'federation'
+        > = {
           'admin-policy': 'policy',
           'admin-channels': 'channels',
           'admin-members': 'members',
           'admin-server': 'server',
+          'admin-federation': 'federation',
         };
         return (
           <main className="view-content">
-            <AdminPanel section={sectionMap[activeView]} />
+            <ErrorBoundary label="Admin">
+              <AdminPanel section={sectionMap[activeView]} />
+            </ErrorBoundary>
           </main>
         );
       }
       default:
         return (
           <div className="app-layout">
-            <aside className="sidebar-left">
-              <ChannelList />
+            <aside className="sidebar-left" aria-label="Channels">
+              <ErrorBoundary label="the channel list">
+                <ChannelList />
+              </ErrorBoundary>
             </aside>
-            <main className="chat-area">
-              <MessageSearch />
-              <ChannelEncryptionBar />
-              <MessageView />
-              <MessageInput />
+            <main className="chat-area" aria-label="Conversation">
+              {/* Separate boundaries: a crash in the message list must not
+                  take the composer with it, and vice versa. */}
+              <ErrorBoundary label="the conversation">
+                <MessageSearch />
+                <ChannelEncryptionBar />
+                <MessageView />
+              </ErrorBoundary>
+              <ErrorBoundary label="the composer">
+                <MessageInput />
+              </ErrorBoundary>
             </main>
-            <aside className="sidebar-right">
-              <MemberList />
+            <aside className="sidebar-right" aria-label="Members and agents">
+              <ErrorBoundary label="the member list">
+                <MemberList />
+              </ErrorBoundary>
             </aside>
           </div>
         );
@@ -145,7 +169,7 @@ export function MainLayout({
           <img src={serverImageUrl} alt="" className="header-server-image" />
         )}
         <h1>Annex</h1>
-        <nav className="header-tabs">
+        <nav className="header-tabs" aria-label="Main views">
           <button
             className={`tab-btn ${activeView === 'chat' ? 'active' : ''}`}
             onClick={() => setActiveView('chat')}
@@ -229,25 +253,23 @@ export function MainLayout({
                 >
                   Channel Management
                 </button>
+                <button
+                  className={`admin-dropdown-item ${activeView === 'admin-federation' ? 'active' : ''}`}
+                  onClick={() => navigateAdmin('admin-federation')}
+                >
+                  Federation Delivery
+                </button>
               </div>
             )}
           </div>
         )}
       </header>
 
-      {pendingProtocolInviteConfirmation && (
-        <div className="invite-confirmation-banner" role="dialog" aria-label="Invite confirmation">
-          <span>
-            Invite received for {pendingProtocolInviteConfirmation.server}
-          </span>
-          <button className="primary-btn" onClick={handleAcceptProtocolInvite}>
-            Join invite server
-          </button>
-          <button className="secondary-btn" onClick={handleIgnoreProtocolInvite}>
-            Ignore
-          </button>
-        </div>
-      )}
+      <InviteConfirmation
+        invite={pendingProtocolInviteConfirmation}
+        onAccept={handleAcceptProtocolInvite}
+        onIgnore={handleIgnoreProtocolInvite}
+      />
 
       {degradedStartup && (
         <div className="degraded-startup-banner" role="status">

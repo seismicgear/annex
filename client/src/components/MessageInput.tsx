@@ -8,6 +8,7 @@
 
 import { useState, useRef, useEffect, type FormEvent, type KeyboardEvent } from 'react';
 import { useChannelsStore } from '@/stores/channels';
+import { useUsernameStore } from '@/stores/usernames';
 import { useIdentityStore } from '@/stores/identity';
 import * as api from '@/lib/api';
 
@@ -56,6 +57,16 @@ export function MessageInput() {
   const { activeChannelId, wsConnected, sendMessage, composerError, clearComposerError, sendTyping, replyToMessage, setReplyTo } = useChannelsStore();
   const identity = useIdentityStore((s) => s.identity);
   const pseudonymId = identity?.pseudonymId ?? '';
+
+  // The reply bar showed `sender_pseudonym.slice(0, 12) + '...'` unconditionally
+  // — a hex string, even when the server username for that person was already
+  // resolved and rendered as a name on the very message being replied to. The
+  // message bubble two lines above it got this right; the composer did not.
+  const getDisplayName = useUsernameStore((s) => s.getDisplayName);
+  const replyAuthorPseudonym = replyToMessage?.sender_pseudonym ?? '';
+  const replyAuthorResolved = replyAuthorPseudonym ? getDisplayName(replyAuthorPseudonym) : undefined;
+  const replyAuthorIsPseudonym = !replyAuthorResolved;
+  const replyAuthorName = replyAuthorResolved ?? `${replyAuthorPseudonym.slice(0, 12)}...`;
 
   // Track the pending request ID so we know when the server acknowledges it.
   const pendingRequestIdRef = useRef<string | null>(null);
@@ -204,13 +215,19 @@ export function MessageInput() {
       {replyToMessage && (
         <div className="reply-bar">
           <span className="reply-bar-label">Replying to</span>
-          <span className="reply-bar-author">{replyToMessage.sender_pseudonym.slice(0, 12)}...</span>
+          <span className={replyAuthorIsPseudonym ? 'reply-bar-author reply-bar-author-pseudonym' : 'reply-bar-author'}>
+            {replyAuthorName}
+          </span>
           <span className="reply-bar-text">{replyToMessage.content.slice(0, 80)}{replyToMessage.content.length > 80 ? '...' : ''}</span>
           <button className="reply-bar-cancel" onClick={() => setReplyTo(null)} aria-label="Cancel reply">&times;</button>
         </div>
       )}
       {uploadError && (
-        <div className="upload-error-bar">{uploadError}</div>
+        // `role="alert"`, like every other error surface in the app. Without
+        // it this bar appears silently: a screen-reader user presses Send,
+        // nothing is announced, and the composer still holds the attachment
+        // with no indication the upload was refused.
+        <div className="upload-error-bar" role="alert">{uploadError}</div>
       )}
       {preview && (
         <div className="image-preview-bar">

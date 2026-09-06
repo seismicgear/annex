@@ -50,6 +50,16 @@ pub enum IncomingMessage {
         #[serde(rename = "messageId")]
         message_id: String,
         content: String,
+        /// Correlates an error frame back to this operation.
+        ///
+        /// `Message` has carried one from the start; these two did not, so a
+        /// rejected edit or delete came back as an error the client could not
+        /// attribute to anything. It could only show a generic message and
+        /// leave the optimistic change it had already painted on screen.
+        /// Optional, and defaulted: a client that omits it still edits and
+        /// deletes exactly as before.
+        #[serde(rename = "clientRequestId", default)]
+        client_request_id: Option<String>,
     },
     #[serde(rename = "delete_message")]
     DeleteMessage {
@@ -57,6 +67,16 @@ pub enum IncomingMessage {
         channel_id: String,
         #[serde(rename = "messageId")]
         message_id: String,
+        /// Correlates an error frame back to this operation.
+        ///
+        /// `Message` has carried one from the start; these two did not, so a
+        /// rejected edit or delete came back as an error the client could not
+        /// attribute to anything. It could only show a generic message and
+        /// leave the optimistic change it had already painted on screen.
+        /// Optional, and defaulted: a client that omits it still edits and
+        /// deletes exactly as before.
+        #[serde(rename = "clientRequestId", default)]
+        client_request_id: Option<String>,
     },
     #[serde(rename = "voice_intent")]
     VoiceIntent {
@@ -81,6 +101,20 @@ pub enum IncomingMessage {
     },
     #[serde(rename = "webrtc_offer")]
     WebRtcOffer {
+        #[serde(rename = "channelId")]
+        channel_id: String,
+        #[serde(rename = "sdp")]
+        sdp: String,
+    },
+    /// The client's answer to an offer the SERVER initiated.
+    ///
+    /// Normal call setup is client-offers / server-answers. This is the other
+    /// direction: when someone joins or leaves a call, every other peer's
+    /// track set changes, and adding a track to an established connection
+    /// requires a fresh offer/answer. Without it a call cannot grow past the
+    /// participants it started with.
+    #[serde(rename = "webrtc_answer")]
+    WebRtcAnswer {
         #[serde(rename = "channelId")]
         channel_id: String,
         #[serde(rename = "sdp")]
@@ -192,15 +226,37 @@ pub enum OutgoingMessage {
         e2e_enabled: bool,
     },
     /// Resume acknowledgement — tells the client how many messages were replayed.
+    ///
+    /// `cursor_lost` distinguishes "you missed nothing" from "I could not work
+    /// out what you missed". They are not the same answer and used to be sent
+    /// as the same frame. The client's `lastMessageId` stops resolving as soon
+    /// as retention deletes the row it names — a routine event on any channel
+    /// with `retention_days` — and a `missedCount: 0` in that case tells a
+    /// client that has been offline across a purge that its timeline is
+    /// complete, when in fact the whole backlog is missing and nothing will
+    /// ever fetch it. When this is set the count is meaningless and the client
+    /// must reload the channel rather than trust its cursor.
     #[serde(rename = "resumed")]
     Resumed {
         #[serde(rename = "channelId")]
         channel_id: String,
         #[serde(rename = "missedCount")]
         missed_count: usize,
+        #[serde(rename = "cursorLost")]
+        cursor_lost: bool,
     },
     #[serde(rename = "webrtc_answer")]
     WebRtcAnswer {
+        #[serde(rename = "channelId")]
+        channel_id: String,
+        #[serde(rename = "sdp")]
+        sdp: String,
+    },
+    /// An offer the SERVER initiated, because this peer's track set changed —
+    /// somebody joined or left the call. The client answers with
+    /// `IncomingMessage::WebRtcAnswer`.
+    #[serde(rename = "webrtc_offer")]
+    WebRtcOffer {
         #[serde(rename = "channelId")]
         channel_id: String,
         #[serde(rename = "sdp")]

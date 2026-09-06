@@ -432,6 +432,58 @@ fn is_weak_signing_key_bytes(bytes: &[u8; 32]) -> bool {
 /// caller is responsible for driving `axum::serve(listener, app)`.
 ///
 /// Tracing must be initialized before calling this function (see [`init_tracing`]).
+/// Applies `ANNEX_RATE_LIMIT_*` overrides to a loaded policy, in memory.
+///
+/// The three rate-limit categories live in `ServerPolicy`, which is stored in
+/// the database and edited through `PUT /api/admin/policy`. That endpoint
+/// requires an existing moderator, so there is otherwise no way to raise the
+/// limits *before* the traffic that needs them — which is exactly what a
+/// container deployment, a load test, or an automated UI audit needs to do.
+///
+/// The value is requests per minute, matching `ServerPolicy::rate_limit`. Note
+/// that `0` does not mean "unlimited" — the limiter admits a request when the
+/// windowed count is `<= limit`, so `0` rejects everything in that category.
+/// To effectively remove a limit, set a large number.
+///
+/// Unparseable values are logged and ignored rather than failing startup: a
+/// typo in an optional tuning knob should not take a server down.
+fn apply_rate_limit_env_overrides(policy: &mut ServerPolicy) {
+    /// Picks the limit field an override applies to.
+    type LimitField = fn(&mut ServerPolicy) -> &mut u32;
+
+    const OVERRIDES: [(&str, LimitField); 3] = [
+        ("ANNEX_RATE_LIMIT_REGISTRATION", |p| {
+            &mut p.rate_limit.registration_limit
+        }),
+        ("ANNEX_RATE_LIMIT_VERIFICATION", |p| {
+            &mut p.rate_limit.verification_limit
+        }),
+        ("ANNEX_RATE_LIMIT_DEFAULT", |p| {
+            &mut p.rate_limit.default_limit
+        }),
+    ];
+
+    for (var, field) in OVERRIDES {
+        let Ok(raw) = std::env::var(var) else {
+            continue;
+        };
+        match raw.trim().parse::<u32>() {
+            Ok(value) => {
+                *field(policy) = value;
+                tracing::info!(env = var, value, "rate limit overridden from environment");
+            }
+            Err(e) => {
+                tracing::warn!(
+                    env = var,
+                    value = %raw,
+                    error = %e,
+                    "ignoring unparseable rate-limit override (expected a non-negative integer)"
+                );
+            }
+        }
+    }
+}
+
 pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Router), StartupError> {
     // Initialize database
     let pool = annex_db::create_pool(
@@ -483,7 +535,7 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
     };
 
     // Get Server ID, Policy, and persisted public URL (auto-seed if no server row exists)
-    let (server_id, policy, db_public_url): (i64, ServerPolicy, String) = {
+    let (server_id, mut policy, db_public_url): (i64, ServerPolicy, String) = {
         let conn = pool.get()?;
         let existing = conn
             .query_row(
@@ -550,6 +602,57 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
             }
         }
     };
+
+    // Rate limits are otherwise only reachable through `PUT /api/admin/policy`,
+    // which needs a moderator to already exist — so an automated deployment,
+    // load test or browser-driven audit has no way to raise them before the
+    // traffic that needs them starts. These env overrides close that gap.
+    //
+    // In-memory only: they deliberately do NOT rewrite `servers.policy_json`,
+    // so an operator's stored policy survives and the override disappears when
+    // the variable does.
+    apply_rate_limit_env_overrides(&mut policy);
+
+    // Say plainly when the outbox will retry past the point a peer can accept.
+    //
+    // These two numbers are configured independently and only make sense
+    // together: retries beyond the freshness window are not "less likely to
+    // succeed", they cannot succeed, because the envelope's signed
+    // `created_at` never moves and the live ingest endpoint rejects on age.
+    {
+        let fed = &config.federation;
+        let usable =
+            crate::background::attempts_within_freshness_window(fed.freshness_window_seconds);
+        if fed.outbox_max_attempts > usable {
+            tracing::warn!(
+                outbox_max_attempts = fed.outbox_max_attempts,
+                freshness_window_seconds = fed.freshness_window_seconds,
+                usable_attempts = usable,
+                "federation outbox will retry past the receiver's freshness \
+                 window: attempts beyond {usable} are rejected as too old, not \
+                 merely likely to fail. Lower `outbox_max_attempts` or raise \
+                 `freshness_window_seconds`.",
+                usable = usable,
+            );
+        }
+    }
+
+    // Say plainly when agent alignment is not being enforced.
+    //
+    // `agent_min_alignment_score` reads like a working gate, and with no
+    // declared principles there is nothing to score against — an agent's
+    // anchor is admitted on the strength of its prohibited actions alone.
+    // That is the right behaviour for a server that has stated no values
+    // (see `compare_peer_anchor_scored`), but it is not what the threshold
+    // in the policy suggests is happening, so it should not be silent.
+    if policy.principles.is_empty() {
+        tracing::warn!(
+            min_alignment_score = policy.agent_min_alignment_score,
+            "server policy declares no `principles`: agent semantic alignment \
+             is NOT enforced and `agent_min_alignment_score` has no effect. \
+             Declare principles via PUT /api/admin/policy to turn it on."
+        );
+    }
 
     // Load ZK verification key.
     //
@@ -714,6 +817,34 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
 
     // Initialize Voice / TTS / STT services
     let voice_service = annex_voice::VoiceService::new(config.webrtc);
+
+    // Tell the voice service where this server is actually reachable.
+    //
+    // The SFU runs in-process and its signalling rides the app's own
+    // WebSocket, so the address a remote client needs for voice is simply
+    // the address it is already talking to. `WebRtcConfig.url` survives from
+    // when the SFU was a separate LiveKit process; nothing dials it now, but
+    // `get_public_url()` still gates on it, and it defaults to
+    // `ws://localhost:7880` — a loopback address, which that method blanks
+    // on purpose because handing a remote client a loopback URL is useless.
+    //
+    // The effect was that `voice_enabled` defaults to true and voice was
+    // nonetheless refused for every client except one on the host machine:
+    // `ChannelService::join_voice_channel` sees an empty URL and returns
+    // `VoiceNotConfigured`.
+    // Setting ANNEX_PUBLIC_URL — the documented way to say where the server
+    // lives — did not help, because the resolved value was only ever written
+    // into AppState and the sole caller of `set_public_url` was the admin
+    // route. An operator had to configure the server correctly AND then make
+    // an authenticated PUT before anyone could hold a call.
+    let effective_public_url = if config.server.public_url.is_empty() {
+        db_public_url.clone()
+    } else {
+        config.server.public_url.clone()
+    };
+    if !effective_public_url.is_empty() {
+        voice_service.set_public_url(effective_public_url.clone());
+    }
     let tts_service = annex_voice::TtsService::new(
         &config.voice.tts_voices_dir,
         &config.voice.tts_binary_path,
@@ -733,6 +864,29 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
     );
     let stt_service =
         annex_voice::SttService::new(&config.voice.stt_model_path, &config.voice.stt_binary_path);
+
+    // The experimental relay transport is configurable and unwired.
+    //
+    // `annex_federation::transport` is complete — `FederationTransport`,
+    // `spawn_signal_listener`, `establish_peer` — and `annex-server` does not
+    // reference the module at all. The flag reaches `DeploymentConfig` and is
+    // validated, and nothing reads it after that. On a production profile the
+    // validation goes further and *demands* `ANNEX_SIGNAL_TRUSTED_PEERS`
+    // before it will start, so an operator can be made to configure a trust
+    // map for a subsystem that will not run.
+    //
+    // Saying so is the whole fix. Wiring the transport is feature work; a
+    // setting that silently does nothing is a defect on its own, and one line
+    // at startup is the difference between "not implemented yet" and "I
+    // configured this and cannot tell whether it is on".
+    if config.deployment.experimental_relay_transport_enabled {
+        tracing::warn!(
+            "deployment.experimental_relay_transport_enabled is set, but the relay \
+             transport is not wired into this server yet — the setting is accepted \
+             and validated, and no relay listener is started. Federation continues \
+             over the HTTP outbox."
+        );
+    }
 
     // Resolve upload directory
     let upload_dir =
@@ -757,12 +911,12 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
         federation_attestation_vkey,
         server_id,
         signing_key: Arc::new(signing_key),
-        // Config/env public_url takes precedence; fall back to DB-persisted value
-        public_url: Arc::new(RwLock::new(if config.server.public_url.is_empty() {
-            db_public_url
-        } else {
-            config.server.public_url.clone()
-        })),
+        // Config/env public_url takes precedence; fall back to DB-persisted
+        // value. Resolved above as `effective_public_url` so the voice
+        // service is told the same thing — the two drifting apart is what
+        // made voice unreachable for remote clients on a correctly
+        // configured server.
+        public_url: Arc::new(RwLock::new(effective_public_url)),
         policy: Arc::new(RwLock::new(policy)),
         rate_limiter: RateLimiter::new(),
         connection_manager: api_ws::ConnectionManager::new(),
@@ -815,6 +969,14 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
         state.clone(),
     )));
 
+    // Start the proactive storage probe. Returns immediately when
+    // `storage.max_db_bytes` is 0 (the default), so it is always safe to
+    // spawn.
+    tokio::spawn(background::start_storage_probe_task(
+        Arc::new(state.clone()),
+        std::path::PathBuf::from(&config.database.path),
+    ));
+
     // Auto-expire silent federation agreements past their TTL
     // (`federation.agreement_ttl_days`; 0 disables). Returns immediately when
     // disabled, so it is always safe to spawn.
@@ -834,4 +996,102 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
     })?;
 
     Ok((listener, router))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Serialises the env-var tests. `std::env::set_var` is process-global, so
+    /// two of these running concurrently would see each other's values.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_env<T>(vars: &[(&str, Option<&str>)], f: impl FnOnce() -> T) -> T {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let saved: Vec<(String, Option<String>)> = vars
+            .iter()
+            .map(|(k, _)| ((*k).to_string(), std::env::var(k).ok()))
+            .collect();
+        for (k, v) in vars {
+            match v {
+                Some(val) => std::env::set_var(k, val),
+                None => std::env::remove_var(k),
+            }
+        }
+        let out = f();
+        for (k, v) in saved {
+            match v {
+                Some(val) => std::env::set_var(&k, val),
+                None => std::env::remove_var(&k),
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn rate_limit_overrides_are_applied_from_env() {
+        let policy = with_env(
+            &[
+                ("ANNEX_RATE_LIMIT_REGISTRATION", Some("55")),
+                ("ANNEX_RATE_LIMIT_VERIFICATION", Some("66")),
+                ("ANNEX_RATE_LIMIT_DEFAULT", Some("7777")),
+            ],
+            || {
+                let mut p = ServerPolicy::default();
+                apply_rate_limit_env_overrides(&mut p);
+                p
+            },
+        );
+
+        assert_eq!(policy.rate_limit.registration_limit, 55);
+        assert_eq!(policy.rate_limit.verification_limit, 66);
+        assert_eq!(policy.rate_limit.default_limit, 7777);
+    }
+
+    #[test]
+    fn rate_limit_defaults_survive_when_unset() {
+        let defaults = ServerPolicy::default();
+        let policy = with_env(
+            &[
+                ("ANNEX_RATE_LIMIT_REGISTRATION", None),
+                ("ANNEX_RATE_LIMIT_VERIFICATION", None),
+                ("ANNEX_RATE_LIMIT_DEFAULT", None),
+            ],
+            || {
+                let mut p = ServerPolicy::default();
+                apply_rate_limit_env_overrides(&mut p);
+                p
+            },
+        );
+
+        assert_eq!(policy.rate_limit, defaults.rate_limit);
+    }
+
+    #[test]
+    fn unparseable_rate_limit_override_is_ignored_not_fatal() {
+        // A typo in an optional tuning knob must not take the server down, and
+        // must not silently reinterpret itself as some other number.
+        let defaults = ServerPolicy::default();
+        let policy = with_env(
+            &[
+                ("ANNEX_RATE_LIMIT_DEFAULT", Some("lots")),
+                ("ANNEX_RATE_LIMIT_REGISTRATION", Some("-5")),
+                ("ANNEX_RATE_LIMIT_VERIFICATION", None),
+            ],
+            || {
+                let mut p = ServerPolicy::default();
+                apply_rate_limit_env_overrides(&mut p);
+                p
+            },
+        );
+
+        assert_eq!(
+            policy.rate_limit.default_limit,
+            defaults.rate_limit.default_limit
+        );
+        assert_eq!(
+            policy.rate_limit.registration_limit,
+            defaults.rate_limit.registration_limit
+        );
+    }
 }

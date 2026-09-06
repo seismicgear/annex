@@ -11,11 +11,16 @@ import {
   decryptForDisplay,
   encryptForWire,
   ensureChannelReady,
+  getChannelKeyError,
+  getChannelKeyState,
   isChannelE2e,
+  isChannelE2eUnknown,
+  markChannelE2eUnknown,
   isE2eBody,
   markChannelE2e,
   resetE2eChannels,
   setE2eIdentity,
+  type ChannelKeyState,
 } from '@/lib/message-crypto';
 import { clearE2eManagers } from '@/lib/e2e-store';
 
@@ -55,6 +60,17 @@ interface ChannelsState {
   activeChannelId: string | null;
   /** Whether the active channel is end-to-end encrypted (reactive for UI). */
   activeChannelE2e: boolean;
+  /** Re-attempt resolving the active channel's key, and reload if it lands. */
+  retryChannelKey: (pseudonymId: string) => Promise<void>;
+  /**
+   * Whether this client can actually read the active E2E channel. `pending`
+   * means the channel is keyed but we have not been admitted yet; `failed`
+   * means resolving the key went wrong. Both used to be invisible, so a
+   * channel full of "🔒 encrypted message (no key)" carried no explanation.
+   */
+  activeChannelKeyState: ChannelKeyState;
+  /** Why the key could not be resolved, for `activeChannelKeyState === 'failed'`. */
+  activeChannelKeyError: string | null;
   /** Set of channel IDs the user is currently a member of. */
   joinedChannelIds: Set<string>;
   /** Messages for the active channel (newest last). */
@@ -77,6 +93,32 @@ interface ChannelsState {
   loadingOlder: boolean;
   /** Whether there are more older messages to load. */
   hasMoreMessages: boolean;
+  /**
+   * Set when a scrollback page failed to load, so the UI can offer a retry.
+   *
+   * Kept separate from `hasMoreMessages` on purpose. A failed page used to
+   * set `hasMoreMessages: false` to stop the scroll handler retrying in a
+   * loop — which worked, and which also told the user they had reached the
+   * beginning of the channel. One dropped request ended the history of that
+   * channel for the rest of the session, and looked exactly like a short
+   * channel.
+   */
+  olderError: string | null;
+  /** Set when an edit could not be sent, so the user is not shown a false save. */
+  messageActionError: string | null;
+  /**
+   * Edits and deletes that have left the device and not yet been answered,
+   * keyed by the `clientRequestId` sent with them.
+   *
+   * Sends have had this correlation from the start; edits and deletes did
+   * not, so a server that refused one came back with an error frame the
+   * client could not attribute to anything. It showed a generic composer
+   * error and left the optimistic edit on screen looking saved — the exact
+   * failure `editMessage`'s own comment says was fixed for the socket-down
+   * case, still open for the far commoner one. The 60-second edit window
+   * closing is a rejection an ordinary user hits by being slow.
+   */
+  pendingMessageOps: Map<string, { messageId: string; revert: (reason: string) => void }>;
   /** The WebSocket instance (internal). */
   ws: AnnexWebSocket | null;
   /** Messages awaiting server acknowledgement, keyed by clientRequestId. */
@@ -108,6 +150,10 @@ interface ChannelsState {
   getPendingSend: (clientRequestId: string) => PendingSend | undefined;
   /** Edit a message in the active channel. */
   editMessage: (messageId: string, content: string) => void;
+  /** Dismiss the "edit not saved" notice. */
+  clearMessageActionError: () => void;
+  /** Retry a scrollback page that failed, clearing the error first. */
+  retryOlderMessages: (pseudonymId: string) => Promise<void>;
   /** Delete a message in the active channel. */
   deleteMessage: (messageId: string) => void;
   /** Load older messages (pagination). */
@@ -120,6 +166,8 @@ interface ChannelsState {
   leaveChannel: (pseudonymId: string, channelId: string) => Promise<void>;
   /** Clear the composer error (on successful send, channel switch, or dismissal). */
   clearComposerError: () => void;
+  /** Drop any pending edit/delete for this message — the server answered. */
+  resolveMessageOp: (messageId?: string) => void;
   /** Disconnect WebSocket. */
   disconnectWs: () => void;
   /** Update the active WebSocket's session token (for reconnect freshness). */
@@ -145,6 +193,8 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
   channels: [],
   activeChannelId: null,
   activeChannelE2e: false,
+  activeChannelKeyState: 'ready' as ChannelKeyState,
+  activeChannelKeyError: null,
   joinedChannelIds: new Set<string>(),
   messages: [],
   wsConnected: false,
@@ -156,6 +206,9 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
   historyError: null,
   loadingOlder: false,
   hasMoreMessages: true,
+  olderError: null,
+  messageActionError: null,
+  pendingMessageOps: new Map(),
   ws: null,
   pendingSends: new Map<string, PendingSend>(),
   typingUsers: [],
@@ -192,7 +245,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     // Staying subscribed to all joined channels lets us receive messages
     // for non-active channels and increment unread counts accurately.
 
-    set({ activeChannelId: channelId, activeChannelE2e: false, messages: [], loadingOlder: false, hasMoreMessages: true, historyLoading: true, historyError: null, composerError: null, typingUsers: [], replyToMessage: null });
+    set({ activeChannelId: channelId, activeChannelE2e: false, activeChannelKeyState: 'ready', activeChannelKeyError: null, messages: [], loadingOlder: false, hasMoreMessages: true, olderError: null, messageActionError: null, pendingMessageOps: new Map(), historyLoading: true, historyError: null, composerError: null, typingUsers: [], replyToMessage: null });
 
     // Auto-join the channel (idempotent — no-op if already a member).
     // Must be a member before fetching messages or joining voice.
@@ -216,9 +269,29 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       const e2e = await api.getChannelE2e(pseudonymId, channelId);
       markChannelE2e(channelId, e2e);
       if (get().activeChannelId === channelId) set({ activeChannelE2e: e2e });
-      if (e2e) await ensureChannelReady(channelId);
-    } catch {
-      markChannelE2e(channelId, false);
+      if (e2e) {
+        await ensureChannelReady(channelId);
+        if (get().activeChannelId === channelId) {
+          set({
+            activeChannelKeyState: getChannelKeyState(channelId),
+            activeChannelKeyError: getChannelKeyError(channelId),
+          });
+        }
+      }
+    } catch (err) {
+      // Unknown, NOT plaintext. This used to record `false`, which is the
+      // same value a genuinely unencrypted channel has, so the send path
+      // took its plaintext branch and put unencrypted content on the wire
+      // for the rest of the session — in a channel the user had turned
+      // encryption on for. A failed check is not evidence of anything.
+      console.warn('[channels] could not determine channel encryption:', err);
+      markChannelE2eUnknown(channelId);
+      if (get().activeChannelId === channelId) {
+        set({
+          composerError:
+            'Could not confirm this channel is encrypted. Reload before sending.',
+        });
+      }
     }
 
     // Fetch history BEFORE subscribing to WS to avoid a race where
@@ -275,6 +348,23 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     }
   },
 
+  retryChannelKey: async (pseudonymId: string) => {
+    const channelId = get().activeChannelId;
+    if (!channelId || !isChannelE2e(channelId)) return;
+    set({ activeChannelKeyState: 'ready', activeChannelKeyError: null });
+    await ensureChannelReady(channelId);
+    if (get().activeChannelId !== channelId) return;
+    const state = getChannelKeyState(channelId);
+    set({
+      activeChannelKeyState: state,
+      activeChannelKeyError: getChannelKeyError(channelId),
+    });
+    // Landing the key means the history on screen is a page of placeholders
+    // that can now be read. Reload so the messages actually appear — leaving
+    // them is the same silence this whole state exists to end.
+    if (state === 'ready') await get().selectChannel(pseudonymId, channelId);
+  },
+
   enableChannelE2e: async (pseudonymId: string) => {
     const channelId = get().activeChannelId;
     if (!channelId) return;
@@ -284,6 +374,12 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     if (get().activeChannelId === channelId) set({ activeChannelE2e: true });
     // Provision/resolve the channel key so the next message encrypts.
     await ensureChannelReady(channelId);
+    if (get().activeChannelId === channelId) {
+      set({
+        activeChannelKeyState: getChannelKeyState(channelId),
+        activeChannelKeyError: getChannelKeyError(channelId),
+      });
+    }
   },
 
   connectWs: (pseudonymId: string, baseUrl?: string, sessionToken?: string | null) => {
@@ -315,6 +411,17 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       // and mark the optimistic message as failed.
       if (frame.type === 'error') {
         const errorMsg = frame.message ?? frame.error ?? 'Unknown WebSocket error';
+        // An edit or delete the server refused, matched back to the operation
+        // that caused it. Undoing the optimistic change is the whole point:
+        // without this the user reads their correction on screen, and only
+        // discovers on the next reload that it never happened.
+        const op = frame.clientRequestId
+          ? get().pendingMessageOps.get(frame.clientRequestId)
+          : undefined;
+        if (op) {
+          op.revert(errorMsg);
+          return;
+        }
         if (frame.clientRequestId) {
           get().resolvePendingSend(frame.clientRequestId);
           // Mark the optimistic message as failed
@@ -389,9 +496,40 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
         return;
       }
 
+      // Live captions from the call.
+      //
+      // Handled here, above the active-channel guard below, because a
+      // transcript belongs to the CALL the user is in, and that is not
+      // necessarily the channel they are looking at — voice keeps running
+      // while you read another channel. The voice store decides whether the
+      // line is for the call in progress.
+      if (frame.type === 'transcription' && frame.channelId && frame.text) {
+        useVoiceStore.getState().appendTranscript({
+          channelId: frame.channelId,
+          speakerPseudonym: frame.speakerPseudonym ?? 'unknown',
+          text: frame.text,
+          at: Date.now(),
+        });
+        return;
+      }
+
       // Handle resume acknowledgement
       if (frame.type === 'resumed') {
-        // Resume complete — no action needed, messages were already processed as normal frames
+        // A completed resume needs nothing: the missed messages arrived as
+        // ordinary `message` frames before this ack.
+        //
+        // `cursorLost` is the other outcome, and it does need something. It
+        // means the server could not work out what this client missed —
+        // the message id being resumed from no longer names a live message
+        // in the channel, which is what retention does on a schedule. The
+        // replay was empty and the count is meaningless, so the timeline on
+        // screen has a hole of unknown size. Refetch it. Doing nothing here
+        // is what made a purged cursor indistinguishable from being up to
+        // date. Only for the channel in view — `selectChannel` moves the
+        // user, and any other channel reloads from scratch when opened.
+        if (frame.cursorLost && frame.channelId && frame.channelId === get().activeChannelId) {
+          void get().selectChannel(pseudonymId, frame.channelId);
+        }
         return;
       }
 
@@ -443,7 +581,19 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
               // When the echoed wire `content` is E2E ciphertext, keep the
               // plaintext we already hold from the composer rather than
               // decrypting our own echo.
-              const confirmed = bodyIsE2e ? { ...msg, content: optimistic.content } : { ...msg };
+              //
+              // `clientRequestId` is carried over deliberately. MessageView
+              // keys rows `msg.clientRequestId ?? msg.message_id`; dropping it
+              // here flipped the key on confirmation, so React unmounted the
+              // row and mounted a new one. A user editing a message they had
+              // just posted — the only time editing is offered, and exactly
+              // when the confirmation is still in flight — lost the textarea
+              // and had their half-typed edit reset to the original, silently.
+              // The field is not a pending marker (`pending` and `failed`
+              // are), so keeping it changes nothing else.
+              const confirmed = bodyIsE2e
+                ? { ...msg, content: optimistic.content, clientRequestId: frame.clientRequestId }
+                : { ...msg, clientRequestId: frame.clientRequestId };
               const updated = state.messages.map((m) =>
                 m.clientRequestId === frame.clientRequestId ? confirmed : m,
               );
@@ -486,6 +636,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
           }));
         }
       } else if (frame.type === 'message_edited') {
+        get().resolveMessageOp(frame.messageId);
         const editedContent = frame.content ?? '';
         set((state) => ({
           messages: state.messages.map((m) =>
@@ -507,6 +658,7 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
           });
         }
       } else if (frame.type === 'message_deleted') {
+        get().resolveMessageOp(frame.messageId);
         set((state) => ({
           messages: state.messages.map((m) =>
             m.message_id === frame.messageId
@@ -576,6 +728,19 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       }));
     };
 
+    // Refuse to send while the encryption state is unresolved.
+    //
+    // The rule below — never put plaintext in an E2E channel — can only hold
+    // if "not E2E" means the server said so. When the check failed, sending
+    // anything is a guess, and the wrong guess is unrecoverable.
+    if (isChannelE2eUnknown(channelId)) {
+      set({
+        composerError:
+          'Could not confirm this channel is encrypted. Reload before sending.',
+      });
+      return null;
+    }
+
     // Plaintext channels: unchanged synchronous path (ws.send mints the id).
     if (!isChannelE2e(channelId)) {
       try {
@@ -624,39 +789,129 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
     const { ws, activeChannelId } = get();
     if (!ws || !activeChannelId) return;
     const channelId = activeChannelId;
+
+    // Keep the old body so the optimistic update can be undone. An edit that
+    // never left the device used to stay on screen looking saved: the socket
+    // was down, `ws.editMessage` threw, the catch logged to a console nobody
+    // has open, and the user watched their correction apply. It survived
+    // until the next reload, at which point the original text came back and
+    // the edit was simply gone.
+    const previous = get().messages.find((m) => m.message_id === messageId);
+    const previousContent = previous?.content;
+    const previousEditedAt = previous?.edited_at;
+
     // Optimistically show the new plaintext locally.
     set((s) => ({
       messages: s.messages.map((m) =>
         m.message_id === messageId ? { ...m, content, edited_at: new Date().toISOString() } : m,
       ),
     }));
+
+    const clientRequestId = crypto.randomUUID();
+
+    // Surfaced where the message is rather than swallowed: the whole point is
+    // that the user finds out now, while the text they meant to keep is still
+    // in front of them. Takes the reason so the server's own words are used
+    // when it is the server that refused.
+    const revert = (reason: string, err?: unknown) => {
+      if (err !== undefined) console.error('[channels] editMessage failed:', err);
+      set((s) => {
+        const pendingMessageOps = new Map(s.pendingMessageOps);
+        pendingMessageOps.delete(clientRequestId);
+        if (previousContent === undefined) return { pendingMessageOps };
+        return {
+          pendingMessageOps,
+          messages: s.messages.map((m) =>
+            m.message_id === messageId
+              ? { ...m, content: previousContent, edited_at: previousEditedAt }
+              : m,
+          ),
+          messageActionError: reason,
+        };
+      });
+    };
+    const OFFLINE = 'Edit not saved — you appear to be offline. Try again.';
+
+    set((s) => {
+      const pendingMessageOps = new Map(s.pendingMessageOps);
+      pendingMessageOps.set(clientRequestId, { messageId, revert });
+      return { pendingMessageOps };
+    });
+
     try {
       if (!isChannelE2e(channelId)) {
-        ws.editMessage(channelId, messageId, content);
+        ws.editMessage(channelId, messageId, content, clientRequestId);
       } else {
         // Encrypt the edited body before it leaves the device.
         void encryptForWire(channelId, content)
-          .then((cipher) => ws.editMessage(channelId, messageId, cipher))
-          .catch((err) => console.error('[channels] E2E edit failed:', err));
+          .then((cipher) => ws.editMessage(channelId, messageId, cipher, clientRequestId))
+          .catch((err) => revert(OFFLINE, err));
       }
     } catch (err) {
-      console.error('[channels] editMessage threw:', err);
+      revert(OFFLINE, err);
     }
   },
+
+  clearMessageActionError: () => set({ messageActionError: null }),
 
   deleteMessage: (messageId: string) => {
     const { ws, activeChannelId } = get();
     if (!ws || !activeChannelId) return;
+
+    // A delete that never left the device used to log to a console nobody has
+    // open and stop there: the confirm dialog closed, the message stayed, and
+    // nothing on screen said the request had not been made. Unlike an edit
+    // there is no optimistic change to undo — the whole defect was silence.
+    const clientRequestId = crypto.randomUUID();
+    const fail = (reason: string, err?: unknown) => {
+      if (err !== undefined) console.error('[channels] deleteMessage failed:', err);
+      set((s) => {
+        const pendingMessageOps = new Map(s.pendingMessageOps);
+        pendingMessageOps.delete(clientRequestId);
+        return { pendingMessageOps, messageActionError: reason };
+      });
+    };
+
+    set((s) => {
+      const pendingMessageOps = new Map(s.pendingMessageOps);
+      pendingMessageOps.set(clientRequestId, { messageId, revert: fail });
+      return { pendingMessageOps };
+    });
+
     try {
-      ws.deleteMessage(activeChannelId, messageId);
+      ws.deleteMessage(activeChannelId, messageId, clientRequestId);
     } catch (err) {
-      console.error('[channels] deleteMessage threw:', err);
+      fail('Message not deleted — you appear to be offline. Try again.', err);
     }
   },
 
+  resolveMessageOp: (messageId?: string) => {
+    if (!messageId) return;
+    set((s) => {
+      let changed = false;
+      const pendingMessageOps = new Map(s.pendingMessageOps);
+      for (const [id, op] of pendingMessageOps) {
+        if (op.messageId === messageId) {
+          pendingMessageOps.delete(id);
+          changed = true;
+        }
+      }
+      return changed ? { pendingMessageOps } : {};
+    });
+  },
+
+  retryOlderMessages: async (pseudonymId: string) => {
+    set({ olderError: null });
+    await get().loadOlderMessages(pseudonymId);
+  },
+
   loadOlderMessages: async (pseudonymId: string) => {
-    const { activeChannelId, messages, loadingOlder, hasMoreMessages } = get();
+    const { activeChannelId, messages, loadingOlder, hasMoreMessages, olderError } = get();
     if (!activeChannelId || messages.length === 0 || loadingOlder || !hasMoreMessages) return;
+    // A previous page failed. Do not retry on every scroll event — that is
+    // the loop the old `hasMoreMessages: false` existed to prevent. Retry is
+    // available, but the user has to ask for it.
+    if (olderError) return;
 
     set({ loadingOlder: true });
     try {
@@ -683,14 +938,24 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       set((state) => ({
         messages: [...olderReversed, ...state.messages],
         hasMoreMessages: older.length >= PAGE_SIZE,
+        olderError: null,
       }));
     } catch (err) {
       console.warn('[channels] loadOlderMessages failed:', err);
-      // Stop trying to load more if the request failed to prevent
-      // infinite retry loops on scroll — but only for the channel this
-      // request was issued for.
+      // Record the failure instead of declaring the history finished.
+      //
+      // Setting `hasMoreMessages: false` here did stop the scroll handler
+      // retrying in a loop, and it also told the user they had reached the
+      // beginning of the channel. One dropped request — a flaky network, a
+      // token refresh, a server restart — permanently ended scrollback for
+      // that channel, and looked identical to a short history. There was no
+      // way to tell the difference and no way to retry.
+      //
+      // `olderError` suppresses the automatic retry the same way, because
+      // the scroll handler checks it; the difference is that the UI can now
+      // say what happened and offer the retry explicitly.
       if (get().activeChannelId === activeChannelId) {
-        set({ hasMoreMessages: false });
+        set({ olderError: 'Could not load earlier messages.' });
       }
     } finally {
       set({ loadingOlder: false });
@@ -797,6 +1062,8 @@ export const useChannelsStore = create<ChannelsState>((set, get) => ({
       hasMoreMessages: true,
       ws: null,
       pendingSends: new Map<string, PendingSend>(),
+      pendingMessageOps: new Map(),
+      messageActionError: null,
       typingUsers: [],
       unreadCounts: {},
       lastReadMessageIds: {},

@@ -1,5 +1,6 @@
 {
   "type": "resumed",
   "channelId": "general",
-  "missedCount": 3
+  "missedCount": 3,
+  "cursorLost": false
 }

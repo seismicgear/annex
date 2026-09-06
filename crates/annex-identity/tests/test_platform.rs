@@ -101,12 +101,17 @@ fn test_second_identity_is_not_founder() {
     assert!(founder.can_invite, "founder should have can_invite");
     assert!(founder.can_federate, "founder should have can_federate");
 
-    // Second identity should NOT have founder capabilities
+    // Second identity should NOT have founder PRIVILEGES.
     let regular = create_platform_identity(&conn, server_id, "regular-id", RoleCode::Human)
         .expect("failed to create second identity");
+    // ...but it can speak. This assertion used to be `!regular.can_voice`,
+    // which encoded a defect rather than an intent: it left every member but
+    // the founder unable to join any call, on a server whose
+    // `ServerPolicy::voice_enabled` defaults to true. See
+    // `every_member_can_speak_but_only_the_founder_moderates`.
     assert!(
-        !regular.can_voice,
-        "second identity should NOT have can_voice"
+        regular.can_voice,
+        "voice is participation, not privilege — the server-level policy is the operator's control"
     );
     assert!(
         !regular.can_moderate,
@@ -209,4 +214,83 @@ fn test_would_remove_last_moderator_guards_lockout() {
             .expect("query should succeed"),
         "an inactive moderator does not count — founder is the last active moderator"
     );
+}
+
+/// Every member can speak; only the founder gets the privileges.
+///
+/// `can_voice` used to be founder-only, alongside moderate/invite/federate.
+/// That meant every member except the very first silently could not join any
+/// call — the join button rendered disabled reading "Voice is disabled by
+/// server policy for your identity", on a server whose
+/// `ServerPolicy::voice_enabled` defaults to true. The operator's switch said
+/// voice was on and nobody but the owner could use it.
+///
+/// It also hid every other voice defect behind it: two ordinary members could
+/// never get into a call together, so nothing downstream of "more than one
+/// person is talking" was reachable at all.
+#[test]
+fn every_member_can_speak_but_only_the_founder_moderates() {
+    let conn = Connection::open_in_memory().expect("open db");
+    run_migrations(&conn).expect("migrations");
+    let server_id = 1;
+
+    let founder = create_platform_identity(&conn, server_id, "founder-pseudonym", RoleCode::Human)
+        .expect("create founder");
+    let second = create_platform_identity(&conn, server_id, "second-pseudonym", RoleCode::Human)
+        .expect("create second");
+    let third = create_platform_identity(&conn, server_id, "third-pseudonym", RoleCode::Human)
+        .expect("create third");
+
+    for member in [&founder, &second, &third] {
+        assert!(
+            member.can_voice,
+            "{} cannot speak — voice is participation, not privilege",
+            member.pseudonym_id,
+        );
+    }
+
+    assert!(founder.can_moderate, "the first registrant is the founder");
+    for member in [&second, &third] {
+        assert!(
+            !member.can_moderate,
+            "{} must not be a moderator by registering",
+            member.pseudonym_id,
+        );
+        assert!(!member.can_invite);
+        assert!(!member.can_federate);
+    }
+}
+
+/// A moderator can still take voice away from one person.
+///
+/// The per-identity flag is the revocation mechanism; granting it at
+/// registration must not make it un-revokable.
+#[test]
+fn voice_can_still_be_revoked_from_an_individual() {
+    let conn = Connection::open_in_memory().expect("open db");
+    run_migrations(&conn).expect("migrations");
+    let server_id = 1;
+
+    create_platform_identity(&conn, server_id, "founder-pseudonym", RoleCode::Human)
+        .expect("create founder");
+    let member = create_platform_identity(&conn, server_id, "member-pseudonym", RoleCode::Human)
+        .expect("create member");
+    assert!(member.can_voice);
+
+    update_capabilities(
+        &conn,
+        server_id,
+        "member-pseudonym",
+        Capabilities {
+            can_voice: false,
+            can_moderate: false,
+            can_invite: false,
+            can_federate: false,
+            can_bridge: false,
+        },
+    )
+    .expect("update capabilities");
+
+    let after = get_platform_identity(&conn, server_id, "member-pseudonym").expect("reload");
+    assert!(!after.can_voice, "a moderator must be able to revoke voice");
 }

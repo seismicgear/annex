@@ -30,6 +30,15 @@ export function IdentitySetup() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const isWorking = phase === 'generating';
   const [showDeviceLink, setShowDeviceLink] = useState(false);
+  /**
+   * The chosen file's name.
+   *
+   * The native input used to be visible and provided this itself. Hiding it
+   * behind a styled button — which is what the other two file inputs in this
+   * app already do — means the app has to say which file is selected, or the
+   * user is asked to press Import with nothing telling them what they picked.
+   */
+  const [backupName, setBackupName] = useState<string | null>(null);
 
   const handleCreate = async (e: FormEvent) => {
     e.preventDefault();
@@ -42,6 +51,7 @@ export function IdentitySetup() {
     const text = await file.text();
     // Reset input so the same file can be re-selected
     if (fileInputRef.current) fileInputRef.current.value = '';
+    setBackupName(null);
     await importBackup(text);
   };
 
@@ -56,7 +66,7 @@ export function IdentitySetup() {
       <div className={`phase-status phase-${phase}`}>
         {PHASE_LABELS[phase] ?? ''}
       </div>
-      {error && <div className="error-message">{error}</div>}
+      {error && <div className="error-message" role="alert">{error}</div>}
 
       {/* Create new identity */}
       {!isWorking && (
@@ -74,7 +84,9 @@ export function IdentitySetup() {
       {/* Device linking — transfer identity from another device */}
       {!isWorking && (
         <div className="setup-divider">
-          <span>or</span>
+          {/* Purely decorative: it separates two alternatives that already
+              read as alternatives. Announcing "or" on its own is noise. */}
+          <span aria-hidden="true">or</span>
         </div>
       )}
       {!isWorking && (
@@ -109,9 +121,51 @@ export function IdentitySetup() {
       {/* Import backup */}
       {!isWorking && (
         <div className="import-section">
-          <h3>Import Backup</h3>
-          <input type="file" ref={fileInputRef} accept=".json" />
-          <button onClick={handleImport}>Import</button>
+          <h3 id="import-backup-heading">Import Backup</h3>
+          <p className="identity-description">
+            Restore an identity from a backup file you exported earlier.
+          </p>
+          {/*
+            Hidden and driven by the button below, matching the server-image
+            picker in AdminPanel and the attachment picker in MessageInput.
+            This one was left raw, so the very first screen of the app showed
+            the browser's default grey "Choose File" control against a dark
+            theme — the only unstyled control in the product, on the screen
+            that makes the first impression.
+          */}
+          <input
+            type="file"
+            ref={fileInputRef}
+            accept=".json"
+            aria-label="Choose an Annex backup file"
+            style={{ display: 'none' }}
+            onChange={(e) => setBackupName(e.target.files?.[0]?.name ?? null)}
+          />
+          <div className="import-actions">
+            <button
+              type="button"
+              className="secondary-btn"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              Choose backup file
+            </button>
+            {/*
+              Disabled until there is something to import. It used to `return`
+              silently when no file was chosen, so pressing it did nothing and
+              said nothing.
+            */}
+            <button
+              type="button"
+              className="primary-btn"
+              onClick={handleImport}
+              disabled={!backupName}
+            >
+              Import
+            </button>
+          </div>
+          <p className="identity-description import-filename">
+            {backupName ?? 'No file chosen.'}
+          </p>
         </div>
       )}
 

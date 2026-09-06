@@ -18,10 +18,28 @@ pub(crate) async fn start_embedded_server(
     state: tauri::State<'_, AppManagedState>,
 ) -> Result<String, String> {
     // Check if server is already running.
+    //
+    // "Running" has to mean "answering", not "we stored a URL once". The URL
+    // is recorded below BEFORE the readiness poll, so a start that timed out
+    // left this state populated and every retry returned Ok immediately —
+    // reporting success about a server that had never served a request. The
+    // frontend then went on to fail every call with "Failed to fetch" and no
+    // explanation, and the one honest error was the one the user had already
+    // dismissed. Re-check before claiming it.
     {
-        let guard = state.server.lock().map_err(|e| e.to_string())?;
-        if let Some(ref srv) = *guard {
-            return Ok(srv.url.clone());
+        let existing = {
+            let guard = state.server.lock().map_err(|e| e.to_string())?;
+            guard.as_ref().map(|srv| srv.url.clone())
+        };
+        if let Some(url) = existing {
+            // A short budget: this server was started earlier, so it is either
+            // up by now or it is not coming up.
+            if wait_for_health(&url, 30).await {
+                return Ok(url);
+            }
+            return Err(format!(
+                "the embedded server at {url} was started but is not responding"
+            ));
         }
     }
 
@@ -83,30 +101,62 @@ pub(crate) async fn start_embedded_server(
         }
     });
 
-    // Poll the health endpoint until the server is accepting connections.
-    // Without this, the frontend can fire API requests before axum::serve()
-    // has polled its first accept(), causing "Failed to fetch" on startup.
     // Budget: 150 attempts × 100ms = 15 seconds — generous for first-run
-    // scenarios where database migrations and Merkle tree restoration can
-    // be slow on modest hardware or cold disk caches.
+    // scenarios where database migrations and Merkle tree restoration can be
+    // slow on modest hardware or cold disk caches.
+    if !wait_for_health(&url, 150).await {
+        return Err("embedded server failed to become ready within 15 seconds".to_string());
+    }
+
+    Ok(url)
+}
+
+/// Poll `{url}/health` until it answers, or `attempts` × 100ms elapse.
+///
+/// Without this the frontend can fire API requests before `axum::serve` has
+/// polled its first `accept()`, which surfaces as "Failed to fetch" on
+/// startup. It is also what the idempotent early return above uses to decide
+/// whether an already-started server is actually serving.
+async fn wait_for_health(url: &str, attempts: u32) -> bool {
     let health_url = format!("{url}/health");
     let client = reqwest::Client::new();
-    let mut ready = false;
-    for attempt in 0u32..150 {
+    for attempt in 0..attempts {
         match client.get(&health_url).send().await {
             Ok(resp) if resp.status().is_success() => {
-                ready = true;
                 tracing::debug!(attempt, "embedded server health check passed");
-                break;
+                return true;
             }
             _ => {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
         }
     }
-    if !ready {
-        return Err("embedded server failed to become ready within 15 seconds".to_string());
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{routing::get, Router};
+
+    #[tokio::test]
+    async fn wait_for_health_sees_a_server_that_is_up() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let app = Router::new().route("/health", get(|| async { "ok" }));
+            let _ = axum::serve(listener, app).await;
+        });
+        assert!(wait_for_health(&format!("http://127.0.0.1:{port}"), 50).await);
     }
 
-    Ok(url)
+    #[tokio::test]
+    async fn wait_for_health_gives_up_on_a_port_nothing_is_serving() {
+        // Bound and dropped, so the port is almost certainly free and nothing
+        // is listening on it.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        assert!(!wait_for_health(&format!("http://127.0.0.1:{port}"), 3).await);
+    }
 }

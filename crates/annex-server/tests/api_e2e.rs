@@ -479,6 +479,12 @@ async fn e2e_flag_toggle_requires_moderation() {
     seed_channel(&pool, "chan");
     seed_identity(&pool, "mod", true);
     seed_identity(&pool, "user", false);
+    // `user` reads the flag below to check the toggle took effect. This test
+    // is about who may WRITE it; it needed a membership it never had, and by
+    // not having one it quietly asserted that any authenticated caller may
+    // read the flag for any channel — see
+    // `reading_the_e2e_flag_requires_membership_or_moderation`.
+    seed_member(&pool, "chan", "user");
 
     // Default is off.
     let resp = app
@@ -519,4 +525,68 @@ async fn e2e_flag_toggle_requires_moderation() {
         .await
         .unwrap();
     assert_eq!(json_body(resp).await["e2e_enabled"], true);
+}
+
+/// `GET /api/channels/{id}/e2e` was the one handler in this module with no
+/// membership check.
+///
+/// Its five siblings all call `is_member` first, and `get_channel_handler`
+/// states the rule the server means to keep: "Moderators can view any
+/// channel; regular users must be members, preventing metadata leakage on
+/// private channels." Whether a channel is end-to-end encrypted is exactly
+/// that kind of metadata, and `list_channels` — which any authenticated user
+/// can call — deliberately does not return it. This route did, for any
+/// channel, to anyone with a pseudonym.
+#[tokio::test]
+async fn reading_the_e2e_flag_requires_membership_or_moderation() {
+    let (app, pool) = common::setup_test_app().await;
+    seed_channel(&pool, "private-chan");
+    seed_identity(&pool, "member", false);
+    seed_identity(&pool, "outsider", false);
+    seed_identity(&pool, "mod", true);
+    seed_member(&pool, "private-chan", "member");
+
+    let resp = app
+        .clone()
+        .oneshot(request(
+            "GET",
+            "/api/channels/private-chan/e2e",
+            "outsider",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "a non-member learned whether a channel they cannot see is encrypted",
+    );
+
+    // A member still gets the answer — the client calls this on every channel
+    // open, after joining, so this is the path that must keep working.
+    let resp = app
+        .clone()
+        .oneshot(request(
+            "GET",
+            "/api/channels/private-chan/e2e",
+            "member",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(json_body(resp).await["e2e_enabled"], false);
+
+    // Moderators keep the same override `get_channel_handler` grants them,
+    // so the two routes cannot disagree about who may see a channel.
+    let resp = app
+        .oneshot(request(
+            "GET",
+            "/api/channels/private-chan/e2e",
+            "mod",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
 }

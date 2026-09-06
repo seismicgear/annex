@@ -34,15 +34,9 @@ function getDb(): Promise<IDBPDatabase> {
   return dbPromise;
 }
 
-const ACCENT_COLORS = [
-  '#e63946', '#646cff', '#4ade80', '#f87171', '#fbbf24', '#7eb8da',
-  '#b87eda', '#ff6b9d', '#c42836', '#10b981', '#6366f1', '#ec4899',
-];
+import { randomAccentColor } from '@/lib/accent-colors';
 
-/** Pick a random accent color for a new server entry. */
-export function randomAccentColor(): string {
-  return ACCENT_COLORS[Math.floor(Math.random() * ACCENT_COLORS.length)];
-}
+export { randomAccentColor };
 
 /** Save or update a server entry. */
 export async function saveServer(server: SavedServer): Promise<void> {

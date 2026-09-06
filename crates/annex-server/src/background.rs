@@ -116,6 +116,20 @@ pub async fn start_federation_outbox_task(state: Arc<AppState>) {
         max_attempts,
         "starting federation outbox task"
     );
+    // Say it out loud, at the one place an operator is already looking when
+    // federation is not delivering. The check this relaxes is also the one
+    // that silently drops every row to a LAN or VPN peer, so the presence of
+    // this line confirms the relaxation took effect, and its absence is the
+    // first thing to check when a private-network peer receives nothing.
+    if state.federation_config.allow_private_peer_addresses {
+        tracing::warn!(
+            "ANNEX_FEDERATION_ALLOW_PRIVATE_PEERS is enabled: federation peers at private, \
+             loopback and link-local addresses are permitted. Intended for LAN, container and \
+             VPN topologies. Peer URLs are operator-provisioned, but this does remove a \
+             defence-in-depth check against an `instances` row edited to point at an internal \
+             service."
+        );
+    }
 
     loop {
         sleep(interval).await;
@@ -286,13 +300,18 @@ pub async fn drain_outbox_batch(state: Arc<AppState>, batch_size: i64) -> Result
                 tokio::task::spawn_blocking(move || {
                     let conn = pool.get().ok();
                     if let Some(c) = conn {
-                        let _ = c.execute(
+                        if let Err(e) = c.execute(
                             "UPDATE federation_outbox SET attempts = attempts + 1, \
                              last_error = 'unknown peer', \
                              next_retry_at = datetime('now', '+1 hour'), \
                              updated_at = datetime('now') WHERE id = ?1",
                             rusqlite::params![id],
-                        );
+                        ) {
+                            tracing::error!(
+                                row = id,
+                                "outbox: could not record unknown-peer backoff: {e}"
+                            );
+                        }
                     }
                 });
                 continue;
@@ -301,7 +320,7 @@ pub async fn drain_outbox_batch(state: Arc<AppState>, batch_size: i64) -> Result
 
         // Defence-in-depth SSRF gate at dequeue time.
         //
-        // `relay_message` already applies `is_url_private_or_reserved`
+        // `relay_message` already applies `is_peer_url_disallowed`
         // at ENQUEUE time, so a row should never be written for a
         // private/loopback/link-local peer. But the outbox is durable
         // across restarts and the `instances` table is admin-editable,
@@ -312,22 +331,27 @@ pub async fn drain_outbox_batch(state: Arc<AppState>, batch_size: i64) -> Result
         // service. We mark the row as terminally failed — re-enqueue
         // requires a new message_id, which itself goes through the
         // enqueue-time SSRF gate.
-        if crate::api_link_preview::is_url_private_or_reserved(&peer_base) {
+        if crate::api_link_preview::is_peer_url_disallowed(
+            &peer_base,
+            state.federation_config.allow_private_peer_addresses,
+        ) {
             tracing::warn!(
                 outbox_id = id,
                 peer = %peer_base,
-                "dropping outbox row: peer base_url resolves to a private/reserved host (peer URL likely changed after enqueue)"
+                "dropping outbox row: peer base_url is not an allowed federation peer address (peer URL likely changed after enqueue)"
             );
             let pool = state.pool.clone();
             let _ = tokio::task::spawn_blocking(move || {
                 if let Ok(conn) = pool.get() {
-                    let _ = conn.execute(
+                    if let Err(e) = conn.execute(
                         "UPDATE federation_outbox SET status = 'failed', \
                          attempts = attempts + 1, \
-                         last_error = 'peer base_url is private/reserved (dequeue-time SSRF gate)', \
+                         last_error = 'peer base_url is not an allowed peer address (dequeue-time SSRF gate)', \
                          updated_at = datetime('now') WHERE id = ?1",
                         rusqlite::params![id],
-                    );
+                    ) {
+                        tracing::error!(row = id, "outbox: could not mark row failed: {e}");
+                    }
                 }
             })
             .await;
@@ -353,13 +377,26 @@ pub async fn drain_outbox_batch(state: Arc<AppState>, batch_size: i64) -> Result
                     let pool = state.pool.clone();
                     let _ = tokio::task::spawn_blocking(move || {
                         if let Ok(conn) = pool.get() {
-                            let _ = conn.execute(
+                            // The one that matters most. A delivered row
+                            // that cannot be marked delivered stays pending,
+                            // is sent again on the next tick, and keeps
+                            // going until `max_attempts` records it as
+                            // failed — a message the peer already has,
+                            // reported as undelivered, from a write nobody
+                            // was told about.
+                            if let Err(e) = conn.execute(
                                 "UPDATE federation_outbox SET status = 'delivered', \
                                  attempts = attempts + 1, \
                                  last_error = NULL, \
                                  updated_at = datetime('now') WHERE id = ?1",
                                 rusqlite::params![id],
-                            );
+                            ) {
+                                tracing::error!(
+                                    row = id,
+                                    "outbox: delivered, but could not mark it so — it will be \
+                                     redelivered until it exhausts its attempts: {e}"
+                                );
+                            }
                         }
                     })
                     .await;
@@ -371,7 +408,7 @@ pub async fn drain_outbox_batch(state: Arc<AppState>, batch_size: i64) -> Result
                     let pool = state.pool.clone();
                     let _ = tokio::task::spawn_blocking(move || {
                         if let Ok(conn) = pool.get() {
-                            let _ = conn.execute(
+                            if let Err(e) = conn.execute(
                                 "UPDATE federation_outbox SET attempts = attempts + 1, \
                                  last_error = ?1, \
                                  next_retry_at = datetime('now', ?2), \
@@ -384,7 +421,13 @@ pub async fn drain_outbox_batch(state: Arc<AppState>, batch_size: i64) -> Result
                                     format!("+{backoff} seconds"),
                                     id,
                                 ],
-                            );
+                            ) {
+                                tracing::error!(
+                                    row = id,
+                                    "outbox: could not record the HTTP failure and backoff, so \
+                                     this row will be retried immediately: {e}"
+                                );
+                            }
                         }
                     })
                     .await;
@@ -395,13 +438,19 @@ pub async fn drain_outbox_batch(state: Arc<AppState>, batch_size: i64) -> Result
                     let err_str = e.to_string();
                     let _ = tokio::task::spawn_blocking(move || {
                         if let Ok(conn) = pool.get() {
-                            let _ = conn.execute(
+                            if let Err(e) = conn.execute(
                                 "UPDATE federation_outbox SET attempts = attempts + 1, \
                                  last_error = ?1, \
                                  next_retry_at = datetime('now', ?2), \
                                  updated_at = datetime('now') WHERE id = ?3",
                                 rusqlite::params![err_str, format!("+{backoff} seconds"), id,],
-                            );
+                            ) {
+                                tracing::error!(
+                                    row = id,
+                                    "outbox: could not record the transport failure and backoff, \
+                                     so this row will be retried immediately: {e}"
+                                );
+                            }
                         }
                     })
                     .await;
@@ -488,6 +537,105 @@ pub async fn start_db_maintenance_task(state: Arc<AppState>) {
     }
 }
 
+/// Proactive half of the storage gate.
+///
+/// `storage_health`'s module header has always named this task as one
+/// of the two ways the gate is promoted — and only the other one, the
+/// reactive `SQLITE_FULL` trip, was ever wired. So
+/// `ANNEX_STORAGE_BLOCK_FREE_BYTES`, documented as the point where "the
+/// server refuses writes with HTTP 507", parsed, validated, reached
+/// `AppState`, and was read by nothing: `evaluate_db_file_size` existed,
+/// was unit-tested, and had no caller outside its own tests. An operator
+/// who set it got the behaviour of one who did not — writes flowed until
+/// SQLite itself returned `SQLITE_FULL`, which is the late, ambiguous
+/// signal the module was written to replace.
+///
+/// Returns immediately when `storage.max_db_bytes` is 0, so it is always
+/// safe to spawn. That is the default, and it is logged rather than
+/// silent: the thresholds are headroom beneath the cap, so without a cap
+/// there is nothing to measure them against.
+pub async fn start_storage_probe_task(state: Arc<AppState>, db_path: std::path::PathBuf) {
+    let max_bytes = state.storage_config.max_db_bytes;
+    if max_bytes == 0 {
+        tracing::info!(
+            "storage probe disabled (storage.max_db_bytes = 0) — the gate can still \
+             close reactively on a SQLite write error"
+        );
+        return;
+    }
+
+    let warn_free = state.storage_config.warn_free_bytes;
+    let block_free = state.storage_config.block_free_bytes;
+    tracing::info!(
+        max_db_bytes = max_bytes,
+        warn_free_bytes = warn_free,
+        block_free_bytes = block_free,
+        interval_seconds = STORAGE_PROBE_INTERVAL.as_secs(),
+        "starting storage probe task"
+    );
+
+    // Check before the first sleep. A server restarted onto a database
+    // that is already over the cap should refuse writes immediately,
+    // not spend the first interval accepting them.
+    let mut last = probe_once(&state, &db_path, warn_free, block_free, max_bytes).await;
+    if last != crate::storage_health::StorageState::Healthy {
+        tracing::warn!(
+            state = last.as_str(),
+            reason = %state.storage_health.reason(),
+            "storage gate is not healthy at startup"
+        );
+    }
+
+    loop {
+        sleep(STORAGE_PROBE_INTERVAL).await;
+        let now = probe_once(&state, &db_path, warn_free, block_free, max_bytes).await;
+        // Log transitions only. At one probe a minute, logging every
+        // tick would bury the transition that matters in noise.
+        if now != last {
+            tracing::warn!(
+                from = last.as_str(),
+                to = now.as_str(),
+                reason = %state.storage_health.reason(),
+                "storage gate state changed"
+            );
+            last = now;
+        }
+    }
+}
+
+/// One pass of the probe. `std::fs::metadata` is a blocking syscall, so
+/// it goes to the blocking pool like the maintenance task's SQLite work.
+async fn probe_once(
+    state: &Arc<AppState>,
+    db_path: &std::path::Path,
+    warn_free: u64,
+    block_free: u64,
+    max_bytes: u64,
+) -> crate::storage_health::StorageState {
+    let health = state.storage_health.clone();
+    let path = db_path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        crate::storage_health::evaluate_db_file_size(
+            &health,
+            &path,
+            warn_free,
+            block_free,
+            Some(max_bytes),
+        )
+    })
+    .await
+    // A panic in the blocking pool must not be read as "healthy" — that
+    // would be the gate reporting the reassuring answer because it
+    // failed to look. Report what the gate currently holds instead.
+    .unwrap_or_else(|_| state.storage_health.state())
+}
+
+/// How often the storage probe stats the database file. Fixed rather
+/// than configurable: a `stat` is cheap enough that a minute costs
+/// nothing, and frequent enough that the gate closes well inside the
+/// window between "filling up" and "full".
+const STORAGE_PROBE_INTERVAL: Duration = Duration::from_secs(60);
+
 /// Periodically deactivates federation agreements that have gone silent past
 /// the configured TTL (`federation.agreement_ttl_days`).
 ///
@@ -538,6 +686,46 @@ fn backoff_seconds(next_attempt: u32) -> u64 {
     let cap: u64 = 3600;
     let shift = next_attempt.saturating_sub(1).min(8);
     (base.saturating_mul(1u64 << shift)).min(cap)
+}
+
+/// How many attempts of the backoff schedule can still be accepted by a peer,
+/// given the receiver's live freshness window.
+///
+/// The outbox posts to `/api/federation/messages`, which checks freshness in
+/// `DeliveryMode::Live` and rejects anything whose `created_at` is older than
+/// `freshness_window_seconds`. The envelope is signed at enqueue and its
+/// timestamp never moves, so once the cumulative backoff passes that window
+/// every remaining retry is guaranteed to be rejected — not "likely to fail",
+/// but structurally incapable of succeeding.
+///
+/// With the shipped defaults that was 12 attempts against a 300s window: the
+/// initial send, retries at 60s and 180s, and then nine more at 420s, 900s,
+/// 1860s … out to roughly three hours, all of them rejected as too old, after
+/// which the row was marked failed and the message dropped. The retries cost
+/// the peer a signature verification each and told the operator nothing, and
+/// `DeliveryMode::Catchup` — the mode that would accept them — is never
+/// constructed anywhere, so there is nothing to fall back to.
+///
+/// Returns the number of sends (including the first) that land inside the
+/// window, floored at 1.
+pub(crate) fn attempts_within_freshness_window(freshness_window_seconds: i64) -> u32 {
+    if freshness_window_seconds <= 0 {
+        return 1;
+    }
+    let window = freshness_window_seconds as u64;
+    let mut elapsed = 0u64;
+    // The first send happens immediately, so it always counts.
+    let mut sends = 1u32;
+    loop {
+        let next = backoff_seconds(sends);
+        match elapsed.checked_add(next) {
+            Some(t) if t <= window => {
+                elapsed = t;
+                sends += 1;
+            }
+            _ => return sends,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -613,5 +801,43 @@ mod backoff_tests {
             assert!(s >= 60, "n={n} → {s}");
             assert!(s <= 3600, "n={n} → {s}");
         }
+    }
+}
+
+#[cfg(test)]
+mod freshness_budget_tests {
+    use super::attempts_within_freshness_window;
+
+    /// The shipped pairing. The backoff is 60s, 120s, 240s …, so against a
+    /// 300s window the immediate send plus retries at 60s and 180s land, and
+    /// the one at 420s does not.
+    #[test]
+    fn the_default_window_admits_three_sends() {
+        assert_eq!(attempts_within_freshness_window(300), 3);
+    }
+
+    /// The old default was 12 against that same window — nine sends that the
+    /// receiver was obliged to reject as too old, spread over ~3 hours.
+    #[test]
+    fn twelve_attempts_never_fitted_the_default_window() {
+        assert!(
+            attempts_within_freshness_window(300) < 12,
+            "if this ever passes, the retry budget and the freshness window \
+             have been reconciled and the warning at startup is dead code",
+        );
+    }
+
+    #[test]
+    fn a_wider_window_admits_more_sends() {
+        // 60 + 120 + 240 + 480 = 900
+        assert_eq!(attempts_within_freshness_window(900), 5);
+    }
+
+    #[test]
+    fn a_window_smaller_than_the_first_backoff_still_admits_the_first_send() {
+        // The initial POST happens immediately and is always worth making.
+        assert_eq!(attempts_within_freshness_window(30), 1);
+        assert_eq!(attempts_within_freshness_window(0), 1);
+        assert_eq!(attempts_within_freshness_window(-5), 1);
     }
 }

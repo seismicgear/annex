@@ -13,12 +13,13 @@
  * (if available) or truncated pseudonyms.
  */
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback, type ReactNode } from 'react';
 import { useChannelsStore } from '@/stores/channels';
 import { useIdentityStore } from '@/stores/identity';
 import { useServersStore } from '@/stores/servers';
 import { useUsernameStore } from '@/stores/usernames';
 import { LinkPreview } from '@/components/LinkPreview';
+import { Modal } from '@/components/Modal';
 import { extractUrls } from '@/lib/link-preview';
 import { getPersonasForIdentity } from '@/lib/personas';
 import { resolveUrl } from '@/lib/api';
@@ -149,6 +150,7 @@ function MessageBubble({
   const [showHistory, setShowHistory] = useState(false);
   const [editHistory, setEditHistory] = useState<MessageEdit[] | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const [canModify, setCanModify] = useState(
     isSelf && !isDeleted && isWithinEditWindow(message.created_at),
   );
@@ -198,6 +200,14 @@ function MessageBubble({
 
   // Show server username if available, then persona display name for own messages, then truncated pseudonym.
   let displayName: string;
+  // True when the name shown is a raw cryptographic id rather than something a
+  // person chose. Every other place the app prints one — `.pseudonym`,
+  // `.member-pseudonym`, `.event-col-entity` — sets it in monospace; the
+  // message header was the one that did not, so an id rendered here in a
+  // proportional font at a width that depended on which hex digits it happened
+  // to contain, and neighbouring bubbles sized differently for no visible
+  // reason.
+  let nameIsPseudonym = false;
   const cachedName = getDisplayName(message.sender_pseudonym);
   if (cachedName) {
     displayName = cachedName;
@@ -205,6 +215,7 @@ function MessageBubble({
     displayName = selfPersona.displayName;
   } else {
     displayName = message.sender_pseudonym.slice(0, 12) + '...';
+    nameIsPseudonym = true;
   }
 
   const avatar = isSelf && selfPersona?.avatarUrl ? selfPersona.avatarUrl : null;
@@ -238,24 +249,41 @@ function MessageBubble({
     setConfirmingDelete(false);
   }, [message.message_id, deleteMessage, confirmingDelete]);
 
+  /**
+   * Fetch the edit trail. A failure must never be written into
+   * `editHistory`: an empty array renders as "No edit history found", which
+   * is a claim about the message — *this was never edited* — on a message
+   * that visibly says it was. The audit trail is the one thing this panel
+   * exists to be trusted about, so a dropped request says so and offers a
+   * retry instead.
+   */
+  const loadHistory = useCallback(async () => {
+    if (!activeChannelId) return;
+    setHistoryLoading(true);
+    setHistoryError(null);
+    try {
+      const edits = await api.getMessageEdits(pseudonymId, activeChannelId, message.message_id);
+      setEditHistory(edits);
+    } catch (err) {
+      setEditHistory(null);
+      setHistoryError(
+        err instanceof Error ? err.message : 'the server did not answer',
+      );
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [pseudonymId, activeChannelId, message.message_id]);
+
   const handleShowHistory = useCallback(async () => {
     if (showHistory) {
       setShowHistory(false);
       return;
     }
     setShowHistory(true);
-    if (!editHistory && activeChannelId) {
-      setHistoryLoading(true);
-      try {
-        const edits = await api.getMessageEdits(pseudonymId, activeChannelId, message.message_id);
-        setEditHistory(edits);
-      } catch {
-        setEditHistory([]);
-      } finally {
-        setHistoryLoading(false);
-      }
-    }
-  }, [showHistory, editHistory, pseudonymId, activeChannelId, message.message_id]);
+    // Retry on reopen after a failure — `editHistory` stays null, so the
+    // panel does not cache a failure as an answer.
+    if (!editHistory) await loadHistory();
+  }, [showHistory, editHistory, loadHistory]);
 
   const handleEditKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -282,7 +310,12 @@ function MessageBubble({
             {displayName.charAt(0).toUpperCase()}
           </span>
         )}
-        <span className="sender" title={message.sender_pseudonym}>{displayName}</span>
+        <span
+          className={nameIsPseudonym ? 'sender sender-pseudonym' : 'sender'}
+          title={message.sender_pseudonym}
+        >
+          {displayName}
+        </span>
         {message.edited_at && !isDeleted && (
           <button
             className="edited-badge"
@@ -357,10 +390,17 @@ function MessageBubble({
       {message.reply_to_message_id && !isDeleted && (() => {
         const parent = allMessages.find((m) => m.message_id === message.reply_to_message_id);
         if (!parent) return null;
-        const parentName = getDisplayName(parent.sender_pseudonym) ?? parent.sender_pseudonym.slice(0, 12) + '...';
+        const parentResolved = getDisplayName(parent.sender_pseudonym);
+        const parentName = parentResolved ?? parent.sender_pseudonym.slice(0, 12) + '...';
         return (
           <div className="reply-context">
-            <span className="reply-context-author">{parentName}</span>
+            <span
+              className={
+                parentResolved ? 'reply-context-author' : 'reply-context-author reply-context-author-pseudonym'
+              }
+            >
+              {parentName}
+            </span>
             <span className="reply-context-text">{parent.content.slice(0, 100)}{parent.content.length > 100 ? '...' : ''}</span>
           </div>
         );
@@ -373,6 +413,7 @@ function MessageBubble({
           <textarea
             ref={editInputRef}
             className="message-edit-input"
+            aria-label="Edit message"
             value={editText}
             onChange={(e) => setEditText(e.target.value)}
             onKeyDown={handleEditKeyDown}
@@ -389,13 +430,26 @@ function MessageBubble({
           {imageUrls.length > 0 && (
             <div className="message-images">
               {imageUrls.map((url) => (
+                // Opening an image at full size was mouse-only: an `<img>`
+                // with an onClick, no role, no tabIndex and no key handler.
+                // The lightbox it opens is the one surface that covers the
+                // whole app, and a keyboard user could not get to it at all.
                 <img
                   key={url}
                   src={resolveUrl(url)}
                   alt="Uploaded image"
                   className="message-inline-image"
                   loading="lazy"
+                  role="button"
+                  tabIndex={0}
+                  aria-label="View image full size"
                   onClick={() => onImageClick(url)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onImageClick(url);
+                    }
+                  }}
                 />
               ))}
             </div>
@@ -449,6 +503,11 @@ function MessageBubble({
           <div className="edit-history-header">Edit History</div>
           {historyLoading ? (
             <div className="edit-history-loading">Loading...</div>
+          ) : historyError ? (
+            <div className="edit-history-error" role="alert">
+              <span>Could not load edit history: {historyError}</span>
+              <button onClick={loadHistory}>Retry</button>
+            </div>
           ) : editHistory && editHistory.length > 0 ? (
             <div className="edit-history-list">
               {editHistory.map((edit) => (
@@ -478,9 +537,17 @@ function MessageBubble({
 
 export function MessageView() {
   const identity = useIdentityStore((s) => s.identity);
-  const { messages, activeChannelId, loadOlderMessages, loadingOlder, hasMoreMessages, historyLoading, historyError, typingUsers } = useChannelsStore();
+  const { messages, activeChannelId, loadOlderMessages, loadingOlder, hasMoreMessages, historyLoading, historyError, typingUsers, olderError, retryOlderMessages, messageActionError, clearMessageActionError } = useChannelsStore();
+  // Whether the channel LIST itself failed to load, as opposed to this
+  // channel's history. Without it the no-channel-selected branch below tells
+  // the user to pick from a list that is empty because the request failed.
+  const channelListError = useChannelsStore((s) => s.error);
+  const channelListLoading = useChannelsStore((s) => s.loading);
   const selectChannel = useChannelsStore((s) => s.selectChannel);
   const loadVisibleUsernames = useUsernameStore((s) => s.loadVisibleUsernames);
+  // The cache itself, not the getter: this has to re-evaluate when a fetch
+  // fills in names, or the effect below would refetch on every render.
+  const usernameCache = useUsernameStore((s) => s.cache);
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const prevMessageCount = useRef(0);
@@ -493,16 +560,46 @@ export function MessageView() {
   // Load the local user's persona for display name / avatar
   useEffect(() => {
     if (!identity) return;
+    // The read is local and fast, but it is keyed on the identity — and this
+    // app is built on keeping identities apart. A late resolve after a switch
+    // would show one identity's persona name and colour while another is
+    // active, which is the one mistake it must not make.
+    let cancelled = false;
     getPersonasForIdentity(identity.id).then((list) => {
-      setSelfPersona(list[0] ?? null);
+      if (!cancelled) setSelfPersona(list[0] ?? null);
     });
+    return () => {
+      cancelled = true;
+    };
   }, [identity, serverAccentColor]);
 
-  // Load visible usernames from server
+  // Load visible usernames from server.
+  //
+  // Refetched when a sender appears that the cache cannot name, not just
+  // once on mount. The cache was previously filled a single time per
+  // identity, so anyone who joined the server, was granted username
+  // visibility, or simply spoke for the first time after the chat was
+  // opened stayed a raw pseudonym for the rest of the session — and the
+  // longer a session ran the more of the room was anonymous.
+  //
+  // Keyed on the set of unnamed senders so a channel full of people who are
+  // legitimately unnamed (visibility not granted) settles after one attempt
+  // instead of refetching forever: the key only changes when a NEW unknown
+  // pseudonym shows up.
+  const unnamedKey = useMemo(() => {
+    const unknown = new Set<string>();
+    for (const m of messages) {
+      if (m.sender_pseudonym && !usernameCache[m.sender_pseudonym]) {
+        unknown.add(m.sender_pseudonym);
+      }
+    }
+    return [...unknown].sort().join(',');
+  }, [messages, usernameCache]);
+
   useEffect(() => {
     if (!identity?.pseudonymId) return;
-    loadVisibleUsernames(identity.pseudonymId);
-  }, [identity?.pseudonymId, loadVisibleUsernames]);
+    void loadVisibleUsernames(identity.pseudonymId);
+  }, [identity?.pseudonymId, loadVisibleUsernames, unnamedKey]);
 
   // Auto-scroll to bottom on new messages; preserve scroll position on prepend
   useEffect(() => {
@@ -540,25 +637,56 @@ export function MessageView() {
     }
   };
 
+  // Every state renders through the same shell.
+  //
+  // The empty, loading and error branches used to return a bare
+  // `<div className="message-view empty">`, which cost two things. axe reported
+  // `scrollable-region-focusable` against them — `.message-view` scrolls, and a
+  // scrollable region that cannot take focus cannot be scrolled from the
+  // keyboard at all. Less visibly, `role="log"` and `aria-live="polite"` only
+  // existed on the populated branch, so switching to an empty channel
+  // destroyed the live region and the first message to arrive created it and
+  // landed in the same tick — which is exactly the case a screen reader does
+  // not announce.
+  const shell = (children: ReactNode, extraClass = '') => (
+    <div
+      className={`message-view ${extraClass}`.trim()}
+      role="log"
+      aria-label="Message history"
+      aria-live="polite"
+      tabIndex={0}
+    >
+      {children}
+    </div>
+  );
+
   if (!activeChannelId) {
-    return (
-      <div className="message-view empty">
-        <p>Select a channel to start chatting</p>
-      </div>
-    );
+    // "Select a channel to start chatting" is an instruction the user cannot
+    // follow when the sidebar is empty because its request failed — the
+    // rate-limited and offline states both land here, with one region saying
+    // the load failed and this one implying nothing is wrong. Say the same
+    // thing the sidebar says instead, and point at the retry that lives there.
+    if (channelListError) {
+      return shell(
+        <p className="error-message">
+          Your channels could not be loaded. Retry from the channel list.
+        </p>,
+        'empty',
+      );
+    }
+    if (channelListLoading) {
+      return shell(<p>Loading channels...</p>, 'empty');
+    }
+    return shell(<p>Select a channel to start chatting</p>, 'empty');
   }
 
   if (historyLoading) {
-    return (
-      <div className="message-view empty">
-        <p>Loading channel history...</p>
-      </div>
-    );
+    return shell(<p>Loading channel history...</p>, 'empty');
   }
 
   if (historyError) {
-    return (
-      <div className="message-view empty">
+    return shell(
+      <>
         <p className="error-message">{historyError}</p>
         <button
           className="primary-btn"
@@ -570,21 +698,39 @@ export function MessageView() {
         >
           Retry
         </button>
-      </div>
+      </>,
+      'empty',
     );
   }
 
   if (messages.length === 0 && !loadingOlder) {
-    return (
-      <div className="message-view empty">
-        <p>No messages yet — be the first to say something!</p>
-      </div>
-    );
+    return shell(<p>No messages yet — be the first to say something!</p>, 'empty');
   }
 
   return (
     <>
-      <div className="message-view" ref={containerRef} onScroll={handleScroll} role="log" aria-label="Message history" aria-live="polite">
+      {/* Same contract as `shell` above; this branch keeps its own element
+          because it needs the scroll ref and handler. */}
+      <div
+        className="message-view"
+        ref={containerRef}
+        onScroll={handleScroll}
+        role="log"
+        aria-label="Message history"
+        aria-live="polite"
+        tabIndex={0}
+      >
+        {olderError && (
+          <div className="scrollback-error" role="alert">
+            <span>{olderError}</span>
+            <button
+              type="button"
+              onClick={() => identity?.pseudonymId && void retryOlderMessages(identity.pseudonymId)}
+            >
+              Retry
+            </button>
+          </div>
+        )}
         {messages.map((msg: Message) => (
           <MessageBubble
             key={msg.clientRequestId ?? msg.message_id}
@@ -607,16 +753,38 @@ export function MessageView() {
         <div ref={bottomRef} />
       </div>
 
+      {messageActionError && (
+        <div className="message-action-error" role="alert">
+          <span>{messageActionError}</span>
+          <button type="button" onClick={clearMessageActionError} aria-label="Dismiss">&times;</button>
+        </div>
+      )}
+
+      {/*
+        The lightbox is a modal — it covers the entire application — and it
+        hand-rolled its own overlay instead of using `Modal`, so it had none
+        of what that provides: no `role="dialog"`, no focus moved into it, no
+        focus trap, and Escape did nothing. A keyboard user who reached it was
+        left tabbing through the page underneath, which the overlay hides.
+        It also escaped `manifest.spec.ts`, whose modal detector looks for
+        `.dialog-overlay` and cannot see a copy under another class name.
+      */}
       {lightboxUrl && (
-        <div className="image-lightbox" onClick={() => setLightboxUrl(null)}>
+        <Modal
+          onClose={() => setLightboxUrl(null)}
+          className="image-lightbox"
+          overlayClassName="image-lightbox-overlay"
+          label="Image at full size"
+        >
           <img src={resolveUrl(lightboxUrl)} alt="Full size" />
           <button
             className="lightbox-close"
             onClick={() => setLightboxUrl(null)}
+            aria-label="Close image"
           >
             x
           </button>
-        </div>
+        </Modal>
       )}
     </>
   );

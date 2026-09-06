@@ -26,7 +26,7 @@
 
 use crate::ws::context::CommandContext;
 use crate::ws::dispatch::{check_ws_membership, MembershipResult, MAX_WS_MESSAGE_CONTENT_LEN};
-use crate::ws::error::send_ws_error;
+use crate::ws::error::send_ws_error_with_id;
 use crate::ws::protocol::{OutgoingMessage, WsMessagePayload};
 
 pub(crate) async fn handle(
@@ -34,16 +34,20 @@ pub(crate) async fn handle(
     channel_id: String,
     message_id: String,
     content: String,
+    client_request_id: Option<String>,
 ) {
+    // Every error this handler can send goes through here, so none of them
+    // can lose the correlation id and leave the client unable to tell which
+    // of its in-flight operations was refused.
+    let fail = |msg: String| send_ws_error_with_id(ctx.tx, msg, client_request_id.clone());
     if content.trim().is_empty() {
-        send_ws_error(ctx.tx, "Message content must not be empty".to_string());
+        fail("Message content must not be empty".to_string());
         return;
     }
     if content.len() > MAX_WS_MESSAGE_CONTENT_LEN {
-        send_ws_error(
-            ctx.tx,
-            format!("Message content exceeds maximum length of {MAX_WS_MESSAGE_CONTENT_LEN} bytes"),
-        );
+        fail(format!(
+            "Message content exceeds maximum length of {MAX_WS_MESSAGE_CONTENT_LEN} bytes"
+        ));
         return;
     }
 
@@ -57,7 +61,7 @@ pub(crate) async fn handle(
     {
         MembershipResult::Allowed => {}
         MembershipResult::Denied => {
-            send_ws_error(ctx.tx, format!("Not a member of channel {channel_id}"));
+            fail(format!("Not a member of channel {channel_id}"));
             return;
         }
         MembershipResult::Error(e) => {
@@ -67,10 +71,7 @@ pub(crate) async fn handle(
                 "edit membership check failed: {}",
                 e
             );
-            send_ws_error(
-                ctx.tx,
-                "Internal error checking channel membership".to_string(),
-            );
+            fail("Internal error checking channel membership".to_string());
             return;
         }
     }
@@ -116,7 +117,7 @@ pub(crate) async fn handle(
             }
         }
         Err(e) => {
-            send_ws_error(ctx.tx, format!("Edit failed: {e}"));
+            fail(format!("Edit failed: {e}"));
         }
     }
 }

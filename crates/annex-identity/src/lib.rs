@@ -17,7 +17,10 @@ pub mod zk;
 
 pub use commitment::generate_commitment;
 pub use merkle::MerkleTree;
-pub use nullifier::{check_nullifier_exists, insert_nullifier};
+pub use nullifier::{
+    backfill_nullifier_owner, check_nullifier_exists, existing_nullifier_owner, insert_nullifier,
+    NullifierOwner,
+};
 pub use platform::{
     create_platform_identity, deactivate_platform_identity, ensure_founder, get_platform_identity,
     update_capabilities, would_remove_last_moderator, Capabilities, PlatformIdentity,

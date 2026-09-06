@@ -1,0 +1,261 @@
+# UI Audit
+
+A repeatable pass over every surface a user can touch: screenshot it, audit it,
+record what is wrong, and fail CI when it changes unintentionally.
+
+Before this existed, `client/e2e/`, `client/e2e-puppeteer/` and
+`scripts/e2e-server.sh` were referenced by **zero** CI workflows, there were no
+screenshot baselines anywhere in the repo, and the browser suites covered
+roughly 8 of the app's ~50 distinct visual states.
+
+## Run it
+
+```bash
+bash scripts/ui-audit.sh                    # full run against a fresh server
+bash scripts/ui-audit.sh --grep chat        # one surface, while iterating
+bash scripts/ui-audit.sh --keep-server      # reuse a running server (see caveat)
+bash scripts/ui-audit.sh --update-baselines # re-record after an intended change
+```
+
+Outputs:
+
+| Path | What it is |
+|---|---|
+| `client/e2e/audit/baselines/<viewport>/<surface>.png` | Approved screenshots. **Tracked** — these are the diff target. |
+| `docs/ui-audit/findings.json` | Machine-readable ledger. **Tracked** — sorted so it diffs cleanly, and a reviewer can read what the audit currently finds without running it. Only a FULL run rewrites it: a `--grep` run would narrow it to its subset and a run that captured nothing would empty it, and both look like a clean sweep in `git diff`. |
+| `docs/ui-audit/index.html` | Contact sheet: every surface, every viewport, with its findings. Its header says how many surfaces **this run** exercised, and banners a partial or empty one. |
+| `docs/ui-audit/captured.jsonl` | One line per surface the run started, written by `capture.spec.ts`. Gitignored, cleared at run start. It is the only thing that tells the report what the run in front of it did — without it the report counted the tracked baselines directory, which no run clears, and announced "103 surfaces captured · 0 findings" after a run that captured nothing. |
+| `client/e2e/audit/diagnostics/` | Screenshots of surfaces the run could not reach. Gitignored. |
+
+### Why the server restarts by default
+
+The audit's `founder` role must be the **earliest identity to register**,
+because the server promotes the earliest registrant to moderator
+(`ensure_founder`) and that is the only path to the admin surfaces. Running
+against a server that already has identities produces a founder with no admin
+rights, so the setup fails loudly instead of capturing a half-empty audit.
+`--keep-server` skips the restart and will hit exactly that if identities
+already exist.
+
+## The desktop lane (journey stage 01)
+
+```bash
+bash scripts/desktop-audit.sh              # all three layers
+bash scripts/desktop-audit.sh --no-package # skip the bundle/install cycle
+```
+
+A browser against the served SPA reaches everything except what only exists in
+the desktop shell: the packaged installer, the `annex://` protocol handler the
+OS registers at install time, the first-run wipe, and the launch path. Those
+are the first things a real user touches, so they get their own lane.
+
+Three layers, cheapest first:
+
+1. **compile** — `cargo check` and `clippy -D warnings` on the Tauri crate.
+2. **logic** — `cargo test -p annex-desktop`, covering deep-link parsing,
+   startup prefs, config and media detection. (No count here on purpose: this
+   said "15 tests" when the crate had 19, and a number in prose is a claim
+   nothing re-checks. `grep -rc '#\[test\]' crates/annex-desktop/src` is the
+   answer that cannot go stale.) The desktop *build* jobs skip these because
+   the test binary links every Tauri dep a second time and exhausts a standard
+   runner's disk; this script checks for ~8 GB of headroom and reports a skip
+   rather than dying mid-link.
+3. **package** — build the `.deb`, `dpkg -i`, assert the binary lands on PATH
+   and that `x-scheme-handler/annex` is registered (without it every invite
+   link a user clicks goes nowhere), launch headless under Xvfb and confirm it
+   is still alive after 12s, then `dpkg -r` and confirm removal.
+
+Layer 3 needs root or passwordless sudo for dpkg and is skipped cleanly
+without either. Runs in CI as the `desktop-audit` job.
+
+## How it fits together
+
+```
+scripts/ui-audit.sh
+  ├─ scripts/e2e-server.sh start        fresh DB, built client, :3000
+  └─ playwright --project=audit
+       ├─ audit-setup (roles.setup.ts)  warm auth state + seed fixtures
+       └─ audit
+            ├─ manifest.spec.ts         static guards on the manifest
+            └─ capture.spec.ts          screenshot + audit every surface
+```
+
+| File | Role |
+|---|---|
+| `client/e2e/audit/surfaces.ts` | **The manifest.** Every capturable surface: id, journey stage, how to reach it, which role, what is masked, which audits are waived and why. |
+| `client/e2e/audit/types.ts` | The contract: stages, roles, viewports, audits, findings. |
+| `client/e2e/audit/nav.ts` | Navigation recipes and capture stabilisation. |
+| `client/e2e/audit/roles.ts` / `roles.setup.ts` | Warm authentication state and fixture seeding. |
+| `client/e2e/audit/audits.ts` | The automated checks. |
+| `client/e2e/audit/capture.spec.ts` | The runner. |
+| `client/e2e/audit/manifest.spec.ts` | Guards that keep the manifest honest. |
+| `scripts/ui-audit-report.mjs` | Renders the contact sheet. |
+
+## Adding a surface
+
+Add an entry to `SURFACES` in `client/e2e/audit/surfaces.ts`:
+
+```ts
+{
+  id: 'admin-server-policy',        // stable; becomes the screenshot filename
+  stage: '09-admin',                // journey order
+  title: 'Admin — server policy',
+  role: 'founder',                  // fresh | member | founder | second-member
+  intent: 'Why this screenshot exists — a reviewer reads this in the report.',
+  navigate: async (page) => { await openAdminSection(page, 'Server Policy'); },
+  clip: '.view-content',            // optional: element instead of viewport
+  mask: ['.some-random-id'],        // optional: extra nondeterministic regions
+}
+```
+
+Then record its baseline with a **full** run:
+
+```bash
+bash scripts/ui-audit.sh --update-baselines
+```
+
+Not `--grep`. The surfaces share one server and one database and run in
+manifest order, so a single-surface run records a state that never occurs in a
+real one — the channel has fewer messages in it, no earlier surface has
+uploaded anything, and the baseline you commit will diff against the next full
+run. `--grep` is for iterating on a surface's navigation, never for recording.
+
+Then run once more **without** `--update-baselines`. A recording run rewrites
+whatever it sees, so it cannot fail on drift and proves nothing; the plain run
+afterwards is the evidence, and the tree should be clean when it finishes.
+
+One trap in that first step: `--update-baselines` rewrites a baseline only
+when its comparison **fails**. A change that lands just inside
+`maxDiffPixelRatio: 0.005` leaves the old PNG alone, so a surface you know you
+changed can survive a recording run still carrying its previous baseline, and
+fail a later run when ordinary anti-aliasing noise tips it over. That reads as
+flakiness and is not. If you changed something and want its baseline
+definitely regenerated, delete the file first — a missing snapshot is always
+written.
+
+Four things make a surface flaky, each learned by writing one:
+
+- **Do not leave state behind.** A surface that posts, uploads or provisions
+  against the real server changes what every later surface sees. If it must
+  write, make sure what it leaves works — `message-image-lightbox` first
+  stubbed the upload to return a URL nothing served, and every later surface
+  in that channel logged a 404.
+- **Do not depend on state an earlier viewport created.** Each viewport gets a
+  fresh browser context. `channel-encryption-enabled` provisioned a real
+  channel key at the first viewport and failed at the other three, because
+  their device keys could not open it.
+- **Clip narrowly, and prefer a clip that excludes anything scrolling.**
+  `.chat-area` drags in the auto-scrolling message column. The audits run
+  against the whole page regardless of the clip, so a narrower picture costs
+  no coverage.
+- **A deliberately-injected failure needs a waiver on `network` AND
+  `console`** — the browser logs an injected 500 to both.
+
+**Masks are scoped to the clip.** Playwright paints masks at their page
+coordinates, and a clipped capture is a crop of that same painted page — so a
+mask on an element *behind* the clipped one lands inside the crop, drawn over
+a subject that is already opaque, and moves whenever the hidden layout behind
+it moves. That produced two separate flakes (`message-search-no-results` and
+both encryption key-state bars) and one wrong remedy: the bars were made
+`reportOnly` before the cause was understood. `maskLocators` now takes the
+clip and returns only masks inside it. This costs no coverage, because a mask
+outside the picture was never diffed.
+
+If a surface genuinely cannot be diffed — live video, animated media — set
+`reportOnly: true`. It is still captured and still audited; only the pixel
+comparison is skipped. Say in a comment what was measured, so the next reader
+can tell a real limitation from a silenced failure. Reach for it only after
+ruling out a harness cause: two of the four surfaces that carried it did not
+need it.
+
+`manifest.spec.ts` fails if a component renders a `.dialog-overlay` and no
+surface reaches it, so a new dialog cannot quietly go unaudited. If a modal
+really is unreachable, add it to `KNOWN_UNREACHABLE` there with a reason.
+
+## What gets audited
+
+| Audit | Catches |
+|---|---|
+| `a11y` | axe-core, WCAG 2.1 A/AA + best practices. |
+| `console` | Uncaught page errors and `console.error` while reaching the surface. |
+| `network` | Requests that failed or returned >= 400. |
+| `overflow` | Content wider than the viewport; text clipped without an ellipsis. |
+| `keyboard` | Dialogs: `role="dialog"`, focus moved in, focus trapped, Escape closes. |
+
+Findings are **recorded, not asserted**. A surface with an accessibility
+violation is still captured and the run still reaches the end — an exhaustive
+audit is only useful if it finishes. Genuine failures (a surface that cannot be
+reached, or one that no longer matches its baseline) do fail the run.
+
+Waiving an audit requires a reason string, not a boolean:
+
+```ts
+waive: { network: 'the 500 is injected deliberately to reach the error state' }
+```
+
+`manifest.spec.ts` rejects waivers shorter than a sentence, because an
+unexplained waiver is indistinguishable from a silenced bug.
+
+## Determinism
+
+Every run generates fresh cryptographic identities, so pseudonyms, leaf
+indices, invite codes and timestamps differ each time and are rendered on
+screen. Rather than faking the thing under test, those regions are **masked**
+at capture time — see `NONDETERMINISTIC_SELECTORS` in `nav.ts`, and the
+per-surface `mask` option. Components can opt in with `data-nondeterministic`.
+
+Two colour sources are pinned in the capture stylesheet rather than the
+product, because the randomness is real behaviour and making it deterministic
+is a product decision to take deliberately:
+
+- `randomAccentColor()` gives each persona one of 12 colours at creation, and
+  that colour drives buttons, badges, avatars and highlights app-wide.
+- `ServerHub` sets `--server-accent` inline per icon.
+
+Animations and transitions are disabled, and the caret is hidden.
+
+## Speed
+
+Reaching the main UI costs a real in-browser Groth16 membership proof, and
+there is no client-side bypass — `ANNEX_ENFORCE_ZK_PROOFS=false` only relaxes
+the *server*. So `roles.setup.ts` drives the real startup flow once per role
+and saves `storageState({ indexedDB: true })`; Annex keeps identity, keys and
+the cached proof in IndexedDB, so restored contexts skip proving entirely.
+
+A cached proof binds to the Merkle root current when it was generated, and each
+registration moves that root — so after all roles exist, only the last one
+holds a proof matching the live root. A final refresh pass re-saves each role
+against the final root, which takes the capture run from ~1.9s to ~150ms per
+page load and, more importantly, to **zero** `verify-membership` calls. Without
+it the run trips the server's rate limiter and screenshots
+"Rate limit exceeded" instead of the UI.
+
+Storage state is regenerated every run and never committed: it is only valid
+against the server instance that produced it.
+
+The audit lane also raises rate limits via
+`ANNEX_RATE_LIMIT_{REGISTRATION,VERIFICATION,DEFAULT}` (set in
+`scripts/e2e-server.sh`). At the shipped defaults — 10/10/60 per minute — a
+browser suite exceeds them trivially, since every public route keys its bucket
+by IP and all captures share one.
+
+## Baselines
+
+Baselines are committed and diffed with a 0.5% pixel tolerance — tight enough
+to catch a colour, spacing or layout change, loose enough to survive font
+hinting differences between machines.
+
+When a change is intended:
+
+```bash
+bash scripts/ui-audit.sh --update-baselines
+git add client/e2e/audit/baselines
+```
+
+That is deliberately a separate, reviewable commit. A run that silently
+rewrote its own baselines could never detect a regression.
+
+## CI
+
+The `ui-audit` job in `.github/workflows/ci.yml` runs the whole lane on every
+PR and uploads the contact sheet plus any diagnostics on failure.

@@ -46,6 +46,24 @@ function getJoinErrorMessage(error: unknown): JoinError {
 /** WebRTC room connection lifecycle state. */
 export type ConnectionState = 'idle' | 'connecting' | 'connected' | 'failed';
 
+/** One transcribed utterance from a voice call. */
+export interface TranscriptLine {
+  channelId: string;
+  speakerPseudonym: string;
+  text: string;
+  /** Client receipt time. The server frame carries no timestamp. */
+  at: number;
+}
+
+/**
+ * How many caption lines to keep.
+ *
+ * Captions are a live aid, not a transcript archive — nothing scrolls back
+ * through them, and an hour-long call would otherwise accumulate thousands
+ * of lines in memory for a strip that shows the last few.
+ */
+export const MAX_TRANSCRIPT_LINES = 50;
+
 export interface VoiceState {
   /** WebRTC access token for the current session. */
   voiceToken: string | null;
@@ -63,6 +81,8 @@ export interface VoiceState {
   connectionError: string | null;
   /** Per-channel call-active status (keyed by channelId). */
   callActiveByChannel: Record<string, boolean>;
+  /** Pseudonyms in each channel's call, from the last `checkCallActive` poll. */
+  participantsByChannel: Record<string, string[]>;
   /** Per-channel join error (keyed by channelId). */
   joinErrorByChannel: Record<string, JoinError | null>;
   /** Whether the user has self-deafened (output muted). */
@@ -79,10 +99,24 @@ export interface VoiceState {
   /** User-visible error from the last mic toggle failure. */
   micToggleError: string | null;
 
+  /**
+   * Live speech-to-text for the call in progress, oldest first.
+   *
+   * The server has always produced these. `whisper.cpp` transcribes the call
+   * audio, `OutgoingMessage::Transcription` carries each line over the
+   * WebSocket to every participant, and startup even reports whether STT is
+   * ready — and nothing in the client read the frame. It arrived, passed
+   * validation, matched none of the branches in `handleFrame`, and was
+   * dropped. A whole subsystem, correct at every layer, rendering nowhere.
+   *
+   * Capped at [`MAX_TRANSCRIPT_LINES`]: a long call would otherwise grow this
+   * without bound, and nobody scrolls back through captions.
+   */
+  transcripts: TranscriptLine[];
+
   /** Audio settings persisted across sessions. */
   inputDeviceId: string | null;
   outputDeviceId: string | null;
-  inputVolume: number;   // 0–100
   outputVolume: number;  // 0–100
   /** Camera device ID (persisted). */
   cameraDeviceId: string | null;
@@ -107,17 +141,17 @@ export interface VoiceState {
   /** Update audio settings. */
   setInputDevice: (deviceId: string | null) => void;
   setOutputDevice: (deviceId: string | null) => void;
-  setInputVolume: (vol: number) => void;
   setOutputVolume: (vol: number) => void;
   setCameraDevice: (deviceId: string | null) => void;
   /** Update the WebRTC room connection state. */
   setConnectionState: (state: ConnectionState, error?: string | null) => void;
   /** Shared async mic toggle — updates store only after WebRTC succeeds. */
-  toggleMicAsync: (localParticipant: unknown) => Promise<void>;
   /** Check if a call is active on a channel (for polling). */
   checkCallActive: (pseudonymId: string, channelId: string) => Promise<void>;
   /** Get call-active status for a specific channel. */
   isCallActive: (channelId: string) => boolean;
+  /** Record one transcribed line. Ignored unless it belongs to this call. */
+  appendTranscript: (line: TranscriptLine) => void;
   /** Get join error for a specific channel. */
   getJoinError: (channelId: string) => JoinError | null;
   /** Check if a join is in progress for a specific channel. */
@@ -126,11 +160,30 @@ export interface VoiceState {
   clearChannelCallState: (channelId: string) => void;
   /** Handle an unexpected disconnect — clears session state and records a user-visible error. */
   handleUnexpectedDisconnect: (errorMessage?: string) => void;
+  /**
+   * Server-side voice readiness, or null before it has been asked for.
+   *
+   * The panel used to learn about an unprovisioned server only by FAILING a
+   * join: `setupHint` was populated from the join error. So an operator who
+   * had not configured WebRTC got a live-looking "Create Call" button, and
+   * the explanation the server had ready all along appeared only after the
+   * user pressed it and it failed.
+   */
+  voiceConfig: api.VoiceConfigStatus | null;
+  /** Whether the readiness check has been attempted, and how it went. */
+  voiceConfigStatus: 'idle' | 'loading' | 'ready' | 'error';
+  /**
+   * Fetch server voice readiness once per server. Cheap and idempotent:
+   * subsequent calls no-op while loading or once resolved. `force` re-asks,
+   * which matters after an admin flips the policy toggle.
+   */
+  loadVoiceConfig: (force?: boolean) => Promise<void>;
   /** Force-clear all voice session state (used by server switching). */
   forceReset: () => void;
   /** Dismiss the persisted failure state (lastFailedChannelId + connectionError). */
   dismissConnectionError: () => void;
   /** Clear the mic toggle error. */
+  setMicToggleError: (message: string | null) => void;
   clearMicToggleError: () => void;
 }
 
@@ -162,6 +215,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   connectionState: 'idle' as ConnectionState,
   connectionError: null,
   callActiveByChannel: {},
+  participantsByChannel: {},
   joinErrorByChannel: {},
   deafened: false,
   micMuted: false,
@@ -169,10 +223,13 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   activeJoinRequestId: 0,
   joiningAnyCall: false,
   micToggleError: null,
+  transcripts: [],
+
+  voiceConfig: null,
+  voiceConfigStatus: 'idle' as const,
 
   inputDeviceId: (saved.inputDeviceId as string) ?? null,
   outputDeviceId: (saved.outputDeviceId as string) ?? null,
-  inputVolume: (saved.inputVolume as number) ?? 100,
   outputVolume: (saved.outputVolume as number) ?? 100,
   cameraDeviceId: (saved.cameraDeviceId as string) ?? null,
 
@@ -194,6 +251,9 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       lastFailedChannelId: null,
       connectionError: null,
       micToggleError: null,
+      // Captions belong to one call. Carrying the last call's lines into the
+      // next one would put words in a new room that were said in another.
+      transcripts: [],
     }));
     try {
       const { token, url, ice_servers } = await api.joinVoice(pseudonymId, channelId, 30_000);
@@ -240,6 +300,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       connectionError: null,
       lastFailedChannelId: null,
       micToggleError: null,
+      transcripts: [],
       // Clear call-active status for the channel we just left
       callActiveByChannel: connectedChannelId
         ? { ...s.callActiveByChannel, [connectedChannelId]: false }
@@ -258,10 +319,6 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
   setOutputDevice: (deviceId) => {
     set({ outputDeviceId: deviceId });
     saveAudioSettings({ outputDeviceId: deviceId });
-  },
-  setInputVolume: (vol) => {
-    set({ inputVolume: vol });
-    saveAudioSettings({ inputVolume: vol });
   },
   setOutputVolume: (vol) => {
     set({ outputVolume: vol });
@@ -285,26 +342,22 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       });
     }
   },
-  toggleMicAsync: async (localParticipant: unknown) => {
-    const lp = localParticipant as { isMicrophoneEnabled: boolean; setMicrophoneEnabled: (v: boolean) => Promise<void> };
-    const shouldEnable = !lp.isMicrophoneEnabled;
-    try {
-      await lp.setMicrophoneEnabled(shouldEnable);
-      set({ micMuted: !shouldEnable, micToggleError: null });
-    } catch (err) {
-      // Explicitly restore store to match real WebRTC state
-      set({ micMuted: !lp.isMicrophoneEnabled, micToggleError: err instanceof Error ? err.message : 'Microphone toggle failed' });
-      console.warn('[voice] toggleMicAsync failed:', err);
-      throw err;
-    }
-  },
   checkCallActive: async (pseudonymId, channelId) => {
     try {
       const status = await api.getVoiceStatus(pseudonymId, channelId);
       set((s) => ({
         callActiveByChannel: { ...s.callActiveByChannel, [channelId]: status.active },
+        participantsByChannel: { ...s.participantsByChannel, [channelId]: status.participant_ids },
       }));
     } catch {
+      // A failed poll clears the "is a call running" flag, because that is what
+      // it could not confirm — but it deliberately LEAVES the roster alone.
+      //
+      // Emptying it here made every participant tile vanish on a single
+      // dropped request and reappear on the next poll ten seconds later, so a
+      // call visibly emptied itself and refilled. A request that did not
+      // arrive is not evidence that everyone left; the last known roster is a
+      // better answer than "nobody".
       set((s) => ({
         callActiveByChannel: { ...s.callActiveByChannel, [channelId]: false },
       }));
@@ -320,12 +373,26 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
     return get().joiningByChannel[channelId] ?? false;
   },
   clearChannelCallState: (channelId) => {
+    // Never clear the channel whose call you are actually in.
+    //
+    // This is called when the active channel changes, to stop the next
+    // channel inheriting the previous one's status and errors — which is
+    // right, except that "the channel you were looking at" and "the channel
+    // whose call you are in" are different things. A user in a call in #standup
+    // who clicks #general to read something is still in the call: the panel
+    // stays mounted and keeps rendering tiles. Clearing here wiped that
+    // call's roster and every remote tile lost its name, for the same reason
+    // as the poll that used to stop on connect — the roster was discarded by
+    // code reasoning about a different channel.
+    if (get().connectedChannelId === channelId) return;
     set((s) => {
       const restActive = Object.fromEntries(Object.entries(s.callActiveByChannel).filter(([k]) => k !== channelId));
+      const restRoster = Object.fromEntries(Object.entries(s.participantsByChannel).filter(([k]) => k !== channelId));
       const restErrors = Object.fromEntries(Object.entries(s.joinErrorByChannel).filter(([k]) => k !== channelId));
       const restJoining = Object.fromEntries(Object.entries(s.joiningByChannel).filter(([k]) => k !== channelId));
       return {
         callActiveByChannel: restActive,
+        participantsByChannel: restRoster,
         joinErrorByChannel: restErrors,
         joiningByChannel: restJoining,
         // Clear failure state when switching away from the failed channel
@@ -346,8 +413,25 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       connectionError: errorMessage ?? 'Voice disconnected unexpectedly.',
     });
   },
+  loadVoiceConfig: async (force = false) => {
+    const { voiceConfigStatus } = get();
+    if (!force && (voiceConfigStatus === 'loading' || voiceConfigStatus === 'ready')) return;
+    set({ voiceConfigStatus: 'loading' });
+    try {
+      const config = await api.getVoiceConfigStatus();
+      set({ voiceConfig: config, voiceConfigStatus: 'ready' });
+    } catch {
+      // Non-fatal, and deliberately NOT treated as "voice is broken": a failed
+      // readiness check says nothing about the server's configuration. The
+      // panel leaves the button as the permissions checks left it, and a join
+      // that does fail still surfaces the server's own hint.
+      set({ voiceConfig: null, voiceConfigStatus: 'error' });
+    }
+  },
   forceReset: () => {
     set({
+      voiceConfig: null,
+      voiceConfigStatus: 'idle' as const,
       voiceToken: null,
       webrtcUrl: null,
       iceServers: [],
@@ -356,18 +440,37 @@ export const useVoiceStore = create<VoiceState>((set, get) => ({
       connectionState: 'idle' as ConnectionState,
       connectionError: null,
       callActiveByChannel: {},
+      participantsByChannel: {},
       joinErrorByChannel: {},
       deafened: false,
       micMuted: false,
       lastFailedChannelId: null,
       joiningAnyCall: false,
       micToggleError: null,
+      transcripts: [],
       voiceSessionDisabled: false,
       voiceSessionDisabledReason: null,
     });
   },
   dismissConnectionError: () => {
     set({ lastFailedChannelId: null, connectionError: null });
+  },
+  appendTranscript: (line) => {
+    set((s) => {
+      // A line for a channel this client is not in a call on is not this
+      // call's. The server sends transcripts to call participants, but a
+      // channel switch mid-call and a late-arriving frame can cross, and
+      // captions attributed to the wrong room are worse than none.
+      if (!s.connectedChannelId || line.channelId !== s.connectedChannelId) return s;
+      const next = [...s.transcripts, line];
+      return {
+        transcripts:
+          next.length > MAX_TRANSCRIPT_LINES ? next.slice(next.length - MAX_TRANSCRIPT_LINES) : next,
+      };
+    });
+  },
+  setMicToggleError: (message) => {
+    set({ micToggleError: message });
   },
   clearMicToggleError: () => {
     set({ micToggleError: null });

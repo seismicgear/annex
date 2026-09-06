@@ -84,10 +84,17 @@ export async function leaveVoice(
   }
 }
 
+export interface VoiceStatus {
+  participants: number;
+  /** Pseudonyms of everyone currently in the call, sorted. */
+  participant_ids: string[];
+  active: boolean;
+}
+
 export async function getVoiceStatus(
   pseudonymId: string,
   channelId: string,
-): Promise<{ participants: number; active: boolean }> {
+): Promise<VoiceStatus> {
   const url = voiceUrl(channelId, 'status');
   const resp = await fetch(url, {
     headers: new Headers(authHeaders(pseudonymId)),
@@ -96,7 +103,14 @@ export async function getVoiceStatus(
     const body = await resp.text();
     throw new ApiError(resp.status, body);
   }
-  return resp.json() as Promise<{ participants: number; active: boolean }>;
+  const body = (await resp.json()) as Partial<VoiceStatus>;
+  // A server predating the roster sends only the count. Default rather than
+  // let `undefined` reach a `.map` in the participant grid.
+  return {
+    participants: body.participants ?? 0,
+    participant_ids: body.participant_ids ?? [],
+    active: body.active ?? false,
+  };
 }
 
 /** Get the server's voice (WebRTC) configuration status (public, no auth). */

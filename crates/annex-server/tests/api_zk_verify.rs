@@ -263,7 +263,22 @@ async fn test_verify_membership_flow() {
     assert!(verify_data.ok);
     assert!(!verify_data.pseudonym_id.is_empty());
 
-    // 7. Verify duplicate submission fails
+    // 7. Re-verification by the SAME identity must succeed idempotently.
+    //
+    // This assertion previously expected 409 CONFLICT, which looked like it
+    // was enforcing the single-use nullifier. In practice it locked real
+    // members out permanently: a client whose cached proof no longer matches
+    // the current Merkle root (any time someone else registers) re-proves and
+    // re-submits here, and a 409 left them with no way back into a server
+    // they had already joined. On a multi-user server that meant everyone
+    // except the most recent joiner.
+    //
+    // Re-presenting the nullifier confers nothing: the caller has already
+    // produced a valid Groth16 proof against an acceptable root with public
+    // signals cross-checked against the claimed commitment. Because the
+    // pseudonym derives deterministically from (topic, nullifier), a
+    // re-verification necessarily resolves to the SAME pseudonym — so the
+    // double-join property the nullifier exists to enforce is preserved.
     let mut verify_req_dup = Request::builder()
         .uri("/api/zk/verify-membership")
         .method("POST")
@@ -273,5 +288,26 @@ async fn test_verify_membership_flow() {
     verify_req_dup.extensions_mut().insert(ConnectInfo(addr));
 
     let verify_resp_dup = app.oneshot(verify_req_dup).await.unwrap();
-    assert_eq!(verify_resp_dup.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        verify_resp_dup.status(),
+        StatusCode::OK,
+        "an existing member re-authenticating must not be locked out"
+    );
+
+    let dup_bytes = axum::body::to_bytes(verify_resp_dup.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let dup_data: VerifyMembershipResponse = serde_json::from_slice(&dup_bytes).unwrap();
+
+    assert!(dup_data.ok);
+    assert_eq!(
+        dup_data.pseudonym_id, verify_data.pseudonym_id,
+        "re-authentication must resolve to the same pseudonym — otherwise one \
+         identity could accumulate multiple pseudonyms in a single topic, which \
+         is exactly what the nullifier exists to prevent"
+    );
+    assert!(
+        !dup_data.session_token.is_empty(),
+        "re-authentication must issue a usable session token"
+    );
 }

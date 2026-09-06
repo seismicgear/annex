@@ -6,11 +6,15 @@
  *   https://monolithannex.com/invite/{base64url_payload}
  *   → deep-links to annex://invite?server={encoded}&code={encoded}
  *
+ * The `annex://` half is parsed in `annex-desktop`, not here — the OS hands
+ * the URL to the Tauri process, which validates it and emits the result as
+ * an event. This module owns the http(s) links the browser sees.
+ *
  * Legacy invite URL format (direct server links):
  *   https://<host>/invite/<channelId>?slug=<serverSlug>&label=<label>
  */
 
-import type { InvitePayload, LegacyInvitePayload } from '@/types';
+import type { LegacyInvitePayload } from '@/types';
 
 /**
  * Parse an invite from the current window location.
@@ -55,32 +59,6 @@ export function parseLegacyInviteFromUrl(): LegacyInvitePayload | null {
 }
 
 /**
- * Parse an annex:// protocol invite URL.
- *
- * Expected format: annex://invite?server={percent_encoded}&code={percent_encoded}
- *
- * This is called when the desktop app receives a deep-link from
- * monolithannex.com's "Open in Annex" button.
- */
-export function parseProtocolInvite(rawUrl: string): InvitePayload | null {
-  try {
-    const url = new URL(rawUrl);
-    if (url.protocol !== 'annex:') return null;
-    if (url.hostname !== 'invite') return null;
-
-    const server = url.searchParams.get('server');
-    const code = url.searchParams.get('code');
-
-    if (!server || !code) return null;
-    if (!server.startsWith('https://')) return null;
-
-    return { server, code };
-  } catch {
-    return null;
-  }
-}
-
-/**
  * Create a new invite by calling the server API.
  *
  * Uses the shared auth plumbing from api.ts so the Bearer token and any
@@ -89,6 +67,23 @@ export function parseProtocolInvite(rawUrl: string): InvitePayload | null {
  *
  * Returns the full monolithannex.com shareable URL.
  */
+/**
+ * Can an invite link be built from this server's public URL?
+ *
+ * The invite format requires HTTPS — `InvitePayload::validate` on the server
+ * rejects anything else, because the link carries a join secret that must not
+ * be readable in transit. Callers used to test only that a public URL was
+ * *set*, so every http:// deployment fired an invite request that could never
+ * succeed: the admin panel did it twice (on open, and after saving a URL) and
+ * startup did it once more, each swallowing the failure in an empty catch. The
+ * operator saw no invite link and no reason for its absence, while the server
+ * log filled with rejected requests. The UI audit caught it as a repeated 400
+ * on `admin-server-settings`.
+ */
+export function canCreateInviteLink(publicUrl: string | null | undefined): boolean {
+  return /^https:\/\//i.test((publicUrl ?? '').trim());
+}
+
 export async function createInviteLink(
   _apiBaseUrl: string,
   pseudonymId: string,

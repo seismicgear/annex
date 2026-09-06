@@ -113,26 +113,36 @@ async fn message_is_encrypted_at_rest_but_reads_back_plaintext() {
     let hits = svc
         .search_messages(
             &member(state.server_id, "psn"),
+            &HeaderMap::new(),
             "launch codes".to_string(),
             Some("chan".to_string()),
             None,
         )
         .await
         .expect("search");
-    assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].content, secret);
+    assert_eq!(hits.results.len(), 1);
+    assert_eq!(hits.results[0].content, secret);
+    assert!(
+        hits.complete,
+        "a channel holding one message was read to its end"
+    );
 
     // A non-matching query returns nothing.
     let misses = svc
         .search_messages(
             &member(state.server_id, "psn"),
+            &HeaderMap::new(),
             "nonexistent".to_string(),
             Some("chan".to_string()),
             None,
         )
         .await
         .expect("search miss");
-    assert!(misses.is_empty());
+    assert!(misses.results.is_empty());
+    assert!(
+        misses.complete,
+        "this miss is a fact about the channel, not about how far we read"
+    );
 }
 
 #[tokio::test]

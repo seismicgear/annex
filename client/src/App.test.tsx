@@ -263,19 +263,57 @@ beforeEach(async () => {
 
 describe('App startup flow', () => {
   describe('ReconnectionBanner', () => {
-    it('shows disconnected banner immediately when ws starts disconnected', async () => {
+    it('stays silent while the first connection is still being established', async () => {
+      // `wsConnected` is false on every load simply because the socket has
+      // not opened yet. Announcing that as a lost connection meant every
+      // single page load flashed "Connection lost" then "Reconnected".
       useChannelsStore.setState({ wsConnected: false });
       const { ReconnectionBanner } = await import('./App');
       render(<ReconnectionBanner />);
 
-      expect(screen.getByRole('alert')).toHaveTextContent('Connection lost — reconnecting...');
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     });
 
-    it('shows reconnected banner on reconnect and auto-hides after 2 seconds', async () => {
+    it('says "connecting" — not "lost" — if the first connection is slow', async () => {
       vi.useFakeTimers();
       useChannelsStore.setState({ wsConnected: false });
       const { ReconnectionBanner } = await import('./App');
       render(<ReconnectionBanner />);
+
+      act(() => {
+        vi.advanceTimersByTime(4000);
+      });
+
+      expect(screen.getByRole('alert')).toHaveTextContent('Connecting to server...');
+      vi.useRealTimers();
+    });
+
+    it('does not claim a reconnection when the first connection succeeds', async () => {
+      vi.useFakeTimers();
+      useChannelsStore.setState({ wsConnected: false });
+      const { ReconnectionBanner } = await import('./App');
+      render(<ReconnectionBanner />);
+
+      act(() => {
+        useChannelsStore.setState({ wsConnected: true });
+      });
+
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      vi.useRealTimers();
+    });
+
+    it('reports a genuine drop and recovery, auto-hiding after 2 seconds', async () => {
+      vi.useFakeTimers();
+      // Start connected: this session has something to lose.
+      useChannelsStore.setState({ wsConnected: true });
+      const { ReconnectionBanner } = await import('./App');
+      render(<ReconnectionBanner />);
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+
+      act(() => {
+        useChannelsStore.setState({ wsConnected: false });
+      });
+
       expect(screen.getByRole('alert')).toHaveTextContent('Connection lost — reconnecting...');
 
       act(() => {
@@ -696,6 +734,34 @@ describe('App startup flow', () => {
         expect(screen.getByText('Choose how to use Annex. Remembered values are shown as suggestions.')).toBeInTheDocument();
       });
       expect(dbMock.clearAllDatabases).not.toHaveBeenCalled();
+    });
+
+    it('Tauri: a missing marker does NOT wipe data when identities exist', async () => {
+      // The marker is written by `markFirstRunCompleted()`, whose failure was
+      // swallowed at its call site. One failed write — a full disk, a
+      // permissions problem, an IPC hiccup — and the marker never appears, so
+      // the next launch treated an established install as fresh and deleted
+      // every identity, server, persona, message and upload. Silently, and
+      // with no way back.
+      //
+      // Existing identities are direct evidence that this is not a fresh
+      // install, and they outrank an absent marker file.
+      tauriEnabled = true;
+      const dbMock = await import('@/lib/db');
+      vi.mocked(dbMock.listIdentities).mockResolvedValue([FAKE_IDENTITY]);
+      const tauri = await import('@/lib/tauri');
+      vi.mocked(tauri.checkFirstRunCompleted).mockResolvedValue(false);
+
+      const App = (await import('./App')).default;
+      render(<App />);
+
+      await waitFor(() => {
+        expect(dbMock.listIdentities).toHaveBeenCalled();
+      });
+      await waitFor(() => {
+        expect(dbMock.clearAllDatabases).not.toHaveBeenCalled();
+      });
+      expect(vi.mocked(tauri.resetServerData)).not.toHaveBeenCalled();
     });
 
     it('Tauri: first_run_completed=false triggers fresh install cleanup', async () => {

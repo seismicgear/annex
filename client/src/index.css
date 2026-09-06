@@ -1,9 +1,160 @@
 /* Global styles for Annex client */
 
+/*
+ * ── Design tokens ──────────────────────────────────────────────────────
+ *
+ * App.css carries ~445 hardcoded hex literals across ~46 distinct colours,
+ * and referenced ELEVEN custom properties that were never defined anywhere
+ * (`--accent`, `--bg-hover`, `--bg-secondary`, `--border`, `--border-color`,
+ * `--danger`, `--error-color`, `--surface-2`, `--text-muted`,
+ * `--text-primary`, `--warning-color`). Every one of those silently resolved
+ * to its `var()` fallback, so the token layer looked present but could never
+ * actually be re-themed — changing a token changed nothing.
+ *
+ * Defining them here makes the existing `var(--x, #fallback)` call sites
+ * live without touching a single one of them: the fallback stays as the
+ * documented intent, and the token now overrides it. Literals elsewhere in
+ * App.css are migrated onto these tokens incrementally, one component group
+ * at a time, with the committed screenshot baselines proving each slice
+ * changed nothing it should not have.
+ *
+ * Values are chosen to match what was already on screen, EXCEPT where the
+ * audit found a WCAG contrast failure — those are corrected here rather than
+ * carried forward. `--text-muted` in particular was `#888`; the audit flagged
+ * the related `#666` (used for dividers, hints and placeholder text) at
+ * 3.66:1 against the near-black background, below the 4.5:1 AA threshold for
+ * normal text. `--text-subtle` is the corrected replacement.
+ */
+:root {
+  /* Surfaces, darkest to lightest. */
+  --bg: #000;
+  --bg-deep: #030303;
+  --surface-sunken: #080808;
+  --bg-secondary: #0a0a0a;
+  --surface-1: #111;
+  --surface-2: #1a1a1a;
+  --surface-3: #2a2a2a;
+  --bg-hover: rgba(255, 255, 255, 0.05);
+  /* Slightly blue-shifted surfaces used by the agent and knowledge panels,
+     which are deliberately distinguishable from ordinary chat chrome. */
+  --surface-cool-1: #2a2a3a;
+  --surface-cool-2: #3a3a4a;
+
+  /* Text. Contrast ratios are against --bg.
+     --text-strong / --text-bright / --text-body / --text-dim / --text-quiet
+     are four near-identical light greys that accumulated independently.
+     They are named separately rather than collapsed because collapsing them
+     changes pixels, and a rename that changes pixels hides the change it is
+     supposed to make reviewable. Collapsing is a follow-up whose diff shows
+     exactly which surfaces moved. */
+  --text-strong: #fff;                       /* 21.0:1 */
+  --text-bright: #eee;                       /* 18.1:1 */
+  --text-primary: rgba(255, 255, 255, 0.87); /* 16.1:1 */
+  --text-body: #e0e0e0;                      /* 15.3:1 */
+  --text-dim: #ddd;                          /* 14.6:1 */
+  --text-quiet: #ccc;                        /* 12.1:1 */
+  --text-secondary: #aaa;                    /*  9.0:1 */
+  --text-muted: #888;                        /*  5.9:1 */
+  /* Tuned against the LIGHTEST surface it appears on (#1a1a1a message
+     bubbles and member rows), not against pure black — at #7a7a7a it passed
+     on the page background and quietly failed on every raised one. */
+  --text-subtle: #8a8a8a;                    /*  5.1:1 on #1a1a1a, 6.1:1 on #000 */
+
+  /* Lines. Not text, so not contrast-bound. */
+  --border: #222;
+  --border-color: #222;
+  --border-strong: #333;
+  --border-stronger: #444;
+  /* The hover/focus border. It is pure white on purpose: it is the only
+     thing distinguishing an interactive element that has keyboard focus. */
+  --border-emphasis: #fff;
+  --border-subtle: rgba(255, 255, 255, 0.15);
+  --border-faint: rgba(255, 255, 255, 0.06);
+
+  /* White overlays, by opacity. Hover and pressed states on dark surfaces. */
+  --overlay-white-02: rgba(255, 255, 255, 0.02);
+  --overlay-white-03: rgba(255, 255, 255, 0.03);
+  --overlay-white-08: rgba(255, 255, 255, 0.08);
+  --overlay-white-10: rgba(255, 255, 255, 0.1);
+  --overlay-white-20: rgba(255, 255, 255, 0.2);
+
+  /* Black overlays: drop shadows and the scrim behind dialogs. */
+  --shadow-soft: rgba(0, 0, 0, 0.2);
+  --shadow-medium: rgba(0, 0, 0, 0.4);
+  --scrim: rgba(0, 0, 0, 0.6);
+
+  /* Status. */
+  --accent: #e63946;
+  --accent-strong: #b3202c;
+  /* The accent as a fill is fine behind white text; as TEXT on a dark
+     background the saturated red lands near 4:1. This lighter tint is the
+     one to use for accent-coloured text. */
+  --accent-text: #ff8a92;
+  --accent-tint-15: rgba(230, 57, 70, 0.15);
+  --accent-tint-30: rgba(230, 57, 70, 0.3);
+  --danger: #e63946;
+  /* The same hue, dark enough that white text on it reaches 5.4:1. Use this
+     whenever the danger colour is a FILL behind text; `--danger` stays right
+     for borders, icons and anything not contrast-bound. */
+  --danger-strong: #c72e3a;
+  /* Danger as a SURFACE — the tinted background behind destructive panels
+     and error banners, not the colour of anything on top of them. */
+  --danger-surface: #200a0a;
+  --danger-surface-strong: #5a2a2a;
+  --error-color: #e63946;
+  --error-text: #f87171;
+  --error-muted: #da7e7e;
+  --error-tint-10: rgba(248, 113, 113, 0.1);
+  --error-tint-12: rgba(248, 113, 113, 0.12);
+  --error-tint-15: rgba(248, 113, 113, 0.15);
+  --warning-color: #fbbf24;
+  --success-color: #4ade80;
+  --success-text: #7eda7e;
+  --success-tint-08: rgba(74, 222, 128, 0.08);
+  /* The counterparts the danger scale already had. Their absence is why
+     positive states kept reaching for `--accent`, which is the brand red —
+     so "aligned" and "conflict" came out the same colour, and identity
+     "ready" and "error" shared a background. */
+  --success-tint-15: rgba(74, 222, 128, 0.15);
+  --success-surface: #0a1a0e;
+  /* The warning scale had a colour and no tint, so the one place that needed
+     a warning background wrote the rgba out by hand. */
+  --warning-tint-15: rgba(251, 191, 36, 0.15);
+
+  /* Shape and depth. */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+
+  /* Layering. Declared as a scale so new overlays stop inventing numbers. */
+  --z-sticky: 10;
+  --z-dropdown: 100;
+  --z-overlay: 200;
+  --z-dialog: 1000;
+  --z-toast: 10000;
+}
+
 *,
 *::before,
 *::after {
   box-sizing: border-box;
+}
+
+/*
+ * Visible to assistive technology, not to sighted users. For labels that a
+ * screen reader needs but that would be redundant next to a placeholder.
+ * Deliberately not `display: none` — that would hide it from AT too.
+ */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 
 :root {
@@ -76,6 +227,23 @@ button:disabled {
 input, textarea, select {
   font-family: inherit;
   font-size: inherit;
+}
+
+/* A disabled field has to look disabled.
+   
+   `button:disabled` above has dimmed and shown a not-allowed cursor since the
+   beginning; the form controls had no equivalent, and the app overrides their
+   colours anyway, so the browser's own greying never applied. The Server Slug
+   input is `disabled` with a hint reading "cannot be changed after creation"
+   and rendered identically to the editable Server Name directly above it —
+   inviting people to click into it and type, to no effect. The three
+   `<select disabled>` in Audio Settings, shown when the browser cannot switch
+   output devices, had the same problem. */
+input:disabled,
+textarea:disabled,
+select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 /* Scrollbar styling */

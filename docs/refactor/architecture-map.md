@@ -120,8 +120,10 @@ The server side lives in `annex-server/src/api_rtx.rs`.
 - `agent.rs` — voice profile selection for agent personas.
 - `config.rs` — voice-specific config knobs (also reflected in `annex-server::config::ServerConfig` env overrides).
 
-WebRTC media plane is hosted by `annex-server` (it embeds `webrtc-rs`). LiveKit
-references in older docs are stale — see `git log` for the rename PR.
+WebRTC media plane is hosted by `annex-server` (it embeds `webrtc-rs`), and its
+signalling rides the app's own `/ws` WebSocket rather than a separate signalling
+port. LiveKit references in older docs are stale — nothing in the tree links,
+dials or spawns a LiveKit server.
 
 ### `annex-graph` + `annex-observe` (`crates/annex-graph/`, `crates/annex-observe/`)
 

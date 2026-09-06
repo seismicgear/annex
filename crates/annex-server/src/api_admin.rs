@@ -83,7 +83,16 @@ pub async fn update_policy_handler(
             ApiError::InternalServerError(format!("db connection failed: {e}"))
         })?;
 
-        let tx = conn.transaction().map_err(|e| {
+        // IMMEDIATE. Every write transaction in this codebase takes the
+        // RESERVED lock at BEGIN: a DEFERRED one reads a WAL snapshot first
+        // and then has to upgrade, and if another connection committed in
+        // between SQLite answers SQLITE_BUSY_SNAPSHOT immediately — the busy
+        // handler is never called, so `busy_timeout` cannot help. That is
+        // what made message sends fail intermittently with "database is
+        // locked"; see `ws_send_immediate_tx.rs`.
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| {
             ApiError::InternalServerError(format!("failed to start transaction: {e}"))
         })?;
 

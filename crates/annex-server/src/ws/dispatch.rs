@@ -106,22 +106,32 @@ pub(crate) async fn dispatch(ctx: &CommandContext<'_>, msg: IncomingMessage) {
             channel_id,
             message_id,
             content,
+            client_request_id,
         } => {
             if !ctx.command_rate_limiter.try_admit().await {
-                send_ws_error(ctx.tx, RATE_LIMIT_MESSAGE.to_string());
+                crate::ws::error::send_ws_error_with_id(
+                    ctx.tx,
+                    RATE_LIMIT_MESSAGE.to_string(),
+                    client_request_id,
+                );
                 return;
             }
-            edit::handle(ctx, channel_id, message_id, content).await;
+            edit::handle(ctx, channel_id, message_id, content, client_request_id).await;
         }
         IncomingMessage::DeleteMessage {
             channel_id,
             message_id,
+            client_request_id,
         } => {
             if !ctx.command_rate_limiter.try_admit().await {
-                send_ws_error(ctx.tx, RATE_LIMIT_MESSAGE.to_string());
+                crate::ws::error::send_ws_error_with_id(
+                    ctx.tx,
+                    RATE_LIMIT_MESSAGE.to_string(),
+                    client_request_id,
+                );
                 return;
             }
-            delete::handle(ctx, channel_id, message_id).await;
+            delete::handle(ctx, channel_id, message_id, client_request_id).await;
         }
         IncomingMessage::VoiceIntent { channel_id, text } => {
             if !ctx.command_rate_limiter.try_admit().await {
@@ -132,6 +142,9 @@ pub(crate) async fn dispatch(ctx: &CommandContext<'_>, msg: IncomingMessage) {
         }
         IncomingMessage::WebRtcOffer { channel_id, sdp } => {
             webrtc::handle_offer(ctx, channel_id, sdp).await;
+        }
+        IncomingMessage::WebRtcAnswer { channel_id, sdp } => {
+            webrtc::handle_answer(ctx, channel_id, sdp).await;
         }
         IncomingMessage::WebRtcIceCandidate {
             channel_id,

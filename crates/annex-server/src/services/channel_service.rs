@@ -198,7 +198,35 @@ pub struct JoinVoiceResponse {
 #[derive(Debug, serde::Serialize)]
 pub struct VoiceStatusResponse {
     pub participants: u32,
+    /// Pseudonyms of everyone currently in the call, sorted.
+    ///
+    /// The SFU has always keyed peers by pseudonym, but only the count was
+    /// exposed — so a client could say "3 people are here" and not who, and
+    /// every remote tile rendered the literal string "Participant".
+    pub participant_ids: Vec<String>,
     pub active: bool,
+}
+
+/// Response body for `GET /api/messages/search`.
+///
+/// This used to be a bare `Vec<Message>`, which could not express the one
+/// thing a searcher most needs to know: whether the search actually looked
+/// everywhere. Message bodies are encrypted at rest, so a SQL `LIKE` cannot
+/// match and the server decrypts a bounded recent window per channel
+/// ([`SEARCH_SCAN_CAP`]) and filters in memory. Anything older was never
+/// examined — and the client, handed an empty array, said "No messages
+/// found", which is a statement about the archive the server had not made.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct SearchResponse {
+    pub results: Vec<Message>,
+    /// True when every channel in scope was searched to its end.
+    ///
+    /// False means at least one channel had more messages than the scan
+    /// window, so a non-match is "not in the part we read", not "not here".
+    pub complete: bool,
+    /// How far back the scan reached in each channel, so the client can say
+    /// so in the user's units without hardcoding a server constant.
+    pub scanned_per_channel: u32,
 }
 
 /// Outcome of a successful `POST /api/channels` call.
@@ -683,10 +711,25 @@ impl ChannelService {
     pub async fn search_messages(
         &self,
         identity: &PlatformIdentity,
+        headers: &HeaderMap,
         query: String,
         channel_id: Option<String>,
         limit: Option<u32>,
-    ) -> Result<Vec<Message>, ChannelServiceError> {
+    ) -> Result<SearchResponse, ChannelServiceError> {
+        // Search returns decrypted message content, so it needs the same gate
+        // as reading that content directly.
+        //
+        // `get_history` has called `enforce_zk` since the gate was introduced;
+        // this route never did. Under `enforce_zk_proofs = true` — the shipped
+        // default, and the posture nothing in the suite exercised until now —
+        // `GET /api/channels/{id}/messages` answered 403 without a membership
+        // proof while `GET /api/messages/search?channel_id={id}` returned the
+        // same messages from the same channel to the same caller with a
+        // session token alone. A session token outlives its holder's access to
+        // the ZK secret that minted it, so the gate was bypassable by asking
+        // for the content through the other door.
+        self.enforce_zk(identity, headers).await?;
+
         if query.trim().is_empty() {
             return Err(ChannelServiceError::BadRequest(
                 "query must not be empty".to_string(),
@@ -718,10 +761,16 @@ impl ChannelService {
             // memory, and substring-filter here. `query` is matched
             // case-insensitively to mirror SQLite's default LIKE semantics.
             let needle = query.to_lowercase();
-            let scan = |cid: &str| -> Result<Vec<Message>, ChannelServiceError> {
+            // Returns the hits and whether this channel was read to its end.
+            // A short candidate list means the channel ran out before the
+            // window did; a full one means there is older history nobody
+            // looked at, which is the difference between "no match" and "no
+            // match in the part we read".
+            let scan = |cid: &str| -> Result<(Vec<Message>, bool), ChannelServiceError> {
                 let mut hits = Vec::new();
                 let candidates = annex_channels::scan_messages(&conn, server_id, cid, SEARCH_SCAN_CAP)
                     .map_err(map_channel_err)?;
+                let exhausted = (candidates.len() as u32) < SEARCH_SCAN_CAP;
                 for mut m in candidates {
                     cipher.decrypt_in_place(&mut m.content);
                     if m.content.to_lowercase().contains(&needle) {
@@ -731,7 +780,7 @@ impl ChannelService {
                         }
                     }
                 }
-                Ok(hits)
+                Ok((hits, exhausted))
             };
 
             // Without a target channel, restrict the sweep to channels the
@@ -750,18 +799,39 @@ impl ChannelService {
                     .collect();
 
                 if member_channels.is_empty() {
-                    return Ok(vec![]);
+                    return Ok(SearchResponse {
+                        results: vec![],
+                        // Nothing was skipped: there was nothing in scope.
+                        complete: true,
+                        scanned_per_channel: SEARCH_SCAN_CAP,
+                    });
                 }
 
                 let mut all_results = Vec::new();
+                let mut complete = true;
                 for cid in &member_channels {
-                    all_results.append(&mut scan(cid)?);
+                    let (mut hits, exhausted) = scan(cid)?;
+                    complete &= exhausted;
+                    all_results.append(&mut hits);
                 }
-                all_results.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+                // `id` breaks the tie because `created_at` is `datetime('now')`
+                // at one-second resolution, so messages sent in the same second
+                // compare equal and their order across channels would otherwise
+                // depend on which channel happened to be walked first.
+                all_results.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(b.id.cmp(&a.id)));
                 all_results.truncate(limit as usize);
-                Ok(all_results)
+                Ok(SearchResponse {
+                    results: all_results,
+                    complete,
+                    scanned_per_channel: SEARCH_SCAN_CAP,
+                })
             } else {
-                scan(channel_id.as_deref().unwrap())
+                let (results, complete) = scan(channel_id.as_deref().unwrap())?;
+                Ok(SearchResponse {
+                    results,
+                    complete,
+                    scanned_per_channel: SEARCH_SCAN_CAP,
+                })
             }
         })
         .await
@@ -780,13 +850,20 @@ impl ChannelService {
             .await?;
 
         let pool = self.state.pool.clone();
+        let server_id = self.state.server_id;
+        let cid = channel_id.to_string();
         let mid = message_id.to_string();
         let cipher = self.state.message_cipher();
         tokio::task::spawn_blocking(move || {
             let conn = pool
                 .get()
                 .map_err(|e| ChannelServiceError::Internal(format!("pool: {e}")))?;
-            let mut edits = get_edit_history(&conn, &mid).map_err(map_channel_err)?;
+            // Both identifiers go into the query. `require_membership` above
+            // can only vouch for the channel; the message has to be tied to
+            // that same channel or the two path segments are independently
+            // attacker-chosen.
+            let mut edits =
+                get_edit_history(&conn, server_id, &cid, &mid).map_err(map_channel_err)?;
             for e in &mut edits {
                 cipher.decrypt_in_place(&mut e.old_content);
             }
@@ -869,8 +946,26 @@ impl ChannelService {
                 // with the same (sender, request_id) will lose on the
                 // UNIQUE constraint and fall back to the lookup branch on
                 // its next attempt.
+                // BEGIN IMMEDIATE, not DEFERRED.
+                //
+                // `create_message` reads before it writes — it resolves the
+                // channel's retention days first. Under a DEFERRED
+                // transaction that read takes a WAL snapshot, and the INSERT
+                // that follows has to upgrade to a writer. If any other
+                // connection has committed in between, SQLite returns
+                // SQLITE_BUSY_SNAPSHOT *immediately*: the busy handler is
+                // never invoked, because waiting cannot resolve a snapshot
+                // conflict, so `busy_timeout` does nothing. The send failed
+                // with "database is locked" and the user was told
+                // "Failed to send message: internal error".
+                //
+                // `edit_message` and `delete_message` were fixed for exactly
+                // this (see the [F31] regression test in annex-channels);
+                // sending was missed. IMMEDIATE takes the RESERVED lock at
+                // BEGIN, so contention becomes a wait bounded by
+                // `busy_timeout` instead of an instant failure.
                 let tx = conn
-                    .transaction()
+                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
                     .map_err(|e| ChannelServiceError::Internal(format!("tx begin: {e}")))?;
 
                 let message_id = uuid::Uuid::new_v4().to_string();
@@ -946,6 +1041,30 @@ impl ChannelService {
             // Store the new body encrypted; the prior (encrypted) body is moved
             // into message_edits by edit_message as-is. Return plaintext for the
             // broadcast/relay.
+            // The message must belong to the channel the caller named.
+            //
+            // `require_membership` above checks the CLIENT-SUPPLIED
+            // channel_id; the mutation below is keyed on message_id alone.
+            // Without tying them together, a member of channel B could edit
+            // or delete their own messages in channel A — one they had left
+            // or been removed from — by naming B in the frame. Ownership is
+            // still enforced by `edit_message`/`delete_message`, so this is
+            // narrower than reading another channel's content, but it
+            // defeats the rule that you cannot change anything in a channel
+            // you are not in.
+            //
+            // It also decides federation. `is_federated` is read from the
+            // channel the caller NAMED, so an edit to a message in a
+            // federated channel, submitted under a local channel id, is
+            // never relayed — peers keep the old text and the servers
+            // diverge with nothing logged. Same defect class as the edit
+            // history keyed on message_id alone.
+            let existing = get_message(&conn, &mid).map_err(map_channel_err)?;
+            if existing.channel_id != cid {
+                return Err(ChannelServiceError::NotFound(format!(
+                    "message {mid} is not in channel {cid}"
+                )));
+            }
             let stored = cipher.encrypt(&content);
             let mut msg = edit_message(&conn, &mid, &pseudo, &stored).map_err(map_channel_err)?;
             msg.content = content;
@@ -982,6 +1101,30 @@ impl ChannelService {
             let conn = pool
                 .get()
                 .map_err(|e| ChannelServiceError::Internal(format!("pool: {e}")))?;
+            // The message must belong to the channel the caller named.
+            //
+            // `require_membership` above checks the CLIENT-SUPPLIED
+            // channel_id; the mutation below is keyed on message_id alone.
+            // Without tying them together, a member of channel B could edit
+            // or delete their own messages in channel A — one they had left
+            // or been removed from — by naming B in the frame. Ownership is
+            // still enforced by `edit_message`/`delete_message`, so this is
+            // narrower than reading another channel's content, but it
+            // defeats the rule that you cannot change anything in a channel
+            // you are not in.
+            //
+            // It also decides federation. `is_federated` is read from the
+            // channel the caller NAMED, so an edit to a message in a
+            // federated channel, submitted under a local channel id, is
+            // never relayed — peers keep the old text and the servers
+            // diverge with nothing logged. Same defect class as the edit
+            // history keyed on message_id alone.
+            let existing = get_message(&conn, &mid).map_err(map_channel_err)?;
+            if existing.channel_id != cid {
+                return Err(ChannelServiceError::NotFound(format!(
+                    "message {mid} is not in channel {cid}"
+                )));
+            }
             let msg = delete_message(&conn, &mid, &pseudo).map_err(map_channel_err)?;
             let channel = get_channel(&conn, &cid).map_err(map_channel_err)?;
             let is_federated = matches!(channel.federation_scope, FederationScope::Federated);
@@ -1129,6 +1272,10 @@ impl ChannelService {
         self.require_membership(&identity.pseudonym_id, channel_id)
             .await?;
 
+        let participant_ids = self.state.voice_service.participant_ids(channel_id).await;
+        // Keep reading the count from its own accessor rather than deriving it
+        // from the roster: the two are read at slightly different moments and
+        // a caller comparing them can tell that the roster is a snapshot.
         let count = self
             .state
             .voice_service
@@ -1138,6 +1285,7 @@ impl ChannelService {
 
         Ok(VoiceStatusResponse {
             participants: count,
+            participant_ids,
             active: count > 0,
         })
     }

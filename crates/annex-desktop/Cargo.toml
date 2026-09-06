@@ -12,6 +12,9 @@ annex-server = { path = "../annex-server" }
 axum = { workspace = true }
 tauri = { version = "2", features = [] }
 tauri-plugin-deep-link = "2"
+# Required for deep links to reach a RUNNING instance on Linux and Windows.
+# Without it the OS starts a second process — see main.rs.
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 url = "2"
 tokio = { workspace = true }
 serde = { workspace = true }

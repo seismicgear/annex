@@ -21,10 +21,17 @@
 
 use crate::ws::context::CommandContext;
 use crate::ws::dispatch::{check_ws_membership, MembershipResult};
-use crate::ws::error::send_ws_error;
+use crate::ws::error::send_ws_error_with_id;
 use crate::ws::protocol::{OutgoingMessage, WsMessagePayload};
 
-pub(crate) async fn handle(ctx: &CommandContext<'_>, channel_id: String, message_id: String) {
+pub(crate) async fn handle(
+    ctx: &CommandContext<'_>,
+    channel_id: String,
+    message_id: String,
+    client_request_id: Option<String>,
+) {
+    // As in `edit`: one place, so no error path can drop the id.
+    let fail = |msg: String| send_ws_error_with_id(ctx.tx, msg, client_request_id.clone());
     match check_ws_membership(
         ctx.state.pool.clone(),
         ctx.state.server_id,
@@ -35,7 +42,7 @@ pub(crate) async fn handle(ctx: &CommandContext<'_>, channel_id: String, message
     {
         MembershipResult::Allowed => {}
         MembershipResult::Denied => {
-            send_ws_error(ctx.tx, format!("Not a member of channel {channel_id}"));
+            fail(format!("Not a member of channel {channel_id}"));
             return;
         }
         MembershipResult::Error(e) => {
@@ -45,10 +52,7 @@ pub(crate) async fn handle(ctx: &CommandContext<'_>, channel_id: String, message
                 "delete membership check failed: {}",
                 e
             );
-            send_ws_error(
-                ctx.tx,
-                "Internal error checking channel membership".to_string(),
-            );
+            fail("Internal error checking channel membership".to_string());
             return;
         }
     }
@@ -94,7 +98,7 @@ pub(crate) async fn handle(ctx: &CommandContext<'_>, channel_id: String, message
             }
         }
         Err(e) => {
-            send_ws_error(ctx.tx, format!("Delete failed: {e}"));
+            fail(format!("Delete failed: {e}"));
         }
     }
 }

@@ -41,6 +41,12 @@ vi.mock('@/lib/zk', () => ({
   generateNodeId: vi.fn(() => 'node1'),
   computeCommitment: vi.fn(async () => 'commit1'),
   generateMembershipProof: vi.fn(async () => ({ proof: {}, publicSignals: [] })),
+  generateMembershipProofV2: vi.fn(async () => ({
+    proof: {},
+    publicSignals: [],
+    nullifierHex: 'n1',
+    topicHashHex: 't1',
+  })),
   cancelMembershipProofGeneration: vi.fn(async () => {}),
   isProofGenerationInFlight: vi.fn(() => false),
   ZkProofAssetsError: class extends Error {},
@@ -287,5 +293,170 @@ describe('identity store — API auth state sync', () => {
     // Permissions should be cleared because the pseudonym changed
     expect(useIdentityStore.getState().permissions).toBeNull();
     expect(useIdentityStore.getState().permissionsStatus).toBe('error');
+  });
+});
+
+/**
+ * `cachedProofIsUsable` gates entry into `ready`. It wrapped two very
+ * different operations in one `try`: parsing the locally stored proof, and
+ * asking the server for its current Merkle root. The single `catch` returned
+ * `true` — "the server is unreachable, trust the cache, nothing works offline
+ * anyway".
+ *
+ * That excuse does not apply to the parse. A cached payload that is not JSON
+ * is a corrupt credential, not an offline server, and trusting it drops the
+ * user into the main UI holding a proof the server will reject — every
+ * protected call 403s, with no route back to re-registration because the
+ * app believes it is `ready`. The parse must fail closed; only the network
+ * call is best-effort.
+ */
+describe('identity store — a corrupt cached proof must not open the door', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const base = {
+    id: '1', sk: 'abc', pseudonymId: 'p1', sessionToken: 'tok1', commitmentHex: 'c1',
+    roleCode: 0, nodeId: 'n1', serverSlug: 's1', leafIndex: 0, createdAt: '',
+  };
+
+  it('loadIdentities re-proves when the cached proof is not JSON', async () => {
+    vi.resetModules();
+    mockListIdentities.mockResolvedValueOnce([
+      { ...base, zkProofPayload: 'not json at all' },
+    ]);
+
+    const { useIdentityStore } = await import('./identity');
+    await useIdentityStore.getState().loadIdentities();
+
+    expect(useIdentityStore.getState().phase).toBe('keys_ready');
+    expect(mockSetZkProofPayload).toHaveBeenCalledWith(null);
+  });
+
+  it('loadIdentities re-proves when the cached proof carries a non-string root', async () => {
+    vi.resetModules();
+    mockListIdentities.mockResolvedValueOnce([
+      { ...base, zkProofPayload: JSON.stringify({ root_hex: { nested: true } }) },
+    ]);
+
+    const { useIdentityStore } = await import('./identity');
+    await useIdentityStore.getState().loadIdentities();
+
+    expect(useIdentityStore.getState().phase).toBe('keys_ready');
+  });
+
+  it('selectIdentity re-proves rather than trusting a truncated payload', async () => {
+    vi.resetModules();
+    mockGetIdentity.mockResolvedValueOnce({
+      ...base, zkProofPayload: '{"root_hex":"ROO',
+    });
+
+    const { useIdentityStore } = await import('./identity');
+    await useIdentityStore.getState().selectIdentity('1');
+
+    expect(useIdentityStore.getState().phase).toBe('keys_ready');
+  });
+
+  it('still trusts a well-formed cached proof when the server is unreachable', async () => {
+    vi.resetModules();
+    mockGetCurrentRoot.mockRejectedValueOnce(new Error('offline'));
+    mockListIdentities.mockResolvedValueOnce([
+      { ...base, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }) },
+    ]);
+
+    const { useIdentityStore } = await import('./identity');
+    await useIdentityStore.getState().loadIdentities();
+
+    expect(useIdentityStore.getState().phase).toBe('ready');
+  });
+});
+
+/**
+ * A backup that will not import has to say so.
+ *
+ * `importBackup` called `db.importIdentity` with nothing catching it, so a
+ * file that is not JSON — or is JSON but not an Annex backup — threw out of
+ * the action into an unhandled rejection. `IdentitySetup` renders
+ * `{error && ...}` straight from this store, and no failure path ever set
+ * it, so choosing the wrong file did nothing whatsoever: no message, no
+ * change of state, nothing in the UI at all. That is the first screen of the
+ * app, and it is the screen people reach when something has already gone
+ * wrong for them and they are trying to restore.
+ */
+describe('identity store — a backup that cannot be imported', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('reports the failure instead of throwing out of the action', async () => {
+    vi.resetModules();
+    mockImportIdentity.mockRejectedValueOnce(new SyntaxError('Unexpected token < in JSON'));
+
+    const { useIdentityStore } = await import('./identity');
+
+    await expect(useIdentityStore.getState().importBackup('<html>')).resolves.toBeUndefined();
+
+    const state = useIdentityStore.getState();
+    expect(state.error).toMatch(/not a usable Annex backup/i);
+    // The detail is what tells someone which file they picked by mistake.
+    expect(state.errorDetails).toMatch(/SyntaxError/);
+  });
+
+  it('leaves the identity list alone when the import fails', async () => {
+    vi.resetModules();
+    mockImportIdentity.mockRejectedValueOnce(new Error('not a backup'));
+
+    const { useIdentityStore } = await import('./identity');
+    const before = useIdentityStore.getState().storedIdentities;
+
+    await useIdentityStore.getState().importBackup('nonsense');
+
+    expect(useIdentityStore.getState().storedIdentities).toBe(before);
+    expect(useIdentityStore.getState().identity).toBeNull();
+  });
+});
+
+describe('identity store — proof timeout message', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // `StartupGate` used to append its own hint here — "the first proof can take
+  // longer on slower hardware" — behind `error.includes('Proof generation
+  // timed out')`. Since this is the only producer of that string and it
+  // already carries the same advice, the user read the sentence twice in two
+  // wordings. The hint is gone, which makes this message the ONLY place the
+  // advice survives: strip the parenthetical here and a user who times out is
+  // told to retry with no reason to expect a different result.
+  it('tells the user why a retry might succeed, not just to retry', async () => {
+    vi.resetModules();
+    const zk = await import('@/lib/zk');
+    vi.mocked(zk.generateMembershipProofV2).mockRejectedValueOnce(
+      new zk.ZkProofTimeoutError('Proof generation timed out after 120s (configured timeout: 120000ms).'),
+    );
+
+    const { useIdentityStore } = await import('./identity');
+    useIdentityStore.setState({
+      identity: {
+        id: '1',
+        sk: 'ff',
+        commitmentHex: 'c1',
+        roleCode: 0,
+        nodeId: 'n1',
+        serverSlug: null,
+        leafIndex: null,
+        pseudonymId: null,
+        sessionToken: null,
+        zkProofPayload: null,
+        createdAt: '',
+      } as never,
+    });
+
+    await useIdentityStore.getState().registerWithServer('srv');
+
+    const { phase, error } = useIdentityStore.getState();
+    expect(phase).toBe('error');
+    expect(error).toMatch(/timed out/i);
+    expect(error).toMatch(/first proof can take longer/i);
   });
 });

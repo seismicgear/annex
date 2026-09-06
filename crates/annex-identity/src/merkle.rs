@@ -397,7 +397,16 @@ impl MerkleTree {
         let starting_epoch = load_meta(conn)?
             .map(|m| m.current_epoch)
             .unwrap_or(rebuilt.next_index as i64);
-        let tx = conn.transaction().map_err(IdentityError::DatabaseError)?;
+        // IMMEDIATE. Every write transaction in this codebase takes the
+        // RESERVED lock at BEGIN: a DEFERRED one reads a WAL snapshot first
+        // and then has to upgrade, and if another connection committed in
+        // between SQLite answers SQLITE_BUSY_SNAPSHOT immediately — the busy
+        // handler is never called, so `busy_timeout` cannot help. That is
+        // what made message sends fail intermittently with "database is
+        // locked"; see `ws_send_immediate_tx.rs`.
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(IdentityError::DatabaseError)?;
         rebuilt.write_persisted_state(&tx, starting_epoch)?;
         tx.commit().map_err(IdentityError::DatabaseError)?;
         Ok(fr_to_canonical_hex(rebuilt.root()))
@@ -528,7 +537,16 @@ impl MerkleTree {
         // `next_index`; concurrent registrations serialise on the SQLite
         // write lock here, so two callers can never observe the same
         // `next_index` value.
-        let tx = conn.transaction().map_err(IdentityError::DatabaseError)?;
+        // IMMEDIATE. Every write transaction in this codebase takes the
+        // RESERVED lock at BEGIN: a DEFERRED one reads a WAL snapshot first
+        // and then has to upgrade, and if another connection committed in
+        // between SQLite answers SQLITE_BUSY_SNAPSHOT immediately — the busy
+        // handler is never called, so `busy_timeout` cannot help. That is
+        // what made message sends fail intermittently with "database is
+        // locked"; see `ws_send_immediate_tx.rs`.
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(IdentityError::DatabaseError)?;
         self.persist_leaf_and_root(&tx, index, leaf, new_root, &updates)?;
         tx.commit().map_err(IdentityError::DatabaseError)?;
 

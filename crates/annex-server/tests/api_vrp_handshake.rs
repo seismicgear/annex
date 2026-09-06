@@ -18,6 +18,10 @@ use std::sync::{Arc, Mutex, RwLock};
 use tower::ServiceExt; // for oneshot
 
 async fn setup_app() -> (axum::Router, annex_db::DbPool) {
+    setup_app_with_policy(ServerPolicy::default()).await
+}
+
+async fn setup_app_with_policy(policy: ServerPolicy) -> (axum::Router, annex_db::DbPool) {
     let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
     let conn = pool.get().unwrap();
     annex_db::run_migrations(&conn).unwrap();
@@ -32,9 +36,6 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool) {
     drop(conn);
 
     let tree = MerkleTree::new(20).unwrap();
-
-    // Use default policy
-    let policy = ServerPolicy::default();
 
     let state = AppState {
         pool: pool.clone(),
@@ -156,12 +157,30 @@ async fn test_agent_handshake_aligned() {
 
 #[tokio::test]
 async fn test_agent_handshake_conflict() {
-    let (app, pool) = setup_app().await;
+    // The server declares its own values, and the agent's are unrelated to
+    // them. That is what a conflict is.
+    //
+    // This test used to run against `ServerPolicy::default()`, whose
+    // `principles` list is empty, and assert that an agent declaring any
+    // principle at all was rejected. That passed, and it was the bug: with
+    // no local principles the semantic branch in `compare_peer_anchor_scored`
+    // was unreachable and everything fell through to Conflict, so the only
+    // agent a stock server could admit was one with no anchor whatsoever.
+    // `agent_min_alignment_score` was never consulted. The test's own
+    // comment — "simple comparison: if hashes differ -> Conflict" — was
+    // describing the mechanism rather than any intended policy.
+    //
+    // A server that has stated no values has nothing for an agent to
+    // conflict with; that case is now covered by
+    // `test_agent_handshake_admitted_when_server_declares_no_principles`.
+    let policy = ServerPolicy {
+        principles: vec!["user privacy is paramount".to_string()],
+        ..Default::default()
+    };
+    let (app, pool) = setup_app_with_policy(policy).await;
 
-    // 1. Create Handshake Payload (Conflict)
-    // Server has empty principles. Agent has conflicting principles.
-    // Wait, simple comparison: if hashes differ -> Conflict.
-    let anchor = VrpAnchorSnapshot::new(&["some-principle".to_string()], &[]).unwrap();
+    let anchor =
+        VrpAnchorSnapshot::new(&["maximise engagement at any cost".to_string()], &[]).unwrap();
 
     let contract = VrpCapabilitySharingContract {
         required_capabilities: vec![],
@@ -442,4 +461,70 @@ async fn rehandshake_with_matching_token_is_allowed() {
         StatusCode::OK,
         "matching session token must authorise a re-handshake"
     );
+}
+
+/// A server running the shipped defaults must be able to register an agent
+/// that declares an ethical anchor.
+///
+/// This is the case the old `test_agent_handshake_conflict` asserted the
+/// opposite of. `ServerPolicy::default()` has `principles: []`, and every
+/// agent that arrived with principles of its own was classified Conflict, no
+/// `agent_registrations` row was written, and the agent's WebSocket was
+/// disconnected — after which every `POST /api/channels/{id}/join` from it
+/// 403'd with "agent not registered". Agent participation did not work out
+/// of the box, and nothing pointed at the empty `principles` list as the
+/// reason.
+#[tokio::test]
+async fn test_agent_handshake_admitted_when_server_declares_no_principles() {
+    let (app, pool) = setup_app().await;
+
+    let anchor = VrpAnchorSnapshot::new(&["users deserve privacy".to_string()], &[]).unwrap();
+
+    let handshake = VrpFederationHandshake {
+        anchor_snapshot: anchor,
+        capability_contract: VrpCapabilitySharingContract {
+            required_capabilities: vec![],
+            offered_capabilities: vec![],
+            redacted_topics: vec![],
+        },
+    };
+
+    let payload = serde_json::json!({
+        "pseudonymId": "agent-with-values",
+        "handshake": handshake,
+    });
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+    let mut req = Request::builder()
+        .uri("/api/vrp/agent-handshake")
+        .method("POST")
+        .header("content-type", "application/json")
+        .body(Body::from(payload.to_string()))
+        .unwrap();
+    req.extensions_mut().insert(ConnectInfo(addr));
+
+    let response = app.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let report: VrpValidationReport = serde_json::from_slice(&body_bytes).unwrap();
+    assert_ne!(
+        report.alignment_status,
+        VrpAlignmentStatus::Conflict,
+        "a default server rejected an agent for having principles",
+    );
+
+    // The registration row is what every later join checks, so its absence
+    // is the part that actually breaks the feature.
+    let conn = pool.get().unwrap();
+    let exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM agent_registrations WHERE pseudonym_id = 'agent-with-values')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(exists, "no agent_registrations row was written");
 }

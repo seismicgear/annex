@@ -27,7 +27,7 @@ import {
 } from '@/lib/tauri';
 import { setApiBaseUrl, fetchWithTimeout } from '@/lib/api';
 import { clearWebStartupMode, loadWebStartupMode, saveWebStartupMode } from '@/lib/startup-prefs';
-import { normalizeServerUrl } from '@/lib/url';
+import { describeServerUrlError, normalizeServerUrl } from '@/lib/url';
 import { useServersStore } from '@/stores/servers';
 import { useIdentityStore } from '@/stores/identity';
 import { useVoiceStore } from '@/stores/voice';
@@ -153,8 +153,12 @@ export function StartupModeSelector({ onReady }: Props) {
       let normalized: string;
       try {
         normalized = normalizeServerUrl(url);
-      } catch {
-        setError('Invalid URL format.');
+      } catch (err) {
+        // The other two failure branches below both echo the address and say
+        // what to do; this is the one a new user hits most, from a typo or a
+        // pasted path. `describeServerUrlError` keeps its wording in step with
+        // the same question asked by `ServerHub`'s Join-a-Server dialog.
+        setError(describeServerUrlError(url, err));
         return;
       }
 
@@ -204,7 +208,10 @@ export function StartupModeSelector({ onReady }: Props) {
         // registration so App.tsx Gate 3 creates a proper identity/server pair.
         const server = await useServersStore.getState().beginRemoteRegistration(normalized);
         if (!server) {
-          setError('Failed to begin registration with the remote server.');
+          setError(
+            useServersStore.getState().registrationError ??
+              'Failed to begin registration with the remote server.',
+          );
           setPhase('choose');
           return;
         }
@@ -259,13 +266,26 @@ export function StartupModeSelector({ onReady }: Props) {
           }
           setPhase('choose');
         } else {
-          // Web/Docker — pre-fill only, no auto-resume
           const prefs = loadWebStartupMode();
           if (cancelled) return;
           if (!prefs) {
             setPhase('choose');
             return;
           }
+          // Auto-resume "use this server". The objection to auto-resuming a
+          // remote URL — a "Connecting..." flash followed by an error if the
+          // host is unreachable — does not apply here: `local` means the
+          // current origin, which is by definition reachable because it just
+          // served this page. Without this, a returning web user was asked to
+          // re-pick a server they were already registered with on every single
+          // page load, and answering that prompt drove a redundant
+          // re-registration.
+          if (prefs.mode === 'local') {
+            applyLocal(true);
+            return;
+          }
+          // Remote stays pre-fill-only, so an unreachable saved host does not
+          // strand the user on an error screen with an empty URL field.
           if (prefs.mode === 'remote' && prefs.server_url) {
             setRemoteUrl(prefs.server_url);
           }
@@ -279,7 +299,7 @@ export function StartupModeSelector({ onReady }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [inTauri, applyHost, applyRemote]);
+  }, [inTauri, applyHost, applyRemote, applyLocal]);
 
   const handleReset = async () => {
     if (inTauri) {
@@ -304,6 +324,11 @@ export function StartupModeSelector({ onReady }: Props) {
   if (phase === 'loading') {
     return (
       <div className="startup-mode-selector">
+        {/* Every other phase of this screen renders the `h1`; this one used to
+            drop it, so while startup preferences were being read the page had
+            no level-one heading at all. axe's `page-has-heading-one` would
+            have caught it, but no audit surface reached this phase. */}
+        <h1>Annex</h1>
         <div className="startup-loading">Loading...</div>
       </div>
     );
@@ -312,7 +337,7 @@ export function StartupModeSelector({ onReady }: Props) {
   if (phase === 'starting_voice') {
     return (
       <div className="startup-mode-selector">
-        <h2>Annex</h2>
+        <h1>Annex</h1>
         <div className="startup-loading">Setting up voice...</div>
         <p className="tunnel-hint">
           This may take a moment on first launch while the voice server is
@@ -325,7 +350,7 @@ export function StartupModeSelector({ onReady }: Props) {
   if (phase === 'starting_server') {
     return (
       <div className="startup-mode-selector">
-        <h2>Annex</h2>
+        <h1>Annex</h1>
         <div className="startup-loading">Starting server...</div>
       </div>
     );
@@ -334,7 +359,7 @@ export function StartupModeSelector({ onReady }: Props) {
   if (phase === 'acquiring_endpoint') {
     return (
       <div className="startup-mode-selector">
-        <h2>Annex</h2>
+        <h1>Annex</h1>
         <div className="startup-loading">Setting up public access...</div>
         <p className="endpoint-hint">
           Acquiring a public endpoint from the Annex router so others can
@@ -347,18 +372,32 @@ export function StartupModeSelector({ onReady }: Props) {
   if (phase === 'connecting') {
     return (
       <div className="startup-mode-selector">
-        <h2>Annex</h2>
+        <h1>Annex</h1>
         <div className="startup-loading">Connecting to server...</div>
       </div>
     );
   }
 
   if (phase === 'error') {
+    // The same screen `StartupGate` renders for a failed bootstrap, and it
+    // used to drop three things that one has: the label saying WHAT failed
+    // (a bare exception string on an otherwise empty page tells a user
+    // nothing), the primary-button styling every other action on this
+    // screen has, and an honest name for the button — `handleReset` clears
+    // the saved startup mode and returns to the chooser, which is not what
+    // "Try Again" leads anyone to expect.
     return (
       <div className="startup-mode-selector">
-        <h2>Annex</h2>
-        <div className="error-message">{error}</div>
-        <button onClick={handleReset}>Try Again</button>
+        <h1>Annex</h1>
+        <div className="error-message" role="alert">Startup failed: {error}</div>
+        <p className="startup-description">
+          The way you chose to run Annex could not start. Going back to the
+          chooser lets you pick a different one — connecting to an existing
+          server does not depend on anything on this machine.
+        </p>
+        <button className="primary-btn" onClick={handleReset}>
+          Back to setup options
+        </button>
       </div>
     );
   }
@@ -366,7 +405,7 @@ export function StartupModeSelector({ onReady }: Props) {
   // phase === 'choose'
   return (
     <div className="startup-mode-selector">
-      <h2>Annex</h2>
+      <h1>Annex</h1>
       <p className="startup-description">
         Choose how to use Annex. Remembered values are shown as suggestions.
       </p>
@@ -375,7 +414,7 @@ export function StartupModeSelector({ onReady }: Props) {
         {inTauri ? (
           /* Tauri: Host a Server */
           <div className="startup-option">
-            <h3>Host a Server</h3>
+            <h2>Host a Server</h2>
             <p>
               Run your own Annex server on this device. A public URL is
               automatically configured so others can connect to you.
@@ -390,7 +429,7 @@ export function StartupModeSelector({ onReady }: Props) {
         ) : (
           /* Web/Docker: Use this server */
           <div className="startup-option">
-            <h3>Use This Server</h3>
+            <h2>Use This Server</h2>
             <p>
               Connect to the Annex server at the current address.
             </p>
@@ -405,7 +444,7 @@ export function StartupModeSelector({ onReady }: Props) {
         </div>
 
         <div className="startup-option">
-          <h3>Connect to {inTauri ? 'a' : 'Another'} Server</h3>
+          <h2>Connect to {inTauri ? 'a' : 'Another'} Server</h2>
           <p>Join an existing Annex server as a client.</p>
           <form onSubmit={handleClientSubmit}>
             <input
@@ -414,7 +453,7 @@ export function StartupModeSelector({ onReady }: Props) {
               onChange={(e) => setRemoteUrl(e.target.value)}
               placeholder="annex.example.com"
             />
-            {error && <div className="form-error">{error}</div>}
+            {error && <div className="form-error" role="alert">{error}</div>}
             <button
               type="submit"
               className="primary-btn"

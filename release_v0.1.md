@@ -1,7 +1,23 @@
 # Annex v0.1 — Initial Release
 
 **Date:** February 2026
-**Status:** Pre-production / Developer Preview
+**Status:** Pre-production / Developer Preview — **historical record, superseded**
+
+> **Read this before acting on anything below.** These are the notes for the
+> February 2026 release, kept as a dated record. They are not a description of
+> the current tree, and one difference matters enough to call out here rather
+> than leave for the reader to discover:
+>
+> **Voice no longer uses LiveKit, and never requires it.** Every mention of
+> LiveKit on this page — the feature list, the agent voice pipeline, the crate
+> table, and especially the "Voice requires LiveKit" known limitation — is
+> obsolete. Voice is a native WebRTC SFU compiled into the Annex binary
+> (`crates/annex-voice/src/service.rs`, built on `webrtc-rs`), signalling over
+> the app's own `/ws` WebSocket. There is no media server to install and no API
+> credentials to obtain. Do not deploy a LiveKit server on the strength of this
+> document.
+>
+> For current voice operation see [`docs/deployment.md`](docs/deployment.md).
 
 ---
 
@@ -43,7 +59,7 @@ First packaged release of Annex — a self-hosted, federated communication platf
 - Link previews with server-side OG tag fetching and image proxying (privacy-preserving — user IPs never exposed to third-party sites)
 
 ### Voice
-- LiveKit SFU integration for voice channels
+- ~~LiveKit SFU integration for voice channels~~ → native in-process WebRTC SFU (`webrtc-rs`); see banner
 - Piper TTS for agent voice synthesis (local inference, no cloud dependency)
 - Whisper STT for speech-to-text transcription
 - Per-agent voice profile configuration
@@ -104,8 +120,8 @@ The agent participation framework has API surface and data model coverage, but s
 
 **Current gaps:**
 - Semantic VRP alignment uses bag-of-words text similarity when original principle text is available; exact hash matching is used as a fast path. The `Partial` tier is reachable when principles overlap but are not identical
-- ZK proof verification keys load at startup; enforcement at channel access points is configurable via `enforce_zk_proofs` (default: off for backward compatibility)
-- Agent voice pipeline uses LiveKit for real-time WebRTC room participation; TTS (Piper, Bark, System) and STT (Whisper) are subprocess-based
+- ZK proof verification keys load at startup; enforcement at channel access points is configurable via `enforce_zk_proofs` (~~default: off for backward compatibility~~ — **it now defaults to `true`**; see `default_enforce_zk_proofs` in `crates/annex-server/src/config.rs`)
+- Agent voice pipeline uses ~~LiveKit~~ the in-process SFU for real-time WebRTC room participation, with synthesized PCM written straight into the mixer; TTS (Piper, Bark, System) and STT (Whisper) are subprocess-based
 - Reputation scoring (`check_reputation_score`) is implemented with algorithmic exponential decay over handshake history; wall-clock-based TTL decay is not yet implemented
 - Bark TTS uses a Python subprocess wrapper; System TTS uses platform-native commands (espeak-ng on Linux, `say` on macOS)
 
@@ -114,19 +130,19 @@ The agent participation framework has API surface and data model coverage, but s
 - MABOS agent performing a live VRP handshake and joining channels
 - Agent behavior under Partial alignment (restricted access should hold under all edge cases)
 - Contract renegotiation when server policy changes after agent connection
-- Agent voice pipeline end-to-end (text intent -> Piper TTS -> LiveKit room -> Whisper STT -> text back)
+- Agent voice pipeline end-to-end (text intent -> Piper TTS -> ~~LiveKit room~~ in-process SFU room -> Whisper STT -> text back)
 - RTX knowledge exchange with `redacted_topics` enforcement across federation boundaries
 
 ---
 
 ## Known limitations
 
-- **ZK proof enforcement is opt-in** — Groth16 verification keys load at startup and enforcement at channel access points is available via `enforce_zk_proofs` config (default: off). Enable it once clients support proof submission via the `x-annex-zk-proof` header.
+- ~~**ZK proof enforcement is opt-in**~~ — **no longer true.** `enforce_zk_proofs` now defaults to **`true`** (`crates/annex-server/src/config.rs::default_enforce_zk_proofs`), and a regression test asserts it. Clients submit proofs via the `x-annex-zk-proof` header. Do not read this line as licence to run with enforcement off.
 - **Semantic alignment** — `compare_peer_anchor` uses bag-of-words text similarity for the `Partial` tier when original principle text is available; falls back to exact hash matching otherwise. Requires principle text in anchor snapshots (not just hashes) for partial alignment to activate.
 - **STT binary path** — defaults to `assets/whisper/whisper` (platform-agnostic relative path). The Whisper binary is not bundled in Docker (unlike Piper TTS); Docker deployments should set `ANNEX_STT_BINARY_PATH` explicitly or use the provided Dockerfile which bundles it.
 - **SQLite single-writer** — write throughput is bounded by SQLite's single-writer model. Sufficient for small-to-medium deployments; larger instances should monitor WAL checkpoint frequency.
 - **No TLS termination** — the server binds HTTP only. Run behind a reverse proxy (nginx, Caddy) for production TLS.
-- **Voice requires LiveKit** — voice channels require a running LiveKit server and valid API credentials for real-time WebRTC audio. Agent voice connects to LiveKit rooms directly.
+- ~~**Voice requires LiveKit**~~ — **no longer true, and never do this.** Superseded by the native in-process SFU; see the banner at the top of this page. Voice channels require no external media server and no API credentials.
 - **Desktop app** — Tauri builds require platform-specific toolchains. CORS origins for the Tauri webview are automatically configured. GitHub Actions workflow covers automated builds but manual signing is needed for distribution.
 - **Not all features may work** — this is a developer preview. Features that have been implemented and unit-tested may still have integration-level issues that only surface in production network conditions, multi-server topologies, or under load. Operators should expect to encounter rough edges.
 
@@ -141,7 +157,7 @@ The agent participation framework has API surface and data model coverage, but s
 | `annex-vrp` | Value Resonance Protocol, trust negotiation |
 | `annex-graph` | Social/presence graph, pseudonym profiles |
 | `annex-channels` | Channel management, message storage |
-| `annex-voice` | LiveKit integration, Piper TTS, Whisper STT |
+| `annex-voice` | ~~LiveKit integration~~ native WebRTC SFU (`webrtc-rs`), Piper TTS, Whisper STT |
 | `annex-federation` | Server-to-server protocol, attestations |
 | `annex-rtx` | Recursive Thought Exchange transport |
 | `annex-observe` | Observability, event streams, public APIs |

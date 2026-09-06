@@ -27,12 +27,44 @@
 use axum::http::StatusCode;
 
 /// Duration for which a WebSocket session token is valid (60 seconds).
-/// Tokens are single-use: the short TTL limits replay risk for unused tokens.
+///
+/// These are NOT single-use, whatever an earlier version of this comment
+/// claimed. [`verify_ws_token`] checks an HMAC and a clock and keeps no
+/// state, so a token can be spent as many times as its lifetime allows; the
+/// TTL is the entire replay bound. That is worth stating plainly because a
+/// reader who believes "single-use" will reason about a replay window that
+/// does not exist.
+///
+/// Two things follow, both pinned by `tests/api_ws_token.rs`:
+///
+///   * A replay opens a fully functional second session. Since
+///     `ConnectionManager::add_session` keeps one session per pseudonym by
+///     design, the newer socket takes the older one's place in the broadcast
+///     registry — the victim's socket stays open and stops receiving.
+///   * The shipped client makes the window an hour, not a minute. It never
+///     calls `POST /api/ws/token`; `client/src/lib/ws.ts` connects with the
+///     REST session token (`SESSION_TOKEN_TTL_SECS`) instead, so the
+///     short-lived token this constant describes is currently unused.
+///
+/// Making the upgrade single-use is not a local change: consumption cannot
+/// live in [`verify_ws_token`], which [`verify_ws_token_for_auth`] calls on
+/// every REST request under `enforce_zk_proofs` — burning the token there
+/// would sign the user out after one API call. It needs a consumption store
+/// on the upgrade path only, and the client minting a fresh token per
+/// connection so reconnects are not locked out.
 pub const WS_TOKEN_TTL_SECS: u64 = 60;
 
 /// Duration for which a REST session token is valid (1 hour).
+///
 /// Issued by verify-membership after ZK proof verification. The client
-/// auto-refreshes before expiry via `POST /api/ws/token`.
+/// auto-refreshes it via `POST /api/session/refresh`, which accepts an
+/// expired-but-validly-signed token — see `startTokenRefresh` in
+/// `client/src/api/core.ts`.
+///
+/// This said `POST /api/ws/token`, four lines below a comment stating that
+/// the client never calls that endpoint. Both cannot be true, and it was the
+/// wrong one: `/api/ws/token` mints a 60-second WS token and would not
+/// refresh a REST session even if the client did call it.
 pub const SESSION_TOKEN_TTL_SECS: u64 = 3600;
 
 /// Derive a 32-byte HMAC key for WebSocket session tokens from the server's

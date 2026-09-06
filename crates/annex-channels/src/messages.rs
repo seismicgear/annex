@@ -271,23 +271,52 @@ pub fn delete_message(
         params![message_id],
     )?;
 
+    // And drop every earlier version of it.
+    //
+    // Blanking `content` alone hid the final text and left all the drafts
+    // behind: `message_edits` kept `old_content` verbatim and
+    // `get_edit_history` did not filter on `deleted_at`, so a message the
+    // sender had deleted still served every prior version through
+    // `GET /api/channels/{id}/messages/{mid}/edits`. Someone who mistyped a
+    // password, a name or an address, corrected it, then deleted the
+    // message, had published the mistake and hidden only the correction —
+    // which is the opposite of what "delete" is asked to do, and the one
+    // case where deleting matters most.
+    tx.execute(
+        "DELETE FROM message_edits WHERE message_id = ?1",
+        params![message_id],
+    )?;
+
     tx.commit()?;
     get_message(conn, message_id)
 }
 
-/// Returns the edit history for a message (oldest first).
+/// Returns the edit history for a message in a channel (oldest first).
+///
+/// The channel is part of the query rather than something the caller is
+/// trusted to have checked, because `message_edits` has no channel column
+/// and the only route that reads it takes the channel and the message as
+/// two independent path segments. Scoped by message id alone, a caller who
+/// is a member of *any* channel could name a message from a channel they
+/// are not in and receive every prior version of it. The membership check
+/// upstream still runs and still matters — it just cannot be the only thing
+/// standing between the two identifiers, because it can only speak about
+/// one of them.
 pub fn get_edit_history(
     conn: &Connection,
+    server_id: i64,
+    channel_id: &str,
     message_id: &str,
 ) -> Result<Vec<MessageEdit>, ChannelError> {
     let mut stmt = conn.prepare(
-        "SELECT id, message_id, old_content, edited_at
-         FROM message_edits
-         WHERE message_id = ?1
-         ORDER BY edited_at ASC",
+        "SELECT e.id, e.message_id, e.old_content, e.edited_at
+         FROM message_edits e
+         JOIN messages m ON m.message_id = e.message_id
+         WHERE e.message_id = ?1 AND m.channel_id = ?2 AND m.server_id = ?3
+         ORDER BY e.edited_at ASC",
     )?;
 
-    let rows = stmt.query_map([message_id], |row| {
+    let rows = stmt.query_map(params![message_id, channel_id, server_id], |row| {
         Ok(MessageEdit {
             id: row.get(0)?,
             message_id: row.get(1)?,

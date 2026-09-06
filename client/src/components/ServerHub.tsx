@@ -12,9 +12,11 @@
 import { useState, useCallback } from 'react';
 import { useServersStore } from '@/stores/servers';
 import { resolveUrl } from '@/lib/api';
-import { normalizeServerUrl } from '@/lib/url';
+import { describeServerUrlError, normalizeServerUrl } from '@/lib/url';
 import { useIdentityStore } from '@/stores/identity';
 import type { SavedServer } from '@/types';
+import { Modal } from '@/components/Modal';
+import { useDialogTitleId } from '@/lib/use-dialog-title-id';
 
 interface AddServerDialogProps {
   onClose: () => void;
@@ -22,6 +24,7 @@ interface AddServerDialogProps {
 }
 
 function AddServerDialog({ onClose, onAdd }: AddServerDialogProps) {
+  const titleId = useDialogTitleId();
   const [url, setUrl] = useState('');
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState('');
@@ -31,12 +34,15 @@ function AddServerDialog({ onClose, onAdd }: AddServerDialogProps) {
     const trimmed = url.trim();
     if (!trimmed) return;
 
-    // Normalize and validate URL
+    // Normalize and validate URL. The wording lives in `describeServerUrlError`
+    // because `StartupModeSelector` asks the same question on first run and
+    // both dialogs had the same gap: a bare "Invalid URL format." that named
+    // nothing the user typed.
     let baseUrl: string;
     try {
       baseUrl = normalizeServerUrl(trimmed);
-    } catch {
-      setError('Invalid URL format.');
+    } catch (err) {
+      setError(describeServerUrlError(trimmed, err));
       return;
     }
 
@@ -45,41 +51,47 @@ function AddServerDialog({ onClose, onAdd }: AddServerDialogProps) {
     try {
       await onAdd(baseUrl);
       onClose();
-    } catch {
-      setError(`Could not reach server at ${baseUrl}. Check the URL and try again.`);
+    } catch (err) {
+      // `onAdd` throws the reason the registration actually failed, which is
+      // not always reachability — a local identity clone can fail with the
+      // network perfectly fine. Overwriting it with "Could not reach server"
+      // put the guess back that the layer below had just stopped making.
+      setError(
+        err instanceof Error && err.message
+          ? err.message
+          : `Could not reach server at ${baseUrl}. Check the URL and try again.`,
+      );
     } finally {
       setAdding(false);
     }
   };
 
   return (
-    <div className="dialog-overlay" onClick={onClose}>
-      <div className="dialog add-server-dialog" onClick={(e) => e.stopPropagation()}>
-        <h3>Join a Server</h3>
-        <p className="dialog-description">
-          Enter the URL of an Annex server to establish a new cryptographic identity there.
-        </p>
-        <form onSubmit={handleSubmit}>
-          <label>
-            Server URL
-            <input
-              type="text"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              placeholder="annex.example.com"
-              autoFocus
-            />
-          </label>
-          {error && <p className="form-error">{error}</p>}
-          <div className="dialog-actions">
-            <button type="button" onClick={onClose}>Cancel</button>
-            <button type="submit" className="primary-btn" disabled={adding || !url.trim()}>
-              {adding ? 'Connecting...' : 'Join Server'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+    <Modal onClose={onClose} className="add-server-dialog" titleId={titleId}>
+      <h2 id={titleId}>Join a Server</h2>
+      <p className="dialog-description">
+        Enter the URL of an Annex server to establish a new cryptographic identity there.
+      </p>
+      <form onSubmit={handleSubmit}>
+        <label>
+          Server URL
+          <input
+            type="text"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder="annex.example.com"
+            autoFocus
+          />
+        </label>
+        {error && <p className="form-error" role="alert">{error}</p>}
+        <div className="dialog-actions">
+          <button type="button" onClick={onClose}>Cancel</button>
+          <button type="submit" className="primary-btn" disabled={adding || !url.trim()}>
+            {adding ? 'Connecting...' : 'Join Server'}
+          </button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 
@@ -146,6 +158,7 @@ export function ServerHub() {
   const switching = useServersStore((s) => s.switching);
   const switchServer = useServersStore((s) => s.switchServer);
   const switchError = useServersStore((s) => s.switchError);
+  const clearSwitchError = useServersStore((s) => s.clearSwitchError);
   const beginRemoteRegistration = useServersStore((s) => s.beginRemoteRegistration);
   const removeServer = useServersStore((s) => s.removeServer);
   const serverImageUrl = useServersStore((s) => s.serverImageUrl);
@@ -161,14 +174,22 @@ export function ServerHub() {
 
   const handleAdd = useCallback(async (baseUrl: string) => {
     const server = await beginRemoteRegistration(baseUrl);
-    if (!server) throw new Error('Failed to add server');
+    if (!server) {
+      throw new Error(
+        useServersStore.getState().registrationError ?? 'Failed to add server',
+      );
+    }
   }, [beginRemoteRegistration]);
 
   const handleRetry = useCallback(async (server: SavedServer) => {
     // Remove the stale placeholder and re-initiate registration
     await removeServer(server.id).catch(() => {});
     const newServer = await beginRemoteRegistration(server.baseUrl);
-    if (!newServer) throw new Error('Failed to retry registration');
+    if (!newServer) {
+      throw new Error(
+        useServersStore.getState().registrationError ?? 'Failed to retry registration',
+      );
+    }
   }, [beginRemoteRegistration, removeServer]);
 
   const handleRemove = useCallback(async (serverId: string) => {
@@ -179,12 +200,32 @@ export function ServerHub() {
 
   return (
     <>
-      <nav className={`server-hub ${switching ? 'switching' : ''}`}>
-        {switchError && (
-          <div className="server-hub-error" role="alert" title={switchError}>
-            <span>!</span>
-          </div>
-        )}
+      {/* Not inside the rail. It used to be: a `role="alert"` wrapping the
+          single character "!", with the real message in a `title`. That
+          announced "!" to a screen reader, was invisible to touch (a title
+          has no tap), had no CSS rule of its own so it rendered unstyled,
+          and never said the thing that matters most — that the switch rolled
+          back and you are still where you started. The rail is 72px with
+          `overflow-x: hidden`, so prose cannot live in it; this sits above
+          the app instead, where a sentence fits. */}
+      {switchError && (
+        <div className="server-switch-error" role="alert">
+          <span aria-hidden="true">&#9888;&#65039;</span>
+          <span>
+            Couldn&apos;t switch servers: {switchError}. You&apos;re still on the
+            server you started from.
+          </span>
+          <button
+            type="button"
+            className="server-switch-error-dismiss"
+            onClick={clearSwitchError}
+            aria-label="Dismiss"
+          >
+            &times;
+          </button>
+        </div>
+      )}
+      <nav className={`server-hub ${switching ? 'switching' : ''}`} aria-label="Your servers">
         <div className="server-hub-list">
           {servers.map((server) => (
             <ServerIcon

@@ -137,25 +137,67 @@ pub(crate) fn active_agreement_transfer_scope(
 /// and `remote_instance_id`. On any read / parse failure returns an empty
 /// vector — matching the existing inline behaviour where corrupt or
 /// missing handshake JSON is treated as "no redactions to enforce".
+///
+/// That is a FAIL-OPEN, and the caller
+/// (`federation_service`'s inbound relay path) skips `check_redacted_topics`
+/// entirely on an empty list — so a handshake row that will not parse means
+/// the peer's declared redactions are not enforced against anything it sends
+/// us. Until this session the three causes were indistinguishable from a peer
+/// that simply declared none, and produced no signal at all. Behaviour is
+/// unchanged — rejecting instead would cut off a peer whose stored handshake
+/// predates a schema change, which is a deployment decision, not a bug fix —
+/// but the operator now gets a line naming the peer, which is the difference
+/// between a policy that is off and a policy that is off silently.
 pub(crate) fn active_agreement_redacted_topics(
     conn: &Connection,
     local_server_id: i64,
     remote_instance_id: i64,
 ) -> Vec<String> {
-    conn.query_row(
+    let stored = match conn.query_row(
         "SELECT remote_handshake_json FROM federation_agreements
          WHERE local_server_id = ?1 AND remote_instance_id = ?2 AND active = 1",
         params![local_server_id, remote_instance_id],
         |row| row.get::<_, Option<String>>(0),
-    )
-    .ok()
-    .flatten()
-    .and_then(|json| {
-        serde_json::from_str::<VrpFederationHandshake>(&json)
-            .ok()
-            .map(|h| h.capability_contract.redacted_topics)
-    })
-    .unwrap_or_default()
+    ) {
+        Ok(Some(json)) => json,
+        // No active agreement row, or the column is NULL. The caller has
+        // already resolved an agreement to get here, so a missing row is
+        // worth saying out loud.
+        Ok(None) => return Vec::new(),
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+            tracing::warn!(
+                local_server_id,
+                remote_instance_id,
+                "no active federation agreement while resolving redacted topics — \
+                 declared redactions will not be enforced"
+            );
+            return Vec::new();
+        }
+        Err(e) => {
+            tracing::warn!(
+                local_server_id,
+                remote_instance_id,
+                error = %e,
+                "could not read the remote handshake while resolving redacted topics — \
+                 declared redactions will not be enforced"
+            );
+            return Vec::new();
+        }
+    };
+
+    match serde_json::from_str::<VrpFederationHandshake>(&stored) {
+        Ok(h) => h.capability_contract.redacted_topics,
+        Err(e) => {
+            tracing::warn!(
+                local_server_id,
+                remote_instance_id,
+                error = %e,
+                "stored remote handshake does not parse — declared redactions will \
+                 not be enforced for this peer"
+            );
+            Vec::new()
+        }
+    }
 }
 
 /// Look up the federated identity row for a `(remote_instance_id,

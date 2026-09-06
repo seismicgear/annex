@@ -168,7 +168,7 @@ build-misconfiguration alert, not noise.
 
 ## WebRTC / media caveats
 
-- The WebRTC media plane is hosted in-process by the Axum server (via `webrtc-rs`). LiveKit references in older docs are stale.
+- The WebRTC media plane is hosted in-process by the Axum server (via `webrtc-rs`), and signalling rides the app's own `/ws` WebSocket rather than a separate port — so the desktop shell needs no extra sidecar process, no second port opened, and no media-server lifecycle to manage. LiveKit references in older docs are stale; nothing in the tree dials or spawns one.
 - Voice config knobs live under `[webrtc]` in `config.toml`. STUN defaults to Google STUN; for restrictive networks add a TURN entry.
 - `getUserMedia` / `getDisplayMedia` require WebKitGTK ≥ 2.40 (Linux). On Windows the WebView2 runtime handles media; on macOS, WKWebView's stack handles it. There is **no fallback path**; an old WebKitGTK is a hard runtime failure.
 - The Tauri CSP at `tauri.conf.json::app::security::csp` allows `connect-src * ws: wss:` and `media-src 'self' blob: data: mediastream: http: https:` deliberately so that media streams can flow. Don't tighten this without testing voice end-to-end.

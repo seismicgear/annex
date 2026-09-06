@@ -672,57 +672,161 @@ impl IdentityService {
             };
 
             // 6. Atomic mutation block.
-            let tx = conn.transaction().map_err(|e| {
+            // IMMEDIATE — this block reads the nullifier and the tree before
+            // writing both, which is the snapshot-conflict shape.
+            let tx = conn
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .map_err(|e| {
                 IdentityServiceError::Internal(format!("failed to start transaction: {e}"))
             })?;
 
-            insert_nullifier(
+            // The nullifier is single-use per topic — that is what stops one
+            // identity claiming two pseudonyms in the same topic. But it is
+            // ALSO presented every time an existing member re-authenticates,
+            // and treating that as an error locked members out permanently:
+            //
+            //   1. Alice joins; her cached proof binds to Merkle root R1.
+            //   2. Bob joins; the root becomes R2.
+            //   3. Alice returns. Her cached proof no longer matches the
+            //      current root, so the client re-proves against R2 and
+            //      re-submits here.
+            //   4. Her nullifier is already consumed -> 409 -> she can never
+            //      get back in, on a server she is a legitimate member of.
+            //
+            // On any multi-user server that locked out every member except
+            // the most recent joiner.
+            //
+            // Re-presenting the nullifier grants no new capability: the
+            // caller has already produced a valid Groth16 proof against an
+            // acceptable root, with `publicSignals` cross-checked against the
+            // claimed commitment, so they have demonstrated knowledge of the
+            // preimage. The pseudonym derives deterministically from
+            // (topic, nullifier), so a re-verification necessarily resolves
+            // to the SAME pseudonym — the double-join property is preserved.
+            //
+            // A different commitment arriving on an already-consumed
+            // nullifier is a real conflict and still rejected.
+            let reauthenticating = match insert_nullifier(
                 &tx,
                 &payload.topic,
                 &nullifier_hex,
                 Some(&pseudonym_id),
                 Some(&payload.commitment),
-            )
-            .map_err(|e| match e {
-                annex_identity::IdentityError::DuplicateNullifier(_) => {
-                    IdentityServiceError::Conflict(e.to_string())
+            ) {
+                Ok(()) => false,
+                Err(annex_identity::IdentityError::DuplicateNullifier(_)) => {
+                    let owner = annex_identity::existing_nullifier_owner(
+                        &tx,
+                        &payload.topic,
+                        &nullifier_hex,
+                    )
+                    .map_err(|e| {
+                        IdentityServiceError::Internal(format!(
+                            "failed to resolve existing nullifier owner: {e}"
+                        ))
+                    })?
+                    .ok_or_else(|| {
+                        IdentityServiceError::Internal(
+                            "nullifier reported as duplicate but no row found".to_string(),
+                        )
+                    })?;
+
+                    match owner.commitment_hex.as_deref() {
+                        Some(existing)
+                            if !existing.eq_ignore_ascii_case(&payload.commitment) =>
+                        {
+                            tracing::warn!(
+                                topic = %payload.topic,
+                                "nullifier presented by a different commitment than the one that \
+                                 consumed it; rejecting"
+                            );
+                            return Err(IdentityServiceError::Conflict(
+                                "nullifier already bound to a different identity".to_string(),
+                            ));
+                        }
+                        Some(_) => {}
+                        None => {
+                            // Pre-migration-024 row: no denormalised binding
+                            // to compare against. The proof already
+                            // established ownership, so record it now.
+                            annex_identity::backfill_nullifier_owner(
+                                &tx,
+                                &payload.topic,
+                                &nullifier_hex,
+                                &pseudonym_id,
+                                &payload.commitment,
+                            )
+                            .map_err(|e| {
+                                IdentityServiceError::Internal(format!(
+                                    "failed to backfill nullifier owner: {e}"
+                                ))
+                            })?;
+                        }
+                    }
+                    true
                 }
-                _ => IdentityServiceError::Internal(format!("failed to insert nullifier: {e}")),
-            })?;
-
-            let observe_payload = EventPayload::PseudonymDerived {
-                pseudonym_id: pseudonym_id.clone(),
-                topic: payload.topic.clone(),
+                Err(e) => {
+                    return Err(IdentityServiceError::Internal(format!(
+                        "failed to insert nullifier: {e}"
+                    )));
+                }
             };
-            crate::emit_and_broadcast(
-                &tx,
-                state.server_id,
-                &pseudonym_id,
-                &observe_payload,
-                &state.observe_tx,
-                &state.signing_key,
-            );
 
-            create_platform_identity(&tx, server_id, &pseudonym_id, role_code).map_err(|e| {
-                IdentityServiceError::Internal(format!("failed to create platform identity: {e}"))
-            })?;
+            // `PseudonymDerived` records the moment a pseudonym came into
+            // existence. A returning member's pseudonym was derived on their
+            // first visit, so re-emitting it on every re-authentication would
+            // put a false "derived" entry in the signed, hash-chained audit
+            // log once per login.
+            if !reauthenticating {
+                let observe_payload = EventPayload::PseudonymDerived {
+                    pseudonym_id: pseudonym_id.clone(),
+                    topic: payload.topic.clone(),
+                };
+                crate::emit_and_broadcast(
+                    &tx,
+                    state.server_id,
+                    &pseudonym_id,
+                    &observe_payload,
+                    &state.observe_tx,
+                    &state.signing_key,
+                );
+            }
+
+            // `create_platform_identity` is a plain INSERT (its founder
+            // election is a TOCTOU-free sub-SELECT that only makes sense on
+            // first insert), so it must not run again for a returning member.
+            // `ensure_graph_node` below IS an upsert and should still run —
+            // it refreshes `last_seen_at`, which is exactly what a returning
+            // member's presence needs.
+            if !reauthenticating {
+                create_platform_identity(&tx, server_id, &pseudonym_id, role_code).map_err(|e| {
+                    IdentityServiceError::Internal(format!(
+                        "failed to create platform identity: {e}"
+                    ))
+                })?;
+            }
 
             ensure_graph_node(&tx, server_id, &pseudonym_id, node_type, metadata_json).map_err(
                 |e| IdentityServiceError::Internal(format!("failed to ensure graph node: {e}")),
             )?;
 
-            let observe_payload = EventPayload::NodeAdded {
-                pseudonym_id: pseudonym_id.clone(),
-                node_type: format!("{node_type:?}"),
-            };
-            crate::emit_and_broadcast(
-                &tx,
-                server_id,
-                &pseudonym_id,
-                &observe_payload,
-                &state.observe_tx,
-                &state.signing_key,
-            );
+            // Likewise `NodeAdded` — the node is added once. Re-authentication
+            // refreshes it (via the `ensure_graph_node` upsert above) and is
+            // reported by the post-commit `NodeUpdated` presence broadcast.
+            if !reauthenticating {
+                let observe_payload = EventPayload::NodeAdded {
+                    pseudonym_id: pseudonym_id.clone(),
+                    node_type: format!("{node_type:?}"),
+                };
+                crate::emit_and_broadcast(
+                    &tx,
+                    server_id,
+                    &pseudonym_id,
+                    &observe_payload,
+                    &state.observe_tx,
+                    &state.signing_key,
+                );
+            }
 
             tx.commit().map_err(|e| {
                 IdentityServiceError::Internal(format!("failed to commit transaction: {e}"))

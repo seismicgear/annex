@@ -178,53 +178,6 @@ pub(crate) fn invite_expires_at_is_past(expires_at: &str, now: chrono::NaiveDate
     }
 }
 
-/// Parsed invite from an `annex://` protocol handler URL.
-#[derive(Debug, Clone)]
-pub struct ProtocolInvite {
-    /// The Annex server's public HTTPS URL (percent-decoded).
-    pub server: String,
-    /// The invite code (percent-decoded).
-    pub code: String,
-}
-
-/// Parse an `annex://` protocol handler URL.
-///
-/// Expected format: `annex://invite?server={percent_encoded}&code={percent_encoded}`
-///
-/// Returns `None` if the URL is not a valid `annex://invite` URL.
-pub fn parse_protocol_invite(raw_url: &str) -> Option<ProtocolInvite> {
-    let parsed = url::Url::parse(raw_url).ok()?;
-
-    if parsed.scheme() != "annex" {
-        return None;
-    }
-
-    // The host portion of annex://invite is "invite"
-    if parsed.host_str() != Some("invite") {
-        return None;
-    }
-
-    let mut server = None;
-    let mut code = None;
-
-    for (key, value) in parsed.query_pairs() {
-        match key.as_ref() {
-            "server" => server = Some(value.into_owned()),
-            "code" => code = Some(value.into_owned()),
-            _ => {}
-        }
-    }
-
-    let server = server?;
-    let code = code?;
-
-    if !server.starts_with("https://") {
-        return None;
-    }
-
-    Some(ProtocolInvite { server, code })
-}
-
 // ── API types ──
 
 /// Request body for `POST /api/invites`.
@@ -359,15 +312,34 @@ pub async fn create_invite_handler(
 
     let url = invite
         .to_invite_url_with_base(&invite_base_url)
-        .map_err(|e| {
-            ApiError::InternalServerError(format!("failed to generate invite URL: {e}"))
-        })?;
+        .map_err(|e| invite_link_error(e, &public_url))?;
 
     Ok(Json(CreateInviteResponse {
         code,
         url,
         expires_at,
     }))
+}
+
+/// Turn an invite-link failure into the error an admin actually sees.
+///
+/// A rejected payload is almost always the operator's public URL being
+/// `http://` rather than `https://`, which the invite format requires so a
+/// shared link cannot be read in transit. That is configuration, not a server
+/// fault, and it was being reported as a 500 — and because
+/// `ApiError::InternalServerError` logs the real reason but returns the literal
+/// string "internal server error", the one sentence explaining how to fix it
+/// never reached the person who could act on it. Clicking "Create Invite Link"
+/// on an HTTP deployment produced an opaque failure with the explanation buried
+/// in the server log.
+fn invite_link_error(err: InviteLinkError, public_url: &str) -> ApiError {
+    match err {
+        InviteLinkError::InvalidServerUrl(reason) => ApiError::BadRequest(format!(
+            "cannot build an invite link from this server's public URL ({public_url}): {reason}. \
+             Set an HTTPS public URL in Admin → Server Settings, or via ANNEX_PUBLIC_URL."
+        )),
+        other => ApiError::InternalServerError(format!("failed to generate invite URL: {other}")),
+    }
 }
 
 /// Handler for `GET /api/invites`.
@@ -634,6 +606,53 @@ pub async fn delete_invite_handler(
 mod tests {
     use super::*;
 
+    /// An `http://` public URL is the operator's configuration, not a server
+    /// fault. It was surfacing as a 500 whose body is the literal string
+    /// "internal server error" — so the one sentence explaining how to fix it
+    /// only ever reached the server log, and the admin clicking
+    /// "Create Invite Link" saw an opaque failure.
+    #[test]
+    fn http_public_url_is_a_client_error_with_actionable_guidance() {
+        let public_url = "http://annex.example.com";
+        let err = InvitePayload::new(public_url, "code-1", Some("Annex"), None::<String>)
+            .to_invite_url_with_base("https://monolithannex.com/invite")
+            .expect_err("an http:// server URL must be rejected");
+
+        match invite_link_error(err, public_url) {
+            ApiError::BadRequest(msg) => {
+                assert!(
+                    msg.contains("HTTPS"),
+                    "the message must say what is wrong so an operator can fix it: {msg}"
+                );
+                assert!(
+                    msg.contains(public_url),
+                    "the message must name the offending URL: {msg}"
+                );
+                assert!(
+                    msg.contains("Server Settings") && msg.contains("ANNEX_PUBLIC_URL"),
+                    "the message must say where to fix it: {msg}"
+                );
+            }
+            other => panic!("expected a client error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn https_public_url_produces_a_link() {
+        let url = InvitePayload::new(
+            "https://annex.example.com",
+            "code-1",
+            Some("Annex"),
+            None::<String>,
+        )
+        .to_invite_url_with_base("https://monolithannex.com/invite")
+        .expect("an https:// server URL is valid");
+        assert!(
+            url.starts_with("https://monolithannex.com/invite/"),
+            "got {url}"
+        );
+    }
+
     #[test]
     fn serialization_uses_camel_case() {
         let payload = InvitePayload::new(
@@ -812,44 +831,6 @@ mod tests {
         );
         let url = payload.to_invite_url().unwrap();
         assert!(url.len() < 2048);
-    }
-
-    #[test]
-    fn parse_valid_protocol_invite() {
-        let url = "annex://invite?server=https%3A%2F%2Fannex.example.com&code=abc123";
-        let invite = parse_protocol_invite(url).unwrap();
-        assert_eq!(invite.server, "https://annex.example.com");
-        assert_eq!(invite.code, "abc123");
-    }
-
-    #[test]
-    fn parse_protocol_invite_missing_server() {
-        let url = "annex://invite?code=abc123";
-        assert!(parse_protocol_invite(url).is_none());
-    }
-
-    #[test]
-    fn parse_protocol_invite_missing_code() {
-        let url = "annex://invite?server=https%3A%2F%2Fannex.example.com";
-        assert!(parse_protocol_invite(url).is_none());
-    }
-
-    #[test]
-    fn parse_protocol_invite_wrong_path() {
-        let url = "annex://something-else?server=https%3A%2F%2Fannex.example.com&code=abc123";
-        assert!(parse_protocol_invite(url).is_none());
-    }
-
-    #[test]
-    fn parse_protocol_invite_rejects_http() {
-        let url = "annex://invite?server=http%3A%2F%2Fannex.example.com&code=abc123";
-        assert!(parse_protocol_invite(url).is_none());
-    }
-
-    #[test]
-    fn parse_protocol_invite_wrong_scheme() {
-        let url = "https://invite?server=https%3A%2F%2Fannex.example.com&code=abc123";
-        assert!(parse_protocol_invite(url).is_none());
     }
 
     #[test]

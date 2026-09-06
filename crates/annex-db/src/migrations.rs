@@ -187,6 +187,10 @@ const MIGRATIONS: &[Migration] = &[
         name: "042_agent_signing_pubkey",
         sql: include_str!("migrations/042_agent_signing_pubkey.sql"),
     },
+    Migration {
+        name: "043_message_edits_cascade",
+        sql: include_str!("migrations/043_message_edits_cascade.sql"),
+    },
 ];
 
 /// Errors that can occur during migration execution.
@@ -377,12 +381,19 @@ fn run_migrations_from_list(
 
         tracing::info!(migration = migration.name, "applying migration");
 
-        let tx = conn
-            .unchecked_transaction()
-            .map_err(|e| MigrationError::ExecutionFailed {
-                name: migration.name.to_string(),
-                source: e,
-            })?;
+        // IMMEDIATE. Every write transaction in this codebase takes the
+        // RESERVED lock at BEGIN: a DEFERRED one reads a WAL snapshot first
+        // and then has to upgrade, and if another connection committed in
+        // between SQLite answers SQLITE_BUSY_SNAPSHOT immediately — the busy
+        // handler is never called, so `busy_timeout` cannot help. That is
+        // what made message sends fail intermittently with "database is
+        // locked"; see `ws_send_immediate_tx.rs`.
+        let tx =
+            rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+                .map_err(|e| MigrationError::ExecutionFailed {
+                    name: migration.name.to_string(),
+                    source: e,
+                })?;
 
         tx.execute_batch(migration.sql)
             .map_err(|e| MigrationError::ExecutionFailed {

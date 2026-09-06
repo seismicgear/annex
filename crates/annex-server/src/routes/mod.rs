@@ -230,6 +230,13 @@ pub fn app(state: AppState) -> Router {
             "/api/usernames/visible",
             get(api_usernames::get_visible_usernames_handler),
         )
+        // The trust graph is member-only. `BfsPath.path` names the
+        // pseudonyms BETWEEN two people — parties to neither end of the query
+        // — so serving it anonymously let anyone who could reach the server
+        // walk pairs and reconstruct the social graph of a platform built on
+        // pseudonymity. It was in `public_routes`; no client code ever called
+        // it, so nothing depended on that.
+        .route("/api/graph/degrees", get(api_graph::get_degrees_handler))
         .route(
             "/api/link-preview",
             get(api_link_preview::link_preview_handler),
@@ -393,7 +400,6 @@ pub fn app(state: AppState) -> Router {
             "/api/federation/rtx",
             post(api_federation::receive_federated_rtx_handler),
         )
-        .route("/api/graph/degrees", get(api_graph::get_degrees_handler))
         .route("/api/public/events", get(api_observe::get_events_handler))
         .route(
             "/api/public/events/chain",
