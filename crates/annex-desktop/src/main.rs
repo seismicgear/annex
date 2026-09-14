@@ -71,6 +71,31 @@ fn bundled_resource_paths(exe_dir: &Path, suffix: &[&str]) -> Vec<PathBuf> {
 }
 
 fn main() {
+    // Declare what this binary is, BEFORE anything spawns a thread.
+    //
+    // `annex_server::build_profile` defaults a release binary to `production`,
+    // because a release binary is what an operator deploys. That default is
+    // wrong for this one: the desktop app embeds the same server on loopback
+    // for the single person sitting in front of it, and the production gates
+    // would refuse to start it — an explicit CORS origin list and a founder
+    // bootstrap token are meaningless here.
+    //
+    // `desktop` keeps the gates that matter for a shipped binary (ZK
+    // verification keys and the VRP model must match their pins; a weak or
+    // ephemeral signing key is refused) and drops the ones that only make
+    // sense when strangers can reach the port.
+    //
+    // Position is load-bearing. `set_var` is only sound while the process is
+    // single-threaded, and the Tokio runtime three lines below spawns workers
+    // — which is why `embedded_server.rs` routes its WebRTC overrides through
+    // a Mutex instead of the environment. This is the last moment it is safe.
+    //
+    // Only when unset, so `ANNEX_BUILD_PROFILE=dev cargo tauri dev` still
+    // works and a developer can still ask for the production gates on purpose.
+    if std::env::var_os("ANNEX_BUILD_PROFILE").is_none() {
+        std::env::set_var("ANNEX_BUILD_PROFILE", "desktop");
+    }
+
     // Tauri's async runtime drives `start_embedded_server` (which calls
     // `prepare_server` + builds the axum Router) and the spawned `axum::serve`
     // task. On Windows the default worker-thread stack (~2 MiB) risks the same

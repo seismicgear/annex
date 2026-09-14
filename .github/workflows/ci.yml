@@ -60,6 +60,22 @@ jobs:
         run: npm test
         working-directory: zk
 
+      # `zk-proof` is a named gate in docs/refactor/release-gates.md and ran
+      # in no workflow. The step above covers verify-artifacts.js only; this
+      # is the one that generates and verifies real proofs, including the
+      # tamper rejections the gate is described by.
+      - name: ZK proof round-trip
+        run: node scripts/test-proofs.js
+        working-directory: zk
+
+      # 41 tests over api/signal.js — the federation signaling relay, and the
+      # canonical signing string that crates/annex-federation/src/signal.rs
+      # has to match byte for byte. Named by no workflow until now, which is
+      # how the two implementations came to disagree about whether
+      # `rendezvous_tag` is part of that string.
+      - name: Signaling relay tests
+        run: node --test api/signal.test.mjs
+
       # The scripts everything else runs through. Their failures were the
       # silent kind: e2e-server.sh reported "Server ready" about a server it
       # had not started, and claude-setup.sh ended on a failed apt-get with
@@ -467,6 +483,16 @@ jobs:
           (cd client && npm run test:e2e:puppeteer)
           bash scripts/e2e-server.sh stop
 
+      # `client/e2e-results/` is the half that was missing, and it is the half
+      # that can actually diagnose a failure. Playwright writes
+      # `<surface>-actual.png` and `<surface>-diff.png` there on every
+      # `toHaveScreenshot` mismatch — the actual taken with the SAME mask and
+      # clip as the baseline, plus a pixel diff. Without it the only evidence
+      # leaving CI was `diagnostics/`, which is an unmasked, unclipped
+      # full-page shot and therefore cannot be compared to a baseline at all.
+      #
+      # A 53-surface failure was read three different ways from the wrong
+      # artifact before anyone noticed the right one was never uploaded.
       - name: Upload audit report
         if: always()
         uses: actions/upload-artifact@v4
@@ -475,7 +501,9 @@ jobs:
           path: |
             docs/ui-audit/
             client/e2e/audit/diagnostics/
-          retention-days: 14
+            client/e2e-results/
+            client/e2e-report/
+          retention-days: 30
           if-no-files-found: ignore
 
   # Desktop audit — journey stage 01, "app install".

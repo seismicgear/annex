@@ -78,6 +78,8 @@ function parseArgs(argv) {
       out.manifest = argv[++i];
     } else if (a === "--profile" && argv[i + 1]) {
       out.profile = argv[++i];
+    } else if (a === "--all") {
+      out.all = true;
     } else if (a === "--help" || a === "-h") {
       out.help = true;
     } else {
@@ -89,10 +91,12 @@ function parseArgs(argv) {
 
 function printHelp() {
   process.stdout.write(
-    "Usage: node zk/scripts/verify-artifacts.js [--manifest <path>] [--profile <dev|production>]\n"
+    "Usage: node zk/scripts/verify-artifacts.js [--manifest <path> | --all] [--profile <dev|production>]\n"
   );
   process.stdout.write(
-    "\nDefault manifest: zk/artifacts/membership/manifest.json\n" +
+    "\n--all verifies every zk/artifacts/*/manifest.json. Prefer it: gating only\n" +
+      "`membership` once let the DEFAULT identity path (membership_v2) ship unverified.\n" +
+      "\nDefault manifest: zk/artifacts/membership/manifest.json\n" +
       "Default profile:  $ANNEX_BUILD_PROFILE (or \"dev\")\n" +
       "\nUnder --profile production, a manifest with ceremony.type=\"dev-fixture\"\n" +
       "is rejected unless ANNEX_ALLOW_DEV_CEREMONY=1.\n"
@@ -116,6 +120,40 @@ function main() {
   if (args.help) {
     printHelp();
     process.exit(0);
+  }
+
+  // `--all` sweeps every circuit. Each manifest is checked in its own child
+  // process rather than in a loop here: the single-manifest path exits on the
+  // first problem by design (its exit code IS the result), and re-entering it
+  // per manifest keeps that contract exactly while still reporting every
+  // circuit instead of stopping at the first bad one.
+  if (args.all) {
+    if (args.manifest) fail("--all and --manifest are mutually exclusive.");
+    const artifactsDir = path.resolve(__dirname, "..", "artifacts");
+    const manifests = fs
+      .readdirSync(artifactsDir, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && d.name !== "ceremony")
+      .map((d) => path.join(artifactsDir, d.name, "manifest.json"))
+      .filter((p) => fs.existsSync(p))
+      .sort();
+    if (manifests.length === 0) {
+      fail(`no circuit manifests found under ${artifactsDir}.`, 2);
+    }
+    const { spawnSync } = require("child_process");
+    let worst = 0;
+    for (const m of manifests) {
+      const r = spawnSync(
+        process.execPath,
+        [__filename, "--manifest", m, ...(args.profile ? ["--profile", args.profile] : [])],
+        { stdio: "inherit" },
+      );
+      if (r.status !== 0) worst = Math.max(worst, r.status || 1);
+    }
+    if (worst !== 0) {
+      fail(`${manifests.length} manifest(s) checked; at least one failed.`, worst);
+    }
+    info(`All ${manifests.length} circuit manifests verified.`);
+    return;
   }
 
   const manifestPath = args.manifest
@@ -183,7 +221,70 @@ function main() {
   // `ANNEX_ALLOW_DEV_CEREMONY=1`. The opt-in exists so a staging release can
   // still be cut while the real ceremony is being scheduled, without losing
   // the production gate for tag-driven releases.
-  if (manifest.ceremony && manifest.ceremony.type === "dev-fixture") {
+  // Ceremony types this pipeline can produce, and what each one means:
+  //
+  //   dev-fixture                  random entropy, one machine, no record.
+  //                                Rejected under production.
+  //   single-contributor-beacon    one local phase-2 contributor plus a
+  //   multi-contributor-beacon     committed public drand beacon. Accepted,
+  //                                but only with a transcript to check.
+  //   mpc                          independent participants. Nothing in this
+  //                                repo writes it; a manifest claiming it must
+  //                                still carry a transcript, so the claim is
+  //                                checkable rather than asserted.
+  //
+  // An unrecognised type is refused rather than waved through: the whole point
+  // of this gate is that a manifest cannot describe its own provenance in
+  // words the gate does not understand.
+  const CEREMONY_TYPES = new Set([
+    "dev-fixture",
+    "single-contributor-beacon",
+    "multi-contributor-beacon",
+    "mpc",
+  ]);
+  const ceremonyType = manifest.ceremony && manifest.ceremony.type;
+  if (isProduction) {
+    if (!ceremonyType) {
+      fail(
+        "manifest has no `ceremony` block. A production build will not consume artifacts " +
+          "whose provenance is unstated.",
+        3,
+      );
+    }
+    if (!CEREMONY_TYPES.has(ceremonyType)) {
+      fail(
+        `manifest declares an unrecognised ceremony.type ${JSON.stringify(ceremonyType)}. ` +
+          `Known types: ${[...CEREMONY_TYPES].join(", ")}.`,
+        3,
+      );
+    }
+    if (ceremonyType !== "dev-fixture") {
+      if (!manifest.ceremony.transcript) {
+        fail(
+          `manifest declares ceremony.type=${JSON.stringify(ceremonyType)} but names no ` +
+            "`ceremony.transcript`. A provenance claim with no transcript is unverifiable; " +
+            "run `node zk/scripts/verify-ceremony.js` against a real one.",
+          3,
+        );
+      }
+      // The transcript must also EXIST. A manifest pointing at a file that was
+      // never committed is the same claim-without-evidence as naming none at
+      // all, and it is the more likely accident of the two.
+      const transcriptPath = path.resolve(
+        path.dirname(manifestPath),
+        manifest.ceremony.transcript,
+      );
+      if (!fs.existsSync(transcriptPath)) {
+        fail(
+          `manifest names ceremony.transcript=${JSON.stringify(manifest.ceremony.transcript)} ` +
+            `but no file exists at ${transcriptPath}.`,
+          3,
+        );
+      }
+    }
+  }
+
+  if (ceremonyType === "dev-fixture") {
     if (isProduction && !allowDevCeremony) {
       fail(
         `manifest is marked ceremony.type="dev-fixture" but ANNEX_BUILD_PROFILE=${profile}. ` +

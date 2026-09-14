@@ -760,8 +760,57 @@ fn validate_config(config: &Config) -> Result<(), ConfigError> {
 
     validate_cors_for_build_profile(&config.cors)?;
     validate_deployment_for_build_profile(&config.deployment)?;
+    validate_zk_enforcement_for_build_profile(&config.security)?;
 
     Ok(())
+}
+
+/// Refuse to start a multi-tenant server with ZK enforcement switched off.
+///
+/// `enforce_zk_proofs` was the only dangerous setting with no production gate,
+/// which made it the most dangerous one. Every lesser knob — wildcard CORS, a
+/// clustered deployment on an in-memory rate limiter, the dev-localhost CORS
+/// relaxation — refuses to start under production. This one did not, and what
+/// it turns off is authentication itself:
+///
+/// * `middleware.rs` accepts a raw pseudonym string as a `Bearer` token;
+/// * `api_ws.rs` accepts a raw pseudonym as a query parameter.
+///
+/// Pseudonyms are public. `GET /api/identity/{pseudonymId}` serves them
+/// unauthenticated, and the member and agent listings enumerate them. So the
+/// combination `ANNEX_BUILD_PROFILE=production` +
+/// `ANNEX_ENFORCE_ZK_PROOFS=false` is not "weaker auth", it is impersonation
+/// of any user by anyone who can read a public endpoint.
+///
+/// There is deliberately no escape hatch. An `ANNEX_ALLOW_INSECURE_AUTH=1`
+/// would be the same shape as `ANNEX_ALLOW_DEV_CEREMONY` — a single variable
+/// that silently disables a gate, which
+/// `scripts/verify-production-rejects-dev-fixtures.sh` exists to police. An
+/// operator who genuinely wants proofs off is running a development server,
+/// and the dev profile says so honestly.
+///
+/// Desktop is exempt for the same reason it is exempt from the CORS gate: it
+/// is a loopback server for the person sitting in front of it. It still gets
+/// the artifact-provenance gates, which are what protect it.
+fn validate_zk_enforcement_for_build_profile(security: &SecurityConfig) -> Result<(), ConfigError> {
+    let profile = crate::build_profile::current();
+    if !profile.requires_multi_tenant_gates() {
+        return Ok(());
+    }
+    if security.enforce_zk_proofs {
+        return Ok(());
+    }
+    Err(ConfigError::InvalidValue {
+        field: "security.enforce_zk_proofs",
+        reason: format!(
+            "must be true under the {} build profile. With it false the server accepts a raw \
+             pseudonym as a Bearer token and as a WebSocket query parameter, and pseudonyms are \
+             served publicly — so any reader of a public endpoint can act as any identity. \
+             Unset ANNEX_ENFORCE_ZK_PROOFS (it defaults to true), or run a dev profile if this \
+             is a development server.",
+            profile.as_str()
+        ),
+    })
 }
 
 /// Refuse impossible deployment shapes under a production profile.
@@ -805,14 +854,11 @@ fn validate_deployment_for_build_profile(deployment: &DeploymentConfig) -> Resul
         });
     }
 
-    let raw_profile = match std::env::var("ANNEX_BUILD_PROFILE") {
-        Ok(v) => v,
-        Err(_) => return Ok(()),
-    };
-    let profile = raw_profile.trim().to_ascii_lowercase();
-    if profile != "production" && profile != "release" {
+    let profile = crate::build_profile::current();
+    if !profile.requires_multi_tenant_gates() {
         return Ok(());
     }
+    let raw_profile = profile.as_str();
 
     if mode == "clustered"
         && deployment
@@ -823,7 +869,7 @@ fn validate_deployment_for_build_profile(deployment: &DeploymentConfig) -> Resul
         return Err(ConfigError::InvalidValue {
             field: "deployment.rate_limit_backend",
             reason: format!(
-                "ANNEX_DEPLOYMENT_MODE=clustered under ANNEX_BUILD_PROFILE={raw_profile} \
+                "ANNEX_DEPLOYMENT_MODE=clustered under the {raw_profile} build profile \
                  requires a shared rate-limit backend. The in-memory backend gives each \
                  replica its own bucket, multiplying the effective limit by the replica \
                  count. Set ANNEX_RATE_LIMIT_BACKEND to a shared store, or run single-mode."
@@ -860,7 +906,7 @@ fn validate_deployment_for_build_profile(deployment: &DeploymentConfig) -> Resul
             return Err(ConfigError::InvalidValue {
                 field: "deployment.experimental_relay_transport_enabled",
                 reason: format!(
-                    "ANNEX_FEDERATION_RELAY_TRANSPORT_ENABLED=true under ANNEX_BUILD_PROFILE={raw_profile} \
+                    "ANNEX_FEDERATION_RELAY_TRANSPORT_ENABLED=true under the {raw_profile} build profile \
                      requires ANNEX_SIGNAL_TRUSTED_PEERS to be configured. The relay is the only \
                      authorization gate for federation SDP; without it, any holder of an Ed25519 \
                      keypair could inject sessions."
@@ -885,25 +931,29 @@ fn validate_deployment_for_build_profile(deployment: &DeploymentConfig) -> Resul
 /// their current permissive behaviour so `cargo run -p annex-server` and
 /// `docker compose up` still work without per-origin configuration.
 ///
-/// Reads `ANNEX_BUILD_PROFILE` directly because nothing else in the
-/// server runtime needs to know the build profile — wiring it into
-/// `Config` would force every test fixture to plumb a new field.
+/// Resolved through [`crate::build_profile`] rather than reading the
+/// environment here. This function used to parse `ANNEX_BUILD_PROFILE` itself
+/// and `return Ok(())` when it was unset — so the gate was off by default on
+/// every binary an operator built from source, and a typo in the variable was
+/// indistinguishable from a dev profile. The profile now comes from the
+/// binary unless something explicitly overrides it.
+///
+/// Gated on `requires_multi_tenant_gates`, not merely "not dev": the desktop
+/// app embeds this server on loopback for one person and has no cross-origin
+/// policy to declare.
 fn validate_cors_for_build_profile(cors: &CorsConfig) -> Result<(), ConfigError> {
-    let raw_profile = match std::env::var("ANNEX_BUILD_PROFILE") {
-        Ok(v) => v,
-        Err(_) => return Ok(()),
-    };
-    let profile = raw_profile.trim().to_ascii_lowercase();
-    if profile != "production" && profile != "release" {
+    let profile = crate::build_profile::current();
+    if !profile.requires_multi_tenant_gates() {
         return Ok(());
     }
+    let raw_profile = profile.as_str();
 
     let has_wildcard = cors.allowed_origins.iter().any(|o| o.trim() == "*");
     if has_wildcard {
         return Err(ConfigError::InvalidValue {
             field: "cors.allowed_origins",
             reason: format!(
-                "wildcard CORS origin (\"*\") is forbidden under ANNEX_BUILD_PROFILE={raw_profile}. \
+                "wildcard CORS origin (\"*\") is forbidden under the {raw_profile} build profile. \
                  Set ANNEX_CORS_ORIGINS to an explicit comma-separated list of allowed origins \
                  (e.g. https://app.example.com), or run a dev profile."
             ),
@@ -913,7 +963,7 @@ fn validate_cors_for_build_profile(cors: &CorsConfig) -> Result<(), ConfigError>
         return Err(ConfigError::InvalidValue {
             field: "cors.allowed_origins",
             reason: format!(
-                "no CORS allowed origins configured under ANNEX_BUILD_PROFILE={raw_profile}. \
+                "no CORS allowed origins configured under the {raw_profile} build profile. \
                  Set ANNEX_CORS_ORIGINS to an explicit comma-separated list (e.g. \
                  https://app.example.com) or cors.allowed_origins in config.toml. \
                  Refusing to start with an unconfigured cross-origin policy under production."
@@ -1953,6 +2003,82 @@ port = 3000
         assert!(persisted.contains(&cfg.server.server_slug));
 
         fs::remove_file(path).expect("failed to remove temp config");
+    }
+
+    // ── Production ZK-enforcement gate ──────────────────────────────────
+    //
+    // The gate this codebase most needed and least had. `enforce_zk_proofs`
+    // defaults to true, but `ANNEX_ENFORCE_ZK_PROOFS=false` overrode it under
+    // ANY profile — and what that override turns off is authentication, not
+    // merely a proof check.
+
+    #[test]
+    fn production_profile_rejects_disabled_zk_enforcement() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+        std::env::set_var("ANNEX_BUILD_PROFILE", "production");
+        // The CORS gate fires first and would mask this one, so satisfy it.
+        std::env::set_var("ANNEX_CORS_ORIGINS", "https://app.example.com");
+        std::env::set_var("ANNEX_ENFORCE_ZK_PROOFS", "false");
+
+        let err = load_config(None)
+            .expect_err("production + enforce_zk_proofs=false must fail validation");
+        match err {
+            ConfigError::InvalidValue { field, reason } => {
+                assert_eq!(field, "security.enforce_zk_proofs");
+                assert!(
+                    reason.contains("raw"),
+                    "the error must say what it lets through: {reason}"
+                );
+            }
+            other => panic!("expected InvalidValue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn production_profile_accepts_enabled_zk_enforcement() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+        std::env::set_var("ANNEX_BUILD_PROFILE", "production");
+        std::env::set_var("ANNEX_CORS_ORIGINS", "https://app.example.com");
+        std::env::set_var("ANNEX_ENFORCE_ZK_PROOFS", "true");
+
+        let cfg = load_config(None).expect("production + enforcement on must validate");
+        assert!(cfg.security.enforce_zk_proofs);
+    }
+
+    /// The desktop app embeds this server on loopback for one person, and its
+    /// first run must not require an explicit CORS origin list. It is still
+    /// held to the artifact-provenance gates — that split is the reason the
+    /// profile is three-valued rather than two.
+    #[test]
+    fn desktop_profile_does_not_take_the_multi_tenant_gates() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+        std::env::set_var("ANNEX_BUILD_PROFILE", "desktop");
+        // Neither an origin list nor an enforcement flag: both would be a
+        // startup error under `production`.
+
+        let cfg = load_config(None).expect("desktop must boot without multi-tenant configuration");
+        assert!(cfg.cors.allowed_origins.is_empty());
+        assert!(
+            crate::build_profile::current().requires_artifact_provenance(),
+            "desktop must still verify what it loads"
+        );
+    }
+
+    /// A dev profile is allowed to run without proofs — that is what makes it
+    /// a dev profile, and the honest alternative to an
+    /// `ANNEX_ALLOW_INSECURE_AUTH` escape hatch on the production one.
+    #[test]
+    fn dev_profile_allows_disabled_zk_enforcement() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+        std::env::set_var("ANNEX_BUILD_PROFILE", "dev");
+        std::env::set_var("ANNEX_ENFORCE_ZK_PROOFS", "false");
+
+        let cfg = load_config(None).expect("dev + enforcement off is legitimate");
+        assert!(!cfg.security.enforce_zk_proofs);
     }
 
     // ── Production CORS gate ────────────────────────────────────────────

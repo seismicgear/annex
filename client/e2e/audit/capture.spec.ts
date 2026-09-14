@@ -176,7 +176,30 @@ for (const surface of ORDERED_SURFACES) {
         // picture of a working screen.
         const file = path.join(DIAG_DIR, viewport.id, `${surface.id}.png`);
         mkdirSync(path.dirname(file), { recursive: true });
-        await page.screenshot({ path: file }).catch(() => {});
+        // Taken with the SAME clip and mask as the baseline, not as a bare
+        // full-page shot.
+        //
+        // The previous version was `page.screenshot({ path: file })` — no
+        // clip, no mask. That picture cannot be compared to a masked, clipped
+        // baseline by construction, so the one artifact CI uploaded for a
+        // failed surface was the one artifact that could not diagnose it. A
+        // 53-surface failure was read three different ways from it before
+        // anyone noticed that Playwright had already written the real
+        // evidence — `<surface>-actual.png` and `<surface>-diff.png` — into
+        // `e2e-results/`, which the workflow was not uploading either.
+        //
+        // A `surface-unreachable` failure is the case where the clip locator
+        // may not exist at all, and there the whole page IS the evidence, so
+        // fall back to it rather than losing the shot.
+        const diagTarget = surface.clip ? page.locator(surface.clip) : page;
+        await diagTarget
+          .screenshot({
+            path: file,
+            mask: maskLocators(page, surface.mask, surface.clip),
+            maskColor: '#3a3a3a',
+            animations: 'disabled' as const,
+          })
+          .catch(() => page.screenshot({ path: file }).catch(() => {}));
 
         record({
           surfaceId: surface.id,

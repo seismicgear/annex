@@ -603,16 +603,24 @@ export const SURFACES: Surface[] = [
       'Inline edit with the live countdown showing how long the edit window has left. The ' +
       'countdown is masked because it ticks; the edit affordance around it is the point.',
     navigate: async (page) => {
-      await selectChannel(page, SEED.defaultChannel);
+      await selectChannel(page, SEED.channels.scratch);
       // Edit and delete are only offered inside `EDIT_WINDOW_MS` (60s) of
       // posting, so the seeded messages — written minutes earlier during
-      // setup — no longer show either control. Post a fresh one.
+      // setup — no longer show either control. Post a fresh one, into the
+      // scratch channel rather than the default one: see `postFreshMessage`.
       const bubble = await postFreshMessage(page, 'Message posted for the edit-mode capture.');
       await bubble.hover();
       await bubble.locator('.edit-btn').click();
       await expect(page.locator('.message-edit-input')).toBeVisible();
     },
-    clip: '.chat-area',
+    // Clipped to the bubble in edit mode, not to `.chat-area`.
+    //
+    // The subject is the edit affordance. `.chat-area` dragged in the whole
+    // message column, which grows by one message per viewport as this surface
+    // runs — so the picture recorded at `mobile` had four messages behind it
+    // and the one at `desktop` had one. Exactly one message can be in edit
+    // mode at a time, so this locator is stable however long the column gets.
+    clip: '.message:has(.message-edit-input)',
     mask: ['.edit-countdown'],
   },
   {
@@ -657,7 +665,7 @@ export const SURFACES: Surface[] = [
       });
     },
     navigate: async (page) => {
-      await selectChannel(page, SEED.defaultChannel);
+      await selectChannel(page, SEED.channels.scratch);
       const bubble = await postFreshMessage(page, 'Message posted for the refused-edit capture.');
       await bubble.hover();
       await bubble.locator('.edit-btn').click();
@@ -665,7 +673,16 @@ export const SURFACES: Surface[] = [
       await page.locator('.msg-edit-save').click();
       await expect(page.locator('.message-action-error')).toBeVisible({ timeout: 20_000 });
     },
+    // The subject is the error banner, which is a sibling of `.message-view`
+    // rather than part of it — so the column can be masked out entirely
+    // without losing anything this surface is about.
+    //
+    // This is the surface the 53-failure cascade started from. Its diff was
+    // pure message text: banner, composer and encryption bar identical,
+    // bubbles one message out of step. At `mobile` the visible tail is
+    // shortest, which is why it crossed the tolerance first.
     clip: '.chat-area',
+    mask: ['.message-view'],
   },
   {
     id: 'message-delete-confirm',
@@ -676,14 +693,16 @@ export const SURFACES: Surface[] = [
       'Deletion is a two-click confirm rather than a dialog. Capturing the armed state proves it ' +
       'is actually distinguishable from the idle one.',
     navigate: async (page) => {
-      await selectChannel(page, SEED.defaultChannel);
+      await selectChannel(page, SEED.channels.scratch);
       // Same 60s window as edit — see above.
       const bubble = await postFreshMessage(page, 'Message posted for the delete-confirm capture.');
       await bubble.hover();
       await bubble.locator('.delete-btn').click();
       await expect(bubble.locator('.delete-btn.confirming')).toBeVisible();
     },
-    clip: '.chat-area',
+    // Only one delete can be armed at a time, so this names exactly one row
+    // no matter how many messages the scratch channel has accumulated.
+    clip: '.message:has(.delete-btn.confirming)',
     mask: ['.edit-countdown'],
   },
   {
@@ -703,7 +722,8 @@ export const SURFACES: Surface[] = [
           .locator('.edited-badge'),
       ).toBeVisible({ timeout: 15_000 });
     },
-    clip: '.chat-area',
+    // The seeder edits exactly one message, so the badge names one row.
+    clip: '.message:has(.edited-badge)',
   },
   {
     id: 'message-edit-history',
@@ -724,7 +744,8 @@ export const SURFACES: Surface[] = [
       await expect(page.locator('.edit-history')).toBeVisible({ timeout: 15_000 });
       await expect(page.locator('.edit-history-loading')).toHaveCount(0);
     },
-    clip: '.chat-area',
+    // The panel is the subject; the column behind it is not.
+    clip: '.edit-history',
     mask: ['.edit-history-time'],
   },
   {
@@ -750,7 +771,7 @@ export const SURFACES: Surface[] = [
       await bubble.locator('.edited-badge').click();
       await expect(page.locator('.edit-history-error')).toBeVisible({ timeout: 15_000 });
     },
-    clip: '.chat-area',
+    clip: '.edit-history',
     waive: {
       network:
         'the 500 is the stub this surface installs on purpose — it is the condition under test, ' +
@@ -773,7 +794,8 @@ export const SURFACES: Surface[] = [
         timeout: 15_000,
       });
     },
-    clip: '.chat-area',
+    // The seeder deletes exactly one message.
+    clip: '.message:has(.message-deleted-text)',
   },
   {
     id: 'message-reply-rendered',
@@ -788,7 +810,8 @@ export const SURFACES: Surface[] = [
       await selectChannel(page, SEED.defaultChannel);
       await expect(page.locator('.reply-context').first()).toBeVisible({ timeout: 15_000 });
     },
-    clip: '.chat-area',
+    // The seeder writes exactly one reply.
+    clip: '.message:has(.reply-context)',
   },
   {
     id: 'message-reply-composer',
@@ -803,7 +826,8 @@ export const SURFACES: Surface[] = [
       await bubble.locator('.reply-btn').click();
       await expect(page.locator('.reply-bar')).toBeVisible();
     },
-    clip: '.chat-area',
+    // The reply bar sits above the composer, outside `.message-view`.
+    clip: '.message-input-wrapper',
   },
   {
     id: 'message-from-another-member',
@@ -825,7 +849,10 @@ export const SURFACES: Surface[] = [
       await expect(incoming).toBeVisible({ timeout: 15_000 });
       await incoming.scrollIntoViewIfNeeded();
     },
-    clip: '.chat-area',
+    // The one bubble that is not the founder's own. Clipping to it means the
+    // incoming-message rendering is diffed and the scroll position of the
+    // column around it is not.
+    clip: '.message:not(.self)',
   },
   {
     id: 'message-reply-to-another-member',
@@ -847,7 +874,8 @@ export const SURFACES: Surface[] = [
       await incoming.locator('.reply-btn').click();
       await expect(page.locator('.reply-bar')).toBeVisible();
     },
-    clip: '.chat-area',
+    // The subject is the reply bar naming somebody else, not the history.
+    clip: '.message-input-wrapper',
   },
   {
     id: 'composer-attachment-staged',
@@ -859,10 +887,10 @@ export const SURFACES: Surface[] = [
       'and a way to back out. The whole attach-and-send flow was uncaptured, so this step — the ' +
       'only chance to notice you picked the wrong file — had never been looked at.',
     navigate: async (page) => {
-      await selectChannel(page, SEED.defaultChannel);
+      await selectChannel(page, SEED.channels.scratch);
       await stageAttachment(page, 'audit-fixture.png');
     },
-    clip: '.chat-area',
+    clip: '.message-input-wrapper',
   },
   {
     id: 'composer-upload-failed',
@@ -875,12 +903,12 @@ export const SURFACES: Surface[] = [
       'to guess whether anything was sent.',
     setup: stub('**/api/channels/*/upload', { error: 'storage unavailable' }, 500),
     navigate: async (page) => {
-      await selectChannel(page, SEED.defaultChannel);
+      await selectChannel(page, SEED.channels.scratch);
       await stageAttachment(page, 'rejected.png');
       await page.getByRole('button', { name: 'Send' }).click();
       await expect(page.locator('.upload-error-bar')).toBeVisible({ timeout: 15_000 });
     },
-    clip: '.chat-area',
+    clip: '.message-input-wrapper',
     waive: {
       network:
         'the 500 is the stub this surface installs on purpose — it is the condition under test, ' +
@@ -905,8 +933,12 @@ export const SURFACES: Surface[] = [
     // surface, none of them about the app. Uploading for real leaves behind a
     // message whose image actually loads, and exercises the upload path
     // end to end into the bargain.
+    //
+    // It now leaves that message in the scratch channel rather than the
+    // default one, so a picture of `General` does not depend on whether this
+    // surface has run yet.
     navigate: async (page) => {
-      await selectChannel(page, SEED.defaultChannel);
+      await selectChannel(page, SEED.channels.scratch);
       await stageAttachment(page, 'lightbox.png');
       await page.getByRole('button', { name: 'Send' }).click();
       const image = page.locator('.message-inline-image').last();
@@ -914,6 +946,10 @@ export const SURFACES: Surface[] = [
       await image.click();
       await expect(page.locator('.image-lightbox')).toBeVisible({ timeout: 15_000 });
     },
+    // The lightbox covers the whole app, but the app is still behind its
+    // semi-transparent backdrop. Clipping to the modal keeps the subject and
+    // drops the page it happens to be floating over.
+    clip: '.image-lightbox',
   },
   {
     id: 'message-search-results',
@@ -2575,7 +2611,10 @@ export const SURFACES: Surface[] = [
       // so by the time a later one runs there are several previews on screen.
       await expect(page.locator('.link-preview-card').first()).toBeVisible({ timeout: 20_000 });
     },
-    clip: '.chat-area',
+    // Clipped to the card for the same reason `.first()` is needed above: the
+    // channel accumulates one message per viewport, so `.chat-area` recorded
+    // a different number of cards at each one.
+    clip: '.link-preview-card >> nth=0',
   },
   {
     id: 'link-preview-unavailable',
@@ -2591,7 +2630,7 @@ export const SURFACES: Surface[] = [
       await postFreshMessage(page, 'Also worth a read: https://example.org/another-article');
       await expect(page.locator('.link-preview-minimal').first()).toBeVisible({ timeout: 20_000 });
     },
-    clip: '.chat-area',
+    clip: '.link-preview-minimal >> nth=0',
     waive: {
       network: 'the 502 is injected deliberately to reach the fallback state',
       console: 'the browser logs the injected 502 to the console as well',

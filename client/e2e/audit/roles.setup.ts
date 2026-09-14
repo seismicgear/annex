@@ -128,6 +128,9 @@ async function seedFixtures(page: import('@playwright/test').Page) {
     [SEED.channels.agent, 'Agent'],
     [SEED.channels.broadcast, 'Broadcast'],
     [SEED.emptyChannel, 'Text'],
+    // Deliberately left empty by the seeder: the surfaces that post during
+    // capture write here, and nothing reads it as a fixture.
+    [SEED.channels.scratch, 'Text'],
   ];
 
   for (const [name, type] of channels) {

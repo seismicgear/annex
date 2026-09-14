@@ -31,6 +31,7 @@ pub mod api_ws;
 pub mod api_zk_circuits;
 pub mod at_rest;
 pub mod background;
+pub mod build_profile;
 pub mod config;
 pub mod http;
 pub mod middleware;

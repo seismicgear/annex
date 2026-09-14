@@ -282,6 +282,12 @@ pub fn init_tracing(logging: &config::LoggingConfig) -> Result<(), StartupError>
         tracing_subscriber::fmt().with_env_filter(filter).init();
     }
 
+    // The first thing worth knowing about a running Annex is which gates are
+    // live. Logged here because it needs a subscriber, and this is the moment
+    // one exists — and because the one case that matters, a release binary
+    // explicitly downgraded to `dev`, is otherwise invisible.
+    crate::build_profile::log_resolution();
+
     Ok(())
 }
 
@@ -301,14 +307,13 @@ pub fn init_tracing(logging: &config::LoggingConfig) -> Result<(), StartupError>
 /// production never wants that surprise. Dev profiles still tolerate the
 /// fallback with a loud warning, matching previous behaviour.
 fn resolve_signing_key(db_path: &str) -> Result<SigningKey, StartupError> {
-    let is_production = matches!(
-        std::env::var("ANNEX_BUILD_PROFILE")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "production" | "release"
-    );
+    // `requires_artifact_provenance`, not "is production": a desktop install
+    // is a shipped binary whose signing key backs WS tokens, voice-join
+    // tokens and federation signatures exactly as a server's does. An
+    // ephemeral or all-zero key is as wrong there as anywhere else, and the
+    // desktop app was previously exempt only because the profile was two-
+    // valued and making it production would have broken its CORS.
+    let is_production = crate::build_profile::requires_artifact_provenance();
 
     // 1. Check environment variable
     if let Ok(hex_key) = std::env::var("ANNEX_SIGNING_KEY") {

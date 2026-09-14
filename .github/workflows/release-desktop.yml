@@ -80,14 +80,24 @@ jobs:
       # SHA-256 hashes. We do NOT regenerate keys here — the manifest +
       # tracked-in-git artifacts are the source of truth.
       #
-      # While the pinned manifest still says ceremony.type="dev-fixture",
-      # this step exits non-zero (code 3) by design — the production gate
-      # refuses to certify random-entropy keys for release. Don't bypass
-      # it with ANNEX_ALLOW_DEV_CEREMONY=1 for a public tag. See
-      # scripts/verify-production-rejects-dev-fixtures.sh for a standalone
-      # proof of that behaviour.
+      # `--all` rather than a bare invocation: the bare form defaults to the
+      # `membership` manifest alone, and the DEFAULT identity path is
+      # membership_v2. Gating one circuit of six let the other five reach a
+      # bundle unverified.
+      #
+      # The dev-fixture bypass env var is deliberately absent from this
+      # workflow; scripts/verify-production-rejects-dev-fixtures.sh asserts
+      # that it stays absent, and that this step still says `--all`.
       - name: Verify pinned ZK artifacts
-        run: node scripts/verify-artifacts.js
+        run: node scripts/verify-artifacts.js --all
+        working-directory: zk
+
+      # Hashes prove the files have not changed since the ceremony. They do
+      # not prove a ceremony happened. `zkey verify` walks r1cs → ptau →
+      # every contribution → beacon, and the beacon is checked against the
+      # drand round the transcript committed to before that round existed.
+      - name: Verify the ZK ceremony
+        run: node scripts/verify-ceremony.js
         working-directory: zk
 
       - name: Install Tauri CLI
@@ -141,7 +151,12 @@ jobs:
 
       - name: Verify pinned ZK artifacts
         shell: bash
-        run: node scripts/verify-artifacts.js
+        run: node scripts/verify-artifacts.js --all
+        working-directory: zk
+
+      - name: Verify the ZK ceremony
+        shell: bash
+        run: node scripts/verify-ceremony.js
         working-directory: zk
 
       - name: Install Tauri CLI
@@ -204,7 +219,11 @@ jobs:
             zk/package-lock.json
 
       - name: Verify pinned ZK artifacts
-        run: node scripts/verify-artifacts.js
+        run: node scripts/verify-artifacts.js --all
+        working-directory: zk
+
+      - name: Verify the ZK ceremony
+        run: node scripts/verify-ceremony.js
         working-directory: zk
 
       - name: Install Tauri CLI
