@@ -173,23 +173,51 @@ Federation requires the server to be publicly accessible (not `127.0.0.1`). Set 
 
 ### Backup
 
-The SQLite database is the single source of truth. Back it up while the server is running:
+**The database is not the whole deployment.** This section used to say it was,
+and told you to copy `annex.db` out of the container. Do that alone and the
+restored server comes back with a *different identity*: the Ed25519 signing key
+lives at `{data_dir}/signing.key`, not in the database, and every session
+token, voice-join token and federation signature the server ever issued is
+derived from it. Peers that federated with the old key see an impostor. Uploads
+are on disk too.
+
+Use the script, which takes all three and then verifies what it wrote:
 
 ```bash
-# Using SQLite's built-in backup (safe for WAL mode)
-docker compose exec annex sqlite3 /app/data/annex.db ".backup /app/data/backup.db"
+bash scripts/backup.sh --data-dir /app/data --out /backups --keep 14
+```
 
-# Copy backup out of container
-docker compose cp annex:/app/data/backup.db ./backup.db
+It snapshots the database with SQLite's own `.backup` (consistent against a
+*running* server, which a file copy is not under WAL), runs
+`PRAGMA integrity_check` on the copy, adds `signing.key` and `uploads/`, writes
+a timestamped `tar.gz` at mode 600 — it contains a private key — re-verifies
+the archive it just wrote, and prunes to `--keep`.
+
+Schedule it. A cron entry or a compose sidecar is enough; what matters is that
+something runs it without being remembered.
+
+```bash
+bash scripts/backup.sh --verify /backups/annex-20260914-120000.tar.gz
 ```
 
 ### Restore
 
+The migration runner is **forward-only** — there are no down migrations — so
+this is the only recovery path from a bad upgrade. Stop the server first.
+
 ```bash
-docker compose down
-docker compose cp ./backup.db annex:/app/data/annex.db
-docker compose up -d
+bash scripts/restore.sh --archive /backups/annex-20260914-120000.tar.gz --data-dir /app/data
 ```
+
+It verifies the archive *before* touching anything, refuses to run over a live
+data directory (a `-wal` file usually means a server has the database open),
+and moves the existing directory aside rather than overwriting it. Then start
+the server and check `GET /readyz`.
+
+`scripts/tests/backup-restore.test.sh` runs the whole drill — build, back up,
+corrupt-archive rejection, destroy, restore, assert the rows and the signing
+key came back — in CI. A recovery path nobody has exercised is a recovery path
+nobody has.
 
 ## Monitoring
 
