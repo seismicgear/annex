@@ -13,7 +13,17 @@ set -euo pipefail
 # ── Defaults ──
 
 MODE="docker"
-HOST="0.0.0.0"
+# Loopback by default.
+#
+# This was `0.0.0.0`, so `./deploy.sh` with no arguments put a server on every
+# interface — and in docker mode it did that against `docker-compose.yml`,
+# which is labelled DEV/LOCAL ONLY and sets wildcard CORS and dev-fixture ZK
+# keys. The default invocation of the deployment script was the least safe
+# thing it could do.
+#
+# Binding to all interfaces is now something you ask for, and asking prints a
+# warning naming what else you need. See --host.
+HOST="127.0.0.1"
 PORT=3000
 DATA_DIR="./data"
 SERVER_LABEL="Annex Server"
@@ -23,10 +33,9 @@ SIGNING_KEY=""
 LOG_LEVEL="info"
 LOG_JSON="false"
 SKIP_BUILD="false"
-LIVEKIT_URL=""
-LIVEKIT_API_KEY=""
-LIVEKIT_API_SECRET=""
 SKIP_CLIENT="false"
+# Opt in to the DEV/LOCAL ONLY compose stack (wildcard CORS, dev ZK keys).
+DEV_STACK="false"
 
 # Default server policy matching ServerPolicy::default() in Rust
 DEFAULT_POLICY='{"agent_min_alignment_score":0.8,"agent_required_capabilities":[],"federation_enabled":true,"default_retention_days":30,"voice_enabled":true,"max_members":1000}'
@@ -51,7 +60,8 @@ Usage: ./deploy.sh [OPTIONS]
 
 Options:
   --mode <docker|source>    Deployment mode (default: docker)
-  --host <addr>             Bind address (default: 0.0.0.0)
+  --host <addr>             Bind address (default: 127.0.0.1; use 0.0.0.0 only
+                            behind a TLS-terminating reverse proxy)
   --port <port>             Bind port (default: 3000)
   --data-dir <path>         Persistent data directory (default: ./data)
   --server-label <name>     Server display name (default: "Annex Server")
@@ -61,10 +71,9 @@ Options:
   --log-level <level>       Log level: trace|debug|info|warn|error (default: info)
   --log-json                Output structured JSON logs
   --skip-build              Skip cargo build (use existing binary)
+  --dev                     Use the DEV/LOCAL ONLY docker stack (wildcard CORS,
+                            dev-fixture ZK keys, production gates off)
   --skip-client             Skip client frontend build (use existing dist)
-  --livekit-url <url>       LiveKit server WebSocket URL (optional)
-  --livekit-api-key <key>   LiveKit API key (optional)
-  --livekit-api-secret <s>  LiveKit API secret (optional)
   --help                    Show this help
 
 Examples:
@@ -89,10 +98,8 @@ while [[ $# -gt 0 ]]; do
         --log-level)      LOG_LEVEL="$2"; shift 2 ;;
         --log-json)       LOG_JSON="true"; shift ;;
         --skip-build)     SKIP_BUILD="true"; shift ;;
+        --dev)            DEV_STACK="true"; shift ;;
         --skip-client)    SKIP_CLIENT="true"; shift ;;
-        --livekit-url)    LIVEKIT_URL="$2"; shift 2 ;;
-        --livekit-api-key)    LIVEKIT_API_KEY="$2"; shift 2 ;;
-        --livekit-api-secret) LIVEKIT_API_SECRET="$2"; shift 2 ;;
         --help|-h)        usage ;;
         *) fail "Unknown option: $1. Use --help for usage." ;;
     esac
@@ -146,7 +153,34 @@ if [[ "$MODE" == "docker" ]]; then
     export ANNEX_PORT="$PORT"
     export ANNEX_LOG_LEVEL="$LOG_LEVEL"
 
-    $COMPOSE -f "$SCRIPT_DIR/docker-compose.yml" up -d --build || fail "Docker Compose failed"
+    # Which compose file, and why it is not always the same one.
+    #
+    # This always used `docker-compose.yml`, which says DEV/LOCAL ONLY in its
+    # own header and sets `ANNEX_BUILD_PROFILE=dev` plus `ANNEX_CORS_ORIGINS=*`.
+    # So the default mode of the deployment script deployed the development
+    # stack — every production gate off — and nothing said so.
+    #
+    # `--dev` is now how you ask for that. Otherwise this uses
+    # `docker-compose.prod.yml`, which requires a real CORS origin list and a
+    # public URL and refuses to start without them.
+    if [[ "$DEV_STACK" == "true" ]]; then
+        COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
+        echo "  Using the DEVELOPMENT stack: wildcard CORS, dev-fixture ZK keys,"
+        echo "  every production gate disabled. Do not expose this."
+    else
+        COMPOSE_FILE="$SCRIPT_DIR/docker-compose.prod.yml"
+        if [[ -z "${ANNEX_CORS_ORIGINS:-}" ]]; then
+            fail "ANNEX_CORS_ORIGINS is required for a production deployment (e.g. https://annex.example.com).
+       The server refuses to start under a production profile without an explicit
+       origin list, and a wildcard is forbidden. Pass --dev for the local stack."
+        fi
+        if [[ -z "${ANNEX_PUBLIC_URL:-}" && -z "$PUBLIC_URL" ]]; then
+            fail "ANNEX_PUBLIC_URL (or --public-url) is required for a production deployment."
+        fi
+        [[ -n "$PUBLIC_URL" ]] && export ANNEX_PUBLIC_URL="$PUBLIC_URL"
+    fi
+
+    $COMPOSE -f "$COMPOSE_FILE" up -d --build || fail "Docker Compose failed"
 
     ok "Containers started"
     step "Annex is running at http://localhost:$PORT"
@@ -157,7 +191,15 @@ if [[ "$MODE" == "docker" ]]; then
     echo ""
 
     # Auto-open browser on the host (the server inside Docker cannot do this).
-    OPEN_ENV="${ANNEX_OPEN_BROWSER:-true}"
+    #
+    # Defaulted to true unconditionally, which meant deploying to a server over
+    # SSH tried to launch a browser on it. Local runs still get the
+    # convenience; anything else has to ask.
+    if [[ "$HOST" == "127.0.0.1" || "$HOST" == "localhost" ]]; then
+        OPEN_ENV="${ANNEX_OPEN_BROWSER:-true}"
+    else
+        OPEN_ENV="${ANNEX_OPEN_BROWSER:-false}"
+    fi
     OPEN_ENV="$(echo "$OPEN_ENV" | tr '[:upper:]' '[:lower:]')"
     if [[ "$OPEN_ENV" != "false" && "$OPEN_ENV" != "0" && "$OPEN_ENV" != "no" ]]; then
         URL="http://localhost:$PORT"
@@ -289,14 +331,33 @@ if [[ "$NEEDS_SEED" == "true" ]]; then
         ANNEX_PORT="0" \
         ANNEX_ZK_KEY_PATH="$VKEY_PATH" \
         ANNEX_LOG_LEVEL="warn" \
-        timeout 30 "$BINARY" >/dev/null 2>"$MIGRATION_LOG" || true
+        timeout 30 "$BINARY" >/dev/null 2>"$MIGRATION_LOG" || MIGRATION_STATUS=$?
     else
         ANNEX_DB_PATH="$DB_PATH" \
         ANNEX_HOST="127.0.0.1" \
         ANNEX_PORT="0" \
         ANNEX_ZK_KEY_PATH="$VKEY_PATH" \
         ANNEX_LOG_LEVEL="warn" \
-        "$BINARY" >/dev/null 2>"$MIGRATION_LOG" || true
+        "$BINARY" >/dev/null 2>"$MIGRATION_LOG" || MIGRATION_STATUS=$?
+    fi
+
+    # A failed migration must stop the deploy.
+    #
+    # This was `|| true` followed by a `warn` that printed the log and carried
+    # on. So a malformed migration, an unwritable database path or a corrupt
+    # schema produced a warning nobody reads and then a server start against a
+    # half-migrated database — and the migration runner is forward-only, so the
+    # recovery path from that is restore-from-backup.
+    #
+    # Exit 124 is `timeout` doing its job: the server ran migrations, seeded,
+    # and then sat serving until the timeout killed it. That is the SUCCESS
+    # case here and the only non-zero status that is not a failure.
+    if [[ "${MIGRATION_STATUS:-0}" -ne 0 && "${MIGRATION_STATUS:-0}" -ne 124 ]]; then
+        echo "" >&2
+        warn "Migrations failed (exit ${MIGRATION_STATUS}). Server output:"
+        cat "$MIGRATION_LOG" >&2
+        rm -f "$MIGRATION_LOG"
+        fail "Refusing to start a server against a database whose migrations did not complete."
     fi
     if [[ -s "$MIGRATION_LOG" ]]; then
         warn "Migration run produced output (may be expected):"
@@ -372,15 +433,12 @@ level = "$LOG_LEVEL"
 json = $LOG_JSON
 TOML
 
-if [[ -n "$LIVEKIT_URL" ]]; then
-    cat >> "$CONFIG_PATH" <<TOML
-
-[livekit]
-url = "$LIVEKIT_URL"
-api_key = "$LIVEKIT_API_KEY"
-api_secret = "$LIVEKIT_API_SECRET"
-TOML
-fi
+# The three `--livekit-*` flags that used to be parsed here wrote a `[livekit]`
+# section. No config struct has ever read one — the voice SFU is in-process in
+# `crates/annex-voice` and the real section is `[webrtc]` — so an operator who
+# passed them got a silently ignored configuration and a voice stack that did
+# not do what they had just configured. Removed rather than renamed: `[webrtc]`
+# has its own env vars and the two are not the same shape.
 
 chmod 600 "$CONFIG_PATH"
 ok "Config written to $CONFIG_PATH"
@@ -398,11 +456,38 @@ export ANNEX_LOG_LEVEL="$LOG_LEVEL"
 export ANNEX_PUBLIC_URL="$PUBLIC_URL"
 export ANNEX_CLIENT_DIR="$CLIENT_DIR"
 
+# Say what this binary is.
+#
+# `deploy.sh` never set ANNEX_BUILD_PROFILE, and every production gate read it
+# directly and passed when it was unset — so a source deployment ran with
+# permissive CORS and no ZK-enforcement gate, silently. A release binary now
+# defaults to `production` on its own; this makes it explicit and overridable,
+# and `--dev` carries through to it.
+if [[ "$DEV_STACK" == "true" ]]; then
+    export ANNEX_BUILD_PROFILE="${ANNEX_BUILD_PROFILE:-dev}"
+else
+    export ANNEX_BUILD_PROFILE="${ANNEX_BUILD_PROFILE:-production}"
+fi
+
+if [[ "$HOST" != "127.0.0.1" && "$HOST" != "localhost" ]]; then
+    echo ""
+    echo "  NOTE binding to $HOST — this server is reachable off-host."
+    echo "       Terminate TLS in front of it (the server speaks HTTP only),"
+    echo "       and set ANNEX_CORS_ORIGINS to your real origin(s). Under a"
+    echo "       production profile the server refuses to start without them."
+    echo ""
+fi
+
 [[ -n "$SIGNING_KEY" ]]  && export ANNEX_SIGNING_KEY="$SIGNING_KEY"
 [[ "$LOG_JSON" == "true" ]] && export ANNEX_LOG_JSON="true"
 
-# Auto-open browser for source deployments (unless explicitly suppressed)
-export ANNEX_OPEN_BROWSER="${ANNEX_OPEN_BROWSER:-true}"
+# Auto-open browser for source deployments, but only for a loopback bind —
+# opening a browser on a remote host you just deployed to is not a convenience.
+if [[ "$HOST" == "127.0.0.1" || "$HOST" == "localhost" ]]; then
+    export ANNEX_OPEN_BROWSER="${ANNEX_OPEN_BROWSER:-true}"
+else
+    export ANNEX_OPEN_BROWSER="${ANNEX_OPEN_BROWSER:-false}"
+fi
 
 # TTS/STT paths (if assets are present)
 [[ -x "$SCRIPT_DIR/assets/piper/piper" ]] && export ANNEX_TTS_BINARY_PATH="$SCRIPT_DIR/assets/piper/piper"

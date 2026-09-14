@@ -433,7 +433,13 @@ impl IdentityService {
     ) -> Result<VerifyMembershipResponse, IdentityServiceError> {
         let state = self.state.clone();
         let ws_token_secret = state.ws_token_secret.clone();
-        let pseudonym_id = tokio::task::spawn_blocking(move || -> Result<String, IdentityServiceError> {
+        // Returns the epoch alongside the pseudonym so the session token below
+        // is minted against the identity's CURRENT revocation epoch. Minting
+        // against 0 would hand a returning member whose sessions had been
+        // revoked a token that verifies — re-authentication would silently undo
+        // the revocation.
+        let (pseudonym_id, token_epoch) = tokio::task::spawn_blocking(
+            move || -> Result<(String, i64), IdentityServiceError> {
             let protocol_version = payload.protocol_version.as_deref().unwrap_or("v1");
             let (vkey_for_proof, expected_signals_len) = match protocol_version {
                 "v1" => (state.membership_vkey.clone(), 2usize),
@@ -839,8 +845,14 @@ impl IdentityService {
             };
             let _ = state.presence_tx.send(event);
 
-            Ok(pseudonym_id)
-        })
+            let token_epoch =
+                annex_identity::get_platform_identity(&conn, state.server_id, &pseudonym_id)
+                    .map(|i| i.token_epoch)
+                    .unwrap_or(0);
+
+            Ok((pseudonym_id, token_epoch))
+            },
+        )
         .await
         .map_err(|e| IdentityServiceError::Internal(format!("task join error: {e}")))??;
 
@@ -850,6 +862,7 @@ impl IdentityService {
             &pseudonym_id,
             &ws_token_secret,
             crate::api_ws::SESSION_TOKEN_TTL_SECS,
+            token_epoch,
         );
 
         Ok(VerifyMembershipResponse {

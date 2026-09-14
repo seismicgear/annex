@@ -61,7 +61,8 @@ pub async fn refresh_session_handler(
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
     // Verify HMAC (but allow expired)
-    let pseudonym = verify_token_allow_expired(token, &state.ws_token_secret)?;
+    let verified = verify_token_allow_expired(token, &state.ws_token_secret)?;
+    let pseudonym = verified.pseudonym.clone();
 
     // Verify identity is still active in the database
     let server_id = state.server_id;
@@ -79,9 +80,30 @@ pub async fn refresh_session_handler(
         return Err(StatusCode::UNAUTHORIZED);
     }
 
-    // Issue fresh session token
-    let new_token =
-        generate_session_token(&pseudonym, &state.ws_token_secret, SESSION_TOKEN_TTL_SECS);
+    // Revoked sessions must not be able to refresh their way back in.
+    //
+    // This endpoint is public by design — its job is to accept an expired
+    // token — which is exactly why the epoch check belongs here. Without it,
+    // revoking an identity's sessions would be undone by the next refresh, and
+    // a stolen token could be kept alive indefinitely by touching it inside
+    // the (now 72h, previously 7 day) window.
+    if verified.epoch != identity.token_epoch {
+        tracing::debug!(
+            pseudonym = %identity.pseudonym_id,
+            claimed = verified.epoch,
+            current = identity.token_epoch,
+            "refusing to refresh a token from a revoked epoch"
+        );
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    // Issue fresh session token, minted against the CURRENT epoch.
+    let new_token = generate_session_token(
+        &pseudonym,
+        &state.ws_token_secret,
+        SESSION_TOKEN_TTL_SECS,
+        identity.token_epoch,
+    );
     Ok(axum::Json(serde_json::json!({
         "sessionToken": new_token,
         "expires_in_secs": SESSION_TOKEN_TTL_SECS,
@@ -103,6 +125,7 @@ pub async fn create_ws_token_handler(
         &identity.pseudonym_id,
         &state.ws_token_secret,
         WS_TOKEN_TTL_SECS,
+        identity.token_epoch,
     );
     Ok(axum::Json(serde_json::json!({
         "token": token,
@@ -128,9 +151,17 @@ pub async fn ws_handler(
     Query(params): Query<WsConnectParams>,
 ) -> impl IntoResponse {
     // 1. Resolve pseudonym — prefer signed token over raw pseudonym
+    //
+    // `claimed_epoch` is the revocation epoch the token asserts; it is checked
+    // against the database row in step 2, where that row is already loaded.
+    // `None` on the legacy raw-pseudonym path, which carries no token.
+    let mut claimed_epoch: Option<i64> = None;
     let pseudonym = if let Some(ref token) = params.token {
         match verify_ws_token(token, &state.ws_token_secret) {
-            Ok(p) => p,
+            Ok(v) => {
+                claimed_epoch = Some(v.epoch);
+                v.pseudonym
+            }
             Err(code) => {
                 tracing::warn!(
                     remote_addr = %addr,
@@ -188,8 +219,17 @@ pub async fn ws_handler(
             .get()
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         match get_platform_identity(&conn, server_id, &pseudonym_clone) {
-            Ok(identity) if identity.active => Ok(identity),
-            Ok(_) => Err(StatusCode::FORBIDDEN), // Inactive
+            Ok(identity) if !identity.active => Err(StatusCode::FORBIDDEN), // Inactive
+            // A token from a revoked epoch is unauthorized, not forbidden: the
+            // identity is fine, the credential is not. Without this check the
+            // WebSocket was a way around revocation — a revoked token would be
+            // refused by every REST call and still open a live socket.
+            Ok(identity)
+                if claimed_epoch.is_some_and(|claimed| claimed != identity.token_epoch) =>
+            {
+                Err(StatusCode::UNAUTHORIZED)
+            }
+            Ok(identity) => Ok(identity),
             Err(_) => Err(StatusCode::UNAUTHORIZED),
         }
     })

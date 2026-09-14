@@ -512,6 +512,13 @@ fn main() {
                 // Drop does NOT terminate the process — without this it orphans
                 // and keeps holding its port across restarts.
                 webrtc::shutdown_local_webrtc(state.inner());
+                // Tell the embedded server's background workers to stop. The
+                // serve task awaits them; this hook cannot, being synchronous.
+                if let Ok(guard) = state.server.lock() {
+                    if let Some(server) = guard.as_ref() {
+                        server.shutdown.cancel();
+                    }
+                }
                 // Release the Annex router public-endpoint session so the public
                 // HTTPS tunnel isn't left advertised after the local server dies.
                 public_endpoint::release_router_session(state.inner());

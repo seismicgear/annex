@@ -115,16 +115,49 @@ RUN set -e; \
 # ── Download Piper TTS + default voice model ──
 FROM debian:bookworm-slim AS piper-downloader
 
+# Re-declared: a global ARG is not in scope inside a stage until the stage
+# names it. Without this line the production check below reads an empty string
+# and silently never fires — a gate that cannot trigger.
+ARG ANNEX_BUILD_PROFILE
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /piper
 
-# Download Piper binary (linux x86_64)
+# Download Piper binary (linux x86_64), checksum-verified under production.
+#
+# Version-pinned is not the same as verified: a release asset can be replaced
+# under the same tag, and this binary is executed by the server. The digest is
+# what makes the pin mean something.
+#
+# `PIPER_SHA256` is deliberately EMPTY here rather than carrying a value
+# nobody measured. This build environment cannot reach GitHub release assets,
+# so a digest written here would have been invented — which is worse than no
+# pin, because it looks like verification. The build prints the digest it
+# measured and refuses to continue under a production profile until someone
+# pins it, so the value arrives from a real download rather than from prose.
 ARG PIPER_VERSION=2023.11.14-2
+ARG PIPER_SHA256=
 RUN curl -fSL "https://github.com/rhasspy/piper/releases/download/${PIPER_VERSION}/piper_linux_x86_64.tar.gz" \
     -o piper.tar.gz \
+    && actual="$(sha256sum piper.tar.gz | cut -d' ' -f1)" \
+    && echo "piper_linux_x86_64.tar.gz sha256 = ${actual}" \
+    && if [ -z "${PIPER_SHA256}" ]; then \
+         if [ "${ANNEX_BUILD_PROFILE}" = "production" ] || [ "${ANNEX_BUILD_PROFILE}" = "release" ]; then \
+           echo "PIPER_SHA256 is unset. A production image will not execute a binary" >&2; \
+           echo "it has not verified. Pin it with --build-arg PIPER_SHA256=${actual}" >&2; \
+           echo "after confirming that digest against the upstream release." >&2; \
+           exit 1; \
+         fi; \
+         echo "WARNING PIPER_SHA256 unset — not verifying (dev build)." >&2; \
+       elif [ "${actual}" != "${PIPER_SHA256}" ]; then \
+         echo "piper_linux_x86_64.tar.gz digest mismatch" >&2; \
+         echo "  expected ${PIPER_SHA256}" >&2; \
+         echo "  actual   ${actual}" >&2; \
+         exit 1; \
+       fi \
     && tar -xzf piper.tar.gz --strip-components=1 \
     && rm piper.tar.gz \
     && chmod +x piper
@@ -146,13 +179,46 @@ RUN curl -fSL "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US
 # by mounting a model and setting ANNEX_STT_MODEL_PATH.
 FROM debian:bookworm-slim AS whisper-builder
 
+# Re-declared for the same reason as in `piper-downloader`.
+ARG ANNEX_BUILD_PROFILE
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates git cmake build-essential \
     && rm -rf /var/lib/apt/lists/*
 
+# Pinned to a tag, and under production verified against a commit SHA.
+#
+# This was `git clone --depth 1` of `master`. Two images built a week apart
+# contained different, unreviewed C++ compiled into the thing that processes
+# audio a user uploads — and neither build recorded which. A tag alone is not
+# enough either: a tag can be moved, and `rev-parse` is what turns a
+# repeatable build into a reproducible one.
+#
+# `WHISPER_CPP_COMMIT` is empty for the same reason `PIPER_SHA256` is: it is
+# not knowable from this environment, and a guessed SHA would fail every build
+# while looking authoritative. The build prints what the tag resolved to.
 WORKDIR /whisper
-RUN git clone --depth 1 https://github.com/ggerganov/whisper.cpp.git /tmp/whisper && \
-    cd /tmp/whisper && cmake -B build && cmake --build build --config Release && \
+ARG WHISPER_CPP_TAG=v1.7.4
+ARG WHISPER_CPP_COMMIT=
+RUN git clone --depth 1 --branch "${WHISPER_CPP_TAG}" \
+        https://github.com/ggerganov/whisper.cpp.git /tmp/whisper && \
+    cd /tmp/whisper && \
+    actual="$(git rev-parse HEAD)" && \
+    echo "whisper.cpp ${WHISPER_CPP_TAG} = ${actual}" && \
+    if [ -z "${WHISPER_CPP_COMMIT}" ]; then \
+        if [ "${ANNEX_BUILD_PROFILE}" = "production" ] || [ "${ANNEX_BUILD_PROFILE}" = "release" ]; then \
+            echo "WHISPER_CPP_COMMIT is unset. A production image will not compile a tree" >&2; \
+            echo "it has not pinned — a tag can be moved. Pin it with" >&2; \
+            echo "--build-arg WHISPER_CPP_COMMIT=${actual} after checking that commit." >&2; \
+            exit 1; \
+        fi; \
+        echo "WARNING WHISPER_CPP_COMMIT unset — building an unpinned tag (dev build)." >&2; \
+    elif [ "${actual}" != "${WHISPER_CPP_COMMIT}" ]; then \
+        echo "whisper.cpp ${WHISPER_CPP_TAG} resolved to ${actual}, expected ${WHISPER_CPP_COMMIT}." >&2; \
+        echo "The tag moved, or the pin is stale. Refusing to compile an unreviewed tree." >&2; \
+        exit 1; \
+    fi && \
+    cmake -B build && cmake --build build --config Release && \
     mkdir -p /whisper/bin && \
     cp /tmp/whisper/build/bin/main /whisper/bin/whisper && \
     rm -rf /tmp/whisper
@@ -175,8 +241,13 @@ FROM debian:bookworm-slim
 ARG ANNEX_BUILD_PROFILE
 ENV ANNEX_BUILD_PROFILE=${ANNEX_BUILD_PROFILE}
 
+# `curl` is here for the HEALTHCHECK below and nothing else. It is a real, if
+# small, addition to the runtime surface; the alternative is a container that
+# reports "running" while unable to serve a request, which is the failure this
+# image had. `sqlite3` is already present for the entrypoint's seeding and for
+# `scripts/backup.sh`.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates sqlite3 gosu \
+    ca-certificates sqlite3 gosu curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -211,6 +282,16 @@ COPY config.toml /app/config.toml
 
 # Entrypoint script (runs migrations + seeds server row on first start)
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+
+# The operator scripts travel with the image.
+#
+# `docker-compose.prod.yml` runs `scripts/backup.sh` from a sidecar against the
+# same volume, and an operator recovering from a bad upgrade needs
+# `scripts/restore.sh` inside the container where the data is. Shipping the
+# runbook's tools separately from the runtime is how a recovery procedure ends
+# up depending on a checkout nobody has at 3am.
+COPY scripts/backup.sh scripts/restore.sh /app/scripts/
+RUN chmod +x /app/scripts/backup.sh /app/scripts/restore.sh
 RUN sed -i 's/\r$//' /app/docker-entrypoint.sh && chmod +x /app/docker-entrypoint.sh
 
 # Create non-root user for runtime
@@ -243,4 +324,16 @@ EXPOSE 3000
 
 # The entrypoint starts as root to fix data-volume ownership, then
 # drops to the non-root "annex" user via gosu before exec-ing the server.
+# The container is only healthy when it can actually serve a request.
+#
+# There was no HEALTHCHECK at all, so Docker and Compose reported "running" for
+# a container whose database was unreachable — and `/health` would have agreed,
+# because it returned a literal. `/readyz` takes a pooled connection, queries,
+# and reads the storage gate and the Merkle tree.
+#
+# `start-period` is generous: first boot runs migrations and, on a fresh
+# volume, generates a signing key.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+    CMD curl -fsS "http://127.0.0.1:${ANNEX_PORT:-3000}/readyz" >/dev/null || exit 1
+
 ENTRYPOINT ["/app/docker-entrypoint.sh"]

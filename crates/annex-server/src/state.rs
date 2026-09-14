@@ -129,6 +129,19 @@ pub struct AppState {
     /// proxy depth via `ANNEX_TRUSTED_PROXY_DEPTH`. See
     /// `crate::config::DeploymentConfig`.
     pub trusted_proxy_depth: u8,
+    /// Cancelled when the process is shutting down.
+    ///
+    /// `axum::serve(..).with_graceful_shutdown(..)` drains in-flight HTTP
+    /// requests and nothing else. Every background worker this server starts
+    /// is a detached `tokio::spawn` with no handle and no stop signal, so a
+    /// SIGTERM left them mid-sleep, mid-long-poll and mid-transaction until
+    /// the runtime was dropped out from under them — which for the federation
+    /// outbox means a delivery that was recorded as attempted and never sent.
+    ///
+    /// Clone it into anything long-running and `select!` on `cancelled()`.
+    /// `Default` gives a live token, so a test that builds `AppState`
+    /// literally gets one that is simply never cancelled.
+    pub shutdown: tokio_util::sync::CancellationToken,
 }
 
 impl AppState {

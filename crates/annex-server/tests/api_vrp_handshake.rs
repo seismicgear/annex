@@ -74,6 +74,7 @@ async fn setup_app_with_policy(policy: ServerPolicy) -> (axum::Router, annex_db:
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
+        shutdown: Default::default(),
     };
 
     (app(state), pool)
@@ -331,6 +332,7 @@ async fn rehandshake_with_mismatched_token_is_rejected() {
         "attacker-pseudonym",
         &[0u8; 32],
         annex_server::api_ws::SESSION_TOKEN_TTL_SECS,
+        0,
     );
 
     let anchor = VrpAnchorSnapshot::new(&[], &[]).unwrap();
@@ -428,6 +430,7 @@ async fn rehandshake_with_matching_token_is_allowed() {
         "agent-owner",
         &[0u8; 32],
         annex_server::api_ws::SESSION_TOKEN_TTL_SECS,
+        0,
     );
 
     let anchor = VrpAnchorSnapshot::new(&[], &[]).unwrap();

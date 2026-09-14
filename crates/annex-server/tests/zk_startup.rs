@@ -132,7 +132,7 @@ async fn zk_unenforced_mode_missing_vkey_starts_with_dummy() {
     let result = prepare_server(cfg).await;
     clear_env();
 
-    let (listener, _router) = result
+    let annex_server::PreparedServer { listener, .. } = result
         .expect("prepare_server must succeed with a missing vkey when enforce_zk_proofs is false");
     // Sanity: the listener should be bound to a valid port — drop it so the
     // OS reclaims the socket before the test exits.
@@ -216,7 +216,7 @@ async fn zk_v2_enabled_loads_v2_vkey() {
     let result = prepare_server(cfg).await;
     clear_env();
 
-    let (listener, _router) =
+    let annex_server::PreparedServer { listener, .. } =
         result.expect("v1+v2 enabled with both keys present must boot cleanly");
     drop(listener);
 }
@@ -337,7 +337,7 @@ async fn zk_unenforced_mode_accepts_on_disk_dummy_vkey() {
     clear_env();
     let _ = std::fs::remove_file(&dummy_path);
 
-    let (listener, _router) = result
+    let annex_server::PreparedServer { listener, .. } = result
         .expect("dev mode must accept an on-disk dummy vkey (matches the in-memory fallback path)");
     drop(listener);
 }

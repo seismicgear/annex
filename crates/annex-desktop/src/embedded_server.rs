@@ -7,7 +7,7 @@
 
 use std::net::SocketAddr;
 
-use annex_server::{config, init_tracing, prepare_server};
+use annex_server::{config, init_tracing, prepare_server, PreparedServer};
 
 use crate::app_state::{AppManagedState, ServerState};
 
@@ -72,7 +72,12 @@ pub(crate) async fn start_embedded_server(
     let _ = init_tracing(&cfg.logging);
 
     // Prepare the server (DB, state, listener).
-    let (listener, router) = prepare_server(cfg)
+    let PreparedServer {
+        listener,
+        router,
+        shutdown,
+        workers,
+    } = prepare_server(cfg)
         .await
         .map_err(|e| format!("server startup failed: {e}"))?;
 
@@ -86,18 +91,37 @@ pub(crate) async fn start_embedded_server(
     // Store the server URL.
     {
         let mut guard = state.server.lock().map_err(|e| e.to_string())?;
-        *guard = Some(ServerState { url: url.clone() });
+        *guard = Some(ServerState {
+            url: url.clone(),
+            shutdown: shutdown.clone(),
+        });
     }
 
     // Spawn the Axum server to run until the process exits.
+    //
+    // The workers are awaited here rather than in `RunEvent::Exit`: that hook
+    // is synchronous and cannot block on a join, so the token is cancelled
+    // there and this task does the waiting. Bounded, because an exiting app
+    // must not hang on a worker that will not stop.
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = axum::serve(
+        let serve = axum::serve(
             listener,
             router.into_make_service_with_connect_info::<SocketAddr>(),
         )
-        .await
-        {
+        .with_graceful_shutdown({
+            let shutdown = shutdown.clone();
+            async move { shutdown.cancelled().await }
+        });
+        if let Err(e) = serve.await {
             tracing::error!("server error: {e}");
+        }
+        let drained = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            futures_util::future::join_all(workers),
+        )
+        .await;
+        if drained.is_err() {
+            tracing::warn!("embedded server background workers did not stop in time");
         }
     });
 

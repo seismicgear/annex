@@ -54,7 +54,12 @@ fn pseudonym_from_authorization_header(
         return Ok(None);
     };
     match verify_ws_token_for_auth(token, secret) {
-        Ok(pseudonym) => Ok(Some(pseudonym)),
+        // The epoch is not checked here. This helper only resolves who the
+        // caller claims to be for a VRP handshake; the route it feeds runs
+        // behind `auth_middleware`, which loads the identity row and does
+        // compare the epoch. Repeating the lookup would cost a second query
+        // per handshake for no additional guarantee.
+        Ok(verified) => Ok(Some(verified.pseudonym)),
         Err(StatusCode::UNAUTHORIZED) => Err(ApiError::Forbidden(
             "agent handshake rejected: invalid or expired session token".to_string(),
         )),

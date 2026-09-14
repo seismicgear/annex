@@ -39,17 +39,6 @@ use crate::http::static_files::{attach_client_dist, attach_uploads};
 use crate::middleware;
 use crate::state::AppState;
 
-/// Health check handler.
-///
-/// Reports basic server liveness, version, and whether voice (WebRTC) is configured.
-async fn health(Extension(state): Extension<Arc<AppState>>) -> Json<Value> {
-    Json(json!({
-        "status": "ok",
-        "version": env!("CARGO_PKG_VERSION"),
-        "voice_enabled": state.voice_service.is_enabled()
-    }))
-}
-
 /// Voice configuration status (public, no auth required).
 ///
 /// Reports both the server policy voice setting and whether the WebRTC
@@ -211,6 +200,10 @@ pub fn app(state: AppState) -> Router {
             patch(api_admin::update_member_capabilities_handler),
         )
         .route(
+            "/api/admin/members/{pseudonymId}/revoke-sessions",
+            post(api_admin::revoke_member_sessions_handler),
+        )
+        .route(
             "/api/profile/username",
             put(api_usernames::set_username_handler).delete(api_usernames::delete_username_handler),
         )
@@ -319,7 +312,13 @@ pub fn app(state: AppState) -> Router {
     // falls back to IP keying, which is the correct upstream cap for
     // anonymous traffic.
     let public_routes = Router::new()
-        .route("/health", get(health))
+        // `/health` keeps its old handler and its old body. Four things poll
+        // it — e2e-server.sh's readiness loop, startup.spec.ts, the puppeteer
+        // harness, and the Docker healthcheck — and none of them is asking the
+        // question `/readyz` answers.
+        .route("/health", get(crate::api_health::live))
+        .route("/livez", get(crate::api_health::live))
+        .route("/readyz", get(crate::api_health::ready))
         .route("/api/registry/register", post(api::register_handler))
         .route(
             "/api/registry/path/{commitmentHex}",

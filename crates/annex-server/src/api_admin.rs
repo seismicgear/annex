@@ -738,6 +738,82 @@ pub async fn update_member_capabilities_handler(
     Ok(AxumJson(serde_json::json!({ "status": "ok" })).into_response())
 }
 
+/// `POST /api/admin/members/{pseudonymId}/revoke-sessions`
+///
+/// Invalidate every session token issued for one identity, without
+/// deactivating them and without rotating the server signing key.
+///
+/// Before this existed there was no middle option. A session token is an HMAC
+/// over the pseudonym and an expiry, verified with no server-side state, so
+/// stopping one being accepted meant either deactivating the identity — which
+/// also stops them re-authenticating — or rotating the signing key, which
+/// invalidates every session, every voice-join token and every federation
+/// signature the server has ever issued.
+///
+/// It also closes a hole rather than merely adding a convenience: a leaked
+/// token could be refreshed indefinitely through the public
+/// `POST /api/session/refresh`, which by design accepts an expired token. The
+/// refresh path checks the epoch too, so a revoked token cannot refresh its
+/// way back in.
+///
+/// The user is not signed out of anything else: they re-authenticate with
+/// their ZK proof and get a token minted against the new epoch.
+pub async fn revoke_member_sessions_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(IdentityContext(identity)): Extension<IdentityContext>,
+    Path(target_pseudonym): Path<String>,
+) -> Result<Response, ApiError> {
+    if !identity.can_moderate {
+        return Err(ApiError::Forbidden(
+            "insufficient permissions to revoke sessions".to_string(),
+        ));
+    }
+
+    let state_clone = state.clone();
+    let target = target_pseudonym.clone();
+    let moderator = identity.pseudonym_id.clone();
+
+    let epoch = tokio::task::spawn_blocking(move || {
+        let mut conn = state_clone
+            .pool
+            .get()
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
+
+        let epoch = annex_identity::platform::revoke_identity_sessions(
+            &mut conn,
+            state_clone.server_id,
+            &target,
+        )
+        .map_err(|e| match e {
+            annex_identity::IdentityError::IdentityNotFound(p) => {
+                ApiError::NotFound(format!("no such member: {p}"))
+            }
+            other => ApiError::InternalServerError(format!("failed to revoke sessions: {other}")),
+        })?;
+
+        let observe_payload = EventPayload::ModerationAction {
+            moderator_pseudonym: moderator.clone(),
+            action_type: "sessions_revoked".to_string(),
+            target_pseudonym: Some(target.clone()),
+            description: format!("Revoked all sessions for {target} (token epoch now {epoch})"),
+        };
+        crate::emit_and_broadcast(
+            &conn,
+            state_clone.server_id,
+            &moderator,
+            &observe_payload,
+            &state_clone.observe_tx,
+            &state_clone.signing_key,
+        );
+
+        Ok::<i64, ApiError>(epoch)
+    })
+    .await
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
+
+    Ok(AxumJson(serde_json::json!({ "status": "ok", "token_epoch": epoch })).into_response())
+}
+
 // ── Storage health gate (ADR-0009) ──
 
 /// Response body for `GET /api/admin/storage`.

@@ -45,11 +45,22 @@ if ANNEX_HOST=127.0.0.1 ANNEX_PORT=0 ANNEX_LOG_LEVEL=warn \
     : # Server ran and exited cleanly
 else
     EXIT_CODE=$?
-    # Exit code 124 = timeout (expected: server started serving after migrations).
-    if [ "$EXIT_CODE" != "124" ] && [ -s "$MIGRATION_LOG" ]; then
-        echo "Migration run output:" >&2
-        cat "$MIGRATION_LOG" >&2
+    # Exit 124 is `timeout` doing its job: migrations ran, the server started
+    # serving, and the timeout killed it. That is the success path.
+    #
+    # Anything else is a failure, and this used to print the log and fall
+    # through to `exec` the server anyway — so a malformed migration, an
+    # unwritable volume or a corrupt schema produced some text in the container
+    # log and then a server running against a half-migrated database. The
+    # migration runner is forward-only; the recovery path from that is
+    # restore-from-backup, which is a bad thing to reach by accident.
+    if [ "$EXIT_CODE" != "124" ]; then
+        echo "FATAL: migrations failed (exit ${EXIT_CODE})." >&2
+        [ -s "$MIGRATION_LOG" ] && cat "$MIGRATION_LOG" >&2
+        rm -f "$MIGRATION_LOG"
+        exit 1
     fi
+    [ -s "$MIGRATION_LOG" ] && cat "$MIGRATION_LOG" >&2
 fi
 rm -f "$MIGRATION_LOG"
 

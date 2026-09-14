@@ -19,6 +19,7 @@ pub mod api_channels;
 pub mod api_e2e;
 pub mod api_federation;
 pub mod api_graph;
+pub mod api_health;
 pub mod api_invite;
 pub mod api_link_preview;
 pub mod api_observe;
@@ -45,7 +46,7 @@ pub mod storage_health;
 pub mod ws;
 
 pub use routes::app;
-pub use startup::{init_tracing, prepare_server, StartupError};
+pub use startup::{init_tracing, prepare_server, PreparedServer, StartupError};
 pub use state::AppState;
 
 use tokio::sync::broadcast;

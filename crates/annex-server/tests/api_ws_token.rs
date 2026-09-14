@@ -363,11 +363,26 @@ async fn the_token_endpoint_mints_a_short_lived_token_bound_to_the_caller() {
 
     let token = json["token"].as_str().expect("no token field");
     let decoded = decode_token(token);
-    let mut fields = decoded.splitn(3, '|');
+    // v2 layout: `pseudonym|epoch|expires|hmac`. The epoch was inserted ahead
+    // of the expiry when per-identity session revocation landed, so a reader
+    // still splitting on the v1 shape silently reads the epoch as a timestamp
+    // — which is 0 for an identity that has never been revoked, and therefore
+    // fails against every clock rather than looking like a format change.
+    let mut fields = decoded.splitn(4, '|');
     assert_eq!(
         fields.next(),
         Some("alice"),
         "the token names someone other than the caller: {decoded}"
+    );
+
+    let epoch: i64 = fields
+        .next()
+        .expect("no epoch field")
+        .parse()
+        .expect("epoch must be an integer");
+    assert_eq!(
+        epoch, 0,
+        "a freshly-minted token for a never-revoked identity should carry epoch 0: {decoded}"
     );
 
     let expires: u64 = fields
@@ -507,7 +522,7 @@ async fn a_token_with_a_non_hex_signature_is_refused() {
 #[tokio::test]
 async fn a_token_with_a_truncated_signature_is_refused() {
     let app = setup(false).await;
-    let real = generate_session_token("alice", &SERVER_SECRET, WS_TOKEN_TTL_SECS);
+    let real = generate_session_token("alice", &SERVER_SECRET, WS_TOKEN_TTL_SECS, 0);
     let body = decode_token(&real);
     let (prefix, sig) = body.rsplit_once('|').expect("token has a signature field");
     let token = encode_token(&format!("{prefix}|{}", &sig[..8]));
@@ -526,7 +541,7 @@ async fn a_token_with_a_truncated_signature_is_refused() {
 #[tokio::test]
 async fn a_token_signed_with_a_different_secret_is_refused() {
     let app = setup(false).await;
-    let token = generate_session_token("alice", &FOREIGN_SECRET, WS_TOKEN_TTL_SECS);
+    let token = generate_session_token("alice", &FOREIGN_SECRET, WS_TOKEN_TTL_SECS, 0);
     assert_eq!(
         upgrade_rejection(app.addr, &format!("token={token}")).await,
         StatusCode::UNAUTHORIZED,
@@ -542,7 +557,7 @@ async fn a_token_signed_with_a_different_secret_is_refused() {
 #[tokio::test]
 async fn a_token_minted_for_alice_cannot_be_rewritten_to_name_carol() {
     let app = setup(false).await;
-    let real = generate_session_token("alice", &SERVER_SECRET, WS_TOKEN_TTL_SECS);
+    let real = generate_session_token("alice", &SERVER_SECRET, WS_TOKEN_TTL_SECS, 0);
     let forged = encode_token(&decode_token(&real).replacen("alice", "carol", 1));
 
     assert_eq!(
@@ -558,7 +573,7 @@ async fn a_token_minted_for_alice_cannot_be_rewritten_to_name_carol() {
 #[tokio::test]
 async fn a_token_whose_expiry_was_extended_by_the_holder_is_refused() {
     let app = setup(false).await;
-    let real = generate_session_token("alice", &SERVER_SECRET, WS_TOKEN_TTL_SECS);
+    let real = generate_session_token("alice", &SERVER_SECRET, WS_TOKEN_TTL_SECS, 0);
     let body = decode_token(&real);
     let fields: Vec<&str> = body.splitn(3, '|').collect();
     let extended: u64 = fields[1].parse::<u64>().unwrap() + 86_400;
@@ -633,7 +648,7 @@ async fn a_signed_token_with_a_non_numeric_expiry_is_refused() {
 #[tokio::test]
 async fn a_validly_signed_token_for_an_unknown_pseudonym_is_refused() {
     let app = setup(false).await;
-    let token = generate_session_token("ghost", &SERVER_SECRET, WS_TOKEN_TTL_SECS);
+    let token = generate_session_token("ghost", &SERVER_SECRET, WS_TOKEN_TTL_SECS, 0);
     assert_eq!(
         upgrade_rejection(app.addr, &format!("token={token}")).await,
         StatusCode::UNAUTHORIZED,
@@ -647,7 +662,7 @@ async fn a_validly_signed_token_for_an_unknown_pseudonym_is_refused() {
 #[tokio::test]
 async fn a_token_for_a_deactivated_identity_is_refused() {
     let app = setup(false).await;
-    let token = generate_session_token("zombie", &SERVER_SECRET, WS_TOKEN_TTL_SECS);
+    let token = generate_session_token("zombie", &SERVER_SECRET, WS_TOKEN_TTL_SECS, 0);
     assert_eq!(
         upgrade_rejection(app.addr, &format!("token={token}")).await,
         StatusCode::FORBIDDEN,
@@ -763,7 +778,7 @@ async fn a_token_for_alice_still_acts_as_alice_when_the_query_also_names_bob() {
 #[tokio::test]
 async fn a_bad_token_does_not_fall_back_to_the_legacy_pseudonym_parameter() {
     let app = setup(false).await;
-    let forged = generate_session_token("alice", &FOREIGN_SECRET, WS_TOKEN_TTL_SECS);
+    let forged = generate_session_token("alice", &FOREIGN_SECRET, WS_TOKEN_TTL_SECS, 0);
 
     assert_eq!(
         upgrade_rejection(app.addr, &format!("token={forged}&pseudonym=alice")).await,
@@ -795,7 +810,7 @@ async fn a_signed_token_still_upgrades_when_zk_enforcement_is_on() {
     // Minted directly: with enforcement on, `POST /api/ws/token` no longer
     // accepts the `X-Annex-Pseudonym` header, so the HTTP mint path is not
     // available to a test that has no ZK proof to trade in.
-    let token = generate_session_token("alice", &SERVER_SECRET, WS_TOKEN_TTL_SECS);
+    let token = generate_session_token("alice", &SERVER_SECRET, WS_TOKEN_TTL_SECS, 0);
 
     let mut ws = upgrade(app.addr, &format!("token={token}"))
         .await
@@ -812,7 +827,7 @@ async fn a_signed_token_still_upgrades_when_zk_enforcement_is_on() {
 #[tokio::test]
 async fn a_foreign_signed_token_is_still_refused_when_zk_enforcement_is_on() {
     let app = setup(true).await;
-    let token = generate_session_token("alice", &FOREIGN_SECRET, WS_TOKEN_TTL_SECS);
+    let token = generate_session_token("alice", &FOREIGN_SECRET, WS_TOKEN_TTL_SECS, 0);
     assert_eq!(
         upgrade_rejection(app.addr, &format!("token={token}")).await,
         StatusCode::UNAUTHORIZED,

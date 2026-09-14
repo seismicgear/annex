@@ -53,7 +53,10 @@ test.describe('surface manifest', () => {
    * the whole 17-minute run or nothing.
    */
   test('no surface writes into the fixture channel', () => {
-    const src = readFileSync(path.join(__dirname, 'surfaces.ts'), 'utf8');
+    // `process.cwd()` rather than `__dirname`: this file is ESM, where
+    // `__dirname` does not exist, and Playwright runs with the cwd set to
+    // `client/`. `SRC` above resolves the same way for the same reason.
+    const src = readFileSync(path.join(process.cwd(), 'e2e', 'audit', 'surfaces.ts'), 'utf8');
     // Split on the two-space object opener the manifest is formatted with, so
     // each chunk is one surface and an id can be attributed to the write.
     const chunks = src.split(/\n {2}\{\n/);

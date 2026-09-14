@@ -308,7 +308,12 @@ fn token_request(
     pseudonym: &str,
     proof_header: Option<&str>,
 ) -> Request<Body> {
-    let token = generate_session_token(pseudonym, &fixture.ws_token_secret, SESSION_TOKEN_TTL_SECS);
+    let token = generate_session_token(
+        pseudonym,
+        &fixture.ws_token_secret,
+        SESSION_TOKEN_TTL_SECS,
+        0,
+    );
     let mut builder = Request::builder()
         .uri(uri)
         .method(method)

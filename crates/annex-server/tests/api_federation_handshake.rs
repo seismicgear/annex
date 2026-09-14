@@ -96,6 +96,7 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool, SigningKey) {
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
+        shutdown: Default::default(),
     };
 
     (app(state), pool, remote_key)

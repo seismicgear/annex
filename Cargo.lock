@@ -96,7 +96,7 @@ dependencies = [
 
 [[package]]
 name = "annex-channels"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "annex-db",
  "annex-types",
@@ -111,7 +111,7 @@ dependencies = [
 
 [[package]]
 name = "annex-db"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "annex-types",
  "r2d2",
@@ -125,12 +125,13 @@ dependencies = [
 
 [[package]]
 name = "annex-desktop"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "annex-server",
  "annex-voice",
  "axum",
  "dirs",
+ "futures-util",
  "keyring",
  "raw-window-handle",
  "reqwest 0.12.28",
@@ -143,6 +144,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tempfile",
  "tokio",
+ "tokio-util",
  "toml 0.8.23",
  "tracing",
  "url",
@@ -154,7 +156,7 @@ dependencies = [
 
 [[package]]
 name = "annex-federation"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "annex-db",
  "annex-rtx",
@@ -174,6 +176,7 @@ dependencies = [
  "sha2",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
  "tracing",
  "uuid",
  "webrtc",
@@ -182,7 +185,7 @@ dependencies = [
 
 [[package]]
 name = "annex-graph"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "annex-db",
  "annex-types",
@@ -195,7 +198,7 @@ dependencies = [
 
 [[package]]
 name = "annex-identity"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "annex-db",
  "annex-types",
@@ -218,7 +221,7 @@ dependencies = [
 
 [[package]]
 name = "annex-observe"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "annex-db",
  "annex-types",
@@ -235,7 +238,7 @@ dependencies = [
 
 [[package]]
 name = "annex-rtx"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "annex-types",
  "annex-vrp",
@@ -247,7 +250,7 @@ dependencies = [
 
 [[package]]
 name = "annex-server"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "annex-channels",
  "annex-db",
@@ -284,6 +287,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-tungstenite",
+ "tokio-util",
  "toml 0.8.23",
  "tower",
  "tower-http",
@@ -295,7 +299,7 @@ dependencies = [
 
 [[package]]
 name = "annex-types"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -305,7 +309,7 @@ dependencies = [
 
 [[package]]
 name = "annex-voice"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "annex-types",
  "base64 0.22.1",
@@ -331,7 +335,7 @@ dependencies = [
 
 [[package]]
 name = "annex-vrp"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "annex-db",
  "annex-types",
@@ -6318,6 +6322,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]

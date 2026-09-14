@@ -191,6 +191,10 @@ const MIGRATIONS: &[Migration] = &[
         name: "043_message_edits_cascade",
         sql: include_str!("migrations/043_message_edits_cascade.sql"),
     },
+    Migration {
+        name: "044_identity_token_epoch",
+        sql: include_str!("migrations/044_identity_token_epoch.sql"),
+    },
 ];
 
 /// Errors that can occur during migration execution.

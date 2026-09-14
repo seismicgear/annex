@@ -25,6 +25,7 @@ fn member(server_id: i64, pseudonym: &str) -> PlatformIdentity {
         can_federate: false,
         can_bridge: false,
         active: true,
+        token_epoch: 0,
         created_at: String::new(),
         updated_at: String::new(),
     }

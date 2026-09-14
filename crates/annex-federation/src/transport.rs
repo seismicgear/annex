@@ -1,58 +1,65 @@
-//! ## ⚠️ Experimental — not wired into the production server
+//! WebRTC peer-to-peer transport for federation traffic.
 //!
-//! `FederationTransport` defines the WebRTC peer-to-peer transport for
-//! federation traffic, gated by an Ed25519-signed signaling envelope
-//! through `api/signal.js`. The struct is fully typed and the
-//! cryptographic verifier callback is part of the constructor, BUT
-//! **no caller in the workspace currently instantiates it**.
+//! Two servers bootstrap a data channel by exchanging sealed SDP through
+//! `api/signal.js`, a relay that is trusted to deliver bytes and trusted with
+//! nothing else. `annex-server`'s `startup.rs` builds one of these when
+//! `federation.enable_relay_transport` is set; the HTTP federation routes
+//! (`/api/federation/*`) remain the path when it is not.
 //!
-//! ### Metadata-hardened signaling
+//! ### What the relay is not allowed to learn
 //!
-//! The transport addresses peers by a ROTATING rendezvous tag
-//! ([`crate::metadata::rendezvous_tag_for`]) rather than a stable slug, and
-//! leaves `from_server_slug`/`to_server_slug` blank on the wire, so the relay
-//! never sees the slug graph and cannot link a peer across hourly buckets. SDPs
-//! are sealed AND length-padded ([`crate::metadata::seal_padded_to`]) so the
-//! relay sees only constant-size ciphertext. Peers are keyed internally by their
-//! Ed25519 public key (a stable, privacy-preserving identifier). Because slugs
-//! are blank, a wired-in `signal_verifier` MUST authorise the sender by
-//! `from_pubkey_hex` (consulting `instances`/`federation_agreements`), not slug.
+//! * **Content.** SDPs are sealed to the recipient's identity key and
+//!   length-padded ([`crate::metadata::seal_padded_to`]), so the relay sees a
+//!   constant-size opaque blob and never an ICE candidate or an IP.
+//! * **The graph.** Envelopes are addressed to a rotating rendezvous tag
+//!   ([`crate::metadata::rendezvous_tag_for`]) — a one-way function of the
+//!   recipient's key and the hour — and carry no server slugs at all. Tags for
+//!   the same peer in different hours are unlinkable.
+//! * **Who may read a queue.** A tag rides in every envelope addressed to its
+//!   owner, so knowing one is not authorisation. A drain presents the
+//!   drainer's public key and a signature, and the relay recomputes the tag
+//!   forwards from that key: only the addressee can drain.
 //!
-//! Until a caller is wired in, the production server does NOT use this
-//! transport — federation traffic continues to flow over the existing
-//! HTTP federation routes (`/api/federation/*`), which have their own
-//! authentication path. Treat this module as the staging ground for the
-//! future relay-based transport.
+//! ### What the relay IS relied on for, and what backs it up
 //!
-//! Anyone adding the first caller MUST also:
+//! The relay authenticates senders (Ed25519 over the canonical envelope) and
+//! authorises them against `ANNEX_SIGNAL_TRUSTED_PEERS`. Because v2 envelopes
+//! carry no slug, that map degenerates to an allowlist of authorised keys —
+//! the relay cannot bind a key to a server it is not allowed to know about.
+//! The slug↔key binding lives here instead, in the `signal_verifier` callback,
+//! which consults `instances` and the active `federation_agreements`. Both
+//! checks are required: the relay's stops unauthorised traffic reaching us at
+//! all, and ours stops an authorised peer injecting SDP into a session this
+//! server never initiated.
 //!
-//! 1. Configure `ANNEX_SIGNAL_TRUSTED_PEERS` on the relay
-//!    (`api/signal.js`) so the slug↔pubkey binding is enforced before
-//!    a signed envelope reaches us.
-//! 2. Provide a `signal_verifier` closure that consults the
-//!    `instances` table (slug → public_key) and the active
-//!    `federation_agreements` to authorise the sender — not just check
-//!    that the signature matches some pubkey.
-//! 3. Add an integration test exercising send/receive end-to-end with
-//!    the real relay surface.
+//! [`FederationTransport::handle_signal_payload`] also re-derives our own tag
+//! and refuses an envelope addressed elsewhere. "It came out of our queue, so
+//! it is for us" is an argument about the relay's behaviour, and the relay is
+//! the untrusted party.
 //!
-//! Until those land, do not flip a feature flag to "enable the
-//! transport" in production. The relay accepts signed envelopes
-//! addressed at trusted slugs but the receiving server has no
-//! verifier wired up, so an authorised peer could still inject SDP
-//! into a session this server never initiated. The defence-in-depth
-//! check at the receiver is the missing piece.
+//! ### The wire format is a two-implementation contract
 //!
-//! See `crates/annex-federation/src/signal.rs::SignalingPayload` for
-//! the wire format and `api/signal.js` for the relay-side gates.
+//! [`crate::signal::SignalingPayload::canonical_signing_input`] and
+//! `canonicalEnvelope` in `api/signal.js` must agree byte for byte. They did
+//! not, for the whole time this module had no caller: Rust interpolated
+//! `rendezvous_tag` as a fourth field and JavaScript did not, so every
+//! signature this transport produced would have been rejected with a 401 and
+//! the only symptom would have been federation never connecting.
+//! `api/canonical-vectors.json` and `api/rendezvous-vectors.json` are read by
+//! `crates/annex-federation/tests/canonical_vectors.rs` and by
+//! `api/signal.test.mjs`, so the two sides now fail together or not at all.
+//!
+//! The envelope carries an explicit `format_version`, inside the signature as
+//! well as on the wire, so a relay and a peer can be upgraded independently
+//! and neither can be talked into verifying a v2 envelope under v1 rules.
 
 use crate::metadata::{
     current_bucket, open_padded_from, rendezvous_tag_for, rendezvous_tag_for_now, seal_padded_to,
 };
 use crate::seal::SealError;
-use crate::signal::{SignalClient, SignalError, SignalingPayload};
+use crate::signal::{DrainAuth, SignalClient, SignalError, SignalingPayload, FORMAT_V2};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
-use ed25519_dalek::{SigningKey, VerifyingKey};
+use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use futures_util::Future;
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -181,35 +188,104 @@ impl FederationTransport {
         rendezvous_tag_for(&self.local_signing_key.verifying_key(), bucket)
     }
 
-    pub fn spawn_signal_listener(self: Arc<Self>) {
-        tokio::spawn(async move {
-            loop {
-                let bucket = current_bucket();
-                // Drain any stragglers addressed to the previous bucket (a peer
-                // that posted just before the hourly rollover), then long-poll
-                // the current bucket. This tolerates clock skew at boundaries.
-                let prev_tag = self.own_tag(bucket.saturating_sub(1));
-                while let Ok(Some(payload)) = self.signal.poll_signal(&prev_tag, 0).await {
+    /// Sign a drain claim for `tag`.
+    ///
+    /// Knowing a tag is not authorisation to drain it — the tag rides in every
+    /// envelope addressed to us, so the relay operator and anyone on the path
+    /// already has it. The relay recomputes the tag forwards from
+    /// `drain_pubkey_hex` and refuses a drain whose tag is not that key's own
+    /// address, which is what stops one authorised peer draining another's
+    /// queue and intercepting its federation bootstrap.
+    fn drain_auth(&self, tag: &str) -> DrainAuth {
+        let timestamp_ms = chrono::Utc::now().timestamp_millis();
+        let input = DrainAuth::canonical_signing_input(tag, timestamp_ms);
+        let sig = self.local_signing_key.sign(input.as_bytes());
+        DrainAuth {
+            drain_pubkey_hex: self.local_public_key_hex.clone(),
+            timestamp_ms,
+            signature_b64: BASE64.encode(sig.to_bytes()),
+        }
+    }
+
+    /// Long-poll our rendezvous queue and dispatch whatever arrives.
+    ///
+    /// Returns the listener's backoff: `None` to poll again immediately.
+    async fn poll_once(&self) -> Option<Duration> {
+        let bucket = current_bucket();
+        // Drain any stragglers addressed to the previous bucket (a peer that
+        // posted just before the hourly rollover), then long-poll the current
+        // bucket. This tolerates clock skew at boundaries.
+        let prev_tag = self.own_tag(bucket.saturating_sub(1));
+        loop {
+            match self
+                .signal
+                .poll_tag(&prev_tag, 0, Some(&self.drain_auth(&prev_tag)))
+                .await
+            {
+                Ok(Some(payload)) => {
                     if let Err(err) = self.handle_signal_payload(payload).await {
                         tracing::warn!(error = %err, "failed to process inbound federation signal");
                     }
                 }
+                Ok(None) => break,
+                Err(err) => {
+                    // A failure here is not "the queue is empty": say so, or a
+                    // misconfigured relay looks exactly like a quiet one.
+                    tracing::warn!(error = %err, "draining the previous rendezvous bucket failed");
+                    break;
+                }
+            }
+        }
 
-                let cur_tag = self.own_tag(bucket);
-                match self.signal.poll_signal(&cur_tag, 55).await {
-                    Ok(Some(payload)) => {
-                        if let Err(err) = self.handle_signal_payload(payload).await {
-                            tracing::warn!(error = %err, "failed to process inbound federation signal");
-                        }
+        let cur_tag = self.own_tag(bucket);
+        match self
+            .signal
+            .poll_tag(&cur_tag, 55, Some(&self.drain_auth(&cur_tag)))
+            .await
+        {
+            Ok(Some(payload)) => {
+                if let Err(err) = self.handle_signal_payload(payload).await {
+                    tracing::warn!(error = %err, "failed to process inbound federation signal");
+                }
+                None
+            }
+            Ok(None) => None,
+            Err(err) => {
+                tracing::warn!(error = %err, "signal long-poll failed");
+                Some(Duration::from_secs(2))
+            }
+        }
+    }
+
+    /// Start the inbound listener, stopping when `shutdown` is cancelled.
+    ///
+    /// The token is not optional decoration: without it the loop is a detached
+    /// task with no way back, and `main.rs`'s graceful drain waits on
+    /// connections this task does not own while it keeps long-polling a relay
+    /// for another 55 seconds. Returns the join handle so the caller can wait
+    /// for the loop to actually leave.
+    pub fn spawn_signal_listener(
+        self: Arc<Self>,
+        shutdown: tokio_util::sync::CancellationToken,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            loop {
+                let backoff = tokio::select! {
+                    biased;
+                    _ = shutdown.cancelled() => {
+                        tracing::info!("federation signal listener stopping");
+                        return;
                     }
-                    Ok(None) => {}
-                    Err(err) => {
-                        tracing::warn!(error = %err, "signal long-poll failed");
-                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    backoff = self.poll_once() => backoff,
+                };
+                if let Some(delay) = backoff {
+                    tokio::select! {
+                        _ = shutdown.cancelled() => return,
+                        _ = tokio::time::sleep(delay) => {}
                     }
                 }
             }
-        });
+        })
     }
 
     pub async fn establish_peer(
@@ -252,7 +328,10 @@ impl FederationTransport {
             .insert(session_id.clone(), tx);
 
         let mut offer_payload = SignalingPayload {
+            format_version: FORMAT_V2,
             // Slugs blanked: the relay must not learn who is talking to whom.
+            // A v2 envelope carrying a slug is REJECTED by the relay rather
+            // than quietly accepted, so this is checked and not merely hoped.
             from_server_slug: String::new(),
             to_server_slug: String::new(),
             // Address the recipient's rotating queue (hides the graph, rotates
@@ -311,12 +390,41 @@ impl FederationTransport {
     }
 
     async fn handle_signal_payload(&self, payload: SignalingPayload) -> Result<(), TransportError> {
-        // Tag-addressed payloads arrived in OUR rotating queue, so they are for
-        // us by construction (and carry blank slugs). Only the legacy slug path
-        // needs the explicit addressee check.
-        if payload.rendezvous_tag.is_empty() && payload.to_server_slug != self.local_server_slug {
+        // Check the addressee against our own keys rather than trusting the
+        // queue it came out of.
+        //
+        // "It arrived in our queue, so it is for us" is an argument about the
+        // relay's behaviour, and the relay is the party this whole design
+        // treats as untrusted. It is also the relay that decides which queue a
+        // drain reads. Recomputing the tag costs one SHA-256 and turns a
+        // relay-side mistake — or a relay-side attack — from an injected SDP
+        // into a rejected envelope.
+        if payload.format_version == FORMAT_V2 {
+            let bucket = current_bucket();
+            let ours = [
+                self.own_tag(bucket),
+                self.own_tag(bucket.saturating_sub(1)),
+                self.own_tag(bucket.saturating_add(1)),
+            ];
+            if !ours.contains(&payload.rendezvous_tag) {
+                return Err(TransportError::SignalingRejected(
+                    "signaling payload addressed to a rendezvous tag that is not ours".to_string(),
+                ));
+            }
+            if !payload.from_server_slug.is_empty() || !payload.to_server_slug.is_empty() {
+                // A slug on a v2 envelope is outside its canonical string and
+                // therefore unsigned: the relay could have put it there.
+                return Err(TransportError::SignalingRejected(
+                    "format_version 2 envelopes must not carry server slugs".to_string(),
+                ));
+            }
+        } else if payload.to_server_slug != self.local_server_slug {
             return Err(TransportError::WebRtc(
                 "signaling payload addressed to a different server".to_string(),
+            ));
+        } else if !payload.rendezvous_tag.is_empty() {
+            return Err(TransportError::SignalingRejected(
+                "rendezvous_tag requires format_version 2".to_string(),
             ));
         }
         let age_ms = chrono::Utc::now().timestamp_millis() - payload.sent_at_ms;
@@ -377,6 +485,7 @@ impl FederationTransport {
             .map_err(|e| TransportError::WebRtc(e.to_string()))?;
 
         let mut answer_payload = SignalingPayload {
+            format_version: FORMAT_V2,
             // Slugs blanked; address the offerer's rotating queue.
             from_server_slug: String::new(),
             to_server_slug: String::new(),

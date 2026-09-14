@@ -17,6 +17,8 @@ tauri-plugin-deep-link = "2"
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 url = "2"
 tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures-util = "0.3"
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }

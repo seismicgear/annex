@@ -489,7 +489,29 @@ fn apply_rate_limit_env_overrides(policy: &mut ServerPolicy) {
     }
 }
 
-pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Router), StartupError> {
+/// Everything `main.rs` needs to serve and then stop cleanly.
+///
+/// `prepare_server` used to return `(listener, router)`, which left the caller
+/// no way to tell the background workers the process is going down — so
+/// `with_graceful_shutdown` drained HTTP requests while six detached timers,
+/// the federation outbox mid-delivery among them, ran until the runtime was
+/// dropped out from under them.
+#[derive(Debug)]
+pub struct PreparedServer {
+    pub listener: TcpListener,
+    pub router: Router,
+    /// Cancel to stop every background worker, then await `workers`.
+    pub shutdown: tokio_util::sync::CancellationToken,
+    /// Handles for the workers that hold external state — the ones whose
+    /// abrupt death is visible to somebody else. The purely local timers are
+    /// still fire-and-forget; cancelling the token stops them too, and there
+    /// is nothing to wait for.
+    pub workers: Vec<tokio::task::JoinHandle<()>>,
+}
+
+pub async fn prepare_server(config: config::Config) -> Result<PreparedServer, StartupError> {
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let mut workers: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     // Initialize database
     let pool = annex_db::create_pool(
         &config.database.path,
@@ -870,29 +892,6 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
     let stt_service =
         annex_voice::SttService::new(&config.voice.stt_model_path, &config.voice.stt_binary_path);
 
-    // The experimental relay transport is configurable and unwired.
-    //
-    // `annex_federation::transport` is complete — `FederationTransport`,
-    // `spawn_signal_listener`, `establish_peer` — and `annex-server` does not
-    // reference the module at all. The flag reaches `DeploymentConfig` and is
-    // validated, and nothing reads it after that. On a production profile the
-    // validation goes further and *demands* `ANNEX_SIGNAL_TRUSTED_PEERS`
-    // before it will start, so an operator can be made to configure a trust
-    // map for a subsystem that will not run.
-    //
-    // Saying so is the whole fix. Wiring the transport is feature work; a
-    // setting that silently does nothing is a defect on its own, and one line
-    // at startup is the difference between "not implemented yet" and "I
-    // configured this and cannot tell whether it is on".
-    if config.deployment.experimental_relay_transport_enabled {
-        tracing::warn!(
-            "deployment.experimental_relay_transport_enabled is set, but the relay \
-             transport is not wired into this server yet — the setting is accepted \
-             and validated, and no relay listener is started. Federation continues \
-             over the HTTP outbox."
-        );
-    }
-
     // Resolve upload directory
     let upload_dir =
         std::env::var("ANNEX_UPLOAD_DIR").unwrap_or_else(|_| "data/uploads".to_string());
@@ -942,6 +941,7 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
         storage_config: config.storage.clone(),
         storage_health,
         trusted_proxy_depth: config.deployment.trusted_proxy_depth,
+        shutdown: shutdown.clone(),
     };
 
     // Start background pruning task
@@ -958,13 +958,19 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
     // Start rate limiter cleanup task
     tokio::spawn(background::start_rate_limit_cleanup_task(
         state.rate_limiter.clone(),
+        shutdown.clone(),
     ));
 
     // Start federation outbox worker (replaces the pre-hardening
     // fire-and-forget `relay_message` spawn — see migration 037 and
     // ADR-0007 / ADR-0008 for the durability rationale).
-    tokio::spawn(background::start_federation_outbox_task(Arc::new(
-        state.clone(),
+    //
+    // Waited on at shutdown, unlike the purely local timers: it is the one
+    // worker that can be interrupted between "marked attempted" and "sent",
+    // which is a delivery a peer never receives and this server believes it
+    // made.
+    workers.push(tokio::spawn(background::start_federation_outbox_task(
+        Arc::new(state.clone()),
     )));
 
     // Start SQLite maintenance worker if enabled. The worker is a no-op
@@ -989,6 +995,26 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
         Arc::new(state.clone()),
     ));
 
+    // Start the relay signaling listener, if the operator opted in.
+    if config.deployment.experimental_relay_transport_enabled {
+        match start_relay_transport(
+            Arc::new(state.clone()),
+            &config.server.server_slug,
+            shutdown.clone(),
+        ) {
+            Ok(handle) => workers.push(handle),
+            Err(e) => {
+                // A relay that cannot start is not a warning. The operator
+                // turned this on, and the validator already made them
+                // configure `ANNEX_SIGNAL_TRUSTED_PEERS` for it; carrying on
+                // with federation quietly on the HTTP path is precisely the
+                // "I configured this and cannot tell whether it is on" state
+                // this replaced.
+                return Err(e);
+            }
+        }
+    }
+
     // Build application
     let router = routes::app(state);
     let addr = SocketAddr::new(config.server.host, config.server.port);
@@ -1000,7 +1026,132 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
         StartupError::IoError(e)
     })?;
 
-    Ok((listener, router))
+    Ok(PreparedServer {
+        listener,
+        router,
+        shutdown,
+        workers,
+    })
+}
+
+/// Build a [`FederationTransport`] and start its inbound listener.
+///
+/// The two callbacks are where this server's half of the trust model lives.
+///
+/// * **Signer** — signs the canonical envelope with the server's Ed25519 key.
+///   The relay verifies it and refuses unsigned traffic.
+/// * **Verifier** — the check the relay *cannot* make. Under rendezvous
+///   addressing an envelope carries no server slug, because the relay is not
+///   permitted to learn which servers federate; all the relay can enforce is
+///   "this key is on the operator's allowlist". Whether the key belongs to a
+///   peer we have an active agreement with is knowable only here, against
+///   `instances` and `federation_agreements`.
+///
+/// Both are required. Without the relay's check, anyone can fill our queue;
+/// without ours, any peer the relay operator has allowlisted — including one
+/// we have severed — can inject SDP into a session we never initiated.
+fn start_relay_transport(
+    state: Arc<AppState>,
+    local_server_slug: &str,
+    shutdown: tokio_util::sync::CancellationToken,
+) -> Result<tokio::task::JoinHandle<()>, StartupError> {
+    use annex_federation::signal::SignalClient;
+    use annex_federation::transport::FederationTransport;
+    use ed25519_dalek::Signer;
+
+    let base_url = std::env::var("ANNEX_SIGNAL_BASE_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    let signal = match base_url {
+        Some(url) => SignalClient::with_base_url(url),
+        None => SignalClient::new(),
+    }
+    .map_err(|e| {
+        StartupError::ConfigError(config::ConfigError::InvalidValue {
+            field: "ANNEX_SIGNAL_BASE_URL",
+            reason: format!("could not build a signaling HTTP client: {e}"),
+        })
+    })?;
+
+    let signing_key = state.signing_key.clone();
+    let local_public_key_hex = signing_key
+        .verifying_key()
+        .to_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+
+    let signer_key = signing_key.clone();
+    let signal_signer: annex_federation::transport::SignalSigner = Arc::new(
+        move |payload: &annex_federation::signal::SignalingPayload| {
+            use base64::Engine;
+            Some(
+                base64::engine::general_purpose::STANDARD.encode(
+                    signer_key
+                        .sign(payload.canonical_signing_input().as_bytes())
+                        .to_bytes(),
+                ),
+            )
+        },
+    );
+
+    let verify_pool = state.pool.clone();
+    let verify_server_id = state.server_id;
+    let signal_verifier: annex_federation::transport::SignalVerifier = Arc::new(
+        move |payload: &annex_federation::signal::SignalingPayload| {
+            let conn = verify_pool
+                .get()
+                .map_err(|e| format!("database unavailable while authorising a peer: {e}"))?;
+            // Named, not collapsed into one message. "signaling rejected" on
+            // its own has sent people to check a network that was fine; the
+            // three causes below need three different actions.
+            match annex_federation::db::authorized_signaling_peer(
+                &conn,
+                verify_server_id,
+                &payload.from_pubkey_hex,
+            ) {
+                Ok(Some(_instance_id)) => Ok(()),
+                Ok(None) => Err(format!(
+                    "no active federation agreement with the key {}…; the peer may have been \
+                     severed, or its instance row may carry a different public_key",
+                    payload.from_pubkey_hex.chars().take(16).collect::<String>()
+                )),
+                Err(e) => Err(format!("authorisation lookup failed: {e}")),
+            }
+        },
+    );
+
+    let inbound_state = state.clone();
+    let inbound_handler: annex_federation::transport::InboundHandler =
+        Arc::new(move |envelope_json: String| {
+            let state = inbound_state.clone();
+            Box::pin(async move {
+                if let Err(e) = crate::api_federation::receive_federated_message_from_data_channel(
+                    state,
+                    &envelope_json,
+                )
+                .await
+                {
+                    tracing::warn!(error = %e, "inbound relay envelope rejected");
+                }
+            })
+        });
+
+    let transport = Arc::new(FederationTransport::new(
+        local_server_slug.to_string(),
+        local_public_key_hex.clone(),
+        signing_key,
+        signal,
+        inbound_handler,
+        signal_signer,
+        signal_verifier,
+    ));
+
+    tracing::info!(
+        local_public_key = %&local_public_key_hex[..16],
+        "starting federation relay signaling listener"
+    );
+    Ok(transport.spawn_signal_listener(shutdown))
 }
 
 #[cfg(test)]

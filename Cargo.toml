@@ -24,6 +24,8 @@ repository = "https://github.com/seismicgear/annex"
 [workspace.dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }
+# CancellationToken: how a detached background task is told to stop.
+tokio-util = { version = "0.7", features = ["rt"] }
 
 # Web framework
 axum = { version = "0.8", features = ["ws", "multipart"] }

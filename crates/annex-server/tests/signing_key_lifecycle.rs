@@ -128,7 +128,7 @@ async fn production_accepts_real_signing_key_env() {
     );
 
     let cfg = config_for_production_signing_test(":memory:");
-    let (listener, _router) = prepare_server(cfg)
+    let annex_server::PreparedServer { listener, .. } = prepare_server(cfg)
         .await
         .expect("production accepts a real 32-byte key");
     drop(listener); // free the OS port immediately
@@ -161,7 +161,8 @@ async fn voice_tokens_survive_restart_with_same_persistent_key() {
 
     let cfg1 = config_for_production_signing_test(&db_str);
     std::env::set_var("ANNEX_BUILD_PROFILE", "production");
-    let (l1, _r1) = prepare_server(cfg1).await.expect("first start ok");
+    let annex_server::PreparedServer { listener: l1, .. } =
+        prepare_server(cfg1).await.expect("first start ok");
     drop(l1);
 
     // Capture the secret from disk: rebuild it ourselves using the
@@ -180,7 +181,8 @@ async fn voice_tokens_survive_restart_with_same_persistent_key() {
 
     // Second start: same db_path → same on-disk key → same derived secret.
     let cfg2 = config_for_production_signing_test(&db_str);
-    let (l2, _r2) = prepare_server(cfg2).await.expect("second start ok");
+    let annex_server::PreparedServer { listener: l2, .. } =
+        prepare_server(cfg2).await.expect("second start ok");
     drop(l2);
 
     let hex_key2 = std::fs::read_to_string(&key_file).expect("still persisted");

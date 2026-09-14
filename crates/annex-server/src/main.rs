@@ -81,20 +81,34 @@ async fn run_server() -> Result<(), StartupError> {
     }
 
     // Prepare and start the server
-    let (listener, app) = prepare_server(config).await?;
+    let prepared = prepare_server(config).await?;
+    let annex_server::PreparedServer {
+        listener,
+        router,
+        shutdown,
+        workers,
+    } = prepared;
 
     // Auto-open browser unless suppressed or running in Docker.
     // ANNEX_OPEN_BROWSER: "true" → force open, "false" → suppress, absent → auto-detect.
     maybe_open_browser(&listener);
 
     // Serve with graceful shutdown
-    axum::serve(
+    let serve_result = axum::serve(
         listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
+        router.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown_signal())
-    .await
-    .map_err(|e| {
+    .await;
+
+    // `with_graceful_shutdown` drains in-flight HTTP requests and knows
+    // nothing about the background workers, which are detached tasks. Tell
+    // them, then wait — bounded, because a worker that will not stop must not
+    // turn a SIGTERM into a SIGKILL either.
+    shutdown.cancel();
+    drain_workers(workers).await;
+
+    serve_result.map_err(|e| {
         tracing::error!("server runtime error: {}", e);
         StartupError::IoError(e)
     })?;
@@ -102,6 +116,40 @@ async fn run_server() -> Result<(), StartupError> {
     tracing::info!("annex server shut down");
 
     Ok(())
+}
+
+/// How long to wait for background workers after cancelling them.
+///
+/// Comfortably inside a container runtime's default 10s stop grace period, so
+/// the process exits on its own rather than being killed — which for the
+/// federation outbox is the difference between finishing a delivery and
+/// leaving a row marked attempted that nobody received.
+const WORKER_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+async fn drain_workers(workers: Vec<tokio::task::JoinHandle<()>>) {
+    if workers.is_empty() {
+        return;
+    }
+    let count = workers.len();
+    tracing::info!(count, "waiting for background workers to stop");
+    let all = futures_util::future::join_all(workers);
+    match tokio::time::timeout(WORKER_DRAIN_TIMEOUT, all).await {
+        Ok(results) => {
+            for r in results {
+                if let Err(e) = r {
+                    // A panic here already happened; say so rather than
+                    // letting the JoinError vanish into a discarded Result.
+                    tracing::error!(error = %e, "background worker ended abnormally");
+                }
+            }
+            tracing::info!(count, "background workers stopped");
+        }
+        Err(_) => tracing::warn!(
+            count,
+            timeout_secs = WORKER_DRAIN_TIMEOUT.as_secs(),
+            "background workers did not stop in time; exiting anyway"
+        ),
+    }
 }
 
 /// Opens the default browser to the server's address unless suppressed.
