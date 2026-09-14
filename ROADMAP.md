@@ -225,7 +225,7 @@ Phase 0 is **COMPLETE** when:
 
 ## Phase 1: Identity Plane
 
-**Status**: `COMPLETE`
+**Status**: `PARTIAL` — the Groth16 trusted setup is single-operator with a public beacon, not a multi-party ceremony (`zk/artifacts/*/manifest.json` records `ceremony.type` honestly).
 **Prerequisites**: Phase 0 `COMPLETE`
 **Estimated scope**: ZKP circuits, Poseidon Merkle tree, VRP registry, identity commitment, pseudonym derivation
 
@@ -446,7 +446,7 @@ Phase 2 is **COMPLETE** when:
 
 ## Phase 3: VRP Trust Negotiation
 
-**Status**: `COMPLETE`
+**Status**: `PARTIAL` — semantic alignment is a curated 12-concept lexicon plus character-trigram hashing, not a learned model — and it is the sole input deciding Aligned/Partial/Conflict for every handshake.
 **Prerequisites**: Phase 2 `COMPLETE`
 **Estimated scope**: Port/adapt MABOS VRP trust negotiation for server-agent and server-server contexts
 
@@ -738,7 +738,7 @@ Phase 5 is **COMPLETE** when:
 
 ## Phase 6: Agent Protocol
 
-**Status**: `COMPLETE`
+**Status**: `PARTIAL` — the negotiated capability contract is enforced at channel join, not at action time.
 **Prerequisites**: Phase 3 `COMPLETE`, Phase 4 `COMPLETE`, Phase 5 `COMPLETE`
 **Estimated scope**: Agent connection flow (VRP handshake → membership → channels), agent presence, capability enforcement
 
@@ -800,7 +800,7 @@ Phase 6 is **COMPLETE** when:
 
 ## Phase 7: Voice Infrastructure
 
-**Status**: `COMPLETE`
+**Status**: `PARTIAL` — Whisper STT needs model provisioning; no GGML model is bundled.
 **Prerequisites**: Phase 4 `COMPLETE`, Phase 6 `COMPLETE`
 **Estimated scope**: native WebRTC SFU, voice LLM TTS service, STT service, agent voice pipeline, voice profiles
 
@@ -968,7 +968,7 @@ Phase 8 is **COMPLETE** when:
 
 ## Phase 9: RTX Knowledge Exchange
 
-**Status**: `COMPLETE`
+**Status**: `PARTIAL` — RTX cross-server delivery is single-hop; multi-hop relay chains lack origin validation and circular-relay prevention.
 **Prerequisites**: Phase 6 `COMPLETE`, Phase 8 `COMPLETE`
 **Estimated scope**: ReflectionSummaryBundle format, RTX publish/subscribe, transfer scope enforcement, governance endpoint
 

@@ -8,11 +8,14 @@ backed by a command you can re-run.
 
 | Suite | Count | How to run |
 |-------|-------|------------|
-| Rust workspace (excl. annex-desktop) | 1055 tests / 116 binaries, 0 clippy warnings | `cargo test --workspace --exclude annex-desktop` |
+| Rust workspace (excl. annex-desktop) | 1061 tests / 117 binaries, 0 clippy warnings | `cargo test --workspace --exclude annex-desktop` |
 | Frontend (vitest) | 478 tests + eslint + `tsc -b` | `cd client && npm test && npm run lint && npx tsc -b` |
 | Playwright functional suite | 13 tests | `bash scripts/e2e-server.sh start && cd client && npm run test:e2e` |
 | Group call (3 real browser contexts, fake media) | 2 tests | `bash scripts/e2e-all.sh group-call` |
-| Harness scripts | 3 files | `for t in scripts/tests/*.test.sh; do bash "$t"; done` |
+| Harness scripts | 4 files | `for t in scripts/tests/*.test.sh; do bash "$t"; done` |
+| Federation signaling relay | 41 tests | `node --test api/signal.test.mjs` |
+| ZK proof round-trip (16 assertions incl. tamper rejection) | `zk-proof` gate | `cd zk && node scripts/test-proofs.js` |
+| Production ZK gate (refuses what it should, and is wired into the release) | 11 assertions | `sh scripts/verify-production-rejects-dev-fixtures.sh` |
 | Live federation relay (signed envelope, second server) | 1 end-to-end path | `bash scripts/smoke-federation.sh` |
 | Puppeteer journey (cold start → identity → proof → chat → channel create) | 1 driver-independent pass | `bash scripts/e2e-all.sh puppeteer` |
 | UI audit (screenshots + a11y + console + network + overflow + keyboard) | 104 surfaces × 4 viewports, 419 checks, 0 findings | `bash scripts/ui-audit.sh` |
@@ -30,21 +33,42 @@ CI (`.github/workflows/ci.yml`, `workflow_dispatch` with `include_macos=true`)
 defines the server checks, the **Linux + Windows + macOS** desktop builds, the
 frontend tests, the UI audit lane, and the server smoke on **Linux + Windows**.
 
-Five of the rows above were, until recently, run by nothing at all: the
-Playwright functional suite, the group-call lane and the puppeteer journey
+Rows here have a way of being defined and not run. Five were, until recently:
+the Playwright functional suite, the group-call lane and the puppeteer journey
 were named by no workflow, `scripts/smoke-federation.sh` was referenced by no
-workflow, script or doc, and the harness scripts had no tests. Defining a
-suite is not running it — every row here now names a command AND a job.
+workflow, script or doc, and the harness scripts had no tests.
 
-> **What CI currently proves: nothing.** Every job on the open PR completes in
-> three to four seconds with `runner_id: 0`, an empty `runner_name`, no steps
-> and no downloadable logs — GitHub is not allocating runners for this
-> repository. That is infrastructure, not the diff, and it means the jobs
-> listed above are *defined* and not *executing*. Every claim in this document
-> is currently backed by a local run only. Check with
-> `gh api repos/seismicgear/annex/actions/jobs/<id>` (or the MCP equivalent)
-> and look at `runner_id` before treating a red check as a real failure — or a
-> green one as real proof.
+Two more were found the same way and are wired now. `api/signal.test.mjs` is 41
+tests over the federation signaling relay — including the canonical signing
+string `crates/annex-federation/src/signal.rs` has to match byte for byte — and
+was named by nothing, which is how the two implementations came to disagree
+about whether `rendezvous_tag` is part of that string. And `zk-proof`, a gate
+`docs/refactor/release-gates.md` describes in detail, ran in no workflow: CI's
+`zk npm test` covers `verify-artifacts.js` only, not the script that generates
+and verifies real proofs.
+
+Defining a suite is not running it — every row here now names a command AND a
+job, and `scripts/test-all.sh` runs the ones that need no browser.
+
+> **CI executes.** The paragraph that stood here said it did not — that every
+> job finished in three to four seconds with `runner_id: 0` and no steps,
+> because GitHub was not allocating runners. That was true of runs 741–748 and
+> has not been true since. Run `34006312223` on `main` (`b172edf`) occupied
+> real runners for 41 minutes: `Check (Server)`, `Frontend Tests`, both desktop
+> builds, both server smokes, the federation smoke and the desktop audit all
+> passed; `UI Audit (Linux)` failed; macOS was skipped by design.
+>
+> Leaving that paragraph in place was the more dangerous of the two errors it
+> could make. It instructed the reader to discount a red check as
+> infrastructure — and a red check was sitting on `main` at the time, which is
+> exactly what it told them to ignore.
+>
+> **A red check on this repository is a real failure.** Before theorising about
+> the cause, download the `ui-audit-report` artifact from the run: it carries
+> `client/e2e-results/<surface>-{actual,diff}.png`, the masked and clipped
+> actual beside a pixel diff. Reading `diagnostics/` instead is what produced
+> three wrong diagnoses of the same failure — that directory holds an
+> unmasked, unclipped full-page shot, which cannot be compared to a baseline.
 
 ## Desktop packaging (Tauri 2)
 
@@ -91,19 +115,42 @@ the dev-fixture keys are clearly **not** a production release.
 > `package-proof.yml` only becomes dispatchable once it exists on the default
 > branch (a GitHub `workflow_dispatch` constraint).
 
-### Release pipeline caveat (must fix before a real public release)
+### The trusted setup, and what it does and does not prove
 
 `release-desktop.yml` builds under `ANNEX_BUILD_PROFILE=production`, which makes
-`zk/scripts/verify-artifacts.js` enforce the pinned manifest. The pinned
-artifacts (`zk/build/membership.r1cs`, `zk/keys/membership_final.zkey`, etc.)
-are **gitignored and not generated in the workflow**, and `dev-setup-groth16.js`
-uses random entropy, so the verify step fails with `MISSING-FILE` before the
-bundler runs — on every platform. Before tagging a real release the project must
-either (a) run a real multi-party trusted-setup ceremony and commit/host the
-resulting artifacts so the manifest hashes resolve, or (b) make the dev-fixture
-deterministic and add a generation step. Until then, `release-desktop.yml`
-cannot produce a build; use `package-proof.yml` for installable (non-production)
-artifacts.
+`zk/scripts/verify-artifacts.js --all` enforce the pinned manifests and
+`zk/scripts/verify-ceremony.js` check that a ceremony produced them.
+
+The ceremony is **single-operator with a public beacon**, and the manifests say
+so: `ceremony.type` is `single-contributor-beacon`, never `mpc`. `ceremony.js`
+runs the standard Groth16 construction — phase 1, then a phase-2 contribution
+per circuit — and finalises with a drand round (League of Entropy, BLS-signed,
+verifiable by anyone forever). The round number is **committed to before that
+round exists**, together with the hashes of the pre-beacon artifacts, so nobody
+— including whoever ran it — could know the beacon while choosing a
+contribution, and nobody could steer the result.
+
+What it does not provide is independent participants. A multi-party ceremony
+whose contributors do not trust each other is strictly stronger, and it remains
+the target. Two things make the upgrade cheap: `ceremony.js --contributors N`
+already records each round in the transcript, and `--ptau <file>
+--ptau-sha256 <hex>` adopts a real perpetual Powers of Tau (hash-checked, then
+`powersoftau verify`-ed) in place of the locally generated phase 1.
+
+Verify any of that from a clean checkout, offline except for the beacon check:
+
+```bash
+ANNEX_BUILD_PROFILE=production node zk/scripts/verify-artifacts.js --all
+node zk/scripts/verify-ceremony.js
+sh scripts/verify-production-rejects-dev-fixtures.sh
+```
+
+The third one tests the **gate** rather than the tree: it builds throwaway
+manifests and asserts each is refused for the right reason and with the right
+exit code. Its predecessor checked one manifest of five, treated any non-zero
+exit as proof, and never neutralised `ANNEX_ALLOW_DEV_CEREMONY` — so it passed
+while the release workflow gated a single circuit and nothing stopped the
+bypass being set.
 
 ## Invite link router (through the marketing site)
 

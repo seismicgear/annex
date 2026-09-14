@@ -28,6 +28,7 @@ Authoritative env-var names live in `crates/annex-server/src/config.rs::load_con
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `ANNEX_BUILD_PROFILE` | compiled default (`production` for a release binary, `dev` for a debug build; `annex-desktop` sets `desktop`) | **Governs every production gate.** `production` requires an explicit CORS origin list, forbids a wildcard origin, refuses clustered mode on an in-memory rate limiter, forces the dev-localhost CORS relaxation off, rejects weak or ephemeral signing keys, and refuses to start with `ANNEX_ENFORCE_ZK_PROOFS=false`. `desktop` keeps the artifact and signing-key checks and drops the multi-tenant ones. An unrecognised value falls back to the compiled default rather than to "off". |
 | `ANNEX_HOST` | `127.0.0.1` | Bind address |
 | `ANNEX_PORT` | `3000` | HTTP port |
 | `ANNEX_DB_PATH` | `annex.db` | SQLite database file path |
@@ -35,8 +36,8 @@ Authoritative env-var names live in `crates/annex-server/src/config.rs::load_con
 | `ANNEX_ZK_KEY_PATH` | `zk/keys/membership_vkey.json` | Groth16 verification key |
 | `ANNEX_WEBRTC_URL` | `ws://localhost:7880` | **Vestigial value, but do not clear it.** Nothing dials this address — the SFU is in-process. It survives only as the on/off gate: `VoiceService::is_enabled()` is false when it is empty, and `join_voice` then refuses every call with `voice_not_configured`. Leave it at the default unless you mean to disable voice. |
 | `ANNEX_WEBRTC_PUBLIC_URL` | (none) | Public URL announced to remote voice clients. Overridden at startup by `ANNEX_PUBLIC_URL` / the persisted server URL when either is set — see [Reverse proxy](#reverse-proxy-recommended). |
-| `ANNEX_WEBRTC_API_KEY` | `devkey` | Signalling auth key |
-| `ANNEX_WEBRTC_API_SECRET` | `secret` | Signalling auth secret. Change it for any deployment reachable off-host. |
+| `ANNEX_WEBRTC_API_KEY` | `devkey` | **Inert.** Carried through `VoiceService` to `AgentVoiceClient::connect`, whose parameters are `_api_key` / `_api_secret` — it authenticates nothing. |
+| `ANNEX_WEBRTC_API_SECRET` | `secret` | **Inert, and this row used to say "change it for any deployment reachable off-host".** It is not a credential: voice-join authentication is an HMAC over `voice_token_secret`, derived from the server's Ed25519 signing key. Rotating this value protects nothing and telling an operator to rotate it spends their attention on the wrong secret. |
 | `ANNEX_PUBLIC_URL` | (auto-derived) | Publicly-reachable server URL (for invites, federation) |
 | `ANNEX_LOG_LEVEL` | `info` | Log level (trace/debug/info/warn/error) |
 | `ANNEX_LOG_JSON` | `false` | JSON log output for log aggregation |
@@ -310,8 +311,9 @@ The Tauri desktop app automatically acquires a public endpoint from the Annex ro
 
 ## Security Notes
 
-- Run behind a reverse proxy (nginx, Caddy) with TLS for production
-- The SQLite database contains message content in plaintext (E2E encryption planned for future)
-- ZK verification keys are public (verification is public by design)
-- Server signing keys (Ed25519) are generated at startup and stored in the database
-- Rate limiting is enabled by default on identity endpoints
+- **Set `ANNEX_BUILD_PROFILE=production`** for anything reachable off-host, unless you are running a release binary with the variable unset — in which case production is already the default. This one variable governs every gate below it: an explicit CORS origin list, the refusal to run clustered mode on an in-memory rate limiter, the dev-localhost CORS relaxation being forced off, weak signing keys being rejected, and ZK enforcement being un-disableable. It used to default to "no gates" when unset, and nothing in these docs or in `deploy.sh` told you to set it. A debug build still defaults to `dev`; the desktop app declares itself `desktop`, which keeps the artifact checks and drops the multi-tenant ones.
+- Run behind a reverse proxy (nginx, Caddy) with TLS for production. The server speaks HTTP only.
+- **Message content is encrypted at rest.** This said the database holds plaintext and that E2E was "planned for future"; both were false. `crates/annex-server/src/at_rest.rs` wraps non-E2E message bodies with ChaCha20-Poly1305 under a key derived from the server signing key, so a stored row reads `\x01ar1:base64(...)` rather than the message — `scripts/smoke-federation.sh` has to decrypt it rather than string-compare. End-to-end channel keys shipped in migration `041_e2e_channel_keys`. See `docs/ENCRYPTION.md` for the three layers.
+- ZK verification keys are public (verification is public by design).
+- **Server signing keys (Ed25519) live in a file, not the database**: `{data_dir}/signing.key`, mode `0600`, resolved by `crates/annex-server/src/startup.rs::resolve_signing_key` in the order env var → file → generate-and-persist. Under a production or desktop profile a weak key (all-zero, all-`0xff`, single-byte fill) is rejected and a failure to persist is a startup error rather than a silent ephemeral key — an ephemeral one rotates on restart and invalidates every session token, voice-join token and federation signature the server has ever issued. **Back this file up with the database**; they are a pair.
+- Rate limiting is enabled by default on identity endpoints.

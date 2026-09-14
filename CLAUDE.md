@@ -103,6 +103,35 @@ invalidating one:
   to a database that is not the one it created. Launching record+verify as one
   background command is not enough — wait for the VERIFY to finish, not just
   the record.
+- **A retry is not a second sample — it is a second write.** The audit runs
+  serially against one server and one database, and `postFreshMessage` posts a
+  real, persisted message. `playwright.config.ts` had `retries: process.env.CI
+  ? 1 : 0` applying to the `audit` project, so on CI a failing surface re-ran
+  its `navigate`, posted a second copy of its message into the shared channel,
+  and every later capture whose picture contained that column was then wrong.
+  One genuine failure at `06-messaging · message-edit-refused @ mobile` became
+  53 failures and 106 ledger findings — every one of them
+  `rule: "visual-regression"`, so the ledger said nothing was wrong with any
+  screen while saying 106 things were wrong.
+
+  Locally, at `retries: 0`, the same commit was green, which is why this went
+  unexplained: it could not be reproduced by running the documented command.
+  `CI=1 bash scripts/ui-audit.sh` reproduces it exactly, down to the first
+  failing surface. Retries are off for the `audit` project now, writes go to
+  `SEED.channels.scratch`, and `manifest.spec.ts` fails a surface that posts
+  while the default channel is selected.
+
+- **The evidence you want is in `client/e2e-results/`, not `diagnostics/`.**
+  Playwright writes `<surface>-actual.png` and `<surface>-diff.png` there on
+  every `toHaveScreenshot` mismatch — the actual taken with the SAME mask and
+  clip as the baseline, beside a pixel diff. `diagnostics/` was a bare
+  `page.screenshot({path})`: no mask, no clip, so it cannot be compared to a
+  baseline by construction. CI uploaded only the second one, and the 53-surface
+  failure above was read three different ways from it before anyone noticed.
+  Both are fixed — the workflow uploads `e2e-results/`, and the diagnostic now
+  uses the capture's own clip and mask — but the ordering still matters: decode
+  the diff, then theorise.
+
 - **`--grep` cannot validate every surface.** The surfaces share one database
   and several post messages, so an unclipped capture — `error-boundary` and
   `agent-detail-overlay` are the two — shows a message column whose contents

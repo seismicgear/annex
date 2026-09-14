@@ -21,6 +21,7 @@ forbidden.
 
 **Enforced by:**
 - `crates/annex-server/src/config.rs` — field declaration and default.
+- `crates/annex-server/src/config.rs::validate_zk_enforcement_for_build_profile` — under `build_profile::requires_multi_tenant_gates()` a `false` value is a startup error, not a warning. This is new: the flag was the only dangerous setting with no production gate, while every lesser one had one. Tests: `production_profile_rejects_disabled_zk_enforcement`, `..._accepts_enabled_...`, `dev_profile_allows_disabled_zk_enforcement`.
 - `crates/annex-server/src/middleware.rs::verify_zk_membership_header` (and call sites guarded by `state.enforce_zk_proofs`).
 - `crates/annex-server/src/api_ws.rs` — raw-pseudonym auth gate; search `enforce_zk_proofs`.
 - Test: `config::tests::defaults_are_loaded_when_file_missing` — its final assertion (tagged `FINDING-001`) is what pins the default to `true`.
@@ -230,3 +231,95 @@ costs the project the ability to re-enable macOS without a re-derivation.
 **Failure mode forbidden:** "macOS doesn't ship right now, let me delete the
 plist + entitlements + matrix entry to clean up." No — keep them; mark as
 non-blocking if needed, but keep them.
+
+---
+
+## I-PROFILE-1 — production gates default to ON, and the binary decides
+
+**Property.** The build profile is one of `dev`, `desktop`, `production`, and
+its default comes from the BINARY: a release build is `production`, a debug
+build is `dev`. `ANNEX_BUILD_PROFILE` overrides it; an unrecognised value falls
+back to the compiled default, never to `dev`. No gate may read the environment
+variable directly.
+
+Gates are grouped by what they protect, and the grouping is the reason there
+are three profiles rather than two:
+
+* `requires_artifact_provenance()` — `desktop` and `production`. "The bytes I
+  load must be the bytes that were signed off": ZK verification keys, signing
+  key strength and persistence.
+* `requires_multi_tenant_gates()` — `production` only. "Strangers can reach
+  this": CORS origins, ZK enforcement, clustered rate limiting, and the
+  founder bootstrap when it lands.
+
+**Enforced by:**
+- `crates/annex-server/src/build_profile.rs` — the resolver and its tests.
+- `crates/annex-server/src/config.rs` (`validate_cors_for_build_profile`,
+  `validate_deployment_for_build_profile`,
+  `validate_zk_enforcement_for_build_profile`),
+  `crates/annex-server/src/http/cors.rs`, `crates/annex-server/src/startup.rs`.
+- `crates/annex-desktop/src/main.rs` sets `desktop` in the FIRST statement of
+  `main`, before the Tokio runtime spawns a thread and `set_var` stops being
+  sound.
+
+**Failure mode forbidden:** a new gate that does its own
+`std::env::var("ANNEX_BUILD_PROFILE")` and returns `Ok(())` when unset. That is
+what four of them did, and it made the entire production posture opt-in through
+a variable nothing in `deploy.sh`, `deploy.ps1` or the operator documentation
+ever set — with a typo in it indistinguishable from a dev profile.
+
+---
+
+## I-ZK-4 — a ceremony claim must be backed by a transcript
+
+**Property.** `zk/artifacts/<circuit>/manifest.json` may declare
+`ceremony.type` only from a known set: `dev-fixture`,
+`single-contributor-beacon`, `multi-contributor-beacon`, `mpc`. Under a
+production profile, `dev-fixture` is refused, an unrecognised value is refused,
+and any other value must name a `ceremony.transcript` **that exists on disk**.
+Nothing in this repository writes `mpc`; a manifest claiming it must still
+carry a transcript, so the claim is checkable rather than asserted.
+
+Hashes and provenance are different questions and both must be asked.
+`verify-artifacts.js` proves the files are the pinned ones — which anyone with
+commit access could arrange. `verify-ceremony.js` proves a ceremony produced
+them: `snarkjs zkey verify` over r1cs → ptau → every contribution → beacon, the
+verification key re-derived from the proving key rather than trusted, and the
+transcript's drand round checked against what was actually published.
+
+**Enforced by:**
+- `zk/scripts/verify-artifacts.js` (the ceremony gate and `--all`).
+- `zk/scripts/verify-ceremony.js`.
+- `scripts/verify-production-rejects-dev-fixtures.sh` — tests the gate against
+  throwaway manifests, asserts the exact exit code for each refusal, runs every
+  child under `env -u ANNEX_ALLOW_DEV_CEREMONY`, and asserts the release
+  workflow runs `--all` and never sets that bypass.
+- `scripts/build-desktop.js` and `.github/workflows/release-desktop.yml`.
+
+**Failure mode forbidden:** editing `dev-fixture` to `mpc` to get a build out.
+Also forbidden: a gate that accepts "any non-zero exit" as proof it worked —
+exit 1 means the manifest is unparseable, and the previous version of that
+script read it as success.
+
+---
+
+## I-AUDIT-1 — a capture's pixels may not depend on what ran before it
+
+**Property.** Audit surfaces run serially against one server and one database.
+A surface that WRITES to a channel other surfaces PHOTOGRAPH makes every later
+picture a function of run order, viewport count and whether anything retried.
+So writes go to `SEED.channels.scratch`, `SEED.defaultChannel` is a fixture
+that nothing appends to, and a surface clipped to `.chat-area` either masks
+`.message-view` or is on a two-name list that deliberately photographs the
+fixture column.
+
+**Enforced by:**
+- `client/e2e/audit/manifest.spec.ts` — "no surface writes into the fixture
+  channel" and "surfaces clipped to .chat-area do not photograph a mutable
+  column".
+- `client/playwright.config.ts` — `retries: 0` on the `audit` project only.
+
+**Failure mode forbidden:** calling `postFreshMessage` with
+`SEED.defaultChannel` selected. One genuine failure, retried once under CI,
+posted a second copy of its message and took 52 further surfaces with it — 53
+failures and 106 ledger findings, none of which said anything about the cause.

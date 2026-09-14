@@ -150,6 +150,14 @@ async function stageAttachment(page: import('@playwright/test').Page, name: stri
   await expect(page.locator('.image-preview-bar')).toBeVisible({ timeout: 15_000 });
 }
 
+/**
+ * How many channels the sidebar shows once `roles.setup.ts` has run.
+ *
+ * `General` is created by the server itself on first boot (`startup.rs`);
+ * `SEED.channels` and `SEED.emptyChannel` are created by the seeder.
+ */
+const SEEDED_CHANNEL_COUNT = 1 + Object.keys(SEED.channels).length + 1;
+
 export const SURFACES: Surface[] = [
   // ─────────────────────── 02 · identity ───────────────────────
   {
@@ -426,7 +434,13 @@ export const SURFACES: Surface[] = [
     intent: 'Every channel type icon (text, voice, hybrid, agent, broadcast) rendered together.',
     clip: '.sidebar-left',
     navigate: async (page) => {
-      await expect(page.locator('.channel-item')).toHaveCount(7, { timeout: 15_000 });
+      // Derived, not a literal. This read `toHaveCount(7)`, and adding one
+      // channel to the seed set turned it into a 15-second timeout on a
+      // surface that has nothing to do with the change. The count follows the
+      // seed now, so the next channel costs nothing.
+      await expect(page.locator('.channel-item')).toHaveCount(SEEDED_CHANNEL_COUNT, {
+        timeout: 15_000,
+      });
     },
   },
   {

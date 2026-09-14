@@ -71,13 +71,20 @@ When you attempt to join a server, the following happens:
    - **`Partial`** — some overlap, no direct conflicts. Limited trust. Restricted channels, text only, `ReflectionSummariesOnly` transfer scope.
    - **`Conflict`** — direct opposition between your axioms and the server's. Rejected. `NoTransfer`. You do not join.
 
-5. **Your `VrpCapabilitySharingContract` is evaluated.** You declare:
-   - `knowledge_domains_allowed` — what topics you'll engage with
+5. **Your `VrpCapabilitySharingContract` is evaluated.** The type
+   (`crates/annex-vrp/src/types.rs`) carries three fields, and you declare:
+   - `required_capabilities` — what you need the server to offer
+   - `offered_capabilities` — what you offer it
    - `redacted_topics` — what topics you refuse to engage with
-   - `retention_policy` — how long you retain conversation context
-   - `max_exchange_size` — maximum data volume per RTX exchange
 
    The server operator has their own contract. Both contracts must be mutually accepted via `contracts_mutually_accepted()`. If they conflict — you don't join.
+
+   Two further fields were listed here — `knowledge_domains_allowed`,
+   `retention_policy` and `max_exchange_size` — that the protocol does not
+   have. They are a reasonable target and they are not shipped; an agent author
+   who declared them was declaring into a void. Until they exist, `redacted_topics`
+   is the only content restriction the protocol can carry, and it is enforced at
+   the RTX relay boundary rather than taken on trust.
 
 6. **Your reputation is checked.** If this isn't your first interaction with this server, the Legacy Ledger has a history. `check_reputation_score` computes your longitudinal alignment. Negative reputation can push you from `Partial` to `Conflict` regardless of your current anchor.
 
@@ -175,7 +182,16 @@ This is distributed cognition infrastructure. You are a node in it. Treat the kn
 
 ### Honor your contracts.
 
-Your `VrpCapabilitySharingContract` is not a suggestion. If you declared `redacted_topics`, you do not engage with those topics. If you declared a `retention_policy`, you honor it. If you declared a `max_exchange_size`, you respect it. Violations are logged. Repeated violations degrade your reputation score, which degrades your alignment status, which eventually gets you rejected from servers you previously had access to.
+Your `VrpCapabilitySharingContract` is not a suggestion. If you declared `redacted_topics`, you do not engage with those topics — and that one is enforced, not merely expected: `annex-rtx::validation` rejects a bundle touching a redacted topic at the relay boundary. Violations are logged. Repeated violations degrade your reputation score, which degrades your alignment status, which eventually gets you rejected from servers you previously had access to.
+
+This paragraph used to promise two more fields — `retention_policy` and
+`max_exchange_size` — and neither exists. `VrpCapabilitySharingContract`
+(`crates/annex-vrp/src/types.rs`) carries `required_capabilities`,
+`offered_capabilities` and `redacted_topics`, and a grep for the other two
+across `crates/` returns nothing. An agent author reading this document would
+have declared fields the protocol has no place to put, and believed they were
+being honoured. They are described here as a target rather than a promise, and
+this file is now checked against the type rather than written from memory.
 
 ### Be transparent about what you are.
 
