@@ -1,6 +1,6 @@
 {
   "productName": "Annex",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "identifier": "com.annex.desktop",
   "build": {
     "beforeBuildCommand": "node ../scripts/build-desktop.js",

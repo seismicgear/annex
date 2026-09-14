@@ -1,0 +1,56 @@
+# Dependabot — there was none, so nothing told this repository when one of its
+# dependencies picked up a CVE.
+#
+# `npm audit` findings in `client/` and `zk/` are already analysed in
+# CLAUDE.md's "snarkjs vulnerability containment" section: the snarkjs → bfj →
+# jsonpath → underscore chain and the circomlibjs → ethers → elliptic chain are
+# build-time surfaces that a bundle scan shows are tree-shaken out of the
+# production browser bundle. Those are contained, not ignored — and the point
+# of this file is to be told when a NEW one appears rather than discovering it
+# in a release audit.
+#
+# Weekly rather than daily: this is a small team and a daily cadence on four
+# ecosystems produces more pull requests than anyone reads, which is how a
+# security update ends up buried under twelve version bumps.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # One PR for the patch-level noise; anything that could plausibly break
+      # a build arrives on its own and gets read.
+      patch-updates:
+        update-types: ["patch"]
+
+  - package-ecosystem: npm
+    directory: "/client"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      patch-updates:
+        update-types: ["patch"]
+
+  - package-ecosystem: npm
+    directory: "/zk"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    ignore:
+      # snarkjs is pinned deliberately. Bumping it changes proof artifacts, and
+      # the artifacts are hash-pinned by zk/artifacts/*/manifest.json — an
+      # automatic bump would fail `verify-artifacts.js` rather than land, and
+      # the real work (re-running the ceremony) is not something a bot should
+      # open a PR for. Track it by hand; see docs/refactor/zk-merkle-production.md.
+      - dependency-name: "snarkjs"
+      - dependency-name: "circomlib"
+      - dependency-name: "circomlibjs"
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3

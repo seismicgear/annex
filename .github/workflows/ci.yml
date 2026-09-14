@@ -506,6 +506,57 @@ jobs:
           retention-days: 30
           if-no-files-found: ignore
 
+  # ── Supply chain ────────────────────────────────────────────────────────
+  #
+  # Nothing told this repository when a dependency picked up a CVE. `cargo
+  # deny` covers advisories, licences and source registries in one pass; the
+  # npm halves are audited at `high` and above, with the two contained chains
+  # documented in CLAUDE.md's "snarkjs vulnerability containment" section.
+  #
+  # `continue-on-error` on the npm steps and NOT on cargo-deny is deliberate.
+  # A new Rust advisory is actionable: the fix is a version bump. The npm
+  # findings are a known, analysed, tree-shaken-out chain that cannot be
+  # resolved without replacing snarkjs, so failing on them would train
+  # everyone to ignore a red check — which is the failure mode this whole
+  # branch has been unpicking. They are reported, not enforced, until the
+  # chain is replaced.
+  supply-chain:
+    name: Supply chain (advisories, licences, sources)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.88
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: supply-chain
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked --version ^0.16
+
+      - name: cargo deny
+        run: cargo deny --all-features check
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            client/package-lock.json
+            zk/package-lock.json
+
+      - name: npm audit (client)
+        continue-on-error: true
+        run: npm audit --audit-level=high
+        working-directory: client
+
+      - name: npm audit (zk)
+        continue-on-error: true
+        run: npm audit --audit-level=high
+        working-directory: zk
+
   # Desktop audit — journey stage 01, "app install".
   #
   # `check-desktop-linux` proves the bundle *builds*. This job proves the

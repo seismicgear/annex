@@ -14,6 +14,14 @@ on:
         options:
           - "false"
           - "true"
+      dry_run:
+        description: "Prove the pipeline without tagging: builds everything and creates a draft release named dry-run-<sha>"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
 
 env:
   CARGO_TERM_COLOR: always
@@ -107,7 +115,8 @@ jobs:
         working-directory: crates/annex-desktop
         run: cargo tauri build --target x86_64-unknown-linux-gnu
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ""
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
@@ -167,7 +176,8 @@ jobs:
         run: cargo tauri build --target x86_64-pc-windows-msvc
         env:
           CMAKE_ARGS: -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-          TAURI_SIGNING_PRIVATE_KEY: ""
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -233,7 +243,8 @@ jobs:
         working-directory: crates/annex-desktop
         run: cargo tauri build --target ${{ matrix.target }}
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ""
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
@@ -251,11 +262,18 @@ jobs:
   release:
     needs: [build-linux, build-windows]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    # A tag publishes; a dispatch with dry_run proves the pipeline without one.
+    # Before this, the only way to find out whether the release job worked was
+    # to push a tag — which is the one action you cannot take back.
+    if: >-
+      startsWith(github.ref, 'refs/tags/') ||
+      (github.event_name == 'workflow_dispatch' && inputs.dry_run == 'true')
     permissions:
       contents: write
 
     steps:
+      - uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -264,14 +282,89 @@ jobs:
       - name: List artifacts
         run: find artifacts -type f | sort
 
+      # Unsigned artifacts used to be produced silently: the workflow passed
+      # `TAURI_SIGNING_PRIVATE_KEY: ""`, Tauri skipped signing, and the release
+      # went out with no `.sig` files and nothing saying so. That is defect
+      # class 1 — a failure rendered as an ordinary result — applied to the one
+      # step whose whole job is proving the bytes are ours.
+      #
+      # A dry run reports; a tag fails. See docs/RELEASING.md for how to
+      # generate the key and where each half goes.
+      - name: Check for updater signatures
+        run: |
+          count=$(find artifacts -name '*.sig' | wc -l)
+          echo "Found ${count} signature file(s)."
+          if [ "${count}" -eq 0 ]; then
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              echo "::warning::No .sig files. TAURI_SIGNING_PRIVATE_KEY is unset, so these"
+              echo "::warning::artifacts are unsigned. Fine for a dry run; not for a tag."
+            else
+              echo "::error::No .sig files on a tagged release. Set the"
+              echo "::error::TAURI_SIGNING_PRIVATE_KEY secret (docs/RELEASING.md) — refusing"
+              echo "::error::to publish artifacts nobody can verify."
+              exit 1
+            fi
+          fi
+
+      # Checksums are the verification path while OS code signing is not in
+      # place: a user who hits SmartScreen or Gatekeeper can still confirm the
+      # download is the one this workflow built.
+      - name: Generate SHA256SUMS
+        run: |
+          cd artifacts
+          find . -type f \( -name '*.deb' -o -name '*.AppImage' -o -name '*.exe' \
+            -o -name '*.msi' -o -name '*.dmg' -o -name '*.sig' \) \
+            -exec sha256sum {} + | sed 's| \./| |' | sort -k2 > ../SHA256SUMS
+          cd ..
+          cat SHA256SUMS
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.88
+
+      # Three SBOMs because there are three dependency graphs, and a release
+      # that names only the Rust one is not an inventory of what shipped.
+      - name: Generate SBOMs
+        run: |
+          cargo install cargo-cyclonedx --locked || true
+          cargo cyclonedx --format json --all || echo "::warning::cargo-cyclonedx failed"
+          find . -name 'bom.json' -not -path './node_modules/*' -exec cp {} annex-rust.cdx.json \; || true
+          npx --yes @cyclonedx/cyclonedx-npm@latest --output-file client.cdx.json \
+            --package-lock-only client/package-lock.json || echo "::warning::client SBOM failed"
+          npx --yes @cyclonedx/cyclonedx-npm@latest --output-file zk.cdx.json \
+            --package-lock-only zk/package-lock.json || echo "::warning::zk SBOM failed"
+          ls -la ./*.cdx.json || true
+
+      # The ZK provenance travels with the release, so a verifier does not have
+      # to clone the repository to check what the bundled keys descend from.
+      - name: Stage ZK provenance
+        run: |
+          mkdir -p provenance
+          cp zk/artifacts/ceremony/transcript.json provenance/ 2>/dev/null || \
+            echo "::warning::no ceremony transcript to attach"
+          for m in zk/artifacts/*/manifest.json; do
+            [ -e "$m" ] || continue
+            cp "$m" "provenance/$(basename "$(dirname "$m")").manifest.json"
+          done
+          ls -la provenance || true
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           draft: true
           generate_release_notes: true
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('dry-run-{0}', github.sha) }}
+          name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('Dry run {0}', github.sha) }}
           files: |
             artifacts/**/*.deb
             artifacts/**/*.AppImage
             artifacts/**/*.exe
             artifacts/**/*.msi
             artifacts/**/*.dmg
+            artifacts/**/*.sig
+            SHA256SUMS
+            ./*.cdx.json
+            provenance/*
