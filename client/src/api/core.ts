@@ -75,10 +75,103 @@ export function extractErrorMessage(status: number, body: string): string {
 }
 
 /**
- * Active base URL for multi-server connections.
- * Empty string = current origin (relative paths). Otherwise, full URL prefix.
+ * The (server, identity) pairing that a credential belongs to.
+ *
+ * A bearer token is minted by ONE server for ONE identity; a membership proof
+ * names one server's Merkle root and carries one nullifier; an attachment
+ * grant is a signed capability for one server's storage. None of them mean
+ * anything anywhere else, and presenting one to a second server DISCLOSES it —
+ * a bearer token is all that server needs to act as the identity on the first.
+ *
+ * So every credential in this module is stamped with the serial of the context
+ * it was established in, and a change of server or identity mints a new
+ * context. Two rules follow, and both are load-bearing:
+ *
+ *   - `authHeaders` will not emit a credential stamped with a stale serial.
+ *   - every ASYNCHRONOUS credential write re-reads the serial it captured at
+ *     entry and declines to mutate if it has moved.
+ *
+ * The second rule is the one that was missing. `refreshSessionToken()` awaited
+ * the network and then assigned the result to the global token unconditionally;
+ * the only generation check lived in `startTokenRefresh`, downstream of that
+ * assignment. Start a refresh against server A, switch to B while it is in
+ * flight, let A answer: the active target is B and the next `Authorization`
+ * header carries A's newly refreshed token. Pinned by
+ * `credential-context.test.ts`.
  */
-let _apiBaseUrl = '';
+interface CredentialContext {
+  readonly serial: number;
+  /** Empty string = current origin (relative paths). Otherwise a URL prefix. */
+  readonly baseUrl: string;
+  readonly pseudonymId: string | null;
+}
+
+let _context: CredentialContext = { serial: 0, baseUrl: '', pseudonymId: null };
+
+/**
+ * Establish a new credential context, invalidating everything minted for the
+ * previous one. A no-op when neither the server nor the identity has changed,
+ * so a redundant `setApiBaseUrl` with the same URL does not destroy a live
+ * session.
+ *
+ * Returns the current context either way, so callers can capture it.
+ */
+function enterContext(baseUrl: string, pseudonymId: string | null): CredentialContext {
+  if (baseUrl === _context.baseUrl && pseudonymId === _context.pseudonymId) {
+    return _context;
+  }
+  _context = { serial: _context.serial + 1, baseUrl, pseudonymId };
+
+  _sessionToken = null;
+  _sessionTokenSerial = -1;
+  _zkProofPayload = null;
+  _zkProofSerial = -1;
+  clearUploadGrant();
+
+  // Cancel the auto-refresh loop and any pending retry. A timer scheduled for
+  // the old context would otherwise fire with no credential to refresh, and
+  // (before this) would have refreshed the wrong one.
+  _refreshGeneration++;
+  if (_refreshTimer !== null) {
+    clearTimeout(_refreshTimer);
+    _refreshTimer = null;
+  }
+
+  return _context;
+}
+
+/**
+ * Thrown by an asynchronous credential operation whose context was replaced
+ * while it was in flight.
+ *
+ * A distinct type rather than a generic `Error` because the callers treat it
+ * differently: a refresh that FAILED means the session is over and the user
+ * should be offered re-registration, while a refresh that was SUPERSEDED means
+ * someone else already owns the session and there is nothing to report.
+ * Collapsing the two is defect class 6 in CLAUDE.md, and it would have shown
+ * the user "your session expired" every time they switched servers.
+ */
+export class StaleCredentialContextError extends Error {
+  constructor(what: string) {
+    super(`${what} was superseded: its server/identity context is no longer current.`);
+    this.name = 'StaleCredentialContextError';
+  }
+}
+
+/** The active credential context. Exported for callers that outlive an await. */
+export function getCredentialContext(): CredentialContext {
+  return _context;
+}
+
+/**
+ * True when `ctx` is still the context every credential is being issued under.
+ * Callers that await anything before touching identity-scoped state must check
+ * this — including state outside this module, such as the IndexedDB identity
+ * record that `useSessionConnection` writes a refreshed token into.
+ */
+export function isCredentialContextCurrent(ctx: CredentialContext): boolean {
+  return ctx.serial === _context.serial;
+}
 
 /**
  * HMAC-signed session token for authenticated API calls.
@@ -86,6 +179,8 @@ let _apiBaseUrl = '';
  * Used as `Authorization: Bearer <token>` when enforce_zk_proofs is enabled.
  */
 let _sessionToken: string | null = null;
+/** The context serial `_sessionToken` was minted for. -1 when there is none. */
+let _sessionTokenSerial = -1;
 
 /**
  * Cached ZK membership proof payload (JSON string of { proof, publicSignals }).
@@ -93,6 +188,8 @@ let _sessionToken: string | null = null;
  * on routes that require `verify_zk_membership_header`.
  */
 let _zkProofPayload: string | null = null;
+/** The context serial `_zkProofPayload` was established in. */
+let _zkProofSerial = -1;
 
 /** Auto-refresh interval handle. */
 let _refreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -115,14 +212,32 @@ let _refreshGeneration = 0;
  */
 const REFRESH_RETRY_FRACTIONS = [1 / 16, 1 / 8, 1 / 4, 1 / 2];
 
-/** Set the API base URL for cross-server requests. Empty string for current origin. */
+/**
+ * Point the client at a server. Empty string for the current origin.
+ *
+ * Changing the target ENDS the current credential context: the session token,
+ * the membership proof and the attachment grant were all issued by the server
+ * being left, and none of them may be presented to the one being entered.
+ *
+ * The corollary is that a caller who changes the target must re-assert the
+ * credentials for the new one — `useIdentityStore.selectIdentity()` /
+ * `reassertCredentials()` do this, and every call site here does one of them.
+ * Re-setting the SAME URL (trailing slashes normalised) is a no-op, so the
+ * redundant calls on the startup path do not tear down a live session.
+ */
 export function setApiBaseUrl(baseUrl: string): void {
-  _apiBaseUrl = baseUrl.replace(/\/+$/, '');
+  const normalized = baseUrl.replace(/\/+$/, '');
+  // The identity resets to null: which identity belongs to the new server is
+  // not known here, and carrying the previous one forward would let a token
+  // minted for it look current.
+  if (normalized !== _context.baseUrl) {
+    enterContext(normalized, null);
+  }
 }
 
 /** Get the current API base URL. */
 export function getApiBaseUrl(): string {
-  return _apiBaseUrl;
+  return _context.baseUrl;
 }
 
 /**
@@ -147,12 +262,23 @@ export function getApiBaseUrl(): string {
  * The first version of the grant fetch used bare `request()`, which attaches no
  * credentials at all. The UI audit caught it: 14 `request-failed` findings,
  * `POST /api/uploads/grant — HTTP 401`, and every attachment a broken image.
+ *
+ * It lives on the credential context rather than in a variable of its own, so
+ * that "which identity" and "which server" move together and cannot drift.
  */
-let _currentPseudonym: string | null = null;
 
 let _uploadGrant: string | null = null;
 let _uploadGrantExpiresAt = 0;
-let _uploadGrantInFlight: Promise<void> | null = null;
+/** The context serial the cached grant belongs to. */
+let _uploadGrantSerial = -1;
+/**
+ * The in-flight grant fetch, and the context it was started for.
+ *
+ * Tagged rather than bare: a caller in a NEW context that awaited the old
+ * promise would be told a grant had arrived when the one that arrived belongs
+ * to the server it just left.
+ */
+let _uploadGrantInFlight: { ctx: CredentialContext; promise: Promise<void> } | null = null;
 
 /**
  * Bumped whenever the cached grant changes.
@@ -193,6 +319,7 @@ export function clearUploadGrant(): void {
   const had = _uploadGrant !== null;
   _uploadGrant = null;
   _uploadGrantExpiresAt = 0;
+  _uploadGrantSerial = -1;
   _uploadGrantInFlight = null;
   if (had) notifyUploadGrantChanged();
 }
@@ -206,33 +333,49 @@ export function clearUploadGrant(): void {
  * start their own.
  */
 export async function ensureUploadGrant(): Promise<void> {
+  const ctx = _context;
   const now = Date.now();
-  if (_uploadGrant && now < _uploadGrantExpiresAt - 60_000) return;
-  if (_uploadGrantInFlight) return _uploadGrantInFlight;
+  if (_uploadGrant && _uploadGrantSerial === ctx.serial && now < _uploadGrantExpiresAt - 60_000) {
+    return;
+  }
+  // Share an in-flight fetch only with callers in the SAME context.
+  if (_uploadGrantInFlight && _uploadGrantInFlight.ctx.serial === ctx.serial) {
+    return _uploadGrantInFlight.promise;
+  }
 
-  _uploadGrantInFlight = (async () => {
+  const promise = (async () => {
     try {
       const resp = await request<{ token: string; expiresInSecs: number }>(
         '/api/uploads/grant',
         {
           method: 'POST',
           body: '{}',
-          headers: authHeaders(_currentPseudonym ?? ''),
+          headers: authHeaders(ctx.pseudonymId ?? ''),
         },
       );
+      // The server may have changed under us while this was out. A grant is a
+      // signed capability for the storage of the server that minted it; caching
+      // it now would append it to URLs pointed somewhere else.
+      if (!isCredentialContextCurrent(ctx)) return;
       _uploadGrant = resp.token;
       _uploadGrantExpiresAt = Date.now() + resp.expiresInSecs * 1000;
+      _uploadGrantSerial = ctx.serial;
       notifyUploadGrantChanged();
     } catch {
       // A failed grant must not break the app: the images 401 and the next
       // render tries again. Throwing here would take the message list with it.
+      if (!isCredentialContextCurrent(ctx)) return;
       _uploadGrant = null;
       _uploadGrantExpiresAt = 0;
+      _uploadGrantSerial = -1;
     } finally {
-      _uploadGrantInFlight = null;
+      if (_uploadGrantInFlight?.ctx.serial === ctx.serial) {
+        _uploadGrantInFlight = null;
+      }
     }
   })();
-  return _uploadGrantInFlight;
+  _uploadGrantInFlight = { ctx, promise };
+  return promise;
 }
 
 /** Chat attachments need a grant; server branding is public. */
@@ -257,7 +400,7 @@ export function resolveUrl(path: string): string {
   if (!path || path.startsWith('http://') || path.startsWith('https://')) {
     return path;
   }
-  const base = _apiBaseUrl ? `${_apiBaseUrl}${path}` : path;
+  const base = _context.baseUrl ? `${_context.baseUrl}${path}` : path;
   if (!needsUploadGrant(path)) return base;
 
   // Kick off a refresh if the cache is cold or stale. Synchronous on purpose —
@@ -266,7 +409,7 @@ export function resolveUrl(path: string): string {
   // render again once it lands. Consumers that render attachments must use
   // `useUploadGrant()`, or they will keep the unsigned URL forever.
   void ensureUploadGrant();
-  if (!_uploadGrant) return base;
+  if (!_uploadGrant || _uploadGrantSerial !== _context.serial) return base;
   const sep = base.includes('?') ? '&' : '?';
   return `${base}${sep}t=${encodeURIComponent(_uploadGrant)}`;
 }
@@ -322,7 +465,7 @@ function jsonHeaders(options?: RequestInit): Headers {
 }
 
 export async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const url = _apiBaseUrl ? `${_apiBaseUrl}${path}` : path;
+  const url = _context.baseUrl ? `${_context.baseUrl}${path}` : path;
   const res = await fetch(url, {
     ...options,
     headers: jsonHeaders(options),
@@ -358,7 +501,8 @@ export async function throwApiError(res: Response): Promise<never> {
 
 /**
  * Fetch from a specific remote server (for federation hopping / discovery).
- * Does NOT use the global _apiBaseUrl — targets the given URL directly.
+ * Does NOT use the active credential context’s base URL — targets the given
+ * URL directly, and attaches no credentials of its own.
  */
 export async function requestRemote<T>(
   baseUrl: string,
@@ -386,19 +530,32 @@ export async function requestRemote<T>(
   return res.json() as Promise<T>;
 }
 
-/** Set the session token (after verify-membership or token refresh). */
+/**
+ * Establish the session credential for an identity on the current server.
+ *
+ * The pseudonym is REQUIRED rather than optional, so the compiler enumerates
+ * every call site. There are eleven in the identity store alone, and the
+ * attachment grant is a credential for one identity — a site that set a new
+ * token while leaving the old pseudonym behind would mint grants naming the
+ * wrong person. An optional parameter would have compiled everywhere and been
+ * wrong in the places nobody revisited.
+ *
+ * Changing the identity mints a new context, so anything still in flight for
+ * the previous one (a token refresh, a grant fetch) finds its context gone and
+ * declines to write. `setSessionToken(null, null)` is therefore a complete
+ * sign-out: it invalidates the token, the proof, the grant and the refresh
+ * loop in one move.
+ */
 export function setSessionToken(token: string | null, pseudonymId: string | null): void {
-  // The pseudonym is REQUIRED rather than optional, so the compiler enumerates
-  // every call site. There are eleven in the identity store alone, and the
-  // attachment grant is a credential for one identity — a site that set a new
-  // token while leaving the old pseudonym behind would mint grants naming the
-  // wrong person. An optional parameter would have compiled everywhere and been
-  // wrong in the places nobody revisited.
-  if (token !== _sessionToken || pseudonymId !== _currentPseudonym) {
+  const ctx = enterContext(_context.baseUrl, pseudonymId);
+  // An identity re-asserting the same pseudonym with a different token (a
+  // completed refresh, a fresh verify-membership) does not change context, but
+  // the grant was minted against the old token and has to go.
+  if (token !== _sessionToken) {
     clearUploadGrant();
   }
   _sessionToken = token;
-  _currentPseudonym = pseudonymId;
+  _sessionTokenSerial = token === null ? -1 : ctx.serial;
 
   // Warm the grant as soon as there is a session to mint one against, rather
   // than waiting for the first attachment to render. Belt and braces with the
@@ -409,19 +566,32 @@ export function setSessionToken(token: string | null, pseudonymId: string | null
   }
 }
 
-/** Get the current session token. */
+/** Get the current session token, or null if none is current. */
 export function getSessionToken(): string | null {
-  return _sessionToken;
+  return _sessionTokenSerial === _context.serial ? _sessionToken : null;
 }
 
-/** Cache the latest ZK proof payload for use in protected API calls. */
+/** The pseudonym the current session belongs to, if any. */
+export function getCurrentPseudonym(): string | null {
+  return _context.pseudonymId;
+}
+
+/**
+ * Cache the latest ZK proof payload for use in protected API calls.
+ *
+ * Stamped with the context like the token: a membership proof names one
+ * server's Merkle root and carries a nullifier scoped to that server's topic.
+ * Sending it elsewhere leaks the commitment and the nullifier to a server that
+ * has no business seeing either.
+ */
 export function setZkProofPayload(payload: string | null): void {
   _zkProofPayload = payload;
+  _zkProofSerial = payload === null ? -1 : _context.serial;
 }
 
-/** Get the cached ZK proof payload. */
+/** Get the cached ZK proof payload, or null if it belongs to another context. */
 export function getZkProofPayload(): string | null {
-  return _zkProofPayload;
+  return _zkProofSerial === _context.serial ? _zkProofPayload : null;
 }
 
 /**
@@ -468,20 +638,32 @@ export function isTokenExpired(token: string): boolean {
  * Calls POST /api/session/refresh which accepts expired-but-validly-signed tokens.
  */
 export async function refreshSessionToken(): Promise<string> {
-  if (!_sessionToken) {
+  const ctx = _context;
+  const token = getSessionToken();
+  if (!token) {
     throw new Error('No session token to refresh');
   }
-  const url = _apiBaseUrl ? `${_apiBaseUrl}/api/session/refresh` : '/api/session/refresh';
+  // Built from the CAPTURED context, so the request cannot be re-pointed at a
+  // different server between here and the fetch.
+  const url = ctx.baseUrl ? `${ctx.baseUrl}/api/session/refresh` : '/api/session/refresh';
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${_sessionToken}` },
+    headers: { 'Authorization': `Bearer ${token}` },
   });
   if (!res.ok) {
     const body = await res.text();
     throw new ApiError(res.status, extractErrorMessage(res.status, body), body);
   }
   const data = await res.json() as { sessionToken: string };
+
+  // Validate BEFORE mutating. This is the whole point: the check used to live
+  // downstream in `startTokenRefresh`, by which time the global token had
+  // already been overwritten with a credential for a server the user had left.
+  if (!isCredentialContextCurrent(ctx)) {
+    throw new StaleCredentialContextError('the session refresh');
+  }
   _sessionToken = data.sessionToken;
+  _sessionTokenSerial = ctx.serial;
   return data.sessionToken;
 }
 
@@ -505,17 +687,26 @@ export function startTokenRefresh(
 ): void {
   stopTokenRefresh();
   const generation = ++_refreshGeneration;
+  const ctx = _context;
   const cycleMs = ttlSecs * 0.8 * 1000;
   const remainingMs = ttlSecs * 0.2 * 1000;
 
   const schedule = (delayMs: number, attempt: number) => {
     _refreshTimer = setTimeout(async () => {
       _refreshTimer = null;
+      // The loop belongs to one context. A server or identity change already
+      // bumped `_refreshGeneration`, but check the context explicitly too: the
+      // two are separate facts and a future caller could move one without the
+      // other.
+      if (generation !== _refreshGeneration || !isCredentialContextCurrent(ctx)) return;
       let newToken: string;
       try {
         newToken = await refreshSessionToken();
       } catch (err) {
-        if (generation !== _refreshGeneration) return;
+        if (generation !== _refreshGeneration || !isCredentialContextCurrent(ctx)) return;
+        // A superseded refresh is not a failed one — there is no session left
+        // to retry for, and nothing to report.
+        if (err instanceof StaleCredentialContextError) return;
         if (attempt < REFRESH_RETRY_FRACTIONS.length) {
           schedule(remainingMs * REFRESH_RETRY_FRACTIONS[attempt], attempt + 1);
         } else {
@@ -523,7 +714,7 @@ export function startTokenRefresh(
         }
         return;
       }
-      if (generation !== _refreshGeneration) return;
+      if (generation !== _refreshGeneration || !isCredentialContextCurrent(ctx)) return;
       onRefreshed?.(newToken);
       schedule(cycleMs, 0);
     }, delayMs);
@@ -563,13 +754,18 @@ function toBase64Utf8(s: string): string {
  */
 export function authHeaders(pseudonymId: string): Record<string, string> {
   const headers: Record<string, string> = {};
-  if (_sessionToken) {
-    headers['Authorization'] = `Bearer ${_sessionToken}`;
+  // Through the accessors on purpose: they return null for a credential minted
+  // in a context that is no longer current, which is the last line of defence
+  // against a stale token reaching a server that never issued it.
+  const token = getSessionToken();
+  const proof = getZkProofPayload();
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
   } else {
     headers['X-Annex-Pseudonym'] = pseudonymId;
   }
-  if (_zkProofPayload) {
-    headers['x-annex-zk-proof'] = toBase64Utf8(_zkProofPayload);
+  if (proof) {
+    headers['x-annex-zk-proof'] = toBase64Utf8(proof);
   }
   return headers;
 }

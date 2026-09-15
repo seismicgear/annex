@@ -423,14 +423,19 @@ export const useServersStore = create<ServersState>((set, get) => ({
       return null;
     }
 
-    // 3. Select the new identity so registration uses it (not the current one)
+    // 3. Point the client at the target server FIRST.
+    //
+    // `setApiBaseUrl` ends the credential context — it has to, because the
+    // token and proof held for the previous server mean nothing here. Doing it
+    // after `selectIdentity` would throw away the credentials that call had
+    // just established.
+    api.setApiBaseUrl(baseUrl);
+
+    // 4. Select the new identity so registration uses it (not the current one)
     await identityStore.selectIdentity(clonedId);
 
-    // 4. Record which placeholder is being fulfilled
+    // 5. Record which placeholder is being fulfilled
     set({ pendingRegistrationServerId: server.id });
-
-    // 5. Set API base URL for the target server
-    api.setApiBaseUrl(baseUrl);
 
     // 6. Reset identity phase to 'keys_ready' so the auto-register effect fires
     useIdentityStore.setState({

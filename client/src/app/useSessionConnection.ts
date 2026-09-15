@@ -11,10 +11,13 @@ import { useChannelsStore } from '@/stores/channels';
 import { useIdentityStore } from '@/stores/identity';
 import {
   getApiBaseUrl,
+  getCredentialContext,
   getSessionToken,
+  isCredentialContextCurrent,
   isTokenExpired,
   refreshSessionToken,
   setSessionToken,
+  StaleCredentialContextError,
   startTokenRefresh,
   stopTokenRefresh,
 } from '@/lib/api';
@@ -43,21 +46,40 @@ export function useSessionConnection({
       let cancelled = false;
 
       (async () => {
+        // The identity and server this effect belongs to. Everything below
+        // awaits, and a refreshed token written into `getState().identity`
+        // afterwards would land on whichever identity is current THEN — which,
+        // after a server switch, is a different person's record on a different
+        // server. `cancelled` catches the common case; the context is what
+        // makes it an invariant rather than a coincidence of effect deps.
+        const ctx = getCredentialContext();
+        const identityId = useIdentityStore.getState().identity?.id ?? null;
+        const stillOurs = () =>
+          !cancelled &&
+          isCredentialContextCurrent(ctx) &&
+          useIdentityStore.getState().identity?.id === identityId;
+
         // Refresh expired tokens before making any API calls
         const currentToken = getSessionToken();
         if (currentToken && isTokenExpired(currentToken)) {
           try {
             const newToken = await refreshSessionToken();
-            if (cancelled) return;
+            if (!stillOurs()) return;
             // Persist refreshed token to IndexedDB
             const currentIdentity = useIdentityStore.getState().identity;
             if (currentIdentity) {
               const updated = { ...currentIdentity, sessionToken: newToken };
               await saveIdentity(updated);
+              if (!stillOurs()) return;
               useIdentityStore.setState({ identity: updated });
             }
           } catch (err) {
-            if (cancelled) return;
+            // A superseded refresh is not a failed one. Someone else owns the
+            // session now; reporting "your session expired" and dropping the
+            // user to re-registration would be a lie told on every server
+            // switch.
+            if (err instanceof StaleCredentialContextError) return;
+            if (!stillOurs()) return;
             console.error('session token refresh failed on startup', err);
             // Token refresh failed — session is invalid.
             // Clear the stale in-memory token and fall back to re-registration.
@@ -67,7 +89,7 @@ export function useSessionConnection({
           }
         }
 
-        if (cancelled) return;
+        if (!stillOurs()) return;
         const baseUrl = getApiBaseUrl();
         const sessionToken = getSessionToken();
         connectWs(pseudonymId, baseUrl || undefined, sessionToken);
@@ -80,16 +102,19 @@ export function useSessionConnection({
         startTokenRefresh(
           3600,
           async (newToken) => {
+            if (!stillOurs()) return;
             const cur = useIdentityStore.getState().identity;
             if (cur) {
               const updated = { ...cur, sessionToken: newToken };
               await saveIdentity(updated);
+              if (!stillOurs()) return;
               useIdentityStore.setState({ identity: updated });
             }
             // Propagate to active WebSocket so reconnects use the refreshed token
             useChannelsStore.getState().updateWsSessionToken(newToken);
           },
           async (err) => {
+            if (err instanceof StaleCredentialContextError || !stillOurs()) return;
             // Reached only after the in-window retries are exhausted, so the
             // credential is genuinely gone rather than one request having
             // failed. Take the same route as the cold-start failure above:

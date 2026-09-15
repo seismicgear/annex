@@ -114,6 +114,12 @@ vi.mock('@/lib/api', () => ({
   setApiBaseUrl: vi.fn(),
   setSessionToken: vi.fn(),
   setZkProofPayload: vi.fn(),
+  // Credentials are bound to a (server, identity) context; anything that
+  // outlives an await re-checks it before touching identity-scoped state.
+  // `useSessionConnection` does, so the mock has to supply it.
+  getCredentialContext: vi.fn(() => ({ serial: 0, baseUrl: 'http://localhost:3000', pseudonymId: 'pseudo-123' })),
+  isCredentialContextCurrent: vi.fn(() => true),
+  StaleCredentialContextError: class StaleCredentialContextError extends Error {},
   getCurrentRoot: vi.fn(async () => ({ rootHex: 'ROOT', leafCount: 1 })),
   getSessionToken: vi.fn(() => null),
   isTokenExpired: vi.fn(() => false),
