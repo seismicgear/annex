@@ -357,3 +357,253 @@ async fn the_flag_does_not_admit_a_non_http_peer_url() {
         "file:// is not a federation peer under any configuration"
     );
 }
+
+// ── Outage and recovery ───────────────────────────────────────────────────
+//
+// A live handshake proves two servers can talk. It does not prove what happens
+// when one of them stops answering, which is the ordinary condition of a
+// federated network: the peer is someone else's self-hosted box, and it will be
+// down for upgrades, reboots and bad afternoons.
+//
+// The configuration distinguishes live delivery from catch-up (a five-minute
+// freshness window, three delivery attempts), so the questions worth asking are
+// whether queued work survives the outage, whether it is delivered on return,
+// and whether the return delivers it TWICE.
+
+/// A peer that refuses every connection: nothing is listening on the port.
+///
+/// Binding and immediately dropping the listener gives a port that is
+/// realistically dead — connection refused — rather than one that hangs, which
+/// is a different failure with a different timeout.
+async fn a_dead_peer_url() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    format!("http://{addr}")
+}
+
+#[tokio::test]
+async fn a_message_queued_while_a_peer_is_down_is_delivered_when_it_returns() {
+    let mut csprng = OsRng;
+    let key_a = SigningKey::generate(&mut csprng);
+    let key_b = SigningKey::generate(&mut csprng);
+    let pub_a = hex::encode(key_a.verifying_key().as_bytes());
+    let pub_b = hex::encode(key_b.verifying_key().as_bytes());
+
+    // B's future address, claimed now and not served until later — the same
+    // shape as a peer that is configured and currently rebooting.
+    let listener_b = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr_b = listener_b.local_addr().unwrap();
+    let url_b = format!("http://{addr_b}");
+    drop(listener_b);
+
+    let (state_a, pool_a, server_a_id) = build_state("a", key_a, "http://placeholder", true);
+    let (url_a, _) = serve(app((*state_a).clone())).await;
+    *state_a.public_url.write().unwrap() = url_a.clone();
+    add_federated_channel(&pool_a, server_a_id);
+    add_peer(&pool_a, server_a_id, &url_b, &pub_b, "FULL_TRANSFER");
+    add_sender_nullifier(&pool_a);
+
+    let msg = a_message("msg-during-outage", "sent while B was down");
+    annex_server::services::federation_service::relay_message(
+        state_a.clone(),
+        CHANNEL_ID.to_string(),
+        msg,
+    )
+    .await;
+
+    // Drain against a peer that is not listening.
+    annex_server::background::drain_outbox_batch(state_a.clone(), 32)
+        .await
+        .expect("a dead peer must not error the whole drain");
+
+    let (status, attempts, err) =
+        outbox_row(&pool_a, "msg-during-outage").expect("the row must still exist");
+    assert_ne!(
+        status, "delivered",
+        "a message cannot be delivered to a peer that is not listening"
+    );
+    assert!(
+        attempts >= 1,
+        "the attempt should have been counted, so the retry budget is real"
+    );
+    assert!(
+        err.is_some(),
+        "the failure should be recorded on the row, not only in a log"
+    );
+    assert_eq!(
+        status, "pending",
+        "the row must stay pending and retryable rather than being dropped or          failed on the first refusal; status was {status:?}"
+    );
+
+    // --- B comes back, with the SAME identity and the same address ---
+    let (state_b, pool_b, server_b_id) = build_state("b", key_b, "http://placeholder", true);
+    let listener_b = tokio::net::TcpListener::bind(addr_b).await.expect(
+        "B should be able to reclaim its address; if this fails the test is racing          something else on the port",
+    );
+    let app_b = app((*state_b).clone());
+    tokio::spawn(async move {
+        let _ = axum::serve(
+            listener_b,
+            app_b.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await;
+    });
+    *state_b.public_url.write().unwrap() = url_b.clone();
+    add_federated_channel(&pool_b, server_b_id);
+    let a_on_b = add_peer(&pool_b, server_b_id, &url_a, &pub_a, "FULL_TRANSFER");
+    add_federated_identity(&pool_b, server_b_id, a_on_b);
+
+    // Let the backoff come due.
+    //
+    // `drain_outbox_batch` selects `WHERE status = 'pending' AND next_retry_at
+    // <= datetime('now')`, and a failed attempt pushes `next_retry_at` forward
+    // exponentially. Draining immediately after recovery therefore returns
+    // nothing — which is correct behaviour, not a delivery failure, and the
+    // first version of this test read it as one. Sleeping for the real backoff
+    // would make the test slow and flaky; moving the clock on the row is the
+    // same event without the wait.
+    {
+        let conn = pool_a.get().unwrap();
+        conn.execute(
+            "UPDATE federation_outbox SET next_retry_at = datetime('now', '-1 minute')
+              WHERE message_id = 'msg-during-outage'",
+            [],
+        )
+        .unwrap();
+    }
+
+    annex_server::background::drain_outbox_batch(state_a.clone(), 32)
+        .await
+        .expect("drain after recovery should not error");
+
+    assert_eq!(
+        count_messages(&pool_b, "msg-during-outage"),
+        1,
+        "the message queued during the outage should arrive once B is back;          outbox row is {:?}",
+        outbox_row(&pool_a, "msg-during-outage")
+    );
+
+    let (status, _, err) = outbox_row(&pool_a, "msg-during-outage").unwrap();
+    assert_eq!(status, "delivered", "last_error={err:?}");
+}
+
+/// Recovery must not duplicate. A retried delivery — the outbox's whole
+/// purpose — reaches an endpoint that may already have stored the message, and
+/// `federation_receipts` carries `UNIQUE (remote_instance_id, message_id)` for
+/// exactly this. Asserted at the receiver rather than by inspecting the sender:
+/// what matters is how many copies a member would see.
+#[tokio::test]
+async fn re_delivering_the_same_message_does_not_duplicate_it() {
+    let mut csprng = OsRng;
+    let key_a = SigningKey::generate(&mut csprng);
+    let key_b = SigningKey::generate(&mut csprng);
+    let pub_a = hex::encode(key_a.verifying_key().as_bytes());
+    let pub_b = hex::encode(key_b.verifying_key().as_bytes());
+
+    let (state_b, pool_b, server_b_id) = build_state("b", key_b, "http://placeholder", true);
+    let (url_b, _) = serve(app((*state_b).clone())).await;
+    add_federated_channel(&pool_b, server_b_id);
+
+    let (state_a, pool_a, server_a_id) = build_state("a", key_a, "http://placeholder", true);
+    let (url_a, _) = serve(app((*state_a).clone())).await;
+    *state_a.public_url.write().unwrap() = url_a.clone();
+    *state_b.public_url.write().unwrap() = url_b.clone();
+
+    add_federated_channel(&pool_a, server_a_id);
+    add_peer(&pool_a, server_a_id, &url_b, &pub_b, "FULL_TRANSFER");
+    let a_on_b = add_peer(&pool_b, server_b_id, &url_a, &pub_a, "FULL_TRANSFER");
+    add_federated_identity(&pool_b, server_b_id, a_on_b);
+    add_sender_nullifier(&pool_a);
+
+    let msg = a_message("msg-delivered-twice", "exactly once, please");
+    annex_server::services::federation_service::relay_message(
+        state_a.clone(),
+        CHANNEL_ID.to_string(),
+        msg.clone(),
+    )
+    .await;
+    annex_server::background::drain_outbox_batch(state_a.clone(), 32)
+        .await
+        .unwrap();
+    assert_eq!(count_messages(&pool_b, "msg-delivered-twice"), 1);
+
+    // Re-enqueue the SAME message id and deliver again — a duplicate arriving
+    // from a retry that the sender believed had failed.
+    {
+        let conn = pool_a.get().unwrap();
+        conn.execute(
+            "UPDATE federation_outbox SET status = 'pending', attempts = 0, last_error = NULL,
+                    next_retry_at = datetime('now', '-1 minute')
+              WHERE message_id = 'msg-delivered-twice'",
+            [],
+        )
+        .unwrap();
+    }
+    annex_server::background::drain_outbox_batch(state_a.clone(), 32)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        count_messages(&pool_b, "msg-delivered-twice"),
+        1,
+        "a re-delivered message was stored twice — a member would see the \
+         message duplicated every time a retry raced a slow acknowledgement"
+    );
+}
+
+/// One unreachable peer must not stop delivery to a healthy one. Without this,
+/// a single self-hosted box that is down takes the whole federation with it.
+#[tokio::test]
+async fn an_unreachable_peer_does_not_block_a_healthy_one() {
+    let mut csprng = OsRng;
+    let key_a = SigningKey::generate(&mut csprng);
+    let key_b = SigningKey::generate(&mut csprng);
+    let key_dead = SigningKey::generate(&mut csprng);
+    let pub_a = hex::encode(key_a.verifying_key().as_bytes());
+    let pub_b = hex::encode(key_b.verifying_key().as_bytes());
+    let pub_dead = hex::encode(key_dead.verifying_key().as_bytes());
+
+    let (state_b, pool_b, server_b_id) = build_state("b", key_b, "http://placeholder", true);
+    let (url_b, _) = serve(app((*state_b).clone())).await;
+    add_federated_channel(&pool_b, server_b_id);
+
+    let (state_a, pool_a, server_a_id) = build_state("a", key_a, "http://placeholder", true);
+    let (url_a, _) = serve(app((*state_a).clone())).await;
+    *state_a.public_url.write().unwrap() = url_a.clone();
+    *state_b.public_url.write().unwrap() = url_b.clone();
+
+    add_federated_channel(&pool_a, server_a_id);
+    // The dead peer is added FIRST, so it is drained first and a naive
+    // implementation would stop there.
+    add_peer(
+        &pool_a,
+        server_a_id,
+        &a_dead_peer_url().await,
+        &pub_dead,
+        "FULL_TRANSFER",
+    );
+    add_peer(&pool_a, server_a_id, &url_b, &pub_b, "FULL_TRANSFER");
+    let a_on_b = add_peer(&pool_b, server_b_id, &url_a, &pub_a, "FULL_TRANSFER");
+    add_federated_identity(&pool_b, server_b_id, a_on_b);
+    add_sender_nullifier(&pool_a);
+
+    let msg = a_message("msg-past-a-dead-peer", "B should still get this");
+    annex_server::services::federation_service::relay_message(
+        state_a.clone(),
+        CHANNEL_ID.to_string(),
+        msg,
+    )
+    .await;
+
+    annex_server::background::drain_outbox_batch(state_a.clone(), 32)
+        .await
+        .expect("one dead peer must not error the drain");
+
+    assert_eq!(
+        count_messages(&pool_b, "msg-past-a-dead-peer"),
+        1,
+        "the healthy peer did not receive the message; one unreachable peer \
+         should not take the federation with it"
+    );
+}
