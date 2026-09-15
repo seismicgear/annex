@@ -117,6 +117,7 @@ async fn test_federation_handshake_success() {
     let handshake = VrpFederationHandshake {
         anchor_snapshot: anchor,
         capability_contract: contract,
+        scorer: None,
     };
 
     let base_url = "https://remote.example.com";
@@ -177,6 +178,7 @@ async fn test_federation_handshake_unknown_instance() {
     let handshake = VrpFederationHandshake {
         anchor_snapshot: anchor,
         capability_contract: contract,
+        scorer: None,
     };
 
     let base_url = "https://unknown.example.com";
@@ -233,6 +235,7 @@ fn the_re_handshake_body_deserializes_as_a_handshake_request() {
             offered_capabilities: vec!["TEXT".to_string()],
             redacted_topics: vec![],
         },
+        scorer: None,
     };
 
     let body =

@@ -279,6 +279,22 @@ fn main() {
     voices_candidates.extend(bundled_resource_paths(&exe_dir, &["assets", "voices"]));
     let voices_dir = voices_candidates.iter().find(|p| p.is_dir());
 
+    // Resolve the VRP alignment model directory.
+    //
+    // `annex_vrp::embedding::DEFAULT_MODEL_DIR` is `assets/embedding` RELATIVE
+    // to the working directory, which for an installed desktop app is wherever
+    // the OS launched it from — almost never the bundle. Without this the
+    // server falls back to the lexicon scorer on every desktop install, and the
+    // only sign would be `lexicon-v1` in a federation handshake.
+    let mut embedding_candidates: Vec<PathBuf> = vec![
+        exe_dir.join("embedding"),
+        resource_base.join("assets").join("embedding"),
+    ];
+    embedding_candidates.extend(bundled_resource_paths(&exe_dir, &["assets", "embedding"]));
+    let embedding_dir = embedding_candidates
+        .iter()
+        .find(|p| p.join("model.safetensors").is_file());
+
     // Pre-compute every value that the env::set_var block needs *before*
     // entering the unsafe block. In particular:
     //
@@ -344,6 +360,9 @@ fn main() {
         }
         if let Some(voices_path) = voices_dir {
             std::env::set_var("ANNEX_TTS_VOICES_DIR", voices_path);
+        }
+        if let Some(embedding_path) = embedding_dir {
+            std::env::set_var("ANNEX_EMBEDDING_MODEL_DIR", embedding_path);
         }
         std::env::set_var("ANNEX_UPLOAD_DIR", &upload_dir);
 

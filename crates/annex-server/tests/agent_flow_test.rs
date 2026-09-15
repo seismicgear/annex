@@ -126,6 +126,7 @@ async fn test_agent_connection_flow_end_to_end() {
     let handshake = VrpFederationHandshake {
         anchor_snapshot: anchor,
         capability_contract: contract,
+        scorer: None,
     };
 
     let handshake_payload = serde_json::json!({

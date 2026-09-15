@@ -235,6 +235,24 @@ impl StaticEmbedder {
 }
 
 impl SemanticEmbedder for StaticEmbedder {
+    /// Measured at 0.5134 — see [`SemanticEmbedder::unrelated_floor`] for why
+    /// this is not the same number as the lexicon's, and
+    /// `tests/alignment_calibration.rs` for the measurement.
+    ///
+    /// Static embeddings have a high floor because ordinary English sentences
+    /// share a large common direction. This is the fact that made the shipped
+    /// `agent_min_alignment_score: 0.8` reject every genuine peer: 0.8 is above
+    /// what a true paraphrase pair reaches (0.5740 at worst on the corpus), so
+    /// the only anchors that ever passed were the ones that matched by hash and
+    /// short-circuited before the comparison.
+    fn unrelated_floor(&self) -> f32 {
+        0.5134
+    }
+
+    fn fingerprint(&self) -> ModelFingerprint {
+        self.fingerprint.clone()
+    }
+
     fn embed(&self, text: &str) -> Result<Vec<f32>, String> {
         let ids = self.token_ids(text)?;
         if ids.is_empty() {

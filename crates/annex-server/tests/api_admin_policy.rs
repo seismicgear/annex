@@ -70,6 +70,7 @@ async fn test_update_policy_and_recalculate() {
     let handshake = VrpFederationHandshake {
         anchor_snapshot: anchor,
         capability_contract: contract,
+        scorer: None,
     };
     let handshake_json = serde_json::to_string(&handshake).unwrap();
 

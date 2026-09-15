@@ -138,6 +138,7 @@ mod tests {
         let handshake = VrpFederationHandshake {
             anchor_snapshot: anchor,
             capability_contract: contract,
+            scorer: None,
         };
 
         let report = process_incoming_handshake(&mut conn, 1, &policy, 10, &handshake).unwrap();
@@ -175,6 +176,7 @@ mod tests {
         let handshake = VrpFederationHandshake {
             anchor_snapshot: remote_anchor,
             capability_contract: contract,
+            scorer: None,
         };
 
         let result = process_incoming_handshake(&mut conn, 1, &policy, 10, &handshake);

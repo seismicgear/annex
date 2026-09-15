@@ -133,6 +133,24 @@ pub enum StartupError {
          move the file aside deliberately."
     )]
     UnusableSigningKey { path: String, reason: String },
+    /// The VRP alignment model could not be loaded under a profile that
+    /// requires it.
+    ///
+    /// The score this model produces decides Aligned / Partial / Conflict for
+    /// every agent registration and every federation handshake. Falling back to
+    /// the lexicon would not be a degraded mode; it would be a DIFFERENT
+    /// instrument, with its own calibration, producing verdicts a peer running
+    /// the pinned model cannot reproduce — and nothing at runtime would say so
+    /// beyond a fingerprint mismatch in a handshake nobody reads.
+    #[error(
+        "the VRP alignment model at '{path}' could not be loaded: {reason}. \
+         Refusing to start: this model decides which peers and agents are trusted, \
+         and the lexicon fallback scores differently, so a server silently using it \
+         would reach verdicts its peers cannot reproduce. Run \
+         scripts/setup-embedding-model.sh, or set ANNEX_EMBEDDING_MODEL_DIR to where \
+         the model is installed."
+    )]
+    UnusableAlignmentModel { path: String, reason: String },
     /// Production rejected an obviously-weak signing key (all-zero, all-`0xff`,
     /// or any single-byte fill). These patterns show up in test fixtures and
     /// in mis-pasted env vars; accepting one in production would compromise
@@ -550,6 +568,158 @@ fn is_weak_signing_key_bytes(bytes: &[u8; 32]) -> bool {
 ///
 /// Unparseable values are logged and ignored rather than failing startup: a
 /// typo in an optional tuning knob should not take a server down.
+/// Choose and install the scorer that decides VRP alignment.
+///
+/// Under a profile that takes the multi-tenant gates, the pinned model is
+/// mandatory: the score decides which peers and agents are trusted, the lexicon
+/// fallback is a different instrument with its own calibration, and a server
+/// silently using it reaches verdicts a peer running the pinned model cannot
+/// reproduce. Same treatment as the dummy vkey, for the same reason.
+///
+/// Dev and desktop fall back and say so. A desktop server is a loopback server
+/// for one person; a dev server is not making trust decisions anybody depends
+/// on. Both carry `lexicon-v1` as their fingerprint, so a peer that does
+/// federate with them can see what they scored with.
+fn install_alignment_scorer() -> Result<(), StartupError> {
+    let profile = crate::build_profile::current();
+    let dir = annex_vrp::embedding::StaticEmbedder::default_dir();
+
+    match annex_vrp::embedding::StaticEmbedder::load(&dir) {
+        Ok(model) => {
+            let fingerprint = model.fingerprint().clone();
+            // An install failure here means something already installed a
+            // scorer, which for a server means `prepare_server` ran twice in
+            // one process — the integration tests do exactly that. Not fatal,
+            // but it must not be silent: the second server is scoring with the
+            // first one's model.
+            if let Err(e) = annex_vrp::scorer::install(std::sync::Arc::new(model)) {
+                tracing::warn!("{e}");
+            } else {
+                tracing::info!(
+                    model_id = %fingerprint.model_id,
+                    weights_sha256 = %&fingerprint.weights_sha256[..16],
+                    "VRP alignment scorer installed"
+                );
+            }
+            Ok(())
+        }
+        Err(e) if profile.requires_multi_tenant_gates() => {
+            Err(StartupError::UnusableAlignmentModel {
+                path: dir.display().to_string(),
+                reason: e.to_string(),
+            })
+        }
+        Err(e) => {
+            tracing::warn!(
+                path = %dir.display(),
+                error = %e,
+                profile = profile.as_str(),
+                "VRP alignment model not loaded; falling back to the lexicon scorer. \
+                 Its verdicts are NOT reproducible by a peer running the pinned model \
+                 — the handshake carries `lexicon-v1` as this server's scorer so peers \
+                 can see that. Run scripts/setup-embedding-model.sh to use the real one."
+            );
+            Ok(())
+        }
+    }
+}
+
+/// The identifier written to `servers.alignment_scorer_id`.
+///
+/// Model id plus the first 16 hex of the weights digest: enough that two
+/// different models, or two revisions of one, never collide, and short enough
+/// to read in a log line.
+fn alignment_scorer_id() -> String {
+    let fp = annex_vrp::scorer::active_fingerprint();
+    let digest = &fp.weights_sha256[..16.min(fp.weights_sha256.len())];
+    format!("{}@{}", fp.model_id, digest)
+}
+
+/// Re-score every stored alignment verdict when the instrument has changed.
+///
+/// `agent_registrations.alignment_status` and
+/// `federation_agreements.alignment_status` are durable, and the only thing
+/// that recomputes them is `PUT /api/admin/policy`. A server that upgraded to a
+/// different scorer — or to the floor-normalised scale, on which the previous
+/// default threshold of 0.8 was unreachable — therefore kept admitting and
+/// refusing on verdicts it would no longer reach, until an operator edited the
+/// policy for some unrelated reason. Nothing surfaced that; the rows simply
+/// said what they had always said.
+///
+/// A failure here is a warning and NOT a boot refusal, and the fingerprint is
+/// deliberately not recorded when it fails, so the next boot tries again.
+/// Refusing to start would turn a stale-verdict problem into an outage; leaving
+/// the marker unwritten is what makes the retry happen rather than the failure
+/// being papered over.
+async fn rescore_alignments_if_scorer_changed(state: Arc<AppState>) {
+    let current = alignment_scorer_id();
+    let server_id = state.server_id;
+
+    let stored: Option<String> = {
+        let Ok(conn) = state.pool.get() else {
+            tracing::warn!("could not check the stored alignment scorer id: pool unavailable");
+            return;
+        };
+        match conn.query_row(
+            "SELECT alignment_scorer_id FROM servers WHERE id = ?1",
+            rusqlite::params![server_id],
+            |row| row.get::<_, Option<String>>(0),
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = %e, "could not read alignment_scorer_id");
+                return;
+            }
+        }
+    };
+
+    if stored.as_deref() == Some(current.as_str()) {
+        return;
+    }
+
+    // A server with nothing scored yet has nothing to re-score; recording the
+    // fingerprint is the whole job. This is the fresh-install path and it must
+    // not pay for a sweep.
+    let has_rows: bool = {
+        let Ok(conn) = state.pool.get() else {
+            return;
+        };
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM agent_registrations WHERE server_id = ?1)              OR EXISTS(SELECT 1 FROM federation_agreements)",
+            rusqlite::params![server_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+            != 0
+    };
+
+    if has_rows {
+        tracing::info!(
+            previous = stored.as_deref().unwrap_or("<unrecorded>"),
+            current = %current,
+            "alignment scorer changed; re-scoring stored agent and federation verdicts",
+        );
+        if let Err(e) = crate::policy::recalculate_all_alignments(state.clone()).await {
+            tracing::warn!(
+                error = %e,
+                "re-scoring stored alignment verdicts failed; they still hold the previous \
+                 scorer's answers and this will be retried on the next start",
+            );
+            return;
+        }
+    }
+
+    let Ok(conn) = state.pool.get() else {
+        return;
+    };
+    if let Err(e) = conn.execute(
+        "UPDATE servers SET alignment_scorer_id = ?1 WHERE id = ?2",
+        rusqlite::params![current, server_id],
+    ) {
+        tracing::warn!(error = %e, "could not record alignment_scorer_id");
+    }
+}
+
 fn apply_rate_limit_env_overrides(policy: &mut ServerPolicy) {
     /// Picks the limit field an override applies to.
     type LimitField = fn(&mut ServerPolicy) -> &mut u32;
@@ -829,6 +999,17 @@ pub async fn prepare_server(config: config::Config) -> Result<PreparedServer, St
         );
     }
 
+    // Install the VRP alignment scorer.
+    //
+    // `compare_peer_anchor_scored` used to construct a `ConceptEmbedder`
+    // inline, so the scorer was not a deployment choice and the pinned
+    // potion-base-2M table — written, tested, digest-verified — was reachable
+    // from nothing. It is a deployment choice now, and which way it goes is
+    // gated on the profile for the same reason the vkey is: a server that
+    // decides who to trust with an instrument its peers do not have is not
+    // degraded, it is unreproducible.
+    install_alignment_scorer()?;
+
     // Load ZK verification key.
     //
     // Priority:
@@ -1092,6 +1273,12 @@ pub async fn prepare_server(config: config::Config) -> Result<PreparedServer, St
         trusted_proxy_depth: config.deployment.trusted_proxy_depth,
         shutdown: shutdown.clone(),
     };
+
+    // Stored alignment verdicts are only as current as the scorer that produced
+    // them. Awaited rather than spawned: a peer handshake that arrives in the
+    // first second of uptime must not be answered from the previous
+    // instrument's rows.
+    rescore_alignments_if_scorer_changed(Arc::new(state.clone())).await;
 
     // Start background pruning task
     let pruning_handle = tokio::spawn(background::start_pruning_task(

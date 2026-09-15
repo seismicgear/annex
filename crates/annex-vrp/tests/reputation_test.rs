@@ -36,6 +36,7 @@ fn test_reputation_scoring() {
         transfer_scope: VrpTransferScope::FullKnowledgeBundle,
         alignment_score: 1.0,
         negotiation_notes: vec![],
+        scoring: None,
     };
 
     record_vrp_outcome(&conn, server_id, peer_pseudonym, "AGENT", &report_aligned)
@@ -54,6 +55,7 @@ fn test_reputation_scoring() {
         transfer_scope: VrpTransferScope::NoTransfer,
         alignment_score: 0.0,
         negotiation_notes: vec!["Conflict!".to_string()],
+        scoring: None,
     };
 
     record_vrp_outcome(&conn, server_id, peer_pseudonym, "AGENT", &report_conflict)
@@ -72,6 +74,7 @@ fn test_reputation_scoring() {
         transfer_scope: VrpTransferScope::ReflectionSummariesOnly,
         alignment_score: 0.5,
         negotiation_notes: vec![],
+        scoring: None,
     };
 
     record_vrp_outcome(&conn, server_id, peer_pseudonym, "AGENT", &report_partial)
@@ -96,6 +99,7 @@ fn test_reputation_persistence() {
         transfer_scope: VrpTransferScope::FullKnowledgeBundle,
         alignment_score: 1.0,
         negotiation_notes: vec![],
+        scoring: None,
     };
 
     record_vrp_outcome(&conn, server_id, peer_pseudonym, "AGENT", &report)
@@ -126,12 +130,14 @@ fn test_reputation_adversarial_oscillation() {
         transfer_scope: VrpTransferScope::FullKnowledgeBundle,
         alignment_score: 1.0,
         negotiation_notes: vec![],
+        scoring: None,
     };
     let report_conflict = VrpValidationReport {
         alignment_status: VrpAlignmentStatus::Conflict,
         transfer_scope: VrpTransferScope::NoTransfer,
         alignment_score: 0.0,
         negotiation_notes: vec![],
+        scoring: None,
     };
 
     // Record 10 cycles of ALIGNED, CONFLICT
@@ -163,6 +169,7 @@ fn test_reputation_sustained_conflict_floors() {
         transfer_scope: VrpTransferScope::NoTransfer,
         alignment_score: 0.0,
         negotiation_notes: vec![],
+        scoring: None,
     };
 
     for _ in 0..50 {
@@ -190,12 +197,14 @@ fn test_reputation_independent_per_pseudonym() {
         transfer_scope: VrpTransferScope::NoTransfer,
         alignment_score: 0.0,
         negotiation_notes: vec![],
+        scoring: None,
     };
     let report_aligned = VrpValidationReport {
         alignment_status: VrpAlignmentStatus::Aligned,
         transfer_scope: VrpTransferScope::FullKnowledgeBundle,
         alignment_score: 1.0,
         negotiation_notes: vec![],
+        scoring: None,
     };
 
     // Bad actor gets many conflicts

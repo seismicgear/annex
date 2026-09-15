@@ -109,6 +109,24 @@ pub struct VrpFederationHandshake {
     pub anchor_snapshot: VrpAnchorSnapshot,
     /// The sender's capability sharing contract.
     pub capability_contract: VrpCapabilitySharingContract,
+    /// Which alignment scorer the sender is using.
+    ///
+    /// Alignment is a negotiated verdict, and two servers computing it from
+    /// different tables are not negotiating — each is asserting something the
+    /// other cannot reproduce. This does not change what the RECEIVER computes
+    /// (it embeds both principle sets with its own scorer), but it is the only
+    /// thing that lets an operator tell "we disagree about values" from "we are
+    /// measuring with different rulers" when a peer reports a verdict they did
+    /// not expect.
+    ///
+    /// `Option` with a serde default because `federation_agreements` rows
+    /// persist this JSON: a stored handshake written before this field existed
+    /// must still parse, and since
+    /// `federation_repository::active_agreement_redacted_topics` now REFUSES a
+    /// peer's traffic on a handshake it cannot parse, a required field here
+    /// would cut off every existing peer at once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scorer: Option<crate::embedding::ModelFingerprint>,
 }
 
 /// Configuration for alignment evaluation.
@@ -147,6 +165,44 @@ pub struct VrpValidationReport {
     pub alignment_score: f32,
     /// Notes or reasons for the alignment outcome.
     pub negotiation_notes: Vec<String>,
+    /// The scorer that produced `alignment_score`, and the peer's if it
+    /// declared one.
+    ///
+    /// Recorded rather than acted on. A mismatch does not make the local
+    /// verdict wrong — the local server embeds both principle sets itself — but
+    /// it does mean the peer will very likely reach a different one, and an
+    /// operator staring at an asymmetric federation needs that to be visible
+    /// somewhere other than a log line nobody kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scoring: Option<ScoringProvenance>,
+}
+
+/// Who measured, and with what.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ScoringProvenance {
+    /// The scorer this server used.
+    pub local: crate::embedding::ModelFingerprint,
+    /// The scorer the peer declared, if it declared one. `None` means a peer
+    /// that predates the field — which is itself informative, and different
+    /// from a peer that declared the lexicon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<crate::embedding::ModelFingerprint>,
+    /// True when both are known and they differ.
+    pub mismatched: bool,
+}
+
+impl ScoringProvenance {
+    pub fn new(
+        local: crate::embedding::ModelFingerprint,
+        remote: Option<crate::embedding::ModelFingerprint>,
+    ) -> Self {
+        let mismatched = remote.as_ref().is_some_and(|r| *r != local);
+        Self {
+            local,
+            remote,
+            mismatched,
+        }
+    }
 }
 
 /// Errors that can occur during VRP operations.

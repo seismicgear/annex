@@ -58,8 +58,20 @@ pub enum BuildProfile {
 impl BuildProfile {
     /// "The bytes I load must be the bytes that were signed off."
     ///
-    /// ZK verification keys, the VRP embedding model, signing-key strength.
-    /// True for anything shipped to a user, desktop included.
+    /// ZK verification keys, signing-key strength. True for anything shipped to
+    /// a user, desktop included.
+    ///
+    /// NOT the VRP alignment model, which this comment used to list. That gate
+    /// is `requires_multi_tenant_gates` — see `install_alignment_scorer` in
+    /// `startup.rs`, which falls back to the lexicon scorer on Dev and Desktop
+    /// and refuses only under Production. The doc said one thing and the code
+    /// did the other, and neither the compiler nor a test would have noticed.
+    /// The code is right: `assets/embedding/` is gitignored, so a desktop
+    /// bundle built without running `scripts/setup-embedding-model.sh` would
+    /// refuse to launch over a 7.5 MB optional asset, which is a worse failure
+    /// than a loopback single-user server scoring with a documented fallback
+    /// that announces itself as `lexicon-v1` in every handshake. A server
+    /// strangers reach gets no such latitude.
     pub fn requires_artifact_provenance(self) -> bool {
         matches!(self, BuildProfile::Desktop | BuildProfile::Production)
     }
@@ -265,6 +277,12 @@ mod tests {
     #[test]
     fn desktop_verifies_what_it_loads_without_taking_the_multi_tenant_gates() {
         assert!(BuildProfile::Desktop.requires_artifact_provenance());
+        // The alignment model is deliberately NOT under artifact provenance:
+        // a desktop bundle built without the optional 7.5 MB asset must still
+        // launch, with the lexicon fallback and a `lexicon-v1` fingerprint.
+        // `install_alignment_scorer` reads `requires_multi_tenant_gates`, and
+        // this assertion is what keeps that from silently becoming a hard
+        // desktop failure.
         assert!(!BuildProfile::Desktop.requires_multi_tenant_gates());
 
         assert!(BuildProfile::Production.requires_artifact_provenance());

@@ -282,6 +282,7 @@ mod tests {
             transfer_scope: VrpTransferScope::ReflectionSummariesOnly,
             alignment_score: 1.0,
             negotiation_notes: vec![],
+            scoring: None,
         }
     }
 
@@ -382,6 +383,7 @@ mod liveness_tests {
             transfer_scope: VrpTransferScope::ReflectionSummariesOnly,
             alignment_score: 1.0,
             negotiation_notes: vec![],
+            scoring: None,
         }
     }
 

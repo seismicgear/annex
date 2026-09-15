@@ -192,6 +192,7 @@ async fn test_federation_full_lifecycle() {
     let handshake = VrpFederationHandshake {
         anchor_snapshot: anchor.clone(),
         capability_contract: contract.clone(),
+        scorer: None,
     };
 
     // Sign the handshake with the remote signing key

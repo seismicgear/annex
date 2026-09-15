@@ -66,6 +66,22 @@ jobs:
       - name: Synchronise client ZK artifacts
         run: node scripts/prepare-zk-dev.js
 
+      # The VRP alignment model: 7.5 MB, digest-pinned, fetched from
+      # huggingface.co.
+      #
+      # Not optional for this job. A production-profile server REFUSES to start
+      # without it (`StartupError::UnusableAlignmentModel`), because the score
+      # it produces decides which peers and agents are trusted and the lexicon
+      # fallback is a different instrument whose verdicts a peer running the
+      # pinned model cannot reproduce. Several tests start such a server.
+      #
+      # It also un-skips the two calibration suites. `alignment_calibration.rs`
+      # and `wordpiece_vectors.rs` both SKIP when the model is absent, so
+      # without this step they pass while measuring nothing — the shape
+      # CLAUDE.md calls a test that stops testing what it claims.
+      - name: Fetch VRP alignment model
+        run: bash scripts/setup-embedding-model.sh
+
       # Tests the production-profile dev-fixture gate in verify-artifacts.js.
       # Cheap (~1s) and the regression class — release silently shipping
       # dev keys — is too painful to leave ungated.
@@ -183,7 +199,15 @@ jobs:
       # Rust regression fails CI in under a minute rather than after a
       # full bundle attempt.
       - name: Ensure asset stub dirs exist
-        run: mkdir -p assets/piper assets/voices
+        run: mkdir -p assets/piper assets/voices assets/embedding
+
+      # `tauri.conf.json` declares `assets/embedding` in `bundle.resources`, and
+      # the bundler validates every declared path at build time. The directory
+      # above satisfies that; fetching the real model additionally proves the
+      # bundle can carry it, which is what a desktop install depends on for
+      # anything but the lexicon fallback.
+      - name: Fetch VRP alignment model
+        run: bash scripts/setup-embedding-model.sh
 
       - name: cargo check (annex-desktop)
         run: cargo check -p annex-desktop

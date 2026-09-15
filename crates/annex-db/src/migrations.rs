@@ -199,6 +199,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "045_zk_auth_challenges",
         sql: include_str!("migrations/045_zk_auth_challenges.sql"),
     },
+    Migration {
+        name: "046_alignment_score_rescale",
+        sql: include_str!("migrations/046_alignment_score_rescale.sql"),
+    },
+    Migration {
+        name: "047_alignment_scorer_id",
+        sql: include_str!("migrations/047_alignment_scorer_id.sql"),
+    },
 ];
 
 /// Errors that can occur during migration execution.
@@ -648,5 +656,188 @@ mod tests {
         assert_eq!(run_migrations_from_list(&conn, &migs).unwrap(), migs.len());
         // Re-running the same set is a no-op and must not error.
         assert_eq!(run_migrations_from_list(&conn, &migs).unwrap(), 0);
+    }
+
+    /// Everything up to, but not including, the named migration.
+    ///
+    /// A data migration can only be tested by putting the old data in
+    /// place first, and `run_migrations` runs the whole list. This splits
+    /// it at the boundary so the "before" state is the real one.
+    fn migrations_before(name: &str) -> &'static [Migration] {
+        let idx = MIGRATIONS
+            .iter()
+            .position(|m| m.name == name)
+            .unwrap_or_else(|| panic!("no migration named {name}"));
+        &MIGRATIONS[..idx]
+    }
+
+    fn stored_score(conn: &Connection, server_id: i64) -> f64 {
+        conn.query_row(
+            "SELECT json_extract(policy_json, '$.agent_min_alignment_score') FROM servers WHERE id = ?1",
+            [server_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    /// The upgrade path 046 exists for: a server that stored the old
+    /// default must not come back up with an unreachable threshold.
+    #[test]
+    fn the_old_default_alignment_score_is_replaced_not_converted() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations_from_list(&conn, migrations_before("046_alignment_score_rescale")).unwrap();
+
+        // The policy an 0.8-era server actually had on disk.
+        let old = annex_types::ServerPolicy {
+            agent_min_alignment_score: 0.8,
+            ..Default::default()
+        };
+        conn.execute(
+            "INSERT INTO servers (id, slug, label, policy_json) VALUES (1, 'a', 'A', ?1)",
+            [serde_json::to_string(&old).unwrap()],
+        )
+        .unwrap();
+
+        run_migrations_from_list(&conn, MIGRATIONS).unwrap();
+
+        let after = stored_score(&conn, 1);
+        assert!(
+            (after - 0.06).abs() < 1e-9,
+            "the old default must become the new default, got {after}",
+        );
+        // And the row must still be a ServerPolicy afterwards: json_set
+        // rewriting one field cannot be allowed to disturb the rest.
+        let json: String = conn
+            .query_row("SELECT policy_json FROM servers WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let parsed: annex_types::ServerPolicy = serde_json::from_str(&json).unwrap();
+        assert!((parsed.agent_min_alignment_score - 0.06).abs() < 1e-6);
+        assert_eq!(parsed.default_retention_days, old.default_retention_days);
+        assert_eq!(parsed.federation_enabled, old.federation_enabled);
+    }
+
+    /// A number an operator chose is converted, not discarded.
+    #[test]
+    fn a_deliberately_set_score_is_carried_onto_the_new_scale() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations_from_list(&conn, migrations_before("046_alignment_score_rescale")).unwrap();
+
+        let chosen = annex_types::ServerPolicy {
+            agent_min_alignment_score: 0.45,
+            ..Default::default()
+        };
+        conn.execute(
+            "INSERT INTO servers (id, slug, label, policy_json) VALUES (2, 'b', 'B', ?1)",
+            [serde_json::to_string(&chosen).unwrap()],
+        )
+        .unwrap();
+
+        run_migrations_from_list(&conn, MIGRATIONS).unwrap();
+
+        // (0.45 - 0.3060) / 0.6940
+        let expected = (0.45f64 - 0.3060) / 0.6940;
+        let after = stored_score(&conn, 2);
+        assert!(
+            (after - expected).abs() < 1e-9,
+            "expected {expected}, got {after}",
+        );
+        assert!((0.0..=1.0).contains(&after));
+    }
+
+    /// Below the floor is 0, not a negative threshold that admits
+    /// everything including a peer that agrees with us about nothing.
+    #[test]
+    fn a_score_below_the_old_noise_floor_clamps_to_zero() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations_from_list(&conn, migrations_before("046_alignment_score_rescale")).unwrap();
+
+        let low = annex_types::ServerPolicy {
+            agent_min_alignment_score: 0.1,
+            ..Default::default()
+        };
+        conn.execute(
+            "INSERT INTO servers (id, slug, label, policy_json) VALUES (3, 'c', 'C', ?1)",
+            [serde_json::to_string(&low).unwrap()],
+        )
+        .unwrap();
+
+        run_migrations_from_list(&conn, MIGRATIONS).unwrap();
+        assert_eq!(stored_score(&conn, 3), 0.0);
+    }
+
+    /// The audit trail is a record of what was active, so it is left
+    /// alone. A migration that rewrote it would make it lie.
+    #[test]
+    fn policy_version_history_is_not_rewritten() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations_from_list(&conn, migrations_before("046_alignment_score_rescale")).unwrap();
+
+        let old = annex_types::ServerPolicy {
+            agent_min_alignment_score: 0.8,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&old).unwrap();
+        conn.execute(
+            "INSERT INTO servers (id, slug, label, policy_json) VALUES (4, 'd', 'D', ?1)",
+            [&json],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO server_policy_versions (server_id, version_id, policy_json) VALUES (4, 'v1', ?1)",
+            [&json],
+        )
+        .unwrap();
+
+        run_migrations_from_list(&conn, MIGRATIONS).unwrap();
+
+        let historical: f64 = conn
+            .query_row(
+                "SELECT json_extract(policy_json, '$.agent_min_alignment_score') \
+                 FROM server_policy_versions WHERE version_id = 'v1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            (historical - 0.8).abs() < 1e-9,
+            "history moved: {historical}"
+        );
+        assert!((stored_score(&conn, 4) - 0.06).abs() < 1e-9);
+    }
+
+    /// A row whose policy_json is not JSON, or has no such key, must not
+    /// stop the server booting.
+    #[test]
+    fn rows_without_the_key_are_left_alone() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations_from_list(&conn, migrations_before("046_alignment_score_rescale")).unwrap();
+
+        conn.execute(
+            "INSERT INTO servers (id, slug, label, policy_json) VALUES (5, 'e', 'E', '{}')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO servers (id, slug, label, policy_json) VALUES (6, 'f', 'F', 'not json')",
+            [],
+        )
+        .unwrap();
+
+        run_migrations_from_list(&conn, MIGRATIONS).unwrap();
+
+        let a: String = conn
+            .query_row("SELECT policy_json FROM servers WHERE id = 5", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let b: String = conn
+            .query_row("SELECT policy_json FROM servers WHERE id = 6", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(a, "{}");
+        assert_eq!(b, "not json");
     }
 }

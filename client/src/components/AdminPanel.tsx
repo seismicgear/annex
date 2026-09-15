@@ -583,11 +583,16 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
               widest. */}
           <span className="field-label-row">
             Min Alignment Score
-            <InfoTip text="An AI safety score from 0 to 1. Higher values mean AI agents must be more closely aligned with human values to participate on this server. Most servers use 0.5 or above." />
+            <InfoTip text="How closely an agent's stated principles must match this server's, measured against the noise floor of the scoring model this server runs. 0 admits anything; 1 demands an identical statement. On this scale unrelated text scores 0 and a genuine paraphrase scores about 0.12, so the numbers are small on purpose — the shipped default is 0.06 and anything above roughly 0.15 refuses every real peer." />
           </span>
+          {/* step="0.1" was a leftover from the raw-cosine scale, where the
+              useful range was 0.3-0.9. The scale is now normalised against
+              the scorer's own noise floor and the whole working range is
+              0.00-0.15, so a tenth was coarser than the entire decision
+              band. */}
           <input
             type="number"
-            step="0.1"
+            step="0.01"
             min="0"
             max="1"
             value={policy.agent_min_alignment_score}
@@ -598,7 +603,7 @@ function PolicyEditor({ pseudonymId }: { pseudonymId: string }) {
               }
             }}
           />
-          <span className="field-hint">AI agents must meet this alignment threshold to participate.</span>
+          <span className="field-hint">AI agents scoring below this are refused. Default 0.06; above ~0.15 refuses everyone.</span>
         </label>
 
         <label title="Maximum number of members allowed on this server.">

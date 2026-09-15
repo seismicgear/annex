@@ -15,8 +15,40 @@ fn env_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// Point the alignment gate at the workspace's model, or say why we cannot.
+///
+/// A production-profile server refuses to start without the VRP alignment
+/// model — it decides which peers and agents are trusted, and the lexicon
+/// fallback is a different instrument. These tests are about SIGNING KEYS, but
+/// they start a production-profile server, so they have to satisfy that gate
+/// the same way a deployment does.
+///
+/// `ANNEX_EMBEDDING_MODEL_DIR` rather than the default, because
+/// `DEFAULT_MODEL_DIR` is relative to the working directory and cargo runs a
+/// test with the CRATE root as its working directory — so the default resolves
+/// to `crates/annex-server/assets/embedding`, which does not exist.
+///
+/// Returns false (having printed why) on a checkout that has not run
+/// `scripts/setup-embedding-model.sh`. A skip that names the missing asset is
+/// better than a red test that blames signing keys for an embedding model.
+fn point_at_alignment_model() -> bool {
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/embedding");
+    if !dir.join("model.safetensors").exists() {
+        eprintln!(
+            "SKIP: no VRP alignment model at {} — run scripts/setup-embedding-model.sh. \
+             A production-profile server refuses to start without it, so this test \
+             cannot run.",
+            dir.display()
+        );
+        return false;
+    }
+    std::env::set_var("ANNEX_EMBEDDING_MODEL_DIR", &dir);
+    true
+}
+
 fn clear_env() {
     for k in [
+        "ANNEX_EMBEDDING_MODEL_DIR",
         "ANNEX_BUILD_PROFILE",
         "ANNEX_SIGNING_KEY",
         "ANNEX_ZK_KEY_PATH",
@@ -55,6 +87,10 @@ async fn production_rejects_all_zero_signing_key_env() {
     clear_env();
 
     std::env::set_var("ANNEX_BUILD_PROFILE", "production");
+    if !point_at_alignment_model() {
+        clear_env();
+        return;
+    }
     std::env::set_var(
         "ANNEX_SIGNING_KEY",
         // 64 zero hex chars — 32 zero bytes. The classic placeholder.
@@ -77,6 +113,10 @@ async fn production_rejects_all_ff_signing_key_env() {
     clear_env();
 
     std::env::set_var("ANNEX_BUILD_PROFILE", "production");
+    if !point_at_alignment_model() {
+        clear_env();
+        return;
+    }
     std::env::set_var(
         "ANNEX_SIGNING_KEY",
         "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
@@ -98,6 +138,10 @@ async fn production_rejects_single_byte_fill_signing_key_env() {
     clear_env();
 
     std::env::set_var("ANNEX_BUILD_PROFILE", "production");
+    if !point_at_alignment_model() {
+        clear_env();
+        return;
+    }
     // 0xab repeated 32 times — common dev fixture pattern.
     std::env::set_var(
         "ANNEX_SIGNING_KEY",
@@ -120,6 +164,10 @@ async fn production_accepts_real_signing_key_env() {
     clear_env();
 
     std::env::set_var("ANNEX_BUILD_PROFILE", "production");
+    if !point_at_alignment_model() {
+        clear_env();
+        return;
+    }
     // A real-looking random key (no pattern). Generated once at fixture
     // authoring time via `openssl rand -hex 32`; bytes are independent.
     std::env::set_var(
@@ -161,6 +209,10 @@ async fn voice_tokens_survive_restart_with_same_persistent_key() {
 
     let cfg1 = config_for_production_signing_test(&db_str);
     std::env::set_var("ANNEX_BUILD_PROFILE", "production");
+    if !point_at_alignment_model() {
+        clear_env();
+        return;
+    }
     let annex_server::PreparedServer { listener: l1, .. } =
         prepare_server(cfg1).await.expect("first start ok");
     drop(l1);

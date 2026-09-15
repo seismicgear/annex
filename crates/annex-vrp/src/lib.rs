@@ -37,6 +37,7 @@
 
 pub mod embedding;
 pub mod reputation;
+pub mod scorer;
 pub mod semantic;
 pub mod server_root;
 pub mod types;
@@ -47,9 +48,9 @@ mod tests;
 pub use reputation::{check_reputation_score, record_vrp_outcome, ReputationError};
 pub use server_root::ServerPolicyRoot;
 pub use types::{
-    VrpAlignmentConfig, VrpAlignmentStatus, VrpAnchorSnapshot, VrpCapabilitySharingContract,
-    VrpError, VrpFederationHandshake, VrpTransferAcceptanceConfig, VrpTransferAcceptanceError,
-    VrpTransferScope, VrpValidationReport,
+    ScoringProvenance, VrpAlignmentConfig, VrpAlignmentStatus, VrpAnchorSnapshot,
+    VrpCapabilitySharingContract, VrpError, VrpFederationHandshake, VrpTransferAcceptanceConfig,
+    VrpTransferAcceptanceError, VrpTransferScope, VrpValidationReport,
 };
 
 use sha2::{Digest, Sha256};
@@ -103,12 +104,22 @@ pub fn compare_peer_anchor(
     compare_peer_anchor_scored(local, remote, config).0
 }
 
+/// The score reported when the scorer itself failed.
+///
+/// Every real score is a cosine in `[0, 1]`, so a negative value cannot be
+/// confused with a measurement. `0.0` could: it is what a genuinely
+/// unrelated pair scores, and what the "no comparison applies" branches
+/// return.
+pub const UNMEASURABLE_SCORE: f32 = -1.0;
+
 /// Like [`compare_peer_anchor`] but also returns the *measured* anchor
 /// similarity (0.0–1.0), so callers can record the real number rather than a
 /// status-derived placeholder. The score is `1.0` on an exact match, `0.0` on a
 /// prohibited-action divergence (or when no semantic comparison is possible),
-/// and the bag-of-words cosine value in the semantic branch — independent of
-/// whether that value cleared `min_alignment_score`.
+/// and the measured cosine in the semantic branch — independent of whether that
+/// value cleared `min_alignment_score`. [`UNMEASURABLE_SCORE`] means the scorer
+/// itself failed and nothing was measured; it is negative precisely so it
+/// cannot be mistaken for one of the above.
 pub fn compare_peer_anchor_scored(
     local: &VrpAnchorSnapshot,
     remote: &VrpAnchorSnapshot,
@@ -156,25 +167,114 @@ pub fn compare_peer_anchor_scored(
         && !local.principles.is_empty()
         && !remote.principles.is_empty()
     {
-        // Concept embedding: fixed-dimension, no jointly-built vocabulary, and
-        // paraphrase-aware (synonym families share a concept dimension). A
-        // federated peer's principles embed into the SAME space as ours
-        // natively, and "users deserve privacy" ≈ "people are entitled to
-        // confidentiality" instead of scoring ~0 as bag-of-words did.
-        let embedder = semantic::ConceptEmbedder::new();
+        // The scorer this process installed — `StaticEmbedder` over the pinned
+        // potion-base-2M table on a server, the lexicon otherwise. This used to
+        // construct `ConceptEmbedder::new()` inline, which meant the scorer was
+        // not a deployment choice and the real model was reachable from
+        // nothing. See `crate::scorer`.
+        let embedder = scorer::active();
 
-        if let Ok(score) =
-            semantic::calculate_semantic_alignment(&local.principles, &remote.principles, &embedder)
-        {
-            if score >= config.min_alignment_score {
-                return (VrpAlignmentStatus::Partial, score);
+        let measured = semantic::calculate_semantic_alignment(
+            &local.principles,
+            &remote.principles,
+            embedder.as_ref(),
+        );
+
+        // A scorer that could not produce a number is a fault in this server,
+        // not evidence about the peer, and it used to be neither reported nor
+        // distinguishable: the `if let Ok(..)` fell through to the
+        // `(Conflict, 0.0)` at the end of this function, which is also what a
+        // genuine measured zero returns and also what "no semantic comparison
+        // applies" returns. Three different situations, one answer, no log
+        // line. `StaticEmbedder::embed` can fail on a token id outside its
+        // table, so this is reachable.
+        //
+        // The verdict stays `Conflict` — refusing is the right default for a
+        // trust decision this server cannot evaluate — but it says so, and the
+        // score is -1.0 rather than 0.0 so an operator reading a stored row or
+        // a handshake report can tell "we could not measure" from "we measured
+        // nothing in common". A score is otherwise a cosine in [0, 1], so a
+        // negative value is unambiguous.
+        let Ok(raw) = measured else {
+            if let Err(e) = measured {
+                tracing::warn!(
+                    error = %e,
+                    scorer = %embedder.fingerprint().model_id,
+                    "alignment could not be measured; refusing rather than guessing",
+                );
             }
-            // Below threshold → Conflict, but surface the real measured score.
-            return (VrpAlignmentStatus::Conflict, score);
+            return (VrpAlignmentStatus::Conflict, UNMEASURABLE_SCORE);
+        };
+
+        {
+            // Three steps, and each one is load-bearing:
+            //
+            //  1. Normalise against THIS scorer's measured noise floor, so the
+            //     configured threshold means the same strictness whichever
+            //     scorer is loaded. The raw cosines are not portable: the
+            //     static model's unrelated pairs top out at 0.5134 and the
+            //     lexicon's at 0.3060, and their separating bands do not
+            //     overlap, so one raw number cannot serve both.
+            //  2. Quantise, so two peers on the same model but different
+            //     hardware cannot land on opposite sides of the threshold over
+            //     a last-bit difference in float accumulation.
+            //  3. Compare — and return the RAW score, because that is the
+            //     measurement an operator should see. `0.5740 under
+            //     potion-base-2M` is a fact about the world; the normalised
+            //     value is a fact about this scale.
+            let normalized = embedding::quantize_score(semantic::normalize_against_floor(
+                raw,
+                embedder.unrelated_floor(),
+            ));
+            if normalized >= config.min_alignment_score {
+                return (VrpAlignmentStatus::Partial, raw);
+            }
+            return (VrpAlignmentStatus::Conflict, raw);
         }
     }
 
     (VrpAlignmentStatus::Conflict, 0.0)
+}
+
+/// Everything [`compare_peer_anchor_scored`] decided, and what it decided it
+/// with.
+///
+/// The two-value return above cannot say which scorer produced the number, and
+/// a peer's verdict is only reproducible by someone running the same one. An
+/// operator looking at a `Conflict` needs to be able to tell "we disagree about
+/// values" from "we are measuring with different rulers".
+#[derive(Debug, Clone, PartialEq)]
+pub struct AlignmentOutcome {
+    pub status: VrpAlignmentStatus,
+    /// Cosine similarity between the principle-set centroids, as measured.
+    pub raw_score: f32,
+    /// [`semantic::normalize_against_floor`] applied to `raw_score`, quantised.
+    /// This is the value that met (or missed) `min_alignment_score`.
+    pub normalized_score: f32,
+    /// The threshold it was compared against.
+    pub threshold: f32,
+    /// The scorer that produced `raw_score`.
+    pub scorer: embedding::ModelFingerprint,
+}
+
+/// [`compare_peer_anchor_scored`] with the workings shown.
+pub fn compare_peer_anchor_detailed(
+    local: &VrpAnchorSnapshot,
+    remote: &VrpAnchorSnapshot,
+    config: &VrpAlignmentConfig,
+) -> AlignmentOutcome {
+    let (status, raw_score) = compare_peer_anchor_scored(local, remote, config);
+    let embedder = scorer::active();
+    AlignmentOutcome {
+        status,
+        raw_score,
+        normalized_score: embedding::quantize_score(semantic::normalize_against_floor(
+            raw_score,
+            embedder.unrelated_floor(),
+        )),
+        threshold: config.min_alignment_score,
+        scorer: embedder.fingerprint(),
+    }
 }
 
 /// Validates that capability contracts are mutually compatible.
@@ -244,6 +344,31 @@ pub fn validate_federation_handshake(
     let contracts_ok = contracts_mutually_accepted(local_contract, &handshake.capability_contract);
 
     let mut notes = Vec::new();
+
+    // 1b. Record what each side measured with.
+    //
+    // A mismatch does NOT change the local verdict — this server embedded both
+    // principle sets with its own scorer, so its number is internally sound.
+    // What a mismatch means is that the peer will very likely reach a different
+    // verdict about us, and an operator looking at a federation that works in
+    // one direction needs to be able to see why. It is a note and a recorded
+    // fact, not a refusal: refusing would cut off every peer that has not yet
+    // installed the same model, which is a worse outcome than an asymmetry the
+    // operator can see.
+    let scoring = ScoringProvenance::new(scorer::active_fingerprint(), handshake.scorer.clone());
+    if scoring.mismatched {
+        notes.push(format!(
+            "peer scores alignment with '{}', this server with '{}': the peer's own \
+             verdict about us will not match ours about it",
+            scoring
+                .remote
+                .as_ref()
+                .map(|r| r.model_id.as_str())
+                .unwrap_or("unknown"),
+            scoring.local.model_id,
+        ));
+    }
+
     let final_status = if !contracts_ok {
         notes.push("Capability contracts incompatible".to_string());
         // Downgrade status if contracts fail.
@@ -265,6 +390,7 @@ pub fn validate_federation_handshake(
         transfer_scope,
         alignment_score,
         negotiation_notes: notes,
+        scoring: Some(scoring),
     }
 }
 

@@ -144,9 +144,13 @@ pub async fn recalculate_agent_alignments(state: Arc<AppState>) -> Result<(), Ap
                         }
                     };
 
+                // Re-evaluating a LOCAL agent's stored anchor, not talking to
+                // a peer — the agent declared no scorer and this server is the
+                // only one measuring, so there is nothing to compare against.
                 let handshake = VrpFederationHandshake {
                     anchor_snapshot: anchor,
                     capability_contract: contract,
+                    scorer: None,
                 };
 
                 let report = validate_federation_handshake(
@@ -582,9 +586,12 @@ pub async fn notify_federation_peers_of_policy_change(
             redacted_topics: vec![],
         };
 
+        // Outbound: tell the peer what we are scoring with, so it can see
+        // whether its verdict about us is reproducible by us.
         let handshake = VrpFederationHandshake {
             anchor_snapshot: local_anchor,
             capability_contract: local_contract,
+            scorer: Some(annex_vrp::scorer::active_fingerprint()),
         };
 
         (handshake, state.get_public_url())

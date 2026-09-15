@@ -99,6 +99,7 @@ async fn test_agent_handshake_aligned() {
     let handshake = VrpFederationHandshake {
         anchor_snapshot: anchor,
         capability_contract: contract,
+        scorer: None,
     };
 
     let payload = serde_json::json!({
@@ -193,6 +194,7 @@ async fn test_agent_handshake_conflict() {
     let handshake = VrpFederationHandshake {
         anchor_snapshot: anchor,
         capability_contract: contract,
+        scorer: None,
     };
 
     let payload = serde_json::json!({
@@ -285,6 +287,7 @@ async fn rehandshake_without_token_is_rejected_for_registered_agent() {
     let handshake = VrpFederationHandshake {
         anchor_snapshot: anchor,
         capability_contract: contract,
+        scorer: None,
     };
     let payload = serde_json::json!({
         "pseudonymId": "agent-already-registered",
@@ -345,6 +348,7 @@ async fn rehandshake_with_mismatched_token_is_rejected() {
     let handshake = VrpFederationHandshake {
         anchor_snapshot: anchor,
         capability_contract: contract,
+        scorer: None,
     };
     let payload = serde_json::json!({
         "pseudonymId": "agent-victim",
@@ -386,6 +390,7 @@ async fn pre_registration_handshake_remains_unauthenticated() {
     let handshake = VrpFederationHandshake {
         anchor_snapshot: anchor,
         capability_contract: contract,
+        scorer: None,
     };
     let payload = serde_json::json!({
         "pseudonymId": "agent-fresh",
@@ -443,6 +448,7 @@ async fn rehandshake_with_matching_token_is_allowed() {
     let handshake = VrpFederationHandshake {
         anchor_snapshot: anchor,
         capability_contract: contract,
+        scorer: None,
     };
     let payload = serde_json::json!({
         "pseudonymId": "agent-owner",
@@ -491,6 +497,7 @@ async fn test_agent_handshake_admitted_when_server_declares_no_principles() {
             offered_capabilities: vec![],
             redacted_topics: vec![],
         },
+        scorer: None,
     };
 
     let payload = serde_json::json!({
@@ -575,6 +582,7 @@ fn handshake_payload(pseudonym: &str) -> serde_json::Value {
         "handshake": VrpFederationHandshake {
             anchor_snapshot: anchor,
             capability_contract: contract,
+            scorer: None,
         }
     })
 }

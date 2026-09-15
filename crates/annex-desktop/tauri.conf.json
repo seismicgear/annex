@@ -44,7 +44,8 @@
       "../../zk/keys/link_pseudonyms_vkey.json",
       "../../zk/keys/federation_attestation_vkey.json",
       "../../assets/piper",
-      "../../assets/voices"
+      "../../assets/voices",
+      "../../assets/embedding"
     ],
     "icon": [
       "icons/32x32.png",
