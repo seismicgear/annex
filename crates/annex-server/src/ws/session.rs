@@ -54,7 +54,7 @@ impl WsSession {
         // try_send paths.
         let (tx, mut rx) = mpsc::channel::<String>(256);
 
-        let session_id = state
+        let (session_id, cancel) = state
             .connection_manager
             .add_session(pseudonym.clone(), tx.clone())
             .await;
@@ -180,7 +180,43 @@ impl WsSession {
         // which the HTTP rate-limit middleware never sees.
         let command_rate_limiter = CommandRateLimiter::new();
 
-        while let Some(Ok(msg)) = receiver.next().await {
+        // `select!` on the cancellation token, not just the socket.
+        //
+        // The loop used to be `while let Some(Ok(msg)) = receiver.next()`,
+        // which ends only when the CLIENT closes. A session replaced by a new
+        // connection from the same identity had its `Sender` dropped — so the
+        // writer task exited and it stopped receiving anything — while this
+        // reader, the ICE relay and the renegotiation relay all stayed alive
+        // on a socket nobody could reach. Reconnecting in a loop therefore
+        // pinned an unbounded number of sockets to ONE valid token, and the
+        // session registry never grew, so it did not read as a leak.
+        //
+        // The same token is what makes `disconnect_user` mean something:
+        // clearing the registry entry left the socket open before this.
+        loop {
+            let msg = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    tracing::debug!(
+                        pseudonym = %pseudonym,
+                        "closing WebSocket session: replaced or disconnected by the server"
+                    );
+                    break;
+                }
+                _ = state.shutdown.cancelled() => {
+                    tracing::debug!(pseudonym = %pseudonym, "closing WebSocket session: server shutting down");
+                    break;
+                }
+                next = receiver.next() => match next {
+                    Some(Ok(msg)) => msg,
+                    // A transport error or a clean end of stream both mean the
+                    // socket is finished. The old `while let Some(Ok(_))`
+                    // treated them identically too — spelled out here so the
+                    // `break` is visible rather than implied by the pattern.
+                    _ => break,
+                },
+            };
+
             if last_activity.elapsed() >= ACTIVITY_DEBOUNCE {
                 tokio::spawn(touch_activity(state.clone(), pseudonym.clone()));
                 last_activity = std::time::Instant::now();

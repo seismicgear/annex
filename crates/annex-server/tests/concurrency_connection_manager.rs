@@ -50,7 +50,7 @@ async fn test_concurrent_add_remove_session_no_orphans() {
 
     // Register a user and subscribe them to channels
     let sender = dummy_sender();
-    let session_id = cm.add_session("user_a".to_string(), sender).await;
+    let (session_id, _cancel) = cm.add_session("user_a".to_string(), sender).await;
 
     cm.subscribe("ch1".to_string(), "user_a".to_string()).await;
     cm.subscribe("ch2".to_string(), "user_a".to_string()).await;

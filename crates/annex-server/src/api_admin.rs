@@ -311,11 +311,24 @@ pub async fn rename_server_handler(
             })?;
         }
 
+        // `(None, None)` is unreachable *today*: the handler rejects an
+        // empty patch before this point. That is a caller-side invariant, not
+        // a type-level one — a future branch that skips the early return
+        // would turn this into a panic inside a `spawn_blocking`, which
+        // surfaces as a bare 500 with no message and no log line naming the
+        // cause. An audit event describing nothing is a strictly better
+        // failure than that.
         let event_desc = match (&label_clone, &description_clone) {
             (Some(l), Some(_)) => format!("Server renamed to \"{l}\" and description updated"),
             (Some(l), None) => format!("Server renamed to \"{l}\""),
             (None, Some(_)) => "Server description updated".to_string(),
-            (None, None) => unreachable!(),
+            (None, None) => {
+                tracing::warn!(
+                    "server update handler reached the empty-patch branch; the early \
+                     return that should have caught it is gone"
+                );
+                "Server updated (no fields changed)".to_string()
+            }
         };
 
         let observe_payload = EventPayload::ModerationAction {

@@ -35,6 +35,7 @@
 //! current skeleton provides the module structure that will be filled in
 //! during that phase.
 
+pub mod embedding;
 pub mod reputation;
 pub mod semantic;
 pub mod server_root;

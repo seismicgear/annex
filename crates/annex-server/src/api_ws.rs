@@ -31,7 +31,7 @@ use std::{net::SocketAddr, sync::Arc};
 pub(crate) const WS_MAX_MESSAGE_BYTES: usize = 128 * 1024;
 
 // ── Public re-exports — preserve `annex_server::api_ws::Foo` paths ──────
-pub use crate::ws::connection_manager::ConnectionManager;
+pub use crate::ws::connection_manager::{ConnectionManager, ConnectionSlot, MAX_WS_CONNECTIONS};
 pub use crate::ws::protocol::{
     IncomingMessage, OutgoingMessage, WsConnectParams, WsMessagePayload,
 };
@@ -243,6 +243,28 @@ pub async fn ws_handler(
                 token_auth = params.token.is_some(),
                 "websocket auth success"
             );
+            // Claim a connection slot BEFORE the upgrade.
+            //
+            // After the upgrade there is no status code left to send: the
+            // response is already a 101 and the only way to refuse is to
+            // accept the socket and close it, which costs the allocation the
+            // cap exists to avoid and tells the client nothing. 503 with
+            // `Retry-After` is both cheaper and legible.
+            let Some(slot) = state.connection_manager.try_admit() else {
+                tracing::warn!(
+                    pseudonym = %pseudonym,
+                    remote_addr = %addr,
+                    open = state.connection_manager.open_connections(),
+                    "refusing websocket upgrade: at the connection cap"
+                );
+                let mut response = StatusCode::SERVICE_UNAVAILABLE.into_response();
+                response.headers_mut().insert(
+                    axum::http::header::RETRY_AFTER,
+                    axum::http::HeaderValue::from_static("5"),
+                );
+                return response;
+            };
+
             // Cap the per-message frame size at 128 KiB. The largest
             // legitimate IncomingMessage is `Message`/`EditMessage`,
             // whose `content` field is bounded by
@@ -253,7 +275,15 @@ pub async fn ws_handler(
             // misbehaving client allocate up to 64 MiB per frame on a
             // single TCP connection before our content cap fires.
             let socket_cap = ws.max_message_size(WS_MAX_MESSAGE_BYTES);
-            socket_cap.on_upgrade(move |socket: WebSocket| WsSession::run(socket, state, identity))
+            socket_cap.on_upgrade(move |socket: WebSocket| async move {
+                // The guard lives for exactly as long as the session task, so
+                // every exit path — clean close, transport error, panic —
+                // returns the slot. A decrement written at the end of
+                // `WsSession::run` would leak on precisely the paths that
+                // matter.
+                let _slot = slot;
+                WsSession::run(socket, state, identity).await;
+            })
         }
         Ok(Err(code)) => {
             tracing::warn!(

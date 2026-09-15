@@ -1,0 +1,1024 @@
+{
+ "_comment": "Generated from assets/embedding/tokenizer.json (minishlab/potion-base-2M, rev 389b9f64be5aa4ae7a6bc6fe95ef20ce485ae5da) by the HuggingFace `tokenizers` library, which is the canonical implementation. crates/annex-vrp/src/embedding.rs reimplements BERT WordPiece in pure Rust and must reproduce every one of these exactly: a peer that tokenizes differently embeds differently and reaches a different trust verdict for the same pair of principles, with nothing on either side to notice.",
+ "model_id": "minishlab/potion-base-2M",
+ "revision": "389b9f64be5aa4ae7a6bc6fe95ef20ce485ae5da",
+ "add_special_tokens": false,
+ "cases": [
+  {
+   "text": "",
+   "ids": [],
+   "tokens": []
+  },
+  {
+   "text": "   ",
+   "ids": [],
+   "tokens": []
+  },
+  {
+   "text": "\t\n ",
+   "ids": [],
+   "tokens": []
+  },
+  {
+   "text": "users deserve privacy",
+   "ids": [
+    4204,
+    9113,
+    8400
+   ],
+   "tokens": [
+    "users",
+    "deserve",
+    "privacy"
+   ]
+  },
+  {
+   "text": "People Are ENTITLED to Confidentiality.",
+   "ids": [
+    1117,
+    1030,
+    3715,
+    1006,
+    17783,
+    2018,
+    18
+   ],
+   "tokens": [
+    "people",
+    "are",
+    "entitled",
+    "to",
+    "confidential",
+    "##ity",
+    "."
+   ]
+  },
+  {
+   "text": "we monetize attention and sell user data to advertisers",
+   "ids": [
+    1063,
+    11262,
+    19630,
+    3377,
+    2092,
+    1004,
+    4277,
+    4316,
+    1957,
+    1006,
+    3754,
+    15880,
+    16294,
+    1021
+   ],
+   "tokens": [
+    "we",
+    "mon",
+    "##eti",
+    "##ze",
+    "attention",
+    "and",
+    "sell",
+    "user",
+    "data",
+    "to",
+    "ad",
+    "##vert",
+    "##iser",
+    "##s"
+   ]
+  },
+  {
+   "text": "zero-knowledge proofs, end-to-end encryption; self-hosted.",
+   "ids": [
+    4723,
+    17,
+    2722,
+    5953,
+    1021,
+    16,
+    1209,
+    17,
+    1006,
+    17,
+    1209,
+    21005,
+    31,
+    1975,
+    17,
+    3360,
+    18
+   ],
+   "tokens": [
+    "zero",
+    "-",
+    "knowledge",
+    "proof",
+    "##s",
+    ",",
+    "end",
+    "-",
+    "to",
+    "-",
+    "end",
+    "encryption",
+    ";",
+    "self",
+    "-",
+    "hosted",
+    "."
+   ]
+  },
+  {
+   "text": "don't  collapse   whitespace wrongly",
+   "ids": [
+    1129,
+    11,
+    62,
+    6865,
+    11467,
+    14333,
+    28122
+   ],
+   "tokens": [
+    "don",
+    "'",
+    "t",
+    "collapse",
+    "whites",
+    "##pace",
+    "wrongly"
+   ]
+  },
+  {
+   "text": "café naïve résumé Ångström",
+   "ids": [
+    6674,
+    14749,
+    12752,
+    16082,
+    14693
+   ],
+   "tokens": [
+    "cafe",
+    "naive",
+    "resume",
+    "ang",
+    "##strom"
+   ]
+  },
+  {
+   "text": "ÁÉÍÓÚ àèìòù ç ñ",
+   "ids": [
+    28353,
+    2701,
+    1232,
+    28353,
+    2701,
+    1232,
+    45,
+    56
+   ],
+   "tokens": [
+    "ae",
+    "##io",
+    "##u",
+    "ae",
+    "##io",
+    "##u",
+    "c",
+    "n"
+   ]
+  },
+  {
+   "text": "数据主权与隐私",
+   "ids": [
+    1,
+    1,
+    753,
+    1,
+    1,
+    1,
+    1
+   ],
+   "tokens": [
+    "[UNK]",
+    "[UNK]",
+    "主",
+    "[UNK]",
+    "[UNK]",
+    "[UNK]",
+    "[UNK]"
+   ]
+  },
+  {
+   "text": "mixed 数据 and english",
+   "ids": [
+    2822,
+    1,
+    1,
+    1004,
+    1400
+   ],
+   "tokens": [
+    "mixed",
+    "[UNK]",
+    "[UNK]",
+    "and",
+    "english"
+   ]
+  },
+  {
+   "text": "emoji 🙂 survives 👍🏽 normalization",
+   "ids": [
+    6867,
+    28153,
+    1078,
+    1,
+    12661,
+    1,
+    2677,
+    2995
+   ],
+   "tokens": [
+    "em",
+    "##oj",
+    "##i",
+    "[UNK]",
+    "survives",
+    "[UNK]",
+    "normal",
+    "##ization"
+   ]
+  },
+  {
+   "text": "control\u0000chars\u0007stripped",
+   "ids": [
+    1497,
+    6513,
+    1875,
+    2373,
+    28449,
+    4675
+   ],
+   "tokens": [
+    "control",
+    "##cha",
+    "##rs",
+    "##st",
+    "##rip",
+    "##ped"
+   ]
+  },
+  {
+   "text": "nbsp separated words",
+   "ids": [
+    56,
+    4916,
+    1367,
+    4465,
+    1622
+   ],
+   "tokens": [
+    "n",
+    "##bs",
+    "##p",
+    "separated",
+    "words"
+   ]
+  },
+  {
+   "text": "supercalifragilisticexpialidocious",
+   "ids": [
+    2571,
+    8295,
+    9134,
+    28187,
+    23417,
+    3594,
+    9294,
+    18318,
+    20279,
+    9091,
+    5319
+   ],
+   "tokens": [
+    "super",
+    "##cal",
+    "##if",
+    "##rag",
+    "##ilis",
+    "##tic",
+    "##ex",
+    "##pia",
+    "##lid",
+    "##oc",
+    "##ious"
+   ]
+  },
+  {
+   "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "ids": [
+    21044,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    19354,
+    1601
+   ],
+   "tokens": [
+    "xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##xx",
+    "##x"
+   ]
+  },
+  {
+   "text": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+   "ids": [
+    67,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106,
+    1106
+   ],
+   "tokens": [
+    "y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y",
+    "##y"
+   ]
+  },
+  {
+   "text": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+   "ids": [
+    1
+   ],
+   "tokens": [
+    "[UNK]"
+   ]
+  },
+  {
+   "text": "CVE-2021-44228 log4j",
+   "ids": [
+    25232,
+    1069,
+    17,
+    24688,
+    17,
+    3014,
+    18323,
+    1626,
+    7839,
+    1555,
+    2507
+   ],
+   "tokens": [
+    "cv",
+    "##e",
+    "-",
+    "2021",
+    "-",
+    "44",
+    "##22",
+    "##8",
+    "log",
+    "##4",
+    "##j"
+   ]
+  },
+  {
+   "text": "https://example.com/path?q=1&r=2",
+   "ids": [
+    15776,
+    30,
+    19,
+    19,
+    1748,
+    18,
+    3018,
+    19,
+    3136,
+    35,
+    59,
+    33,
+    21,
+    10,
+    60,
+    33,
+    22
+   ],
+   "tokens": [
+    "https",
+    ":",
+    "/",
+    "/",
+    "example",
+    ".",
+    "com",
+    "/",
+    "path",
+    "?",
+    "q",
+    "=",
+    "1",
+    "&",
+    "r",
+    "=",
+    "2"
+   ]
+  },
+  {
+   "text": "user@example.com",
+   "ids": [
+    4316,
+    36,
+    1748,
+    18,
+    3018
+   ],
+   "tokens": [
+    "user",
+    "@",
+    "example",
+    ".",
+    "com"
+   ]
+  },
+  {
+   "text": "1234567890 3.14159 -42",
+   "ids": [
+    12144,
+    18967,
+    1581,
+    1587,
+    1626,
+    20063,
+    23,
+    18,
+    14477,
+    27160,
+    17,
+    3419
+   ],
+   "tokens": [
+    "123",
+    "##45",
+    "##6",
+    "##7",
+    "##8",
+    "##90",
+    "3",
+    ".",
+    "141",
+    "##59",
+    "-",
+    "42"
+   ]
+  },
+  {
+   "text": "snake_case camelCase kebab-case",
+   "ids": [
+    6494,
+    41,
+    1559,
+    18136,
+    17388,
+    16716,
+    2682,
+    1503,
+    17,
+    1559
+   ],
+   "tokens": [
+    "snake",
+    "_",
+    "case",
+    "camel",
+    "##case",
+    "ke",
+    "##ba",
+    "##b",
+    "-",
+    "case"
+   ]
+  },
+  {
+   "text": "«guillemets» “smart quotes” ‘single’",
+   "ids": [
+    83,
+    25464,
+    5222,
+    10374,
+    1021,
+    96,
+    529,
+    5053,
+    15620,
+    530,
+    526,
+    1315,
+    527
+   ],
+   "tokens": [
+    "«",
+    "gui",
+    "##lle",
+    "##met",
+    "##s",
+    "»",
+    "“",
+    "smart",
+    "quotes",
+    "”",
+    "‘",
+    "single",
+    "’"
+   ]
+  },
+  {
+   "text": "tab\tseparated\tvalues",
+   "ids": [
+    20634,
+    4465,
+    4306
+   ],
+   "tokens": [
+    "tab",
+    "separated",
+    "values"
+   ]
+  },
+  {
+   "text": "trailing punctuation !!!???",
+   "ids": [
+    11548,
+    25142,
+    5599,
+    13511,
+    5,
+    5,
+    5,
+    35,
+    35,
+    35
+   ],
+   "tokens": [
+    "trailing",
+    "pun",
+    "##ct",
+    "##uation",
+    "!",
+    "!",
+    "!",
+    "?",
+    "?",
+    "?"
+   ]
+  },
+  {
+   "text": "a",
+   "ids": [
+    43
+   ],
+   "tokens": [
+    "a"
+   ]
+  },
+  {
+   "text": "A",
+   "ids": [
+    43
+   ],
+   "tokens": [
+    "a"
+   ]
+  },
+  {
+   "text": "0",
+   "ids": [
+    20
+   ],
+   "tokens": [
+    "0"
+   ]
+  },
+  {
+   "text": "Ⅷ roman numeral",
+   "ids": [
+    1,
+    2148,
+    15377,
+    27996
+   ],
+   "tokens": [
+    "[UNK]",
+    "roman",
+    "nu",
+    "##meral"
+   ]
+  },
+  {
+   "text": "ligature ﬁle ﬂow",
+   "ids": [
+    7024,
+    10250,
+    990,
+    1577,
+    991,
+    4010
+   ],
+   "tokens": [
+    "liga",
+    "##ture",
+    "ﬁ",
+    "##le",
+    "ﬂ",
+    "##ow"
+   ]
+  },
+  {
+   "text": "The quick brown fox jumps over the lazy dog.",
+   "ids": [
+    1002,
+    3254,
+    1835,
+    3425,
+    13529,
+    1064,
+    1002,
+    12977,
+    2905,
+    18
+   ],
+   "tokens": [
+    "the",
+    "quick",
+    "brown",
+    "fox",
+    "jumps",
+    "over",
+    "the",
+    "lazy",
+    "dog",
+    "."
+   ]
+  },
+  {
+   "text": "AI agents must not deceive the people they serve",
+   "ids": [
+    8938,
+    5080,
+    1448,
+    1031,
+    10709,
+    6422,
+    2732,
+    1002,
+    1117,
+    1033,
+    2716
+   ],
+   "tokens": [
+    "ai",
+    "agents",
+    "must",
+    "not",
+    "dec",
+    "##ei",
+    "##ve",
+    "the",
+    "people",
+    "they",
+    "serve"
+   ]
+  },
+  {
+   "text": "Consent is required before any data leaves the device",
+   "ids": [
+    8625,
+    1009,
+    2229,
+    1083,
+    1157,
+    1957,
+    2733,
+    1002,
+    4086
+   ],
+   "tokens": [
+    "consent",
+    "is",
+    "required",
+    "before",
+    "any",
+    "data",
+    "leaves",
+    "the",
+    "device"
+   ]
+  },
+  {
+   "text": "Surveillance capitalism harvests behaviour for profit",
+   "ids": [
+    8873,
+    15504,
+    10209,
+    1021,
+    8170,
+    1011,
+    4624
+   ],
+   "tokens": [
+    "surveillance",
+    "capitalism",
+    "harvest",
+    "##s",
+    "behaviour",
+    "for",
+    "profit"
+   ]
+  }
+ ]
+}

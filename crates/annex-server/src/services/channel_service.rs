@@ -826,7 +826,17 @@ impl ChannelService {
                     scanned_per_channel: SEARCH_SCAN_CAP,
                 })
             } else {
-                let (results, complete) = scan(channel_id.as_deref().unwrap())?;
+                // The `if` arm above covers the all-channels search, so this
+                // branch only runs when a channel id was supplied — but the
+                // compiler does not know that, and `.unwrap()` here would
+                // panic inside a `spawn_blocking`, which reaches the client as
+                // an unexplained 500. Name the condition instead.
+                let Some(id) = channel_id.as_deref() else {
+                    return Err(ChannelServiceError::Internal(
+                        "search reached the single-channel branch with no channel id".to_string(),
+                    ));
+                };
+                let (results, complete) = scan(id)?;
                 Ok(SearchResponse {
                     results,
                     complete,

@@ -887,58 +887,69 @@ async fn a_ws_token_is_replayable_within_its_ttl() {
 }
 
 /// The consequence of the replay above, made concrete: the replayed socket
-/// takes over the original's place in the broadcast registry.
+/// takes over, and the original is CLOSED rather than left half-alive.
 ///
-/// `first` sends a message and `second` is the socket it comes out of. That
-/// can only happen because `add_session` overwrote the single entry keyed by
-/// `alice`, so every broadcast addressed to alice — including the echo of
-/// her own send — is now routed to whoever connected last. A leaked token is
-/// therefore not just an eavesdropping risk; spending it silently detaches
-/// the real user's client from the channels it is sitting in.
+/// `add_session` keeps one entry per pseudonym, so a second connection
+/// displaces the first in the broadcast registry. That much was always true.
+/// What the displaced socket did afterwards is the part that changed.
 ///
-/// Asserted as a positive delivery rather than as `first` receiving nothing,
-/// so there is no waiting-for-absence timeout to make the test flaky.
+/// It used to stay open. Dropping its `Sender` ended the writer task, but the
+/// reader loop waited on the client, so the socket lived on: able to send,
+/// unable to receive, and invisible to any count keyed on the registry. Two
+/// consequences, and the second is worse than the eavesdropping the doc
+/// comment above describes. A user whose token leaked went quiet without
+/// being disconnected — no close frame, no reconnect, just a client that had
+/// stopped hearing anything. And a client reconnecting in a loop with ONE
+/// valid token accumulated sockets without bound, each holding a reader task,
+/// two event relays and a 1024-slot channel.
+///
+/// Now the displaced session is cancelled, so `first` observes a close. That
+/// is both the resource fix and the better user-visible behaviour: a client
+/// that is disconnected reconnects, and a real user notices being kicked off.
 #[tokio::test]
-async fn a_replayed_token_takes_over_the_original_sockets_delivery() {
+async fn a_replayed_token_closes_the_socket_it_displaces() {
     let app = setup(false).await;
     let token = mint_token_over_http(&app.router, "alice").await;
 
     let mut first = upgrade(app.addr, &format!("token={token}"))
         .await
         .expect("first use of the token must work");
-    send_json(
-        &mut first,
-        json!({ "type": "subscribe", "channelId": "chan-alice" }),
-    )
-    .await;
+    // Speak once, so the first socket is demonstrably live before the replay.
+    // Without this the close below could equally mean it was never working.
+    let frame = speak(&mut first, "chan-alice", "before the replay").await;
+    assert_eq!(frame["senderPseudonym"], "alice", "frame: {frame}");
 
     let mut second = upgrade(app.addr, &format!("token={token}"))
         .await
         .expect("the replay must succeed for this test to mean anything");
-    send_json(
-        &mut second,
-        json!({ "type": "subscribe", "channelId": "chan-alice" }),
-    )
-    .await;
 
-    send_json(
-        &mut first,
-        json!({
-            "type": "message",
-            "channelId": "chan-alice",
-            "content": "sent by the original socket",
-            "replyTo": null,
-        }),
-    )
-    .await;
-
-    let frame = next_json(&mut second).await;
-    assert_eq!(
-        frame["type"], "message",
-        "expected the broadcast on the replayed socket, got: {frame}"
+    // The displaced socket ends. Read until the stream terminates rather than
+    // asserting on one specific frame: a close may be preceded by whatever the
+    // session had already queued, and which of those lands first is a race
+    // this test has no reason to care about.
+    let closed = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match first.next().await {
+                None => return true,
+                Some(Err(_)) => return true,
+                Some(Ok(Message::Close(_))) => return true,
+                Some(Ok(_)) => continue,
+            }
+        }
+    })
+    .await
+    .expect(
+        "the displaced socket must be closed, not left open-but-deaf — a client \
+         that is never disconnected never reconnects, and one valid token could \
+         otherwise pin unbounded sockets",
     );
+    assert!(closed);
+
+    // And the replacement is fully functional: displacing the old session must
+    // not have damaged the new one.
+    let frame = speak(&mut second, "chan-alice", "after the replay").await;
     assert_eq!(
-        frame["content"], "sent by the original socket",
-        "the replayed socket did not inherit the original's delivery: {frame}"
+        frame["senderPseudonym"], "alice",
+        "the replayed socket should be a working session: {frame}"
     );
 }
