@@ -378,6 +378,12 @@ async fn relay_redaction_enqueues_prefixed_outbox_rows() {
         metrics: Default::default(),
     });
 
+    // Captured before `state` is consumed. NOT the harness cipher: the two
+    // derive from different signing keys, so decrypting with the wrong one
+    // silently yields the ciphertext unchanged and the parse below would fail
+    // in a way that looks like a serialisation bug.
+    let relay_cipher = state.message_cipher();
+
     relay_redaction(
         state,
         CHANNEL_ID.to_string(),
@@ -401,7 +407,15 @@ async fn relay_redaction_enqueues_prefixed_outbox_rows() {
         format!("redaction:{MESSAGE_ID}"),
         "outbox key must be namespaced so it can't collide with the original message row"
     );
-    let parsed: FederatedRedactionEnvelope = serde_json::from_str(&envelope_json).unwrap();
+    // Decrypt, as the delivery worker does. `federation_outbox` rows are
+    // stored encrypted and outlive the retention sweep.
+    let mut decrypted = envelope_json.clone();
+    relay_cipher.decrypt_in_place(&mut decrypted);
+    assert_ne!(
+        decrypted, envelope_json,
+        "the queued envelope must be encrypted at rest"
+    );
+    let parsed: FederatedRedactionEnvelope = serde_json::from_str(&decrypted).unwrap();
     assert_eq!(parsed.envelope_kind, "redaction");
     assert_eq!(parsed.message_id, MESSAGE_ID);
     assert_eq!(parsed.redacted_by, SENDER);

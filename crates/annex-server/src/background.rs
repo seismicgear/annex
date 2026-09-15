@@ -319,7 +319,16 @@ pub async fn drain_outbox_batch(state: Arc<AppState>, batch_size: i64) -> Result
     };
 
     let mut handles = Vec::new();
-    for (id, peer_id, envelope_json, attempts) in rows {
+    for (id, peer_id, stored_envelope, attempts) in rows {
+        // Decrypt once, at the top: the envelope is stored encrypted because
+        // it carries the message body in cleartext and `federation_outbox`
+        // rows outlive the retention sweep that deletes from `messages`. Both
+        // uses below — routing by `envelopeKind` and the POST body — need the
+        // plaintext. `MessageCipher::decrypt` passes unmarked values through
+        // unchanged, so rows enqueued before the column was encrypted still
+        // route and deliver without a migration.
+        let mut envelope_json = stored_envelope;
+        state.message_cipher().decrypt_in_place(&mut envelope_json);
         let peer_base = match peer_urls.get(&peer_id).cloned() {
             Some(u) => u,
             None => {

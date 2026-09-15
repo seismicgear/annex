@@ -135,7 +135,17 @@ async fn test_join_voice_channel_success() {
     {
         let conn = pool.get().unwrap();
         conn.execute(
-            "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active) VALUES (1, 'user-1', 'HUMAN', 1)",
+            // `can_voice` is set explicitly because this INSERT bypasses
+            // `create_platform_identity`, which is the only production path
+            // that creates a member and which always sets it to 1. The column
+            // itself defaults to 0 (migration 004), so a raw fixture models a
+            // member whose voice has been revoked — not an ordinary one. That
+            // distinction became visible when voice-join started consulting the
+            // capability; before that the flag was inert and the fixture's
+            // omission could not be noticed.
+            "INSERT INTO platform_identities \
+             (server_id, pseudonym_id, participant_type, active, can_voice) \
+             VALUES (1, 'user-1', 'HUMAN', 1, 1)",
             [],
         )
         .unwrap();
@@ -205,7 +215,17 @@ async fn test_join_voice_channel_forbidden_not_member() {
     {
         let conn = pool.get().unwrap();
         conn.execute(
-            "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active) VALUES (1, 'user-1', 'HUMAN', 1)",
+            // `can_voice` is set explicitly because this INSERT bypasses
+            // `create_platform_identity`, which is the only production path
+            // that creates a member and which always sets it to 1. The column
+            // itself defaults to 0 (migration 004), so a raw fixture models a
+            // member whose voice has been revoked — not an ordinary one. That
+            // distinction became visible when voice-join started consulting the
+            // capability; before that the flag was inert and the fixture's
+            // omission could not be noticed.
+            "INSERT INTO platform_identities \
+             (server_id, pseudonym_id, participant_type, active, can_voice) \
+             VALUES (1, 'user-1', 'HUMAN', 1, 1)",
             [],
         )
         .unwrap();
@@ -246,7 +266,17 @@ async fn test_join_voice_channel_bad_request_wrong_type() {
     {
         let conn = pool.get().unwrap();
         conn.execute(
-            "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active) VALUES (1, 'user-1', 'HUMAN', 1)",
+            // `can_voice` is set explicitly because this INSERT bypasses
+            // `create_platform_identity`, which is the only production path
+            // that creates a member and which always sets it to 1. The column
+            // itself defaults to 0 (migration 004), so a raw fixture models a
+            // member whose voice has been revoked — not an ordinary one. That
+            // distinction became visible when voice-join started consulting the
+            // capability; before that the flag was inert and the fixture's
+            // omission could not be noticed.
+            "INSERT INTO platform_identities \
+             (server_id, pseudonym_id, participant_type, active, can_voice) \
+             VALUES (1, 'user-1', 'HUMAN', 1, 1)",
             [],
         )
         .unwrap();
@@ -289,7 +319,17 @@ async fn test_leave_voice_channel_success() {
     {
         let conn = pool.get().unwrap();
         conn.execute(
-            "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active) VALUES (1, 'user-1', 'HUMAN', 1)",
+            // `can_voice` is set explicitly because this INSERT bypasses
+            // `create_platform_identity`, which is the only production path
+            // that creates a member and which always sets it to 1. The column
+            // itself defaults to 0 (migration 004), so a raw fixture models a
+            // member whose voice has been revoked — not an ordinary one. That
+            // distinction became visible when voice-join started consulting the
+            // capability; before that the flag was inert and the fixture's
+            // omission could not be noticed.
+            "INSERT INTO platform_identities \
+             (server_id, pseudonym_id, participant_type, active, can_voice) \
+             VALUES (1, 'user-1', 'HUMAN', 1, 1)",
             [],
         )
         .unwrap();
@@ -575,7 +615,17 @@ async fn test_voice_join_not_configured_returns_structured_error() {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active) VALUES (1, 'user-1', 'HUMAN', 1)",
+            // `can_voice` is set explicitly because this INSERT bypasses
+            // `create_platform_identity`, which is the only production path
+            // that creates a member and which always sets it to 1. The column
+            // itself defaults to 0 (migration 004), so a raw fixture models a
+            // member whose voice has been revoked — not an ordinary one. That
+            // distinction became visible when voice-join started consulting the
+            // capability; before that the flag was inert and the fixture's
+            // omission could not be noticed.
+            "INSERT INTO platform_identities \
+             (server_id, pseudonym_id, participant_type, active, can_voice) \
+             VALUES (1, 'user-1', 'HUMAN', 1, 1)",
             [],
         )
         .unwrap();

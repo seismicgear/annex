@@ -2,7 +2,22 @@
 //! `IncomingMessage::WebRtcIceCandidate` — SDP-offer answering and ICE
 //! relay for the in-process WebRTC voice layer.
 //!
-//! Behaviour preserved verbatim from the original inline arms:
+//! `handle_offer` used to be the whole voice authorization story on this
+//! path, and the story was one sentence: is this pseudonym a member of the
+//! channel. Everything the HTTP join checks — the server's `voice_enabled`
+//! policy, whether the voice service is configured at all, whether the
+//! channel is a Voice or Hybrid channel, and the identity's `can_voice`
+//! capability — was checked on that path and nowhere else. A client that
+//! skipped `POST /api/channels/:id/voice/join` and sent a `webrtc_offer`
+//! frame got a live SFU peer connection with none of it applied. The
+//! operator's kill switch was a client-side suggestion.
+//!
+//! Both halves are closed here: the shared gate
+//! (`ChannelService::ensure_voice_allowed`) so the two paths cannot drift
+//! again, and the join grant the HTTP path already minted, so an offer cannot
+//! outlive the authorization that permitted it.
+//!
+//! Behaviour otherwise preserved from the original inline arms:
 //!
 //!   * `handle_offer` runs the membership gate (same wording on
 //!     Denied / Error), then asks the voice service to answer the
@@ -20,12 +35,18 @@
 //! No protocol shape changes; field names on the outgoing answer
 //! frame match the previous inline definition.
 
+use crate::services::ChannelService;
 use crate::ws::context::CommandContext;
 use crate::ws::dispatch::{check_ws_membership, MembershipResult};
 use crate::ws::error::send_ws_error;
 use crate::ws::protocol::OutgoingMessage;
 
-pub(crate) async fn handle_offer(ctx: &CommandContext<'_>, channel_id: String, sdp: String) {
+pub(crate) async fn handle_offer(
+    ctx: &CommandContext<'_>,
+    channel_id: String,
+    sdp: String,
+    voice_token: Option<String>,
+) {
     match check_ws_membership(
         ctx.state.pool.clone(),
         ctx.state.server_id,
@@ -35,6 +56,62 @@ pub(crate) async fn handle_offer(ctx: &CommandContext<'_>, channel_id: String, s
     .await
     {
         MembershipResult::Allowed => {
+            // The same gate the HTTP join runs, from the same function, so the
+            // two cannot drift apart again.
+            if let Err(e) = ChannelService::new(ctx.state.clone())
+                .ensure_voice_allowed(ctx.identity, &channel_id)
+                .await
+            {
+                send_ws_error(ctx.tx, e.to_string());
+                return;
+            }
+
+            // The join grant, required only to ENTER.
+            //
+            // Not required for a peer already in the room, and that is not a
+            // loophole — it is what keeps a long call alive. The grant's TTL is
+            // five minutes (`VOICE_TOKEN_DEFAULT_TTL_SECS`) and calls run
+            // longer; a flat requirement would refuse the renegotiation offer
+            // that adding a screen-share track produces and drop the user out
+            // of a working call. Entry still costs a fresh, valid grant bound
+            // to this room and this pseudonym, and a peer can only be "already
+            // present" because it presented one.
+            if !ctx.state.voice_service.has_peer(&channel_id, ctx.pseudonym) {
+                let Some(token) = voice_token
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                else {
+                    send_ws_error(
+                        ctx.tx,
+                        "A voice join grant is required: call POST /api/channels/{id}/voice/join \
+                         first and send its token with the offer."
+                            .to_string(),
+                    );
+                    return;
+                };
+                if let Err(e) = annex_voice::verify_join_token(
+                    token,
+                    &ctx.state.voice_token_secret,
+                    Some(&channel_id),
+                    Some(ctx.pseudonym),
+                ) {
+                    tracing::warn!(
+                        pseudonym = %ctx.pseudonym,
+                        channel_id = %channel_id,
+                        error = %e,
+                        "webrtc offer rejected: voice join grant is not valid for this room"
+                    );
+                    send_ws_error(
+                        ctx.tx,
+                        "Your voice join grant is not valid for this channel, or it has expired. \
+                         Rejoin the call."
+                            .to_string(),
+                    );
+                    return;
+                }
+            }
+
             match ctx
                 .state
                 .voice_service
