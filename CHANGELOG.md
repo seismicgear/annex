@@ -12,6 +12,20 @@ supersession banner and is kept for provenance rather than maintained.
 
 ### Fixed
 
+- **The desktop app panicked before its first window.** Registering
+  `tauri_plugin_updater` unconditionally made every build without
+  `TAURI_SIGNING_PUBLIC_KEY` exit at startup with
+  `PluginInitialization("updater", "invalid type: null, expected struct
+  Config")` — `plugins.updater` is deliberately not in `tauri.conf.json`
+  because the key is the operator's and the release workflow injects it. That
+  is every `cargo tauri dev`, every local `cargo tauri build`, and a tagged
+  release if the secret is unset. The plugin is registered only when the
+  compiled config carries it; a signed release still verifies each detached
+  signature against the injected key, an unsigned build has no updater at all.
+  Found by `scripts/desktop-audit.sh` — `cargo check`, `clippy --all-targets`,
+  `cargo test -p annex-desktop` and `cargo tauri build` were all green, because
+  none of them runs the binary.
+
 - **Live captions transcribed nothing, in every deployment, and always had.**
   Three independent causes, each sufficient: the SFU tap handed whisper.cpp
   headerless 48 kHz PCM, which its loader rejects before reading a sample (it

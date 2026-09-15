@@ -627,7 +627,20 @@ The second desktop job, `desktop-audit`, runs
 `bash scripts/desktop-audit.sh` — it takes the bundle past "does it
 build" to **does it install and run**: `dpkg -i`, binary on PATH, the
 `annex://` scheme handler registered with the OS, a headless Xvfb launch
-that survives startup, then `dpkg -r` and confirmed removal. It *does*
+that survives startup, then `dpkg -r` and confirmed removal.
+
+**That job is not redundant with the three above it, and here is the proof.**
+A commit registering `tauri_plugin_updater` unconditionally shipped an app
+that panicked in `tauri::Builder::build()` — `PluginInitialization("updater",
+"invalid type: null, expected struct Config")` — because `plugins.updater` is
+deliberately absent from `tauri.conf.json` (the public key is injected at
+build time from a secret). The app exited before its first window, for every
+build made without that secret: every `cargo tauri dev`, every local build.
+`cargo check`, `cargo clippy --all-targets`, `cargo test -p annex-desktop`
+(24 tests) and `cargo tauri build` were all GREEN on that commit. None of them
+runs the binary. If a change touches plugin registration, the builder chain,
+or anything else that executes before the first window, the only lane that can
+speak to it is this one. It *does*
 attempt `cargo test -p annex-desktop`, but gates it on ~8 GB of free
 disk and reports a skip rather than dying mid-link, so a tight runner
 degrades instead of failing. See `docs/ui-audit/README.md`.
