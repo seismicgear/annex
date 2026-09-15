@@ -111,7 +111,7 @@ as authoritative for CI and update this file.
 ### fe-test
 - Command: `npm --prefix client test -- --run`
 - Workflow: `.github/workflows/ci.yml::test-frontend::npm test`
-- Catches: Vitest unit + RTL component test regressions. 500 tests across 54 files at last baseline (`npx vitest list`).
+- Catches: Vitest unit + RTL component test regressions. 502 tests across 54 files at last baseline (`cd client && npm test`).
 - Also typechecked, which it was not until recently: `ci.yml::test-frontend` runs `npx tsc -b` before `npm test`, and `client/tsconfig.json` references `tsconfig.test.json`, so `src/**/*.test.ts(x)` and `e2e/` are covered. Vitest transpiles with esbuild and cannot fail on a type error, so without that project a broken test file passed by being unparsed.
 
 ### fe-build

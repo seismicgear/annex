@@ -28,12 +28,13 @@ Phase 1: Identity Plane ................ PARTIAL  (membership solid; v2 secret-
                                                    independent participants, not
                                                    a ceremony)
 Phase 2: Server Core ................... COMPLETE
-Phase 3: VRP Trust Negotiation ......... PARTIAL  (reputation gates outcomes +
-                                                   real measured alignment score
-                                                   [2026-06-19]; semantic now a
-                                                   paraphrase-aware concept
-                                                   embedding [2026-06-20], not a
-                                                   learned model)
+Phase 3: VRP Trust Negotiation ......... PARTIAL  (pinned static embedding
+                                                   model, floor-normalised
+                                                   scores, scorer fingerprint in
+                                                   the handshake [2026-09-15];
+                                                   thresholds measured on a
+                                                   16-pair corpus, which is too
+                                                   small to call them tuned)
 Phase 4: Text Communication ............ COMPLETE
 Phase 5: Presence Graph ................ COMPLETE
 Phase 6: Agent Protocol ................ COMPLETE (alignment is enforced at
@@ -233,7 +234,7 @@ Status line said COMPLETE — the same drift the reality check of 2026-06-19
 caught in the Status lines, one level down, where nothing was looking.
 
 - [x] `cargo build` succeeds for all workspace crates with zero warnings
-- [x] `cargo test` passes (including the database integration test) — 1231 tests / 121 binaries
+- [x] `cargo test` passes (including the database integration test) — 1284 tests / 134 binaries
 - [x] `cargo clippy -- -D warnings` passes
 - [ ] CI pipeline is green on `main`. Not yet: the fixes are on a branch. Run
       `34006312223` on `b172edf` was green on eight jobs and red on UI Audit
@@ -481,7 +482,7 @@ Ticked against the code on 2026-09-15, same as Phase 0's.
 
 ## Phase 3: VRP Trust Negotiation
 
-**Status**: `PARTIAL` — semantic alignment is a curated 12-concept lexicon plus character-trigram hashing, not a learned model — and it is the sole input deciding Aligned/Partial/Conflict for every handshake.
+**Status**: `PARTIAL` — semantic alignment now runs a pinned, digest-verified static embedding model (`minishlab/potion-base-2M`, ADR-0015), mandatory under a production profile, with scores normalised against the loaded scorer's measured noise floor and the scorer's fingerprint carried in the handshake. What keeps this `PARTIAL` is the evidence behind the threshold, not the instrument: the separating bands were measured on a **16-pair labelled corpus**, which is enough to show they do not overlap and not enough to call `agent_min_alignment_score: 0.06` tuned — and this score is the sole input deciding Aligned/Partial/Conflict for every handshake.
 **Prerequisites**: Phase 2 `COMPLETE`
 **Estimated scope**: Port/adapt MABOS VRP trust negotiation for server-agent and server-server contexts
 
@@ -522,9 +523,15 @@ The trust negotiation layer. After this phase, an entity (agent or server) can p
       deterministic and dependency-free, replacing bag-of-words as the default
       [2026-06-20]. Unit-tested: paraphrase pairs beat bag-of-words by a clear
       margin; opposing-value statements stay low.
-- [ ] (Optional) integrate a *learned* embedding model behind the
+- [x] (Optional) integrate a *learned* embedding model behind the
       `SemanticEmbedder` trait for deployments that accept the size/latency cost
-- [ ] ADR: which learned embedding model, local vs. API, latency budget
+      — `embedding::StaticEmbedder`, `minishlab/potion-base-2M` (MIT), a
+      29,528 × 64 static distilled table plus the canonical WordPiece
+      tokenizer, revision- and digest-pinned, 7.5 MB, mandatory under a
+      production profile with the lexicon kept as a dev-only fallback
+      [2026-09-15]
+- [x] ADR: which learned embedding model, local vs. API, latency budget —
+      `docs/adr/0015-vrp-alignment-embedding-model.md`
 - [x] If deferred: ensure `VrpAlignmentConfig.semantic_alignment_required` can be set to `false` without breaking the handshake flow
 
 #### 3.4 — Reputation system
@@ -538,7 +545,12 @@ The trust negotiation layer. After this phase, an entity (agent or server) can p
   - `principles: Vec<String>` — server's declared operating principles
   - `prohibited_actions: Vec<String>` — what the server prohibits
 - [x] Server policy root is derived from `server_policy_versions.policy_json`
-- [ ] Changes to server policy regenerate the policy root and trigger re-evaluation of all active agent and federation relationships
+- [x] Changes to server policy regenerate the policy root and trigger re-evaluation of all active agent and federation relationships
+      — `PUT /api/admin/policy` swaps the in-memory policy and then calls
+      `policy::recalculate_all_alignments`, which re-derives
+      `ServerPolicyRoot::from_policy` and re-scores every active agent
+      registration AND every federation agreement; the same function runs at
+      startup when the scorer fingerprint has changed
 
 #### 3.6 — Agent handshake endpoint
 - [x] `POST /api/vrp/agent-handshake`
