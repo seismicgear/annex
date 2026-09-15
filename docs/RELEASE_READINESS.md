@@ -65,13 +65,39 @@ and verifies real proofs.
 Defining a suite is not running it — every row here now names a command AND a
 job, and `scripts/test-all.sh` runs the ones that need no browser.
 
-> **CI executes.** The paragraph that stood here said it did not — that every
-> job finished in three to four seconds with `runner_id: 0` and no steps,
-> because GitHub was not allocating runners. That was true of runs 741–748 and
-> has not been true since. Run `34006312223` on `main` (`b172edf`) occupied
+> **CI executes when it gets runners, and whether it gets them is not
+> reliable.** The paragraph that first stood here said CI proved nothing, because
+> every job finished in three to four seconds with `runner_id: 0` and no steps.
+> Its replacement said that was over. Both were overstated in the same way:
+> allocation is intermittent, and each paragraph read one sample as a standing
+> condition.
+>
+> What is measured. Runs 741–748 all died in three to six seconds with no
+> runner. Run `34001650423` (749) failed that way on attempt 1 and ran 78
+> minutes on attempt 2. Run `34006312223` (750) on `main` (`b172edf`) occupied
 > real runners for 41 minutes: `Check (Server)`, `Frontend Tests`, both desktop
 > builds, both server smokes, the federation smoke and the desktop audit all
-> passed; `UI Audit (Linux)` failed; macOS was skipped by design.
+> passed; `UI Audit (Linux)` failed; macOS was skipped by design. Run
+> `35033304858` (751), dispatched on `claude/beautiful-bohr-9qb34p`, died in
+> three seconds on BOTH attempts — five jobs each time, `ubuntu-latest` and
+> `windows-latest` alike, `runner_id: 0`, `runner_name` empty, and HTTP 404 for
+> the job logs because no log was ever written. The five jobs that `needs` them
+> were skipped, so the run reports as a failure with nine of ten jobs having
+> executed nothing.
+>
+> **So tell the two apart before reading either one as a result**, in this
+> order, because they render identically in the checks list:
+>
+> 1. `runner_id` is `0` and `runner_name` is empty → nothing ran. A job that ran
+>    names its runner.
+> 2. The job's log download 404s → nothing ran. A job that ran has a log, even
+>    if it failed in its first step.
+> 3. Elapsed time is a few seconds on a job whose fastest step is a `cargo`
+>    fetch → nothing ran.
+>
+> None of that excuses a red check that has a runner, a log and a duration.
+> Re-running the workflow is the response to the first kind; it worked for 749
+> and did not for 751.
 >
 > Leaving that paragraph in place was the more dangerous of the two errors it
 > could make. It instructed the reader to discount a red check as
