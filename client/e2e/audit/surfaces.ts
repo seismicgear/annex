@@ -1555,6 +1555,63 @@ export const SURFACES: Surface[] = [
     },
   },
   {
+    id: 'voice-captions-unavailable',
+    stage: '07-voice',
+    title: 'Live captions on a server with no speech model',
+    role: 'founder',
+    intent:
+      'Silence had two causes and they looked identical. Nobody speaking, and no transcriber ' +
+      'installed, both produced an empty caption strip — so a user on a server with no GGML ' +
+      'model saw exactly what a user in a quiet call saw, and the operator could not learn it ' +
+      'from the app either. CLAUDE.md defect class 1, in the one place a user would notice. ' +
+      'This is the capture of the notice that replaced it, including the sentence naming WHICH ' +
+      'file is missing — a bare `stt_ready: false` covers four situations and the one an ' +
+      'operator hits most is a binary without its executable bit.',
+    // The same real join as `voice-captions`: the strip only exists inside a
+    // connected call. No transcripts are injected, which is the point — an
+    // empty strip is the state under test.
+    setup: async (page) => {
+      // Voice ready, transcription not. `stt_detail` is what the server sends
+      // when the model file is absent; the client prefers it over its own
+      // generic sentence.
+      await page.route('**/api/voice/config-status', (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            voice_enabled: true,
+            policy_enabled: true,
+            infrastructure_ready: true,
+            has_public_url: true,
+            has_local_url: true,
+            stt_ready: false,
+            stt_detail:
+              'The GGML model file is missing: assets/models/ggml-base.en.bin. Run ' +
+              'scripts/setup-stt.sh to download it, or set ANNEX_STT_MODEL_PATH to an ' +
+              'existing model.',
+            setup_hint:
+              'Voice is ready, but live captions are not: The GGML model file is missing.',
+          }),
+        }),
+      );
+      await page.routeWebSocket(/\/ws/, (ws) => {
+        const server = ws.connectToServer();
+        ws.onMessage((raw) => server.send(raw));
+        server.onMessage((raw) => ws.send(raw));
+      });
+    },
+    navigate: async (page) => {
+      await selectChannel(page, SEED.channels.voice);
+      await page.locator('.voice-join-btn').first().click();
+      await expect(page.locator('.voice-captions-unavailable')).toBeVisible({ timeout: 45_000 });
+      await expect(page.getByRole('status')).toContainText('setup-stt.sh');
+    },
+    clip: '.voice-captions',
+    waive: {
+      console: 'the WebRTC session logs its negotiation against a lane with no SFU peer',
+    },
+  },
+  {
     id: 'voice-captions',
     stage: '07-voice',
     title: 'Live captions in a call',
