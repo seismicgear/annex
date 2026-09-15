@@ -70,6 +70,31 @@ fn bundled_resource_paths(exe_dir: &Path, suffix: &[&str]) -> Vec<PathBuf> {
         .collect()
 }
 
+
+/// Whether this build's compiled config carries a usable `plugins.updater`.
+///
+/// Null and empty both count as absent. `tauri.conf.json` omits the key
+/// entirely, and a `--config` overlay that set it to `null` would deserialise
+/// to the same panic the presence check exists to prevent, so both are treated
+/// as "this build has no updater".
+fn updater_is_configured(context: &tauri::Context) -> bool {
+    updater_config_is_usable(context.config().plugins.0.get("updater"))
+}
+
+/// The decision itself, split out from the `Context` so it can be tested.
+///
+/// Constructing a `tauri::Context` in a unit test means compiling a whole app,
+/// so the thing that decides whether a release ships a launchable binary would
+/// otherwise be the one line with no test on it.
+fn updater_config_is_usable(value: Option<&serde_json::Value>) -> bool {
+    match value {
+        None => false,
+        Some(serde_json::Value::Null) => false,
+        Some(serde_json::Value::Object(map)) => !map.is_empty(),
+        Some(_) => true,
+    }
+}
+
 fn main() {
     // Declare what this binary is, BEFORE anything spawns a thread.
     //
@@ -394,7 +419,12 @@ fn main() {
         }
     }
 
-    tauri::Builder::default()
+    // The compiled config is read BEFORE the builder, because one plugin can
+    // only be registered when the config has something for it to read. See the
+    // updater block below.
+    let context = tauri::generate_context!();
+
+    let builder = tauri::Builder::default()
         // Single instance MUST be registered before the deep-link plugin.
         //
         // Without it, clicking an `annex://` link while Annex is already
@@ -421,14 +451,44 @@ fn main() {
                 let _ = window.unminimize();
             }
         }))
-        .plugin(tauri_plugin_deep_link::init())
-        // The updater plugin was configured in the bundle and never installed
-        // in the app, so `createUpdaterArtifacts` would have produced signed
-        // bundles that nothing could consume. Registering it is what makes the
-        // signature meaningful: the plugin verifies the detached signature
-        // against the public key baked into the built config before it will
-        // apply anything.
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_deep_link::init());
+
+    // The updater is registered only when this build actually carries its
+    // config, and that condition is the whole point.
+    //
+    // `plugins.updater` is deliberately NOT in `tauri.conf.json`: the public key
+    // is the operator's, and the release workflow injects it with `--config`
+    // from `TAURI_SIGNING_PUBLIC_KEY` alongside `createUpdaterArtifacts`. So a
+    // build made WITHOUT that secret — every `cargo tauri dev`, every local
+    // `cargo tauri build`, every unsigned dry run — has no `plugins.updater` at
+    // all, and registering the plugin unconditionally made such a build panic
+    // before its first window:
+    //
+    //     PluginInitialization("updater", "Error deserializing 'plugins.updater'
+    //     within your Tauri configuration: invalid type: null, expected struct
+    //     Config")
+    //
+    // Which is to say the app did not start. Found by `scripts/desktop-audit.sh`
+    // — `cargo check`, `cargo clippy`, `cargo test -p annex-desktop` (24 tests)
+    // and the bundle build were ALL green on that commit, because none of them
+    // runs the binary. The audit installs the `.deb` and launches it under
+    // Xvfb, and that is the only step that could have caught this.
+    //
+    // A signed release still gets the updater, and gets it meaningfully: the
+    // plugin verifies each detached signature against the injected public key
+    // before applying anything. An unsigned build gets no updater, which is the
+    // honest behaviour — there is no key it could verify against.
+    let builder = if updater_is_configured(&context) {
+        builder.plugin(tauri_plugin_updater::Builder::new().build())
+    } else {
+        tracing::info!(
+            "no `plugins.updater` in this build's config — updater disabled \
+             (a release build injects it from TAURI_SIGNING_PUBLIC_KEY)"
+        );
+        builder
+    };
+
+    builder
         .manage(AppManagedState {
             data_dir,
             config_path,
@@ -526,7 +586,7 @@ fn main() {
             media::get_platform_media_status,
             media::set_media_keepalive,
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error building Annex desktop")
         .run(|app_handle, event| {
             // Clean up out-of-process / external state when the event loop is
@@ -585,5 +645,44 @@ mod tests {
             )),
             "must cover macOS Contents/Resources resource root, got {paths:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod updater_config_tests {
+    use super::updater_config_is_usable;
+    use serde_json::json;
+
+    /// The shipped state: `tauri.conf.json` has no `plugins.updater` because the
+    /// public key belongs to the operator and is injected at build time.
+    #[test]
+    fn an_absent_updater_section_is_not_usable() {
+        assert!(!updater_config_is_usable(None));
+    }
+
+    /// The case that actually panicked. A `--config` overlay, or a merge that
+    /// produced the key with no value, deserialises as `invalid type: null,
+    /// expected struct Config` INSIDE the plugin's initialiser — which is after
+    /// the point where anything can catch it, so the app exits before its first
+    /// window.
+    #[test]
+    fn a_null_updater_section_is_not_usable() {
+        assert!(!updater_config_is_usable(Some(&json!(null))));
+    }
+
+    /// `{}` is missing the pubkey and the endpoints, so it is not an updater
+    /// either. Tauri would reject it for the same reason.
+    #[test]
+    fn an_empty_updater_section_is_not_usable() {
+        assert!(!updater_config_is_usable(Some(&json!({}))));
+    }
+
+    /// What the release workflow injects from `TAURI_SIGNING_PUBLIC_KEY`.
+    #[test]
+    fn a_populated_updater_section_is_usable() {
+        assert!(updater_config_is_usable(Some(&json!({
+            "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IHRlc3Q=",
+            "endpoints": ["https://example.invalid/latest.json"],
+        }))));
     }
 }
