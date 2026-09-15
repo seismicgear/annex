@@ -483,6 +483,28 @@ the reading of it was wrong in an interesting-sounding way. Restore with `cp`,
 or `touch` the file afterwards. The same applies to any revert-to-confirm-red
 cycle, which is most of them here.
 
+### Disk: the suite's own link step can run out of it
+
+`cargo test --workspace --exclude annex-desktop` builds ~121 test binaries and
+every one statically links webrtc-rs, arkworks, axum and tokio. Two things keep
+that inside a fixed disk allowance, and the failure mode when they don't reads as
+a broken machine rather than a full one — `error: linking with 'cc' failed`,
+several times, with no mention of space.
+
+- **`[profile.dev.package."*"] debug = 0`** in the root `Cargo.toml`. Measured
+  across two complete builds with nothing stale in `target/`: 126 binaries
+  averaging 100 MB became 121 averaging 66 MB, the executables alone 12.6 GB →
+  7.8 GB, `target/` 19 GB → 11 GB. Workspace crates keep `line-tables-only`, so
+  panic backtraces through OUR code still carry file and line numbers.
+- **`bash scripts/prune-stale-test-binaries.sh`** when a run dies for space.
+  Cargo never removes the previous hash of a rebuilt test binary, so a session
+  with many edits accumulates orphans — 9.0 GB of them in one measured case. The
+  script keeps the newest per target; anything it removes, cargo rebuilds.
+  `--dry-run` reports without deleting.
+
+`df` misleads here: "Avail" at 0 with low "Used" means the per-session allowance
+is spent, not that the disk is broken. Deletes still succeed while writes fail.
+
 ### Linting
 ```bash
 cargo fmt --all --check
