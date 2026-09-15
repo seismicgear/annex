@@ -26,6 +26,12 @@ All configuration can be overridden via environment variables. Set them in `dock
 
 Authoritative env-var names live in `crates/annex-server/src/config.rs::load_config`. This table is a subset for deploy operators; consult the README for the full list.
 
+<!-- Keep this table CONTIGUOUS. Prose, or even an HTML comment, between two
+     rows ends a GitHub-flavoured Markdown table: the seven
+     ANNEX_FEDERATION_* variables used to sit after a paragraph about the
+     storage thresholds and rendered as a block of literal pipe characters.
+     Explanatory notes go after the last row. -->
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ANNEX_BUILD_PROFILE` | compiled default (`production` for a release binary, `dev` for a debug build; `annex-desktop` sets `desktop`) | **Governs every production gate.** `production` requires an explicit CORS origin list, forbids a wildcard origin, refuses clustered mode on an in-memory rate limiter, forces the dev-localhost CORS relaxation off, rejects weak or ephemeral signing keys, and refuses to start with `ANNEX_ENFORCE_ZK_PROOFS=false`. `desktop` keeps the artifact and signing-key checks and drops the multi-tenant ones. An unrecognised value falls back to the compiled default rather than to "off". |
@@ -33,7 +39,9 @@ Authoritative env-var names live in `crates/annex-server/src/config.rs::load_con
 | `ANNEX_PORT` | `3000` | HTTP port |
 | `ANNEX_DB_PATH` | `annex.db` | SQLite database file path |
 | `ANNEX_CONFIG_PATH` | `config.toml` | Config file path |
-| `ANNEX_ZK_KEY_PATH` | `zk/keys/membership_vkey.json` | Groth16 verification key |
+| `ANNEX_ZK_KEY_PATH` | `zk/keys/membership_vkey.json` | Groth16 verification key for the **v1** membership circuit. Only loaded when `security.enabled_zk_versions` includes `"v1"`, which it does not by default |
+| `ANNEX_ZK_KEY_PATH_V2` | `zk/keys/membership_v2_vkey.json` | Groth16 verification key for the **v2** membership circuit — the default identity path. With the shipped `enabled_zk_versions = ["v2"]` and `enforce_zk_proofs = true`, a missing or unreadable file here is a hard startup error, so this is an operator-facing requirement rather than an optional override |
+| `ANNEX_EMBEDDING_MODEL_DIR` | `assets/embedding` | Directory holding the pinned VRP alignment model (`model.safetensors` + `tokenizer.json`, 7.5 MB, installed by `scripts/setup-embedding-model.sh`). Under a production profile the server **refuses to start** without it: the score it produces decides which peers and agents are trusted, and the lexicon fallback is a different instrument whose verdicts a peer running the pinned model cannot reproduce. Relative to the process working directory; `annex-desktop` resolves it from the bundle |
 | `ANNEX_WEBRTC_URL` | `ws://localhost:7880` | **Vestigial value, but do not clear it.** Nothing dials this address — the SFU is in-process. It survives only as the on/off gate: `VoiceService::is_enabled()` is false when it is empty, and `join_voice` then refuses every call with `voice_not_configured`. Leave it at the default unless you mean to disable voice. |
 | `ANNEX_WEBRTC_PUBLIC_URL` | (none) | Public URL announced to remote voice clients. Overridden at startup by `ANNEX_PUBLIC_URL` / the persisted server URL when either is set — see [Reverse proxy](#reverse-proxy-recommended). |
 | `ANNEX_WEBRTC_API_KEY` | `devkey` | **Inert.** Carried through `VoiceService` to `AgentVoiceClient::connect`, whose parameters are `_api_key` / `_api_secret` — it authenticates nothing. |
@@ -49,6 +57,15 @@ Authoritative env-var names live in `crates/annex-server/src/config.rs::load_con
 | `ANNEX_STORAGE_MAX_DB_BYTES` | `0` (uncapped) | Size cap for the SQLite database file. **The two thresholds below are headroom beneath this number, so without it neither does anything.** |
 | `ANNEX_STORAGE_WARN_FREE_BYTES` | `536870912` (512 MiB) | Headroom beneath the cap at which the server logs a warning. Writes still flow |
 | `ANNEX_STORAGE_BLOCK_FREE_BYTES` | `67108864` (64 MiB) | Headroom beneath the cap below which writes are rejected with HTTP 507. Must be smaller than the warning threshold |
+| `ANNEX_FEDERATION_FRESHNESS_SECONDS` | `300` | Max age (seconds) of a live federated envelope's `created_at` |
+| `ANNEX_FEDERATION_FUTURE_SKEW_SECONDS` | `60` | Max future skew (seconds) of a live federated envelope's `created_at` |
+| `ANNEX_FEDERATION_OUTBOX_MAX_ATTEMPTS` | `12` | Max delivery attempts before an outbox row is marked `failed` |
+| `ANNEX_FEDERATION_OUTBOX_INTERVAL_SECONDS` | `5` | Outbox worker tick interval |
+| `ANNEX_FEDERATION_OUTBOX_PER_PEER_BATCH` | `8` | Max outbox rows drained per peer per tick (fairness cap) |
+| `ANNEX_FEDERATION_ALLOW_PRIVATE_PEERS` | `false` | Permit federation peers at private / loopback / link-local addresses — see below |
+| `ANNEX_FEDERATION_RELAY_TRANSPORT_ENABLED` | `false` | **Accepted and validated, but not yet wired.** The relay transport exists in `annex-federation` and no server code starts it; setting this logs a warning at startup and changes nothing. Under a production profile it additionally requires `ANNEX_SIGNAL_TRUSTED_PEERS`. Federation runs over the HTTP outbox either way |
+
+### Storage-threshold notes
 
 These three are not free-*disk* measurements, despite what the two older
 names suggest. The server has no portable way to ask the OS how much space
@@ -63,13 +80,6 @@ Both thresholds are validated at startup: the blocking threshold must be
 smaller than the warning one, and the cap must exceed the blocking
 threshold, or the server refuses to start rather than running with a gate
 that can never warn or one that closes on an empty database.
-| `ANNEX_FEDERATION_FRESHNESS_SECONDS` | `300` | Max age (seconds) of a live federated envelope's `created_at` |
-| `ANNEX_FEDERATION_FUTURE_SKEW_SECONDS` | `60` | Max future skew (seconds) of a live federated envelope's `created_at` |
-| `ANNEX_FEDERATION_OUTBOX_MAX_ATTEMPTS` | `12` | Max delivery attempts before an outbox row is marked `failed` |
-| `ANNEX_FEDERATION_OUTBOX_INTERVAL_SECONDS` | `5` | Outbox worker tick interval |
-| `ANNEX_FEDERATION_OUTBOX_PER_PEER_BATCH` | `8` | Max outbox rows drained per peer per tick (fairness cap) |
-| `ANNEX_FEDERATION_ALLOW_PRIVATE_PEERS` | `false` | Permit federation peers at private / loopback / link-local addresses — see below |
-| `ANNEX_FEDERATION_RELAY_TRANSPORT_ENABLED` | `false` | **Accepted and validated, but not yet wired.** The relay transport exists in `annex-federation` and no server code starts it; setting this logs a warning at startup and changes nothing. Under a production profile it additionally requires `ANNEX_SIGNAL_TRUSTED_PEERS`. Federation runs over the HTTP outbox either way |
 
 #### Federating over a private network
 
@@ -177,7 +187,7 @@ To federate with another Annex instance:
 
 3. Once both servers have `Aligned` or `Partial` status, federation is active.
 
-Federation requires the server to be publicly accessible (not `127.0.0.1`). Set `ANNEX_SERVER_HOST=0.0.0.0` and configure appropriate firewall rules.
+Federation requires the server to be publicly accessible (not `127.0.0.1`). Set `ANNEX_HOST=0.0.0.0` and configure appropriate firewall rules.
 
 ## Backup and Restore
 
@@ -353,5 +363,6 @@ The Tauri desktop app automatically acquires a public endpoint from the Annex ro
 - Run behind a reverse proxy (nginx, Caddy) with TLS for production. The server speaks HTTP only.
 - **Message content is encrypted at rest.** This said the database holds plaintext and that E2E was "planned for future"; both were false. `crates/annex-server/src/at_rest.rs` wraps non-E2E message bodies with ChaCha20-Poly1305 under a key derived from the server signing key, so a stored row reads `\x01ar1:base64(...)` rather than the message — `scripts/smoke-federation.sh` has to decrypt it rather than string-compare. End-to-end channel keys shipped in migration `041_e2e_channel_keys`. See `docs/ENCRYPTION.md` for the three layers.
 - ZK verification keys are public (verification is public by design).
+- **`security.enabled_zk_versions` ships as `["v2"]`, and a production profile refuses `"v1"`.** v1's public signals are `[root, commitment]`: nothing in the body is fresh, so a captured `POST /api/zk/verify-membership` request is a bearer credential — replay it after a revocation and the server mints a new session (invariant I-ZK-5). v2 binds a single-use server-issued challenge into the circuit, which is what closes that. There is **no environment-variable override for this field**: an operator who genuinely needs v1 must set it in a config file and run a non-production profile, and should understand that they have re-opened the replay. Consequence for deployment: `ANNEX_ZK_KEY_PATH_V2` must point at a real `membership_v2_vkey.json`, because with the shipped defaults a missing one is a startup failure rather than a degraded mode.
 - **Server signing keys (Ed25519) live in a file, not the database**: `{data_dir}/signing.key`, mode `0600`, resolved by `crates/annex-server/src/startup.rs::resolve_signing_key` in the order env var → file → generate-and-persist. Under a production or desktop profile a weak key (all-zero, all-`0xff`, single-byte fill) is rejected and a failure to persist is a startup error rather than a silent ephemeral key — an ephemeral one rotates on restart and invalidates every session token, voice-join token and federation signature the server has ever issued. **Back this file up with the database**; they are a pair.
 - Rate limiting is enabled by default on identity endpoints.

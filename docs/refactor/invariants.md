@@ -59,18 +59,44 @@ been generated yet.
 
 ## I-ZK-3 — Membership proofs must bind to the expected identity/session
 
-**Property.** A membership proof's public signals are the **two** values
-`[root, commitment]` (in that order), produced by
-`zk/circuits/membership.circom::Membership(20)` (`signal output root; signal output commitment;`).
+**Property.** A membership proof's public signals are versioned, and the
+version decides the layout:
+
+- **v1** — two values `[root, commitment]`, from
+  `zk/circuits/membership.circom::Membership(20)`.
+- **v2** — five values `[root, commitment, nullifier, topicHash, challenge]`,
+  from `zk/circuits/membership_v2.circom::MembershipV2(20)`. This is the
+  default: `security.enabled_zk_versions` ships as `["v2"]`, and a production
+  profile REFUSES `"v1"` (see `config.rs`, `validate_config`). Signal order is
+  outputs first, then public inputs in declaration order — check
+  `zk/build/membership_v2.sym` rather than assuming.
+
 Verification must:
-1. Parse the public signals as exactly two field elements in the documented order.
-2. Compare `root` against the server's current Merkle root (`state.merkle_tree.root_hex()`).
-3. Bind the proof to the caller's claimed pseudonym/commitment by verifying that the same `commitment` is the leaf the caller is using to log in (via `nullifierHex` derived from `commitment` + topic, or via a direct pseudonym-to-commitment lookup).
+1. Parse the public signals as exactly the count the declared version specifies,
+   in the documented order.
+2. Check the root is ACCEPTABLE, not merely current:
+   `annex_identity::merkle::is_root_acceptable` admits the active root plus any
+   root inside `ROOT_EPOCH_GRACE_SECONDS`. A strict equality check against
+   `root_hex()` rejects every proof built a moment before an insertion, which
+   under load is most of them.
+3. Bind the proof to the caller's claimed pseudonym/commitment by verifying that
+   the same `commitment` is the leaf the caller is using to log in (via
+   `nullifierHex` derived from `commitment` + topic, or via a direct
+   pseudonym-to-commitment lookup).
+4. **On the session-minting path only**, spend a single-use challenge — see
+   I-ZK-5. The header path deliberately does not re-check it: liveness there is
+   the session token, and a proof in a header is not minting anything.
 
 **Enforced by:**
-- `crates/annex-server/src/middleware.rs` — search `// Parse public inputs: [merkle_root, commitment]` (currently around line 551). The function rejects when `current_root != payload.root_hex` (around line 573).
-- `zk/scripts/test-proofs.js` (16/16 must pass): asserts root match, commitment match, rejects tampered public signals.
-- `annex-identity::nullifier::insert_nullifier` enforces single-use binding per topic.
+- `crates/annex-server/src/middleware.rs` — search
+  `// Parse public inputs: [merkle_root, commitment]`. The function rejects a
+  root `is_root_acceptable` refuses.
+- `zk/scripts/test-proofs.js`: asserts root match, commitment match, rejects
+  tampered public signals, and rejects a v2 proof presented against a different
+  challenge. No pass count is quoted here — the previous "16/16" survived three
+  additions to the script and four commits of the script being broken outright.
+- `annex-identity::nullifier::insert_nullifier` enforces single-use binding per
+  topic.
 
 **Failure mode forbidden:** Accepting a proof but then trusting a separate,
 client-supplied `commitment` field instead of the one in the verified public
@@ -87,16 +113,19 @@ zero stripping (i.e. a fixed-width 64-char hex string). All comparisons must
 treat the root as a fixed-width hex string of that exact form.
 
 The tree is append-only at runtime. On every server boot, the persisted root
-is recomputed from `identities` and compared; mismatch panics with
-`MerkleRootMismatch` (see `crates/annex-identity/src/merkle.rs` around line
-232). Any feature that mutates leaves in place — re-keying, deletion, bulk
-re-insertion — must update both the tree state and a recorded epoch counter,
-and must reject inbound proofs whose `root` corresponds to a previous epoch
-unless the agent has been migrated to the new root explicitly.
+is recomputed from `identities` and compared; a mismatch returns
+`Err(IdentityError::MerkleRootMismatch)`, which `startup.rs` propagates into a
+`StartupError` — the server refuses to boot. It does not panic; this file said
+it did. Any feature that mutates leaves in place — re-keying, deletion, bulk
+re-insertion — must update both the tree state and the recorded epoch counter,
+and must reject inbound proofs whose `root` corresponds to an epoch outside the
+grace window.
 
-The current code does **not** yet implement epoch metadata explicitly; the
-"epoch model" target is described in `zk-merkle-production.md`. Until it
-lands, the invariant remains: never silently rotate the root in production.
+The epoch model has landed: migration 034 added `vrp_root_epochs`, and
+`current_epoch`, `ROOT_EPOCH_GRACE_SECONDS` and `is_root_acceptable` implement
+it. The paragraph that used to sit here said epoch metadata was not implemented
+and asked only that the root never rotate silently, which now understates the
+guarantee.
 
 **Enforced by:**
 - `crates/annex-identity/src/merkle.rs` — root recomputation and mismatch panic.
@@ -175,19 +204,30 @@ short of a documented bootstrap exception that is itself signed.
 ## I-DB-1 — SQLite migrations are append-only
 
 **Property.** Every schema change is a new numbered file in
-`crates/annex-db/src/migrations/`. The current sequence is
-`000_init.sql` … `033_server_public_url.sql`. Numbers are dense and never
-reused. Edits to a published migration are forbidden — even comment-only
-edits — because some installations have already applied that file and would
-re-checksum it.
+`crates/annex-db/src/migrations/`, taking the next unused number in that
+directory — quoting the current last filename here only produced a number that
+went stale thirteen migrations ago. Numbers are dense and never reused. Edits to
+a published migration are forbidden — even comment-only edits — because some
+installations have already applied that file and would re-checksum it.
 
 If a migration is wrong in production, the fix is **another migration** that
-corrects the schema. If a migration must be reverted, write an inverse
-migration.
+corrects the schema. There are no down-migrations and never have been: rollback
+is operational, not schema-level — restore from a backup, per
+`scripts/restore.sh` and the deployment guide. This paragraph used to say "write
+an inverse migration", which contradicted `ROADMAP.md` quality gate 9 after that
+gate was amended on 2026-06-10 to say the opposite. Two documents, opposite
+instructions, for three months.
 
 **Enforced by:**
-- File numbering convention (no tooling enforcement yet — humans must hold the line).
-- `crates/annex-db/src/migrations.rs::apply_migrations` (runs files in lexicographic order).
+- `crates/annex-db/src/migrations.rs` — the embedded list is applied in order and
+  recorded in `_annex_migrations`.
+- **A checksum ledger, not a convention.** Migration 039 added `sha256_hex` and
+  `ordinal`; `run_migrations_from_list` fails boot with
+  `MigrationError::ChecksumMismatch` when an already-applied migration's SQL has
+  changed, and with `DuplicateOrdinal` when two files claim the same number.
+  Pinned by `checksum_mismatch_after_edit_is_rejected`. This entry previously
+  said "no tooling enforcement yet — humans must hold the line", which stopped
+  being true at migration 039.
 
 **Failure mode forbidden:** "I'll just fix the typo in `010_messages.sql`" —
 no. Add `034_*.sql`.
@@ -300,6 +340,97 @@ transcript's drand round checked against what was actually published.
 Also forbidden: a gate that accepts "any non-zero exit" as proof it worked —
 exit 1 means the manifest is unparseable, and the previous version of that
 script read it as success.
+
+---
+
+## I-ZK-5 — a membership proof that mints a session must spend a challenge
+
+**Property.** Every field of a `POST /api/zk/verify-membership` body was stable
+for a given member and topic: the Merkle root, the commitment, the nullifier,
+the topic hash and the Groth16 proof over them. The whole body was therefore a
+bearer credential — capture one successful request and re-submit it verbatim,
+after the member's sessions had been revoked, without ever holding `sk`, and the
+server minted a fresh session token at the identity's CURRENT revocation epoch.
+Revocation did not survive its own re-authentication path.
+
+Note that proof-hash dedup does not close this: Groth16 proofs are
+re-randomisable for fixed public inputs, so an attacker can produce a
+byte-different proof over the same signals. The freshness has to be in the
+public inputs.
+
+So: a v2 proof presented to the session-minting endpoint MUST carry a
+`challengeHex` this server issued, and that challenge MUST be spent inside the
+same `BEGIN IMMEDIATE` transaction that mints the token, BEFORE the nullifier
+branch — because that branch treats a repeat nullifier as re-authentication,
+which is precisely what made a captured body replayable.
+
+**Enforced by:**
+- `zk/circuits/membership_v2.circom` — `challengeSquared <== challenge * challenge`.
+  The constraint is the point: circom DROPS a public input that appears in no
+  constraint, so a declared-but-unused `challenge` would not be in the witness
+  and could be swapped freely. This is Semaphore's `signalHashSquared` idiom.
+- `crates/annex-server/src/api_zk_challenge.rs` — issue, TTL, per-commitment
+  outstanding cap, and single-use consumption.
+- `crates/annex-server/src/services/identity_service.rs` — parse and cross-check
+  the challenge before `verify_proof`, spend it inside the IMMEDIATE transaction
+  ahead of the nullifier branch.
+- `crates/annex-server/tests/zk_auth_challenge.rs`, `zk/scripts/test-proofs.js`
+  (tampered challenge rejected; a second challenge needs a second proof),
+  `scripts/smoke-server-flow.mjs`.
+
+**Failure mode forbidden:** Accepting a v2 proof with no challenge; spending the
+challenge outside the minting transaction; deduplicating on the proof bytes and
+calling it replay protection; or re-enabling `"v1"` under a production profile,
+which has no challenge input at all.
+
+---
+
+## I-VRP-1 — a trust verdict must name the instrument that produced it
+
+**Property.** `agent_min_alignment_score` decides Aligned / Partial / Conflict
+for every agent registration and every federation handshake. Three things follow
+and none of them are optional:
+
+1. **The scale is normalised, not raw.** A raw cosine is not a portable unit.
+   Measured on the same sixteen labelled pairs, the pinned `potion-base-2M`
+   table puts every unrelated pair at or below 0.5134 and every genuine
+   paraphrase at or above 0.5740; the lexicon fallback's figures are 0.3060 and
+   0.3918. The bands do not overlap, so no single raw threshold can serve both.
+   Scores are normalised against the loaded scorer's own measured floor
+   (`annex_vrp::semantic::normalize_against_floor`) and quantised before the
+   comparison, so architecture-dependent summation order cannot move a pair
+   across a category boundary.
+2. **A production server refuses to score with a fallback.**
+   `install_alignment_scorer` returns `StartupError::UnusableAlignmentModel`
+   under a profile that takes the multi-tenant gates. Dev and Desktop fall back
+   to the lexicon and say so — and carry `lexicon-v1` as their fingerprint, so a
+   peer can see what scored it. The model is deliberately NOT under
+   `requires_artifact_provenance`: `assets/embedding/` is gitignored, and a
+   desktop bundle refusing to launch over a 7.5 MB optional asset is a worse
+   failure than a documented, announced fallback on a loopback listener.
+3. **Stored verdicts are re-derived when the instrument changes.**
+   `servers.alignment_scorer_id` records the scorer; startup compares it and
+   re-scores `agent_registrations` and `federation_agreements` once on a
+   mismatch. Without this an upgraded server admits and refuses on an instrument
+   it no longer runs, and the only path that recomputed those rows was
+   `PUT /api/admin/policy`.
+
+**Enforced by:**
+- `crates/annex-vrp/src/scorer.rs`, `embedding.rs`, `semantic.rs`
+- `crates/annex-server/src/startup.rs::install_alignment_scorer`,
+  `rescore_alignments_if_scorer_changed`
+- `crates/annex-db/src/migrations/046_alignment_score_rescale.sql`,
+  `047_alignment_scorer_id.sql`
+- `crates/annex-vrp/tests/alignment_calibration.rs` (the calibration corpus),
+  `crates/annex-vrp/tests/unmeasurable_alignment.rs`,
+  `crates/annex-server/tests/alignment_model_startup.rs`
+
+**Failure mode forbidden:** Comparing a raw cosine to a configured threshold;
+shipping a default above the scorer's separating band (0.8 was above BOTH, so
+the only agents it ever admitted were those matching by anchor hash); a
+production server silently using the lexicon; reporting a scorer FAILURE as a
+measured 0.0 — `annex_vrp::UNMEASURABLE_SCORE` is negative precisely so it
+cannot be confused with a measurement.
 
 ---
 

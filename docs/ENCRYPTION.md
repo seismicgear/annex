@@ -91,6 +91,19 @@ STT, and federation all keep working.
 
 - Encrypt on write (`channel_service::send_message`/`edit_message`,
   `federation_service` receive/edit); decrypt on every read path.
+- **Including the federation outbox.** `federation_service::enqueue_message_envelope`
+  and the edit / redaction enqueues store `federation_outbox.envelope_json`
+  encrypted. The envelope carries the message body in cleartext, and an outbox
+  row outlives the retention sweep that removes the message it was built from —
+  so a queue that was never meant to be a second copy of the history was exactly
+  that, in plaintext, for as long as delivery took or failed.
+  `background::start_federation_outbox_task` decrypts on read, and
+  `MessageCipher::decrypt` passes unmarked values through, so rows written before
+  this needed no migration.
+- Operational consequence, and the same one `release-gates.md` already records
+  for `messages.content`: a test or a script that inspects an outbox row has to
+  DECRYPT it. `scripts/smoke-federation.sh` does; a `grep` for the message text
+  in `federation_outbox` will find nothing and that is the correct behaviour.
 - **Search** can't `LIKE` over ciphertext, so it scans a bounded recent window
   (`annex_channels::scan_messages`), decrypts in memory, and substring-filters
   (documented window trade-off; no plaintext index is kept).

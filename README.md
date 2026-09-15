@@ -168,8 +168,10 @@ The deploy scripts generate a `config.toml` in your data directory. You can also
 | `ANNEX_DB_POOL_MAX_SIZE` | `8` | Connection pool size (1-64) |
 | `ANNEX_LOG_LEVEL` | `info` | Log level or tracing directive |
 | `ANNEX_LOG_JSON` | `false` | Structured JSON output |
-| `ANNEX_SIGNING_KEY` | *(ephemeral)* | Ed25519 secret key (hex) |
-| `ANNEX_ZK_KEY_PATH` | `zk/keys/membership_vkey.json` | Groth16 verification key |
+| `ANNEX_SIGNING_KEY` | *(`{data_dir}/signing.key`, generated and persisted mode 0600 on first boot)* | Ed25519 secret key (hex). Not ephemeral: an ephemeral key rotates on restart and invalidates every session token, voice-join token and federation signature the server ever issued. **Back the file up with the database** — see `docs/deployment.md` |
+| `ANNEX_ZK_KEY_PATH` | `zk/keys/membership_vkey.json` | v1 Groth16 verification key (loaded only when `enabled_zk_versions` includes `"v1"`) |
+| `ANNEX_ZK_KEY_PATH_V2` | `zk/keys/membership_v2_vkey.json` | v2 Groth16 verification key — required under the default posture |
+| `ANNEX_EMBEDDING_MODEL_DIR` | `assets/embedding` | Pinned VRP alignment model. A production profile refuses to start without it |
 | `ANNEX_CONFIG_PATH` | `config.toml` | Config file path |
 | `ANNEX_MERKLE_TREE_DEPTH` | `20` | Merkle tree depth (1-30) |
 | `ANNEX_INVITE_BASE_URL` | `https://monolithannex.com/invite` | Base URL for generated invite links |
@@ -189,7 +191,8 @@ The deploy scripts generate a `config.toml` in your data directory. You can also
 | Requirement | Required? | Notes |
 |-------------|-----------|-------|
 | Writable directory for SQLite DB | Yes | Created automatically |
-| `zk/keys/membership_vkey.json` | Yes | Included in repo; Groth16 verification key |
+| `zk/keys/membership_v2_vkey.json` | Yes | Required by the default `enabled_zk_versions = ["v2"]`. Installed from `zk/artifacts/` by `zk/scripts/install-ceremony.js`; `zk/keys/` is gitignored |
+| `zk/keys/membership_vkey.json` | Only with `"v1"` enabled | v1 Groth16 verification key. Not loaded under the default posture |
 | Row in `servers` table | Yes | Deploy scripts handle this automatically, including first-boot sovereign identity materialization |
 | Public URL / slug bootstrap | No | Zero-Config Sovereignty derives and persists these on first launch; overrides remain optional |
 | Piper / Whisper binaries | No | Only for agent voice synthesis / transcription |
@@ -308,7 +311,15 @@ Alignment is determined in two stages: (1) exact hash match of principles/prohib
 
 The `VrpCapabilitySharingContract` governs agent behavior on the server: `knowledge_domains_allowed`, `redacted_topics`, `retention_policy`, `max_exchange_size`. Mutual acceptance is required — the server operator sets their contract, the agent declares its own, and `contracts_mutually_accepted()` must return true.
 
-**Server ↔ Server**: Federation handshake via `VrpFederationHandshake` with `protocol_version`, `identity_hash`, `ethical_root_hash`, `declared_transfer_scopes`, `declared_capabilities`. Two servers federate only if their policy roots align via VRP. Federation trust is not binary — it follows the full `VrpAlignmentStatus` spectrum with negotiated transfer scopes.
+**Server ↔ Server**: Federation handshake via `VrpFederationHandshake`, whose
+fields are `anchor_snapshot` (the hashed principle / prohibited-action root),
+`capability_contract`, and an optional `scorer` fingerprint naming the embedding
+model that produced the sender's alignment scores — the five fields this
+paragraph used to list (`protocol_version`, `identity_hash`,
+`ethical_root_hash`, `declared_transfer_scopes`, `declared_capabilities`) have
+never existed on the struct. Two servers federate only if their policy roots
+align via VRP. Federation trust is not binary — it follows the full
+`VrpAlignmentStatus` spectrum with negotiated transfer scopes.
 
 **Reputation tracking**: The Legacy Ledger integration (`check_reputation_score`) tracks alignment history per counterparty across all three contexts. `record_vrp_outcome` logs every handshake result. Bad actors decay toward `Conflict` through accumulated `LegacyLedgerAlignment` entries over time.
 
@@ -423,7 +434,7 @@ zk/
 ├── circuits/
 │   ├── identity.circom              # Poseidon(sk, roleCode, nodeId) commitment
 │   ├── membership.circom            # Merkle membership proof (v1)
-│   ├── membership_v2.circom         # Membership proof with secret-derived nullifier (opt-in)
+│   ├── membership_v2.circom         # Membership proof, challenge-bound (the default)
 │   ├── channel_eligibility.circom   # Role-gated channel access, identity hidden
 │   ├── link_pseudonyms.circom       # Opt-in same-identity pseudonym linkage
 │   └── federation_attestation.circom # Hidden-member cross-server attestation
@@ -437,9 +448,25 @@ zk/
 
 **`identity.circom`** — Binds secret key + role + node identity into a single field element.
 
-**`membership.circom`** — Proves a commitment is a leaf in a Merkle tree under a given root, without revealing the secret or leaf index. This is the v1 circuit every shipped client uses today.
+**`membership.circom`** — Proves a commitment is a leaf in a Merkle tree under a given root, without revealing the secret or leaf index. This is v1, retained for dev and desktop profiles; the shipped client no longer produces v1 proofs, and a production profile refuses to accept them.
 
-**`membership_v2.circom`** — Same membership proof but with a secret-derived nullifier (so a topic pseudonym is not derivable from the public commitment). This is now the **default** path: the shipped client generates v2 proofs and the server accepts both v1 and v2 (`security.enabled_zk_versions = ["v1","v2"]`) for migration.
+**`membership_v2.circom`** — Same membership proof, plus two things v1 does not
+have: a secret-derived nullifier (so a topic pseudonym is not derivable from the
+public commitment) and a **server-issued single-use challenge**. Public signals:
+`[root, commitment, nullifier, topicHash, challenge]`.
+
+`security.enabled_zk_versions` defaults to `["v2"]` and a production profile
+refuses `"v1"`. The challenge is why. Every field of a v1
+`verify-membership` body is stable for a given member and topic, so the whole
+body is a bearer credential: capture one successful request and replay it —
+after the member's sessions were revoked, without holding `sk` — and the server
+mints a fresh session. Proof-hash dedup does not close it either, because
+Groth16 proofs are re-randomisable for fixed public inputs. The freshness has to
+be in the public inputs, so `challenge` comes from `POST /api/zk/challenge`
+(`{commitment, topic}` → `{challenge, expiresInSecs}`, 5-minute TTL, at most 8
+outstanding per commitment) and is constrained inside the circuit
+(`challengeSquared <== challenge * challenge` — circom drops a public input that
+appears in no constraint, so the constraint is what makes it binding).
 
 **`channel_eligibility.circom`** — Proves the holder is a member whose
 committed role equals the role a channel admits, emitting a channel-scoped
@@ -463,10 +490,16 @@ These three are wired end to end: server verification keys load at startup
 (`AppState`), the endpoints `POST /api/zk/{channel-eligibility,link-pseudonyms,
 federation-attestation}` verify proofs and bind topic/role/context, the client
 generates the proofs (`client/src/lib/zk.ts`), and the build/bundle pipeline
-ships the wasm/zkey/vkey artifacts. Like the membership keys they currently use
-a **dev-fixture trusted setup** (random-entropy, documented as dev-only in
-`docs/refactor/zk-merkle-production.md`); a multi-party ceremony is the
-remaining production-grade step, tracked there.
+ships the wasm/zkey/vkey artifacts. Like the membership keys they come from
+the ceremony in `zk/scripts/ceremony.js`: every `zk/artifacts/*/manifest.json`
+records `ceremony.type: single-contributor-beacon` against drand round 6468464,
+with a transcript `verify-ceremony.js` re-checks (`snarkjs zkey verify` over
+r1cs → ptau → contribution → beacon, the vkey re-derived from the proving key,
+and the beacon checked against what the League of Entropy published). That is a
+real, verifiable chain and it is **not** MPC: it has one contributor.
+Independent participants remain the target and are the only reason Phase 1 is
+not complete; `--contributors N` and `--ptau <file> --ptau-sha256 <hex>` are the
+upgrade path and change nothing downstream.
 
 ---
 

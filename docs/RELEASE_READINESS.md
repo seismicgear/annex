@@ -8,26 +8,41 @@ backed by a command you can re-run.
 
 | Suite | Count | How to run |
 |-------|-------|------------|
-| Rust workspace (excl. annex-desktop) | 1061 tests / 117 binaries, 0 clippy warnings | `cargo test --workspace --exclude annex-desktop` |
-| Frontend (vitest) | 478 tests + eslint + `tsc -b` | `cd client && npm test && npm run lint && npx tsc -b` |
+| Rust workspace (excl. annex-desktop) | 1231 tests / 121 binaries, 0 clippy warnings | `cargo test --workspace --exclude annex-desktop` |
+| Frontend (vitest) | 502 tests across 54 files + eslint + `tsc -b` (which now covers the test files themselves — see below) | `cd client && npm test && npm run lint && npx tsc -b` |
 | Playwright functional suite | 13 tests | `bash scripts/e2e-server.sh start && cd client && npm run test:e2e` |
 | Group call (3 real browser contexts, fake media) | 2 tests | `bash scripts/e2e-all.sh group-call` |
-| Harness scripts | 4 files | `for t in scripts/tests/*.test.sh; do bash "$t"; done` |
-| Federation signaling relay | 41 tests | `node --test api/signal.test.mjs` |
-| ZK proof round-trip (16 assertions incl. tamper rejection) | `zk-proof` gate | `cd zk && node scripts/test-proofs.js` |
-| Production ZK gate (refuses what it should, and is wired into the release) | 11 assertions | `sh scripts/verify-production-rejects-dev-fixtures.sh` |
+| Harness scripts | 11 files | `for t in scripts/tests/*.test.sh; do bash "$t"; done` |
+| Federation signaling relay | 59 tests | `node --test api/signal.test.mjs` |
+| ZK proof round-trip (57 assertions: tamper rejection, and the v2 challenge binding) | `zk-proof` gate | `cd zk && node scripts/test-proofs.js` |
+| Production ZK gate (refuses what it should, is wired into the release, AND is invoked by CI — it was not) | 14 assertions | `sh scripts/verify-production-rejects-dev-fixtures.sh` |
 | Live federation relay (signed envelope, second server) | 1 end-to-end path | `bash scripts/smoke-federation.sh` |
 | Puppeteer journey (cold start → identity → proof → chat → channel create) | 1 driver-independent pass | `bash scripts/e2e-all.sh puppeteer` |
 | UI audit (screenshots + a11y + console + network + overflow + keyboard) | 104 surfaces × 4 viewports, 419 checks, 0 findings | `bash scripts/ui-audit.sh` |
 | Desktop install → run → uninstall | 9 checks | `bash scripts/desktop-audit.sh` |
 | ZK artifact gate | dev-fixture rejection under production profile | `cd zk && npm test` |
-| Marketing-site invite router (`monolith-annex`) | 62 tests | `cd ../monolith-annex && npm test` |
+| Marketing-site invite router (`monolith-annex`) — **cross-repo, not verifiable from this checkout** | 62 tests as last reported | `cd ../monolith-annex && npm test` |
 | Server smoke (register → Merkle → Groth16 → verify → channel) | Linux + Windows | `bash scripts/smoke-server.sh` / `scripts/smoke-server.ps1` |
 
 The counts above are what the commands beside them printed, not a target. If a
 number here disagrees with a run, the run is right and this table is stale —
-that has already happened once, when it claimed 770 Rust and 171 frontend tests
-against actuals of 1055 and 469.
+that has already happened twice. It once claimed 770 Rust and 171 frontend
+tests against actuals of 1055 and 469; and it carried "16 assertions" for the
+ZK proof round-trip through four commits in which that script did not run at
+all, because `membership_v2` gained a `challenge` public input and the script
+built its witness without one. A count in a table is not a run.
+
+Two additions worth naming rather than burying in a number:
+
+* **The frontend test files are now typechecked.** Vitest transpiles with
+  esbuild and cannot fail on a type error, so until `client/tsconfig.test.json`
+  existed, `src/**/*.test.ts(x)` and `e2e/` were outside every `tsc -b` in the
+  repo. A test file with a type error passed by not being checked.
+* **The production ZK gate is invoked.** It asserted that a release runs
+  `verify-artifacts.js --all`, and nothing ran the gate itself: CI's globbed
+  step matches `scripts/tests/*.test.sh` and the script is `scripts/*.sh`. It
+  is an explicit step in `ci.yml::check-server` and in `scripts/test-all.sh`
+  now, and it asserts both callers exist.
 
 CI (`.github/workflows/ci.yml`, `workflow_dispatch` with `include_macos=true`)
 defines the server checks, the **Linux + Windows + macOS** desktop builds, the

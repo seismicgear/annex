@@ -10,7 +10,67 @@ supersession banner and is kept for provenance rather than maintained.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **Live captions transcribed nothing, in every deployment, and always had.**
+  Three independent causes, each sufficient: the SFU tap handed whisper.cpp
+  headerless 48 kHz PCM, which its loader rejects before reading a sample (it
+  requires a 16 kHz 16-bit WAV container); the tap loop spawned one whisper
+  process per 20 ms RTP packet, over a window shorter than whisper returns
+  anything for; and the Docker image installed whisper.cpp v1.7.4's
+  `build/bin/main`, which in that tag is the deprecation stub. `stt_ready`
+  reported `true` for the stub because it only tested `is_file()`, and the
+  per-frame failure was logged at DEBUG. Audio is now band-limited, resampled
+  and wrapped (`annex-voice::audio`), buffered per `(channel, speaker)` and
+  flushed at 2 s or 700 ms of quiet, and the build refuses a binary that
+  prints a deprecation notice. `SttReadiness` / `stt_detail` name which of the
+  four causes a server has, and the caption strip renders it.
+- **`agent_min_alignment_score` shipped at a value no genuine peer could
+  reach.** 0.8 against a raw cosine, where the pinned model's unrelated pairs
+  top out at 0.5134 and the lexicon's at 0.3060 — above both separating bands,
+  so the only agents ever admitted on the semantic path were those matching by
+  anchor hash. Scores are normalised against the loaded scorer's measured noise
+  floor and the default is 0.06 on that scale; migrations 046 and 047 carry
+  stored thresholds and stored verdicts across.
+- **An agent swept to `Conflict` kept working.** The sweep set
+  `agent_registrations.active = 0` and closed one socket;
+  `platform_identities.active` and `channel_members` were untouched, so the
+  agent's session token still verified and a reconnect restored everything.
+  Alignment is now checked at action time (`services/agent_policy.rs`) for
+  send, edit, delete, voice media, VoiceIntent and channel creation, and a
+  `Conflict` verdict bumps the token epoch in the same transaction that
+  deactivates the registration.
+- **The WebSocket send handler reported every refusal as "internal error".** A
+  non-member, an alignment refusal, an oversized body and a tripped storage
+  gate all came back identically, and all were logged at ERROR. Four of the
+  five are the caller's doing.
+- **`zk/scripts/test-proofs.js` had been failing since the challenge landed**
+  — it built its v2 witness without the `challenge` public input — while
+  `release-gates.md` and `invariants.md` quoted "16/16 must pass". It now also
+  asserts the challenge binding: a proof presented against a different
+  challenge is rejected, and a second challenge needs a second proof.
+- **`scripts/verify-production-rejects-dev-fixtures.sh` ran in no workflow.**
+  The globbed harness step matches `scripts/tests/*.test.sh`; it is
+  `scripts/*.sh`. Twelve assertions about whether a release can ship
+  dev-fixture ZK keys, invoked by hand. It is an explicit step in CI and in
+  `test-all.sh` now, and asserts both callers exist.
+- **`scripts/tests/ceremony-verifier.test.sh` corrupted the repository.** Its
+  `restore()` deleted the backup as it copied, so every mutation after the
+  first stayed on disk; a run left the tracked ceremony transcript carrying a
+  `1111…` beacon signature, which failed `verify-ceremony.js` and the
+  production ZK gate with it. Four of its six negative cases also addressed
+  `phase1.beacon`, where there is no beacon, so they tested nothing while
+  failing loudly. It now restores after every mutation and asserts the
+  transcript is byte-identical to how it found it.
+
+### Changed
+
+- `[profile.dev.package."*"] debug = 0`. A complete
+  `cargo test --workspace --exclude annex-desktop` needed 12.6 GB of test
+  binaries inside a 19 GB `target/` and died in the linker with "No space left
+  on device"; dependency line tables were the bulk of it and nobody steps
+  through `webrtc-rs` from a failing Annex test. Now 7.8 GB and 11 GB.
+  Workspace crates keep `line-tables-only`.
 
 ## [0.1.0] — unreleased
 
@@ -112,11 +172,14 @@ development; no `v*` tag has ever existed in this repository.
 Carried forward deliberately, and tracked in `ROADMAP.md`:
 
 - The trusted setup is single-operator, not multi-party.
-- VRP semantic alignment is a curated concept lexicon, not a learned model, and
-  it decides Aligned/Partial/Conflict for every handshake.
-- The agent capability contract is enforced at channel join, not at action time.
+- VRP semantic alignment scores with a pinned static embedding table
+  (`potion-base-2M`, 7.5 MB), not a learned contextual model. A production
+  server refuses to start without it; dev and desktop fall back to the concept
+  lexicon and carry `lexicon-v1` as their scorer fingerprint so a peer can see
+  which instrument produced a verdict.
 - RTX cross-server delivery is single-hop.
 - Whisper STT needs an operator-supplied model; none is bundled.
+  `scripts/setup-stt.sh` installs a digest-pinned one.
 - The server speaks HTTP only and expects a TLS-terminating reverse proxy.
 - Desktop installers are not OS-code-signed; SmartScreen and Gatekeeper will
   warn. Verify downloads against the published SHA-256 checksums.

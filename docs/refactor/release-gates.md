@@ -24,6 +24,7 @@ as authoritative for CI and update this file.
 | Desktop install   | `desktop-audit-package`                                                                       |
 | Federation        | `signal-relay-contract`                                                                       |
 | Documentation     | `roadmap-consistent`                                                                          |
+| Supply chain      | `dep-deny`, `npm-audit`                                                                       |
 
 ---
 
@@ -41,9 +42,9 @@ as authoritative for CI and update this file.
 - Catches: lints with the project's deny-warnings policy. The `-D warnings` is non-negotiable; PRs that introduce a clippy warning must fix it, not silence it.
 
 ### srv-test
-- Command: `cargo test --workspace --exclude annex-desktop --no-fail-fast`
+- Command: `cargo test --workspace --exclude annex-desktop`
 - Workflow: `.github/workflows/ci.yml::check-server::cargo test`
-- Catches: lib + integration test regressions. `--no-fail-fast` is required so the full inventory is reported instead of bailing on the first crate failure.
+- Catches: lib + integration test regressions. Add `--no-fail-fast` locally when you want the full inventory rather than a bail on the first crate failure; CI does not pass it, and this entry asserted that it did.
 - Local note: tests use in-memory SQLite (`:memory:`) via `tests/common/mod.rs::setup_test_app`. Some WS tests bind a real `TcpListener` on `127.0.0.1:0`.
 
 ### srv-zk-keys-present
@@ -61,9 +62,9 @@ as authoritative for CI and update this file.
 - Catches: missing GTK3 / WebKitGTK / PipeWire dev packages. **Verify the WebKitGTK version with `pkg-config --modversion webkit2gtk-4.1`**. Do not use `webkitgtk-4.1` (no "2") — only `webkit2gtk-4.1.pc` ships with `libwebkit2gtk-4.1-dev`.
 
 ### lin-build
-- Command: `cargo build -p annex-desktop --release`
-- Workflow: `.github/workflows/ci.yml::check-desktop::cargo build (release)`
-- Catches: link-time and compile-time desktop breakages.
+- Command: `cargo check -p annex-desktop` (CI) / `cargo build -p annex-desktop --release` (local pre-flight)
+- Workflow: `.github/workflows/ci.yml::check-desktop-linux::cargo check (annex-desktop)`, then `cargo clippy (annex-desktop)`, then `Tauri build (debug — validates bundle wiring)`. The job name is `check-desktop-linux`, not `check-desktop`, and it never ran a release build.
+- Catches: link-time and compile-time desktop breakages, and the bundle-resource validation the debug Tauri build performs.
 
 ### lin-bundle-deb / lin-bundle-appimage
 - Command: `cargo tauri build --target x86_64-unknown-linux-gnu` (run from `crates/annex-desktop/`)
@@ -81,8 +82,8 @@ as authoritative for CI and update this file.
 - Catches: missing MSVC build tools — annex-desktop and several Rust deps need a C++ toolchain.
 
 ### win-build
-- Command: `cargo build -p annex-desktop --release`
-- Workflow: `.github/workflows/ci.yml::build-windows::cargo build (release)`
+- Command: `SKIP_PIPER=1 cargo tauri build --debug --bundles nsis`
+- Workflow: `.github/workflows/ci.yml::check-desktop-windows::Tauri build (debug — validates bundle wiring)`. There is no `build-windows` job and CI runs no release build on Windows.
 - Env: `CMAKE_ARGS: -DCMAKE_POLICY_VERSION_MINIMUM=3.5` (required for an upstream cmake-using crate to build on the matrix).
 
 ### win-bundle-nsis
@@ -109,7 +110,8 @@ as authoritative for CI and update this file.
 ### fe-test
 - Command: `npm --prefix client test -- --run`
 - Workflow: `.github/workflows/ci.yml::test-frontend::npm test`
-- Catches: Vitest unit + RTL component test regressions. 478 tests at last baseline.
+- Catches: Vitest unit + RTL component test regressions. 500 tests across 54 files at last baseline (`npx vitest list`).
+- Also typechecked, which it was not until recently: `ci.yml::test-frontend` runs `npx tsc -b` before `npm test`, and `client/tsconfig.json` references `tsconfig.test.json`, so `src/**/*.test.ts(x)` and `e2e/` are covered. Vitest transpiles with esbuild and cannot fail on a type error, so without that project a broken test file passed by being unparsed.
 
 ### fe-build
 - Command: `npm --prefix client run build`
@@ -141,7 +143,8 @@ as authoritative for CI and update this file.
 - Command: `(cd zk && node scripts/test-proofs.js)`
 - Workflow: `.github/workflows/ci.yml::check-server::ZK proof round-trip`, and `scripts/test-all.sh` (skipped there, with a stated reason, when `zk/keys` is empty).
 - Ran in NO workflow until that step was added. CI's `ZK script tests` step runs `zk npm test`, which is `verify-artifacts.test.js` alone — it never generated or verified a proof. A gate this file described in detail was, for its whole life, a command nobody executed.
-- Catches: 16/16 must pass: identity validity, identity tampering rejection, identity input differentiation, membership validity for index 0 + 1, membership tamper rejection (proof, root, commitment), and the `mismatched leafIndex/pathIndexBits` rejection at witness generation time.
+- Catches: identity validity, identity tampering rejection, identity input differentiation, membership validity for index 0 + 1, membership tamper rejection (proof, root, commitment), the `mismatched leafIndex/pathIndexBits` rejection at witness generation time, and the `membership_v2` assertions including the challenge binding. No count is quoted here on purpose — the previous "16/16" outlived three additions to the script.
+- **It was broken for four commits and this file said 16/16 throughout.** `membership_v2.circom` gained `main {public [topicHash, challenge]}`; the script built its v2 witness with `topicHash` alone and asserted `publicSignals.length === 4` against a circuit producing five, so `fullProve` failed with "Only 45 out of 46 inputs set" in CI and in `test-all.sh`. Quoting a pass count in a document is not the same as running the command.
 
 ### zk-vkey-shipped
 - Command: `ANNEX_BUILD_PROFILE=production node zk/scripts/verify-artifacts.js --all`
@@ -158,14 +161,50 @@ as authoritative for CI and update this file.
 
 ### zk-production-gate
 - Command: `sh scripts/verify-production-rejects-dev-fixtures.sh`
-- Workflow: `.github/workflows/ci.yml::check-server::Harness script tests` (globbed) and `scripts/test-all.sh`.
+- Workflow: `.github/workflows/ci.yml::check-server::Production ZK provenance gate` and `scripts/test-all.sh`.
+- **That line was false until the step existed.** The globbed `Harness script tests` step runs `scripts/tests/*.test.sh`; this script lives in `scripts/` and is not named `*.test.sh`, so it matched neither the directory nor the suffix and ran in no workflow at all. `scripts/test-all.sh` did not call it either. Twelve assertions about whether a release can ship dev-fixture ZK keys, executed by hand when somebody remembered. The script now asserts that both callers invoke it, so this cannot come back quietly. 14 assertions.
 - Tests the GATE, not the tree: it builds throwaway manifests in a temp directory and asserts each is refused with the right exit code — dev-fixture under production is exactly 3, an unknown ceremony type is 3, a ceremony claim with no transcript is 3, a named-but-absent transcript is 3, a tampered artifact is 2, and the same dev-fixture manifest under a dev profile is 0. Every invocation runs under `env -u ANNEX_ALLOW_DEV_CEREMONY`, because every expectation is meaningless if that bypass is set.
 - Also asserts the release workflow runs `--all` and never sets the bypass. A gate nothing invokes is decoration; the previous version proved the script refuses and never checked that a release calls it.
+
+---
+
+## Supply-chain gates
+
+An entire CI job was missing from this file, which claims to be "intentionally
+redundant with ci.yml".
+
+### dep-deny
+- Command: `cargo deny --all-features check`
+- Workflow: `.github/workflows/ci.yml::supply-chain::cargo deny`
+- Catches: advisories, banned/duplicate crates, disallowed licences and
+  unexpected sources across the whole Rust graph. Blocking — no
+  `continue-on-error`.
+
+### npm-audit
+- Command: `npm audit --audit-level=high` in `client/` and in `zk/`
+- Workflow: `.github/workflows/ci.yml::supply-chain::npm audit (client)` and
+  `npm audit (zk)`
+- **Both are `continue-on-error: true`, so this is a report, not a gate.** That
+  is deliberate and the reason is written down: the remaining highs are the
+  `snarkjs → bfj → jsonpath → underscore` chain and the `circomlibjs → ethers →
+  elliptic` chain, and a build-time scan of `client/dist/assets/*.js` shows
+  neither reaches the production browser bundle (CLAUDE.md, "snarkjs
+  vulnerability containment"). Making it blocking today would stop every PR on
+  a finding that is contained rather than shipped. Revisit when snarkjs drops
+  bfj.
+
+---
+
+## Federation gates
 
 ### signal-relay-contract
 - Command: `node --test api/signal.test.mjs`
 - Workflow: `.github/workflows/ci.yml::check-server::Signaling relay tests`, and `scripts/test-all.sh`.
-- 41 tests over `api/signal.js`, the relay `crates/annex-federation/src/transport.rs` talks to — including the canonical signing string both sides must agree on byte for byte. Named by no workflow, script or doc until now, which is how the two implementations came to disagree about whether `rendezvous_tag` is part of that string.
+- 59 tests over `api/signal.js`, the relay `crates/annex-federation/src/transport.rs` talks to — including the canonical signing string both sides must agree on byte for byte. Named by no workflow, script or doc until now, which is how the two implementations came to disagree about whether `rendezvous_tag` is part of that string.
+
+---
+
+## Documentation gates
 
 ### roadmap-consistent
 - Command: `bash scripts/tests/roadmap-consistency.test.sh`

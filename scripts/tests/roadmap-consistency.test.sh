@@ -112,5 +112,42 @@ while IFS= read -r line; do
 done < "${ROADMAP}"
 note_ok "every PARTIAL phase names the gap that keeps it partial"
 
+# ── A phase's criteria have to agree with its own status ───────────────────
+#
+# Phase 1 said `PARTIAL` with a named gap (the ceremony type) while every one
+# of its ten completion criteria was unchecked, and the changelog recorded
+# "Phase 1 COMPLETE" three months earlier. Three statements in one document,
+# no two of which could both be true, and the check above was satisfied by all
+# of it because it only compared the two Status lines to each other.
+#
+# The rule: a phase whose Status is PARTIAL or COMPLETE must have at least one
+# ticked criterion. A wholly-unticked criteria list means either the work is
+# not done (so the Status is wrong) or the boxes were never maintained (so the
+# list is decoration).
+awk '
+  /^## Phase [0-9]+/            { phase = $3; sub(/:$/, "", phase); incrit = "" }
+  /^\*\*Status\*\*: `(PARTIAL|COMPLETE)`/ && phase != "" { status[phase] = 1 }
+  /^### Completion Criteria/    { incrit = phase }
+  /^## / && !/^## Phase/        { incrit = "" }
+  incrit != "" && /^- \[x\]/    { ticked[incrit]++ }
+  incrit != "" && /^- \[ \]/    { unticked[incrit]++ }
+  END {
+    for (p in status) {
+      if ((ticked[p] + unticked[p]) > 0 && ticked[p] == 0) {
+        printf "UNTICKED %s %d\n", p, unticked[p]
+      }
+    }
+  }
+' "${ROADMAP}" > "${TMPDIR:-/tmp}/roadmap-criteria.$$" || true
+
+if [ -s "${TMPDIR:-/tmp}/roadmap-criteria.$$" ]; then
+  while read -r _ phase count; do
+    note_bad "Phase ${phase} claims a status but all ${count} of its completion criteria are unchecked"
+  done < "${TMPDIR:-/tmp}/roadmap-criteria.$$"
+else
+  note_ok "no phase claims a status with a wholly-unchecked criteria list"
+fi
+rm -f "${TMPDIR:-/tmp}/roadmap-criteria.$$"
+
 echo "[roadmap] ${RC_OK} passed, ${RC_BAD} failed"
 [ "${RC_BAD}" -eq 0 ] || exit 1

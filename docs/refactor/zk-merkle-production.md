@@ -384,7 +384,8 @@ commitment alone is not enough.
 
 ### Server config + dispatch
 
-- `Config::security.enabled_zk_versions: Vec<String>` (default `["v1"]`).
+- `Config::security.enabled_zk_versions: Vec<String>` (default `["v2"]` — this
+  said `["v1"]`, which was the default when v2 was a plan).
   Recognised values: `"v1"`, `"v2"`. Anything else fails startup with
   `StartupError::UnknownZkVersion`.
 - `AppState::membership_vkey_v2: Option<Arc<VerifyingKey<Bn254>>>`.
@@ -392,6 +393,15 @@ commitment alone is not enough.
   `ANNEX_ZK_KEY_PATH_V2`, otherwise `zk/keys/membership_v2_vkey.json`.
   Same enforcement as v1: with `enforce_zk_proofs = true`, missing or
   invalid v2 vkey is `StartupError::MissingVerificationKey`.
+- `VerifyMembershipRequest.challengeHex` — required for a v2 proof. The
+  challenge is issued by `POST /api/zk/challenge` (migration
+  `045_zk_auth_challenges`, `CHALLENGE_TTL_SECS = 300`,
+  `MAX_OUTSTANDING_PER_COMMITMENT = 8`), cross-checked against
+  `publicSignals[4]` before `verify_proof` runs, and CONSUMED inside the same
+  `BEGIN IMMEDIATE` transaction that mints the session token — ahead of the
+  nullifier branch, because that branch treats a repeat nullifier as
+  re-authentication and is what made a captured body replayable. See invariant
+  I-ZK-5.
 - `VerifyMembershipRequest` adds three optional fields:
     - `protocolVersion: Option<String>` — `None` or `"v1"` selects the
       legacy verifier; `"v2"` selects the secret-derived-nullifier
@@ -406,7 +416,8 @@ commitment alone is not enough.
     1. Resolves `protocolVersion` first, before any DB or proof work,
        so an unknown version is `400 Bad Request` regardless of state.
     2. Selects the right vkey + expected `publicSignals.len()` (2 for
-       v1, 4 for v2).
+       v1, **5** for v2 — `[root, commitment, nullifier, topicHash,
+       challenge]`; this said 4, from before the challenge landed).
     3. Verifies the proof against the version-matched vkey. A v2 proof
        against the v1 vkey (or vice-versa) is rejected as a
        verification failure — the vkey size encodes the public-input
@@ -419,7 +430,7 @@ commitment alone is not enough.
        `derive_nullifier_hex(commitment, topic)` is never called for
        a v2 proof.
 - `crates/annex-server/tests/zk_startup.rs` adds four v2-specific tests:
-  default `enabled_zk_versions == ["v1"]`; unknown version is a
+  default `enabled_zk_versions == ["v2"]`; unknown version is a
   startup error; v2 enabled with v2 vkey present boots cleanly; v2
   enabled with v2 vkey missing under enforcement is
   `StartupError::MissingVerificationKey`.
@@ -432,10 +443,11 @@ commitment alone is not enough.
 
 - v1 keys, vkey, circuit, and on-the-wire shape are **untouched**. The
   only behavioural change for v1 clients on v1-only servers is: none.
-- v2 is opt-in per server (`enabled_zk_versions` must include `"v2"`)
-  AND opt-in per request (`protocolVersion: "v2"`). A server that
-  enables both still rejects v1 payloads against the v2 vkey and
-  vice versa.
+- v2 is the DEFAULT per server and a production profile REFUSES `"v1"`
+  (`config.rs::validate_zk_protocol_versions_for_build_profile`). It remains
+  selected per request by `protocolVersion`, and a server that enables both
+  still rejects v1 payloads against the v2 vkey and vice versa. "Opt-in"
+  described the migration's first week.
 - v1 nullifiers in `zk_nullifiers` and v2 nullifiers in the same table
   are different 64-char hex strings; rows do not collide.
 - v1 cannot be removed until every client has been updated. Both
@@ -462,15 +474,18 @@ are tracked here:
 - **v1 retirement**. Once every shipped client has switched to v2 and
   every active VRP nullifier is v2-derived, drop v1 from
   `enabled_zk_versions`, then remove the v1 wasm/zkey bundle and the
-  v1 verification path. No active deployment is at this stage yet.
+  v1 verification path. **This has begun**: the shipped client produces v2
+  proofs only, the default excludes v1, and a production profile refuses it.
+  What remains is deleting the v1 code path, which is deliberately still
+  present for dev and desktop profiles.
 - **Federation `protocolVersion` exchange**. Two federated servers
   must both be on v2 (or both on v1) for cross-server proof acceptance
   to work. The handshake envelope in `crates/annex-federation::handshake`
   needs to advertise the supported set and reject mismatched peers.
-- **Client-side v2 prover**. `client/src/lib/zk.ts` and the proof
-  worker still build v1 proofs only. A future task adds the v2 prover
-  with `topicHash` as a public input and `protocolVersion: "v2"` in
-  the verify-membership request.
+- ~~**Client-side v2 prover**.~~ **Shipped.** `client/src/lib/zk.ts`
+  generates v2 proofs, checks for five public signals, and
+  `client/src/api/identity.ts` sends `protocolVersion: "v2"` with
+  `nullifierHex`, `topicHashHex` and `challengeHex`.
 
 ---
 
