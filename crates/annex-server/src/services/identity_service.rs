@@ -863,6 +863,44 @@ impl IdentityService {
             // it refreshes `last_seen_at`, which is exactly what a returning
             // member's presence needs.
             if !reauthenticating {
+                // Enforce `max_members` HERE, not only at registration.
+                //
+                // Registration counts `platform_identities` and refuses when
+                // the server is full — but the identity row is created at this
+                // point, during proof verification, which can be minutes later
+                // and is a separate request. So N commitments could all pass
+                // the registration check while the count sat below the cap,
+                // and then all activate, putting the server past the limit it
+                // advertises.
+                //
+                // This is the authoritative moment: the check and the INSERT
+                // are in the same transaction, so a concurrent verification
+                // cannot slip between them. The registration-time check stays
+                // as a cheap early refusal — it is friendlier to fail before a
+                // user has generated a proof — but it is not the guarantee.
+                let max_members = state
+                    .policy
+                    .read()
+                    .map_err(|_| {
+                        IdentityServiceError::Internal("policy lock poisoned".to_string())
+                    })?
+                    .max_members;
+                let current_count: i64 = tx
+                    .query_row(
+                        "SELECT COUNT(*) FROM platform_identities \
+                         WHERE server_id = ?1 AND active = 1",
+                        rusqlite::params![server_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|e| {
+                        IdentityServiceError::Internal(format!("member count query failed: {e}"))
+                    })?;
+                if current_count >= max_members as i64 {
+                    return Err(IdentityServiceError::Forbidden(
+                        "This server has reached its maximum member limit.".to_string(),
+                    ));
+                }
+
                 create_platform_identity(&tx, server_id, &pseudonym_id, role_code).map_err(|e| {
                     IdentityServiceError::Internal(format!(
                         "failed to create platform identity: {e}"

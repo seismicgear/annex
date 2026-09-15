@@ -12,6 +12,12 @@ annex-server = { path = "../annex-server" }
 axum = { workspace = true }
 tauri = { version = "2", features = [] }
 tauri-plugin-deep-link = "2"
+# In-app update checking. The bundles it consumes are produced only when the
+# release workflow is given a signing key (see .github/workflows/
+# release-desktop.yml); without one, `plugins.updater` is absent from the
+# built config and `check()` reports no configured endpoint rather than
+# pretending to be up to date.
+tauri-plugin-updater = "2"
 # Required for deep links to reach a RUNNING instance on Linux and Windows.
 # Without it the OS starts a second process — see main.rs.
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }

@@ -3,13 +3,22 @@
 //! Starts an axum HTTP server with structured logging, database initialization,
 //! and graceful shutdown on SIGTERM/SIGINT.
 
-use annex_server::{config, init_tracing, prepare_server, StartupError};
+use annex_server::{config, init_tracing, migrate_only, prepare_server, StartupError};
 use std::net::SocketAddr;
+
+/// True when the caller asked for migrations only.
+///
+/// Checked across all arguments rather than just the first so
+/// `annex-server config.toml --migrate` works as well as
+/// `annex-server --migrate config.toml`.
+fn wants_migrate_only() -> bool {
+    std::env::args().skip(1).any(|a| a == "--migrate")
+}
 
 fn resolve_config_path() -> (Option<String>, &'static str) {
     if let Some(path) = std::env::args()
-        .nth(1)
-        .filter(|value| !value.trim().is_empty())
+        .skip(1)
+        .find(|value| !value.trim().is_empty() && !value.starts_with("--"))
     {
         return (Some(path), "cli-arg");
     }
@@ -49,7 +58,36 @@ fn run() -> Result<(), StartupError> {
         .thread_stack_size(16 * 1024 * 1024)
         .build()
         .map_err(StartupError::IoError)?
-        .block_on(run_server())
+        .block_on(async {
+            if wants_migrate_only() {
+                run_migrations_and_exit().await
+            } else {
+                run_server().await
+            }
+        })
+}
+
+/// `annex-server --migrate` — apply migrations, report, exit.
+///
+/// A deployment boundary with a real success signal. The Docker entrypoint
+/// previously ran the whole server under `timeout 10` and read exit code 124
+/// as "migrations succeeded", which is elapsed time standing in for a result:
+/// the check could only fail if the server exited early, which is the one
+/// thing a healthy server does not do.
+async fn run_migrations_and_exit() -> Result<(), StartupError> {
+    let (resolved_config_path, config_source) = resolve_config_path();
+    let selected_config_path = resolved_config_path.as_deref().or(Some("config.toml"));
+    let config = config::load_config(selected_config_path)?;
+    init_tracing(&config.logging)?;
+    tracing::info!(
+        source = config_source,
+        path = selected_config_path.unwrap_or("<none>"),
+        db = %config.database.path,
+        "running migrations only"
+    );
+    let applied = migrate_only(config).await?;
+    tracing::info!(applied, "migrations finished; exiting without serving");
+    Ok(())
 }
 
 async fn run_server() -> Result<(), StartupError> {

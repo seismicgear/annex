@@ -46,6 +46,9 @@ pub enum StartupError {
     /// Failed to initialize the database connection pool.
     #[error("failed to initialize database pool: {0}")]
     DatabaseError(#[from] annex_db::PoolError),
+    /// A `--migrate` run could not complete.
+    #[error("migration failed: {0}")]
+    MigrationFailed(String),
     /// Failed to initialize or restore the Merkle tree.
     #[error("failed to initialize merkle tree: {0}")]
     IdentityError(#[from] annex_identity::IdentityError),
@@ -602,6 +605,56 @@ pub struct PreparedServer {
     /// still fire-and-forget; cancelling the token stops them too, and there
     /// is nothing to wait for.
     pub workers: Vec<tokio::task::JoinHandle<()>>,
+}
+
+/// Apply database migrations and exit — a deployment boundary with an
+/// explicit success signal.
+///
+/// The Docker entrypoint used to run the whole server under `timeout 10` and
+/// treat exit code 124 as proof that migrations had succeeded. Elapsed time is
+/// not a completion signal: a slow disk, a cold container or a large migration
+/// looks identical to a fast one, and the only way the check could FAIL was for
+/// the server to exit early — which is the one thing a healthy server does not
+/// do. It also meant every deploy started, bound, served and killed a real
+/// server before starting the real one.
+///
+/// This runs the migrations, the event-log chain backfill, and nothing else,
+/// then returns. Exit 0 means applied; any other exit means it did not, and
+/// the caller can stop instead of starting a server against a half-migrated
+/// database.
+pub async fn migrate_only(config: config::Config) -> Result<usize, StartupError> {
+    let pool = annex_db::create_pool(
+        &config.database.path,
+        annex_db::DbRuntimeSettings {
+            busy_timeout_ms: config.database.busy_timeout_ms,
+            pool_max_size: config.database.pool_max_size,
+        },
+    )?;
+    let conn = pool.get()?;
+    let applied = annex_db::run_migrations(&conn)?;
+
+    // Same repair the normal startup path performs, for the same reason: a
+    // database upgraded across migration 038 has empty chain columns, and no
+    // new events may be emitted against a broken chain.
+    match annex_observe::backfill_event_log_chain(&conn) {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(
+            servers = n,
+            "rebuilt event-log hash chain for upgraded databases"
+        ),
+        Err(e) => {
+            // A failure here is fatal in a migrate-only run, where the whole
+            // point is a trustworthy exit code. On the normal startup path it
+            // is logged and tolerated, because refusing to boot a running
+            // server over a repair is worse than running with it pending.
+            return Err(StartupError::MigrationFailed(format!(
+                "event-log hash-chain backfill failed: {e}"
+            )));
+        }
+    }
+
+    tracing::info!(applied, "migrations complete");
+    Ok(applied)
 }
 
 pub async fn prepare_server(config: config::Config) -> Result<PreparedServer, StartupError> {

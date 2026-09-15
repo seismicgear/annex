@@ -47,6 +47,7 @@ pub mod storage_health;
 pub mod ws;
 
 pub use routes::app;
+pub use startup::migrate_only;
 pub use startup::{init_tracing, prepare_server, PreparedServer, StartupError};
 pub use state::AppState;
 

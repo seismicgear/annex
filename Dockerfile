@@ -307,7 +307,10 @@ ENV ANNEX_BUILD_PROFILE=${ANNEX_BUILD_PROFILE}
 # image had. `sqlite3` is already present for the entrypoint's seeding and for
 # `scripts/backup.sh`.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates sqlite3 gosu curl \
+    # `gosu` is gone with the root phase of the entrypoint. `sqlite3` stays:
+    # scripts/backup.sh and scripts/restore.sh both use it, and an operator
+    # recovering inside the container needs it.
+    ca-certificates sqlite3 curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -366,8 +369,15 @@ COPY scripts/backup.sh scripts/restore.sh /app/scripts/
 RUN chmod +x /app/scripts/backup.sh /app/scripts/restore.sh
 RUN sed -i 's/\r$//' /app/docker-entrypoint.sh && chmod +x /app/docker-entrypoint.sh
 
-# Create non-root user for runtime
-RUN groupadd --system annex && useradd --system --gid annex --no-create-home annex
+# Non-root runtime user, at a FIXED uid/gid.
+#
+# Pinned rather than left to the next free system id, because
+# `docker-compose.prod.yml` names the same numbers in its `user:` line and its
+# volume-init service. A uid that drifts between base-image versions would
+# silently mismatch the volume's ownership and produce a permission error on
+# upgrade that looks like data corruption.
+RUN groupadd --system --gid 10001 annex \
+    && useradd --system --uid 10001 --gid annex --no-create-home annex
 
 # Create data directory for SQLite (owned by runtime user)
 RUN mkdir -p /app/data && chown annex:annex /app/data
@@ -398,8 +408,13 @@ ENV ANNEX_STT_BINARY_PATH=/app/assets/whisper/whisper
 
 EXPOSE 3000
 
-# The entrypoint starts as root to fix data-volume ownership, then
-# drops to the non-root "annex" user via gosu before exec-ing the server.
+# Runs as `annex` from PID 1 onward — no root phase, no gosu, no capabilities.
+#
+# `docker-compose.prod.yml` drops ALL capabilities, and the previous entrypoint
+# needed several of them (CAP_CHOWN/CAP_FOWNER to chown the volume,
+# CAP_SETUID/CAP_SETGID for gosu). Volume ownership is now done once by a
+# short-lived init service that holds only CAP_CHOWN, so the long-lived process
+# needs none.
 # The container is only healthy when it can actually serve a request.
 #
 # There was no HEALTHCHECK at all, so Docker and Compose reported "running" for
@@ -411,5 +426,7 @@ EXPOSE 3000
 # volume, generates a signing key.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
     CMD curl -fsS "http://127.0.0.1:${ANNEX_PORT:-3000}/readyz" >/dev/null || exit 1
+
+USER annex
 
 ENTRYPOINT ["/app/docker-entrypoint.sh"]

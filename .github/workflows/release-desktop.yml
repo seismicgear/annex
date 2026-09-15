@@ -22,6 +22,14 @@ on:
         options:
           - "true"
           - "false"
+      unsigned_dry_run:
+        description: "Build WITHOUT updater signing keys. The only way to get an unsigned build; refused on a tag."
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 env:
   CARGO_TERM_COLOR: always
@@ -96,6 +104,22 @@ jobs:
       # The dev-fixture bypass env var is deliberately absent from this
       # workflow; scripts/verify-production-rejects-dev-fixtures.sh asserts
       # that it stays absent, and that this step still says `--all`.
+      # `verify-ceremony.js` needs zk/node_modules.
+      #
+      # It shells out to `zk/node_modules/snarkjs/build/cli.cjs` for
+      # `zkey verify`, and requires `@noble/curves` to check the drand beacon's
+      # BLS signature. Neither exists on a clean runner. Configuring an npm
+      # CACHE — which the Setup Node step above does — does not create the
+      # directory; it only makes populating it faster. So the verification step
+      # that the release contract rests on could not run at all.
+      #
+      # `verify-artifacts.js` needs none of this (it only hashes files), which
+      # is why the gap survived: the cheap gate passed and the expensive one
+      # was never reached.
+      - name: Install ZK dependencies
+        run: npm ci
+        working-directory: zk
+
       - name: Verify pinned ZK artifacts
         run: node scripts/verify-artifacts.js --all
         working-directory: zk
@@ -113,10 +137,32 @@ jobs:
 
       - name: Build Tauri app (Linux)
         working-directory: crates/annex-desktop
-        run: cargo tauri build --target x86_64-unknown-linux-gnu
+        run: |
+          set -euo pipefail
+          # Updater artifacts exist only when there is a key to sign them with.
+          #
+          # `createUpdaterArtifacts` is NOT committed in tauri.conf.json and the
+          # public key is NOT in the repository. The pubkey is the operator's
+          # half of their own signing key; a value baked into the tree would
+          # either be a placeholder that produces unverifiable updates, or a key
+          # whose private half somebody else holds. It is injected here with
+          # `--config`, from a repository secret, so the committed config stays
+          # truthful about what it can prove.
+          if [ -n "${TAURI_SIGNING_PUBLIC_KEY:-}" ]; then
+            echo "Signing key configured — building updater artifacts."
+            CONFIG=$(printf '{"bundle":{"createUpdaterArtifacts":true},"plugins":{"updater":{"pubkey":"%s","endpoints":["%s"]}}}' \
+              "${TAURI_SIGNING_PUBLIC_KEY}" "${ANNEX_UPDATER_ENDPOINT}")
+          else
+            echo "No TAURI_SIGNING_PUBLIC_KEY — building WITHOUT updater artifacts."
+            echo "The release job refuses this unless unsigned_dry_run was set."
+            CONFIG='{}'
+          fi
+          cargo tauri build --target x86_64-unknown-linux-gnu --config "${CONFIG}"
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
+          ANNEX_UPDATER_ENDPOINT: ${{ vars.ANNEX_UPDATER_ENDPOINT || 'https://github.com/seismicgear/annex/releases/latest/download/latest.json' }}
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
@@ -125,6 +171,13 @@ jobs:
           path: |
             target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
             target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
+            # The updater bundle and its detached signature. Without these two
+            # lines the signatures never left the build job, so the release job
+            # below looked for `.sig` files in artifacts that could not contain
+            # any — and a correctly-configured signing key would still have
+            # produced a release with nothing to verify.
+            target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage.tar.gz
+            target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage.tar.gz.sig
           if-no-files-found: error
 
   build-windows:
@@ -158,6 +211,13 @@ jobs:
             -property installationPath
         shell: pwsh
 
+      # See the Linux job: verify-ceremony.js needs zk/node_modules, and an
+      # npm cache is not the same thing as an install.
+      - name: Install ZK dependencies
+        shell: bash
+        run: npm ci
+        working-directory: zk
+
       - name: Verify pinned ZK artifacts
         shell: bash
         run: node scripts/verify-artifacts.js --all
@@ -173,11 +233,26 @@ jobs:
 
       - name: Build Tauri app (Windows)
         working-directory: crates/annex-desktop
-        run: cargo tauri build --target x86_64-pc-windows-msvc
+        shell: bash
+        run: |
+          set -euo pipefail
+          # See the Linux job for why the pubkey is injected rather than
+          # committed.
+          if [ -n "${TAURI_SIGNING_PUBLIC_KEY:-}" ]; then
+            echo "Signing key configured — building updater artifacts."
+            CONFIG=$(printf '{"bundle":{"createUpdaterArtifacts":true},"plugins":{"updater":{"pubkey":"%s","endpoints":["%s"]}}}' \
+              "${TAURI_SIGNING_PUBLIC_KEY}" "${ANNEX_UPDATER_ENDPOINT}")
+          else
+            echo "No TAURI_SIGNING_PUBLIC_KEY — building WITHOUT updater artifacts."
+            CONFIG='{}'
+          fi
+          cargo tauri build --target x86_64-pc-windows-msvc --config "${CONFIG}"
         env:
           CMAKE_ARGS: -DCMAKE_POLICY_VERSION_MINIMUM=3.5
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
+          ANNEX_UPDATER_ENDPOINT: ${{ vars.ANNEX_UPDATER_ENDPOINT || 'https://github.com/seismicgear/annex/releases/latest/download/latest.json' }}
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -186,6 +261,11 @@ jobs:
           path: |
             target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
             target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+            # Same omission as Linux: the updater bundles and signatures.
+            target/x86_64-pc-windows-msvc/release/bundle/nsis/*.nsis.zip
+            target/x86_64-pc-windows-msvc/release/bundle/nsis/*.nsis.zip.sig
+            target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi.zip
+            target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi.zip.sig
           if-no-files-found: error
 
   # ── Deferred platform: macOS. Opt-in via workflow_dispatch only. ──
@@ -228,6 +308,22 @@ jobs:
             client/package-lock.json
             zk/package-lock.json
 
+      # `verify-ceremony.js` needs zk/node_modules.
+      #
+      # It shells out to `zk/node_modules/snarkjs/build/cli.cjs` for
+      # `zkey verify`, and requires `@noble/curves` to check the drand beacon's
+      # BLS signature. Neither exists on a clean runner. Configuring an npm
+      # CACHE — which the Setup Node step above does — does not create the
+      # directory; it only makes populating it faster. So the verification step
+      # that the release contract rests on could not run at all.
+      #
+      # `verify-artifacts.js` needs none of this (it only hashes files), which
+      # is why the gap survived: the cheap gate passed and the expensive one
+      # was never reached.
+      - name: Install ZK dependencies
+        run: npm ci
+        working-directory: zk
+
       - name: Verify pinned ZK artifacts
         run: node scripts/verify-artifacts.js --all
         working-directory: zk
@@ -241,16 +337,32 @@ jobs:
 
       - name: Build Tauri app (macOS)
         working-directory: crates/annex-desktop
-        run: cargo tauri build --target ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          # See the Linux job for why the pubkey is injected rather than
+          # committed.
+          if [ -n "${TAURI_SIGNING_PUBLIC_KEY:-}" ]; then
+            echo "Signing key configured — building updater artifacts."
+            CONFIG=$(printf '{"bundle":{"createUpdaterArtifacts":true},"plugins":{"updater":{"pubkey":"%s","endpoints":["%s"]}}}' \
+              "${TAURI_SIGNING_PUBLIC_KEY}" "${ANNEX_UPDATER_ENDPOINT}")
+          else
+            echo "No TAURI_SIGNING_PUBLIC_KEY — building WITHOUT updater artifacts."
+            CONFIG='{}'
+          fi
+          cargo tauri build --target ${{ matrix.target }} --config "${CONFIG}"
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
+          ANNEX_UPDATER_ENDPOINT: ${{ vars.ANNEX_UPDATER_ENDPOINT || 'https://github.com/seismicgear/annex/releases/latest/download/latest.json' }}
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
           name: annex-macos-${{ matrix.arch }}
           path: |
+            target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz
+            target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz.sig
             target/${{ matrix.target }}/release/bundle/dmg/*.dmg
           if-no-files-found: warn
 
@@ -290,20 +402,65 @@ jobs:
       #
       # A dry run reports; a tag fails. See docs/RELEASING.md for how to
       # generate the key and where each half goes.
-      - name: Check for updater signatures
+      # Every updater bundle must carry its OWN signature.
+      #
+      # This counted `.sig` files and passed if the count was non-zero, which
+      # answers a different question than the one that matters: one signed
+      # Linux bundle would have satisfied it for a release whose Windows
+      # bundles were entirely unsigned. Pair them up instead.
+      #
+      # And the dry run enforced LESS than the tag — a missing signature was a
+      # warning on `workflow_dispatch` and an error on a tag. So a green dry
+      # run established nothing about whether the tagged-release contract
+      # worked, which is the one thing a dry run exists to establish. Both
+      # paths now run the same check. `unsigned_dry_run` is the single,
+      # explicit way to get an unsigned build, and it is refused on a tag.
+      - name: Verify updater signatures
         run: |
-          count=$(find artifacts -name '*.sig' | wc -l)
-          echo "Found ${count} signature file(s)."
-          if [ "${count}" -eq 0 ]; then
-            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-              echo "::warning::No .sig files. TAURI_SIGNING_PRIVATE_KEY is unset, so these"
-              echo "::warning::artifacts are unsigned. Fine for a dry run; not for a tag."
+          set -euo pipefail
+
+          unsigned_ok="${{ github.event_name == 'workflow_dispatch' && inputs.unsigned_dry_run || 'false' }}"
+          is_tag="${{ startsWith(github.ref, 'refs/tags/') }}"
+
+          if [ "${is_tag}" = "true" ] && [ "${unsigned_ok}" = "true" ]; then
+            echo "::error::unsigned_dry_run cannot be used on a tagged release."
+            exit 1
+          fi
+
+          # The bundles the updater actually consumes. The .deb/.exe/.msi a
+          # user downloads by hand are NOT signed by Tauri — conflating the two
+          # is how "every artifact needs a .sig" becomes an unsatisfiable rule.
+          mapfile -t bundles < <(find artifacts \
+            \( -name '*.AppImage.tar.gz' -o -name '*.nsis.zip' -o -name '*.msi.zip' \
+               -o -name '*.app.tar.gz' \) -print | sort)
+
+          echo "Found ${#bundles[@]} updater bundle(s)."
+          missing=0
+          for b in "${bundles[@]}"; do
+            if [ -f "${b}.sig" ]; then
+              echo "  signed   $(basename "${b}")"
             else
-              echo "::error::No .sig files on a tagged release. Set the"
-              echo "::error::TAURI_SIGNING_PRIVATE_KEY secret (docs/RELEASING.md) — refusing"
-              echo "::error::to publish artifacts nobody can verify."
-              exit 1
+              echo "::error::unsigned $(basename "${b}") — no ${b}.sig"
+              missing=$((missing + 1))
             fi
+          done
+
+          if [ "${#bundles[@]}" -eq 0 ]; then
+            if [ "${unsigned_ok}" = "true" ]; then
+              echo "::warning::No updater bundles. createUpdaterArtifacts is off because"
+              echo "::warning::no signing key was supplied, and unsigned_dry_run was set."
+              exit 0
+            fi
+            echo "::error::No updater bundles were produced. Set TAURI_SIGNING_PRIVATE_KEY"
+            echo "::error::and TAURI_SIGNING_PUBLIC_KEY (docs/RELEASING.md), or re-run a"
+            echo "::error::workflow_dispatch with unsigned_dry_run=true to build without them."
+            exit 1
+          fi
+
+          if [ "${missing}" -gt 0 ]; then
+            echo "::error::${missing} updater bundle(s) have no signature. Refusing to publish"
+            echo "::error::artifacts the updater cannot verify."
+            exit 1
           fi
 
       # Checksums are the verification path while OS code signing is not in
@@ -327,19 +484,115 @@ jobs:
 
       # Three SBOMs because there are three dependency graphs, and a release
       # that names only the Rust one is not an inventory of what shipped.
+      # SBOMs are part of the release contract, so a failure to produce one
+      # fails the release.
+      #
+      # Each of these ended with `|| echo "::warning::… SBOM failed"`, so a
+      # release could be published having merely ATTEMPTED its dependency
+      # inventory. An inventory that might not exist is not an inventory, and
+      # the warning was in a log nobody reads after a green run. Same defect
+      # class as the beacon check that discarded its result.
+      #
+      # The generators are version-pinned for the same reason the ZK artifacts
+      # are: an inventory produced by an unknown tool version is not
+      # reproducible, and reproducibility is most of what it is for.
       - name: Generate SBOMs
         run: |
-          cargo install cargo-cyclonedx --locked || true
-          cargo cyclonedx --format json --all || echo "::warning::cargo-cyclonedx failed"
-          find . -name 'bom.json' -not -path './node_modules/*' -exec cp {} annex-rust.cdx.json \; || true
-          npx --yes @cyclonedx/cyclonedx-npm@latest --output-file client.cdx.json \
-            --package-lock-only client/package-lock.json || echo "::warning::client SBOM failed"
-          npx --yes @cyclonedx/cyclonedx-npm@latest --output-file zk.cdx.json \
-            --package-lock-only zk/package-lock.json || echo "::warning::zk SBOM failed"
-          ls -la ./*.cdx.json || true
+          set -euo pipefail
+          mkdir -p artifacts/sbom
 
-      # The ZK provenance travels with the release, so a verifier does not have
-      # to clone the repository to check what the bundled keys descend from.
+          cargo install cargo-cyclonedx@0.5.7 --locked
+          cargo cyclonedx --format json --all
+          find . -name 'bom.json' -not -path './artifacts/*' -exec \
+            cp {} artifacts/sbom/rust-workspace.json \;
+
+          npx --yes @cyclonedx/cyclonedx-npm@1.19.3 \
+            --output-file artifacts/sbom/client.json \
+            --package-lock-only client/package-lock.json
+          npx --yes @cyclonedx/cyclonedx-npm@1.19.3 \
+            --output-file artifacts/sbom/zk.json \
+            --package-lock-only zk/package-lock.json
+
+          # Produced is not the same as complete. An empty components array is
+          # what a misconfigured generator emits, and it would otherwise ship
+          # looking exactly like a real inventory.
+          for f in artifacts/sbom/rust-workspace.json artifacts/sbom/client.json artifacts/sbom/zk.json; do
+            if [ ! -s "$f" ]; then
+              echo "::error::${f} was not produced."
+              exit 1
+            fi
+            count=$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1])).get('components',[])))" "$f")
+            echo "${f}: ${count} component(s)"
+            if [ "${count}" -lt 1 ]; then
+              echo "::error::${f} lists no components — the inventory is empty, not clean."
+              exit 1
+            fi
+          done
+
+      # The update manifest the plugin polls.
+      #
+      # `plugins.updater.endpoints` points at `latest.json`, and nothing
+      # generated one — so a correctly signed, correctly uploaded set of
+      # updater bundles would still have produced an app that checked for
+      # updates, got a 404, and reported no update available. Signed artifacts
+      # nobody can discover are the same as no artifacts.
+      #
+      # Built from the .sig files themselves rather than from a template: the
+      # signature content IS the field the plugin verifies, so deriving the
+      # manifest from the signatures makes the two impossible to disagree.
+      - name: Generate update manifest
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.unsigned_dry_run == 'true') }}
+        run: |
+          set -euo pipefail
+          version="${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('0.0.0-dryrun-{0}', github.sha) }}"
+          version="${version#v}"
+          base="${{ github.server_url }}/${{ github.repository }}/releases/download/${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('dry-run-{0}', github.sha) }}"
+
+          python3 - "$version" "$base" <<'PYEOF'
+          import json, pathlib, sys
+
+          version, base = sys.argv[1], sys.argv[2]
+          # Tauri's platform keys. Only the ones we actually built appear.
+          patterns = {
+              "linux-x86_64": "*.AppImage.tar.gz",
+              "windows-x86_64": "*.nsis.zip",
+              "darwin-x86_64": "*.app.tar.gz",
+              "darwin-aarch64": "*.app.tar.gz",
+          }
+          arts = pathlib.Path("artifacts")
+          platforms = {}
+          for key, pat in patterns.items():
+              want_arch = key.split("-", 1)[1]
+              for bundle in sorted(arts.rglob(pat)):
+                  # macOS ships per-arch directories; match on the artifact
+                  # folder name so x86_64 and aarch64 do not overwrite each other.
+                  if key.startswith("darwin") and want_arch not in str(bundle):
+                      continue
+                  sig = bundle.with_suffix(bundle.suffix + ".sig")
+                  if not sig.exists():
+                      continue
+                  platforms[key] = {
+                      "signature": sig.read_text().strip(),
+                      "url": f"{base}/{bundle.name}",
+                  }
+                  break
+
+          if not platforms:
+              raise SystemExit("no signed updater bundles found; refusing to write an empty manifest")
+
+          manifest = {
+              "version": version,
+              "notes": f"Annex {version}",
+              "pub_date": __import__("datetime").datetime.now(
+                  __import__("datetime").timezone.utc
+              ).isoformat().replace("+00:00", "Z"),
+              "platforms": platforms,
+          }
+          out = arts / "latest.json"
+          out.write_text(json.dumps(manifest, indent=2) + "\n")
+          print(f"wrote {out} for {sorted(platforms)}")
+          PYEOF
+
       - name: Stage ZK provenance
         run: |
           mkdir -p provenance
@@ -365,6 +618,7 @@ jobs:
             artifacts/**/*.msi
             artifacts/**/*.dmg
             artifacts/**/*.sig
+            artifacts/latest.json
             SHA256SUMS
             ./*.cdx.json
             provenance/*

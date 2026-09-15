@@ -28,14 +28,55 @@
 # docs/deployment.md.
 
 services:
+  # Ownership of the data volume, done once, by the only thing that needs a
+  # capability to do it.
+  #
+  # A named volume is created root-owned on first use, and the server runs as
+  # uid 10001 with `cap_drop: ALL`. The entrypoint used to reconcile that by
+  # starting as root, `chown -R`-ing the volume and dropping privileges with
+  # gosu — all of which need capabilities the hardening below removes, so the
+  # documented production compose file could not run its own entrypoint.
+  #
+  # This holds CAP_CHOWN for the length of one chown and then exits. The server
+  # then runs unprivileged for its whole life.
+  annex-init:
+    image: busybox:1.36
+    user: "0:0"
+    command: >
+      sh -c "mkdir -p /data && chown -R 10001:10001 /data && chmod 0750 /data
+             && echo 'data volume ready (uid 10001)'"
+    volumes:
+      - annex-data:/data
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - FOWNER
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
   annex:
+    depends_on:
+      annex-init:
+        condition: service_completed_successfully
+    # Matches the uid/gid baked into the image, pinned in both places so an
+    # upgrade cannot silently land on a different id and read as corruption.
+    user: "10001:10001"
     build:
       context: .
       args:
         # Production here selects the ZK path that VERIFIES pinned artifacts
         # instead of generating dev fixtures, and arms the supply-chain pins
-        # for Piper and whisper.cpp. Those two need digests supplied:
-        #   --build-arg PIPER_SHA256=... --build-arg WHISPER_CPP_COMMIT=...
+        # for Piper, whisper.cpp and the default voice model.
+        #
+        # Those pins now have measured defaults in the Dockerfile, so this
+        # command builds as written. It previously did not: PIPER_SHA256 and
+        # WHISPER_CPP_COMMIT were deliberately empty and the production stages
+        # refuse to proceed without them, so the documented ordinary startup
+        # command could not build its own image. Override with --build-arg to
+        # move to a different upstream release.
         ANNEX_BUILD_PROFILE: production
     image: annex:production
     restart: unless-stopped
@@ -110,7 +151,7 @@ services:
     command:
       - |
         while true; do
-          sh /app/scripts/backup.sh --data-dir /app/data --out /backups --keep 14 || \
+          bash /app/scripts/backup.sh --data-dir /app/data --out /backups --keep 14 || \
             echo "[backup] FAILED — the next run will try again, but investigate." >&2
           sleep 86400
         done
@@ -122,9 +163,26 @@ services:
       # and it fails in a way that reads like a permissions problem.
       - annex-data:/app/data
       - annex-backups:/backups
+    # Runs as the same uid as the server: it reads the live database and the
+    # owner-only signing key, and writes archives that the server's user must
+    # be able to restore from.
+    user: "10001:10001"
     read_only: true
+    # The staging area has to fit the database, not a token amount.
+    #
+    # This was 256 MiB while the server is configured for a 10 GiB database
+    # (ANNEX_STORAGE_MAX_DB_BYTES above). backup.sh stages the database and
+    # uploads under mktemp and then extracts the archive into a SECOND
+    # temporary directory to verify it, so the peak requirement is roughly
+    # twice the data — and the failure arrives as a truncated archive from a
+    # "No space left on device" partway through, long after the size was
+    # chosen.
+    #
+    # Sized from the storage cap by default. A tmpfs is memory, so an operator
+    # running near 10 GiB should point ANNEX_BACKUP_TMPFS_SIZE at something
+    # smaller and mount real disk at /tmp instead.
     tmpfs:
-      - /tmp:size=256m,mode=1777
+      - /tmp:size=${ANNEX_BACKUP_TMPFS_SIZE:-24g},mode=1777
     security_opt:
       - no-new-privileges:true
     cap_drop:

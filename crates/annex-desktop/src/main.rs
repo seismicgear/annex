@@ -403,6 +403,13 @@ fn main() {
             }
         }))
         .plugin(tauri_plugin_deep_link::init())
+        // The updater plugin was configured in the bundle and never installed
+        // in the app, so `createUpdaterArtifacts` would have produced signed
+        // bundles that nothing could consume. Registering it is what makes the
+        // signature meaningful: the plugin verifies the detached signature
+        // against the public key baked into the built config before it will
+        // apply anything.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppManagedState {
             data_dir,
             config_path,
