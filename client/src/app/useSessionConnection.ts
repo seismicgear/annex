@@ -61,7 +61,7 @@ export function useSessionConnection({
             console.error('session token refresh failed on startup', err);
             // Token refresh failed — session is invalid.
             // Clear the stale in-memory token and fall back to re-registration.
-            setSessionToken(null);
+            setSessionToken(null, null);
             useIdentityStore.setState({ phase: 'keys_ready' });
             return;
           }
@@ -97,7 +97,7 @@ export function useSessionConnection({
             // The alternative is what used to happen — a console line, and
             // an app that looks signed in while every call 401s.
             console.error('session token refresh failed', err);
-            setSessionToken(null);
+            setSessionToken(null, null);
             useIdentityStore.setState({ phase: 'keys_ready' });
           },
         );

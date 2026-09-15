@@ -47,7 +47,28 @@ The reader is assumed to know that production-grade requires:
 ### Merkle storage (`crates/annex-identity/src/merkle.rs`, table `identities`)
 
 - Append-only Poseidon Merkle tree. Leaves are identity commitments stored in the `identities` SQL table (migrations 001+).
-- On boot, the tree is rebuilt from `identities` and the recomputed root is compared against a persisted root; mismatch raises `MerkleRootMismatch` (search `merkle.rs` for the variant; it is raised from two sites) and panics. This is the only "tamper detection" today.
+- **Stale as written; corrected here.** The tree is no longer rebuilt from
+  leaves on every boot, and it has not been for some time. `MerkleTree::restore`
+  takes a fast path from persisted metadata plus the sparse `vrp_merkle_nodes`
+  table, and falls back to `rebuild_from_leaves` only for a fresh or legacy
+  database that has no persisted node state. Nodes are held in a sparse
+  `HashMap<(level, index), Fr>`, so depth 20 (1,048,576 leaves) does not imply
+  a million-node walk per start.
+- A root mismatch raises `MerkleRootMismatch` rather than silently continuing.
+  **What that check covers is narrower than it sounds**, and the gap is worth
+  stating rather than leaving for someone to discover: the fast restore path
+  compares the loaded top-level root against the root in the metadata row. It
+  does not recompute the interior from the leaves. A corrupted node at a lower
+  level, with both of those two values left intact, is therefore not detected
+  by this path. Proofs generated against it would fail verification — which is
+  a symptom, not a diagnosis, and it arrives at the user rather than at the
+  operator.
+- Two things are consequently NOT established and should not be claimed:
+  a measured operating envelope at large registries (registration and
+  proof latency, memory, lock contention, cold-start time at 100k leaves and
+  near capacity), and a demonstrated detection-and-repair contract for the
+  corrupted-interior-node case above. The fix for the latter need not be an
+  expensive full rebuild on every boot; it does need to exist and be tested.
 - Roots are formatted by encoding the Fr field element as big-endian bytes via `into_bigint().to_bytes_be()` then `hex::encode(...)` — lowercase, no `0x`, fixed width.
 - The current root is exposed at `GET /api/registry/current-root` (handler `crates/annex-server/src/api.rs::get_current_root_handler`; route registered in `crates/annex-server/src/routes/mod.rs`). Earlier revisions of this doc gave the path as `/api/registry/root` and put the registration in `lib.rs` — neither is correct, and a client built from that path gets a 404.
 - Path lookup for clients uses `annex_identity::registry::get_path_for_commitment`.
@@ -167,9 +188,20 @@ moves forward.
   `r1cs`, plus circuit metadata (`circuit`, `circuitVersion`, `curve`,
   `provingSystem`, `treeDepth`, `publicSignals`). The
   `ceremony.type` field labels how the pinned artifacts were produced.
-  Today every shipped manifest carries `ceremony.type: "dev-fixture"`;
-  flipping that to `"ceremony-vN"` is the documentation event that
-  accompanies a real ceremony.
+
+  **This paragraph used to say every shipped manifest carried
+  `ceremony.type: "dev-fixture"`. That is no longer true and had not been
+  true since the ceremony was run.** Every manifest now carries
+  `"multi-contributor-beacon"`, with a `transcript` pointer, the drand round
+  its phase-2 beacon came from, and a `note` stating plainly that this is NOT
+  a multi-party ceremony with independent participants.
+
+  Two statements that must not drift apart again: the artifacts descend from a
+  recorded, verifiable trusted setup whose beacon is authenticated against the
+  League of Entropy chain (`verify-ceremony.js` checks the BLS signature, and
+  that the commitment predates the beacon round); and the contributions are all
+  local to one operator. More local contributions are not independence. The
+  ROADMAP entry stays `PARTIAL` for exactly that reason.
 - `zk/scripts/verify-artifacts.js` — side-effect-free verifier. Reads a
   manifest (default `zk/artifacts/membership/manifest.json`), computes
   SHA-256 of each referenced file, exits 0 only if every required artifact

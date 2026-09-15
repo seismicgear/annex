@@ -107,7 +107,15 @@ describe('x-annex-zk-proof header (server contract)', () => {
     vi.mocked(global.fetch).mockResolvedValue(okJsonResponse({ status: 'joined' }));
     await joinChannel('pseudo-1', 'chan-1');
 
-    const init = vi.mocked(global.fetch).mock.calls[0][1];
+    // Select the call by URL, not by index. `setSessionToken` now warms the
+    // attachment grant, so `/api/uploads/grant` can be the first fetch — and an
+    // index-based lookup silently asserted against the wrong request rather
+    // than failing in a way that named the cause.
+    const joinCall = vi
+      .mocked(global.fetch)
+      .mock.calls.find((c) => String(c[0]).includes('/join'));
+    expect(joinCall, 'joinChannel should have issued a request').toBeTruthy();
+    const init = joinCall![1];
     const headers = init?.headers as Headers;
     const headerVal = headers.get('x-annex-zk-proof');
     expect(headerVal).toBeTruthy();

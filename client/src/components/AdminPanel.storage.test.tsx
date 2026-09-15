@@ -22,6 +22,10 @@ vi.mock('@/lib/api', () => ({
   getServer: vi.fn(async () => ({ slug: 'alpha', label: 'Alpha', public_url: '' })),
   getApiBaseUrl: () => 'https://alpha.example',
   resolveUrl: (u: string) => u,
+  // MessageBubble subscribes to the attachment grant, so any mock of
+  // `@/lib/api` that a message component renders through needs these.
+  subscribeUploadGrant: () => () => {},
+  getUploadGrantVersion: () => 0,
   renameServer: vi.fn(),
   setPublicUrl: vi.fn(),
   uploadServerImage: vi.fn(),

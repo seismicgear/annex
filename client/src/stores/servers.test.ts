@@ -51,6 +51,10 @@ vi.mock('@/lib/api', () => ({
   getServerSummary: (...args: unknown[]) => mockGetServerSummary(...args),
   getRemoteServerSummary: (...args: unknown[]) => mockGetRemoteServerSummary(...args),
   resolveUrl: (url: string) => url,
+  // MessageBubble subscribes to the attachment grant, so any mock of
+  // `@/lib/api` that a message component renders through needs these.
+  subscribeUploadGrant: () => () => {},
+  getUploadGrantVersion: () => 0,
 }));
 
 const mockCloneForServer = vi.fn(async (): Promise<string | null> => 'cloned-identity-1');

@@ -18,13 +18,40 @@ use tower_http::services::{ServeDir, ServeFile};
 
 /// Attaches the `/uploads/*` static mount, if the directory exists.
 pub(crate) fn attach_uploads(router: Router, upload_dir: &str) -> Router {
-    if std::path::Path::new(upload_dir).exists() {
-        tracing::info!(path = %upload_dir, "serving uploaded files at /uploads");
-        router.nest_service("/uploads", ServeDir::new(upload_dir))
-    } else {
-        tracing::info!(path = %upload_dir, "uploads directory not found yet (will be created on first upload)");
-        router
-    }
+    // ONLY `/uploads/server` is public.
+    //
+    // This used to mount the whole `upload_dir` as a bare `ServeDir` at
+    // `/uploads`, outside the authenticated route group — so every chat
+    // attachment was fetchable by anyone holding its URL, with no session, no
+    // channel membership and no expiry. A member removed from a channel kept
+    // every attachment URL they had ever seen, permanently: the messages became
+    // unreachable to them and the files did not.
+    //
+    // Random UUID filenames make a URL hard to guess. They are not an
+    // authorization check, and treating them as one meant a private
+    // conversation's FILES had a different access boundary from its messages
+    // while the UI presents them as one thing.
+    //
+    // `/uploads/server` is the server's own icon and banner — deliberately
+    // public, because they are shown on the join screen to people who have no
+    // identity yet. Chat attachments are served by
+    // `api_uploads_access::serve_chat_upload`, which checks a signed grant and
+    // re-reads membership on every request.
+    // Mounted unconditionally, NOT behind an `exists()` check.
+    //
+    // The previous version decided at router-construction time whether to
+    // mount at all, which on a fresh server means the directory does not exist
+    // yet and the mount is skipped — permanently, until someone restarts the
+    // process. So the first operator to upload a server icon got a 404 for it
+    // and no indication why. `ServeDir` resolves paths per request and answers
+    // 404 for a missing directory on its own, so the check bought nothing and
+    // cost a startup-ordering dependency.
+    let server_dir = std::path::Path::new(upload_dir).join("server");
+    tracing::info!(
+        path = %server_dir.display(),
+        "serving public server branding at /uploads/server"
+    );
+    router.nest_service("/uploads/server", ServeDir::new(server_dir))
 }
 
 /// Attaches the client SPA mount as the router's fallback service, if the

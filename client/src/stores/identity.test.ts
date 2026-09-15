@@ -81,7 +81,7 @@ describe('identity store — API auth state sync', () => {
     const { useIdentityStore } = await import('./identity');
     await useIdentityStore.getState().loadIdentities();
 
-    expect(mockSetSessionToken).toHaveBeenCalledWith('tok1');
+    expect(mockSetSessionToken).toHaveBeenCalledWith('tok1', expect.anything());
     expect(useIdentityStore.getState().phase).toBe('ready');
   });
 
@@ -96,7 +96,7 @@ describe('identity store — API auth state sync', () => {
     const { useIdentityStore } = await import('./identity');
     await useIdentityStore.getState().loadIdentities();
 
-    expect(mockSetSessionToken).toHaveBeenCalledWith(null);
+    expect(mockSetSessionToken).toHaveBeenCalledWith(null, expect.anything());
     expect(useIdentityStore.getState().phase).toBe('ready');
   });
 
@@ -111,7 +111,7 @@ describe('identity store — API auth state sync', () => {
     const { useIdentityStore } = await import('./identity');
     await useIdentityStore.getState().loadIdentities();
 
-    expect(mockSetSessionToken).toHaveBeenCalledWith(null);
+    expect(mockSetSessionToken).toHaveBeenCalledWith(null, null);
     expect(useIdentityStore.getState().phase).toBe('keys_ready');
   });
 
@@ -124,7 +124,7 @@ describe('identity store — API auth state sync', () => {
     const { useIdentityStore } = await import('./identity');
     await useIdentityStore.getState().loadIdentities();
 
-    expect(mockSetSessionToken).toHaveBeenCalledWith(null);
+    expect(mockSetSessionToken).toHaveBeenCalledWith(null, null);
     expect(useIdentityStore.getState().phase).toBe('uninitialized');
   });
 
@@ -138,7 +138,7 @@ describe('identity store — API auth state sync', () => {
     const { useIdentityStore } = await import('./identity');
     await useIdentityStore.getState().selectIdentity('1');
 
-    expect(mockSetSessionToken).toHaveBeenCalledWith('tok1');
+    expect(mockSetSessionToken).toHaveBeenCalledWith('tok1', expect.anything());
     expect(useIdentityStore.getState().phase).toBe('ready');
   });
 
@@ -152,7 +152,7 @@ describe('identity store — API auth state sync', () => {
     const { useIdentityStore } = await import('./identity');
     await useIdentityStore.getState().selectIdentity('1');
 
-    expect(mockSetSessionToken).toHaveBeenCalledWith(null);
+    expect(mockSetSessionToken).toHaveBeenCalledWith(null, expect.anything());
     expect(useIdentityStore.getState().phase).toBe('ready');
   });
 
@@ -166,7 +166,7 @@ describe('identity store — API auth state sync', () => {
     const { useIdentityStore } = await import('./identity');
     await useIdentityStore.getState().selectIdentity('2');
 
-    expect(mockSetSessionToken).toHaveBeenCalledWith(null);
+    expect(mockSetSessionToken).toHaveBeenCalledWith(null, null);
     expect(useIdentityStore.getState().phase).toBe('keys_ready');
   });
 
@@ -177,7 +177,7 @@ describe('identity store — API auth state sync', () => {
     const { useIdentityStore } = await import('./identity');
     useIdentityStore.getState().logout();
 
-    expect(mockSetSessionToken).toHaveBeenCalledWith(null);
+    expect(mockSetSessionToken).toHaveBeenCalledWith(null, null);
     expect(useIdentityStore.getState().phase).toBe('uninitialized');
   });
 
@@ -200,7 +200,7 @@ describe('identity store — API auth state sync', () => {
     // Voice teardown should happen before token is cleared
     expect(mockLeaveCall).toHaveBeenCalledWith('p1');
     expect(mockForceReset).toHaveBeenCalled();
-    expect(mockSetSessionToken).toHaveBeenCalledWith(null);
+    expect(mockSetSessionToken).toHaveBeenCalledWith(null, null);
     expect(useIdentityStore.getState().phase).toBe('uninitialized');
   });
 
@@ -215,7 +215,7 @@ describe('identity store — API auth state sync', () => {
     const { useIdentityStore } = await import('./identity');
     await useIdentityStore.getState().importBackup(JSON.stringify(imported));
 
-    expect(mockSetSessionToken).toHaveBeenCalledWith('tok3');
+    expect(mockSetSessionToken).toHaveBeenCalledWith('tok3', expect.anything());
   });
 
   it('importBackup clears token for keys_ready identity', async () => {
@@ -229,7 +229,7 @@ describe('identity store — API auth state sync', () => {
     const { useIdentityStore } = await import('./identity');
     await useIdentityStore.getState().importBackup(JSON.stringify(imported));
 
-    expect(mockSetSessionToken).toHaveBeenCalledWith(null);
+    expect(mockSetSessionToken).toHaveBeenCalledWith(null, null);
   });
 
   it('loadIdentities selects the most recently used ready identity', async () => {
@@ -246,7 +246,7 @@ describe('identity store — API auth state sync', () => {
 
     // Should select the identity with the most recent lastUsedAt
     expect(useIdentityStore.getState().identity?.id).toBe('2');
-    expect(mockSetSessionToken).toHaveBeenCalledWith('tok2');
+    expect(mockSetSessionToken).toHaveBeenCalledWith('tok2', expect.anything());
   });
 
   it('selectIdentity clears permissions from previous identity', async () => {

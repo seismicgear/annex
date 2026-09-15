@@ -14,6 +14,10 @@ import { render, screen, cleanup } from '@testing-library/react';
 vi.mock('@/lib/api', () => ({
   getMessageEdits: vi.fn(),
   resolveUrl: (u: string) => u,
+  // MessageBubble subscribes to the attachment grant, so any mock of
+  // `@/lib/api` that a message component renders through needs these.
+  subscribeUploadGrant: () => () => {},
+  getUploadGrantVersion: () => 0,
   getVisibleUsernames: vi.fn(async () => ({ usernames: {} })),
 }));
 

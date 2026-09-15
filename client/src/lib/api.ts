@@ -11,8 +11,11 @@ export {
   ApiError,
   authHeaders,
   fetchWithTimeout,
+  clearUploadGrant,
+  ensureUploadGrant,
   getApiBaseUrl,
   getSessionToken,
+  getUploadGrantVersion,
   getZkProofPayload,
   isTokenExpired,
   refreshSessionToken,
@@ -24,6 +27,7 @@ export {
   setZkProofPayload,
   startTokenRefresh,
   stopTokenRefresh,
+  subscribeUploadGrant,
 } from '@/api/core';
 
 export {

@@ -371,7 +371,13 @@ async fn a_member_can_upload_an_image_and_fetch_it_back() {
     // The URL in the response is what the client renders. If it does not
     // serve, every uploaded image is a broken thumbnail and the upload
     // response still says "ok".
-    let (status, served) = get(&a.router, url, Some("alice")).await;
+    //
+    // The grant is new: chat attachments are no longer served by a bare
+    // ServeDir, so a fetch without one is refused. The client appends it in
+    // `resolveUrl`. This test previously passed with no credential at all,
+    // which was the defect rather than the feature.
+    let granted = format!("{url}?t={}", grant_for("alice", 0));
+    let (status, served) = get(&a.router, &granted, Some("alice")).await;
     assert_eq!(
         status,
         StatusCode::OK,
@@ -403,11 +409,14 @@ async fn exif_is_gone_from_the_bytes_that_are_actually_served() {
     let json: Value = serde_json::from_str(&body).unwrap();
     let url = json["url"].as_str().expect("url");
 
-    let (status, served) = get(&a.router, url, Some("alice")).await;
+    let granted = format!("{url}?t={}", grant_for("alice", 0));
+    let (status, served) = get(&a.router, &granted, Some("alice")).await;
     assert_eq!(status, StatusCode::OK);
 
     // This is the whole point of stripping: not that a function returns
-    // clean bytes, but that the bytes a stranger can download are clean.
+    // clean bytes, but that the bytes a MEMBER can download are clean. (It
+    // used to say "a stranger", which was accurate at the time and is the
+    // thing that changed.)
     assert!(
         !served
             .windows(b"annex-gps-location".len())
@@ -725,4 +734,190 @@ fn walk_upload_dir(app: &UploadApp) -> Vec<String> {
         &mut out,
     );
     out
+}
+
+// ── A private attachment is not public because its name is random ─────────
+//
+// `/uploads` was a bare `ServeDir` outside the authenticated route group, so
+// anyone holding a URL could fetch the file: no session, no membership, no
+// expiry. Random UUID filenames make a URL hard to GUESS; they do not make it
+// an authorization check. The case that decides it is the removed member, who
+// keeps every URL they ever saw while the messages become unreachable.
+
+/// The grant an authenticated member would obtain from `/api/uploads/grant`.
+fn grant_for(pseudonym: &str, epoch: i64) -> String {
+    annex_server::api_uploads_access::generate_upload_grant(
+        pseudonym,
+        &[0u8; 32], // matches build_app_state's ws_token_secret
+        annex_server::api_uploads_access::UPLOAD_GRANT_TTL_SECS,
+        epoch,
+    )
+}
+
+/// Upload a file as `uploader` into `channel` and return its URL path.
+async fn upload_and_get_path(app: &UploadApp, channel: &str, uploader: &str) -> String {
+    let body = multipart_body("private.png", "image/png", &png_with_text_chunk());
+    let (status, response) = post_multipart(
+        &app.router,
+        &format!("/api/channels/{channel}/upload"),
+        uploader,
+        body,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "upload failed: {response}");
+    let json: serde_json::Value = serde_json::from_str(&response).unwrap();
+    json["url"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no url in {response}"))
+        .to_string()
+}
+
+#[tokio::test]
+async fn a_private_attachment_needs_a_grant_and_membership() {
+    let app = setup_upload_app(ServerPolicy::default()).await;
+    add_member(&app.pool, "alice", false);
+    add_member(&app.pool, "mallory", false);
+    add_channel(&app.pool, "chan-private", "alice");
+
+    let url = upload_and_get_path(&app, "chan-private", "alice").await;
+    assert!(
+        url.starts_with("/uploads/chat/"),
+        "unexpected upload url: {url}"
+    );
+
+    // 1. Unauthenticated: the URL alone must not be enough. This is the exact
+    //    request that used to succeed.
+    let (status, _bytes) = get(&app.router, &url, None).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "the bare URL served a private attachment to an anonymous caller"
+    );
+
+    // 2. A member of the channel, with a grant: allowed.
+    let alice_url = format!("{url}?t={}", grant_for("alice", 0));
+    let (status, bytes) = get(&app.router, &alice_url, None).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a member was refused their own file"
+    );
+    assert!(!bytes.is_empty(), "the file came back empty");
+
+    // 3. An authenticated user who is NOT in the channel: refused. 404 rather
+    //    than 403 on purpose — a 403 confirms the upload id is real, which
+    //    turns this endpoint into an existence oracle.
+    let mallory_url = format!("{url}?t={}", grant_for("mallory", 0));
+    let (status, _bytes) = get(&app.router, &mallory_url, None).await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a non-member fetched a private attachment"
+    );
+}
+
+/// The case the capability-URL model cannot handle at all: someone who WAS a
+/// member. Their grant is valid and their membership is gone, so authorization
+/// has to be a live read rather than something baked into the token.
+#[tokio::test]
+async fn a_removed_member_loses_access_to_attachments_they_had_seen() {
+    let app = setup_upload_app(ServerPolicy::default()).await;
+    add_member(&app.pool, "alice", false);
+    add_member(&app.pool, "bob", false);
+    add_channel(&app.pool, "chan-shared", "alice");
+    {
+        let conn = app.pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO channel_members (channel_id, pseudonym_id, server_id) VALUES ('chan-shared', 'bob', 1)",
+            [],
+        )
+        .unwrap();
+    }
+
+    let url = upload_and_get_path(&app, "chan-shared", "alice").await;
+    let bob_url = format!("{url}?t={}", grant_for("bob", 0));
+
+    let (status, _bytes) = get(&app.router, &bob_url, None).await;
+    assert_eq!(status, StatusCode::OK, "bob should see it while a member");
+
+    // Remove bob. His grant is still perfectly valid and unexpired.
+    {
+        let conn = app.pool.get().unwrap();
+        conn.execute(
+            "DELETE FROM channel_members WHERE channel_id = 'chan-shared' AND pseudonym_id = 'bob'",
+            [],
+        )
+        .unwrap();
+    }
+
+    let (status, _bytes) = get(&app.router, &bob_url, None).await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a removed member kept access with an unexpired grant — authorization \
+         is baked into the token instead of being read at fetch time"
+    );
+}
+
+/// Revoking sessions must reach attachments too, or revocation stops API calls
+/// and leaves in-flight grants working until they expire.
+#[tokio::test]
+async fn a_revoked_grant_cannot_fetch_attachments() {
+    let app = setup_upload_app(ServerPolicy::default()).await;
+    add_member(&app.pool, "alice", false);
+    add_channel(&app.pool, "chan-rev", "alice");
+
+    let url = upload_and_get_path(&app, "chan-rev", "alice").await;
+    let old_grant = format!("{url}?t={}", grant_for("alice", 0));
+
+    let (status, _) = get(&app.router, &old_grant, None).await;
+    assert_eq!(status, StatusCode::OK, "precondition");
+
+    {
+        let conn = app.pool.get().unwrap();
+        conn.execute(
+            "UPDATE platform_identities SET token_epoch = token_epoch + 1 WHERE pseudonym_id = 'alice'",
+            [],
+        )
+        .unwrap();
+    }
+
+    let (status, _) = get(&app.router, &old_grant, None).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a revoked grant still fetched an attachment"
+    );
+
+    // A freshly minted grant at the new epoch works again.
+    let new_grant = format!("{url}?t={}", grant_for("alice", 1));
+    let (status, _) = get(&app.router, &new_grant, None).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "re-granting after revocation should work"
+    );
+}
+
+/// Server branding stays public: it is shown on the join screen to people who
+/// have no identity yet.
+#[tokio::test]
+async fn server_branding_is_still_public() {
+    let app = setup_upload_app(ServerPolicy::default()).await;
+    add_member(&app.pool, "mod", true);
+
+    let body = multipart_body("icon.png", "image/png", &png_with_text_chunk());
+    let (status, response) =
+        post_multipart(&app.router, "/api/admin/server/image", "mod", body).await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    let json: serde_json::Value = serde_json::from_str(&response).unwrap();
+    let url = json["url"].as_str().expect("url").to_string();
+
+    let (status, bytes) = get(&app.router, &url, None).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "server branding must remain fetchable without a grant"
+    );
+    assert!(!bytes.is_empty());
 }

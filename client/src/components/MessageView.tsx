@@ -21,6 +21,7 @@ import { useUsernameStore } from '@/stores/usernames';
 import { LinkPreview } from '@/components/LinkPreview';
 import { Modal } from '@/components/Modal';
 import { extractUrls } from '@/lib/link-preview';
+import { useUploadGrant } from '@/lib/useUploadGrant';
 import { getPersonasForIdentity } from '@/lib/personas';
 import { resolveUrl } from '@/lib/api';
 import * as api from '@/lib/api';
@@ -132,6 +133,13 @@ function MessageBubble({
   selfPersona: Persona | null;
   onImageClick: (url: string) => void;
 }) {
+  // Subscribe to the attachment grant so this bubble re-renders when it
+  // arrives. `resolveUrl` appends it to `/uploads/chat/**` URLs, and it is
+  // fetched asynchronously — a bubble painted before it lands would otherwise
+  // keep its unsigned URL, and the image would stay broken for the life of the
+  // view rather than for a moment.
+  useUploadGrant();
+
   const createdMs = parseMessageTimestamp(message.created_at);
   const time = isNaN(createdMs) ? '??' : new Date(createdMs).toLocaleTimeString();
   const isDeleted = !!message.deleted_at;

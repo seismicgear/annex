@@ -27,6 +27,7 @@ pub mod api_observe;
 pub mod api_rtx;
 pub mod api_sse;
 pub mod api_upload;
+pub mod api_uploads_access;
 pub mod api_usernames;
 pub mod api_vrp;
 pub mod api_ws;

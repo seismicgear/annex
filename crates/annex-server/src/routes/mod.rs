@@ -160,6 +160,10 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/api/metrics", get(crate::api_metrics::metrics))
         .route(
+            "/api/uploads/grant",
+            post(crate::api_uploads_access::issue_upload_grant),
+        )
+        .route(
             "/api/admin/policy",
             get(api_admin::get_policy_handler).put(api_admin::update_policy_handler),
         )
@@ -329,6 +333,15 @@ pub fn app(state: AppState) -> Router {
         // means the path never simply vanishes, which reads to an operator as
         // a broken build rather than a policy.
         .route("/metrics", get(crate::api_metrics::metrics_public))
+        // Not behind `auth_middleware` because a browser cannot attach an
+        // Authorization header to `<img src>` — which is the whole constraint
+        // that shapes this. The handler authorises internally against a signed
+        // grant plus a LIVE membership read, so leaving a channel takes effect
+        // on the next request rather than whenever a token expires.
+        .route(
+            "/uploads/chat/{category}/{filename}",
+            get(crate::api_uploads_access::serve_chat_upload),
+        )
         .route("/api/registry/register", post(api::register_handler))
         .route(
             "/api/registry/path/{commitmentHex}",

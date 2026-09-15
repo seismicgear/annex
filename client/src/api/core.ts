@@ -126,11 +126,130 @@ export function getApiBaseUrl(): string {
 }
 
 /**
+ * The current attachment grant, and when it stops being usable.
+ *
+ * Chat attachments are no longer served by a public static mount — they need a
+ * short-lived signed grant, because a browser cannot attach an `Authorization`
+ * header to `<img src>`. See `crates/annex-server/src/api_uploads_access.rs`.
+ *
+ * Held in a module-level cache rather than fetched per image: a channel with
+ * thirty pictures would otherwise mint thirty grants on scroll.
+ */
+/**
+ * The pseudonym the current session belongs to.
+ *
+ * `authHeaders` needs it for the `X-Annex-Pseudonym` fallback used when no
+ * session token is held (dev and the e2e harness, where `enforce_zk_proofs` is
+ * off). Tracked here so `ensureUploadGrant` — which is reached from `resolveUrl`
+ * during render, with no caller to pass it — can authenticate the same way
+ * every other call does.
+ *
+ * The first version of the grant fetch used bare `request()`, which attaches no
+ * credentials at all. The UI audit caught it: 14 `request-failed` findings,
+ * `POST /api/uploads/grant — HTTP 401`, and every attachment a broken image.
+ */
+let _currentPseudonym: string | null = null;
+
+let _uploadGrant: string | null = null;
+let _uploadGrantExpiresAt = 0;
+let _uploadGrantInFlight: Promise<void> | null = null;
+
+/**
+ * Bumped whenever the cached grant changes.
+ *
+ * `resolveUrl` is called during render and cannot await, so the first paint
+ * after a cold start emits an unsigned URL. Something has to tell React to
+ * render again once the grant lands — and the first version of this assumed
+ * "the state update when the grant arrives re-renders it", which was simply
+ * not true: the grant lives in a module variable and no state was touched.
+ *
+ * The UI audit found it. `/api/uploads/grant` stopped 401-ing and the images
+ * kept 401-ing, on exactly the surface (`message-image-lightbox`) whose
+ * attachments render on first paint.
+ */
+let _uploadGrantVersion = 0;
+const _uploadGrantListeners = new Set<() => void>();
+
+function notifyUploadGrantChanged(): void {
+  _uploadGrantVersion += 1;
+  for (const listener of _uploadGrantListeners) listener();
+}
+
+/** `useSyncExternalStore` subscribe half. */
+export function subscribeUploadGrant(listener: () => void): () => void {
+  _uploadGrantListeners.add(listener);
+  return () => {
+    _uploadGrantListeners.delete(listener);
+  };
+}
+
+/** `useSyncExternalStore` snapshot half. */
+export function getUploadGrantVersion(): number {
+  return _uploadGrantVersion;
+}
+
+/** Cleared on sign-out and on identity switch, so a grant cannot outlive its owner. */
+export function clearUploadGrant(): void {
+  const had = _uploadGrant !== null;
+  _uploadGrant = null;
+  _uploadGrantExpiresAt = 0;
+  _uploadGrantInFlight = null;
+  if (had) notifyUploadGrantChanged();
+}
+
+/**
+ * Ensure a usable attachment grant is cached.
+ *
+ * Refreshed a minute early so a render that begins just before expiry does not
+ * produce broken images. Concurrent callers share one request — a channel
+ * switch renders many attachments at once, and without this they would each
+ * start their own.
+ */
+export async function ensureUploadGrant(): Promise<void> {
+  const now = Date.now();
+  if (_uploadGrant && now < _uploadGrantExpiresAt - 60_000) return;
+  if (_uploadGrantInFlight) return _uploadGrantInFlight;
+
+  _uploadGrantInFlight = (async () => {
+    try {
+      const resp = await request<{ token: string; expiresInSecs: number }>(
+        '/api/uploads/grant',
+        {
+          method: 'POST',
+          body: '{}',
+          headers: authHeaders(_currentPseudonym ?? ''),
+        },
+      );
+      _uploadGrant = resp.token;
+      _uploadGrantExpiresAt = Date.now() + resp.expiresInSecs * 1000;
+      notifyUploadGrantChanged();
+    } catch {
+      // A failed grant must not break the app: the images 401 and the next
+      // render tries again. Throwing here would take the message list with it.
+      _uploadGrant = null;
+      _uploadGrantExpiresAt = 0;
+    } finally {
+      _uploadGrantInFlight = null;
+    }
+  })();
+  return _uploadGrantInFlight;
+}
+
+/** Chat attachments need a grant; server branding is public. */
+function needsUploadGrant(path: string): boolean {
+  return path.startsWith('/uploads/chat/');
+}
+
+/**
  * Resolve a relative path against the API base URL.
  *
  * When the app is loaded from a Tauri bundle (`tauri://localhost`), relative
  * paths like `/uploads/abc.png` would resolve against the Tauri origin and
  * fail. This helper ensures they resolve against the server instead.
+ *
+ * Chat attachment paths additionally get the cached grant appended. This is
+ * the one place every attachment URL passes through, which is why the grant
+ * goes here rather than at each of the three call sites in `MessageView`.
  *
  * Absolute URLs (http/https) are returned unchanged.
  */
@@ -138,7 +257,18 @@ export function resolveUrl(path: string): string {
   if (!path || path.startsWith('http://') || path.startsWith('https://')) {
     return path;
   }
-  return _apiBaseUrl ? `${_apiBaseUrl}${path}` : path;
+  const base = _apiBaseUrl ? `${_apiBaseUrl}${path}` : path;
+  if (!needsUploadGrant(path)) return base;
+
+  // Kick off a refresh if the cache is cold or stale. Synchronous on purpose —
+  // `resolveUrl` is called from render. A first paint before the grant arrives
+  // emits an unsigned URL; `subscribeUploadGrant` is what makes the component
+  // render again once it lands. Consumers that render attachments must use
+  // `useUploadGrant()`, or they will keep the unsigned URL forever.
+  void ensureUploadGrant();
+  if (!_uploadGrant) return base;
+  const sep = base.includes('?') ? '&' : '?';
+  return `${base}${sep}t=${encodeURIComponent(_uploadGrant)}`;
 }
 
 /**
@@ -257,8 +387,26 @@ export async function requestRemote<T>(
 }
 
 /** Set the session token (after verify-membership or token refresh). */
-export function setSessionToken(token: string | null): void {
+export function setSessionToken(token: string | null, pseudonymId: string | null): void {
+  // The pseudonym is REQUIRED rather than optional, so the compiler enumerates
+  // every call site. There are eleven in the identity store alone, and the
+  // attachment grant is a credential for one identity — a site that set a new
+  // token while leaving the old pseudonym behind would mint grants naming the
+  // wrong person. An optional parameter would have compiled everywhere and been
+  // wrong in the places nobody revisited.
+  if (token !== _sessionToken || pseudonymId !== _currentPseudonym) {
+    clearUploadGrant();
+  }
   _sessionToken = token;
+  _currentPseudonym = pseudonymId;
+
+  // Warm the grant as soon as there is a session to mint one against, rather
+  // than waiting for the first attachment to render. Belt and braces with the
+  // subscription above: this removes the race in the common path, and the
+  // subscription covers the rest.
+  if (token !== null || pseudonymId !== null) {
+    void ensureUploadGrant();
+  }
 }
 
 /** Get the current session token. */
@@ -284,8 +432,29 @@ export function isTokenExpired(token: string): boolean {
   try {
     const decoded = atob(token.replace(/-/g, '+').replace(/_/g, '/'));
     const parts = decoded.split('|');
-    if (parts.length !== 3) return true;
-    const expires = parseInt(parts[1], 10);
+
+    // Two layouts, and reading the wrong one is not a parse error — it is a
+    // plausible number in the wrong position.
+    //
+    //   v1: pseudonym|expires|signature            (3 fields)
+    //   v2: pseudonym|epoch|expires|signature      (4 fields)
+    //
+    // This only understood v1 and returned `true` for anything else, so once
+    // the server started minting v2 every token read as ALREADY EXPIRED and
+    // the client refreshed on every check. Had it instead been written to take
+    // `parts[1]` regardless, it would have read the EPOCH as a unix timestamp
+    // — 0 for a never-revoked identity, i.e. expired in 1970 — which is the
+    // same failure with a more convincing cause.
+    let expiresField: string | undefined;
+    if (parts.length === 4) {
+      expiresField = parts[2];
+    } else if (parts.length === 3) {
+      expiresField = parts[1];
+    } else {
+      return true;
+    }
+
+    const expires = parseInt(expiresField, 10);
     if (isNaN(expires)) return true;
     // Treat as expired 30 seconds early to avoid edge-case races
     return Date.now() / 1000 >= expires - 30;

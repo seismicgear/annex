@@ -161,7 +161,7 @@ export function useAppBootstrap({
               error: null,
               errorDetails: null,
             });
-            setSessionToken(null);
+            setSessionToken(null, null);
           }
         } else {
           try {

@@ -6,15 +6,58 @@ member would.
 
 | Layer | Protects against | Server can read? | Status |
 |-------|------------------|------------------|--------|
-| **E2E channels** | the server, disk thieves, federation peers, anyone | **No** (content-blind) | opt-in per channel |
+| **E2E channels** | disk thieves, federation peers, a passive server | **No** (content-blind) — but see the limits box in §1: an ACTIVELY malicious server can still obtain the channel key, and attachments are refused rather than encrypted | opt-in per channel |
 | **Encryption at rest** | stolen DB file, leaked backups, filesystem access | Yes (it holds the key) | always on, transparent |
 | **Metadata hardening** | the signaling relay observing who/when/how-big | n/a (relay was already content-blind) | wire-protocol + primitives |
 
 ## 1. End-to-end encrypted channels (content-blind)
 
+> ### What this does NOT currently defend against
+>
+> Three limits, stated here rather than further down, because the sentence
+> under this box is the one people act on.
+>
+> **1. A malicious server can obtain the channel key.** Key distribution reads
+> a server-provided directory of pseudonyms and X25519 public keys, and a
+> legitimate client wraps the channel key to whatever entries it is given. It
+> does not authenticate those device keys against an independently verifiable
+> member identity, and when it adopts a wrapped key it authenticates that the
+> blob was sealed *to it* — which the sealed-box construction guarantees by
+> design — not that the sender was entitled to choose and distribute that key.
+> A server that substitutes recipient keys in its directory therefore learns
+> the CEK, with every primitive behaving exactly as specified. Signing the
+> directory with the same server's key would not help.
+>
+> This is an inference from reading the whole key-distribution path, not an
+> exploit that was run. It is what stops the heading's promise from being
+> unqualified, and closing it needs client-verifiable identity-to-device-key
+> bindings and authenticated channel-key establishment.
+>
+> **2. Attachments are not encrypted.** The composer encrypts the message and
+> uploads the file as ordinary multipart data, so encrypting a message that
+> contains a link never encrypted the file behind it. The server now REFUSES
+> attachments in an E2EE channel rather than accepting a readable one — the
+> honest interim, not the fix. The fix is client-side encryption of the file
+> under the channel key.
+>
+> **3. Device replacement can strand an identity.** The device secret lives in
+> a separate IndexedDB store; the server keeps one key per pseudonym, and
+> publishing a new one overwrites it. A legitimate identity returning on a
+> clean device publishes a replacement key, cannot decrypt the existing wraps,
+> and cannot be repaired by ordinary reconciliation because wraps are
+> first-write-wins per `(channel, recipient, epoch)`. The epoch machinery is
+> also not yet a rotation mechanism: cached keys are returned without checking
+> for a newer epoch, the local store holds one key per channel, and message
+> bodies carry no key-epoch identifier.
+>
+> Until 1 and 3 are closed, treat E2EE channels as protecting against disk
+> theft, a federation peer, and a passive server — not against a server that
+> is actively hostile.
+
 Opt-in per channel (moderator toggle, lock indicator in the UI). When enabled,
 message bodies are encrypted on the sender's device and only decrypted on
-members' devices. The server stores ciphertext and **cannot read it**.
+members' devices. The server stores ciphertext and cannot read it **so long as
+it distributes member keys honestly** — see the box above.
 
 - **Crypto core** — a sealed box (ephemeral X25519 + ECDH + HKDF-SHA256 +
   ChaCha20-Poly1305, wire `epk(32)‖nonce(12)‖ct`). Implemented **byte-identically**
