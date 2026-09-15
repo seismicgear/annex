@@ -611,3 +611,118 @@ async fn the_upload_is_recorded_against_the_channel_and_the_uploader() {
     assert_eq!(purpose, "chat");
     assert_eq!(category, "image");
 }
+
+// ── An encrypted channel must not accept a readable attachment ────────────
+//
+// The composer encrypts the MESSAGE and then uploads the attachment through
+// `POST /api/channels/{id}/upload` as ordinary multipart form data. Encrypting
+// a message that contains a link does not encrypt the file behind the link, so
+// the server received, stripped metadata from, and wrote to disk the readable
+// original — in a channel whose entire presentation to the user is that the
+// server cannot read it.
+//
+// Enforced on the server rather than in the composer, because a client that has
+// not been updated, or anything that simply posts to the endpoint, must not be
+// able to put plaintext in an encrypted channel.
+
+fn add_e2e_channel(pool: &DbPool, channel_id: &str, member: &str) {
+    let conn = pool.get().unwrap();
+    conn.execute(
+        "INSERT INTO channels (channel_id, server_id, name, channel_type, federation_scope, e2e_enabled)
+         VALUES (?1, 1, 'secret', 'Text', 'LOCAL_ONLY', 1)",
+        [channel_id],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO channel_members (channel_id, pseudonym_id, server_id)
+         VALUES (?1, ?2, 1)",
+        [channel_id, member],
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn an_e2ee_channel_refuses_a_plaintext_attachment() {
+    let app = setup_upload_app(ServerPolicy::default()).await;
+    add_member(&app.pool, "alice", false);
+    add_e2e_channel(&app.pool, "chan-secret", "alice");
+
+    let body = multipart_body("secret.png", "image/png", &png_with_text_chunk());
+    let (status, response) = post_multipart(
+        &app.router,
+        "/api/channels/chan-secret/upload",
+        "alice",
+        body,
+    )
+    .await;
+
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "an E2EE channel accepted a readable attachment. The body is encrypted and \
+         the file is not, so the server now holds in plaintext exactly what the \
+         channel promises it cannot see. Response: {response}"
+    );
+    assert!(
+        response.contains("end-to-end encrypted"),
+        "the refusal must say why, so it does not read as an unexplained upload \
+         failure: {response}"
+    );
+
+    // And nothing was written. A refusal that still leaves the file on disk
+    // has not refused anything.
+    let written: Vec<_> = walk_upload_dir(&app);
+    assert!(
+        written.is_empty(),
+        "the upload was refused but {} file(s) were written: {written:?}",
+        written.len()
+    );
+}
+
+/// Ordinary channels are unaffected — the gate must be about encryption, not
+/// about uploads in general.
+#[tokio::test]
+async fn a_plaintext_channel_still_accepts_attachments() {
+    let app = setup_upload_app(ServerPolicy::default()).await;
+    add_member(&app.pool, "alice", false);
+    add_channel(&app.pool, "chan-open", "alice");
+
+    let body = multipart_body("ok.png", "image/png", &png_with_text_chunk());
+    let (status, response) =
+        post_multipart(&app.router, "/api/channels/chan-open/upload", "alice", body).await;
+
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a non-encrypted channel must still accept uploads: {response}"
+    );
+}
+
+/// Every file under the upload directory, relative to it.
+fn walk_upload_dir(app: &UploadApp) -> Vec<String> {
+    fn rec(dir: &std::path::Path, base: &std::path::Path, out: &mut Vec<String>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                rec(&p, base, out);
+            } else {
+                out.push(
+                    p.strip_prefix(base)
+                        .unwrap_or(&p)
+                        .to_string_lossy()
+                        .to_string(),
+                );
+            }
+        }
+    }
+    let mut out = Vec::new();
+    rec(
+        std::path::Path::new(&app._dir.path()),
+        app._dir.path(),
+        &mut out,
+    );
+    out
+}

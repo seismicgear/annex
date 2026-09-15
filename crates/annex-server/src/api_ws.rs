@@ -37,7 +37,7 @@ pub use crate::ws::protocol::{
 };
 pub use crate::ws::tokens::{
     derive_ws_token_secret, generate_session_token, verify_token_allow_expired,
-    verify_ws_token_for_auth, SESSION_TOKEN_TTL_SECS, WS_TOKEN_TTL_SECS,
+    verify_ws_token_for_auth, VerifiedToken, SESSION_TOKEN_TTL_SECS, WS_TOKEN_TTL_SECS,
 };
 
 /// `POST /api/session/refresh` — re-issues a session token for a returning user

@@ -102,19 +102,29 @@ impl IdentityService {
     ///           `DuplicateCommitment`, fall back to `get_path_for_commitment`
     ///           and return the existing path — preserves idempotent
     ///           re-registration.
-    ///        d. On success, attempt to bump the invite's `use_count`. If
-    ///           a concurrent request beat us to the last seat, log a
-    ///           warning (compensation path; documented).
+    ///        c-pre. CLAIM a seat on the invite, refusing if none is left.
+    ///        d. Release the seat again if nothing was created.
     ///        e. Emit `IdentityRegistered` to the observe bus.
     ///
-    /// Invite atomicity: `register_identity` opens its own transaction
-    /// internally (over `vrp_identities` + `vrp_leaves` + `vrp_merkle_*`)
-    /// so the invite_code update cannot be wrapped in the same write
-    /// without a signature change in `annex-identity`. The compensation
-    /// path is: a successful registration whose invite update returned
-    /// `0 rows affected` is logged and accepted. The user already has an
-    /// identity; rolling them back would be more destructive than the
-    /// over-issue. This matches the pre-refactor behaviour.
+    /// Invite atomicity: the seat is claimed BEFORE `register_identity`, not
+    /// after. The claim's `use_count < max_uses` predicate is atomic on its
+    /// own, so of two requests racing for the last seat exactly one wins and
+    /// the loser is refused while refusing is still free — before any identity
+    /// exists.
+    ///
+    /// This replaces a documented compensation path in which a claim that
+    /// affected zero rows was logged and the registration accepted anyway,
+    /// which meant a one-use invite could admit two identities with only a
+    /// warning to show for it. The old comment said a true atomic claim would
+    /// need a signature change in `annex-identity`; it needed an ordering
+    /// change here.
+    ///
+    /// The seat is released on any path that ends without a NEW identity: a
+    /// registration error, and an idempotent replay of a commitment that
+    /// already exists. Without that second one, retrying a request whose
+    /// response was lost would silently burn an invitation use while
+    /// returning the same identity — idempotent in its result, not in its
+    /// cost.
     pub async fn register_identity(
         &self,
         payload: RegisterRequest,
@@ -219,6 +229,70 @@ impl IdentityService {
                 IdentityServiceError::Internal("merkle tree lock poisoned".to_string())
             })?;
 
+            // 3c-pre. CLAIM the invite seat before creating anything.
+            //
+            // This used to run AFTER `register_identity`, and when the claim
+            // affected zero rows — because a concurrent request had taken the
+            // last seat between the check and the claim — the code logged a
+            // warning and accepted the registration anyway. The comment called
+            // it a documented compensation path. It is an over-issue: a
+            // one-use invite admits two identities, and the only record is a
+            // warning in a log.
+            //
+            // Inverting the order makes the invariant hold instead of being
+            // apologised for. The UPDATE's `use_count < max_uses` predicate is
+            // itself atomic, so exactly one of two racing requests gets the
+            // last seat; the loser is refused BEFORE any identity exists, which
+            // is the moment refusal is still free. If registration then fails,
+            // or turns out to be an idempotent replay that created nothing, the
+            // seat is handed back below.
+            //
+            // No signature change in `annex_identity::register_identity` was
+            // needed after all — the ordering was the whole problem.
+            let claimed_seat = if let Some(ref code) = invite_code_for_registration {
+                let updated = conn
+                    .execute(
+                        "UPDATE invite_codes SET use_count = use_count + 1 \
+                         WHERE server_id = ?1 AND code = ?2 \
+                         AND (max_uses IS NULL OR use_count < max_uses)",
+                        rusqlite::params![state.server_id, code],
+                    )
+                    .map_err(|e| {
+                        IdentityServiceError::Internal(format!("invite claim failed: {e}"))
+                    })?;
+                if updated == 0 {
+                    return Err(IdentityServiceError::Forbidden(
+                        "This invite code has already been used the maximum number of times."
+                            .to_string(),
+                    ));
+                }
+                true
+            } else {
+                false
+            };
+
+            // Hand the seat back. Used on every path that ends without a NEW
+            // identity having been created.
+            let release_seat = |conn: &rusqlite::Connection| {
+                if let Some(ref code) = invite_code_for_registration {
+                    if let Err(e) = conn.execute(
+                        "UPDATE invite_codes SET use_count = use_count - 1 \
+                         WHERE server_id = ?1 AND code = ?2 AND use_count > 0",
+                        rusqlite::params![state.server_id, code],
+                    ) {
+                        // Worth a loud log: the seat is lost until an operator
+                        // adjusts it. Still better than the alternative, which
+                        // was handing out a seat that was never claimed.
+                        tracing::error!(
+                            code = %code,
+                            error = %e,
+                            "could not release an invite seat after a registration that \
+                             created no identity; the invite has one fewer use than it should"
+                        );
+                    }
+                }
+            };
+
             let registration_result = match register_identity(
                 &mut tree,
                 &mut conn,
@@ -250,6 +324,14 @@ impl IdentityService {
                                 "duplicate commitment id lookup failed: {e}"
                             ))
                         })?;
+                    // A replay created no identity, so it must not spend a
+                    // seat. Returning the same identity is not idempotent if
+                    // the retry costs an invitation use — a client retrying a
+                    // request whose response was lost would silently burn the
+                    // invite.
+                    if claimed_seat {
+                        release_seat(&conn);
+                    }
                     tracing::info!(
                         commitment = %commitment,
                         leaf_index,
@@ -264,6 +346,9 @@ impl IdentityService {
                     }
                 }
                 Err(e) => {
+                    if claimed_seat {
+                        release_seat(&conn);
+                    }
                     return Err(match e {
                         annex_identity::IdentityError::InvalidCommitmentFormat
                         | annex_identity::IdentityError::InvalidRoleCode(_)
@@ -277,33 +362,6 @@ impl IdentityService {
                     });
                 }
             };
-
-            // 3d. Atomically claim the invite (re-checks max_uses to avoid
-            // races with a parallel registration). If `updated == 0`, the
-            // invite was exhausted between our (3b) check and now; the
-            // identity is already valid so we accept it but log a
-            // warning. This is the documented compensation path; making
-            // it a true single-transaction atomic claim would require a
-            // signature change in annex_identity::register_identity.
-            if let Some(ref code) = invite_code_for_registration {
-                let updated = conn
-                    .execute(
-                        "UPDATE invite_codes SET use_count = use_count + 1 \
-                         WHERE server_id = ?1 AND code = ?2 \
-                         AND (max_uses IS NULL OR use_count < max_uses)",
-                        rusqlite::params![state.server_id, code],
-                    )
-                    .map_err(|e| {
-                        IdentityServiceError::Internal(format!("invite update failed: {e}"))
-                    })?;
-                if updated == 0 {
-                    tracing::warn!(
-                        code = %code,
-                        "invite code exhausted between validation and claim; \
-                         registration succeeded but invite use not counted"
-                    );
-                }
-            }
 
             // 3e. Audit-log emission.
             let observe_payload = EventPayload::IdentityRegistered {

@@ -240,7 +240,7 @@ mod tests {
         // sake of a tighter-looking assertion.
         let after = PANIC_COUNT.load(std::sync::atomic::Ordering::Relaxed);
         assert!(
-            after >= before + 1,
+            after > before,
             "a caught panic must be counted apart from ordinary 500s — it is a \
              defect, not load, and should page someone on its own \
              (before={before}, after={after})"

@@ -14,6 +14,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json as AxumJson,
 };
+use rusqlite::OptionalExtension;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -464,16 +465,57 @@ pub async fn upload_chat_handler(
     let channel_id_clone = channel_id.clone();
     let pseudonym = identity.pseudonym_id.clone();
 
-    let is_member_result = tokio::task::spawn_blocking(move || {
+    // Membership AND the channel's encryption mode, in one round trip. They are
+    // asked together because the answer to the second one changes whether this
+    // request may proceed at all.
+    let (is_member_result, e2e_enabled) = tokio::task::spawn_blocking(move || {
         let conn = state_clone
             .pool
             .get()
             .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
-        is_member(&conn, state_clone.server_id, &channel_id_clone, &pseudonym)
-            .map_err(|e| ApiError::InternalServerError(format!("membership check failed: {e}")))
+        let member = is_member(&conn, state_clone.server_id, &channel_id_clone, &pseudonym)
+            .map_err(|e| ApiError::InternalServerError(format!("membership check failed: {e}")))?;
+        let e2e: i64 = conn
+            .query_row(
+                "SELECT e2e_enabled FROM channels WHERE server_id = ?1 AND channel_id = ?2",
+                rusqlite::params![state_clone.server_id, &channel_id_clone],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| ApiError::InternalServerError(format!("db query failed: {e}")))?
+            .unwrap_or(0);
+        Ok::<_, ApiError>((member, e2e != 0))
     })
     .await
     .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
+
+    // Refuse attachments in an end-to-end encrypted channel.
+    //
+    // The composer encrypts the MESSAGE and then uploads the attachment
+    // through this endpoint as ordinary multipart form data. Encrypting a
+    // message that contains a link does not encrypt the file behind the link:
+    // the server received, stripped metadata from, and wrote to disk the
+    // readable original, in a channel whose whole presentation to the user is
+    // that the server cannot read it.
+    //
+    // That is a promise broken silently, which is worse than a feature that is
+    // missing. Refusing is the honest state until the client encrypts
+    // attachments under the channel key the way it already encrypts bodies —
+    // at which point this gate becomes a check that the upload IS encrypted,
+    // not that it is absent.
+    //
+    // Enforced on the SERVER, not only in the composer: a client that has not
+    // been updated, or one that simply posts to this endpoint, must not be
+    // able to put a plaintext file in an encrypted channel.
+    if e2e_enabled {
+        return Err(ApiError::BadRequest(
+            "attachments are not yet supported in end-to-end encrypted channels. \
+             The message body is encrypted but the file would be uploaded readable, \
+             so the server would hold in plaintext exactly what this channel promises \
+             it cannot see."
+                .to_string(),
+        ));
+    }
 
     if !is_member_result {
         return Err(ApiError::Forbidden(
