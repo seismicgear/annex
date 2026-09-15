@@ -97,6 +97,21 @@ opt-level = 0
 # per-invocation with CARGO_PROFILE_DEV_DEBUG=true when you need that.
 debug = "line-tables-only"
 
+# ...and dependencies do not even need that. A test binary here statically
+# links webrtc-rs, arkworks, axum and tokio; their line tables are the bulk of
+# its size and nobody has ever stepped through them from a failing Annex test.
+# Dropping them nearly halves target/, while `panic!` backtraces through OUR
+# crates keep their file and line numbers, which is the part that gets used.
+#
+# Measured on this repo, comparing two complete `cargo test --workspace
+# --exclude annex-desktop` builds with nothing stale in target/: 126 test
+# binaries averaging 100 MB became 121 averaging 66 MB, the binaries alone went
+# from 12.6 GB to 7.8 GB, and target/ from 19 GB to 11 GB. Restore a
+# dependency's debug info for one session with
+# CARGO_PROFILE_DEV_PACKAGE_ALL_DEBUG=line-tables-only if you ever need it.
+[profile.dev.package."*"]
+debug = 0
+
 [profile.release]
 opt-level = 3
 lto = "thin"
