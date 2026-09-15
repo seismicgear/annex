@@ -149,9 +149,19 @@ landed.
 Voice runs inside the Annex process. Provide:
 
 1. TTS model (Piper): place `.onnx` voice model files in `ANNEX_TTS_VOICES_DIR` (or mount a volume there).
-2. STT model (Whisper): place `ggml-base.en.bin` at `ANNEX_STT_MODEL_PATH`.
+2. STT model (Whisper): run `scripts/setup-stt.sh`, which downloads a
+   digest-pinned GGML model into `assets/models/` and prints the
+   `ANNEX_STT_MODEL_PATH` line to export. `--model tiny.en` is smaller and
+   faster; `--verify` checks what is already installed and never downloads.
+   Mounting your own model and setting the variable by hand works too.
 
 Without voice models, text channels still work. Voice channels will be unavailable.
+
+Speech-to-text is separable from the rest of voice: a call works without it and
+simply has no captions. `GET /api/voice/config-status` reports `stt_ready`, and
+when that is false, `stt_detail` names which of the four causes it is — model
+missing, binary missing, binary present but not executable, or ready — by path.
+The client renders that sentence in place of the caption strip.
 
 ## Federation
 

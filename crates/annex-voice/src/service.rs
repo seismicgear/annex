@@ -568,6 +568,16 @@ impl VoiceService {
         self.stt_tap_tx.subscribe()
     }
 
+    /// Push a frame onto the STT tap without an RTP packet behind it.
+    ///
+    /// Test-only. The windowing in [`crate::agent`] is a property of what
+    /// the tap emits over time, and the only other way to drive it is a
+    /// real peer connection publishing real Opus.
+    #[cfg(test)]
+    pub(crate) fn emit_stt_tap_for_test(&self, frame: SttTapFrame) {
+        let _ = self.stt_tap_tx.send(frame);
+    }
+
     pub fn subscribe_ice_candidates(&self) -> broadcast::Receiver<IceCandidateEvent> {
         self.ice_candidate_tx.subscribe()
     }

@@ -46,11 +46,14 @@ use crate::state::AppState;
 /// "voice disabled by admin" and "voice enabled but needs WebRTC setup".
 ///
 /// Also reports `stt_ready` — whether the whisper.cpp binary and GGML
-/// model file are both present on disk. Previously the response implied
-/// voice (and transcription) was ready as long as WebRTC was configured,
-/// even though the Docker image set `ANNEX_STT_MODEL_PATH` to a model it
-/// never copied in, so the first transcription attempt would 500. The
-/// `stt_ready` field surfaces that mismatch up to the client.
+/// model file are both present and the binary is executable — and
+/// `stt_detail`, which names the specific file when it is not.
+/// Previously the response implied voice (and transcription) was ready
+/// as long as WebRTC was configured, even though the Docker image set
+/// `ANNEX_STT_MODEL_PATH` to a model it never copied in, so the first
+/// transcription attempt would fail. `stt_ready` surfaces that mismatch
+/// up to the client; `stt_detail` tells the operator which of the four
+/// things it can be.
 async fn voice_config_status(Extension(state): Extension<Arc<AppState>>) -> Json<Value> {
     let infrastructure_ready = state.voice_service.is_enabled();
     // get_public_url() now returns "" for loopback-only URLs, so
@@ -63,20 +66,29 @@ async fn voice_config_status(Extension(state): Extension<Arc<AppState>>) -> Json
         .read()
         .unwrap_or_else(|p| p.into_inner())
         .voice_enabled;
-    let stt_ready = state.stt_service.is_ready();
+    let stt_readiness = state.stt_service.readiness();
+    let stt_ready = stt_readiness.is_ready();
 
-    let setup_hint = if !policy_enabled {
+    let setup_hint: String = if !policy_enabled {
         "Voice is disabled in the server policy. An admin can enable it in Server Policy settings."
+            .to_string()
     } else if !infrastructure_ready {
-        "Voice is enabled by policy but WebRTC is not configured. Set webrtc.url, webrtc.api_key, and webrtc.api_secret in config.toml or use ANNEX_WEBRTC_* environment variables."
+        "Voice is enabled by policy but WebRTC is not configured. Set webrtc.url, webrtc.api_key, and webrtc.api_secret in config.toml or use ANNEX_WEBRTC_* environment variables.".to_string()
     } else if !has_public_url && has_local_url {
-        "WebRTC is configured with a loopback-only URL. Voice works for the host but remote users who join via invite will not be able to connect to calls. Set webrtc.public_url in config.toml to a publicly reachable WebSocket address, or set ANNEX_WEBRTC_PUBLIC_URL."
+        "WebRTC is configured with a loopback-only URL. Voice works for the host but remote users who join via invite will not be able to connect to calls. Set webrtc.public_url in config.toml to a publicly reachable WebSocket address, or set ANNEX_WEBRTC_PUBLIC_URL.".to_string()
     } else if !has_public_url {
         "WebRTC URL is configured but no public URL is set. Clients may not be able to connect."
+            .to_string()
     } else if !stt_ready {
-        "WebRTC is ready, but STT is not: the whisper.cpp binary or GGML model file is missing. Transcription will fail. Provide a model and set ANNEX_STT_MODEL_PATH, or leave STT disabled."
+        // Not "the binary or the model is missing" — which of the two,
+        // by path, and what to run. The operator reading this is the
+        // person who can fix it.
+        format!(
+            "Voice is ready, but live captions are not: {}",
+            stt_readiness.detail()
+        )
     } else {
-        "Voice is configured and ready."
+        "Voice is configured and ready.".to_string()
     };
 
     Json(json!({
@@ -86,6 +98,10 @@ async fn voice_config_status(Extension(state): Extension<Arc<AppState>>) -> Json
         "has_public_url": has_public_url,
         "has_local_url": has_local_url,
         "stt_ready": stt_ready,
+        // `stt_ready` stays a bare bool for wire compatibility with
+        // clients that already read it; `stt_detail` is the sentence
+        // naming the specific file.
+        "stt_detail": stt_readiness.detail(),
         "setup_hint": setup_hint
     }))
 }

@@ -39,6 +39,13 @@ export interface VoiceConfigStatus {
    * "unknown" rather than "ready".
    */
   stt_ready?: boolean;
+  /**
+   * When `stt_ready` is false, the sentence naming WHICH file is missing
+   * (or not executable) and what to run. A bare boolean told an operator
+   * that captions were off but not which of the four causes they had.
+   * Older servers do not send it.
+   */
+  stt_detail?: string;
   setup_hint: string;
 }
 

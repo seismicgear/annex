@@ -135,6 +135,50 @@ RUN set -e; \
         ;; \
     esac
 
+# ── Download the VRP alignment model ──
+#
+# `minishlab/potion-base-2M` (MIT), 7.5 MB, revision-pinned and digest-verified.
+# Not optional for this image: `ANNEX_BUILD_PROFILE=production` makes the server
+# REFUSE TO START without it, because the score it produces decides which peers
+# and agents are trusted and the lexicon fallback is a different instrument
+# whose verdicts a peer running the pinned model cannot reproduce.
+#
+# Unlike the Piper binary above, the digests here are not placeholders — the
+# model is fetched from huggingface.co, which this build environment can reach,
+# so they were measured rather than asserted. They must match
+# `scripts/setup-embedding-model.sh` and the constants in
+# `crates/annex-vrp/src/embedding.rs`; the server re-verifies both files at load
+# and refuses a mismatch, so a drift here surfaces at startup rather than as a
+# peer that quietly disagrees.
+FROM debian:bookworm-slim AS embedding-downloader
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /embedding
+
+ARG EMBEDDING_MODEL_ID=minishlab/potion-base-2M
+ARG EMBEDDING_REVISION=389b9f64be5aa4ae7a6bc6fe95ef20ce485ae5da
+ARG EMBEDDING_WEIGHTS_SHA256=f95ffde02ad06f63ae38eb9d400038cd5ccaf8411ec3cb650c6025113f96cbb8
+ARG EMBEDDING_TOKENIZER_SHA256=e67e803f624fb4d67dea1c730d06e1067e1b14d830e2c2202569e3ef0f70bb50
+RUN set -e; \
+    base="https://huggingface.co/${EMBEDDING_MODEL_ID}/resolve/${EMBEDDING_REVISION}"; \
+    for pair in "model.safetensors:${EMBEDDING_WEIGHTS_SHA256}" "tokenizer.json:${EMBEDDING_TOKENIZER_SHA256}"; do \
+      name="${pair%%:*}"; expected="${pair##*:}"; \
+      curl -fSL "${base}/${name}" -o "${name}"; \
+      actual="$(sha256sum "${name}" | cut -d" " -f1)"; \
+      echo "${name} sha256 = ${actual}"; \
+      if [ "${actual}" != "${expected}" ]; then \
+        echo "${name} digest mismatch" >&2; \
+        echo "  expected ${expected}" >&2; \
+        echo "  actual   ${actual}" >&2; \
+        echo "A different revision scores principle sets differently, so a server" >&2; \
+        echo "built from it would reach verdicts its peers cannot reproduce." >&2; \
+        exit 1; \
+      fi; \
+    done
+
 # ── Download Piper TTS + default voice model ──
 FROM debian:bookworm-slim AS piper-downloader
 
@@ -257,6 +301,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # `WHISPER_CPP_COMMIT` was empty for the same reason `PIPER_SHA256` was: it is
 # not knowable from this environment, and a guessed SHA would fail every build
 # while looking authoritative. The build prints what the tag resolved to.
+#
+# The binary copied out is `whisper-cli`, and the tag and the path move
+# together. This stage used to copy `build/bin/main`, which at v1.7.4 is not
+# the CLI: `examples/main/main.cpp` does not exist in that tree (404 on
+# raw.githubusercontent.com), `examples/cli/CMakeLists.txt` reads
+# `set(TARGET whisper-cli)`, and `examples/deprecation-warning/CMakeLists.txt`
+# builds `main`, `bench`, `stream` and `command` from `deprecation-warning.cpp`
+# — no-op executables that print a warning and exit.
+#
+# So the image shipped a stub under the name `whisper`, and
+# `SttService::is_ready()` — which tests `is_file()` and nothing else —
+# reported STT ready. `/api/voice/config-status` said `stt_ready: true`, the
+# client showed an empty caption strip, and the per-frame transcription error
+# was logged at DEBUG, below the default level. Live captions could not have
+# worked in any container ever built from this file, and nothing said so.
+#
+# The grep after the copy is there because the next rename should break the
+# build rather than ship silence.
 WORKDIR /whisper
 ARG WHISPER_CPP_TAG=v1.7.4
 ARG WHISPER_CPP_COMMIT=8a9ad7844d6e2a10cddf4b92de4089d7ac2b14a9
@@ -280,7 +342,15 @@ RUN git clone --depth 1 --branch "${WHISPER_CPP_TAG}" \
     fi && \
     cmake -B build && cmake --build build --config Release && \
     mkdir -p /whisper/bin && \
-    cp /tmp/whisper/build/bin/main /whisper/bin/whisper && \
+    cp /tmp/whisper/build/bin/whisper-cli /whisper/bin/whisper && \
+    if /whisper/bin/whisper 2>&1 | grep -qi "deprecat"; then \
+        echo "the copied binary is whisper.cpp's DEPRECATION STUB, not the CLI." >&2; \
+        echo "From v1.7.x the CLI target is whisper-cli; examples/deprecation-warning" >&2; \
+        echo "builds no-op executables named main/bench/stream/command that print a" >&2; \
+        echo "warning and exit. Shipping one makes SttService::is_ready() report true" >&2; \
+        echo "for a binary that cannot transcribe anything." >&2; \
+        exit 1; \
+    fi && \
     rm -rf /tmp/whisper
 
 # ── Build client ──
@@ -343,6 +413,10 @@ COPY --from=client-builder /build/client/dist /app/client/dist
 # require remembering this line.
 COPY --from=zk-builder /build/zk/keys/ /app/zk/keys/
 
+# The VRP alignment model. Digest-verified in its own stage above, and
+# re-verified by the server at load.
+COPY --from=embedding-downloader /embedding/ /app/assets/embedding/
+
 # Piper TTS binary and libraries
 COPY --from=piper-downloader /piper/ /app/assets/piper/
 
@@ -391,6 +465,9 @@ ENV ANNEX_ZK_KEY_PATH_V2=/app/zk/keys/membership_v2_vkey.json
 ENV ANNEX_DB_PATH=/app/data/annex.db
 ENV ANNEX_TTS_BINARY_PATH=/app/assets/piper/piper
 ENV ANNEX_TTS_VOICES_DIR=/app/assets/voices
+# Absolute, because `DEFAULT_MODEL_DIR` is relative to the working directory and
+# the server does not necessarily run from /app.
+ENV ANNEX_EMBEDDING_MODEL_DIR=/app/assets/embedding
 ENV ANNEX_CLIENT_DIR=/app/client/dist
 ENV ANNEX_STT_BINARY_PATH=/app/assets/whisper/whisper
 # ANNEX_STT_MODEL_PATH is intentionally NOT set. Operators who want STT

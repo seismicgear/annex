@@ -233,7 +233,14 @@ Requires Python 3.8+ with the `bark` package installed. Set `ANNEX_BARK_BINARY_P
 
 Uses the system TTS engine. Install `espeak-ng` on Linux (`apt install espeak-ng`), or use the built-in `say` command on macOS. No configuration needed.
 
-Docker builds include Piper, the voice model, and whisper.cpp (for STT) automatically. No manual step needed.
+Docker builds include Piper and its voice model automatically, and build the whisper.cpp
+CLI for speech-to-text. They do **not** include a GGML speech model — `ggml-base.en.bin` is
+141 MiB, nineteen times the rest of the image's model payload, for a feature many
+deployments do not use. Run `scripts/setup-stt.sh` on the host (or mount a model and set
+`ANNEX_STT_MODEL_PATH`) if you want live captions. Without one,
+`GET /api/voice/config-status` reports `stt_ready: false` with an `stt_detail` naming the
+missing file, and the call UI says captions are unavailable rather than showing an empty
+strip.
 
 ### Manual setup (without deploy scripts)
 

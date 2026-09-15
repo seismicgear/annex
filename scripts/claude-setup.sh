@@ -94,8 +94,53 @@ else
 fi
 
 # ---------- 3. Asset stub directories ----------
-mkdir -p assets/piper assets/voices
+mkdir -p assets/piper assets/voices assets/embedding
 info "Asset directories ready."
+
+# ---------- 3b. VRP alignment model ----------
+#
+# Fetched here rather than left to the developer, because without it a local
+# server falls back to the lexicon scorer and the only sign is `lexicon-v1` in a
+# handshake. `crates/annex-vrp/tests/alignment_calibration.rs` and
+# `wordpiece_vectors.rs` both SKIP when it is absent, so a missing model shows
+# up as tests that pass while measuring nothing.
+#
+# Failure is a warning, not an exit: huggingface.co is not reachable from every
+# environment this script runs in, and the dev fallback is a working scorer.
+if [ -f "assets/embedding/model.safetensors" ]; then
+    info "VRP alignment model already present."
+else
+    info "Fetching VRP alignment model (7.5 MB, digest-pinned)..."
+    if bash scripts/setup-embedding-model.sh 2>&1 | tail -3; then
+        info "VRP alignment model ready."
+    else
+        warn "VRP alignment model fetch failed; alignment will use the lexicon fallback \
+and the calibration tests will skip."
+    fi
+fi
+
+# ---------- 3b. Whisper GGML model (opt-in) ----------
+#
+# NOT fetched by default, unlike the alignment model above. `ggml-base.en.bin`
+# is 141 MB — nineteen times the alignment model — for a feature (live call
+# captions) most sessions never exercise. An environment that wants it sets
+# ANNEX_FETCH_STT_MODEL=1.
+#
+# The cost of leaving it out is visible rather than silent:
+# `/api/voice/config-status` reports `stt_ready: false` with an `stt_detail`
+# naming the missing file, and the call UI says captions are unavailable.
+if [ "${ANNEX_FETCH_STT_MODEL:-0}" = "1" ]; then
+    if bash scripts/setup-stt.sh 2>&1 | tail -3; then
+        info "Whisper STT model ready."
+    else
+        warn "Whisper STT model fetch failed; live captions will be unavailable."
+    fi
+elif [ -f "assets/models/ggml-base.en.bin" ] || [ -f "assets/models/ggml-tiny.en.bin" ]; then
+    info "Whisper STT model already present."
+else
+    info "No Whisper STT model (live captions inert). \
+Run scripts/setup-stt.sh, or set ANNEX_FETCH_STT_MODEL=1 to fetch it here."
+fi
 
 # ---------- 4. Frontend npm deps ----------
 if [ -d "client/node_modules" ]; then

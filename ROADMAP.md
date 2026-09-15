@@ -44,8 +44,11 @@ Phase 7: Voice Infrastructure .......... PARTIAL  (native in-process SFU, no
                                                    box — built-in default profile
                                                    + espeak-ng System fallback +
                                                    DB profile loader [2026-06-20];
-                                                   Whisper STT still needs model
-                                                   provisioning)
+                                                   Whisper STT transcribes for
+                                                   real as of 2026-09-15 — it
+                                                   never had before, see 7.5 —
+                                                   but still ships without a
+                                                   GGML model by design)
 Phase 8: Federation .................... COMPLETE (message/edit/redaction relay
                                                    verified; revocation works)
 Phase 9: RTX Knowledge Exchange ........ PARTIAL  (relay content-bound vs
@@ -800,7 +803,9 @@ Phase 6 is **COMPLETE** when:
 
 ## Phase 7: Voice Infrastructure
 
-**Status**: `PARTIAL` — Whisper STT needs model provisioning; no GGML model is bundled.
+**Status**: `PARTIAL` — no GGML model is bundled; `scripts/setup-stt.sh` installs one
+with a pinned digest. The transcription path itself was repaired on 2026-09-15; before
+that it was wired end to end and produced no text in any deployment (see 7.5).
 **Prerequisites**: Phase 4 `COMPLETE`, Phase 6 `COMPLETE`
 **Estimated scope**: native WebRTC SFU, voice LLM TTS service, STT service, agent voice pipeline, voice profiles
 
@@ -845,6 +850,36 @@ Voice channels that work for both humans and agents. Humans speak via WebRTC to 
   - Delivers transcription to subscribed agents as text via their WebSocket connection
 - [x] Message format: `{ "type": "transcription", "channelId": "...", "speakerPseudonym": "...", "text": "..." }`
 - [x] ADR: STT model selection, latency vs. accuracy tradeoff, resource allocation
+- [x] The audio handed to whisper.cpp is audio whisper.cpp can read. Closed
+      [2026-09-15]. These boxes were ticked while the pipeline transcribed
+      nothing, anywhere, and could not have: the SFU tap emits headerless
+      48 kHz signed-16 PCM, and `read_audio_data` in whisper.cpp's
+      `examples/common.cpp` calls `drwav_init_memory` on stdin and then
+      rejects anything that is not a 16 kHz 16-bit WAV. Three checks, all
+      failed, on every frame. `annex-voice::audio` band-limits and decimates
+      48 kHz → 16 kHz and wraps the result in a RIFF/WAVE container.
+- [x] One transcription per window of speech, not per RTP packet. Closed
+      [2026-09-15]. The tap loop called `transcribe()` on each 20 ms frame —
+      a fork, a model load and an inference fifty times a second per speaker,
+      over a window too short for whisper to return anything. Audio is now
+      buffered per `(channel, speaker)` and flushed at 2 s or after 700 ms of
+      quiet, with at most two transcriptions in flight.
+- [x] A missing model says so. Closed [2026-09-15]. `SttReadiness`
+      distinguishes model-missing, binary-missing and binary-not-executable,
+      `/api/voice/config-status` carries it as `stt_detail`, and the client
+      renders it instead of an empty caption strip. The per-frame failure was
+      logged at DEBUG, so a subsystem that could not work in any container
+      ever built from this repo's Dockerfile said so nowhere.
+- [x] The image builds the whisper CLI, not its deprecation stub. Closed
+      [2026-09-15]. whisper.cpp v1.7.4 still produces a `build/bin/main`, and
+      it is `examples/deprecation-warning/deprecation-warning.cpp` — a program
+      whose only behaviour is to print a notice and exit non-zero. The
+      Dockerfile copied it. It now copies `whisper-cli` and fails the build if
+      the copied binary prints a deprecation notice.
+- [ ] A GGML model is provisioned automatically. `scripts/setup-stt.sh`
+      installs one with a pinned SHA-256, but the image still ships without a
+      model on purpose (141 MiB for an optional feature). This is what keeps
+      Phase 7 `PARTIAL`.
 
 #### 7.6 — Voice profile assignment
 - [x] Server operator assigns voice profiles to agents via `agent_registrations.voice_profile_id`
@@ -1216,6 +1251,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-09-15 | Phase 7.5 (`STT service`) REOPENED and repaired. The path was wired end to end and transcribed nothing: headerless 48 kHz PCM to a loader that requires a 16 kHz WAV, one process per 20 ms frame, and the resulting error logged at DEBUG. Audio conversion, per-speaker windowing, `SttReadiness`/`stt_detail`, and a Dockerfile that copies `whisper-cli` rather than its deprecation stub. |
 | 2026-09-15 | `agent_min_alignment_score` rescaled. The semantic comparison now normalises against the loaded scorer's measured noise floor, the shipped default moves 0.8 -> 0.06 on that scale, and migration 046 carries stored values across. The old default was above both scorers' separating bands: unreachable, not strict. |
 | 2026-08-07 | Phase 7 criteria corrected per update rule 5. Every step that named **LiveKit** was replaced with the component that actually shipped: a native WebRTC SFU built on `webrtc-rs`, compiled into the server (`crates/annex-voice/src/service.rs`), whose signalling rides the app's own `/ws` WebSocket. No LiveKit dependency exists in `Cargo.toml` or `client/package.json`, nothing dials an external media server, and `ensure_webrtc_running` in `crates/annex-server/src/startup.rs` is a no-op that spawns no sidecar. Affected: the tech-stack list, the crate tree, Phase 7 scope/7.1/7.2/7.4/7.5/7.7 and its completion criteria, Phase 11.4, and Phase 12.6. No criterion was removed — each was restated against the shipped design, and the completion status of every step is unchanged because the capability each described was in fact delivered, by different means. Changelog rows dated 2026-02-18 and earlier retain their original LiveKit wording as a record of what was believed at the time. |
 | 2026-06-10 | Code Standards Quality Gate #9 corrected per update rule 5: "all migrations are reversible (every up has a down)" replaced with "all migrations are forward-only, immutable, and integrity-checked." The original criterion contradicted the shipped design — migrations are append-only and protected by the SHA-256 checksum ledger (migration 039, invariant I-DB-1), and no down-migrations have ever existed. Rollback is operational (SQLite backup/restore per the deployment guide), not schema-level. |

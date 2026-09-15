@@ -513,6 +513,47 @@ async fn test_voice_config_status_disabled() {
     );
 }
 
+/// `stt_detail` has to reach the wire, not just exist on the server.
+///
+/// This is CLAUDE.md defect class 2 — a value that never crosses a
+/// boundary it is assumed to cross. `SttReadiness::detail()` is computed
+/// in `voice_config_status`, and the response body is a hand-built
+/// `json!` literal: adding a field to the readiness type does nothing
+/// unless the literal lists it, and nothing in the type system says so.
+#[tokio::test]
+async fn config_status_names_the_missing_stt_file_on_the_wire() {
+    let app = setup_app_voice_disabled().await;
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+    let mut request = Request::builder()
+        .uri("/api/voice/config-status")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    assert_eq!(body["stt_ready"].as_bool(), Some(false));
+    let detail = body["stt_detail"]
+        .as_str()
+        .expect("stt_detail must be present on the wire");
+    // The fixture configures model path "dummy", which does not exist.
+    assert!(
+        detail.contains("dummy"),
+        "stt_detail must name the file: {detail}",
+    );
+    assert!(
+        detail.contains("setup-stt.sh"),
+        "stt_detail must say what to run: {detail}",
+    );
+}
+
 #[tokio::test]
 async fn test_voice_config_status_enabled() {
     // Build an app whose WebRTC config has a non-loopback public URL so the
