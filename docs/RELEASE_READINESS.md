@@ -18,7 +18,7 @@ backed by a command you can re-run.
 | Production ZK gate (refuses what it should, is wired into the release, AND is invoked by CI — it was not) | 14 assertions | `sh scripts/verify-production-rejects-dev-fixtures.sh` |
 | Live federation relay (signed envelope, second server) | 1 end-to-end path | `bash scripts/smoke-federation.sh` |
 | Puppeteer journey (cold start → identity → proof → chat → channel create) | 1 driver-independent pass | `bash scripts/e2e-all.sh puppeteer` |
-| UI audit (screenshots + a11y + console + network + overflow + keyboard) | 104 surfaces × 4 viewports, 419 checks, 0 findings | `bash scripts/ui-audit.sh` |
+| UI audit (screenshots + a11y + console + network + overflow + keyboard) | 105 surfaces, 413 captures + 9 manifest checks + 3 setups = 425, 0 findings | `bash scripts/ui-audit.sh` |
 | Desktop install → run → uninstall | 9 checks | `bash scripts/desktop-audit.sh` |
 | ZK artifact gate | dev-fixture rejection under production profile | `cd zk && npm test` |
 | Marketing-site invite router (`monolith-annex`) — **cross-repo, not verifiable from this checkout** | 62 tests as last reported | `cd ../monolith-annex && npm test` |
