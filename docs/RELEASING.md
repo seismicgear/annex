@@ -116,10 +116,34 @@ used to say otherwise and that paragraph is gone.
 
 Actions → **Release Desktop App** → Run workflow → `dry_run: true`.
 
-It builds the full bundles on Linux and Windows under
-`ANNEX_BUILD_PROFILE=production`, verifies the pinned ZK artifacts and the
-ceremony chain, generates `SHA256SUMS` and three SBOMs, and creates a **draft**
-release named `dry-run-<sha>`.
+It runs the pre-flight gates, builds the full bundles on Linux and Windows
+under `ANNEX_BUILD_PROFILE=production`, builds and **boots** the server tarball,
+verifies the pinned ZK artifacts and the ceremony chain, generates `SHA256SUMS`
+and the SBOMs, and creates a **draft** release named `dry-run-<sha>`.
+
+What to look at in the run, because each of these was silently absent at some
+point:
+
+* **`preflight` ran and passed.** It ties the tag to the version and refuses a
+  dev-fixture proving key, before 30-60 minutes of Tauri builds rather than
+  after. Both checks run again in `release`, because a `workflow_dispatch` dry
+  run reaches that job and a gate a path can skip is not a gate.
+* **The updater bundles are in the asset list**, not just their `.sig` files.
+  `latest.json` points at `*.AppImage.tar.gz`, `*.nsis.zip`, `*.msi.zip` and
+  `*.app.tar.gz`; none of them were uploaded until 2026-09-15, so every update
+  the manifest advertised 404'd and every signing check above it was inert.
+* **`SHA256SUMS` covers those bundles and `latest.json`.** A user could
+  previously checksum the installer they clicked and not the payload their
+  machine fetches unattended — which is the one they never see.
+* **The server tarball's `--check` step passed.** That is not a formality: under
+  the default posture the server refuses to start without
+  `zk/keys/membership_v2_vkey.json`, and under a production profile without
+  `assets/embedding/`. Both directories are gitignored and filled by separate
+  scripts, so a tarball can look complete and be unbootable.
+* **`artifacts/sbom/rust-workspace.json` lists more than one crate's
+  dependencies.** `cargo cyclonedx --all` writes one `bom.json` per crate, and
+  the old step copied each in turn to the same filename — so "rust-workspace"
+  was whichever of the twelve `find` reached last.
 
 Do this before every real tag. A tag is the one action you cannot take back,
 and it used to be the only way to find out whether the release job worked.
@@ -136,8 +160,19 @@ git tag -a v0.1.0 -m "Annex v0.1.0"
 git push origin v0.1.0
 ```
 
-The `release` job assembles a **draft** GitHub Release. Review the generated
-notes against `CHANGELOG.md`, attach anything missing, then publish.
+The `release` job assembles a **draft** GitHub Release. Its body is the
+`## [x.y.z]` section of `CHANGELOG.md` — extracted by
+`scripts/changelog-section.py`, which fails the release if there is no section —
+with GitHub's generated commit list appended. Review it, attach anything
+missing, then publish.
+
+Assets: the desktop installers, the updater bundles and their signatures,
+`latest.json`, `SHA256SUMS`, the SBOMs, and
+`annex-server-<version>-x86_64-unknown-linux-gnu.tar.gz`.
+
+**There is no published container image yet.** `docker-compose.prod.yml` still
+refers to a locally-built tag, and publishing to GHCR is the remaining piece of
+the server release path — see `CHANGELOG.md` for why it was not attempted blind.
 
 ## 5. After
 

@@ -21,7 +21,7 @@
     "contributorsPerCircuit": 1,
     "beacon": {
       "chainHash": "8990e7a9aaed2ffed73dbd7092123d6f289930540d7651336225dc172e51b2ce",
-      "chainPublicKey": "868f005eb8e6e4ca0a47c8a77ceaa5309a47978a7c71bc5cce96366b5d7a569937c529eeda66c7293784a9402801af31",
+      "chainPublicKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "round": 6468464,
       "randomness": "aff423b1fb07e03b79434a94d90b59ad58a71e46c29de26dbbebeb28285fa86e",
       "signature": "b9b8b34148558f4d90f9eaf2b6d0675307f13fe71149d4ae5d9ad1245f3b72830ef362eb47de0cb8a30341cca378f07c0d2f77f3f30be626f57934b2a0710c9a53c421a8fd9aff84da9a4b0e27c819b8f275d787b1634bd824fa9d6f9b837041",

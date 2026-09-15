@@ -12,7 +12,16 @@ use std::net::SocketAddr;
 /// `annex-server config.toml --migrate` works as well as
 /// `annex-server --migrate config.toml`.
 fn wants_migrate_only() -> bool {
-    std::env::args().skip(1).any(|a| a == "--migrate")
+    has_flag("--migrate")
+}
+
+/// True when the caller asked to validate the installation and exit.
+fn wants_check_only() -> bool {
+    has_flag("--check")
+}
+
+fn has_flag(flag: &str) -> bool {
+    std::env::args().skip(1).any(|a| a == flag)
 }
 
 fn resolve_config_path() -> (Option<String>, &'static str) {
@@ -61,6 +70,8 @@ fn run() -> Result<(), StartupError> {
         .block_on(async {
             if wants_migrate_only() {
                 run_migrations_and_exit().await
+            } else if wants_check_only() {
+                run_check_and_exit().await
             } else {
                 run_server().await
             }
@@ -87,6 +98,49 @@ async fn run_migrations_and_exit() -> Result<(), StartupError> {
     );
     let applied = migrate_only(config).await?;
     tracing::info!(applied, "migrations finished; exiting without serving");
+    Ok(())
+}
+
+/// `annex-server --check` — validate everything startup validates, then exit 0.
+///
+/// A deployment boundary, and a release gate. Under the default posture a server
+/// refuses to start without a v2 ZK verification key and, on a production
+/// profile, without the pinned VRP alignment model — and both live in
+/// directories that are gitignored (`zk/keys/`, `assets/embedding/`), installed
+/// by separate scripts. A tarball or an image that omits either is a tarball
+/// that cannot boot, and the only way that was discoverable was to try to boot
+/// it and read the error.
+///
+/// This runs the whole of `prepare_server`, which is where every one of those
+/// checks lives — config validation, the profile gates, the signing key, the
+/// vkeys, the alignment scorer, the migrations, the Merkle root recomputation —
+/// and then drops the result instead of serving. It binds a listener, because
+/// `prepare_server` does; `ANNEX_PORT=0` gives an ephemeral one.
+///
+/// Deliberately not a separate validation path. A `--check` that ran its own
+/// subset of the checks would be a second implementation to drift from the
+/// first, and would pass while the server failed.
+async fn run_check_and_exit() -> Result<(), StartupError> {
+    let (resolved_config_path, config_source) = resolve_config_path();
+    let selected_config_path = resolved_config_path.as_deref().or(Some("config.toml"));
+    let config = config::load_config(selected_config_path)?;
+    init_tracing(&config.logging)?;
+    tracing::info!(
+        source = config_source,
+        path = selected_config_path.unwrap_or("<none>"),
+        "checking configuration and installed artifacts"
+    );
+
+    let prepared = prepare_server(config).await?;
+    let addr = prepared.listener.local_addr().ok();
+    prepared.shutdown.cancel();
+    drain_workers(prepared.workers).await;
+    drop(prepared.listener);
+
+    match addr {
+        Some(a) => tracing::info!(would_bind = %a, "configuration and artifacts are usable"),
+        None => tracing::info!("configuration and artifacts are usable"),
+    }
     Ok(())
 }
 

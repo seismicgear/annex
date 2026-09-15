@@ -24,7 +24,8 @@ as authoritative for CI and update this file.
 | Desktop install   | `desktop-audit-package`                                                                       |
 | Federation        | `signal-relay-contract`                                                                       |
 | Documentation     | `roadmap-consistent`                                                                          |
-| Supply chain      | `dep-deny`, `npm-audit`                                                                       |
+| Supply chain      | `dep-deny`, `npm-audit-prod`, `npm-audit-report`, `codeql`                                     |
+| Release pipeline  | `rel-preflight`, `rel-server-tarball`, `rel-assets`, `rel-notes`                               |
 
 ---
 
@@ -180,18 +181,85 @@ redundant with ci.yml".
   unexpected sources across the whole Rust graph. Blocking — no
   `continue-on-error`.
 
-### npm-audit
+### npm-audit-prod
+- Command: `npm audit --omit=dev --audit-level=high` in `client/`
+- Workflow: `.github/workflows/ci.yml::supply-chain::npm audit (client production dependencies) — BLOCKING`
+- Catches a high or critical advisory in the dependency tree that actually
+  reaches a browser. Clean at the commit this was introduced, so it needs no
+  allowlist — which is the point: an allowlist of the fifteen devDependency highs
+  the full audit reports would need maintaining and would fail every PR the day a
+  new advisory lands in vite.
+
+### npm-audit-report
 - Command: `npm audit --audit-level=high` in `client/` and in `zk/`
-- Workflow: `.github/workflows/ci.yml::supply-chain::npm audit (client)` and
-  `npm audit (zk)`
-- **Both are `continue-on-error: true`, so this is a report, not a gate.** That
-  is deliberate and the reason is written down: the remaining highs are the
-  `snarkjs → bfj → jsonpath → underscore` chain and the `circomlibjs → ethers →
-  elliptic` chain, and a build-time scan of `client/dist/assets/*.js` shows
-  neither reaches the production browser bundle (CLAUDE.md, "snarkjs
-  vulnerability containment"). Making it blocking today would stop every PR on
-  a finding that is contained rather than shipped. Revisit when snarkjs drops
-  bfj.
+- Workflow: `ci.yml::supply-chain::npm audit (zk, full)` and
+  `npm audit (client, full)`, both `continue-on-error: true`
+- **Reports, not gates,** and the reason is measured rather than assumed:
+  `zk/`'s production tree carries 5 highs, all the
+  `snarkjs → bfj → jsonpath → underscore` chain, and a build-time scan of
+  `client/dist/assets/*.js` shows none of those names — nor `elliptic`,
+  `ethersproject` or `secp256k1` from the `circomlibjs → ethers` chain — in the
+  production bundle (CLAUDE.md, "snarkjs vulnerability containment"). `zk/` is
+  build tooling, marked `"private": true`. Revisit when snarkjs drops bfj.
+
+### codeql
+- Command: n/a (`github/codeql-action`)
+- Workflow: `.github/workflows/codeql.yml`, matrix over
+  `javascript-typescript` and `actions`, query set `security-and-quality`,
+  plus a weekly schedule because advisories land without a push.
+- **Rust is deliberately not scanned.** It would need `security-extended` and a
+  full build, which on Linux means the GTK / WebKit / soup / pipewire dev
+  packages and a Tauri bundle — a second, slower copy of `check-desktop-linux`
+  for a marginal signal. The substitute is `cargo clippy --all-targets -D
+  warnings` plus `cargo deny`, and that trade is stated in the workflow rather
+  than left implied.
+
+---
+
+## Release-pipeline gates
+
+Everything below is in `.github/workflows/release-desktop.yml`.
+
+### rel-preflight
+- Workflow: `release-desktop.yml::preflight`
+- Runs `version-sync.test.sh` and `verify-production-rejects-dev-fixtures.sh`
+  BEFORE the builds, and `needs`-gates all three build jobs on it. Previously
+  neither ran in any release path, so a mismatched tag or a dev-fixture proving
+  key was discoverable only after 30-60 minutes of Tauri builds — or not at all.
+- Both run again in `release`, unconditionally. A `workflow_dispatch` dry run
+  reaches that job, and the workflow's own history includes a dry-run path that
+  enforced LESS than the tag path.
+
+### rel-server-tarball
+- Workflow: `release-desktop.yml::build-server`
+- The server had **no release artifact at all**: the only pipeline in this
+  repository built the desktop app, and an operator who wanted to run a server
+  had `docker build` from source.
+- The tarball carries the binary, the ceremony-installed vkeys and the pinned
+  VRP alignment model, because under the default posture a missing
+  `membership_v2_vkey.json` is a hard startup error and under a production
+  profile a missing alignment model is too — and both directories are gitignored.
+  Migrations need no packaging; they are `include_str!`-ed into the binary.
+- **The gate is `./annex-server --check`**, which runs the whole of
+  `prepare_server` and exits. A tarball that cannot boot is not a release
+  artifact, and "it built" does not answer that.
+
+### rel-assets
+- Workflow: `release-desktop.yml::release::Create GitHub Release`
+- The `files:` list must include the updater BUNDLES, not only their `.sig`
+  files. It did not until 2026-09-15: `latest.json` advertised
+  `*.AppImage.tar.gz`, `*.nsis.zip`, `*.msi.zip` and `*.app.tar.gz`, none of
+  which were uploaded, so every update 404'd and every signature check above it
+  was inert. `SHA256SUMS` covers them and `latest.json` too — a user could
+  previously checksum the installer they clicked and not the payload their
+  machine fetches unattended.
+
+### rel-notes
+- Command: `python3 scripts/changelog-section.py CHANGELOG.md <version>`
+- Workflow: `release-desktop.yml::release::Release notes from the CHANGELOG`
+- The body was `generate_release_notes: true` alone — a list of commit subjects —
+  while the hand-written `## [x.y.z]` section went unused. Fails the release when
+  the section is absent.
 
 ---
 

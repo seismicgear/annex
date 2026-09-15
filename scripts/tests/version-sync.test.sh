@@ -78,5 +78,47 @@ else
   vs_bad "CHANGELOG.md has no '## [${cargo_version}]' section"
 fi
 
+# ── The tag has to be the version ───────────────────────────────────────────
+#
+# Nothing tied the two together. `release-desktop.yml` builds on any `v*` tag
+# and writes `latest.json` from the manifests, so a tag of `v0.2.0` pushed
+# against a tree at `0.1.0` produced a release called v0.2.0 advertising 0.1.0
+# to every updater that polled it — and the mismatch was only visible by
+# reading both.
+#
+# Runs only when GITHUB_REF_NAME names a tag, so a local invocation and a
+# branch build are unaffected.
+case "${GITHUB_REF_NAME:-}" in
+  v[0-9]*)
+    tag_version="${GITHUB_REF_NAME#v}"
+    if [ "${tag_version}" = "${cargo_version}" ]; then
+      vs_ok "tag ${GITHUB_REF_NAME} matches the manifests (${cargo_version})"
+    else
+      vs_bad "tag ${GITHUB_REF_NAME} ships version ${cargo_version}"
+    fi
+    ;;
+  "")
+    vs_ok "no GITHUB_REF_NAME — not a tagged build, tag check skipped"
+    ;;
+  *)
+    vs_ok "GITHUB_REF_NAME='${GITHUB_REF_NAME}' is not a v* tag, tag check skipped"
+    ;;
+esac
+
+# `zk/package.json` is deliberately NOT in the agreement set above: it is a
+# build-tooling package, not something published or shipped, and forcing it to
+# track the app's version would mean a version bump touching a file with no
+# relationship to it. Asserted rather than assumed, because "exempt" and
+# "forgotten" look identical in a list of files that agree.
+ZK_PKG="${ROOT_DIR}/zk/package.json"
+if [ ! -f "${ZK_PKG}" ]; then
+  vs_bad "no zk/package.json"
+elif grep -q '"private"[[:space:]]*:[[:space:]]*true' "${ZK_PKG}"; then
+  vs_ok "zk/package.json is private, so its version is deliberately exempt"
+else
+  vs_bad "zk/package.json is not marked private but is exempt from the version check — \
+decide which it is"
+fi
+
 echo "[version] ${VS_OK} passed, ${VS_BAD} failed"
 [ "${VS_BAD}" -eq 0 ] || exit 1

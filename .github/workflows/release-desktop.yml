@@ -38,9 +38,138 @@ env:
   ANNEX_BUILD_PROFILE: production
 
 jobs:
+  # ── Cheap gates, before 30-60 minutes of Tauri builds ─────────────────────
+  #
+  # Both of these were written, both pass, and both ran in no release path.
+  # Running them here rather than only in `release` matters: a mismatched tag or
+  # a dev-fixture proving key would otherwise be discovered after two Tauri
+  # builds and a `cargo install tauri-cli` had burned.
+  #
+  # Deliberately NOT `if: startsWith(github.ref, 'refs/tags/')`. The comment in
+  # the `release` job records that the dry-run path once enforced LESS than the
+  # tag path; a conditional gate is how that asymmetry comes back somewhere new.
+  preflight:
+    name: Pre-flight gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Ties the tag to the version. Nothing did: a `v0.2.0` tag pushed against
+      # a tree at `0.1.0` produced a release named v0.2.0 whose `latest.json`
+      # advertised 0.1.0 to every updater that polled it. Also fails a missing
+      # CHANGELOG section for the version being shipped.
+      - name: Version, tag and CHANGELOG agree
+        run: bash scripts/tests/version-sync.test.sh
+
+      # Decides whether a release can ship dev-fixture proving keys.
+      # `release-gates.md` claimed this ran in ci.yml's globbed harness step;
+      # that step matches `scripts/tests/*.test.sh` and this is `scripts/*.sh`,
+      # so it matched nothing. Needs `node` for verify-artifacts.js, hence the
+      # setup-node above.
+      - name: Production ZK provenance gate
+        run: sh scripts/verify-production-rejects-dev-fixtures.sh
+
+  # ── The server, which had no release artifact at all ──────────────────────
+  #
+  # The only release pipeline in this repository built the DESKTOP app. An
+  # operator who wanted to run a server had `docker build` from source and
+  # nothing else: no binary, no tarball, no published image. This produces the
+  # tarball; the image is a separate concern and is not attempted here (see
+  # CHANGELOG).
+  #
+  # The contents are not just the binary, and the reason is a consequence of two
+  # of this session's own changes:
+  #
+  #   * `zk/keys/` is gitignored — the production vkeys are installed from
+  #     `zk/artifacts/` by `install-ceremony.js`, which re-hashes each file after
+  #     it lands. With the default `enabled_zk_versions = ["v2"]` a missing
+  #     `membership_v2_vkey.json` is a hard startup error, not a degraded mode.
+  #   * `assets/embedding/` is gitignored too, and a production-profile server
+  #     REFUSES TO START without the alignment model. A tarball without it is a
+  #     tarball that cannot boot under the profile it is built for.
+  #
+  # Migrations need no packaging: they are `include_str!`-ed into the binary.
+  build-server:
+    name: Build (server tarball)
+    needs: preflight
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.88
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: server-release
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Hash-checked on the way in and re-hashed on the way out.
+      - name: Install ceremony-produced ZK artifacts
+        run: node zk/scripts/install-ceremony.js
+
+      - name: Fetch the pinned VRP alignment model
+        run: bash scripts/setup-embedding-model.sh
+
+      - name: Build the server
+        run: cargo build --release -p annex-server
+
+      - name: Assemble the tarball
+        run: |
+          set -euo pipefail
+          version=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          stage="annex-server-${version}-x86_64-unknown-linux-gnu"
+          mkdir -p "dist/${stage}"/{zk/keys,assets/embedding}
+          cp target/release/annex-server "dist/${stage}/"
+          cp zk/keys/*_vkey.json "dist/${stage}/zk/keys/"
+          cp assets/embedding/* "dist/${stage}/assets/embedding/"
+          cp README.md LICENSE.md "dist/${stage}/"
+          cp docs/deployment.md "dist/${stage}/DEPLOYMENT.md"
+
+          # A tarball that cannot start is not a release artifact, and "it
+          # compiled" does not answer that. `--check` runs the whole of
+          # `prepare_server` and exits, so this fails if the vkeys or the
+          # alignment model did not make it in. Verified locally both ways:
+          # removing `assets/embedding/model.safetensors` gives
+          # `UnusableAlignmentModel`, removing `zk/keys/membership_v2_vkey.json`
+          # gives `MissingVerificationKey`, each naming the file.
+          #
+          # A REAL random key. A production profile rejects a single-byte fill as
+          # a weak key, so `'ab' * 32` — the obvious placeholder, and the one I
+          # wrote first — fails this step for a reason that has nothing to do
+          # with the tarball.
+          (
+            cd "dist/${stage}"
+            ANNEX_BUILD_PROFILE=production \
+            ANNEX_CORS_ORIGINS=https://example.invalid \
+            ANNEX_SIGNING_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))") \
+            ANNEX_DB_PATH=./smoke.db \
+            ANNEX_PORT=0 \
+            ./annex-server --check
+          )
+          rm -f "dist/${stage}/smoke.db"*
+
+          tar -C dist -czf "annex-server-${version}-x86_64-unknown-linux-gnu.tar.gz" "${stage}"
+          sha256sum "annex-server-${version}-x86_64-unknown-linux-gnu.tar.gz"
+
+      - name: Upload the server tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-linux-x86_64
+          path: annex-server-*.tar.gz
+          if-no-files-found: error
+
   # ── Required platforms: Linux + Windows. A failure here fails the release. ──
   build-linux:
     name: Build (Linux x86_64, required)
+    needs: preflight
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -181,6 +310,7 @@ jobs:
           if-no-files-found: error
 
   build-windows:
+    needs: preflight
     name: Build (Windows x86_64, required)
     runs-on: windows-latest
     steps:
@@ -275,6 +405,7 @@ jobs:
   # `continue-on-error` keeps a Mac-side breakage from blocking the
   # Linux + Windows release.
   build-macos:
+    needs: preflight
     name: Build (macOS, deferred)
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.include_macos == 'true' }}
     continue-on-error: true
@@ -372,7 +503,7 @@ jobs:
   # build did produce artifacts, they'll be picked up by download-artifact
   # via the artifacts/** glob below.
   release:
-    needs: [build-linux, build-windows]
+    needs: [build-linux, build-windows, build-server]
     runs-on: ubuntu-latest
     # A tag publishes; a dispatch with dry_run proves the pipeline without one.
     # Before this, the only way to find out whether the release job worked was
@@ -469,8 +600,15 @@ jobs:
       - name: Generate SHA256SUMS
         run: |
           cd artifacts
+          # The updater BUNDLES were missing here, and they are the artifacts
+          # the app downloads unattended. A user could checksum the installer
+          # they clicked and not the payload their machine fetches next week —
+          # which is the one they never see.
           find . -type f \( -name '*.deb' -o -name '*.AppImage' -o -name '*.exe' \
-            -o -name '*.msi' -o -name '*.dmg' -o -name '*.sig' \) \
+            -o -name '*.msi' -o -name '*.dmg' -o -name '*.sig' \
+            -o -name '*.AppImage.tar.gz' -o -name '*.nsis.zip' \
+            -o -name '*.msi.zip' -o -name '*.app.tar.gz' -o -name 'latest.json' \
+            -o -name 'annex-server-*.tar.gz' \) \
             -exec sha256sum {} + | sed 's| \./| |' | sort -k2 > ../SHA256SUMS
           cd ..
           cat SHA256SUMS
@@ -478,6 +616,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+
+      # Again here, and not only in `preflight`. A `workflow_dispatch` dry run
+      # reaches this job, and a gate that can be reached by a path that skips it
+      # is not a gate. Cheap enough to run twice.
+      - name: Version, tag and CHANGELOG agree
+        run: bash scripts/tests/version-sync.test.sh
+
+      - name: Production ZK provenance gate
+        run: sh scripts/verify-production-rejects-dev-fixtures.sh
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.88
@@ -501,10 +648,23 @@ jobs:
           set -euo pipefail
           mkdir -p artifacts/sbom
 
+          # `cargo cyclonedx --all` writes one bom.json PER CRATE, beside each
+          # Cargo.toml. The old `find | cp {} rust-workspace.json` copied each
+          # in turn to the same destination, so the file named "rust-workspace"
+          # held whichever of the twelve crates `find` reached last — one
+          # crate's dependency list under the workspace's name, and the
+          # completeness check below passed on it, because one crate does have
+          # components. Collect them all, named for their crate, then take the
+          # union.
           cargo install cargo-cyclonedx@0.5.7 --locked
           cargo cyclonedx --format json --all
-          find . -name 'bom.json' -not -path './artifacts/*' -exec \
-            cp {} artifacts/sbom/rust-workspace.json \;
+          mkdir -p artifacts/sbom/rust
+          find crates -name 'bom.json' | while read -r bom; do
+            cp "$bom" "artifacts/sbom/rust/$(basename "$(dirname "$bom")").json"
+          done
+          [ -f bom.json ] && cp bom.json artifacts/sbom/rust/workspace-root.json
+          python3 scripts/combine-rust-sboms.py \
+            artifacts/sbom/rust artifacts/sbom/rust-workspace.json
 
           npx --yes @cyclonedx/cyclonedx-npm@1.19.3 \
             --output-file artifacts/sbom/client.json \
@@ -604,13 +764,37 @@ jobs:
           done
           ls -la provenance || true
 
+      # The release body used to be `generate_release_notes: true` alone — a
+      # list of commit subjects — while the hand-written `## [x.y.z]` section of
+      # CHANGELOG.md went unused. The changelog is where the reasoning is; a
+      # commit list is what you read when there isn't one. Generated notes stay
+      # on as an appendix.
+      #
+      # Fails the release when the section is absent, which is the same fact
+      # `version-sync.test.sh` asserts, enforced at the point of use.
+      - name: Release notes from the CHANGELOG
+        run: |
+          set -euo pipefail
+          version=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          python3 scripts/changelog-section.py CHANGELOG.md "${version}" > RELEASE_NOTES.md
+          echo "--- release body ---"
+          head -30 RELEASE_NOTES.md
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           draft: true
+          body_path: RELEASE_NOTES.md
           generate_release_notes: true
           tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('dry-run-{0}', github.sha) }}
           name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('Dry run {0}', github.sha) }}
+          # The `.sig` files were uploaded and the bundles they sign were not.
+          # `latest.json` points the updater at `*.AppImage.tar.gz`,
+          # `*.nsis.zip`, `*.msi.zip` and `*.app.tar.gz`; none were in this
+          # list, so every update the manifest advertised 404'd and every
+          # signing improvement above it was inert. The SBOMs the step above
+          # hard-validates were not uploaded either, and `./*.cdx.json` was a
+          # pattern nothing in this workflow writes.
           files: |
             artifacts/**/*.deb
             artifacts/**/*.AppImage
@@ -618,7 +802,13 @@ jobs:
             artifacts/**/*.msi
             artifacts/**/*.dmg
             artifacts/**/*.sig
+            artifacts/**/*.AppImage.tar.gz
+            artifacts/**/*.nsis.zip
+            artifacts/**/*.msi.zip
+            artifacts/**/*.app.tar.gz
+            artifacts/**/annex-server-*.tar.gz
             artifacts/latest.json
+            artifacts/sbom/*.json
+            artifacts/sbom/rust/*.json
             SHA256SUMS
-            ./*.cdx.json
             provenance/*

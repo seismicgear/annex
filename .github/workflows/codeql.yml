@@ -1,0 +1,64 @@
+# CodeQL — the one scanner this repository genuinely did not have.
+#
+# `cargo clippy --all-targets -- -D warnings` and `cargo deny --all-features
+# check` already gate the Rust side, and Rust CodeQL would need
+# `security-extended` plus a full build, which on Linux means the GTK / WebKit /
+# soup / pipewire dev packages and a Tauri bundle — a second, slower copy of the
+# `check-desktop-linux` job for a marginal signal. That trade is stated here
+# rather than left implied: the Rust substitute is clippy + cargo-deny, and if it
+# is ever judged insufficient, the honest fix is a Rust CodeQL job, not a claim
+# that one exists.
+#
+# What IS scanned is everything CodeQL is good at here and nothing else covers:
+# the React client, the ZK tooling, the federation signalling relay in `api/`,
+# and the workflow files themselves.
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly, because advisories land without a push. Monday 07:00 UTC.
+    - cron: "0 7 * * 1"
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      packages: read
+      actions: read
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: javascript-typescript
+            build-mode: none
+          # `actions` catches the class this repository has already produced by
+          # hand: a workflow step that runs in no lane, a glob that matches
+          # nothing, a permission wider than the job needs.
+          - language: actions
+            build-mode: none
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          # `security-and-quality` over the default `security` set: the quality
+          # queries are what find the unused-result and dead-branch shapes this
+          # codebase's defect classes 1 and 6 are made of.
+          queries: security-and-quality
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"

@@ -591,15 +591,44 @@ jobs:
             client/package-lock.json
             zk/package-lock.json
 
-      - name: npm audit (client)
-        continue-on-error: true
-        run: npm audit --audit-level=high
+      # ── One of these three is a gate; the other two are reports ─────────
+      #
+      # Both audits were `continue-on-error: true`, so a new high never failed
+      # anything and the job's green tick meant only that npm had been asked.
+      # Making them blocking as they stand is not the fix either: the full
+      # client audit reports 15 high/critical packages today — vite, vitest,
+      # puppeteer, postcss, browserslist, undici — every one a devDependency
+      # that never reaches a user, and an allowlist of fifteen entries would
+      # need maintaining and would still fail every PR the day a new advisory
+      # lands in vite.
+      #
+      # What DOES ship to a browser is `client`'s production dependency tree,
+      # and measured on this commit it is clean at `--audit-level=high`. So that
+      # one is a gate, with no allowlist to rot: a new high reaching the bundle's
+      # dependency tree now fails CI.
+      - name: npm audit (client production dependencies) — BLOCKING
+        run: npm audit --omit=dev --audit-level=high
         working-directory: client
 
-      - name: npm audit (zk)
+      # `zk`'s production tree carries 5 highs, all the
+      # `snarkjs -> bfj -> jsonpath -> underscore` chain. CLAUDE.md's "snarkjs
+      # vulnerability containment" section records the measurement: none of those
+      # package names appear in `client/dist/assets/*.js`, because the proof
+      # worker only calls `groth16.fullProve` and Vite tree-shakes the streaming
+      # JSON parser out. The chain is reachable from Node-side tooling only —
+      # build-time, not runtime traffic — and `zk/` is build tooling, marked
+      # `"private": true`. Report, not gate, until snarkjs drops bfj.
+      - name: npm audit (zk, full) — report only
         continue-on-error: true
         run: npm audit --audit-level=high
         working-directory: zk
+
+      # The full client audit, for the devDependency picture. Report only, for
+      # the reason above.
+      - name: npm audit (client, full) — report only
+        continue-on-error: true
+        run: npm audit --audit-level=high
+        working-directory: client
 
   # Desktop audit — journey stage 01, "app install".
   #

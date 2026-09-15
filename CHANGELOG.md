@@ -71,6 +71,20 @@ supersession banner and is kept for provenance rather than maintained.
   `scripts/*.sh`. Twelve assertions about whether a release can ship
   dev-fixture ZK keys, invoked by hand. It is an explicit step in CI and in
   `test-all.sh` now, and asserts both callers exist.
+- **The updater's own bundles were never uploaded.** `release-desktop.yml`
+  published the `.sig` files and not the `*.AppImage.tar.gz`, `*.nsis.zip`,
+  `*.msi.zip` or `*.app.tar.gz` they sign — the artifacts `latest.json` points
+  the app at. Every update the manifest advertised 404'd, and every signing check
+  in the workflow above that list was inert. `SHA256SUMS` missed them too, so a
+  user could checksum the installer they clicked and not the payload their machine
+  fetches unattended. The SBOMs the workflow hard-validates were not uploaded
+  either, and `./*.cdx.json` was a pattern nothing writes.
+- **The "workspace" SBOM was one crate's.** `cargo cyclonedx --all` writes a
+  `bom.json` per crate and the step did
+  `find . -name bom.json -exec cp {} …/rust-workspace.json \;`, which copies each
+  in turn to the same destination — so the file named for the workspace held
+  whichever of the twelve `find` reached last, and the completeness check passed
+  on it because one crate does have components.
 - **`scripts/tests/ceremony-verifier.test.sh` corrupted the repository.** Its
   `restore()` deleted the backup as it copied, so every mutation after the
   first stayed on disk; a run left the tracked ceremony transcript carrying a
@@ -80,7 +94,62 @@ supersession banner and is kept for provenance rather than maintained.
   failing loudly. It now restores after every mutation and asserts the
   transcript is byte-identical to how it found it.
 
+### Added
+
+- **A server release artifact.** The only release pipeline in this repository
+  built the desktop app; an operator who wanted to run a server had
+  `docker build` from source and nothing else. `release-desktop.yml` now builds
+  `annex-server-<version>-x86_64-unknown-linux-gnu.tar.gz` — the binary, the
+  ceremony-installed ZK verification keys and the pinned VRP alignment model —
+  and the job's gate is `./annex-server --check`, not "it compiled". That matters
+  because both of those directories are gitignored and filled by separate
+  scripts, and under the shipped posture a missing `membership_v2_vkey.json` is a
+  hard startup error, as is a missing alignment model on a production profile. A
+  tarball can look complete and be unbootable.
+
+  **No container image is published yet.** `docker-compose.prod.yml` still names a
+  locally-built tag. Publishing to GHCR needs `packages: write`, a tags-only
+  condition so a `workflow_dispatch` cannot move `:latest`, and a first push to
+  confirm the registry path — none of which can be verified from a build
+  environment, and a release step that has never run once is not an improvement
+  over its absence.
+
+- **`annex-server --check`** — run everything startup validates, then exit. Not a
+  separate validation path: it calls `prepare_server` and drops the result, so it
+  cannot drift from what the server actually does at boot. Used as the tarball
+  gate above and useful to an operator staging a config.
+
+- **CodeQL** (`javascript-typescript` and `actions`, `security-and-quality`,
+  weekly). Rust is deliberately excluded — it would need `security-extended` and
+  a full build, which on Linux means the GTK/WebKit/soup/pipewire dev packages
+  and a Tauri bundle for a marginal signal over `clippy -D warnings` plus
+  `cargo deny`. That trade is written in the workflow rather than left implied.
+
 ### Changed
+
+- **`npm audit` became a gate for the code that ships, and stayed a report for
+  the code that does not.** Both audits were `continue-on-error: true`, so a new
+  high failed nothing. Making them blocking as they stood was not the fix
+  either: the full client audit reports 15 high/critical packages, every one a
+  devDependency. `client`'s PRODUCTION tree is clean at `--audit-level=high`, so
+  that one blocks with no allowlist to rot; the full audits and `zk/` (5 highs,
+  all the documented `snarkjs → bfj` chain, none of it in the browser bundle)
+  remain reports.
+
+- **The release pipeline's gates now run in the release pipeline.**
+  `version-sync.test.sh` and `verify-production-rejects-dev-fixtures.sh` both
+  passed and both ran in no release path — `release-gates.md` named a workflow
+  step for the second that does not exist, because CI's globbed step matches
+  `scripts/tests/*.test.sh` and the script is `scripts/*.sh`. They are a
+  `preflight` job that gates the builds, and run again in `release` because a
+  dry run reaches that job directly.
+
+- **The tag is tied to the version.** Nothing connected them: a `v0.2.0` tag
+  pushed against a tree at `0.1.0` produced a release named v0.2.0 whose
+  `latest.json` advertised 0.1.0 to every updater that polled it.
+
+- **The release body is the CHANGELOG section**, not a list of commit subjects,
+  and a missing section fails the release.
 
 - `[profile.dev.package."*"] debug = 0`. A complete
   `cargo test --workspace --exclude annex-desktop` needed 12.6 GB of test
