@@ -112,6 +112,7 @@ fn build_state(pool: annex_db::DbPool, tree: MerkleTree, with_circuits: bool) ->
         storage_health: Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
         shutdown: Default::default(),
+        metrics: Default::default(),
     }
 }
 

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "startedAt": "2026-09-14T21:38:04.713Z",
+  "startedAt": "2026-09-15T01:17:36.172Z",
   "tool": "zk/scripts/ceremony.js",
   "snarkjs": "0.7.6",
   "circom": "v2.2.3",
@@ -22,16 +22,17 @@
     "beacon": {
       "chainHash": "8990e7a9aaed2ffed73dbd7092123d6f289930540d7651336225dc172e51b2ce",
       "chainPublicKey": "868f005eb8e6e4ca0a47c8a77ceaa5309a47978a7c71bc5cce96366b5d7a569937c529eeda66c7293784a9402801af31",
-      "round": 6466366,
-      "randomness": "3d7f483c005b26688ce6d8c180d4825c8d6f20da4d904b53dab6660ca57aa879",
-      "signature": "94faf701613eb5897ed2eee13187d64e58bb11eb1f7f4117b188d306a92d58780d8adbd04149af995b8a78a4df350b24054cab4542067c39eaff79d3de502b1b21082d0ccb6984825bd38a1f9ef77c3a33747640198bf88a259af0f841931876",
-      "committedAt": "2026-09-14T21:39:59.398Z",
+      "round": 6466805,
+      "randomness": "553779bc68b613111d2c2ef430cb9618a8bc2e0498de247130512fc7a093cbef",
+      "signature": "82c6bb3195acdeadda8aa05f5e317540002f2c293076a9fdb4189ef2c60120788725d8d737e0192e397f44b362efb83709ac4a30190b659371bfc965f806d99264f43e94c40344615c311fa9644ec208bed9bed9d45f1460d6d9de37b516c673",
+      "committedAt": "2026-09-15T01:17:47.053Z",
+      "latestRoundAtCommit": 6466801,
       "commitment": {
         "stage": "phase1",
-        "preBeaconPtauSha256": "8b496eb490b82773dc644795c00736d66343a70281cbe8740fd32c9ad95b4eac"
+        "preBeaconPtauSha256": "42649c5bfb90bc593f6ec5b7be0db700c2720a9e84e025ea5f54c922e7a00355"
       }
     },
-    "preparedSha256": "b189ce4a706b9ec8ee39f77843294033f92f2898e66a23cf107f21df1c793195",
+    "preparedSha256": "15c73c5175f0951fea4ad2c7a1ee99c07188e42f03af6e865d8f2059b9d41ed2",
     "verified": true
   },
   "phase2": {
@@ -39,19 +40,20 @@
     "beacon": {
       "chainHash": "8990e7a9aaed2ffed73dbd7092123d6f289930540d7651336225dc172e51b2ce",
       "chainPublicKey": "868f005eb8e6e4ca0a47c8a77ceaa5309a47978a7c71bc5cce96366b5d7a569937c529eeda66c7293784a9402801af31",
-      "round": 6466379,
-      "randomness": "6fa32ccfca3d8c21b34077e6830ffc7f5336aab34b36cd90a4857a053d70eb04",
-      "signature": "a964053e0501afbf2ad5ff5fa16fa489abb22a374f13308f8bb83097d622a6014e542d556dccda40fe83490a0aa7b19309f0e0d6fb0a1e9c0e174039fd7f05b0c84dfde982f93f1795dee84ef84c5afda760fc93cf2a28ce97b9e126dda288e3",
-      "committedAt": "2026-09-14T21:46:32.440Z",
+      "round": 6466817,
+      "randomness": "a787e71f3f1023470314b200a32cbc37c41e73ceccfc4edfd93a5c7ed8474a68",
+      "signature": "90e6265a621c96a838754aa8e1e655ed31e942dd107692a1167000dba28f8f85cadd220c37f1438bfd8c48c128540097193560793d1be9dc5c363376e3efda7c7c89b4db2e7ba377e3b049491a75021fdb89d59ebbc953150b807a4f64968538",
+      "committedAt": "2026-09-15T01:23:33.782Z",
+      "latestRoundAtCommit": 6466813,
       "commitment": {
         "stage": "phase2",
         "preBeaconZkeySha256": {
-          "identity": "b40a10b4179210667abb0397360d196bd8c31c9acaaf86dd99e26d59e4784656",
-          "membership": "52b22c22e74dcadeba64aa4085de5d9dc098d4d44682f18b6ff54be88f1d8987",
-          "membership_v2": "6353ebdd341c1c829a43177fa0996d14a065df79e572f2c78ef085f38c1c383a",
-          "channel_eligibility": "2c59b6761747286819af9af8be830e6c43b19af48c233e86316b0262e69b8459",
-          "link_pseudonyms": "c596c701854127ce5a2d927e63d22b5e07921efcd07ee1f51fcfb5d9fa6fcd8f",
-          "federation_attestation": "134c8fa2174a2e776018c38d4892d66501c7ac3937cc3632bce05dc6c2fe717d"
+          "identity": "a565597fc36f6f2e92a826285033d59aaf99ce5ae98767deb61bb96af53acfa7",
+          "membership": "07150481d1f1859077bba8bc29c8aba33ad7daf0b9be8ed065f810f4dfdbe607",
+          "membership_v2": "614e6c6600a7507060043efeafd6d956ab988f06db05f9634f5a219fdcff9839",
+          "channel_eligibility": "abece9e0973ae6f25fbccff789eeea9077592ccd127dd32c290ce6322d1cfa14",
+          "link_pseudonyms": "e5c0297c8cd11315e97a5ed654e05a7674d0114d844cc03e69561918be655464",
+          "federation_attestation": "4d6c3d72336ec184b500d2f5251564a32778299c11366afb2d184b420f009fe4"
         }
       }
     },
@@ -61,11 +63,11 @@
         "contributions": [
           {
             "name": "annex-phase2-local-1",
-            "hash": "0b2b9d78dbd8f8b611d42bb84e238fef6ac8d26788bb2e53a9dff79802cc0e4dad37467d16deb991193bc265b34c7105d2c3ef7a2afaa16320264efa371fc846"
+            "hash": "49fe4e13e902757cc4710ecd8e25d7157bd59b4894888cca875168c0c9be4a91cc4b59c35b874db1e40e3eaa67b201df046cf6701b8e52fd3b2dc926dfcb1761"
           },
           {
             "name": "annex-phase2-local-2",
-            "hash": "72815e4138cfc9101be6240a9d9b0043144ff401d0acd5a2e3e0f9d58155536f99e03cbf59180d92760150f6456a306cc08ccf1ed3bff37d212d0327402feef2"
+            "hash": "81bb18be76e9efe67909182e632c56e0e821f72c3997d58f90daace17548c2a589fa449a5d37460307fe0d6da4378ada4eb5cedd63450e45ab9918368caed55b"
           }
         ],
         "verified": true
@@ -75,11 +77,11 @@
         "contributions": [
           {
             "name": "annex-phase2-local-1",
-            "hash": "25e40c4a018078a016d15e0b4808462ab123108e811a334d197ee4e6c48779705de21a02930945146b6983b422225761ed8a2fb1c4367ec7a61c944fa6dd2e1b"
+            "hash": "859830c5cacfff9e3d6641e1bf5565e96a05bed1e1a4c567ed8bb9c259a97d5b7ff46a8c22c1f21be2d728656562fb17b879c0be2d359fbe83151a66dbf4ba49"
           },
           {
             "name": "annex-phase2-local-2",
-            "hash": "1b85510d311fc2d2f4e8890b012501a3d708b144f40376f68d2c2337a7815c8d7970f2626340d96daf55b4f1fefa2446359427e25ba945379816a475044e0984"
+            "hash": "dd789219e6a4a2d0f9ff5c897871beb0226ff50e3d75c4457e9aa196ce679b41d36690b3fdb214f52b8dbecbd3d0dea219bda959190372ad735dda2e56759202"
           }
         ],
         "verified": true
@@ -89,11 +91,11 @@
         "contributions": [
           {
             "name": "annex-phase2-local-1",
-            "hash": "d8dc9de5de7cb55a299facccea550023b0bee947753aea1f1c2d867b350072fa99ac01be1db2eb27e0f9667d69ebde96874c7528e52fd1c75d797a4dc0bd3890"
+            "hash": "f5182284b78e6fc110a6188fc2f99488f9af65bfd3dfd8d23fe376d901d7227dfcc3d944d1910c6e6bf769772127ad89b5c7e5fa16d6a76b08f1489b5395a92c"
           },
           {
             "name": "annex-phase2-local-2",
-            "hash": "a10ddedd25c015248ebb2b9cf5779b75610367121f1a32ec9acb670619c5104c0fa2e1f8dfdb85fc2ec60f4a188656d784fb6ca335a584bc9f89de695a422197"
+            "hash": "c33c2efbbb00291147052a97a30aad7b423a9f3baf297fab80da68582188547f37b6eac4771cbaf77246340c1176eded7a5237c533a5ba3a4bcaad3ffb0ab772"
           }
         ],
         "verified": true
@@ -103,11 +105,11 @@
         "contributions": [
           {
             "name": "annex-phase2-local-1",
-            "hash": "423cc7fcf16e9d029aaa63bb37eb44386ffc4b35011226c8da7070cc8e83ad9d81c311f6991240b99ccf95a6cc2a3439b5ad9aad46d26c28ecd223065170b8a1"
+            "hash": "f4f49f808cf08f9bb3d8953c44a78f1aade0197afb4df696b1fa5edd233b0755cb49bd1a8e77ed620e2742a15907c545d3c8341a72c886605bf7efc0eeb754c1"
           },
           {
             "name": "annex-phase2-local-2",
-            "hash": "e0c8d0efd7da0ceef311b62ea9f9b6ce5ff5d850b380171ca3a7cde39ff71eef8f409af737746fa5be00b5563c21f9e509c1f06815fe38236914d74dacb718c1"
+            "hash": "5e16dc582cbb8ee53e3e4e0ca746e5a162fdb6a90138d9baea2884b6191d2228319faa95b8ebc9cbd4fe38f1be68cbacf4990b0f41983550b8456ee0127f364d"
           }
         ],
         "verified": true
@@ -117,11 +119,11 @@
         "contributions": [
           {
             "name": "annex-phase2-local-1",
-            "hash": "97169df92bbda01b289751e3a1a2f6236ce8c85a31d9973f1201a4ed8e49035418cb1d900e31b799bc65003c9919f8f54ef821ccea9976abc71f74f4f8deac3f"
+            "hash": "4dab5d7b3c880d48ea7a926f36287c1b61c84b13b0a9612d7296388ec4a5ff3a6606af74743abbb47dd2416f8fcd533eb4f4a4752114513c1c9873fb0613bf44"
           },
           {
             "name": "annex-phase2-local-2",
-            "hash": "938a78493eb2871ec6c1d8e2559de4b0dc3a7df3ce5c261040ce2587d72ac9b8790ad2f04c30f77e048da46d45515ebc00110b74981017b704c48d3d6161a24f"
+            "hash": "9dbfb2d7e1b46ffc2582b24802eec681ef0befe02ebb7c568cfd0313fd0605551aa7177b696ce8c8cec0f9a99d6ca3d43ce3e5361367b2ebcad58b28f4fdd408"
           }
         ],
         "verified": true
@@ -131,11 +133,11 @@
         "contributions": [
           {
             "name": "annex-phase2-local-1",
-            "hash": "be15bd6b0f9c7783691a6490017a710711680762f8fa8967ccd5099598ec780af35f37de0cb9abce470ada78eb42f28dc48a70905e1f81337afd9fa192738dd2"
+            "hash": "93c3a71566f0c3434e13d6188c0e0d0d4237a6cf5eb0c5f17c3c5acf30ae21aa50cbae422014c9fd46ac583bb893916ac1fa4b8f973749ce455495a9cea1af3d"
           },
           {
             "name": "annex-phase2-local-2",
-            "hash": "0e7c6f95e2124312879e794b60fdf1d49c0971e4db3c73429294393ce8129226565fcb0618f4749c06082913dad77b8604aef6bae9131a993b7715700f47339e"
+            "hash": "ec0383ea9b99399126e6ea4bf209e7e2270ad53850298957114392b10740d7ab9c96d82ea71e2c4f7c0563de22931b577190f2939ab8a704a8ca5b7631495ef9"
           }
         ],
         "verified": true
@@ -144,7 +146,7 @@
   },
   "ptauFile": {
     "path": "./pot14_final.ptau",
-    "sha256": "b189ce4a706b9ec8ee39f77843294033f92f2898e66a23cf107f21df1c793195"
+    "sha256": "15c73c5175f0951fea4ad2c7a1ee99c07188e42f03af6e865d8f2059b9d41ed2"
   },
-  "finishedAt": "2026-09-14T21:47:32.349Z"
+  "finishedAt": "2026-09-15T01:26:18.788Z"
 }

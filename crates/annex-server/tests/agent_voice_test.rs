@@ -77,6 +77,7 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool, Arc<AppState>) {
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
         shutdown: Default::default(),
+        metrics: Default::default(),
     };
 
     (app(state.clone()), pool, Arc::new(state))

@@ -5,4 +5,5 @@
 
 pub mod cors;
 pub mod layers;
+pub mod observability;
 pub mod static_files;

@@ -22,6 +22,7 @@ pub mod api_graph;
 pub mod api_health;
 pub mod api_invite;
 pub mod api_link_preview;
+pub mod api_metrics;
 pub mod api_observe;
 pub mod api_rtx;
 pub mod api_sse;

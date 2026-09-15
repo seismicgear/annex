@@ -122,6 +122,12 @@ pub struct AppState {
     /// `degraded` causes the auth middleware to reject mutating
     /// requests with HTTP 507.
     pub storage_health: std::sync::Arc<crate::storage_health::StorageHealth>,
+    /// Process-wide HTTP counters, served by `GET /metrics`.
+    ///
+    /// `Arc` because `AppState` is cloned per request-extension and the
+    /// counters must be shared, not copied — a per-clone counter would report
+    /// zero forever.
+    pub metrics: std::sync::Arc<crate::api_metrics::RequestMetrics>,
     /// Number of trusted reverse-proxy hops in front of this process.
     /// Drives `rate_limit_middleware`'s IP extraction:
     /// `0` → trust only the raw socket peer; `N >= 1` → take the real

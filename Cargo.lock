@@ -273,6 +273,7 @@ dependencies = [
  "hex",
  "hkdf",
  "hmac",
+ "http-body-util",
  "num-bigint",
  "open",
  "r2d2",

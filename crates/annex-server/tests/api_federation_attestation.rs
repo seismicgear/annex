@@ -72,6 +72,7 @@ async fn setup_app() -> axum::Router {
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
         shutdown: Default::default(),
+        metrics: Default::default(),
     };
 
     app(state)
@@ -201,6 +202,7 @@ async fn test_attest_membership_invalid_signature() {
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
         shutdown: Default::default(),
+        metrics: Default::default(),
     };
 
     let app = app(state);
@@ -309,6 +311,7 @@ async fn test_attest_membership_valid_signature_fails_network() {
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
         shutdown: Default::default(),
+        metrics: Default::default(),
     };
 
     let app = app(state);
@@ -479,6 +482,7 @@ async fn setup_app_with_known_instance(
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
         shutdown: Default::default(),
+        metrics: Default::default(),
     };
 
     (app(state), signing_key)

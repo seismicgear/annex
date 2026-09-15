@@ -9,8 +9,8 @@
     "commitment"
   ],
   "wasm_sha256": "8da5966252df0373651ef8aa00d81a112c7c84a700a3c93fd5e4e5a015c986ee",
-  "zkey_sha256": "e7060ac5cce17cf784321f7bb6fae6a1dbc2cdb446cae69490cf823e24a6e461",
-  "vkey_sha256": "31e7785c1379acdddfd32401313e9e467483f2bf8398b5e295f8229d2cb7bf2b",
+  "zkey_sha256": "8b4e7919988973323fc5acca41e9d2c5e6636c2dec7c447130de78cc83ad1852",
+  "vkey_sha256": "58bb56b84563f07c6704db78b7035801dbdf30bb97a768441fcdf5298095463a",
   "r1cs_sha256": "665efcc2da911de25bf08cc8e03fa6f4102cda12f6712dc0fd21b0b6da9cc235",
   "paths": {
     "wasm": "./identity.wasm",
@@ -20,12 +20,12 @@
   },
   "ceremony": {
     "type": "multi-contributor-beacon",
-    "generatedAt": "2026-09-14T21:38:04.713Z",
+    "generatedAt": "2026-09-15T01:17:36.172Z",
     "transcript": "../ceremony/transcript.json",
     "phase1Source": "generated-by-this-ceremony",
-    "beaconRound": 6466379,
+    "beaconRound": 6466817,
     "beaconChainHash": "8990e7a9aaed2ffed73dbd7092123d6f289930540d7651336225dc172e51b2ce",
     "zkeyVerified": true,
-    "note": "Produced by zk/scripts/ceremony.js. Phase 2 was finalised with drand round 6466379 on chain 8990e7a9aaed2ffed73dbd7092123d6f289930540d7651336225dc172e51b2ce, committed to before that round existed (see the transcript's commitment field). `snarkjs zkey verify` passed against the pinned r1cs and ptau. This is NOT a multi-party ceremony with independent participants; see docs/refactor/zk-merkle-production.md for what that would add."
+    "note": "Produced by zk/scripts/ceremony.js. Phase 2 was finalised with drand round 6466817 on chain 8990e7a9aaed2ffed73dbd7092123d6f289930540d7651336225dc172e51b2ce, committed to before that round existed (see the transcript's commitment field). `snarkjs zkey verify` passed against the pinned r1cs and ptau. This is NOT a multi-party ceremony with independent participants; see docs/refactor/zk-merkle-production.md for what that would add."
   }
 }

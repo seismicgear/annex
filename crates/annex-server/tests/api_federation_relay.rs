@@ -131,6 +131,7 @@ async fn test_receive_federated_message() {
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
         shutdown: Default::default(),
+        metrics: Default::default(),
     };
 
     let app = app(state);
@@ -329,6 +330,7 @@ async fn setup_relay_fixture(
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
         shutdown: Default::default(),
+        metrics: Default::default(),
     };
 
     let app = app(state);

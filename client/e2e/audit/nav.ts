@@ -163,6 +163,17 @@ const CAPTURE_STYLESHEET = `
    * see, and would stop the audit noticing if one of them disappeared for
    * real.
    *
+   * \`text-overflow: ellipsis\`, not \`clip\`. The first attempt used \`clip\` and
+   * the overflow audit immediately produced 390 \`clipped-text\` findings —
+   * correctly, because a fixed width plus \`clip\` IS the signature it hunts
+   * for ("text clipped without ellipsis, scrollWidth 108 > clientWidth 72").
+   * Those findings described this stylesheet rather than the product, since
+   * nothing constrains these elements in the real UI. The capture stylesheet
+   * has to stabilise layout without inventing a defect, and an ellipsis on a
+   * truncated fixed-width label is both the accepted treatment and what
+   * \`audits.ts\` checks for. The glyphs it draws change no pixel: Playwright
+   * paints the mask over the element's whole box, so the ellipsis is under it.
+   *
    * Scoped to the message header and the reply affordances, which is where
    * the failures were MEASURED. The same argument applies in principle to the
    * event-log columns and the admin member lists — their content is
@@ -182,7 +193,7 @@ const CAPTURE_STYLESHEET = `
     min-width: 72px !important;
     overflow: hidden !important;
     white-space: nowrap !important;
-    text-overflow: clip !important;
+    text-overflow: ellipsis !important;
     vertical-align: middle !important;
   }
 

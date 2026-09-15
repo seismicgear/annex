@@ -140,6 +140,7 @@ fn build_harness(seed_original_receipt: bool) -> Harness {
         storage_health: Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
         shutdown: Default::default(),
+        metrics: Default::default(),
     };
 
     Harness {
@@ -420,6 +421,7 @@ async fn relay_edit_enqueues_per_event_outbox_rows() {
         storage_health: Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
         shutdown: Default::default(),
+        metrics: Default::default(),
     });
 
     // Two edits to the same message must produce two distinct outbox

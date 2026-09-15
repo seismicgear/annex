@@ -60,6 +60,7 @@ async fn test_register_identity_success() {
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
         shutdown: Default::default(),
+        metrics: Default::default(),
     };
     let app = app(state);
 
@@ -150,6 +151,7 @@ async fn test_register_duplicate_returns_idempotent_path() {
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
         shutdown: Default::default(),
+        metrics: Default::default(),
     };
     let app = app(state);
 
@@ -265,6 +267,7 @@ async fn test_register_invalid_role_failure() {
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
         shutdown: Default::default(),
+        metrics: Default::default(),
     };
     let app = app(state);
 

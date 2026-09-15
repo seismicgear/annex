@@ -176,6 +176,27 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function beaconFromFutureRound(leadRounds, commitment) {
   const latest = await drandGet("/public/latest");
   const targetRound = latest.round + leadRounds;
+
+  // Stamp the commitment NOW, before the wait — not when the round arrives.
+  //
+  // This used to be `committedAt: new Date().toISOString()` inside the return
+  // below, which runs AFTER the loop has waited for the round to be published.
+  // The protocol was right — the artifact hashes are fixed here, and the round
+  // committed to does not yet exist — but the recorded timestamp described the
+  // moment of collection rather than the moment of commitment, so it always
+  // landed at or after the beacon's own publication time.
+  //
+  // That made a sound ceremony indistinguishable from an unsound one. The
+  // phase-2 record of the previous ceremony read as "committed 2.4s AFTER the
+  // beacon was public", which is exactly what choosing contributions with
+  // knowledge of the beacon would look like. `verify-ceremony.js` now checks
+  // this and fails on it, so the field has to mean what it says.
+  //
+  // `latestRoundAtCommit` is recorded alongside so the claim is checkable a
+  // second way, independent of any clock: the target round must be strictly
+  // greater than the newest round that existed when the commitment was made.
+  const committedAt = new Date().toISOString();
+
   info(
     `committing to drand round ${targetRound} (latest is ${latest.round}, ` +
       `~${leadRounds * DRAND.periodSeconds}s away)`,
@@ -192,7 +213,8 @@ async function beaconFromFutureRound(leadRounds, commitment) {
         round: targetRound,
         randomness: r.randomness,
         signature: r.signature,
-        committedAt: new Date().toISOString(),
+        committedAt,
+        latestRoundAtCommit: latest.round,
         commitment,
       };
     } catch {

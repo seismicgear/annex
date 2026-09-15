@@ -158,6 +158,7 @@ pub fn app(state: AppState) -> Router {
             "/api/rtx/governance/summary",
             get(api_rtx::governance_summary_handler),
         )
+        .route("/api/metrics", get(crate::api_metrics::metrics))
         .route(
             "/api/admin/policy",
             get(api_admin::get_policy_handler).put(api_admin::update_policy_handler),
@@ -319,6 +320,15 @@ pub fn app(state: AppState) -> Router {
         .route("/health", get(crate::api_health::live))
         .route("/livez", get(crate::api_health::live))
         .route("/readyz", get(crate::api_health::ready))
+        // `/metrics` is mounted in BOTH groups and each half refuses when it
+        // is not the one in force: the public handler 404s unless
+        // ANNEX_METRICS_PUBLIC is set, and the authenticated one 403s a
+        // non-moderator unless it is. Mounting both unconditionally keeps the
+        // route table independent of process environment — a router built
+        // under one setting and served under another still behaves — and
+        // means the path never simply vanishes, which reads to an operator as
+        // a broken build rather than a policy.
+        .route("/metrics", get(crate::api_metrics::metrics_public))
         .route("/api/registry/register", post(api::register_handler))
         .route(
             "/api/registry/path/{commitmentHex}",

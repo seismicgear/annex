@@ -74,6 +74,7 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool) {
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
         shutdown: Default::default(),
+        metrics: Default::default(),
     };
 
     (app(state), pool)
@@ -387,6 +388,7 @@ async fn setup_app_voice_disabled() -> axum::Router {
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
         shutdown: Default::default(),
+        metrics: Default::default(),
     };
 
     app(state)
@@ -530,6 +532,7 @@ async fn test_voice_config_status_enabled() {
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
         shutdown: Default::default(),
+        metrics: Default::default(),
     };
 
     let app_router = app(state);
@@ -634,6 +637,7 @@ async fn test_voice_join_not_configured_returns_structured_error() {
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
         shutdown: Default::default(),
+        metrics: Default::default(),
     };
 
     let router = app(state);

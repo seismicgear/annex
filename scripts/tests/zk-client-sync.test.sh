@@ -54,8 +54,14 @@ if [ -d "${ROOT_DIR}/client/public/zk" ] && [ -d "${ROOT_DIR}/zk/keys" ]; then
   if [ "$drift" -eq 0 ]; then
     zs_ok "every mirrored proving key in client/public/zk matches zk/keys"
   fi
+elif [ ! -d "${ROOT_DIR}/client/public/zk" ]; then
+  # Expected on a clean checkout: the directory is gitignored and is created by
+  # prepare-zk-dev.js. Stated rather than folded into a generic skip, because
+  # "absent" and "present and in sync" are different facts and a test that
+  # reports them identically is hiding one of them.
+  zs_ok "client/public/zk is absent (clean checkout) — nothing to drift yet"
 else
-  zs_ok "no zk artifacts present in this checkout — skipping the live-tree check"
+  zs_ok "no zk/keys in this checkout — skipping the live-tree check"
 fi
 
 # ── 2. The script must detect a CONTENT difference ──────────────────────────
@@ -79,9 +85,27 @@ else
   if [ -d "${ROOT_DIR}/zk/build" ]; then
     cp -r "${ROOT_DIR}/zk/build/." "$scratch/repo/zk/build/"
   fi
-  cp -r "${ROOT_DIR}/client/public/zk/." "$scratch/repo/client/public/zk/"
 
-  # Baseline: an in-sync tree is a no-op.
+  # Populate the scratch client directory by RUNNING the script, rather than
+  # copying whatever this checkout happens to hold.
+  #
+  # The first version copied `${ROOT_DIR}/client/public/zk`, which is
+  # gitignored and therefore absent on a clean checkout — so on CI the copy
+  # silently did nothing and the "in-sync tree is a no-op" assertion below
+  # failed against a tree that had never been synced. Worse, CI regenerates
+  # random-entropy dev keys immediately before this runs, so even a populated
+  # checkout would have been out of date by construction. The fixture now
+  # builds itself from the keys in the scratch repo, which is the only state
+  # this test has any business depending on.
+  seed="$( cd "$scratch/repo" && node scripts/prepare-zk-dev.js 2>&1 )"
+  if [ ! -f "$scratch/repo/client/public/zk/membership_final.zkey" ]; then
+    zs_bad "could not seed the scratch client directory: $(printf '%s' "$seed" | tail -3)"
+    echo "[zk-sync] ${ZS_OK} passed, ${ZS_BAD} failed"
+    exit 1
+  fi
+  zs_ok "the scratch fixture seeds itself from zk/keys"
+
+  # Baseline: having just synced, a second run is a no-op.
   out="$( cd "$scratch/repo" && node scripts/prepare-zk-dev.js 2>&1 )"
   if printf '%s' "$out" | grep -q 'Nothing to do'; then
     zs_ok "an in-sync tree is reported as nothing to do"

@@ -36,6 +36,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { execFileSync } = require("child_process");
+const { bls12_381 } = require("@noble/curves/bls12-381.js");
 
 const ZK_DIR = path.resolve(__dirname, "..");
 const ARTIFACTS_DIR = path.join(ZK_DIR, "artifacts");
@@ -76,31 +77,209 @@ function parseArgs(argv) {
   return out;
 }
 
-async function checkBeacon(transcript) {
-  const beacons = [transcript.phase1 && transcript.phase1.beacon, transcript.phase2 && transcript.phase2.beacon]
-    .filter(Boolean);
-  if (beacons.length === 0) {
-    warn("transcript records no beacon — nothing to check against drand.");
-    return true;
+/// drand's chained scheme signs SHA256(prev_signature || round_be64) on G2,
+/// against a chain public key on G1, with this domain separation tag.
+const DRAND_DST = "BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";
+
+function hexToBytes(h) {
+  if (typeof h !== "string" || h.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(h)) {
+    throw new Error(`not hex: ${String(h).slice(0, 32)}`);
   }
+  return Uint8Array.from(Buffer.from(h, "hex"));
+}
+
+/**
+ * Check one beacon against the drand chain it claims to come from.
+ *
+ * Returns true only if every check passed. The caller must honour that — see
+ * the note at the call site.
+ *
+ * Four things are checked and the first three were previously not checked at
+ * all:
+ *
+ *  1. The chain is the one the transcript names: `/info` must return the same
+ *     chain hash AND the same public key. Comparing randomness against an
+ *     endpoint chosen by the transcript proves nothing if the transcript can
+ *     also choose the chain.
+ *  2. The signature verifies under BLS12-381 against that chain key. This is
+ *     what makes the beacon *authentic* rather than merely *agreed with by the
+ *     server we asked*. Without it, anyone who could answer for api.drand.sh
+ *     could mint a beacon.
+ *  3. `randomness == SHA256(signature)`, which is drand's definition. The old
+ *     check compared the transcript's randomness to the endpoint's and stopped
+ *     there, so a transcript recording a randomness unrelated to its own
+ *     signature passed.
+ *  4. The commitment predates the beacon. A beacon is unpredictable
+ *     randomness mixed in AFTER the contributions are fixed; if the commitment
+ *     was recorded after the round was already public, the beacon adds
+ *     nothing, because the operator could have chosen contributions knowing
+ *     it. Round time is `genesis_time + (round - 1) * period`, which is exact,
+ *     so this is checkable rather than a matter of trust.
+ */
+async function checkOneBeacon(label, b) {
   let ok = true;
-  for (const b of beacons) {
-    const res = await fetch(`https://api.drand.sh/public/${b.round}`);
+
+  let chainInfo;
+  try {
+    const res = await fetch(`https://api.drand.sh/${b.chainHash}/info`);
     if (!res.ok) {
-      warn(`drand round ${b.round} returned HTTP ${res.status}; could not check.`);
-      ok = false;
-      continue;
+      warn(`${label}: drand /info returned HTTP ${res.status}; cannot authenticate the chain.`);
+      return false;
     }
-    const round = await res.json();
-    if (round.randomness !== b.randomness) {
+    chainInfo = await res.json();
+  } catch (e) {
+    warn(`${label}: could not reach drand (${e.message}); cannot authenticate the chain.`);
+    return false;
+  }
+
+  if (chainInfo.hash !== b.chainHash) {
+    fail(`${label}: drand reports chain hash ${chainInfo.hash}, transcript says ${b.chainHash}.`, 2);
+  }
+  if (chainInfo.public_key !== b.chainPublicKey) {
+    fail(
+      `${label}: chain public key mismatch.\n  transcript ${b.chainPublicKey}\n  drand      ${chainInfo.public_key}`,
+      2,
+    );
+  }
+
+  let round;
+  try {
+    const res = await fetch(`https://api.drand.sh/${b.chainHash}/public/${b.round}`);
+    if (!res.ok) {
+      warn(`${label}: drand round ${b.round} returned HTTP ${res.status}; could not check.`);
+      return false;
+    }
+    round = await res.json();
+  } catch (e) {
+    warn(`${label}: could not fetch drand round ${b.round} (${e.message}).`);
+    return false;
+  }
+
+  if (round.randomness !== b.randomness) {
+    fail(
+      `${label}: drand round ${b.round} randomness does not match the transcript.\n` +
+        `  transcript ${b.randomness}\n  drand      ${round.randomness}\n` +
+        "The ceremony's beacon is not the value the League of Entropy published.",
+      2,
+    );
+  }
+  if (round.signature !== b.signature) {
+    fail(
+      `${label}: drand round ${b.round} signature does not match the transcript.`,
+      2,
+    );
+  }
+
+  // (3) randomness is defined as SHA256 of the signature.
+  const derived = crypto.createHash("sha256").update(Buffer.from(hexToBytes(b.signature))).digest("hex");
+  if (derived !== b.randomness) {
+    fail(
+      `${label}: randomness is not SHA256(signature).\n  recorded ${b.randomness}\n  derived  ${derived}`,
+      2,
+    );
+  }
+
+  // (2) authenticate the signature against the chain key.
+  try {
+    const roundBuf = Buffer.alloc(8);
+    roundBuf.writeBigUInt64BE(BigInt(b.round));
+    const msg = Uint8Array.from(
+      crypto
+        .createHash("sha256")
+        .update(Buffer.concat([Buffer.from(hexToBytes(round.previous_signature || "")), roundBuf]))
+        .digest(),
+    );
+    const point = bls12_381.longSignatures.hash(msg, DRAND_DST);
+    const valid = bls12_381.longSignatures.verify(
+      hexToBytes(b.signature),
+      point,
+      hexToBytes(b.chainPublicKey),
+    );
+    if (!valid) {
       fail(
-        `drand round ${b.round} randomness does not match the transcript.\n` +
-          `  transcript ${b.randomness}\n  drand      ${round.randomness}\n` +
-          "The ceremony's beacon is not the value the League of Entropy published.",
+        `${label}: the beacon signature does NOT verify against the chain public key. ` +
+          "The recorded beacon is not a genuine League of Entropy value.",
         2,
       );
     }
-    info(`  OK beacon  drand round ${b.round} matches the transcript`);
+    info(`  OK beacon  ${label}: drand round ${b.round} signature verifies under BLS12-381`);
+  } catch (e) {
+    warn(`${label}: BLS verification could not run (${e.message}).`);
+    ok = false;
+  }
+
+  // (4) the commitment must predate the beacon.
+  const roundTimeSec = Number(chainInfo.genesis_time) + (Number(b.round) - 1) * Number(chainInfo.period);
+  if (b.committedAt) {
+    const committedSec = Date.parse(b.committedAt) / 1000;
+    if (!Number.isFinite(committedSec)) {
+      warn(`${label}: committedAt is not a parseable timestamp (${b.committedAt}).`);
+      ok = false;
+    } else if (committedSec >= roundTimeSec) {
+      fail(
+        `${label}: the commitment does NOT predate its beacon.\n` +
+          `  committed  ${b.committedAt}\n` +
+          `  round ${b.round} published ${new Date(roundTimeSec * 1000).toISOString()}\n` +
+          `  committed ${(committedSec - roundTimeSec).toFixed(1)}s AFTER the beacon was public.\n` +
+          "A beacon only contributes unpredictability if the contributions are fixed first. " +
+          "Recorded after the fact, it proves nothing about what the operator could have known.",
+        2,
+      );
+    } else {
+      info(
+        `  OK beacon  ${label}: committed ${(roundTimeSec - committedSec).toFixed(1)}s before round ${b.round} was published`,
+      );
+    }
+  } else {
+    warn(`${label}: no committedAt recorded, so the pre-beacon commitment cannot be checked.`);
+    ok = false;
+  }
+
+  // The same claim, checked a second way and without reference to any clock.
+  //
+  // `committedAt` depends on the operator's system time, which a determined
+  // operator controls. `latestRoundAtCommit` is the newest round drand had
+  // published when the commitment was made, and the beacon round must be
+  // strictly later than it. Neither check subsumes the other: the timestamp
+  // catches a commitment made late, this catches a transcript whose clock was
+  // simply wound back.
+  if (b.latestRoundAtCommit !== undefined) {
+    if (!(Number(b.round) > Number(b.latestRoundAtCommit))) {
+      fail(
+        `${label}: the beacon round ${b.round} was NOT in the future at commit time ` +
+          `(drand had already published round ${b.latestRoundAtCommit}).`,
+        2,
+      );
+    }
+    info(
+      `  OK beacon  ${label}: round ${b.round} was ${Number(b.round) - Number(b.latestRoundAtCommit)} round(s) in the future at commit time`,
+    );
+  } else {
+    // Transcripts produced before `latestRoundAtCommit` was recorded still
+    // verify on the timestamp alone; say so rather than passing silently.
+    warn(
+      `${label}: no latestRoundAtCommit recorded — the pre-beacon claim rests on the ` +
+        "operator's clock alone. Re-run the ceremony to record it.",
+    );
+  }
+
+  return ok;
+}
+
+async function checkBeacon(transcript) {
+  const beacons = [
+    transcript.phase1 && transcript.phase1.beacon && ["phase1", transcript.phase1.beacon],
+    transcript.phase2 && transcript.phase2.beacon && ["phase2", transcript.phase2.beacon],
+  ].filter(Boolean);
+
+  if (beacons.length === 0) {
+    warn("transcript records no beacon — nothing to check against drand.");
+    return false;
+  }
+
+  let ok = true;
+  for (const [label, b] of beacons) {
+    if (!(await checkOneBeacon(label, b))) ok = false;
   }
   return ok;
 }
@@ -207,8 +386,25 @@ async function main() {
   if (args.offline) {
     warn("--offline: the drand beacon was NOT checked. This run proves the artifacts are");
     warn("           internally consistent, not that the beacon is the published one.");
-  } else {
-    await checkBeacon(transcript);
+  } else if (!(await checkBeacon(transcript))) {
+    // Fail CLOSED.
+    //
+    // This was `await checkBeacon(transcript);` with the result discarded, so
+    // any beacon check that ended in a warning rather than a hard `fail()` —
+    // an unreachable drand, a non-200 response, a missing committedAt — left
+    // `bad` at zero and the script went on to print "All N circuit(s)
+    // verified against the ceremony transcript." A verifier that reports
+    // success when its network check did not run is worse than no verifier,
+    // because the green line is what a release reads.
+    //
+    // `--offline` is the supported way to say "I know the beacon is not being
+    // checked", and it says so loudly in its own output.
+    bad += 1;
+    fail(
+      "beacon verification did not complete. Re-run when drand is reachable, " +
+        "or pass --offline to state explicitly that the beacon is unchecked.",
+      2,
+    );
   }
 
   if (bad > 0) fail(`${bad} check(s) failed across ${circuits.length} circuit(s).`, 2);

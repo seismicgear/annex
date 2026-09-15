@@ -128,6 +128,7 @@ async fn setup_app_with_mock_tts(
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
         shutdown: Default::default(),
+        metrics: Default::default(),
     };
 
     (app(state.clone()), pool, Arc::new(state))
@@ -457,6 +458,7 @@ async fn test_voice_intent_tts_profile_not_found() {
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
         shutdown: Default::default(),
+        metrics: Default::default(),
     };
 
     // Seed agent and channel

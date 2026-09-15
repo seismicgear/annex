@@ -106,6 +106,30 @@ pub enum StartupError {
          data directory is writable, set ANNEX_SIGNING_KEY explicitly, or run a dev profile."
     )]
     EphemeralSigningKeyInProduction { path: String, reason: String },
+
+    /// A signing key file exists but could not be used.
+    ///
+    /// Distinguished from "no key yet" on purpose, and it is the whole point
+    /// of this variant. Generating a key on genuine first boot is correct;
+    /// generating one because an EXISTING key is unreadable replaces the
+    /// server's identity. Federation peers stop recognising it, every issued
+    /// session and voice-join token becomes unverifiable, and the audit log's
+    /// signature chain breaks at that boundary — all reported as a warning
+    /// line in a log nobody was watching, because the server came up fine.
+    ///
+    /// A transient cause (a permissions change, a not-yet-mounted volume, a
+    /// half-written file after a power cut) is far more likely than genuine
+    /// key loss, and all of them are recoverable — but only if the server
+    /// refuses to paper over them first.
+    #[error(
+        "the signing key at '{path}' exists but could not be used: {reason}. \
+         Refusing to start: generating a replacement would give this server a NEW \
+         identity, and federation peers, issued tokens and the audit log's signature \
+         chain are all bound to the old one. Restore the key from backup, fix its \
+         permissions, or — if the identity really is lost and a new one is intended — \
+         move the file aside deliberately."
+    )]
+    UnusableSigningKey { path: String, reason: String },
     /// Production rejected an obviously-weak signing key (all-zero, all-`0xff`,
     /// or any single-byte fill). These patterns show up in test fixtures and
     /// in mis-pasted env vars; accepting one in production would compromise
@@ -358,13 +382,28 @@ fn resolve_signing_key(db_path: &str) -> Result<SigningKey, StartupError> {
                         tracing::info!(path = %key_file.display(), "loaded signing key from persistent file");
                         return Ok(SigningKey::from_bytes(&byte_array));
                     }
-                    _ => {
-                        tracing::warn!(path = %key_file.display(), "signing key file exists but is malformed — generating new key");
+                    Ok(bytes) => {
+                        return Err(StartupError::UnusableSigningKey {
+                            path: key_file.display().to_string(),
+                            reason: format!(
+                                "decoded to {} bytes, expected 32 — the file is truncated or corrupt",
+                                bytes.len()
+                            ),
+                        });
+                    }
+                    Err(e) => {
+                        return Err(StartupError::UnusableSigningKey {
+                            path: key_file.display().to_string(),
+                            reason: format!("not valid hex: {e}"),
+                        });
                     }
                 }
             }
             Err(e) => {
-                tracing::warn!(path = %key_file.display(), error = %e, "could not read signing key file — generating new key");
+                return Err(StartupError::UnusableSigningKey {
+                    path: key_file.display().to_string(),
+                    reason: format!("could not be read: {e}"),
+                });
             }
         }
     }
@@ -388,14 +427,8 @@ fn resolve_signing_key(db_path: &str) -> Result<SigningKey, StartupError> {
         }
     }
 
-    match std::fs::write(&key_file, &hex_key) {
+    match write_key_file_atomically(&key_file, &hex_key) {
         Ok(()) => {
-            // Set file permissions to owner-only (0600) on Unix
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&key_file, std::fs::Permissions::from_mode(0o600));
-            }
             tracing::info!(path = %key_file.display(), "generated and persisted new signing key");
         }
         Err(e) => {
@@ -414,6 +447,68 @@ fn resolve_signing_key(db_path: &str) -> Result<SigningKey, StartupError> {
     }
 
     Ok(key)
+}
+
+/// Write the signing key so that a reader either sees the whole key or no file
+/// at all, and never sees it through a permissive mode.
+///
+/// Three problems with the `fs::write` + `set_permissions` it replaces:
+///
+/// * **A window at 0644.** `fs::write` creates the file with the process
+///   umask, and the `chmod` lands afterwards. A private key was briefly
+///   world-readable every time one was generated.
+/// * **The chmod result was discarded** (`let _ = ...`), so on a filesystem
+///   that refuses it the key simply stayed readable and nothing said so.
+/// * **It was not atomic.** A crash or a full disk mid-write leaves a
+///   truncated file, which on the next boot is a key that "exists but is
+///   malformed" — and that used to mean the server generated a fresh identity
+///   for itself. The failure mode of the write fed directly into the failure
+///   mode above it.
+///
+/// Create-new-with-mode, fsync, then rename: the rename is atomic within a
+/// directory, so the key file is only ever absent or complete.
+fn write_key_file_atomically(key_file: &std::path::Path, hex_key: &str) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let tmp = key_file.with_extension("key.tmp");
+    // Remove a leftover from an interrupted previous attempt; `create_new`
+    // below would otherwise refuse.
+    let _ = std::fs::remove_file(&tmp);
+
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+
+    let mut file = options.open(&tmp)?;
+    file.write_all(hex_key.as_bytes())?;
+    // Flush to the device before the rename, so a power loss cannot leave the
+    // rename durable and the contents not.
+    file.sync_all()?;
+    drop(file);
+
+    // On Windows there is no `mode`, so narrow the permissions after creation
+    // and treat a failure as a failure rather than ignoring it.
+    #[cfg(not(unix))]
+    {
+        let mut perms = std::fs::metadata(&tmp)?.permissions();
+        perms.set_readonly(false);
+        std::fs::set_permissions(&tmp, perms)?;
+    }
+
+    std::fs::rename(&tmp, key_file)?;
+
+    // fsync the directory so the rename itself is durable.
+    #[cfg(unix)]
+    if let Some(dir) = key_file.parent() {
+        if let Ok(d) = std::fs::File::open(dir) {
+            let _ = d.sync_all();
+        }
+    }
+    Ok(())
 }
 
 /// Identify obviously-weak signing keys that must not be accepted in
@@ -940,6 +1035,7 @@ pub async fn prepare_server(config: config::Config) -> Result<PreparedServer, St
         federation_config: config.federation.clone(),
         storage_config: config.storage.clone(),
         storage_health,
+        metrics: Default::default(),
         trusted_proxy_depth: config.deployment.trusted_proxy_depth,
         shutdown: shutdown.clone(),
     };

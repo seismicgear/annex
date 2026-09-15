@@ -53,6 +53,19 @@ jobs:
           node scripts/build-circuits.js
           node scripts/setup-groth16.js
 
+      # Synchronise the browser's copies with the keys just generated.
+      #
+      # `setup-groth16.js` writes fresh random-entropy proving keys into
+      # `zk/keys`. Anything that then asserts the client and server agree — the
+      # harness tests below, and any browser lane — is asserting against inputs
+      # this workflow just invalidated. The client artifacts are gitignored, so
+      # a clean runner has none at all until this step creates them.
+      #
+      # This is the ordering, not a convenience: regenerate, then synchronise,
+      # then test the consumers.
+      - name: Synchronise client ZK artifacts
+        run: node scripts/prepare-zk-dev.js
+
       # Tests the production-profile dev-fixture gate in verify-artifacts.js.
       # Cheap (~1s) and the regression class — release silently shipping
       # dev keys — is too painful to leave ungated.
