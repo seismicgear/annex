@@ -34,11 +34,16 @@ pub mod types;
 pub mod validation;
 
 pub use error::RtxError;
-pub use types::{BundleProvenance, ReflectionSummaryBundle, RtxSubscription};
+pub use types::{
+    BundleProvenance, OriginAttestation, ReflectionSummaryBundle, RelayHop, RtxSubscription,
+};
 pub use validation::{
-    author_signing_payload, bundle_signing_payload, check_redacted_topics, enforce_transfer_scope,
-    validate_bundle_structure, MAX_CAVEATS, MAX_CAVEAT_BYTES, MAX_DOMAIN_TAGS,
+    author_signing_payload, bundle_signing_payload, chain_digest, check_redacted_topics,
+    enforce_transfer_scope, hop_payloads, origin_attestation_payload, reasoning_commitment,
+    relay_hop_payload, scope_invariant_content_digest, validate_bundle_structure,
+    validate_provenance_structure, MAX_CAVEATS, MAX_CAVEAT_BYTES, MAX_DOMAIN_TAGS,
     MAX_DOMAIN_TAG_BYTES, MAX_IDENTIFIER_BYTES, MAX_REASONING_CHAIN_BYTES, MAX_SUMMARY_BYTES,
+    RTX_HOP_CEILING,
 };
 
 #[cfg(test)]
@@ -415,6 +420,8 @@ mod tests {
                 "http://server-c.example.com".to_string(),
             ],
             bundle_id: "bundle-001".to_string(),
+            hops: vec![],
+            origin: None,
         };
 
         let json = serde_json::to_string(&provenance).unwrap();

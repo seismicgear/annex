@@ -434,6 +434,62 @@ cannot be confused with a measurement.
 
 ---
 
+## I-FED-2 — a relayed bundle's provenance must be attributable at every hop
+
+**Property.** `BundleProvenance.relay_path` was a `Vec<String>` and the only
+signature on an RTX envelope was the immediate relayer's. Three things followed,
+and all three were live:
+
+1. A relayer could rewrite the path freely — remove itself, invent an upstream,
+   claim a path it was never on.
+2. "B relayed A's bundle" and "B wrote a bundle and put A's name on it" were the
+   same envelope, because no signature in it was A's.
+3. It could not grow anyway: `relay_rtx_bundles` reset it to
+   `vec![local_public_url]` on every send, and `receive_federated_rtx` never
+   re-relayed. So the circular-relay check and the origin check that ROADMAP 9.4
+   recorded as complete were guarding a path no bundle could take.
+
+So: every hop carries its own Ed25519 signature over a payload that includes the
+PREVIOUS hop's payload digest, and the origin carries an attestation no relayer
+can forge. Specifically —
+
+- The origin signs a digest that is **invariant under transfer-scope
+  enforcement** (`scope_invariant_content_digest`, which omits
+  `reasoning_chain`) plus `SHA-256` of the reasoning chain as published. It
+  cannot sign the content hash a receiver computes, because stripping the chain
+  for a `ReflectionSummariesOnly` peer is the policy working. A relayer may
+  therefore REMOVE the chain and cannot ADD or alter one.
+- Each hop payload binds `hop_index`, `next_peer` and `prev_chain_digest`, so a
+  hop signature cannot be replayed at another depth, cannot authorise forwarding
+  elsewhere, and cannot be presented out of order. `annex_rtx::hop_payloads`
+  computes the vector for both the relayer and the receiver — two
+  implementations would be two chances to disagree about what was signed.
+- Loop prevention fails **closed** on an unknown local URL. A server that cannot
+  name itself cannot prove it is not already in the path.
+- The hop budget is `min(origin.max_hops, RTX_HOP_CEILING)`: a publisher limits
+  its own blast radius, an operator limits what it will carry, and neither alone
+  is the right answer.
+- Structural bounds are checked BEFORE any signature work, because
+  `POST /api/federation/rtx` has no auth middleware in front of it.
+
+**Enforced by:** `crates/annex-rtx/src/validation.rs` (the canonical payloads,
+`RTX_HOP_CEILING`, `validate_provenance_structure`),
+`crates/annex-server/src/services/rtx_service.rs`
+(`sign_origin_attestation`, `relay_rtx_bundle_onwards`),
+`crates/annex-server/src/services/federation_service.rs`
+(`receive_federated_rtx` steps 1.4–1.9),
+`crates/annex-server/tests/rtx_multihop_relay.rs` (22 tests),
+`docs/protocol/rtx-relay.md`.
+
+**Failure mode forbidden:** Reading `relay_path` for a trust decision; extending
+a chain that carries no origin attestation; re-relaying a duplicate arrival;
+relaying before the receive transaction commits; accepting a chain whose first
+hop is not the origin or whose last hop is not the sender; or letting the origin
+sign `rtx_bundle_content_hash`, which would make every legitimate scope-strip
+look like tampering.
+
+---
+
 ## I-AUDIT-1 — a capture's pixels may not depend on what ran before it
 
 **Property.** Audit surfaces run serially against one server and one database.

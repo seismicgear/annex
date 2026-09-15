@@ -37,9 +37,10 @@ use crate::AppState;
 
 // ── Public re-exports — preserve `crate::api_rtx::Foo` paths ──────────
 pub use crate::services::rtx_service::{
-    relay_rtx_bundles, rtx_bundle_content_hash, rtx_relay_signing_payload,
-    GovernanceSummaryResponse, PublishResponse, ScopeBreakdown, SubscribeRequest,
-    SubscribeResponse, SubscriptionInfo, TransferLogEntry, TransferLogQuery, TransferLogResponse,
+    relay_rtx_bundle_onwards, relay_rtx_bundles, rtx_bundle_content_hash,
+    rtx_relay_signing_payload, sign_origin_attestation, GovernanceSummaryResponse, PublishResponse,
+    ScopeBreakdown, SubscribeRequest, SubscribeResponse, SubscriptionInfo, TransferLogEntry,
+    TransferLogQuery, TransferLogResponse,
 };
 
 /// Handler for `POST /api/rtx/publish`.

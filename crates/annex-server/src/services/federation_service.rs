@@ -1941,7 +1941,15 @@ impl FederationService {
         let state = self.state.clone();
         let bundle_id_for_response = envelope.bundle.bundle_id.clone();
 
-        let (delivered_count, deliveries) = tokio::task::spawn_blocking({
+        // The third element is the onward relay obligation: the bundle as this
+        // server will forward it, and the provenance to extend. `None` means do
+        // not relay — a duplicate, or an envelope with no signed chain.
+        #[allow(clippy::type_complexity)]
+        let (delivered_count, deliveries, onward): (
+            usize,
+            Vec<(String, String)>,
+            Option<(annex_rtx::ReflectionSummaryBundle, annex_rtx::BundleProvenance)>,
+        ) = tokio::task::spawn_blocking({
             let state = state.clone();
             move || {
                 let mut conn = state.pool.get().map_err(pool_err)?;
@@ -1960,32 +1968,259 @@ impl FederationService {
                     )));
                 }
 
-                // 1.5. Circular relay prevention
+                // 1.4. Structural bounds BEFORE any signature work.
+                //
+                // `/api/federation/rtx` has no auth middleware in front of it,
+                // so a 500-hop envelope from anywhere should cost a bounds check
+                // rather than 500 Ed25519 verifications.
+                annex_rtx::validate_provenance_structure(&envelope.provenance).map_err(|e| {
+                    FederationError::Forbidden(format!("invalid relay provenance: {e}"))
+                })?;
+                if envelope.provenance.bundle_id != envelope.bundle.bundle_id {
+                    return Err(FederationError::Forbidden(
+                        "provenance names a different bundle than the envelope carries"
+                            .to_string(),
+                    ));
+                }
+
+                // 1.5. Circular relay prevention.
+                //
+                // Fail closed on an unknown local URL: every check below is a
+                // comparison against it, so an empty value turns cycle
+                // detection into cycle detection that silently passes. The
+                // previous code guarded the comparison with
+                // `!local_url.is_empty()`, which chose the other direction.
                 let local_url = state
                     .public_url
                     .read()
                     .unwrap_or_else(|p| p.into_inner())
                     .clone();
-                if !local_url.is_empty()
-                    && envelope
-                        .provenance
-                        .relay_path
-                        .iter()
-                        .any(|hop| hop == &local_url)
+                if local_url.is_empty() {
+                    return Err(FederationError::Forbidden(
+                        "this server has no public URL, so it cannot prove it is not already \
+                         in the relay path"
+                            .to_string(),
+                    ));
+                }
+                if envelope
+                    .provenance
+                    .hops
+                    .iter()
+                    .any(|h| h.server == local_url)
+                    || envelope.provenance.origin_server == local_url
                 {
                     return Err(FederationError::Forbidden(
                         "circular relay detected: local server already in relay path".to_string(),
                     ));
                 }
 
-                // 1.6. Origin server validation
-                if !repo::instance_known(&conn, &envelope.provenance.origin_server)
-                    .map_err(FederationError::DbError)?
-                {
-                    return Err(FederationError::UnknownRemote(format!(
-                        "origin server {} is not a known instance",
+                // 1.55. "B relayed A's bundle" and "B wrote a bundle and put A's
+                // name on it" were the same envelope until this line. The bundle
+                // names its own source server; the provenance names an origin.
+                // If they disagree, one of them is a claim about somebody else.
+                if envelope.bundle.source_server != envelope.provenance.origin_server {
+                    return Err(FederationError::Forbidden(format!(
+                        "the bundle says it came from {} and the provenance says {}",
+                        envelope.bundle.source_server, envelope.provenance.origin_server
+                    )));
+                }
+
+                // 1.6. The origin's own attestation.
+                //
+                // Every hop signature is made by a relayer, so a chain of them
+                // proves only that some servers handled the bundle — never that
+                // the server named as the origin published it. This is the one
+                // signature a relayer cannot forge.
+                let origin_instance =
+                    repo::find_instance_by_base_url(&conn, &envelope.provenance.origin_server)
+                        .map_err(FederationError::DbError)?
+                        .ok_or_else(|| {
+                            FederationError::UnknownRemote(format!(
+                                "origin server {} is not a known instance",
+                                envelope.provenance.origin_server
+                            ))
+                        })?;
+                if origin_instance.status != "ACTIVE" {
+                    return Err(FederationError::Forbidden(format!(
+                        "origin instance {} is not active",
                         envelope.provenance.origin_server
                     )));
+                }
+
+                let require_chain = state.federation_config.rtx_require_hop_chain;
+                match envelope.provenance.origin.as_ref() {
+                    Some(attestation) => {
+                        // The digest the origin signed omits `reasoning_chain`,
+                        // so it verifies whether or not an upstream hop stripped
+                        // it for a `ReflectionSummariesOnly` peer — which is the
+                        // whole reason it is a separate digest from
+                        // `rtx_bundle_content_hash`.
+                        let payload = annex_rtx::origin_attestation_payload(
+                            &envelope.bundle.bundle_id,
+                            &envelope.provenance.origin_server,
+                            &envelope.bundle.source_pseudonym,
+                            envelope.bundle.created_at,
+                            &envelope.bundle.vrp_handshake_ref,
+                            &annex_rtx::scope_invariant_content_digest(&envelope.bundle),
+                            &attestation.reasoning_commitment,
+                            attestation.max_hops,
+                        );
+                        let digest = <sha2::Sha256 as sha2::Digest>::digest(payload.as_bytes());
+                        verify_ed25519(
+                            &origin_instance.public_key_hex,
+                            &attestation.signature,
+                            digest.as_slice(),
+                        )
+                        .map_err(|e| {
+                            FederationError::InvalidSignature(format!(
+                                "origin attestation for {} does not verify: {e}",
+                                envelope.provenance.origin_server
+                            ))
+                        })?;
+
+                        // 1.65. A relayer may REMOVE a reasoning chain — that is
+                        // the transfer scope working. It may not ADD or alter
+                        // one, and the commitment is what tells those apart.
+                        if let Some(chain) = envelope.bundle.reasoning_chain.as_deref() {
+                            if annex_rtx::reasoning_commitment(Some(chain))
+                                != attestation.reasoning_commitment
+                            {
+                                return Err(FederationError::Forbidden(
+                                    "the reasoning chain is not the one the origin published"
+                                        .to_string(),
+                                ));
+                            }
+                        }
+
+                        // 1.7. TTL. The publisher's budget, bounded by this
+                        // operator's ceiling.
+                        let budget = (attestation.max_hops as usize)
+                            .min(annex_rtx::RTX_HOP_CEILING);
+                        if envelope.provenance.hops.len() > budget {
+                            return Err(FederationError::Forbidden(format!(
+                                "relay chain is {} hops, over the budget of {budget}",
+                                envelope.provenance.hops.len()
+                            )));
+                        }
+
+                        // 1.8. The hop chain itself.
+                        if envelope.provenance.hops.is_empty() {
+                            return Err(FederationError::Forbidden(
+                                "an attested envelope must carry at least one relay hop"
+                                    .to_string(),
+                            ));
+                        }
+                        let last_hop = envelope.provenance.hops.last().expect("non-empty");
+                        if last_hop.server != envelope.relaying_server {
+                            return Err(FederationError::Forbidden(format!(
+                                "the last relay hop names {} but the envelope was sent by {}",
+                                last_hop.server, envelope.relaying_server
+                            )));
+                        }
+                        if envelope.provenance.hops[0].server != envelope.provenance.origin_server {
+                            return Err(FederationError::Forbidden(
+                                "the first relay hop is not the origin server".to_string(),
+                            ));
+                        }
+
+                        let payloads = annex_rtx::hop_payloads(
+                            &envelope.provenance,
+                            &attestation.signature,
+                            &local_url,
+                        );
+                        let last_index = payloads.len() - 1;
+                        let mut unverifiable: Vec<String> = Vec::new();
+                        for (i, (hop, payload)) in envelope
+                            .provenance
+                            .hops
+                            .iter()
+                            .zip(payloads.iter())
+                            .enumerate()
+                        {
+                            let key = if hop.server == envelope.provenance.origin_server {
+                                Some(origin_instance.public_key_hex.clone())
+                            } else if hop.server == envelope.relaying_server {
+                                Some(instance.public_key_hex.clone())
+                            } else {
+                                repo::find_instance_by_base_url(&conn, &hop.server)
+                                    .map_err(FederationError::DbError)?
+                                    .map(|i| i.public_key_hex)
+                            };
+                            match key {
+                                Some(pk) => {
+                                    let digest = <sha2::Sha256 as sha2::Digest>::digest(
+                                        payload.as_bytes(),
+                                    );
+                                    verify_ed25519(&pk, &hop.signature, digest.as_slice())
+                                        .map_err(|e| {
+                                            FederationError::InvalidSignature(format!(
+                                                "relay hop {i} ({}) does not verify: {e}",
+                                                hop.server
+                                            ))
+                                        })?;
+                                }
+                                None => {
+                                    // In A -> B -> C -> D, D may know A and C
+                                    // but not B. Refusing would make multi-hop
+                                    // work only in a fully-provisioned mesh,
+                                    // which defeats the point of relaying; the
+                                    // chained `prev_chain_digest` means the
+                                    // hop we DO verify is cryptographically
+                                    // accountable for what it claims the middle
+                                    // was. So: the origin and the immediate
+                                    // relayer must always verify, and an
+                                    // unknown middle is recorded rather than
+                                    // trusted silently.
+                                    if i == 0 || i == last_index {
+                                        return Err(FederationError::UnknownRemote(format!(
+                                            "relay hop {i} ({}) is not a known instance",
+                                            hop.server
+                                        )));
+                                    }
+                                    unverifiable.push(hop.server.clone());
+                                }
+                            }
+                        }
+                        if !unverifiable.is_empty() {
+                            tracing::warn!(
+                                bundle_id = %envelope.bundle.bundle_id,
+                                origin = %envelope.provenance.origin_server,
+                                relayer = %envelope.relaying_server,
+                                unverifiable = ?unverifiable,
+                                "accepted a relayed RTX bundle with hops this server cannot \
+                                 verify; the immediate relayer vouches for them"
+                            );
+                        }
+
+                        // 1.9. The last hop's content hash has to be the bundle
+                        // that actually arrived.
+                        let received_hash = rtx_bundle_content_hash(&envelope.bundle);
+                        if last_hop.content_hash != received_hash {
+                            return Err(FederationError::Forbidden(
+                                "the last relay hop's content hash is not the bundle received"
+                                    .to_string(),
+                            ));
+                        }
+                    }
+                    None if require_chain => {
+                        return Err(FederationError::Forbidden(
+                            "this server requires a signed relay chain \
+                             (federation.rtx_require_hop_chain)"
+                                .to_string(),
+                        ));
+                    }
+                    None => {
+                        // A peer on an older build. Accepted on the legacy
+                        // single-hop path below, delivered locally, and NOT
+                        // re-relayed: an unsigned chain is not something to
+                        // extend.
+                        tracing::debug!(
+                            bundle_id = %envelope.bundle.bundle_id,
+                            relayer = %envelope.relaying_server,
+                            "RTX envelope carries no origin attestation; accepting on the \
+                             legacy single-hop path"
+                        );
+                    }
                 }
 
                 // 2. Verify active federation agreement and check transfer scope
@@ -2106,8 +2341,10 @@ impl FederationService {
                     // Duplicate bundle (idempotent) — already received.
                     // Transaction is dropped without commit (implicit
                     // rollback), which is correct because no writes
-                    // succeeded.
-                    return Ok((0_usize, Vec::<(String, String)>::new()));
+                    // succeeded. And no onward relay: re-forwarding on every
+                    // duplicate is how a mesh with two paths between two
+                    // servers turns into a broadcast storm.
+                    return Ok((0_usize, Vec::<(String, String)>::new(), None));
                 }
 
                 // 7. Log the federated transfer (receive-side audit row).
@@ -2243,7 +2480,26 @@ impl FederationService {
 
                 let count = deliveries.len();
                 tx.commit().map_err(FederationError::DbError)?;
-                Ok::<(usize, Vec<(String, String)>), FederationError>((count, deliveries))
+
+                // Only an envelope with a signed chain is extended. The
+                // provenance handed on is the one that arrived; the relay
+                // function appends this server's hop per peer, because the hop
+                // signature binds the destination and the post-scope content and
+                // so differs for each of them.
+                let onward = envelope
+                    .provenance
+                    .origin
+                    .as_ref()
+                    .map(|_| (scoped_bundle.clone(), envelope.provenance.clone()));
+
+                Ok::<
+                    (
+                        usize,
+                        Vec<(String, String)>,
+                        Option<(annex_rtx::ReflectionSummaryBundle, annex_rtx::BundleProvenance)>,
+                    ),
+                    FederationError,
+                >((count, deliveries, onward))
             }
         })
         .await
@@ -2252,6 +2508,24 @@ impl FederationService {
         // 9. Deliver via WebSocket (async, outside spawn_blocking)
         for (pseudonym, json) in &deliveries {
             state.connection_manager.send(pseudonym, json.clone()).await;
+        }
+
+        // 10. Relay onwards. THIS is the second hop, and until it existed there
+        // was none: `receive_federated_rtx` stored the bundle, fanned it out to
+        // local subscribers, and stopped. No bundle had ever taken more than one
+        // hop, so the ROADMAP's "single-hop only" was accurate and the
+        // circular-relay check it recorded as complete was guarding a path
+        // nothing could take.
+        //
+        // After the commit, and only on a fresh insert: relaying before the
+        // write would forward a bundle this server might then fail to store, and
+        // relaying on a duplicate would re-forward on every arrival.
+        if let Some((bundle, provenance)) = onward {
+            tokio::spawn(crate::services::rtx_service::relay_rtx_bundle_onwards(
+                state.clone(),
+                bundle,
+                provenance,
+            ));
         }
 
         Ok((bundle_id_for_response, delivered_count))

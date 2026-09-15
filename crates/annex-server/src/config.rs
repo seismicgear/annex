@@ -118,6 +118,35 @@ pub struct FederationConfig {
     /// automatic expiry. Default: 30 days.
     #[serde(default = "default_agreement_ttl_days")]
     pub agreement_ttl_days: u32,
+
+    /// How far an RTX bundle published HERE may travel, counted in relay hops.
+    ///
+    /// Signed into the origin attestation, so it limits this server's own
+    /// publications rather than what it will accept. A receiver bounds what it
+    /// accepts with `annex_rtx::RTX_HOP_CEILING` (5) and takes the minimum, so a
+    /// hostile origin asking for more gets the ceiling and an operator running a
+    /// tight mesh can ask for less.
+    ///
+    /// Default 3: A publishes, B relays, C relays, D receives. Chosen rather
+    /// than measured — no Annex federation exists to measure a diameter on —
+    /// and `0` disables relay of locally-published bundles entirely.
+    #[serde(default = "default_rtx_max_hops")]
+    pub rtx_max_hops: u8,
+
+    /// Refuse an RTX envelope that carries no signed hop chain.
+    ///
+    /// `false` for one release, mirroring `default_outbound_envelope_version`:
+    /// an envelope from a peer on an older build has `hops: []` and
+    /// `origin: None`, and refusing those on the day this ships would break
+    /// federation with every peer that has not upgraded. While it is `false`
+    /// such an envelope is accepted on the legacy single-hop path and cannot be
+    /// re-relayed — an unsigned chain is not something to extend.
+    ///
+    /// Flipping it to `true` is an operator decision, and it is not one this
+    /// code can make: whether peers on older builds exist is a fact about a
+    /// deployment, not about the source.
+    #[serde(default = "default_rtx_require_hop_chain")]
+    pub rtx_require_hop_chain: bool,
 }
 
 impl Default for FederationConfig {
@@ -131,8 +160,18 @@ impl Default for FederationConfig {
             default_outbound_envelope_version: default_outbound_envelope_version(),
             allow_private_peer_addresses: default_allow_private_peer_addresses(),
             agreement_ttl_days: default_agreement_ttl_days(),
+            rtx_max_hops: default_rtx_max_hops(),
+            rtx_require_hop_chain: default_rtx_require_hop_chain(),
         }
     }
+}
+
+fn default_rtx_max_hops() -> u8 {
+    3
+}
+
+fn default_rtx_require_hop_chain() -> bool {
+    false
 }
 
 fn default_allow_private_peer_addresses() -> bool {
@@ -1251,6 +1290,12 @@ pub fn load_config(path: Option<&str>) -> Result<Config, ConfigError> {
     if let Some(v) = parse_env_var::<String>("ANNEX_FEDERATION_DEFAULT_ENVELOPE_VERSION")? {
         config.federation.default_outbound_envelope_version = v;
     }
+    if let Some(v) = parse_env_var::<u8>("ANNEX_RTX_MAX_HOPS")? {
+        config.federation.rtx_max_hops = v;
+    }
+    if let Some(v) = parse_env_bool("ANNEX_RTX_REQUIRE_HOP_CHAIN")? {
+        config.federation.rtx_require_hop_chain = v;
+    }
     if let Some(v) = parse_env_var::<u64>("ANNEX_STORAGE_WARN_FREE_BYTES")? {
         config.storage.warn_free_bytes = v;
     }
@@ -1443,6 +1488,8 @@ mod tests {
             "ANNEX_IDEMPOTENCY_TTL_SECONDS",
             "ANNEX_FEDERATION_OUTBOX_PER_PEER_BATCH",
             "ANNEX_FEDERATION_ALLOW_PRIVATE_PEERS",
+            "ANNEX_RTX_MAX_HOPS",
+            "ANNEX_RTX_REQUIRE_HOP_CHAIN",
             "ANNEX_INACTIVITY_THRESHOLD_SECONDS",
             "ANNEX_PUBLIC_URL",
             "ANNEX_MERKLE_TREE_DEPTH",

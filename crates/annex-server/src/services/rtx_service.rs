@@ -45,7 +45,7 @@ use std::sync::Arc;
 use annex_federation::FederatedRtxEnvelope;
 use annex_rtx::{
     check_redacted_topics, enforce_transfer_scope, validate_bundle_structure, BundleProvenance,
-    ReflectionSummaryBundle,
+    OriginAttestation, ReflectionSummaryBundle, RelayHop,
 };
 use annex_vrp::VrpTransferScope;
 use ed25519_dalek::Signer;
@@ -279,6 +279,40 @@ pub fn rtx_relay_signing_payload(
 ) -> String {
     let relay_path_joined = relay_path.join("|");
     format!("{bundle_id}\n{relaying_server}\n{origin_server}\n{relay_path_joined}\n{content_hash}")
+}
+
+/// Sign the origin attestation for a bundle this server is publishing.
+///
+/// Must be called on the UNSCOPED bundle, before `enforce_transfer_scope` runs
+/// for any peer: `reasoning_commitment` has to be over the chain as published,
+/// and scope enforcement strips it. Minting it once per publish rather than once
+/// per peer is not an optimisation — a per-peer attestation over a
+/// scope-stripped bundle would commit to the absence of the chain, and the next
+/// hop could then never tell a stripped bundle from one that never had a chain.
+pub fn sign_origin_attestation(
+    bundle: &ReflectionSummaryBundle,
+    origin_server: &str,
+    signing_key: &ed25519_dalek::SigningKey,
+    max_hops: u8,
+) -> OriginAttestation {
+    use sha2::{Digest, Sha256};
+    let commitment = annex_rtx::reasoning_commitment(bundle.reasoning_chain.as_deref());
+    let payload = annex_rtx::origin_attestation_payload(
+        &bundle.bundle_id,
+        origin_server,
+        &bundle.source_pseudonym,
+        bundle.created_at,
+        &bundle.vrp_handshake_ref,
+        &annex_rtx::scope_invariant_content_digest(bundle),
+        &commitment,
+        max_hops,
+    );
+    let digest = Sha256::digest(payload.as_bytes());
+    OriginAttestation {
+        signature: hex::encode(signing_key.sign(&digest).to_bytes()),
+        reasoning_commitment: commitment,
+        max_hops,
+    }
 }
 
 /// Extracts redacted topics from a capability contract JSON string.
@@ -895,15 +929,22 @@ impl RtxService {
     }
 }
 
-/// SSRF gate for the RTX relay outbound path. Wraps
-/// `api_link_preview::is_url_private_or_reserved` so the dependency is
-/// directly testable from this module's unit tests and the call site stays
-/// readable. Returns `true` when the peer's `base_url` must NOT be
-/// contacted (loopback, private, link-local, CGNAT, IPv4-mapped IPv6 of
-/// any of the above, `localhost`, `*.local`, `*.internal`, unparseable, or
-/// non-http(s) scheme).
-pub(crate) fn rtx_peer_url_is_private_or_reserved(base_url: &str) -> bool {
-    crate::api_link_preview::is_url_private_or_reserved(base_url)
+/// SSRF gate for the RTX relay outbound path. Returns `true` when the peer's
+/// `base_url` must NOT be contacted.
+///
+/// Honours `federation.allow_private_peer_addresses`, and did not until
+/// 2026-09-15: it called `is_url_private_or_reserved` unconditionally while the
+/// message relay called `is_peer_url_disallowed(url, allow_private)`, so an
+/// operator who set that flag — documented as what makes two servers on a LAN,
+/// two containers addressing each other by Compose service name, and peers
+/// across a VPN possible — got messages relayed and RTX bundles silently
+/// dropped at the same peer. The comment beside the call site claimed to mirror
+/// the message path, which is how the divergence survived.
+///
+/// Malformed and non-http(s) URLs stay refused whatever the flag says; the flag
+/// lifts only the private-address half.
+pub(crate) fn rtx_peer_url_is_private_or_reserved(base_url: &str, allow_private: bool) -> bool {
+    crate::api_link_preview::is_peer_url_disallowed(base_url, allow_private)
 }
 
 /// Background relay: post a freshly published RTX bundle to every active
@@ -927,6 +968,39 @@ pub(crate) fn rtx_peer_url_is_private_or_reserved(base_url: &str) -> bool {
 ///   * Per-peer POST is fire-and-forget under `tokio::spawn`; non-success
 ///     responses and network errors are logged but not retried.
 pub async fn relay_rtx_bundles(state: Arc<AppState>, bundle: ReflectionSummaryBundle) {
+    // A locally-published bundle: this server IS the origin, so it mints the
+    // attestation and starts an empty chain.
+    let origin_server = state.get_public_url();
+    let max_hops = state.federation_config.rtx_max_hops;
+    let attestation =
+        sign_origin_attestation(&bundle, &origin_server, &state.signing_key, max_hops);
+    let provenance = BundleProvenance {
+        origin_server,
+        relay_path: Vec::new(),
+        bundle_id: bundle.bundle_id.clone(),
+        hops: Vec::new(),
+        origin: Some(attestation),
+    };
+    relay_rtx_bundle_onwards(state, bundle, provenance).await
+}
+
+/// Forward a bundle to every eligible peer, extending the provenance chain by
+/// one hop.
+///
+/// Called with an empty chain by [`relay_rtx_bundles`] for a local publish, and
+/// with the received chain by `federation_service::receive_federated_rtx` — which
+/// is what makes a second hop possible at all. The previous code reset
+/// `relay_path` to `vec![local_public_url]` on every send, so the list could
+/// never contain more than one entry, the cycle check could only ever see this
+/// server, and nothing re-relayed: `receive_federated_rtx` stored and fanned out
+/// locally and stopped. "Single-hop only" understated it — multi-hop did not
+/// exist, and the two pieces the ROADMAP recorded as done (the circular-relay
+/// check and the origin check) were guarding a path no bundle could take.
+pub async fn relay_rtx_bundle_onwards(
+    state: Arc<AppState>,
+    bundle: ReflectionSummaryBundle,
+    provenance: BundleProvenance,
+) {
     let peers = tokio::task::spawn_blocking({
         let pool = state.pool.clone();
         let server_id = state.server_id;
@@ -961,14 +1035,69 @@ pub async fn relay_rtx_bundles(state: Arc<AppState>, bundle: ReflectionSummaryBu
         }
     };
 
-    // Build the relay path for cycle detection. For initial publishes the
-    // path is empty; for re-relayed bundles it contains the hops so far.
-    let existing_relay_path: Vec<String> = vec![state.get_public_url()];
+    let local_url = state.get_public_url();
+
+    // A server that cannot name itself cannot prove it is not already in the
+    // chain, and every loop check below is a comparison against this value.
+    // Refusing here is the difference between "no cycle detection" and "cycle
+    // detection that silently passes".
+    if local_url.is_empty() {
+        tracing::warn!(
+            bundle_id = %bundle.bundle_id,
+            "not relaying: this server has no public URL, so it cannot add an attributable hop"
+        );
+        return;
+    }
+
+    let origin_signature = provenance
+        .origin
+        .as_ref()
+        .map(|o| o.signature.clone())
+        .unwrap_or_default();
+
+    // An unsigned chain is not something to extend. An envelope from a peer on
+    // an older build arrives with no attestation; it is accepted and delivered
+    // locally (see `receive_federated_rtx`) and stops there.
+    let Some(attestation) = provenance.origin.clone() else {
+        tracing::debug!(
+            bundle_id = %bundle.bundle_id,
+            "not re-relaying a bundle that carries no origin attestation"
+        );
+        return;
+    };
+
+    // The budget: what the publisher asked for, bounded by what this operator
+    // will carry. Neither alone is right — an origin limiting its own blast
+    // radius and an operator limiting relay depth are different questions.
+    let budget = (attestation.max_hops as usize).min(annex_rtx::RTX_HOP_CEILING);
+    if provenance.hops.len() >= budget {
+        tracing::debug!(
+            bundle_id = %bundle.bundle_id,
+            hops = provenance.hops.len(),
+            budget,
+            "not re-relaying: hop budget exhausted"
+        );
+        return;
+    }
+
+    // The payload the last hop signed, which our hop chains onto. Computed with
+    // the shared helper rather than rebuilt here, because a second
+    // implementation of this loop is a second chance to disagree with the
+    // receiver about what was signed.
+    let prev_chain_digest = annex_rtx::hop_payloads(&provenance, &origin_signature, &local_url)
+        .last()
+        .map(|p| annex_rtx::chain_digest(p))
+        .unwrap_or_default();
+    let hop_index = provenance.hops.len();
 
     for peer in peers {
-        // Skip peers whose base_url already appears in the relay path
-        // (prevent cycles) or is the origin.
-        if existing_relay_path.iter().any(|hop| hop == &peer.base_url)
+        // Skip peers already in the chain (prevent cycles), the origin, and
+        // ourselves. The first of those is a real list now: it used to be a
+        // one-element vector containing this server, so it could only detect a
+        // cycle back to us.
+        if provenance.hops.iter().any(|h| h.server == peer.base_url)
+            || provenance.origin_server == peer.base_url
+            || local_url == peer.base_url
             || bundle.source_server == peer.base_url
         {
             tracing::debug!(
@@ -985,7 +1114,10 @@ pub async fn relay_rtx_bundles(state: Arc<AppState>, bundle: ReflectionSummaryBu
         // turn this background relay into a continuous probe of internal
         // services (and re-emit signed RTX envelopes to internal hosts).
         // Mirrors the guard in `federation_service::relay_message`.
-        if rtx_peer_url_is_private_or_reserved(&peer.base_url) {
+        if rtx_peer_url_is_private_or_reserved(
+            &peer.base_url,
+            state.federation_config.allow_private_peer_addresses,
+        ) {
             tracing::warn!(
                 peer = %peer.base_url,
                 bundle_id = %bundle.bundle_id,
@@ -1022,31 +1154,67 @@ pub async fn relay_rtx_bundles(state: Arc<AppState>, bundle: ReflectionSummaryBu
             }
         };
 
-        // Build provenance (this server is the first relay hop).
-        let pub_url = state.get_public_url();
-        let provenance = BundleProvenance {
-            origin_server: bundle.source_server.clone(),
-            relay_path: vec![pub_url.clone()],
-            bundle_id: bundle.bundle_id.clone(),
+        // Our hop, signed over the content we are actually sending (post-scope),
+        // the peer we are sending it to, and the digest of the hop before us.
+        //
+        // The content hash is per-hop for a reason: scope enforcement rewrites
+        // the bundle in flight, so the bytes leaving here legitimately differ
+        // from the bytes that arrived. An origin-level signature over the full
+        // content would fail at every downstream hop, for the correct behaviour
+        // of the system — which is why the origin signs a scope-invariant digest
+        // plus a commitment to the reasoning chain instead.
+        let content_hash = rtx_bundle_content_hash(&scoped_bundle);
+        let hop_payload = annex_rtx::relay_hop_payload(
+            &bundle.bundle_id,
+            &provenance.origin_server,
+            &origin_signature,
+            hop_index,
+            &local_url,
+            &peer.base_url,
+            &content_hash,
+            &prev_chain_digest,
+        );
+        let hop_signature = {
+            use sha2::{Digest, Sha256};
+            let digest = Sha256::digest(hop_payload.as_bytes());
+            hex::encode(state.signing_key.sign(&digest).to_bytes())
         };
 
-        // Sign the relay envelope, binding the exact content we are sending
-        // (post-scope) so a downstream peer cannot alter it undetected.
-        let content_hash = rtx_bundle_content_hash(&scoped_bundle);
-        let signing_payload = rtx_relay_signing_payload(
+        let mut hops = provenance.hops.clone();
+        hops.push(RelayHop {
+            server: local_url.clone(),
+            content_hash: content_hash.clone(),
+            signature: hop_signature,
+        });
+        let outbound_provenance = BundleProvenance {
+            origin_server: provenance.origin_server.clone(),
+            // Mirrored from `hops` so a peer on an older build still parses the
+            // envelope. Nothing signs it; nothing should read it for a trust
+            // decision.
+            relay_path: hops.iter().map(|h| h.server.clone()).collect(),
+            bundle_id: bundle.bundle_id.clone(),
+            hops,
+            origin: Some(attestation.clone()),
+        };
+
+        // The legacy envelope signature, kept populated for one release so a
+        // peer that only knows how to verify THIS still accepts the envelope.
+        // It covers the mirrored `relay_path`, which is why it cannot be the
+        // thing a multi-hop receiver trusts.
+        let legacy_payload = rtx_relay_signing_payload(
             &bundle.bundle_id,
-            &pub_url,
-            &bundle.source_server,
-            &provenance.relay_path,
+            &local_url,
+            &outbound_provenance.origin_server,
+            &outbound_provenance.relay_path,
             &content_hash,
         );
-        let signature = state.signing_key.sign(signing_payload.as_bytes());
-        let signature_hex = hex::encode(signature.to_bytes());
+        let signature_hex =
+            hex::encode(state.signing_key.sign(legacy_payload.as_bytes()).to_bytes());
 
         let envelope = FederatedRtxEnvelope {
             bundle: scoped_bundle,
-            provenance,
-            relaying_server: pub_url,
+            provenance: outbound_provenance,
+            relaying_server: local_url.clone(),
             signature: signature_hex,
         };
 
@@ -1242,66 +1410,121 @@ mod tests {
 
     #[test]
     fn rtx_peer_url_is_private_or_reserved_blocks_loopback() {
-        assert!(rtx_peer_url_is_private_or_reserved("http://127.0.0.1:9000"));
         assert!(rtx_peer_url_is_private_or_reserved(
-            "https://localhost/api/federation/rtx"
+            "http://127.0.0.1:9000",
+            false
         ));
-        assert!(rtx_peer_url_is_private_or_reserved("http://[::1]:9000"));
+        assert!(rtx_peer_url_is_private_or_reserved(
+            "https://localhost/api/federation/rtx",
+            false
+        ));
+        assert!(rtx_peer_url_is_private_or_reserved(
+            "http://[::1]:9000",
+            false
+        ));
+    }
+
+    #[test]
+    fn the_flag_lifts_the_private_check_and_nothing_else() {
+        // The divergence this pair pins: the message relay honoured
+        // `allow_private_peer_addresses` and this gate did not, so an operator
+        // who set it got messages relayed and RTX bundles dropped at the same
+        // peer, with only a warn line to say so.
+        assert!(rtx_peer_url_is_private_or_reserved(
+            "http://10.0.0.5",
+            false
+        ));
+        assert!(
+            !rtx_peer_url_is_private_or_reserved("http://10.0.0.5", true),
+            "the flag must lift the private-address half",
+        );
+        assert!(
+            rtx_peer_url_is_private_or_reserved("file:///etc/hostname", true),
+            "the flag must NOT lift the scheme check",
+        );
+        assert!(
+            rtx_peer_url_is_private_or_reserved("not a url", true),
+            "the flag must NOT lift the parse check",
+        );
     }
 
     #[test]
     fn rtx_peer_url_is_private_or_reserved_blocks_private_ranges() {
         // RFC1918
-        assert!(rtx_peer_url_is_private_or_reserved("http://10.0.0.5"));
-        assert!(rtx_peer_url_is_private_or_reserved("http://172.16.0.1"));
-        assert!(rtx_peer_url_is_private_or_reserved("http://192.168.1.1"));
+        assert!(rtx_peer_url_is_private_or_reserved(
+            "http://10.0.0.5",
+            false
+        ));
+        assert!(rtx_peer_url_is_private_or_reserved(
+            "http://172.16.0.1",
+            false
+        ));
+        assert!(rtx_peer_url_is_private_or_reserved(
+            "http://192.168.1.1",
+            false
+        ));
         // Link-local (cloud metadata)
         assert!(rtx_peer_url_is_private_or_reserved(
-            "http://169.254.169.254"
+            "http://169.254.169.254",
+            false
         ));
         // CGNAT
-        assert!(rtx_peer_url_is_private_or_reserved("http://100.64.0.1"));
+        assert!(rtx_peer_url_is_private_or_reserved(
+            "http://100.64.0.1",
+            false
+        ));
         // IPv4-mapped IPv6
         assert!(rtx_peer_url_is_private_or_reserved(
-            "http://[::ffff:10.0.0.1]"
+            "http://[::ffff:10.0.0.1]",
+            false
         ));
         // Reserved hostnames
         assert!(rtx_peer_url_is_private_or_reserved(
-            "http://server.local/api/federation/rtx"
+            "http://server.local/api/federation/rtx",
+            false
         ));
         assert!(rtx_peer_url_is_private_or_reserved(
-            "https://service.internal"
+            "https://service.internal",
+            false
         ));
         assert!(rtx_peer_url_is_private_or_reserved(
-            "http://metadata.google.internal/"
+            "http://metadata.google.internal/",
+            false
         ));
     }
 
     #[test]
     fn rtx_peer_url_is_private_or_reserved_blocks_unparseable_or_non_http() {
         // Unparseable URLs — fail closed.
-        assert!(rtx_peer_url_is_private_or_reserved("not a url"));
-        assert!(rtx_peer_url_is_private_or_reserved(""));
+        assert!(rtx_peer_url_is_private_or_reserved("not a url", false));
+        assert!(rtx_peer_url_is_private_or_reserved("", false));
         // Non-http(s) schemes — fail closed (no relay over file://, ftp://, etc.).
-        assert!(rtx_peer_url_is_private_or_reserved("file:///etc/hostname"));
         assert!(rtx_peer_url_is_private_or_reserved(
-            "ftp://example.com/api/federation/rtx"
+            "file:///etc/hostname",
+            false
+        ));
+        assert!(rtx_peer_url_is_private_or_reserved(
+            "ftp://example.com/api/federation/rtx",
+            false
         ));
     }
 
     #[test]
     fn rtx_peer_url_is_private_or_reserved_allows_public_hosts() {
         assert!(!rtx_peer_url_is_private_or_reserved(
-            "https://annex-peer.example.com"
+            "https://annex-peer.example.com",
+            false
         ));
         assert!(!rtx_peer_url_is_private_or_reserved(
-            "http://203.0.113.42:8080/api/federation/rtx"
+            "http://203.0.113.42:8080/api/federation/rtx",
+            false
         ));
         // Public IPv6 (2001:db8::/32 is documentation-reserved per RFC3849
         // but is not in our private/loopback set, so it's allowed at this
         // layer; the wire shape is what matters here).
         assert!(!rtx_peer_url_is_private_or_reserved(
-            "http://[2001:db8::1]/api/federation/rtx"
+            "http://[2001:db8::1]/api/federation/rtx",
+            false
         ));
     }
 }

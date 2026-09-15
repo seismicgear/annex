@@ -64,6 +64,8 @@ Authoritative env-var names live in `crates/annex-server/src/config.rs::load_con
 | `ANNEX_FEDERATION_OUTBOX_PER_PEER_BATCH` | `8` | Max outbox rows drained per peer per tick (fairness cap) |
 | `ANNEX_FEDERATION_ALLOW_PRIVATE_PEERS` | `false` | Permit federation peers at private / loopback / link-local addresses — see below |
 | `ANNEX_FEDERATION_RELAY_TRANSPORT_ENABLED` | `false` | **Accepted and validated, but not yet wired.** The relay transport exists in `annex-federation` and no server code starts it; setting this logs a warning at startup and changes nothing. Under a production profile it additionally requires `ANNEX_SIGNAL_TRUSTED_PEERS`. Federation runs over the HTTP outbox either way |
+| `ANNEX_RTX_MAX_HOPS` | `3` | How far an RTX bundle published by THIS server may travel, in relay hops. Signed into the origin attestation, so it limits this server's own publications rather than what it accepts; a receiver bounds what it accepts with a compile-time ceiling of 5 and takes the minimum. `0` disables relay of locally-published bundles |
+| `ANNEX_RTX_REQUIRE_HOP_CHAIN` | `false` | Refuse an RTX envelope that carries no signed hop chain. `false` for one release so peers on older builds keep working — such an envelope is accepted and delivered locally but never re-relayed. Flipping it to `true` is a decision about whether your peers have upgraded, which the software cannot know |
 
 ### Storage-threshold notes
 

@@ -58,12 +58,17 @@ Phase 7: Voice Infrastructure .......... PARTIAL  (native in-process SFU, no
                                                    GGML model by design)
 Phase 8: Federation .................... COMPLETE (message/edit/redaction relay
                                                    verified; revocation works)
-Phase 9: RTX Knowledge Exchange ........ PARTIAL  (relay content-bound vs
+Phase 9: RTX Knowledge Exchange ........ COMPLETE (relay content-bound vs
                                                    tampering + agreement TTL
                                                    [2026-06-19]; per-agent author
                                                    signature now verified against
                                                    handshake-captured Ed25519 key
-                                                   [2026-06-20]; single-hop only)
+                                                   [2026-06-20]; multi-hop with a
+                                                   signed hop chain, origin
+                                                   attestation, TTL and loop
+                                                   prevention [2026-09-15] —
+                                                   before which multi-hop did not
+                                                   exist at all)
 Phase 10: Observability ................ COMPLETE
 Phase 11: Client ....................... COMPLETE
 Phase 12: Hardening & Audit ............ COMPLETE
@@ -1056,7 +1061,17 @@ Phase 8 is **COMPLETE** when:
 
 ## Phase 9: RTX Knowledge Exchange
 
-**Status**: `PARTIAL` — RTX cross-server delivery is single-hop; multi-hop relay chains lack origin validation and circular-relay prevention.
+**Status**: `COMPLETE`
+
+The gap this phase carried said "single-hop; multi-hop relay chains lack origin
+validation and circular-relay prevention", and understated it twice over. Those
+two items were ticked in 9.4 — and they were guarding a path no bundle could
+take. `relay_rtx_bundles` reset `relay_path` to `vec![local_public_url]` on
+every send, so the list could never hold more than one entry and the cycle check
+could only ever detect a cycle back to this server; and
+`receive_federated_rtx` stored the bundle, fanned it out to local subscribers
+and stopped, so nothing re-relayed. No RTX bundle had ever taken a second hop.
+Closed 2026-09-15.
 **Prerequisites**: Phase 6 `COMPLETE`, Phase 8 `COMPLETE`
 **Estimated scope**: ReflectionSummaryBundle format, RTX publish/subscribe, transfer scope enforcement, governance endpoint
 
@@ -1100,6 +1115,34 @@ Agent-to-agent knowledge exchange across the federation. After this phase, an ag
 - [x] Federated servers relay RTX bundles to peers based on federation agreement transfer scope
 - [x] Bundle provenance chain is preserved (original source + relay path)
 - [x] Receiving server validates: bundle signature, VRP handshake reference, federation agreement permits transfer
+- [x] A received bundle is relayed ONWARDS. Closed [2026-09-15]. This is the
+      whole of multi-hop and it was absent: `receive_federated_rtx` stored,
+      delivered locally and returned.
+- [x] Each hop is attributable. Closed [2026-09-15]. `relay_path` was a
+      `Vec<String>` any relayer could rewrite freely — remove itself, invent an
+      upstream, claim a path it was never on. Each hop now signs its own place,
+      and the signature covers the previous hop's payload digest, so a chain is
+      a chain: dropping, reordering or splicing invalidates every signature
+      after the edit.
+- [x] The origin is attested by the origin. Closed [2026-09-15]. Every hop
+      signature is a relayer's, so a chain of them could never distinguish
+      "B relayed A's bundle" from "B wrote a bundle and put A's name on it". The
+      origin signs a digest that is INVARIANT under transfer-scope enforcement,
+      plus a commitment to the reasoning chain — so a relayer may strip the
+      chain for a `ReflectionSummariesOnly` peer (the policy working) and cannot
+      add or alter one.
+- [x] TTL and loop prevention. Closed [2026-09-15]. `federation.rtx_max_hops`
+      (default 3) is signed into the attestation and bounded by
+      `annex_rtx::RTX_HOP_CEILING` (5), so a publisher limits its own blast
+      radius and an operator limits what it will carry. A bundle is never sent
+      to a server already in its chain, a duplicate arrival is not re-relayed,
+      and an over-long chain is refused on a bounds check before any signature
+      work — `/api/federation/rtx` has no auth middleware in front of it.
+- [ ] Compatibility shim removed. `federation.rtx_require_hop_chain` defaults
+      `false` for one release so an envelope from a peer on an older build is
+      still accepted (delivered locally, never re-relayed). Flipping it is an
+      operator decision about a deployment, not something this repository can
+      decide.
 
 #### 9.5 — Governance mediation
 - [x] All RTX transfers are logged in `rtx_transfer_log` table
@@ -1304,6 +1347,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-09-15 | Phase 9 `COMPLETE`. Multi-hop RTX relay: a signed hop chain where each hop covers the previous hop's digest, an origin attestation over a scope-invariant content digest plus a reasoning-chain commitment, `rtx_max_hops` / `RTX_HOP_CEILING` as a TTL, and loop prevention that can see more than one hop. Before this, `relay_path` was reset to one entry on every send and nothing re-relayed, so multi-hop did not exist and the two items 9.4 recorded as done were guarding a path no bundle could take. Also: the RTX relay's SSRF gate ignored `allow_private_peer_addresses` while the message relay honoured it, so an operator who set that flag got messages relayed and RTX bundles silently dropped at the same peer. |
 | 2026-09-15 | Phase 6 `COMPLETE`. Alignment is enforced at action time (`services/agent_policy.rs`), a `Conflict` verdict revokes the agent's sessions in the same transaction that deactivates it, and the WebSocket send handler stopped reporting every refusal as "internal error". The phase's stated gap named the capability contract; the contract was never an action permission set, and the thing actually missing was alignment. |
 | 2026-09-15 | Phase 7.5 (`STT service`) REOPENED and repaired. The path was wired end to end and transcribed nothing: headerless 48 kHz PCM to a loader that requires a 16 kHz WAV, one process per 20 ms frame, and the resulting error logged at DEBUG. Audio conversion, per-speaker windowing, `SttReadiness`/`stt_detail`, and a Dockerfile that copies `whisper-cli` rather than its deprecation stub. |
 | 2026-09-15 | `agent_min_alignment_score` rescaled. The semantic comparison now normalises against the loaded scorer's measured noise floor, the shipped default moves 0.8 -> 0.06 on that scale, and migration 046 carries stored values across. The old default was above both scorers' separating bands: unreachable, not strict. |

@@ -88,15 +88,6 @@ pub(crate) fn find_instance_id_and_key(
     .optional()
 }
 
-/// Returns true iff the named base_url is a known instance.
-pub(crate) fn instance_known(conn: &Connection, base_url: &str) -> Result<bool, rusqlite::Error> {
-    conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM instances WHERE base_url = ?1)",
-        params![base_url],
-        |row| row.get(0),
-    )
-}
-
 /// Returns true iff there is an active federation_agreements row between
 /// `local_server_id` and `remote_instance_id`.
 ///

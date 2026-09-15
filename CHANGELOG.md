@@ -44,6 +44,23 @@ supersession banner and is kept for provenance rather than maintained.
   non-member, an alignment refusal, an oversized body and a tripped storage
   gate all came back identically, and all were logged at ERROR. Four of the
   five are the caller's doing.
+- **Multi-hop RTX relay did not exist**, and ROADMAP Phase 9 recorded the two
+  guards for it as complete. `relay_rtx_bundles` reset `relay_path` to
+  `vec![local_public_url]` on every send, so the list could never hold more than
+  one entry and the cycle check could only detect a cycle back to this server;
+  `receive_federated_rtx` stored the bundle, fanned it out locally and stopped,
+  so nothing re-relayed. Now: a signed hop chain where each hop covers the
+  previous hop's digest, an origin attestation over a scope-invariant content
+  digest plus a reasoning-chain commitment (so a relayer may strip a reasoning
+  chain for policy and cannot add one), a TTL from `rtx_max_hops` bounded by
+  `RTX_HOP_CEILING`, and loop prevention that can see more than one hop. See
+  `docs/protocol/rtx-relay.md`.
+- **The RTX relay's SSRF gate ignored `allow_private_peer_addresses`** while the
+  message relay honoured it, so an operator who set that flag — documented as
+  what makes two servers on a LAN, two containers on a Compose network, and
+  peers across a VPN possible — got messages relayed and RTX bundles silently
+  dropped at the same peer. The comment beside the call site claimed to mirror
+  the message path, which is how the divergence survived.
 - **`zk/scripts/test-proofs.js` had been failing since the challenge landed**
   — it built its v2 witness without the `challenge` public input — while
   `release-gates.md` and `invariants.md` quoted "16/16 must pass". It now also
