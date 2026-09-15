@@ -36,28 +36,39 @@ if [ ! -f "$CEREMONY" ]; then
   exit 0
 fi
 
-# ── Restoring a TRACKED file is the dangerous part of this test ─────────────
+# ── This test no longer touches the tracked transcript ─────────────────────
 #
-# This test doctors `zk/artifacts/ceremony/transcript.json` in place, which is a
-# committed artifact, and the previous version left it doctored. Its `restore()`
-# deleted the backup as it copied, so the second call found nothing to copy
-# from; every later mutation stayed on disk, and the run ended with a tracked
-# transcript carrying a `1111…` beacon signature. Nothing downstream could tell
-# that from a real corruption: `verify-ceremony.js` failed, the production ZK
-# gate failed with it, and `git status` showed one modified artifact with no
-# indication that a test had done it.
+# It used to doctor `zk/artifacts/ceremony/transcript.json` in place and restore
+# it afterwards. Two separate failures came out of that, and the second is why
+# in-place-with-restore is not good enough however carefully it is written:
 #
-# So: the backup lives in its own directory that is removed only at the very
-# end, `restore` is idempotent and never deletes it, restoration happens after
-# EVERY mutation rather than only at exit, and the last thing this file does is
-# assert that the transcript is byte-identical to what it started as. A test
-# that can corrupt the repository has to prove it did not.
-BACKUP_DIR="$(mktemp -d)"
-backup="${BACKUP_DIR}/transcript.json"
+#   1. `restore()` deleted the backup as it copied, so the second call had
+#      nothing to copy from. Every mutation after the first stayed on disk and a
+#      run ended with a tracked transcript carrying a `1111…` beacon signature.
+#      `verify-ceremony.js` failed on it, the production ZK gate failed with it,
+#      and `git status` showed one modified artifact with no sign a test had done
+#      it.
+#   2. Fixing (1) — restore after every mutation, plus a byte-identical
+#      assertion at the end — still leaves a window. Between a mutation and its
+#      restore the repository holds a corrupt artifact, and anything reading the
+#      working tree in that window sees it. Commit `7d0b2f4` shipped a transcript
+#      with a `"aaaa…"` chain public key, taken from this test's own "wrong chain
+#      public key" case, because a `git add -A` landed mid-run. No assertion
+#      inside the test can prevent that: the assertion runs after the window
+#      closes.
+#
+# So the hazard is removed rather than detected. The whole ceremony directory is
+# copied to a temp dir, the doctored transcripts are written THERE, and
+# `verify-ceremony.js --transcript <path>` is pointed at the copy. The tracked
+# file is read once and never written.
+WORK_DIR="$(mktemp -d)"
+CEREMONY_SRC_DIR="$(dirname "$CEREMONY")"
+cp -a "${CEREMONY_SRC_DIR}/." "${WORK_DIR}/"
+backup="${WORK_DIR}/transcript.json.pristine"
 cp "$CEREMONY" "$backup"
 ORIGINAL_SHA="$(sha256sum "$CEREMONY" | cut -d" " -f1)"
-restore() { [ -f "$backup" ] && cp "$backup" "$CEREMONY"; }
-cleanup() { restore; rm -rf "$BACKUP_DIR"; }
+WORK_TRANSCRIPT="${WORK_DIR}/transcript.json"
+cleanup() { rm -rf "$WORK_DIR"; }
 trap cleanup EXIT
 
 # Mutate the transcript with a small node one-liner and run the verifier.
@@ -68,24 +79,20 @@ mutate_and_run() {
   # rest of the suite with it. That is how four of these cases came to report
   # "the message does not mention ..." about an empty string.
   LAST_OUT=""
-  cp "$backup" "$CEREMONY"
+  cp "$backup" "$WORK_TRANSCRIPT"
   if ! node -e "
-    const fs=require('fs'); const p='$CEREMONY';
+    const fs=require('fs'); const p='$WORK_TRANSCRIPT';
     const t=JSON.parse(fs.readFileSync(p,'utf8'));
     ($expr)(t);
     fs.writeFileSync(p, JSON.stringify(t,null,2));
   " 2>&1; then
     LAST_OUT="the mutation itself failed — the expression does not match the transcript's shape"
-    restore
     return 99
   fi
   local out
-  out="$(cd "$ZK_DIR" && node scripts/verify-ceremony.js 2>&1)"
+  out="$(cd "$ZK_DIR" && node scripts/verify-ceremony.js --transcript "$WORK_TRANSCRIPT" 2>&1)"
   local rc=$?
   LAST_OUT="$out"
-  # Immediately, not at exit. The transcript spends the shortest possible time
-  # in a doctored state.
-  restore
   return $rc
 }
 
@@ -103,7 +110,9 @@ expect_failure() {
 }
 
 # ── The baseline: the real transcript must verify ───────────────────────────
-cp "$backup" "$CEREMONY"
+#
+# Read from the tracked location, so this is a statement about the repository and
+# not about the copy.
 if ( cd "$ZK_DIR" && node scripts/verify-ceremony.js >/tmp/cv_base.$$ 2>&1 ); then
   cv_ok "the committed ceremony verifies"
 else
@@ -154,12 +163,16 @@ expect_failure "beacon round already existed at commit time" \
   "future"
 
 # ── And the repository has to be where we found it ──────────────────────────
-restore
+#
+# Kept even though nothing in this file writes the tracked path any more. It is
+# now a statement that the design holds rather than a cleanup check, and it costs
+# one sha256 — if a future edit reintroduces an in-place mutation, this is what
+# says so.
 FINAL_SHA="$(sha256sum "$CEREMONY" | cut -d" " -f1)"
 if [ "$FINAL_SHA" = "$ORIGINAL_SHA" ]; then
-  cv_ok "the committed transcript is byte-identical to how this test found it"
+  cv_ok "the tracked transcript was never written by this test"
 else
-  cv_bad "THIS TEST LEFT THE TRACKED TRANSCRIPT MODIFIED (${ORIGINAL_SHA:0:12} -> ${FINAL_SHA:0:12}) — restore it with 'git checkout zk/artifacts/ceremony/transcript.json'"
+  cv_bad "THIS TEST MODIFIED THE TRACKED TRANSCRIPT (${ORIGINAL_SHA:0:12} -> ${FINAL_SHA:0:12}) — it is supposed to work on a temp copy; restore with 'git checkout zk/artifacts/ceremony/transcript.json'"
 fi
 
 echo

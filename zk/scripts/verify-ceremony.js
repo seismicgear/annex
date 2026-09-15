@@ -71,6 +71,7 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === "--offline") out.offline = true;
     else if (a === "--circuit" && argv[i + 1]) out.circuit = argv[++i];
+    else if (a === "--transcript" && argv[i + 1]) out.transcript = argv[++i];
     else if (a === "--help" || a === "-h") out.help = true;
     else fail(`unknown argument: ${a}`);
   }
@@ -288,12 +289,32 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
     process.stdout.write(
-      "Usage: node zk/scripts/verify-ceremony.js [--offline] [--circuit <name>]\n",
+      "Usage: node zk/scripts/verify-ceremony.js [--offline] [--circuit <name>] " +
+        "[--transcript <path>]\n",
     );
     process.exit(0);
   }
 
-  const transcriptPath = path.join(CEREMONY_DIR, "transcript.json");
+  // `--transcript` exists so a test can drive this against a DOCTORED
+  // transcript without writing one into `zk/artifacts/ceremony/`.
+  //
+  // `scripts/tests/ceremony-verifier.test.sh` used to mutate the tracked file in
+  // place and restore it afterwards, which is unsafe for a reason no assertion
+  // inside the test can fix: between the mutation and the restore the repository
+  // holds a corrupt artifact, and anything that reads the working tree in that
+  // window — `git add -A`, a concurrent CI step, a person — sees it. It happened:
+  // commit `7d0b2f4` shipped a transcript with a `"aaaa…"` chain public key,
+  // taken from that test's own "wrong chain public key" case, and
+  // `verify-ceremony.js` failed on it in CI.
+  //
+  // The paths the transcript names (`ptauFile.path`, and each circuit's files)
+  // are resolved relative to the transcript's own directory, so a copy in /tmp
+  // must sit beside the artifacts it describes — or name them absolutely. The
+  // test copies the whole ceremony directory.
+  const transcriptPath = args.transcript
+    ? path.resolve(args.transcript)
+    : path.join(CEREMONY_DIR, "transcript.json");
+  const ceremonyDir = path.dirname(transcriptPath);
   if (!fs.existsSync(transcriptPath)) {
     fail(
       `no ceremony transcript at ${transcriptPath}. The pinned artifacts were not produced by ` +
@@ -305,7 +326,7 @@ async function main() {
   if (!transcript.ptauFile || !transcript.ptauFile.path) {
     fail("transcript does not record the ptau file it used.");
   }
-  const ptau = path.resolve(CEREMONY_DIR, transcript.ptauFile.path);
+  const ptau = path.resolve(ceremonyDir, transcript.ptauFile.path);
   if (!fs.existsSync(ptau)) fail(`ptau named by the transcript is missing: ${ptau}`, 2);
   const ptauHash = sha256(ptau);
   if (ptauHash !== transcript.ptauFile.sha256) {
