@@ -120,7 +120,8 @@ pub struct VerifyMembershipRequest {
     /// The public signals (array of strings).
     ///
     /// v1: ordering is `[root, commitment]` (length 2).
-    /// v2: ordering is `[root, commitment, nullifier, topicHash]` (length 4).
+    /// v2: ordering is `[root, commitment, nullifier, topicHash, challenge]`
+    /// (length 5).
     #[serde(rename = "publicSignals")]
     pub public_signals: Vec<String>,
 
@@ -149,6 +150,22 @@ pub struct VerifyMembershipRequest {
     /// `public_signals[3]` matches.
     #[serde(rename = "topicHashHex", default)]
     pub topic_hash_hex: Option<String>,
+
+    /// v2-only and REQUIRED: the single-use challenge this server issued for
+    /// this attempt, as canonical lowercase hex.
+    ///
+    /// Optional in the type and rejected in the handler rather than made
+    /// non-optional, so that an old client omitting it gets "this server
+    /// requires a fresh authentication challenge" instead of a serde error
+    /// naming a field it has never heard of.
+    ///
+    /// This is what stops a captured verify-membership body being replayed.
+    /// The same value appears as `public_signals[4]`, constrained inside the
+    /// circuit, so a proof produced for one challenge cannot be presented with
+    /// another — and the challenge itself is spent exactly once. See
+    /// `crate::api_zk_challenge`.
+    #[serde(rename = "challengeHex", default)]
+    pub challenge_hex: Option<String>,
 }
 
 /// Response body for successful membership verification.

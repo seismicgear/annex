@@ -31,6 +31,7 @@ pub mod api_uploads_access;
 pub mod api_usernames;
 pub mod api_vrp;
 pub mod api_ws;
+pub mod api_zk_challenge;
 pub mod api_zk_circuits;
 pub mod at_rest;
 pub mod background;

@@ -195,6 +195,10 @@ const MIGRATIONS: &[Migration] = &[
         name: "044_identity_token_epoch",
         sql: include_str!("migrations/044_identity_token_epoch.sql"),
     },
+    Migration {
+        name: "045_zk_auth_challenges",
+        sql: include_str!("migrations/045_zk_auth_challenges.sql"),
+    },
 ];
 
 /// Errors that can occur during migration execution.

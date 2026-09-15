@@ -17,7 +17,22 @@ include "circomlib/circuits/bitify.circom";
 //   topic-scoped pseudonym. Knowledge of `sk` is required.
 //
 // Public signals (snarkjs ordering = outputs first, then declared public
-// inputs): [root, commitment, nullifier, topicHash].
+// inputs): [root, commitment, nullifier, topicHash, challenge].
+//
+// `challenge` is what makes a v2 proof evidence of a LIVE authentication
+// rather than a bearer token. Without it every field of a verify-membership
+// request is replayable: root, commitment, nullifier and topicHash are all
+// stable for a given member and topic, so a captured request body could be
+// re-submitted verbatim — after the member's sessions had been revoked, by
+// someone who never held `sk` — and the server would mint a fresh session
+// token at the CURRENT revocation epoch. Revocation did not survive its own
+// re-authentication path.
+//
+// A nonce sent ALONGSIDE the proof does not fix that: an attacker replaying a
+// captured proof would simply request a nonce of their own and attach it. The
+// challenge has to be inside the proof, so that the Groth16 verification
+// equation itself refuses a proof produced for a different one. That is what
+// the squaring constraint below achieves.
 //
 // Migration: this is a NEW circuit shipped alongside v1. v1 stays in place
 // until every client has been updated. The Rust verifier dispatches by an
@@ -62,9 +77,13 @@ template MerkleTreeInclusionProofV2(depth) {
 //   pathElements[] — sibling hashes along the Merkle path to the root.
 //   pathIndexBits[]— direction bits along the same path.
 //
-// Public input:
+// Public inputs:
 //   topicHash      — Poseidon hash of the topic context, supplied by the
 //                    verifier (not the prover) to prevent topic substitution.
+//   challenge      — a single-use value the server issued for THIS attempt,
+//                    bound to the server and to the commitment. Constrained
+//                    (not merely declared) so it cannot be dropped from the
+//                    constraint system and cannot be changed after the fact.
 //
 // Public outputs:
 //   root           — the Merkle root the inclusion proof matches.
@@ -84,6 +103,9 @@ template MembershipV2(depth) {
 
     // Public input — the topic context for which this proof is valid.
     signal input topicHash;
+
+    // Public input — the server's single-use challenge for this attempt.
+    signal input challenge;
 
     // Public outputs.
     signal output root;
@@ -129,8 +151,27 @@ template MembershipV2(depth) {
     nullifierHash.inputs[1] <== topicHash;
     nullifierHash.inputs[2] <== DOMAIN_NULLIFIER_V2;
     nullifier <== nullifierHash.out;
+
+    // 5. Bind the challenge into the constraint system.
+    //
+    // A public input that appears in no constraint is not part of the proof:
+    // circom drops it, and a proof generated for one value would verify
+    // against any other. Squaring it is the minimal constraint that cannot be
+    // optimised away, and it is the same device Semaphore uses for its signal
+    // hash. `challengeSquared` is an intermediate signal, not an output, so it
+    // does not appear in the public signal vector.
+    //
+    // The security property this buys: a Groth16 proof commits to every public
+    // input, so the proof a member produced for challenge C is rejected by the
+    // verifier when presented with challenge C'. Replaying a captured request
+    // therefore requires replaying its challenge too — and the server consumes
+    // each challenge exactly once, inside the same transaction that mints the
+    // session.
+    signal challengeSquared;
+    challengeSquared <== challenge * challenge;
 }
 
-// `topicHash` is declared `public` so snarkjs lays it after the outputs in
-// the public-signal vector. Final ordering: [root, commitment, nullifier, topicHash].
-component main {public [topicHash]} = MembershipV2(20);
+// `topicHash` and `challenge` are declared `public` so snarkjs lays them after
+// the outputs in the public-signal vector, in this declaration order. Final
+// ordering: [root, commitment, nullifier, topicHash, challenge].
+component main {public [topicHash, challenge]} = MembershipV2(20);

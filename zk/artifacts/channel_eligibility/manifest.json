@@ -12,8 +12,8 @@
     "channelTopicHash"
   ],
   "wasm_sha256": "23fb55feff575545bfb6626107d518b9c0e5560683eb6e0eea833b6940a16e5f",
-  "zkey_sha256": "33f06221a3a103d4d496ecb943c22f13b9ee0c7dcf6a707b7e146417bb13061d",
-  "vkey_sha256": "06a983c89178e6803db3e40f402dbbdd501e2eed4b2df732d0f6280c409664ab",
+  "zkey_sha256": "c84a4f2d305471be153a930c4adab75f842371fce64b55a245a3e9554ad76b22",
+  "vkey_sha256": "81714d50d18a342a7e3a2897125284bcde2bea0655c50376ca9cb2f474e2da13",
   "r1cs_sha256": "44067c81af485d0f277346ea2e8d9c57371ede96c7af87d6b719d17e46b3f3a0",
   "paths": {
     "wasm": "./channel_eligibility.wasm",
@@ -22,13 +22,13 @@
     "r1cs": "./channel_eligibility.r1cs"
   },
   "ceremony": {
-    "type": "multi-contributor-beacon",
-    "generatedAt": "2026-09-15T01:17:36.172Z",
+    "type": "single-contributor-beacon",
+    "generatedAt": "2026-09-15T15:06:39.060Z",
     "transcript": "../ceremony/transcript.json",
-    "phase1Source": "generated-by-this-ceremony",
-    "beaconRound": 6466817,
+    "phase1Source": "operator-supplied",
+    "beaconRound": 6468464,
     "beaconChainHash": "8990e7a9aaed2ffed73dbd7092123d6f289930540d7651336225dc172e51b2ce",
     "zkeyVerified": true,
-    "note": "Produced by zk/scripts/ceremony.js. Phase 2 was finalised with drand round 6466817 on chain 8990e7a9aaed2ffed73dbd7092123d6f289930540d7651336225dc172e51b2ce, committed to before that round existed (see the transcript's commitment field). `snarkjs zkey verify` passed against the pinned r1cs and ptau. This is NOT a multi-party ceremony with independent participants; see docs/refactor/zk-merkle-production.md for what that would add."
+    "note": "Produced by zk/scripts/ceremony.js. Phase 2 was finalised with drand round 6468464 on chain 8990e7a9aaed2ffed73dbd7092123d6f289930540d7651336225dc172e51b2ce, committed to before that round existed (see the transcript's commitment field). `snarkjs zkey verify` passed against the pinned r1cs and ptau. This is NOT a multi-party ceremony with independent participants; see docs/refactor/zk-merkle-production.md for what that would add."
   }
 }

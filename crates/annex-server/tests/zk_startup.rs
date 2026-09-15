@@ -145,17 +145,24 @@ async fn zk_unenforced_mode_missing_vkey_starts_with_dummy() {
 
 #[test]
 fn zk_config_default_enables_v1_and_v2() {
-    // The shipped client now generates v2 (secret-derived nullifier) proofs by
-    // default, which closes the disclosed v1 nullifier-linkability hole. The
-    // default config therefore accepts BOTH versions: v2 for new clients and v1
-    // so existing registrations / older clients keep working during migration.
+    // v2 only, and that is a security default rather than a tidy-up.
+    //
+    // v1 derives its per-topic nullifier from the PUBLIC identity commitment,
+    // so a registry snapshot yields every member's pseudonym for every topic;
+    // and a v1 proof has no authentication challenge among its public signals,
+    // so a captured v1 sign-in mints sessions indefinitely. Defaulting to
+    // `["v1", "v2"]` — which this asserted before, on the grounds that older
+    // clients needed the migration path — meant the weaker protocol was on by
+    // default and was the bypass around everything v2 provides. Nothing had
+    // shipped, so there were no older clients to accommodate.
+    //
     // Enabling v2 means the v2 vkey must load at startup under enforce mode
     // (covered by `zk_v2_enforced_missing_vkey_returns_startup_error`).
     let cfg = config::Config::default();
     assert_eq!(
         cfg.security.enabled_zk_versions,
-        vec!["v1".to_string(), "v2".to_string()],
-        "Config::default().security.enabled_zk_versions must be [\"v1\", \"v2\"]"
+        vec!["v2".to_string()],
+        "Config::default().security.enabled_zk_versions must be [\"v2\"]"
     );
 }
 

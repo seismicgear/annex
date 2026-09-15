@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "circuit": "membership_v2",
-  "circuitVersion": "1.0.0",
+  "circuitVersion": "2.0.0",
   "curve": "bn254",
   "provingSystem": "groth16",
   "treeDepth": 20,
@@ -9,12 +9,13 @@
     "root",
     "commitment",
     "nullifier",
-    "topicHash"
+    "topicHash",
+    "challenge"
   ],
-  "wasm_sha256": "385454698294c08587069c01f95399103dfb6983a1f9a665285ffcfa6819626c",
-  "zkey_sha256": "9c238aac6ed0d08ff384d56d2c83bae2047cd72046fe292f1fc2f93793dbb690",
-  "vkey_sha256": "527e706e1f7da73d168b0e1697286848d4db1cfc2e8186328705992cf25788f0",
-  "r1cs_sha256": "fd29b65ae0972fdc1f367499dc47e25144930a4449eea92815ee79dd1c11a548",
+  "wasm_sha256": "879babd0510691a046405e321f2878edcdf57ce2621d87f9b059bea69a99d23c",
+  "zkey_sha256": "8e2f2424f83c09fd199f26e1fd2de1dfa1f7a03cd366f36add541ee1e3f73028",
+  "vkey_sha256": "769082449f1519d55a61a5855664be7c5e1eba9d1f02f24b54c3a249f441ec1f",
+  "r1cs_sha256": "984737dcfc71d802a2db185b2621f50324749730d024bdfc767823a7ec88e234",
   "paths": {
     "wasm": "./membership_v2.wasm",
     "zkey": "./membership_v2_final.zkey",
@@ -22,13 +23,13 @@
     "r1cs": "./membership_v2.r1cs"
   },
   "ceremony": {
-    "type": "multi-contributor-beacon",
-    "generatedAt": "2026-09-15T01:17:36.172Z",
+    "type": "single-contributor-beacon",
+    "generatedAt": "2026-09-15T15:06:39.060Z",
     "transcript": "../ceremony/transcript.json",
-    "phase1Source": "generated-by-this-ceremony",
-    "beaconRound": 6466817,
+    "phase1Source": "operator-supplied",
+    "beaconRound": 6468464,
     "beaconChainHash": "8990e7a9aaed2ffed73dbd7092123d6f289930540d7651336225dc172e51b2ce",
     "zkeyVerified": true,
-    "note": "Produced by zk/scripts/ceremony.js. Phase 2 was finalised with drand round 6466817 on chain 8990e7a9aaed2ffed73dbd7092123d6f289930540d7651336225dc172e51b2ce, committed to before that round existed (see the transcript's commitment field). `snarkjs zkey verify` passed against the pinned r1cs and ptau. This is NOT a multi-party ceremony with independent participants; see docs/refactor/zk-merkle-production.md for what that would add."
+    "note": "Produced by zk/scripts/ceremony.js. Phase 2 was finalised with drand round 6468464 on chain 8990e7a9aaed2ffed73dbd7092123d6f289930540d7651336225dc172e51b2ce, committed to before that round existed (see the transcript's commitment field). `snarkjs zkey verify` passed against the pinned r1cs and ptau. This is NOT a multi-party ceremony with independent participants; see docs/refactor/zk-merkle-production.md for what that would add."
   }
 }

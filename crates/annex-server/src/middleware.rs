@@ -789,7 +789,7 @@ pub struct ZkProofPayload {
 /// the authenticated identity's commitment (prevents proof replay across users).
 ///
 /// Dispatches to the v1 or v2 verifier based on `payload.protocol_version`.
-/// v2 proofs additionally require `publicSignals` (length 4) and a `topic`
+/// v2 proofs additionally require `publicSignals` (length 5) and a `topic`
 /// for the canonical topicHash cross-check; without those the request is
 /// rejected exactly the way the local `/api/zk/verify-membership` endpoint
 /// rejects them.
@@ -849,7 +849,19 @@ pub fn verify_zk_membership_header(
                 );
                 StatusCode::FORBIDDEN
             })?;
-            (v2_key, 4usize)
+            // Five since the challenge binding landed:
+            // [root, commitment, nullifier, topicHash, challenge].
+            //
+            // The challenge is NOT re-checked here, and that is deliberate.
+            // This header is a cached membership assertion presented on every
+            // protected request; requiring a fresh, single-use challenge would
+            // mean a server round trip and a Groth16 proof per request. The
+            // liveness credential on this path is the session token, which the
+            // auth middleware has already verified against the identity's
+            // revocation epoch. What the challenge closes is the path that
+            // MINTS that token — `verify_membership` — where a replayable body
+            // was the whole credential.
+            (v2_key, 5usize)
         }
         other => {
             tracing::warn!("ZK proof header has unsupported protocolVersion '{other}'");

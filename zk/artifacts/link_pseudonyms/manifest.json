@@ -12,8 +12,8 @@
     "topicHashB"
   ],
   "wasm_sha256": "c2ff8f1ea9971ba8edeb637ea934bf20668ce4a168d60880ef87c00b3562a87e",
-  "zkey_sha256": "24b49b7d756dca26e114c8238b119c4b74c8d886ad04d7ddc348eca7942d380a",
-  "vkey_sha256": "148cb74fa91454f38a2a134837938c7d25cc3239da7329d31d33d05045e30610",
+  "zkey_sha256": "c6abda3a74be4940112f2a0ab015602acfd2d216d122300c702cd3f868d761f8",
+  "vkey_sha256": "de5ef820e6c435876083970df1b25a59fd3281b6fdd32630f2ee812ed504670c",
   "r1cs_sha256": "083b4021b8e5e1974bb1df952f7518544413dbbc7690bdf9a2ad95e24373f0c9",
   "paths": {
     "wasm": "./link_pseudonyms.wasm",
@@ -22,13 +22,13 @@
     "r1cs": "./link_pseudonyms.r1cs"
   },
   "ceremony": {
-    "type": "multi-contributor-beacon",
-    "generatedAt": "2026-09-15T01:17:36.172Z",
+    "type": "single-contributor-beacon",
+    "generatedAt": "2026-09-15T15:06:39.060Z",
     "transcript": "../ceremony/transcript.json",
-    "phase1Source": "generated-by-this-ceremony",
-    "beaconRound": 6466817,
+    "phase1Source": "operator-supplied",
+    "beaconRound": 6468464,
     "beaconChainHash": "8990e7a9aaed2ffed73dbd7092123d6f289930540d7651336225dc172e51b2ce",
     "zkeyVerified": true,
-    "note": "Produced by zk/scripts/ceremony.js. Phase 2 was finalised with drand round 6466817 on chain 8990e7a9aaed2ffed73dbd7092123d6f289930540d7651336225dc172e51b2ce, committed to before that round existed (see the transcript's commitment field). `snarkjs zkey verify` passed against the pinned r1cs and ptau. This is NOT a multi-party ceremony with independent participants; see docs/refactor/zk-merkle-production.md for what that would add."
+    "note": "Produced by zk/scripts/ceremony.js. Phase 2 was finalised with drand round 6468464 on chain 8990e7a9aaed2ffed73dbd7092123d6f289930540d7651336225dc172e51b2ce, committed to before that round existed (see the transcript's commitment field). `snarkjs zkey verify` passed against the pinned r1cs and ptau. This is NOT a multi-party ceremony with independent participants; see docs/refactor/zk-merkle-production.md for what that would add."
   }
 }

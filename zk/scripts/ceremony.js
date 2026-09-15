@@ -64,10 +64,16 @@ const CIRCUITS = [
   { name: "identity", version: "1.0.0", treeDepth: 0, publicSignals: ["commitment"] },
   { name: "membership", version: "1.0.0", treeDepth: 20, publicSignals: ["root", "commitment"] },
   {
+    // 2.0.0: `challenge` became a constrained public input. A v2 proof is now
+    // evidence of a LIVE authentication rather than a bearer credential — see
+    // `crates/annex-server/src/api_zk_challenge.rs`. The wire format changed
+    // (five public signals, not four), so this is a major version and the
+    // previous membership_v2 artifacts do not verify proofs from this circuit
+    // or vice versa.
     name: "membership_v2",
-    version: "1.0.0",
+    version: "2.0.0",
     treeDepth: 20,
-    publicSignals: ["root", "commitment", "nullifier", "topicHash"],
+    publicSignals: ["root", "commitment", "nullifier", "topicHash", "challenge"],
   },
   {
     name: "channel_eligibility",
@@ -89,9 +95,11 @@ const CIRCUITS = [
   },
 ];
 
-// 2^14 = 16,384 constraints. The largest circuit here is ~6k, so this is ~2.5x
-// headroom. A circuit that grows past 16k needs a larger power AND a new
-// ceremony — the ptau is not extensible after `prepare phase2`.
+// 2^14 = 16,384 constraints. The largest circuit here is `membership_v2` at
+// ~11.6k after the challenge binding landed, so the headroom is ~1.4x rather
+// than the ~2.5x this comment used to claim. A circuit that grows past 16k
+// needs a larger power AND a new phase 1 — the ptau is not extensible after
+// `prepare phase2`, so `--ptau` cannot rescue an under-sized one.
 const DEFAULT_POWER = 14;
 
 // drand mainnet, "default" chain: 30s rounds, BLS-signed, chained scheme.

@@ -287,13 +287,25 @@ fn default_enforce_zk_proofs() -> bool {
 }
 
 fn default_enabled_zk_versions() -> Vec<String> {
-    // Accept BOTH protocol versions by default. v2 (secret-derived nullifier)
-    // is what shipped clients generate; v1 is retained so older clients and
-    // existing registrations keep working during migration. Enabling v2
-    // requires the v2 vkey to load at startup (under `enforce_zk_proofs`), so
-    // deployments must ship `membership_v2_vkey.json` (the desktop bundle and
-    // dev/e2e setup both do).
-    vec!["v1".to_string(), "v2".to_string()]
+    // v2 only.
+    //
+    // This used to be `["v1", "v2"]` "so older clients keep working during
+    // migration". There are no older clients — nothing has shipped — and the
+    // cost of the accommodation is that the weaker protocol is on by default:
+    // v1's nullifier is derivable from the public commitment, and a v1 proof
+    // carries no authentication challenge, so a captured v1 sign-in mints
+    // sessions indefinitely. Leaving it in the default made v1 the bypass
+    // around every guarantee v2 provides.
+    //
+    // v1 remains implemented and selectable under a dev or desktop profile —
+    // the integration tests prove against it — but a production profile
+    // refuses it outright (`validate_zk_protocol_versions_for_build_profile`).
+    //
+    // Enabling v2 requires the v2 vkey to load at startup (under
+    // `enforce_zk_proofs`), so deployments must ship
+    // `membership_v2_vkey.json`; the desktop bundle and the dev/e2e setup
+    // both do.
+    vec!["v2".to_string()]
 }
 
 impl Default for SecurityConfig {
@@ -761,6 +773,7 @@ fn validate_config(config: &Config) -> Result<(), ConfigError> {
     validate_cors_for_build_profile(&config.cors)?;
     validate_deployment_for_build_profile(&config.deployment)?;
     validate_zk_enforcement_for_build_profile(&config.security)?;
+    validate_zk_protocol_versions_for_build_profile(&config.security)?;
 
     Ok(())
 }
@@ -792,6 +805,61 @@ fn validate_config(config: &Config) -> Result<(), ConfigError> {
 /// Desktop is exempt for the same reason it is exempt from the CORS gate: it
 /// is a loopback server for the person sitting in front of it. It still gets
 /// the artifact-provenance gates, which are what protect it.
+/// Refuse the v1 membership protocol under a production profile.
+///
+/// v1 is not merely older. Two properties make it unusable on a server that
+/// takes authentication seriously, and both were the reason v2 exists:
+///
+/// * **Its nullifier is publicly derivable.** v1's per-topic nullifier is
+///   `sha256(commitmentHex + ":" + topic)`, computed from the Merkle leaf,
+///   which is public. Anyone with a registry snapshot — a federation peer, an
+///   ex-operator, a leaked backup — can compute every member's pseudonym for
+///   every topic. That is a deterministic public mapping from leaf to handle,
+///   which is the opposite of what the identity model claims.
+///
+/// * **It carries no authentication challenge, and cannot.** v1's public
+///   signals are `[root, commitment]`. Both are stable, so a captured v1
+///   sign-in is a bearer credential that mints sessions forever — the exact
+///   defect `api_zk_challenge` closes for v2. Fixing v1 would mean changing
+///   its circuit, at which point it is v2.
+///
+/// So leaving v1 enabled alongside a challenge-bound v2 would leave the
+/// replay path open and simply move it one field over: an attacker submits
+/// `protocolVersion: "v1"` with a captured v1 proof, or re-derives the v1
+/// nullifier from the public commitment, and the v2 work buys nothing.
+///
+/// Dev and desktop profiles keep v1, because the test harness and several
+/// integration tests prove against it and a loopback desktop server is not
+/// the threat model. Production, and any profile that needs multi-tenant
+/// gates, must be v2-only.
+fn validate_zk_protocol_versions_for_build_profile(
+    security: &SecurityConfig,
+) -> Result<(), ConfigError> {
+    let profile = crate::build_profile::current();
+    if !profile.requires_multi_tenant_gates() {
+        return Ok(());
+    }
+    if !security
+        .enabled_zk_versions
+        .iter()
+        .any(|v| v.eq_ignore_ascii_case("v1"))
+    {
+        return Ok(());
+    }
+    Err(ConfigError::InvalidValue {
+        field: "security.enabled_zk_versions",
+        reason: format!(
+            "must not include \"v1\" under the {} build profile. v1 derives its per-topic \
+             nullifier from the PUBLIC identity commitment, so anyone holding a registry \
+             snapshot can compute every member's pseudonym; and a v1 proof carries no \
+             authentication challenge, so a captured sign-in can be replayed indefinitely to \
+             mint fresh sessions. Set security.enabled_zk_versions = [\"v2\"] (or unset it — \
+             that is the default).",
+            profile.as_str()
+        ),
+    })
+}
+
 fn validate_zk_enforcement_for_build_profile(security: &SecurityConfig) -> Result<(), ConfigError> {
     let profile = crate::build_profile::current();
     if !profile.requires_multi_tenant_gates() {
@@ -2045,6 +2113,95 @@ port = 3000
 
         let cfg = load_config(None).expect("production + enforcement on must validate");
         assert!(cfg.security.enforce_zk_proofs);
+    }
+
+    // ── Production ZK-protocol-version gate ────────────────────────────
+    //
+    // v1's per-topic nullifier is derived from the PUBLIC identity commitment,
+    // and a v1 proof carries no authentication challenge among its public
+    // signals. Leaving it enabled alongside a challenge-bound v2 leaves the
+    // replay path open and moves it one field over, so the gate has to refuse
+    // the version rather than merely not default to it — a config copied from
+    // a dev box is how the weaker setting actually reaches production.
+
+    #[test]
+    fn production_profile_rejects_v1_membership_proofs() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+        std::env::set_var("ANNEX_BUILD_PROFILE", "production");
+        std::env::set_var("ANNEX_CORS_ORIGINS", "https://app.example.com");
+
+        let path = write_temp_config(
+            r#"
+[server]
+server_slug = "fixture-zkv1"
+
+[security]
+enforce_zk_proofs = true
+enabled_zk_versions = ["v1", "v2"]
+"#,
+        );
+        let err = load_config(Some(&path))
+            .expect_err("production + enabled_zk_versions containing v1 must fail validation");
+        fs::remove_file(&path).ok();
+
+        match err {
+            ConfigError::InvalidValue { field, reason } => {
+                assert_eq!(field, "security.enabled_zk_versions");
+                assert!(
+                    reason.contains("replayed"),
+                    "the error must say WHY v1 is refused, not just that it is: {reason}"
+                );
+            }
+            other => panic!("expected InvalidValue, got {other:?}"),
+        }
+    }
+
+    /// The same profile must accept v2-only, so the gate is shown to be about
+    /// v1 rather than about production refusing every explicit version list.
+    #[test]
+    fn production_profile_accepts_v2_only() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+        std::env::set_var("ANNEX_BUILD_PROFILE", "production");
+        std::env::set_var("ANNEX_CORS_ORIGINS", "https://app.example.com");
+
+        let path = write_temp_config(
+            r#"
+[server]
+server_slug = "fixture-zkv2"
+
+[security]
+enforce_zk_proofs = true
+enabled_zk_versions = ["v2"]
+"#,
+        );
+        let cfg = load_config(Some(&path)).expect("production + v2-only must validate");
+        fs::remove_file(&path).ok();
+        assert_eq!(cfg.security.enabled_zk_versions, vec!["v2".to_string()]);
+    }
+
+    /// A dev profile keeps v1: the integration tests prove against it, and a
+    /// gate that made the test harness unusable would be routed around rather
+    /// than obeyed.
+    #[test]
+    fn dev_profile_still_allows_v1() {
+        let _guard = env_lock().lock().expect("env lock poisoned");
+        clear_env();
+        std::env::set_var("ANNEX_BUILD_PROFILE", "dev");
+
+        let path = write_temp_config(
+            r#"
+[server]
+server_slug = "fixture-zkdev"
+
+[security]
+enabled_zk_versions = ["v1", "v2"]
+"#,
+        );
+        let cfg = load_config(Some(&path)).expect("dev + v1 must validate");
+        fs::remove_file(&path).ok();
+        assert!(cfg.security.enabled_zk_versions.iter().any(|v| v == "v1"));
     }
 
     /// The desktop app embeds this server on loopback for one person, and its

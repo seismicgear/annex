@@ -351,6 +351,14 @@ pub fn app(state: AppState) -> Router {
             "/api/registry/current-root",
             get(api::get_current_root_handler),
         )
+        // Issued before a membership proof is generated, spent by the proof
+        // that follows. Public because a member signing in has no session yet;
+        // it discloses only a random number, and the outstanding-set cap in
+        // `api_zk_challenge` bounds what an unauthenticated caller can store.
+        .route(
+            "/api/zk/challenge",
+            post(crate::api_zk_challenge::issue_challenge_handler),
+        )
         .route(
             "/api/zk/verify-membership",
             post(api::verify_membership_handler),

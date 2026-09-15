@@ -125,6 +125,45 @@ impl IdentityService {
     /// response was lost would silently burn an invitation use while
     /// returning the same identity — idempotent in its result, not in its
     /// cost.
+    /// Is this commitment already a leaf in this server's registry?
+    ///
+    /// The question that separates admission from re-authentication. Read
+    /// against `vrp_identities` rather than `platform_identities` because that
+    /// is what `register_identity` writes and what the duplicate-commitment
+    /// branch keys on — a commitment can be enrolled in the tree and not yet
+    /// have verified into a platform identity, and such a caller is still not
+    /// a new registration.
+    ///
+    /// Deliberately NOT a permission: it says nothing about whether the
+    /// identity is active or its sessions are live, and it is used only to
+    /// skip the new-member gates. Everything that governs whether the holder
+    /// may DO anything is enforced at verification and afterwards.
+    async fn commitment_is_enrolled(
+        &self,
+        commitment_hex: &str,
+    ) -> Result<bool, IdentityServiceError> {
+        let state = self.state.clone();
+        let commitment = commitment_hex.to_ascii_lowercase();
+        tokio::task::spawn_blocking(move || -> Result<bool, IdentityServiceError> {
+            let conn = state.pool.get().map_err(|e| {
+                IdentityServiceError::Internal(format!("db connection failed: {e}"))
+            })?;
+            let found: Option<i64> = conn
+                .query_row(
+                    "SELECT rowid FROM vrp_identities WHERE commitment_hex = ?1",
+                    rusqlite::params![commitment],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| {
+                    IdentityServiceError::Internal(format!("enrollment lookup failed: {e}"))
+                })?;
+            Ok(found.is_some())
+        })
+        .await
+        .map_err(|e| IdentityServiceError::Internal(format!("task join error: {e}")))?
+    }
+
     pub async fn register_identity(
         &self,
         payload: RegisterRequest,
@@ -134,9 +173,32 @@ impl IdentityService {
             IdentityServiceError::BadRequest(format!("invalid role code: {}", payload.role_code))
         })?;
 
-        // 2. Resolve access-mode policy + early-validate invite/password.
+        // 2. Is this commitment already enrolled?
+        //
+        // Everything below — the invite requirement, the server password, the
+        // member cap, the invite seat claim — is ADMISSION: the decision about
+        // whether to let a NEW person in. An enrolled member arriving here is
+        // not asking to be admitted; they are asking for their Merkle path so
+        // they can re-prove membership they already hold.
+        //
+        // Conflating the two locked members out of servers they belong to, and
+        // it did not take anything exotic. A cached proof binds to one Merkle
+        // root; the client re-proves whenever the root has moved on, which
+        // happens every time anyone else registers. That re-prove routes
+        // through this endpoint. So: the server fills up, or an invite reaches
+        // its use limit, or the operator switches to invite_only — and every
+        // existing member is refused the next time the tree changes under them,
+        // by a check that was never about them.
+        //
+        // Deactivation and revocation are NOT part of admission and are not
+        // skipped: an inactive identity is refused at verification (see
+        // `verify_membership`), and its sessions stay dead through the token
+        // epoch. What this branch skips is only the "may a stranger join"
+        // question, for someone who is not a stranger.
+        let already_enrolled = self.commitment_is_enrolled(&payload.commitment_hex).await?;
+
         let access_mode = self.read_access_mode()?;
-        let invite_code_for_registration = if access_mode == "invite_only" {
+        let invite_code_for_registration = if access_mode == "invite_only" && !already_enrolled {
             let invite_code = payload.invite_code.as_deref().unwrap_or("").trim();
             if invite_code.is_empty() {
                 return Err(IdentityServiceError::Forbidden(
@@ -148,7 +210,7 @@ impl IdentityService {
             None
         };
 
-        if access_mode == "password" {
+        if access_mode == "password" && !already_enrolled {
             let expected_password = self.read_access_password()?;
             let provided = payload.server_password.as_deref().unwrap_or("").trim();
             // Constant-time compare: prevent rate-limited timing attacks from
@@ -174,8 +236,17 @@ impl IdentityService {
                 .get()
                 .map_err(|e| IdentityServiceError::Internal(format!("db connection failed: {e}")))?;
 
-            // 3a. Enforce max_members.
-            {
+            // 3a. Enforce max_members — for new members only.
+            //
+            // The count reads `platform_identities WHERE active = 1`, which
+            // INCLUDES the returning member, so a full server refused its own
+            // members on the path they use to get back in. The cap itself is
+            // not weakened by skipping it here: `verify_membership` re-checks
+            // it inside the same transaction that creates the
+            // `platform_identities` row, which is the authoritative moment —
+            // this one is a cheap early refusal, and refusing early is only
+            // friendly when the answer would have been the same later.
+            if !already_enrolled {
                 let max_members = state
                     .policy
                     .read()
@@ -198,7 +269,7 @@ impl IdentityService {
             // 3b. Validate invite (max_uses + expires_at) before the
             // mutating registration. The use_count bump is deferred to
             // (3d) so a registration failure doesn't burn an invite seat.
-            if let Some(ref code) = invite_code_for_registration {
+            if let Some(ref code) = invite_code_for_registration.as_ref().filter(|_| !already_enrolled) {
                 let row: Result<(Option<i64>, i64, Option<String>), _> = conn.query_row(
                     "SELECT max_uses, use_count, expires_at FROM invite_codes WHERE server_id = ?1 AND code = ?2",
                     rusqlite::params![state.server_id, code],
@@ -249,7 +320,12 @@ impl IdentityService {
             //
             // No signature change in `annex_identity::register_identity` was
             // needed after all — the ordering was the whole problem.
-            let claimed_seat = if let Some(ref code) = invite_code_for_registration {
+            // An enrolled member spends no seat: they took theirs when they
+            // joined, and `invite_code_for_registration` is already `None` for
+            // them, so this is belt and braces rather than a second decision.
+            let claimed_seat = if let Some(ref code) =
+                invite_code_for_registration.as_ref().filter(|_| !already_enrolled)
+            {
                 let updated = conn
                     .execute(
                         "UPDATE invite_codes SET use_count = use_count + 1 \
@@ -364,18 +440,28 @@ impl IdentityService {
             };
 
             // 3e. Audit-log emission.
-            let observe_payload = EventPayload::IdentityRegistered {
-                commitment_hex: payload.commitment_hex.clone(),
-                role_code: role.as_u8(),
-            };
-            crate::emit_and_broadcast(
-                &conn,
-                state.server_id,
-                &payload.commitment_hex,
-                &observe_payload,
-                &state.observe_tx,
-                &state.signing_key,
-            );
+            //
+            // Only for an actual registration. `IdentityRegistered` records the
+            // moment someone joined this server; a member fetching their Merkle
+            // path to re-prove did not join again, and emitting it here wrote a
+            // false entry into the signed, hash-chained audit log once per
+            // sign-in. `verify_membership` already makes this distinction for
+            // `PseudonymDerived` and `NodeAdded`; this site was the one left
+            // behind.
+            if !already_enrolled {
+                let observe_payload = EventPayload::IdentityRegistered {
+                    commitment_hex: payload.commitment_hex.clone(),
+                    role_code: role.as_u8(),
+                };
+                crate::emit_and_broadcast(
+                    &conn,
+                    state.server_id,
+                    &payload.commitment_hex,
+                    &observe_payload,
+                    &state.observe_tx,
+                    &state.signing_key,
+                );
+            }
 
             Ok(registration_result)
         })
@@ -508,7 +594,7 @@ impl IdentityService {
                              does not include \"v2\")".to_string(),
                         )
                     })?;
-                    (v2_key, 4usize)
+                    (v2_key, 5usize)
                 }
                 other => {
                     return Err(IdentityServiceError::BadRequest(format!(
@@ -563,6 +649,48 @@ impl IdentityService {
                     public_signals.len()
                 )));
             }
+
+            // v2-specific: the single-use challenge.
+            //
+            // Checked BEFORE the pairing check, because a request with no
+            // challenge cannot succeed however good its proof is, and a
+            // Groth16 verification is the most expensive thing on this path —
+            // an unauthenticated caller should not be able to spend it by
+            // sending a structurally incomplete body.
+            //
+            // The challenge is only SPENT further down, inside the same
+            // IMMEDIATE transaction that mints the session. Spending it here
+            // would leave a window where a challenge is burned but the caller
+            // gets no session, turning a transient database error into "sign
+            // in again, and again".
+            let challenge_hex = if protocol_version == "v2" {
+                let claimed = payload.challenge_hex.as_deref().map(str::trim).unwrap_or("");
+                if claimed.is_empty() {
+                    return Err(IdentityServiceError::BadRequest(
+                        "this server requires a fresh authentication challenge: request one from \
+                         POST /api/zk/challenge and include it as challengeHex and as the \
+                         circuit's challenge public input"
+                            .to_string(),
+                    ));
+                }
+                let claimed = claimed.to_ascii_lowercase();
+                let claimed_fr = parse_fr_from_hex(&claimed).map_err(|e| {
+                    IdentityServiceError::BadRequest(format!("invalid challengeHex: {e}"))
+                })?;
+                if public_signals[4] != claimed_fr {
+                    return Err(IdentityServiceError::BadRequest(
+                        "the proof's challenge public signal does not match challengeHex — the \
+                         proof was produced for a different authentication attempt"
+                            .to_string(),
+                    ));
+                }
+                // Canonicalised through the field element rather than trusting
+                // the caller's spelling, so the row lookup below uses the same
+                // encoding the issuer wrote.
+                Some(fr_to_canonical_hex(claimed_fr))
+            } else {
+                None
+            };
 
             let valid = verify_proof(&vkey_for_proof, &proof, &public_signals).map_err(|e| {
                 IdentityServiceError::Unauthorized(format!("proof verification failed: {e}"))
@@ -744,6 +872,45 @@ impl IdentityService {
                 IdentityServiceError::Internal(format!("failed to start transaction: {e}"))
             })?;
 
+            // Spend the challenge FIRST, inside this transaction.
+            //
+            // Before the nullifier bookkeeping on purpose: the branch below
+            // deliberately treats a repeat nullifier as re-authentication (see
+            // its comment), which is correct and is also exactly what made a
+            // captured request replayable. The challenge is the thing that
+            // makes re-authentication require a live prover, so it has to be
+            // the first gate, not a later one.
+            if let Some(ref challenge) = challenge_hex {
+                let now = chrono::Utc::now().timestamp();
+                let outcome = crate::api_zk_challenge::consume_challenge(
+                    &tx,
+                    state.server_id,
+                    challenge,
+                    &payload.commitment,
+                    &payload.topic,
+                    now,
+                )
+                .map_err(|e| {
+                    IdentityServiceError::Internal(format!("challenge lookup failed: {e}"))
+                })?;
+                if let Err(rejection) = outcome {
+                    // Logged apart, answered the same. An attacker must not be
+                    // able to distinguish "never issued" from "already spent"
+                    // by the response, but an operator has to be able to see a
+                    // replay happening — `already_consumed` against a valid
+                    // proof is what that looks like.
+                    tracing::warn!(
+                        reason = rejection.as_str(),
+                        topic = %payload.topic,
+                        "membership proof rejected: authentication challenge not spendable"
+                    );
+                    return Err(IdentityServiceError::Unauthorized(
+                        "authentication challenge is invalid, expired, or already used — request                          a fresh one and prove against it"
+                            .to_string(),
+                    ));
+                }
+            }
+
             // The nullifier is single-use per topic — that is what stops one
             // identity claiming two pseudonyms in the same topic. But it is
             // ALSO presented every time an existing member re-authenticates,
@@ -835,6 +1002,42 @@ impl IdentityService {
                     )));
                 }
             };
+
+            // A deactivated identity does not get back in by re-proving.
+            //
+            // Nothing checked this. `verify_membership` read the identity only
+            // to pick up its `token_epoch` and never looked at `active`, so a
+            // banned member who re-proved received a well-formed session token
+            // — dead at every consumer, which is why this was survivable, but
+            // two things still happened that should not: `ensure_graph_node`
+            // below is an upsert that forces `active = 1` on the graph node,
+            // and the post-commit presence broadcast announced them as online.
+            // A moderator watching the member list saw a banned account come
+            // back and light up.
+            //
+            // Placed on the re-authentication branch only: a first-time
+            // verification has no `platform_identities` row to be inactive.
+            if reauthenticating {
+                match annex_identity::get_platform_identity(&tx, state.server_id, &pseudonym_id) {
+                    Ok(existing) if !existing.active => {
+                        return Err(IdentityServiceError::Forbidden(
+                            "This identity has been deactivated on this server.".to_string(),
+                        ));
+                    }
+                    Ok(_) => {}
+                    // No row yet: the commitment consumed its nullifier on an
+                    // earlier attempt that did not reach `create_platform_identity`.
+                    // Not a deactivation, and not this check's business.
+                    Err(annex_identity::IdentityError::DatabaseError(
+                        rusqlite::Error::QueryReturnedNoRows,
+                    )) => {}
+                    Err(e) => {
+                        return Err(IdentityServiceError::Internal(format!(
+                            "failed to read platform identity: {e}"
+                        )));
+                    }
+                }
+            }
 
             // `PseudonymDerived` records the moment a pseudonym came into
             // existence. A returning member's pseudonym was derived on their
