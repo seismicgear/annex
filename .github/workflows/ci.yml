@@ -97,6 +97,13 @@ jobs:
         run: node scripts/test-proofs.js
         working-directory: zk
 
+      # `zk-production-gate`, the other named gate that ran nowhere. The
+      # globbed "Harness script tests" step below matches
+      # scripts/tests/*.test.sh; this script is in scripts/ and is not named
+      # *.test.sh, so it matched nothing. It asserts that this step exists.
+      - name: Production ZK provenance gate
+        run: sh scripts/verify-production-rejects-dev-fixtures.sh
+
       # 41 tests over api/signal.js — the federation signaling relay, and the
       # canonical signing string that crates/annex-federation/src/signal.rs
       # has to match byte for byte. Named by no workflow until now, which is

@@ -103,6 +103,16 @@ else
     echo -e "${YELLOW}>>> SKIPPED${NC}: zk proof round-trip (no artifacts in zk/keys — run 'cd zk && npm ci && node scripts/build-circuits.js && node scripts/dev-setup-groth16.js')"
 fi
 
+# ---------- Production ZK provenance gate ----------
+#
+# `zk-production-gate` is a named release gate and, until this line existed, it
+# ran nowhere: `release-gates.md` claimed a workflow step for it, and the
+# globbed `scripts/tests/*.test.sh` loop above matches neither this file's
+# directory nor its suffix. Twelve assertions about whether a release can ship
+# dev-fixture ZK keys, invoked by hand when somebody remembered. The script now
+# asserts that this line is here.
+run_step "production ZK provenance gate" sh scripts/verify-production-rejects-dev-fixtures.sh
+
 # ---------- Rust tests ----------
 if [ -n "$CARGO_TEST_EXTRA" ]; then
     run_step "cargo test (Rust)" cargo test --workspace --exclude annex-desktop $CARGO_TEST_EXTRA

@@ -214,6 +214,27 @@ else
   bad "release-desktop.yml not found at ${WORKFLOW}"
 fi
 
+# ── And something has to actually call THIS ────────────────────────────────
+#
+# The same lesson one level out, and it had already happened here: this script
+# asserts that a release runs `verify-artifacts.js`, and nothing ran this
+# script. `release-gates.md` named a workflow step for it that does not exist;
+# the globbed "Harness script tests" step in ci.yml matches
+# `scripts/tests/*.test.sh`, and this file is neither in that directory nor
+# named with that suffix, so it matched nothing and nobody noticed. Twelve
+# assertions about the most consequential gate in the repo, run by hand, when
+# someone remembered.
+for caller in "${ROOT_DIR}/scripts/test-all.sh" "${ROOT_DIR}/.github/workflows/ci.yml"; do
+  name=$(basename "${caller}")
+  if [ ! -f "${caller}" ]; then
+    bad "${name} not found — cannot confirm this gate is invoked"
+  elif grep -q 'verify-production-rejects-dev-fixtures.sh' "${caller}"; then
+    ok "${name} invokes this gate"
+  else
+    bad "${name} does not invoke this gate — it would run nowhere again"
+  fi
+done
+
 echo "[prod-gate] ${PASSES} passed, ${FAILURES} failed"
 [ "${FAILURES}" -eq 0 ] || exit 1
 echo "[prod-gate] PASS: the production ZK gate refuses everything it should and is wired into the release."
