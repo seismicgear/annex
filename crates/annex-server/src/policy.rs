@@ -195,6 +195,37 @@ pub async fn recalculate_agent_alignments(state: Arc<AppState>) -> Result<(), Ap
                 ],
             ).map_err(|e| ApiError::InternalServerError(format!("update failed: {e}")))?;
 
+            // A deactivated agent's TOKENS have to stop verifying too.
+            //
+            // The sweep used to set `active = 0` and close the current socket,
+            // and stop there. `platform_identities.active` was untouched, so
+            // `auth_middleware` still accepted the agent's session token; it
+            // reconnected and carried on. `AgentDisconnected` went into the
+            // audit log about an agent that had not been disconnected in any
+            // durable sense. Bumping the token epoch inside THIS transaction
+            // means the deactivation and the revocation commit together —
+            // revoking afterwards would leave a window in which the row says
+            // inactive and the token still works.
+            if !active {
+                match annex_identity::platform::bump_token_epoch(
+                    &tx,
+                    state_clone.server_id,
+                    &pseudonym,
+                ) {
+                    Ok(epoch) => tracing::info!(
+                        agent = %pseudonym,
+                        token_epoch = epoch,
+                        "conflict-aligned agent's sessions revoked",
+                    ),
+                    // An agent registration with no platform identity is a
+                    // broken row, not a reason to abandon the sweep.
+                    Err(e) => tracing::warn!(
+                        agent = %pseudonym,
+                        "could not revoke sessions for a deactivated agent: {e}",
+                    ),
+                }
+            }
+
             // Emit presence event (SSE)
              let _ = state_clone.presence_tx.send(PresenceEvent::NodeUpdated {
                 pseudonym_id: pseudonym.clone(),

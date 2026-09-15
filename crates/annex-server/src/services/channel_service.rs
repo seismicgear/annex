@@ -60,6 +60,8 @@ use axum::http::{HeaderMap, StatusCode};
 use rusqlite::{params, OptionalExtension};
 use thiserror::Error;
 
+use crate::services::agent_policy::{self, ActionRefusal};
+
 use crate::api_federation::find_commitment_for_pseudonym;
 use crate::middleware::verify_zk_membership_header;
 use crate::AppState;
@@ -119,6 +121,17 @@ pub enum ChannelServiceError {
     /// Carries no payload because the JSON body is fixed.
     #[error("voice not configured")]
     VoiceNotConfigured,
+}
+
+/// `agent_policy` answers to no protocol of its own, so each caller maps its
+/// refusal. Two callers do it identically, which is what this `From` is for.
+impl From<ActionRefusal> for ChannelServiceError {
+    fn from(refusal: ActionRefusal) -> Self {
+        match refusal {
+            ActionRefusal::Forbidden(m) => ChannelServiceError::Forbidden(m),
+            ActionRefusal::Internal(m) => ChannelServiceError::Internal(m),
+        }
+    }
 }
 
 impl ChannelServiceError {
@@ -274,6 +287,29 @@ impl ChannelService {
         identity: &PlatformIdentity,
         req: CreateChannelRequest,
     ) -> Result<CreateChannelOutcome, ChannelServiceError> {
+        // Creating a channel sets policy other participants live under, so it
+        // is grouped with voice rather than with text for a partially-aligned
+        // agent. See `AgentAction::allowed_when_partial`.
+        {
+            let pool = self.state.pool.clone();
+            let server_id = self.state.server_id;
+            let pid = identity.pseudonym_id.clone();
+            tokio::task::spawn_blocking(move || -> Result<(), ChannelServiceError> {
+                let conn = pool
+                    .get()
+                    .map_err(|e| ChannelServiceError::Internal(format!("pool: {e}")))?;
+                agent_policy::check_agent_action(
+                    &conn,
+                    server_id,
+                    &pid,
+                    agent_policy::AgentAction::CreateChannel,
+                )
+                .map_err(ChannelServiceError::from)
+            })
+            .await
+            .map_err(|e| ChannelServiceError::Internal(format!("join: {e}")))??;
+        }
+
         if !identity.can_moderate {
             return Err(ChannelServiceError::Forbidden(
                 "insufficient capabilities".to_string(),
@@ -853,8 +889,12 @@ impl ChannelService {
         reply_to: Option<String>,
         client_request_id: Option<String>,
     ) -> Result<(Message, bool, SendOutcome), ChannelServiceError> {
-        self.require_membership(sender_pseudonym, channel_id)
-            .await?;
+        self.require_membership_for(
+            sender_pseudonym,
+            channel_id,
+            Some(agent_policy::AgentAction::SendText),
+        )
+        .await?;
 
         let server_id = self.state.server_id;
         let pool = self.state.pool.clone();
@@ -1074,8 +1114,12 @@ impl ChannelService {
         message_id: &str,
         new_content: &str,
     ) -> Result<(Message, bool), ChannelServiceError> {
-        self.require_membership(sender_pseudonym, channel_id)
-            .await?;
+        self.require_membership_for(
+            sender_pseudonym,
+            channel_id,
+            Some(agent_policy::AgentAction::EditText),
+        )
+        .await?;
 
         let pool = self.state.pool.clone();
         let mid = message_id.to_string();
@@ -1139,8 +1183,12 @@ impl ChannelService {
         channel_id: &str,
         message_id: &str,
     ) -> Result<(Message, bool), ChannelServiceError> {
-        self.require_membership(sender_pseudonym, channel_id)
-            .await?;
+        self.require_membership_for(
+            sender_pseudonym,
+            channel_id,
+            Some(agent_policy::AgentAction::DeleteText),
+        )
+        .await?;
 
         let pool = self.state.pool.clone();
         let mid = message_id.to_string();
@@ -1233,6 +1281,31 @@ impl ChannelService {
             return Err(ChannelServiceError::Forbidden(
                 "voice is not enabled for this identity".to_string(),
             ));
+        }
+
+        // And, for an agent, whether its alignment still permits voice. This
+        // function is the shared gate for BOTH voice paths — the HTTP join and
+        // the WebSocket `webrtc_offer` frame — which is why the check goes here
+        // rather than at either call site; that drift is what this function was
+        // extracted to end.
+        {
+            let pool = self.state.pool.clone();
+            let server_id = self.state.server_id;
+            let pid = identity.pseudonym_id.clone();
+            tokio::task::spawn_blocking(move || -> Result<(), ChannelServiceError> {
+                let conn = pool
+                    .get()
+                    .map_err(|e| ChannelServiceError::Internal(format!("pool: {e}")))?;
+                agent_policy::check_agent_action(
+                    &conn,
+                    server_id,
+                    &pid,
+                    agent_policy::AgentAction::VoiceMedia,
+                )
+                .map_err(ChannelServiceError::from)
+            })
+            .await
+            .map_err(|e| ChannelServiceError::Internal(format!("join: {e}")))??;
         }
 
         let channel = self.fetch_channel(channel_id.to_string()).await?;
@@ -1450,27 +1523,54 @@ impl ChannelService {
         pseudonym_id: &str,
         channel_id: &str,
     ) -> Result<(), ChannelServiceError> {
+        self.require_membership_for(pseudonym_id, channel_id, None)
+            .await
+    }
+
+    /// Membership, and — for an action alignment governs — whether this agent
+    /// may still take it.
+    ///
+    /// Alignment used to be checked once, at the join, and never again.
+    /// `recalculate_agent_alignments` exists to cut off an agent whose
+    /// principles no longer match the server's; all it did was set
+    /// `agent_registrations.active = 0` and drop the socket. It did not touch
+    /// `channel_members` and it did not touch `platform_identities.active`, so
+    /// the agent's session token still verified, it reconnected, and it kept
+    /// sending, editing and deleting in every channel it had already joined —
+    /// while `AgentDisconnected` sat in the audit log saying otherwise.
+    ///
+    /// Both queries run in ONE `spawn_blocking` on ONE pooled connection.
+    /// Message send is the busiest path in the app and already pays for a
+    /// checkout; a second one per frame would double that.
+    async fn require_membership_for(
+        &self,
+        pseudonym_id: &str,
+        channel_id: &str,
+        action: Option<agent_policy::AgentAction>,
+    ) -> Result<(), ChannelServiceError> {
         let pool = self.state.pool.clone();
         let server_id = self.state.server_id;
         let cid = channel_id.to_string();
         let pid = pseudonym_id.to_string();
-        let member: bool =
-            tokio::task::spawn_blocking(move || -> Result<bool, ChannelServiceError> {
-                let conn = pool
-                    .get()
-                    .map_err(|e| ChannelServiceError::Internal(format!("pool: {e}")))?;
-                is_member(&conn, server_id, &cid, &pid)
-                    .map_err(|e| ChannelServiceError::Internal(format!("is_member: {e}")))
-            })
-            .await
-            .map_err(|e| ChannelServiceError::Internal(format!("join: {e}")))??;
-
-        if !member {
-            return Err(ChannelServiceError::Forbidden(
-                "not a channel member".to_string(),
-            ));
-        }
-        Ok(())
+        tokio::task::spawn_blocking(move || -> Result<(), ChannelServiceError> {
+            let conn = pool
+                .get()
+                .map_err(|e| ChannelServiceError::Internal(format!("pool: {e}")))?;
+            let member = is_member(&conn, server_id, &cid, &pid)
+                .map_err(|e| ChannelServiceError::Internal(format!("is_member: {e}")))?;
+            if !member {
+                return Err(ChannelServiceError::Forbidden(
+                    "not a channel member".to_string(),
+                ));
+            }
+            if let Some(action) = action {
+                agent_policy::check_agent_action(&conn, server_id, &pid, action)
+                    .map_err(ChannelServiceError::from)?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| ChannelServiceError::Internal(format!("join: {e}")))?
     }
 
     /// AI-agent voice client lifecycle for the join path. Idempotent: if a

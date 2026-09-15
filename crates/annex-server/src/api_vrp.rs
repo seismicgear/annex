@@ -416,21 +416,55 @@ pub async fn agent_handshake_handler(
             // If an existing agent re-handshakes and gets Conflict, update their
             // status in the DB and deactivate them. New agents with Conflict are
             // simply not inserted (they never had a row).
+            // `VrpAlignmentStatus::Conflict.to_string()`, not the literal
+            // `'Conflict'`. This branch wrote a different spelling from every
+            // other writer of the column — the success path above and
+            // `policy.rs` both use `.to_string()`, which produces `CONFLICT` —
+            // so a row this branch touched read back as an unparseable status
+            // in `api_agent.rs` and 500'd there. The tolerant two-step parse in
+            // `agent_policy` and `channel_policy` exists because of exactly
+            // this, and one fewer spelling is better than a more tolerant
+            // parser.
             let updated = tx
                 .execute(
                     "UPDATE agent_registrations
-                     SET alignment_status = 'Conflict',
+                     SET alignment_status = ?3,
                          transfer_scope = 'NO_TRANSFER',
                          active = 0,
                          updated_at = datetime('now')
                      WHERE server_id = ?1 AND pseudonym_id = ?2",
-                    rusqlite::params![state.server_id, payload.pseudonym_id],
+                    rusqlite::params![
+                        state.server_id,
+                        payload.pseudonym_id,
+                        VrpAlignmentStatus::Conflict.to_string()
+                    ],
                 )
                 .map_err(|e| {
                     ApiError::InternalServerError(format!(
                         "failed to deactivate conflict agent: {e}"
                     ))
                 })?;
+
+            // Revoke the agent's sessions in the SAME transaction, so a
+            // Conflict verdict survives a reconnect. Without this the row said
+            // `active = 0` while the agent's existing token still verified.
+            if updated > 0 {
+                match annex_identity::platform::bump_token_epoch(
+                    &tx,
+                    state.server_id,
+                    &payload.pseudonym_id,
+                ) {
+                    Ok(epoch) => tracing::info!(
+                        agent = %payload.pseudonym_id,
+                        token_epoch = epoch,
+                        "conflict-aligned agent's sessions revoked",
+                    ),
+                    Err(e) => tracing::warn!(
+                        agent = %payload.pseudonym_id,
+                        "could not revoke sessions for a conflict agent: {e}",
+                    ),
+                }
+            }
 
             tx.commit().map_err(|e| {
                 ApiError::InternalServerError(format!("failed to commit transaction: {e}"))

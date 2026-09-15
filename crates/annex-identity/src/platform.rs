@@ -166,7 +166,32 @@ pub fn revoke_identity_sessions(
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(IdentityError::DatabaseError)?;
-    let changed = tx
+    let epoch = bump_token_epoch(&tx, server_id, pseudonym_id)?;
+    tx.commit().map_err(IdentityError::DatabaseError)?;
+    Ok(epoch)
+}
+
+/// The revocation itself, on a connection that is ALREADY inside a transaction.
+///
+/// [`revoke_identity_sessions`] takes a `&mut Connection` because it opens its
+/// own `IMMEDIATE` transaction, which makes it unusable from a caller that is
+/// already inside one — and the conflict sweep in the server's
+/// `recalculate_agent_alignments` is exactly that caller. Opening a nested
+/// transaction there is not an option (SQLite has none, and a `SAVEPOINT` is
+/// DEFERRED underneath), and dropping the sweep's transaction to revoke and
+/// then reopening it would make the deactivation and the revocation two
+/// separate commits with a window between them in which the agent is marked
+/// inactive and its tokens still verify.
+///
+/// So the body lives here and both callers share it. Anything taking a
+/// `&Connection` inside a transaction is trusting the caller to have opened it
+/// `IMMEDIATE`; both do.
+pub fn bump_token_epoch(
+    conn: &Connection,
+    server_id: i64,
+    pseudonym_id: &str,
+) -> Result<i64, IdentityError> {
+    let changed = conn
         .execute(
             "UPDATE platform_identities
              SET token_epoch = token_epoch + 1, updated_at = datetime('now')
@@ -177,16 +202,13 @@ pub fn revoke_identity_sessions(
     if changed == 0 {
         return Err(IdentityError::IdentityNotFound(pseudonym_id.to_string()));
     }
-    let epoch: i64 = tx
-        .query_row(
-            "SELECT token_epoch FROM platform_identities
-             WHERE server_id = ?1 AND pseudonym_id = ?2",
-            params![server_id, pseudonym_id],
-            |row| row.get(0),
-        )
-        .map_err(IdentityError::DatabaseError)?;
-    tx.commit().map_err(IdentityError::DatabaseError)?;
-    Ok(epoch)
+    conn.query_row(
+        "SELECT token_epoch FROM platform_identities
+         WHERE server_id = ?1 AND pseudonym_id = ?2",
+        params![server_id, pseudonym_id],
+        |row| row.get(0),
+    )
+    .map_err(IdentityError::DatabaseError)
 }
 
 /// Updates the capability flags for a platform identity.

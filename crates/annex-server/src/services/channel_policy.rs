@@ -110,8 +110,14 @@ pub(crate) fn check_join_policy(
 
     let alignment_status: Option<String> = conn
         .query_row(
+            // `AND active = 1` so join and every action gate agree on what an
+            // agent registration IS. Without it a registration the conflict
+            // sweep had deactivated still satisfied the join check on its
+            // stored `alignment_status`, which the sweep does not always
+            // change — `rtx_repository` already treated `active` as the gate,
+            // and this query did not.
             "SELECT alignment_status FROM agent_registrations \
-             WHERE server_id = ?1 AND pseudonym_id = ?2",
+             WHERE server_id = ?1 AND pseudonym_id = ?2 AND active = 1",
             params![server_id, identity.pseudonym_id],
             |row| row.get(0),
         )

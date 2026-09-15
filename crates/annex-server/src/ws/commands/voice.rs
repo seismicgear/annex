@@ -81,6 +81,50 @@ pub(crate) async fn handle(ctx: &CommandContext<'_>, channel_id: String, text: S
         }
     }
 
+    // Alignment, at the moment of the action.
+    //
+    // VoiceIntent bypasses `ChannelService` entirely, so the gate in
+    // `ensure_voice_allowed` does not cover it. Without this an agent swept to
+    // Conflict keeps the server's voice speaking its words in every channel it
+    // had already joined.
+    {
+        let pool = ctx.state.pool.clone();
+        let server_id = ctx.state.server_id;
+        let pid = ctx.pseudonym.to_string();
+        let checked = tokio::task::spawn_blocking(move || {
+            let conn = pool.get().map_err(|e| {
+                crate::services::agent_policy::ActionRefusal::Internal(format!("pool: {e}"))
+            })?;
+            crate::services::agent_policy::check_agent_action(
+                &conn,
+                server_id,
+                &pid,
+                crate::services::agent_policy::AgentAction::VoiceIntent,
+            )
+        })
+        .await;
+        match checked {
+            Ok(Ok(())) => {}
+            Ok(Err(crate::services::agent_policy::ActionRefusal::Forbidden(m))) => {
+                send_ws_error(ctx.tx, m);
+                return;
+            }
+            Ok(Err(crate::services::agent_policy::ActionRefusal::Internal(e))) => {
+                tracing::error!(
+                    pseudonym = %ctx.pseudonym,
+                    "voice intent alignment check failed: {e}",
+                );
+                send_ws_error(ctx.tx, "Internal error checking agent policy".to_string());
+                return;
+            }
+            Err(e) => {
+                tracing::error!(pseudonym = %ctx.pseudonym, "voice intent alignment task failed: {e}");
+                send_ws_error(ctx.tx, "Internal error checking agent policy".to_string());
+                return;
+            }
+        }
+    }
+
     let voice_profile_id = {
         let pool = ctx.state.pool.clone();
         let server_id = ctx.state.server_id;
