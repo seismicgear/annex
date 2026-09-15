@@ -12,7 +12,7 @@ backed by a command you can re-run.
 | Frontend (vitest) | 502 tests across 54 files + eslint + `tsc -b` (which now covers the test files themselves — see below) | `cd client && npm test && npm run lint && npx tsc -b` |
 | Playwright functional suite | 13 tests | `bash scripts/e2e-server.sh start && cd client && npm run test:e2e` |
 | Group call (3 real browser contexts, fake media) | 2 tests | `bash scripts/e2e-all.sh group-call` |
-| Harness scripts | 11 files | `for t in scripts/tests/*.test.sh; do bash "$t"; done` |
+| Harness scripts | 12 files | `for t in scripts/tests/*.test.sh; do bash "$t"; done` |
 | Federation signaling relay | 59 tests | `node --test api/signal.test.mjs` |
 | ZK proof round-trip (57 assertions: tamper rejection, and the v2 challenge binding) | `zk-proof` gate | `cd zk && node scripts/test-proofs.js` |
 | Production ZK gate (refuses what it should, is wired into the release, AND is invoked by CI — it was not) | 14 assertions | `sh scripts/verify-production-rejects-dev-fixtures.sh` |

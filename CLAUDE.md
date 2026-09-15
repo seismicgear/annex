@@ -190,6 +190,17 @@ invalidating one:
   0.0022 and 0.0003, under the tolerance, which is exactly why the
   baselines have to be deleted before re-recording rather than left for
   `--update-baselines` to notice.
+
+  **`node scripts/baseline-drift.mjs` does this counting for you** — every
+  changed baseline against `HEAD`, sorted, split into RESIZED (a clip moved:
+  a different picture, not a drifted one, and never averaged into a ratio),
+  MOVED past `maxDiffPixelRatio`, and noise within it. It has no dependencies
+  (zlib plus PNG's five row filters), so it runs during a bisect where
+  `client/node_modules` belongs to the wrong commit. `scripts/tests/
+  baseline-drift.test.sh` pins the decoder against a fixture built to tie
+  Paeth's predictor distances — without that tie, the usual mis-write of the
+  tie-break decodes identically and the test passes against a broken
+  decoder, which is what the first version of it did.
 - **A recording run proves nothing.** `--update-baselines` rewrites whatever
   it sees, so it cannot fail on drift and cannot tell you the guard holds.
   Every claim about the audit comes from a plain run afterwards, against the
