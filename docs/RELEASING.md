@@ -170,9 +170,43 @@ Assets: the desktop installers, the updater bundles and their signatures,
 `latest.json`, `SHA256SUMS`, the SBOMs, and
 `annex-server-<version>-x86_64-unknown-linux-gnu.tar.gz`.
 
-**There is no published container image yet.** `docker-compose.prod.yml` still
-refers to a locally-built tag, and publishing to GHCR is the remaining piece of
-the server release path — see `CHANGELOG.md` for why it was not attempted blind.
+### The container image
+
+`build-image` builds the server image from `Dockerfile` on every run of this
+workflow and **pushes only on a tag**, to `ghcr.io/seismicgear/annex:<version>`.
+A `workflow_dispatch` therefore proves the Dockerfile still builds and that the
+image starts, and publishes nothing — a dry run that pushes is not a dry run.
+
+The job builds with `load: true` rather than `push: true` even on a tag, because
+it runs `annex-server --check` inside the image before pushing: the same
+question the tarball answers, which is whether the thing STARTS. An image that
+built but lost a v2 vkey or the pinned alignment model passes every other gate
+here and fails on an operator's machine.
+
+`latest` is deliberately never pushed. The release this workflow assembles is a
+DRAFT until a human publishes it, and moving `latest` would hand every
+`docker pull` a version nobody had decided to ship. Move it by hand after
+publishing:
+
+```bash
+docker pull  ghcr.io/seismicgear/annex:0.1.0
+docker tag   ghcr.io/seismicgear/annex:0.1.0 ghcr.io/seismicgear/annex:latest
+docker push  ghcr.io/seismicgear/annex:latest
+```
+
+Operators run the published image by setting `ANNEX_IMAGE`; without it
+`docker-compose.prod.yml` builds locally exactly as before:
+
+```bash
+ANNEX_IMAGE=ghcr.io/seismicgear/annex:0.1.0 \
+  docker compose -f docker-compose.prod.yml pull
+```
+
+**Not verified from the development container**: it has the docker CLI but no
+daemon, so the image build, the start check and the push have never been
+executed — only the workflow's YAML, the compose override in both directions
+and the `--check` flag itself were. The first tag, or the first dispatch that
+gets a runner, is where this job is proven.
 
 ## 5. After
 

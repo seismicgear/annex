@@ -78,7 +78,17 @@ services:
         # command could not build its own image. Override with --build-arg to
         # move to a different upstream release.
         ANNEX_BUILD_PROFILE: production
-    image: annex:production
+    # Build locally by default; point ANNEX_IMAGE at a published tag to pull one
+    # instead. The release workflow pushes `ghcr.io/seismicgear/annex:<version>`
+    # on a tag, so
+    #
+    #     ANNEX_IMAGE=ghcr.io/seismicgear/annex:0.1.0 docker compose \
+    #       -f docker-compose.prod.yml pull && ... up -d
+    #
+    # runs the image CI built, verified and started, rather than one built here
+    # from whatever the working tree happens to hold. `latest` is deliberately
+    # never published: the GitHub Release is a draft until a human publishes it.
+    image: ${ANNEX_IMAGE:-annex:production}
     restart: unless-stopped
 
     environment:
@@ -142,7 +152,10 @@ services:
   # writes — including the signing key, which the old manual procedure did not
   # copy at all.
   backup:
-    image: annex:production
+    # Same image as the server on purpose — it runs `scripts/backup.sh` from it,
+    # so a version skew between the two would back up with a different sqlite3
+    # than the one that wrote the database.
+    image: ${ANNEX_IMAGE:-annex:production}
     restart: unless-stopped
     depends_on:
       annex:

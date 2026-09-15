@@ -166,6 +166,107 @@ jobs:
           path: annex-server-*.tar.gz
           if-no-files-found: error
 
+  # ── The server container image ───────────────────────────────────────────
+  #
+  # `docs/RELEASING.md` said "there is no published container image yet" and
+  # `docker-compose.prod.yml` named a locally-built tag, so the documented
+  # production deployment path ended at "build it yourself" while the desktop
+  # app had a signed, checksummed, SBOM'd release pipeline. The Dockerfile was
+  # already the strict half of that story — it verifies all five ZK manifests,
+  # runs the ceremony verifier, installs the VERIFIED bytes rather than whatever
+  # is in `zk/keys`, and pins every download by digest — and none of it was ever
+  # built by CI.
+  #
+  # Build always, push only on a tag. A dispatch proves the Dockerfile still
+  # builds and that the image STARTS, without publishing anything: publishing is
+  # not reversible, and a dry run that pushes is not a dry run.
+  build-image:
+    name: Build (server container image)
+    needs: preflight
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # This build compiles the Rust workspace in release mode, builds
+      # whisper.cpp from source and bundles the client, in one context. A
+      # standard runner has ~14 GB free and the toolcaches nothing here uses
+      # account for several of them.
+      - name: Reclaim runner disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Resolve the image reference
+        id: img
+        run: |
+          set -euo pipefail
+          version=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          repo=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          echo "ref=ghcr.io/${repo}:${version}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      # `load: true`, not `push: true`, even on a tag — the image has to be in
+      # the local daemon for the start check below, and an image is pushed only
+      # after something has run it.
+      - name: Build the image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          push: false
+          tags: ${{ steps.img.outputs.ref }}
+          build-args: |
+            ANNEX_BUILD_PROFILE=production
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The same question the tarball answers, asked of the image: does it
+      # START? `--check` runs the whole of `prepare_server` — config validation,
+      # the production-profile gates, the signing key, the v2 vkeys, the pinned
+      # alignment model, the migrations — and exits without serving. An image
+      # that built but omitted a vkey or the model passes every other check in
+      # this workflow and fails on an operator's machine.
+      #
+      # A real random signing key: a production profile rejects a single-byte
+      # fill as weak, so a placeholder fails this step for a reason that has
+      # nothing to do with the image.
+      - name: Prove the image starts
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --entrypoint /app/annex-server \
+            -e ANNEX_BUILD_PROFILE=production \
+            -e ANNEX_CORS_ORIGINS=https://example.invalid \
+            -e ANNEX_SIGNING_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" \
+            -e ANNEX_DB_PATH=/tmp/check.db \
+            -e ANNEX_PORT=0 \
+            "${{ steps.img.outputs.ref }}" --check
+
+      - name: Log in to GHCR
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Only the exact version, never `latest`. The GitHub Release this workflow
+      # produces is a DRAFT that a human publishes; moving `latest` here would
+      # hand every `docker pull` a version nobody had yet decided to ship.
+      # `docs/RELEASING.md` records moving it as a step after publishing.
+      - name: Push the image
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          docker push "${{ steps.img.outputs.ref }}"
+          echo "pushed ${{ steps.img.outputs.ref }}"
+
   # ── Required platforms: Linux + Windows. A failure here fails the release. ──
   build-linux:
     name: Build (Linux x86_64, required)
@@ -503,7 +604,7 @@ jobs:
   # build did produce artifacts, they'll be picked up by download-artifact
   # via the artifacts/** glob below.
   release:
-    needs: [build-linux, build-windows, build-server]
+    needs: [build-linux, build-windows, build-server, build-image]
     runs-on: ubuntu-latest
     # A tag publishes; a dispatch with dry_run proves the pipeline without one.
     # Before this, the only way to find out whether the release job worked was

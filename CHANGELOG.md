@@ -96,6 +96,25 @@ supersession banner and is kept for provenance rather than maintained.
 
 ### Added
 
+- **A published server container image.** `docker-compose.prod.yml` named a
+  locally-built tag and `docs/RELEASING.md` said outright that there was no
+  published image, so the documented production deployment ended at "build it
+  yourself" while the desktop app had a signed, checksummed, SBOM'd pipeline.
+  The `Dockerfile` was already the strict half of that story — it verifies all
+  five ZK manifests, runs the ceremony verifier, installs the *verified* bytes
+  rather than whatever sits in `zk/keys`, and pins every download by digest —
+  and CI built it never. `release-desktop.yml::build-image` builds it on every
+  run and pushes `ghcr.io/seismicgear/annex:<version>` only on a tag, after
+  running `annex-server --check` *inside the image*: an image that built but
+  lost a v2 vkey or the alignment model passes every other gate and fails on an
+  operator's machine. `latest` is deliberately never pushed, because the release
+  is a draft until a human publishes it. Operators select the published image
+  with `ANNEX_IMAGE`; unset, compose builds locally exactly as before. Not yet
+  executed anywhere: this development container has the docker CLI and no
+  daemon, so the build, the start check and the push are proven by the first
+  run that gets a runner, and `docs/RELEASING.md` says so rather than implying
+  otherwise.
+
 - **A server release artifact.** The only release pipeline in this repository
   built the desktop app; an operator who wanted to run a server had
   `docker build` from source and nothing else. `release-desktop.yml` now builds
