@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type * as serversDb from '@/lib/servers';
+import type * as api from '@/lib/api';
+import type { SavedServer } from '@/types';
 
 // Track mock calls for assertions
 const mockConnectWs = vi.fn();
@@ -6,13 +9,13 @@ const mockSelectIdentity = vi.fn(async () => {});
 const mockLoadPermissions = vi.fn(async () => {});
 const mockSetApiBaseUrl = vi.fn();
 const mockSaveServer = vi.fn(async () => {});
-const mockListServers = vi.fn(async () => []);
+const mockListServers = vi.fn<typeof serversDb.listServers>(async () => []);
 const mockGetServerByIdentityId = vi.fn(async () => null);
 const mockRemoveServer = vi.fn(async () => {});
 const mockUpdateCachedSummary = vi.fn(async () => {});
 const mockGetServerSummary = vi.fn(async () => ({ slug: 'test', label: 'Test' }));
-const mockCreateServerEntry = vi.fn(
-  (baseUrl: string, slug: string, label: string, identityId: string) => ({
+const mockCreateServerEntry = vi.fn<typeof serversDb.createServerEntry>(
+  (baseUrl, slug, label, identityId) => ({
     id: `gen-${Math.random().toString(36).slice(2)}`,
     baseUrl,
     slug,
@@ -26,18 +29,25 @@ const mockCreateServerEntry = vi.fn(
   }),
 );
 
-// Mock dependencies before importing the store
+// Mock dependencies before importing the store.
+//
+// Each mock stays behind a forwarding arrow: `vi.mock` is hoisted, so this
+// factory can run during the static import phase — before the `const`s above
+// are initialised — and naming one directly here throws on the temporal dead
+// zone. The rest parameter is typed as the mock's own argument tuple because
+// a spread of `unknown[]` has no tuple type to spread; at runtime a rest
+// parameter still collects every argument, so the forwarding is unchanged.
 vi.mock('@/lib/servers', () => ({
-  listServers: (...args: unknown[]) => mockListServers(...args),
-  saveServer: (...args: unknown[]) => mockSaveServer(...args),
-  getServerByIdentityId: (...args: unknown[]) => mockGetServerByIdentityId(...args),
-  createServerEntry: (...args: unknown[]) => (mockCreateServerEntry as (...a: unknown[]) => unknown)(...args),
-  removeServer: (...args: unknown[]) => mockRemoveServer(...args),
-  updateCachedSummary: (...args: unknown[]) => mockUpdateCachedSummary(...args),
+  listServers: (...args: Parameters<typeof mockListServers>) => mockListServers(...args),
+  saveServer: (...args: Parameters<typeof mockSaveServer>) => mockSaveServer(...args),
+  getServerByIdentityId: (...args: Parameters<typeof mockGetServerByIdentityId>) => mockGetServerByIdentityId(...args),
+  createServerEntry: (...args: Parameters<typeof mockCreateServerEntry>) => mockCreateServerEntry(...args),
+  removeServer: (...args: Parameters<typeof mockRemoveServer>) => mockRemoveServer(...args),
+  updateCachedSummary: (...args: Parameters<typeof mockUpdateCachedSummary>) => mockUpdateCachedSummary(...args),
   getServerBySlug: vi.fn(async () => undefined),
 }));
 
-const mockGetServerImage = vi.fn(async () => ({ image_url: null }));
+const mockGetServerImage = vi.fn<typeof api.getServerImage>(async () => ({ image_url: null }));
 const mockGetRemoteServerSummary = vi.fn(async () => ({
   slug: 'remote',
   label: 'Remote Server',
@@ -47,9 +57,9 @@ let mockCurrentApiBaseUrl = '';
 vi.mock('@/lib/api', () => ({
   setApiBaseUrl: (...args: unknown[]) => { mockCurrentApiBaseUrl = args[0] as string; mockSetApiBaseUrl(...args); },
   getApiBaseUrl: () => mockCurrentApiBaseUrl,
-  getServerImage: (...args: unknown[]) => mockGetServerImage(...args),
-  getServerSummary: (...args: unknown[]) => mockGetServerSummary(...args),
-  getRemoteServerSummary: (...args: unknown[]) => mockGetRemoteServerSummary(...args),
+  getServerImage: (...args: Parameters<typeof mockGetServerImage>) => mockGetServerImage(...args),
+  getServerSummary: (...args: Parameters<typeof mockGetServerSummary>) => mockGetServerSummary(...args),
+  getRemoteServerSummary: (...args: Parameters<typeof mockGetRemoteServerSummary>) => mockGetRemoteServerSummary(...args),
   resolveUrl: (url: string) => url,
   // MessageBubble subscribes to the attachment grant, so any mock of
   // `@/lib/api` that a message component renders through needs these.
@@ -64,8 +74,8 @@ vi.mock('./identity', () => ({
     {
       getState: () => ({
         identity: { pseudonymId: 'p1', sessionToken: 'session-tok-1' },
-        selectIdentity: (...args: unknown[]) => mockSelectIdentity(...args),
-        loadPermissions: (...args: unknown[]) => mockLoadPermissions(...args),
+        selectIdentity: (...args: Parameters<typeof mockSelectIdentity>) => mockSelectIdentity(...args),
+        loadPermissions: (...args: Parameters<typeof mockLoadPermissions>) => mockLoadPermissions(...args),
         cloneForServer: () => mockCloneForServer(),
       }),
       setState: vi.fn(),
@@ -134,7 +144,7 @@ describe('servers store', () => {
     const { useServersStore } = await import('./servers');
 
     useServersStore.setState({
-      servers: [{ id: 'pending-1', baseUrl: 'https://remote.example.com', slug: 'remote', label: 'Remote', identityId: '', cachedSummary: null, personaId: null, accentColor: '#e63946', lastConnectedAt: null } as Record<string, unknown>],
+      servers: [{ id: 'pending-1', baseUrl: 'https://remote.example.com', slug: 'remote', label: 'Remote', identityId: '', cachedSummary: null, personaId: null, accentColor: '#e63946', lastConnectedAt: null } as unknown as SavedServer],
       activeServerId: null,
     });
 
@@ -271,6 +281,8 @@ describe('servers store', () => {
   it('cleanupFailedRegistration removes placeholder and clears pendingRegistrationServerId', async () => {
     const { useServersStore } = await import('./servers');
 
+    // Same deliberately-partial placeholder as above: null `lastConnectedAt`
+    // for a server that has never been reached.
     const placeholder = {
       id: 'pending-fail',
       baseUrl: 'https://failed.example.com',
@@ -282,10 +294,10 @@ describe('servers store', () => {
       vrpTopic: 'annex:server:failed:v1',
       lastConnectedAt: null,
       cachedSummary: null,
-    };
+    } as unknown as SavedServer;
 
     useServersStore.setState({
-      servers: [placeholder as Record<string, unknown>],
+      servers: [placeholder],
       pendingRegistrationServerId: 'pending-fail',
     });
 
@@ -323,7 +335,7 @@ describe('servers store', () => {
       vrpTopic: 'annex:server:remote:v1',
       lastConnectedAt: new Date().toISOString(),
       cachedSummary: { slug: 'remote', label: 'Remote Server', total_active_members: 5 },
-    };
+    } as unknown as SavedServer;
     mockCreateServerEntry.mockReturnValueOnce(placeholder);
     mockListServers.mockResolvedValueOnce([placeholder]);
 
@@ -362,7 +374,7 @@ describe('servers store', () => {
     };
     useServersStore.setState({ servers: [serverA, serverB], activeServerId: null });
 
-    let resolveBImage: ((value: { image_url: string | null }) => void) | null = null;
+    let resolveBImage!: (value: { image_url: string | null }) => void;
     mockGetServerImage.mockImplementation(() => new Promise((resolve) => {
       if (mockCurrentApiBaseUrl === 'https://b.example.com') {
         resolveBImage = resolve;

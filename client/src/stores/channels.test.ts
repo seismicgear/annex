@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { Message } from '@/types';
+import type { AnnexWebSocket } from '@/lib/ws';
 
 vi.mock('@/lib/api', () => ({
   listChannels: vi.fn(async () => []),
@@ -54,7 +56,7 @@ describe('channels store', () => {
 
     // Simulate some state from server A
     useChannelsStore.setState({
-      channels: [{ channel_id: 'ch1', name: 'general', channel_type: 'Text', federation_scope: 'local' } as unknown as import('./channels').Channel],
+      channels: [{ channel_id: 'ch1', name: 'general', channel_type: 'Text', topic: null, federation_scope: 'Local' }],
       activeChannelId: 'ch1',
       messages: [{ message_id: 'msg1', channel_id: 'ch1', sender_pseudonym: 'p1', content: 'hello', reply_to_message_id: null, created_at: '', edited_at: null, deleted_at: null }],
       error: 'some error',
@@ -84,7 +86,7 @@ describe('channels store', () => {
 
     // Set some initial channels
     useChannelsStore.setState({
-      channels: [{ channel_id: 'old', name: 'old', channel_type: 'Text', federation_scope: 'local' } as Record<string, unknown>],
+      channels: [{ channel_id: 'old', name: 'old', channel_type: 'Text', topic: null, federation_scope: 'Local' }],
     });
 
     await useChannelsStore.getState().loadChannels('p1');
@@ -145,7 +147,7 @@ describe('channels store', () => {
       connected: true,
     };
     useChannelsStore.setState({
-      ws: mockWs as unknown,
+      ws: mockWs as unknown as AnnexWebSocket,
       activeChannelId: 'chan-1',
       wsConnected: true,
     });
@@ -169,7 +171,7 @@ describe('channels store', () => {
       connected: true,
     };
     useChannelsStore.setState({
-      ws: mockWs as unknown,
+      ws: mockWs as unknown as AnnexWebSocket,
       activeChannelId: 'chan-1',
       wsConnected: true,
     });
@@ -277,8 +279,8 @@ describe('channels store', () => {
       const promise = new Promise<T>((res) => { resolve = res; });
       return { promise, resolve };
     };
-    const a = deferred<Array<{ message_id: string; channel_id: string; sender_pseudonym: string; content: string; created_at: string }>>();
-    const b = deferred<Array<{ message_id: string; channel_id: string; sender_pseudonym: string; content: string; created_at: string }>>();
+    const a = deferred<Message[]>();
+    const b = deferred<Message[]>();
 
     vi.mocked(apiModule.getMessages).mockImplementation((_p, channelId) => (
       channelId === 'A' ? a.promise : channelId === 'B' ? b.promise : Promise.resolve([])
@@ -298,16 +300,16 @@ describe('channels store', () => {
     connected: false,
       trackLastMessageId: vi.fn(),
     };
-    useChannelsStore.setState({ ws: ws as unknown });
+    useChannelsStore.setState({ ws: ws as unknown as AnnexWebSocket });
 
     const selectA = useChannelsStore.getState().selectChannel('p1', 'A');
     const selectB = useChannelsStore.getState().selectChannel('p1', 'B');
 
     await Promise.resolve();
-    b.resolve([{ message_id: 'b1', channel_id: 'B', sender_pseudonym: 'p2', content: 'new', created_at: '' }]);
+    b.resolve([{ message_id: 'b1', channel_id: 'B', sender_pseudonym: 'p2', content: 'new', reply_to_message_id: null, created_at: '' }]);
     await selectB;
 
-    a.resolve([{ message_id: 'a1', channel_id: 'A', sender_pseudonym: 'p2', content: 'old', created_at: '' }]);
+    a.resolve([{ message_id: 'a1', channel_id: 'A', sender_pseudonym: 'p2', content: 'old', reply_to_message_id: null, created_at: '' }]);
     await selectA;
 
     const state = useChannelsStore.getState();
@@ -322,9 +324,9 @@ describe('channels store', () => {
   it('selectChannel marks read after successful history load', async () => {
     const apiModule = await import('@/lib/api');
     vi.mocked(apiModule.getMessages).mockResolvedValueOnce([
-      { message_id: 'm3', channel_id: 'A', sender_pseudonym: 'p2', content: 'newest', created_at: '' },
-      { message_id: 'm2', channel_id: 'A', sender_pseudonym: 'p2', content: 'older', created_at: '' },
-    ] as Array<{ message_id: string; channel_id: string; sender_pseudonym: string; content: string; created_at: string }>);
+      { message_id: 'm3', channel_id: 'A', sender_pseudonym: 'p2', content: 'newest', reply_to_message_id: null, created_at: '' },
+      { message_id: 'm2', channel_id: 'A', sender_pseudonym: 'p2', content: 'older', reply_to_message_id: null, created_at: '' },
+    ]);
 
     const { useChannelsStore } = await import('./channels');
     useChannelsStore.setState({
@@ -375,9 +377,9 @@ describe('channels store', () => {
 
   it('loadOlderMessages drops stale response after channel switch', async () => {
     const apiModule = await import('@/lib/api');
-    let resolveOlder!: (value: unknown) => void;
+    let resolveOlder!: (value: Message[]) => void;
     vi.mocked(apiModule.getMessages).mockImplementationOnce(
-      () => new Promise((res) => { resolveOlder = res; }) as ReturnType<typeof apiModule.getMessages>,
+      () => new Promise<Message[]>((res) => { resolveOlder = res; }),
     );
 
     const { useChannelsStore } = await import('./channels');

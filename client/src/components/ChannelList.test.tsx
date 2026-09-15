@@ -17,6 +17,10 @@ let channelsState: {
   selectChannel: ReturnType<typeof vi.fn>;
   joinChannel: ReturnType<typeof vi.fn>;
   leaveChannel: ReturnType<typeof vi.fn>;
+  // `ChannelList` reads this to render the per-channel unread badge, and the
+  // `beforeEach` has always supplied it; it was missing from the type only
+  // because nothing typechecked this file.
+  unreadCounts: Record<string, number>;
 };
 
 vi.mock('@/stores/identity', () => ({

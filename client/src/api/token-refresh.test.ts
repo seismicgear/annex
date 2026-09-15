@@ -32,7 +32,7 @@ describe('startTokenRefresh — one failure is not the end of the session', () =
 
   it('retries within the token\'s remaining validity instead of waiting a full cycle', async () => {
     const core = await import('./core');
-    core.setSessionToken('tok');
+    core.setSessionToken('tok', 'alice');
 
     const fetchMock = vi.fn()
       .mockRejectedValueOnce(new Error('network down'))
@@ -61,7 +61,7 @@ describe('startTokenRefresh — one failure is not the end of the session', () =
 
   it('reports through onError only once the retries are exhausted', async () => {
     const core = await import('./core');
-    core.setSessionToken('tok');
+    core.setSessionToken('tok', 'alice');
 
     const fetchMock = vi.fn().mockRejectedValue(new Error('network down'));
     vi.stubGlobal('fetch', fetchMock);
@@ -80,7 +80,7 @@ describe('startTokenRefresh — one failure is not the end of the session', () =
 
   it('keeps refreshing on the normal schedule after a recovered failure', async () => {
     const core = await import('./core');
-    core.setSessionToken('tok');
+    core.setSessionToken('tok', 'alice');
 
     const fetchMock = vi.fn()
       .mockRejectedValueOnce(new Error('blip'))
@@ -101,7 +101,7 @@ describe('startTokenRefresh — one failure is not the end of the session', () =
 
   it('stopTokenRefresh cancels a pending retry', async () => {
     const core = await import('./core');
-    core.setSessionToken('tok');
+    core.setSessionToken('tok', 'alice');
 
     const fetchMock = vi.fn().mockRejectedValue(new Error('network down'));
     vi.stubGlobal('fetch', fetchMock);

@@ -93,7 +93,7 @@ describe('attachment grants', () => {
     // A grant names a pseudonym and an epoch, so it must not outlive its
     // owner. Cleared inside setSessionToken rather than at each call site
     // that clears the token.
-    setSessionToken('a-different-session');
+    setSessionToken('a-different-session', 'a-different-pseudonym');
     expect(resolveUrl('/uploads/chat/images/a.png')).toBe('/uploads/chat/images/a.png');
   });
 

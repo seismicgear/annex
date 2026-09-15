@@ -56,8 +56,12 @@ describe('public observability endpoints', () => {
   });
 
   it('passes the domain and limit filters through as query parameters', async () => {
-    const fetchMock = vi.fn(async () => jsonResponse({ events: [], count: 0 }));
-    global.fetch = fetchMock as unknown as typeof fetch;
+    // Typed as `fetch` itself rather than a bare `vi.fn()`: the assertion below
+    // reads `mock.calls[0][0]`, and an untyped mock records a zero-length
+    // argument tuple, so the index would not exist as far as the compiler is
+    // concerned.
+    const fetchMock = vi.fn<typeof fetch>(async () => jsonResponse({ events: [], count: 0 }));
+    global.fetch = fetchMock;
 
     await getPublicEvents('MODERATION', undefined, 25);
 

@@ -602,10 +602,23 @@ describe('VoicePanel', () => {
     expect(screen.getByText(/Camera and microphone are blocked/)).toBeInTheDocument();
   });
 
+  // This test asserted nothing for its entire life.
+  //
+  // It read `screen.queryByClassName?.('speaking-indicator')`. Testing
+  // Library's `screen` has no `queryByClassName` — the queries are
+  // ByRole/ByText/ByTitle/ByTestId — so the optional call short-circuited to
+  // `undefined`, `?? null` made it `null`, and `.toBeNull()` passed without
+  // the DOM ever being consulted. The class name was wrong too:
+  // `ParticipantGrid` writes `speaking` onto `.call-tile`, and
+  // `speaking-indicator` appears nowhere in the codebase. Two independent
+  // reasons it could never have failed. Found when the test files were
+  // brought under `tsc -b` for the first time — the optional-call typing is
+  // what the compiler objected to.
+  //
+  // Rewritten to check the behaviour the name promises, in both directions.
+  // One-directional assertions are how a test ends up passing against a
+  // component that never renders the thing at all.
   it('marks participant as speaking only when isSpeaking is true', async () => {
-    // Override useParticipants to return a participant with isSpeaking
-    // This is tested through the mock - the ParticipantGrid uses p.isSpeaking
-    // rather than checking publication.isMuted
     voiceState = {
       ...voiceState,
       voiceToken: 'token-speak',
@@ -614,12 +627,19 @@ describe('VoicePanel', () => {
       connectionState: 'connected',
     };
 
-    await act(async () => {
-      render(<VoicePanel />);
-    });
+    mockSessionBase.isSpeaking = false;
+    const { unmount } = render(<VoicePanel />);
+    await act(async () => {});
+    expect(document.querySelector('.call-tile.speaking')).toBeNull();
+    // The tile itself must be on screen, or the assertion above would pass
+    // for the same reason the old one did.
+    expect(document.querySelector('.call-tile')).not.toBeNull();
+    unmount();
 
-    // With empty participants from the mock, no speaking indicators should be present
-    expect(screen.queryByClassName?.('speaking-indicator') ?? null).toBeNull();
+    mockSessionBase.isSpeaking = true;
+    render(<VoicePanel />);
+    await act(async () => {});
+    expect(document.querySelector('.call-tile.speaking')).not.toBeNull();
   });
 
   it('shows connectionError in disconnected state after unexpected disconnect', () => {
@@ -738,6 +758,11 @@ describe('VoicePanel', () => {
         { channel_id: 'chan-text', channel_type: 'Text', name: 'General Chat' },
         { channel_id: 'chan-voice', channel_type: 'Voice', name: 'Voice Room' },
       ],
+      // `null` rather than the shared `mockWs`: this assignment replaces the
+      // whole snapshot and previously left `ws` undefined, so null is the
+      // no-socket state the real store starts in and keeps every `ws?.…`
+      // short-circuiting exactly as it did.
+      ws: null,
     };
 
     voiceState = {

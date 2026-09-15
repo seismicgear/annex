@@ -25,12 +25,22 @@ const mockIdentity = {
   pseudonymId: 'pseudo-123456789012',
 };
 
-const mockImportBackup = vi.fn(async () => {});
+// Typed with the real `importBackup(json: string)` signature — the stub body
+// ignores the argument, but the mock has to admit it takes one so the recorded
+// call tuple holds the backup JSON the assertion below reads back out of it.
+// The `as []` dance the wrapper used to need existed only because the mock
+// claimed to take nothing.
+const mockImportBackup = vi.fn<(json: string) => Promise<void>>(async () => {});
 
+// The forwarding arrows below are load-bearing: `vi.mock` is hoisted, so a
+// factory that named these mocks directly would read them before their `const`
+// initialisers had run. Their rest parameters are typed as each mock's own
+// argument tuple because a spread of `unknown[]` has no tuple type to spread —
+// at runtime a rest parameter still collects every argument either way.
 vi.mock('@/stores/identity', () => ({
   useIdentityStore: (selector: (state: Record<string, unknown>) => unknown) => selector({
     identity: mockIdentity,
-    importBackup: (...a: unknown[]) => mockImportBackup(...(a as [])),
+    importBackup: (...a: Parameters<typeof mockImportBackup>) => mockImportBackup(...a),
   }),
 }));
 
@@ -347,7 +357,7 @@ describe('SocialRecoveryDialog', () => {
     });
 
     await waitFor(() => expect(mockImportBackup).toHaveBeenCalled());
-    const backup = JSON.parse(mockImportBackup.mock.calls[0][0] as unknown as string);
+    const backup = JSON.parse(mockImportBackup.mock.calls[0][0]);
     // It used to call generateNodeId() for a RANDOM node id and hardcode
     // roleCode 1, producing a different commitment — a new identity, not the
     // recovered one.

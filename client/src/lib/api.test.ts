@@ -85,13 +85,13 @@ describe('x-annex-zk-proof header (server contract)', () => {
   });
 
   afterEach(() => {
-    setSessionToken(null);
+    setSessionToken(null, null);
     setZkProofPayload(null);
     setApiBaseUrl('');
   });
 
   it('joinChannel sends a base64-encoded full ZkProofPayload the server can decode', async () => {
-    setSessionToken('sess-token');
+    setSessionToken('sess-token', 'pseudo-1');
     // Shape MUST match the server's ZkProofPayload (proof + root_hex +
     // commitment_hex required). This is what verify_zk_membership_header
     // base64-decodes and deserializes.
@@ -135,7 +135,7 @@ describe('voice endpoints use _apiBaseUrl', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setApiBaseUrl(REMOTE_URL);
-    setSessionToken(null);
+    setSessionToken(null, null);
     global.fetch = vi.fn();
   });
 
