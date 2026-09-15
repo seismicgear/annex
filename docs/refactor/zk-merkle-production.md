@@ -63,12 +63,31 @@ The reader is assumed to know that production-grade requires:
   by this path. Proofs generated against it would fail verification — which is
   a symptom, not a diagnosis, and it arrives at the user rather than at the
   operator.
-- Two things are consequently NOT established and should not be claimed:
-  a measured operating envelope at large registries (registration and
-  proof latency, memory, lock contention, cold-start time at 100k leaves and
-  near capacity), and a demonstrated detection-and-repair contract for the
-  corrupted-interior-node case above. The fix for the latter need not be an
-  expensive full rebuild on every boot; it does need to exist and be tested.
+- **Detection now exists, and its scope is narrower than "detects a corrupted
+  tree" — say the narrow thing.** `get_proof` recomputes the root from the leaf
+  and the path it is about to return, and refuses to hand out a path that does
+  not reach the tree's root (`IdentityError::MerkleRootMismatch`). Twenty
+  Poseidon hashes per proof, and it covers every path anyone actually relies on
+  rather than only the state at boot.
+
+  What it catches is a corrupted value that a proof DEPENDS on — i.e. a damaged
+  sibling. A proof recomputes the nodes on its own path and reads only the
+  siblings, so damage to a node that a given leaf rebuilds anyway does not
+  affect that leaf's proof, and should not: the proof is still correct. In a
+  depth-5 tree with node (1,0) damaged, leaves 0 and 1 still verify (they
+  rebuild it), leaves 2 and 3 are refused (it is their level-1 sibling), and
+  leaves 4-7 are unaffected. All four cases are pinned in
+  `crates/annex-identity/tests/merkle_interior_corruption.rs`, including the
+  assertion that `restore` still ACCEPTS that database — which is what makes
+  the separate check necessary.
+
+  REPAIR is still manual: `MerkleTree::audit_against_leaves` and
+  `repair_persisted_nodes` exist and are not wired to anything automatic.
+- Still NOT established, and not claimed: a measured operating envelope at
+  large registries — registration and proof latency, memory, lock contention
+  and cold-start time at 100k leaves and near the depth-20 capacity of
+  1,048,576. `crates/annex-identity/tests/perf_merkle.rs` exists but is not
+  that measurement.
 - Roots are formatted by encoding the Fr field element as big-endian bytes via `into_bigint().to_bytes_be()` then `hex::encode(...)` — lowercase, no `0x`, fixed width.
 - The current root is exposed at `GET /api/registry/current-root` (handler `crates/annex-server/src/api.rs::get_current_root_handler`; route registered in `crates/annex-server/src/routes/mod.rs`). Earlier revisions of this doc gave the path as `/api/registry/root` and put the registration in `lib.rs` — neither is correct, and a client built from that path gets a 404.
 - Path lookup for clients uses `annex_identity::registry::get_path_for_commitment`.

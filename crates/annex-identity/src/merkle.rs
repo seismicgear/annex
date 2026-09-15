@@ -173,6 +173,45 @@ impl MerkleTree {
             current_idx /= 2;
         }
 
+        // Recompute the root from the leaf and the path just produced, and
+        // refuse to hand out a proof that does not reach the tree's root.
+        //
+        // This closes the gap the fast restore path leaves open.
+        // `restore_from_meta` loads every persisted node and compares only the
+        // TOP node against `vrp_merkle_meta.current_root_hex`; it does not
+        // recompute the interior. So a corrupted node at a lower level, with
+        // those two values left intact, restores cleanly — and every proof
+        // drawn through that node is silently wrong.
+        //
+        // What the user saw was a proof that failed verification: a symptom
+        // arriving at the wrong person, with no statement anywhere that the
+        // server's tree was damaged. This turns it into a server-side error
+        // naming the tree, at the moment a damaged path is actually used.
+        //
+        // O(depth) — twenty Poseidon hashes per proof. A full interior
+        // recomputation on boot would be O(nodes) and would still only cover
+        // the state at boot; this covers every path that anyone relies on,
+        // continuously, for a cost that does not scale with the registry.
+        let leaf = *self
+            .nodes
+            .get(&(0, index))
+            .ok_or(IdentityError::InvalidIndex(index))?;
+        let mut computed = leaf;
+        for (level, sibling) in path_elements.iter().enumerate() {
+            computed = if path_indices[level] == 0 {
+                hash_inputs(&[computed, *sibling])?
+            } else {
+                hash_inputs(&[*sibling, computed])?
+            };
+        }
+        let root = self.root();
+        if computed != root {
+            return Err(IdentityError::MerkleRootMismatch {
+                stored: fr_to_canonical_hex(root),
+                computed: fr_to_canonical_hex(computed),
+            });
+        }
+
         Ok((path_elements, path_indices))
     }
 
