@@ -65,6 +65,42 @@ and verifies real proofs.
 Defining a suite is not running it — every row here now names a command AND a
 job, and `scripts/test-all.sh` runs the ones that need no browser.
 
+### The sweep behind these numbers
+
+Every row above was run on one machine, in sequence, at `a96e275` (2026-09-16) —
+not assembled from different commits on different days:
+
+| Lane | Result |
+|---|---|
+| `bash scripts/test-all.sh` | all steps passed, exit 0 |
+| `cargo test --workspace --exclude annex-desktop` | 1284 passed, 0 failed, 134 binaries |
+| `cd client && npm test` | 502 passed, 54 files |
+| `for t in scripts/tests/*.test.sh` | 12 files, 0 failed |
+| `node --test api/signal.test.mjs` | passed |
+| `cd zk && node scripts/test-proofs.js` | passed |
+| `sh scripts/verify-production-rejects-dev-fixtures.sh` | passed |
+| `npm run test:e2e` | 13 passed |
+| `bash scripts/e2e-all.sh group-call` | 6 passed |
+| `bash scripts/e2e-all.sh puppeteer` | passed, message round-trip confirmed |
+| `bash scripts/smoke-server.sh` | OK |
+| `bash scripts/smoke-federation.sh` | OK — signed accept, persist, idempotent re-POST, tamper reject 401 |
+| `cargo check -p annex-desktop` + `clippy --all-targets -D warnings` | clean |
+| `cargo test -p annex-desktop` | 28 passed |
+| `bash scripts/desktop-audit.sh` | 10 passed, 0 failed |
+| `bash scripts/ui-audit.sh` (record, then an independent verify) | 425 passed, 105 of 105 surfaces, 0 findings, **both runs** |
+
+The desktop audit is the row to read twice. On the commit before it ran,
+`cargo check`, `cargo clippy --all-targets`, `cargo test -p annex-desktop` and
+`cargo tauri build` were all green while the installed binary exited before its
+first window — an updater plugin registered against a config section that a
+build without the signing secret does not have. None of those four lanes runs
+the binary. The Xvfb launch step is the only thing in this repository that
+could have caught it, and a release built from that commit would have shipped
+an app that does not start.
+
+**What this sweep is not.** It is a local run. It says nothing about Windows or
+macOS, and CI has not executed on this branch at all — see below.
+
 > **CI executes when it gets runners, and whether it gets them is not
 > reliable.** The paragraph that first stood here said CI proved nothing, because
 > every job finished in three to four seconds with `runner_id: 0` and no steps.
@@ -78,12 +114,17 @@ job, and `scripts/test-all.sh` runs the ones that need no browser.
 > real runners for 41 minutes: `Check (Server)`, `Frontend Tests`, both desktop
 > builds, both server smokes, the federation smoke and the desktop audit all
 > passed; `UI Audit (Linux)` failed; macOS was skipped by design. Run
-> `35033304858` (751), dispatched on `claude/beautiful-bohr-9qb34p`, died in
-> three seconds on BOTH attempts — five jobs each time, `ubuntu-latest` and
-> `windows-latest` alike, `runner_id: 0`, `runner_name` empty, and HTTP 404 for
-> the job logs because no log was ever written. The five jobs that `needs` them
-> were skipped, so the run reports as a failure with nine of ten jobs having
-> executed nothing.
+> runs 751 through 754, dispatched on
+> `claude/beautiful-bohr-9qb34p` over about eighty minutes, ALL died in three to
+> six seconds — five attempts counting 751's re-run, five jobs each time,
+> `ubuntu-latest` and `windows-latest` alike, `runner_id: 0`, `runner_name`
+> empty, and HTTP 404 for the job logs because no log was ever written. The five
+> jobs that `needs` them were skipped, so each run reports as a failure with
+> nine of ten jobs having executed nothing.
+>
+> **So this branch has no CI result, and nothing here should be read as one.**
+> The lanes were run locally instead — see "The sweep behind these numbers"
+> above — which covers Linux and says nothing about Windows or macOS.
 >
 > **So tell the two apart before reading either one as a result**, in this
 > order, because they render identically in the checks list:
