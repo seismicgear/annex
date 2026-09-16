@@ -11,7 +11,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 tokio = { workspace = true, features = ["process", "io-util", "sync", "rt-multi-thread"] }
-webrtc = "0.11"
+webrtc = "0.17"
 dashmap = "6"
 bytes = "1"
 base64 = "0.22"
