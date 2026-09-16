@@ -26,15 +26,15 @@
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "snarkjs": "^0.7.6",
-    "zustand": "^5.0.11"
+    "zustand": "^5.0.15"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.12.1",
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.56.1",
     "@testing-library/jest-dom": "^6.9.1",
-    "@testing-library/react": "^16.3.2",
-    "@testing-library/user-event": "^14.6.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.7",
     "@types/node": "^24.12.4",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
