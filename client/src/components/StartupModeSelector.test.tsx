@@ -10,6 +10,12 @@ const clearStartupModeMock = vi.fn(async () => {});
 const clearWebStartupModeMock = vi.fn();
 const startEmbeddedServerMock = vi.fn(async () => 'http://127.0.0.1:9999');
 
+// Each mock stays behind a forwarding arrow: `vi.mock` is hoisted, so this
+// factory can run during the static import phase — before the `const`s above
+// are initialised — and naming one directly here throws on the temporal dead
+// zone. The rest parameter is typed as the mock's own argument tuple because
+// a spread of `unknown[]` has no tuple type to spread; at runtime a rest
+// parameter still collects every argument, so the forwarding is unchanged.
 vi.mock('@/lib/tauri', async () => {
   const actual = await vi.importActual<typeof import('@/lib/tauri')>('@/lib/tauri');
   return {
@@ -17,8 +23,8 @@ vi.mock('@/lib/tauri', async () => {
     isTauri: () => true,
     getStartupMode: () => getStartupModeMock(),
     saveStartupMode: vi.fn(async () => {}),
-    clearStartupMode: (...args: unknown[]) => clearStartupModeMock(...args),
-    startEmbeddedServer: (...args: unknown[]) => startEmbeddedServerMock(...args),
+    clearStartupMode: (...args: Parameters<typeof clearStartupModeMock>) => clearStartupModeMock(...args),
+    startEmbeddedServer: (...args: Parameters<typeof startEmbeddedServerMock>) => startEmbeddedServerMock(...args),
     acquirePublicEndpoint: vi.fn(async () => 'https://host-abc123.router.annex.net'),
     getWebRtcConfig: vi.fn(async () => ({ configured: false, url: '', api_key: '', has_api_secret: false, token_ttl_seconds: 3600 })),
     startLocalWebRtc: vi.fn(async () => ({ url: 'ws://127.0.0.1:7880' })),
@@ -40,7 +46,7 @@ vi.mock('@/stores/servers', () => ({
   useServersStore: {
     getState: () => ({
       findServerByBaseUrl: () => null,
-      beginRemoteRegistration: (...args: unknown[]) => mockBeginRemoteRegistration(...args),
+      beginRemoteRegistration: (...args: Parameters<typeof mockBeginRemoteRegistration>) => mockBeginRemoteRegistration(...args),
     }),
   },
 }));
@@ -49,6 +55,11 @@ vi.mock('@/stores/identity', () => ({
   useIdentityStore: {
     getState: () => ({
       selectIdentity: vi.fn(async () => {}),
+      // Repointing the client at a server ends the credential context, so the
+      // selector re-asserts afterwards. Mocked here because this file mocks
+      // `@/lib/api` down to two functions and the real one would reach for
+      // the rest.
+      reassertCredentials: vi.fn(async () => {}),
     }),
   },
 }));

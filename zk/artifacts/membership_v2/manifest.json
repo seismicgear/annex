@@ -1,24 +1,35 @@
 {
   "schemaVersion": 1,
   "circuit": "membership_v2",
-  "circuitVersion": "1.0.0",
+  "circuitVersion": "2.0.0",
   "curve": "bn254",
   "provingSystem": "groth16",
   "treeDepth": 20,
-  "publicSignals": ["root", "commitment", "nullifier", "topicHash"],
-  "wasm_sha256": "385454698294c08587069c01f95399103dfb6983a1f9a665285ffcfa6819626c",
-  "zkey_sha256": "4c95355a6f9c13aa4c5983c9ed018d518b0944d316fdea7c642633dcc19caa9d",
-  "vkey_sha256": "7f9f542db22ed153c226b524f151f75795950005b9a545958feca3537e6cdf40",
-  "r1cs_sha256": "fd29b65ae0972fdc1f367499dc47e25144930a4449eea92815ee79dd1c11a548",
+  "publicSignals": [
+    "root",
+    "commitment",
+    "nullifier",
+    "topicHash",
+    "challenge"
+  ],
+  "wasm_sha256": "879babd0510691a046405e321f2878edcdf57ce2621d87f9b059bea69a99d23c",
+  "zkey_sha256": "8e2f2424f83c09fd199f26e1fd2de1dfa1f7a03cd366f36add541ee1e3f73028",
+  "vkey_sha256": "769082449f1519d55a61a5855664be7c5e1eba9d1f02f24b54c3a249f441ec1f",
+  "r1cs_sha256": "984737dcfc71d802a2db185b2621f50324749730d024bdfc767823a7ec88e234",
   "paths": {
-    "wasm": "../../build/membership_v2_js/membership_v2.wasm",
-    "zkey": "../../keys/membership_v2_final.zkey",
-    "vkey": "../../keys/membership_v2_vkey.json",
-    "r1cs": "../../build/membership_v2.r1cs"
+    "wasm": "./membership_v2.wasm",
+    "zkey": "./membership_v2_final.zkey",
+    "vkey": "./membership_v2_vkey.json",
+    "r1cs": "./membership_v2.r1cs"
   },
   "ceremony": {
-    "type": "dev-fixture",
-    "generatedAt": "2026-06-20",
-    "note": "These hashes pin the membership_v2 (secret-derived nullifier) artifacts produced by zk/scripts/dev-setup-groth16.js with random entropy. v2 is the DEFAULT identity path, so a production release MUST replace these artifacts AND hashes with multi-party trusted-setup ceremony output before going public. Regenerate ALL circuit manifests together so their provenance matches. See docs/refactor/zk-merkle-production.md."
+    "type": "single-contributor-beacon",
+    "generatedAt": "2026-09-15T15:06:39.060Z",
+    "transcript": "../ceremony/transcript.json",
+    "phase1Source": "operator-supplied",
+    "beaconRound": 6468464,
+    "beaconChainHash": "8990e7a9aaed2ffed73dbd7092123d6f289930540d7651336225dc172e51b2ce",
+    "zkeyVerified": true,
+    "note": "Produced by zk/scripts/ceremony.js. Phase 2 was finalised with drand round 6468464 on chain 8990e7a9aaed2ffed73dbd7092123d6f289930540d7651336225dc172e51b2ce, committed to before that round existed (see the transcript's commitment field). `snarkjs zkey verify` passed against the pinned r1cs and ptau. This is NOT a multi-party ceremony with independent participants; see docs/refactor/zk-merkle-production.md for what that would add."
   }
 }

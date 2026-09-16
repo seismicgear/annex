@@ -15,6 +15,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ConnectionState as RoomConnectionState, WebRtcSession } from '@/lib/webrtc';
 import type { NativeConnectionState } from '@/lib/webrtc';
 import type { AnnexWebSocket } from '@/lib/ws';
+import { useVoiceStore } from '@/stores/voice';
 import { useWebRtcSignals } from './useWebRtcSignals';
 
 interface UseVoiceRoomArgs {
@@ -46,7 +47,13 @@ export function useVoiceRoom({
     if (!ws) return;
 
     const sess = new WebRtcSession(iceServers, channelId, identity, {
-      sendOffer: (ch, sdp) => ws.sendWebRtcOffer(ch, sdp),
+      // Read at send time, not capture time: the grant is stored by
+      // `joinCall` and the session is constructed by an effect that can run
+      // either side of it. Reading through `getState()` means the offer
+      // carries whatever grant is current when it actually leaves, rather
+      // than whatever was in the store when this closure was built.
+      sendOffer: (ch, sdp) =>
+        ws.sendWebRtcOffer(ch, sdp, useVoiceStore.getState().voiceToken),
       sendAnswer: (ch, sdp) => ws.sendWebRtcAnswer(ch, sdp),
       sendIceCandidate: (ch, candidate, sdpMid, sdpMLineIndex) =>
         ws.sendIceCandidate(ch, candidate, sdpMid, sdpMLineIndex),

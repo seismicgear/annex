@@ -91,6 +91,31 @@ export default defineConfig({
       testDir: './e2e/audit',
       testMatch: /capture\.spec\.ts|manifest\.spec\.ts/,
       dependencies: ['audit-setup'],
+      // No retries here, unlike every other project.
+      //
+      // A retry is a second sample of the same experiment — which is true for
+      // `chromium` and `group-call`, where each test starts from a fresh
+      // context and leaves nothing behind. It is false here. The audit runs
+      // serially against ONE server and ONE database, and a surface's
+      // `navigate` can write to it. Re-running a surface does not repeat its
+      // measurement; it MUTATES the state every later surface is measured
+      // against.
+      //
+      // That is not hypothetical. On CI (`retries: 1`) a single genuine
+      // failure at `06-messaging · message-edit-refused @ mobile` was retried,
+      // its retry posted a second copy of its message into the shared channel,
+      // and every subsequent surface whose picture contained that column then
+      // failed too: 53 failures and 106 ledger findings from one defect.
+      // Locally, with retries at 0, the same commit was green. The cascade is
+      // reproducible — `CI=1 bash scripts/ui-audit.sh` fails at exactly the
+      // same first surface.
+      //
+      // The surfaces no longer share an accumulating channel (see
+      // `SEED.channels.scratch` in e2e/audit/roles.ts), so a retry would be
+      // much less destructive now. It is still off: a flaky surface should
+      // report as flaky, not be given a second chance to agree with a
+      // baseline.
+      retries: 0,
       // Captures start from warm storage state, so a surface that is actually
       // reachable lands in seconds. The suite-wide 120s budget exists for cold
       // Groth16 proving and does not apply here — leaving it would mean an

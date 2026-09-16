@@ -150,6 +150,161 @@ async function stageAttachment(page: import('@playwright/test').Page, name: stri
   await expect(page.locator('.image-preview-bar')).toBeVisible({ timeout: 15_000 });
 }
 
+/**
+ * How many channels the sidebar shows once `roles.setup.ts` has run.
+ *
+ * `General` is created by the server itself on first boot (`startup.rs`);
+ * `SEED.channels` and `SEED.emptyChannel` are created by the seeder.
+ */
+const SEEDED_CHANNEL_COUNT = 1 + Object.keys(SEED.channels).length + 1;
+
+/**
+ * A fixed event stream for the two event-log surfaces.
+ *
+ * These were the last surfaces whose pixels depended on what ran BEFORE them.
+ * `/api/public/events` defaults to a limit of 100 and the audit's database
+ * holds roughly fifteen events by stage 11, so the picture was every event the
+ * run had accumulated — and adding any surface earlier in the manifest that
+ * registers an identity silently rewrote two baselines at four viewports each.
+ * Between two builds in this session the table lost two rows and changed its
+ * tail, which measured 0.011-0.020 against a 0.005 tolerance: a failure that
+ * would read as an event-log regression and be neither.
+ *
+ * Clipping cannot fix this one. The variance is in the row COUNT, so the
+ * table's height moves, and a clip to the table takes the variance with it.
+ *
+ * So the data is fixed instead — the same treatment `channel-encryption-enabled`
+ * needed, for the same reason. What that costs is the boundary check: a stub
+ * cannot notice that the server's event shape has drifted, and a stub that has
+ * drifted is a screenshot of a lie. So the real endpoint is called first and
+ * its fields compared with the fixture's, in BOTH directions: a field the
+ * server has and the fixture lacks fails, and so does the reverse. The picture
+ * is then fixed and the contract is still checked.
+ *
+ * The route honours `domain`, so `event-log-filtered` still proves the select
+ * narrows the table rather than photographing a filter that does nothing.
+ */
+const EVENT_LOG_FIXTURE: ReadonlyArray<Record<string, unknown>> = [
+  {
+    id: 1, server_id: 1, domain: 'IDENTITY', event_type: 'IDENTITY_REGISTERED',
+    entity_type: 'identity', entity_id: 'f3a91c7d4b02e8a5', seq: 1,
+    payload_json: '{"event":"IDENTITY_REGISTERED","role_code":1}',
+    occurred_at: '2026-03-04T09:12:41Z',
+  },
+  {
+    id: 2, server_id: 1, domain: 'IDENTITY', event_type: 'IDENTITY_VERIFIED',
+    entity_type: 'identity', entity_id: 'f3a91c7d4b02e8a5', seq: 2,
+    payload_json: '{"event":"IDENTITY_VERIFIED","topic":"annex:server:audit:v2"}',
+    occurred_at: '2026-03-04T09:12:43Z',
+  },
+  {
+    id: 3, server_id: 1, domain: 'IDENTITY', event_type: 'PSEUDONYM_DERIVED',
+    entity_type: 'pseudonym', entity_id: '5c20be914af7d3e6', seq: 3,
+    payload_json: '{"event":"PSEUDONYM_DERIVED","topic":"annex:server:audit:v2"}',
+    occurred_at: '2026-03-04T09:12:44Z',
+  },
+  {
+    id: 4, server_id: 1, domain: 'PRESENCE', event_type: 'NODE_ADDED',
+    entity_type: 'node', entity_id: '5c20be914af7d3e6', seq: 4,
+    payload_json: '{"event":"NODE_ADDED","node_type":"HUMAN"}',
+    occurred_at: '2026-03-04T09:12:45Z',
+  },
+  {
+    id: 5, server_id: 1, domain: 'PRESENCE', event_type: 'NODE_PRUNED',
+    entity_type: 'node', entity_id: 'a17f40c9e5b2d883', seq: 5,
+    payload_json: '{"event":"NODE_PRUNED"}',
+    occurred_at: '2026-03-04T09:31:02Z',
+  },
+  {
+    id: 6, server_id: 1, domain: 'PRESENCE', event_type: 'NODE_REACTIVATED',
+    entity_type: 'node', entity_id: 'a17f40c9e5b2d883', seq: 6,
+    payload_json: '{"event":"NODE_REACTIVATED"}',
+    occurred_at: '2026-03-04T09:44:18Z',
+  },
+  {
+    id: 7, server_id: 1, domain: 'FEDERATION', event_type: 'FEDERATION_ESTABLISHED',
+    entity_type: 'peer', entity_id: 'beta.example', seq: 7,
+    payload_json:
+      '{"event":"FEDERATION_ESTABLISHED","remote_url":"https://beta.example","alignment_status":"FULLY_ALIGNED"}',
+    occurred_at: '2026-03-04T10:02:55Z',
+  },
+  {
+    id: 8, server_id: 1, domain: 'FEDERATION', event_type: 'FEDERATION_REALIGNED',
+    entity_type: 'peer', entity_id: 'beta.example', seq: 8,
+    payload_json:
+      '{"event":"FEDERATION_REALIGNED","remote_url":"https://beta.example",' +
+      '"previous_status":"FULLY_ALIGNED","alignment_status":"PARTIALLY_ALIGNED"}',
+    occurred_at: '2026-03-04T10:19:07Z',
+  },
+  {
+    id: 9, server_id: 1, domain: 'FEDERATION', event_type: 'FEDERATION_SEVERED',
+    entity_type: 'peer', entity_id: 'gamma.example', seq: 9,
+    payload_json:
+      '{"event":"FEDERATION_SEVERED","remote_url":"https://gamma.example","reason":"alignment conflict"}',
+    occurred_at: '2026-03-04T10:26:31Z',
+  },
+  {
+    id: 10, server_id: 1, domain: 'AGENT', event_type: 'AGENT_CONNECTED',
+    entity_type: 'agent', entity_id: '9be34d7a1f60c2e8', seq: 10,
+    payload_json: '{"event":"AGENT_CONNECTED","alignment_status":"FULLY_ALIGNED"}',
+    occurred_at: '2026-03-04T11:05:12Z',
+  },
+  {
+    id: 11, server_id: 1, domain: 'AGENT', event_type: 'AGENT_REALIGNED',
+    entity_type: 'agent', entity_id: '9be34d7a1f60c2e8', seq: 11,
+    payload_json:
+      '{"event":"AGENT_REALIGNED","previous_status":"FULLY_ALIGNED","alignment_status":"CONFLICT"}',
+    occurred_at: '2026-03-04T11:41:59Z',
+  },
+  {
+    id: 12, server_id: 1, domain: 'MODERATION', event_type: 'MODERATION_ACTION',
+    entity_type: 'channel', entity_id: 'general', seq: 12,
+    payload_json:
+      '{"event":"MODERATION_ACTION","action_type":"MESSAGE_REMOVED",' +
+      '"description":"Message removed by a moderator"}',
+    occurred_at: '2026-03-04T12:08:20Z',
+  },
+];
+
+function fixedEventLog() {
+  return async (page: import('@playwright/test').Page) => {
+    // The contract half. `page.request` resolves against `baseURL` and shares
+    // the context's storage state, and the endpoint is public anyway.
+    const live = await page.request.get('/api/public/events?limit=1');
+    expect(live.ok(), 'the real events endpoint must answer before it is stubbed').toBe(true);
+    const body = await live.json();
+    expect(Array.isArray(body.events)).toBe(true);
+    expect(typeof body.count).toBe('number');
+    expect(
+      body.events.length,
+      'the audit database should always hold identity events by this stage',
+    ).toBeGreaterThan(0);
+
+    const real = body.events[0] as Record<string, unknown>;
+    const fixture = EVENT_LOG_FIXTURE[0];
+    for (const key of Object.keys(fixture)) {
+      expect(real, `EVENT_LOG_FIXTURE carries a field the server does not: ${key}`)
+        .toHaveProperty(key);
+    }
+    for (const key of Object.keys(real)) {
+      expect(fixture, `the server returns a field EVENT_LOG_FIXTURE omits: ${key}`)
+        .toHaveProperty(key);
+    }
+
+    await page.route('**/api/public/events*', (route) => {
+      const domain = new URL(route.request().url()).searchParams.get('domain');
+      const events = domain
+        ? EVENT_LOG_FIXTURE.filter((e) => e.domain === domain)
+        : EVENT_LOG_FIXTURE;
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ events, count: events.length }),
+      });
+    });
+  };
+}
+
 export const SURFACES: Surface[] = [
   // ─────────────────────── 02 · identity ───────────────────────
   {
@@ -426,7 +581,13 @@ export const SURFACES: Surface[] = [
     intent: 'Every channel type icon (text, voice, hybrid, agent, broadcast) rendered together.',
     clip: '.sidebar-left',
     navigate: async (page) => {
-      await expect(page.locator('.channel-item')).toHaveCount(7, { timeout: 15_000 });
+      // Derived, not a literal. This read `toHaveCount(7)`, and adding one
+      // channel to the seed set turned it into a 15-second timeout on a
+      // surface that has nothing to do with the change. The count follows the
+      // seed now, so the next channel costs nothing.
+      await expect(page.locator('.channel-item')).toHaveCount(SEEDED_CHANNEL_COUNT, {
+        timeout: 15_000,
+      });
     },
   },
   {
@@ -603,16 +764,24 @@ export const SURFACES: Surface[] = [
       'Inline edit with the live countdown showing how long the edit window has left. The ' +
       'countdown is masked because it ticks; the edit affordance around it is the point.',
     navigate: async (page) => {
-      await selectChannel(page, SEED.defaultChannel);
+      await selectChannel(page, SEED.channels.scratch);
       // Edit and delete are only offered inside `EDIT_WINDOW_MS` (60s) of
       // posting, so the seeded messages — written minutes earlier during
-      // setup — no longer show either control. Post a fresh one.
+      // setup — no longer show either control. Post a fresh one, into the
+      // scratch channel rather than the default one: see `postFreshMessage`.
       const bubble = await postFreshMessage(page, 'Message posted for the edit-mode capture.');
       await bubble.hover();
       await bubble.locator('.edit-btn').click();
       await expect(page.locator('.message-edit-input')).toBeVisible();
     },
-    clip: '.chat-area',
+    // Clipped to the bubble in edit mode, not to `.chat-area`.
+    //
+    // The subject is the edit affordance. `.chat-area` dragged in the whole
+    // message column, which grows by one message per viewport as this surface
+    // runs — so the picture recorded at `mobile` had four messages behind it
+    // and the one at `desktop` had one. Exactly one message can be in edit
+    // mode at a time, so this locator is stable however long the column gets.
+    clip: '.message:has(.message-edit-input)',
     mask: ['.edit-countdown'],
   },
   {
@@ -657,7 +826,7 @@ export const SURFACES: Surface[] = [
       });
     },
     navigate: async (page) => {
-      await selectChannel(page, SEED.defaultChannel);
+      await selectChannel(page, SEED.channels.scratch);
       const bubble = await postFreshMessage(page, 'Message posted for the refused-edit capture.');
       await bubble.hover();
       await bubble.locator('.edit-btn').click();
@@ -665,7 +834,16 @@ export const SURFACES: Surface[] = [
       await page.locator('.msg-edit-save').click();
       await expect(page.locator('.message-action-error')).toBeVisible({ timeout: 20_000 });
     },
+    // The subject is the error banner, which is a sibling of `.message-view`
+    // rather than part of it — so the column can be masked out entirely
+    // without losing anything this surface is about.
+    //
+    // This is the surface the 53-failure cascade started from. Its diff was
+    // pure message text: banner, composer and encryption bar identical,
+    // bubbles one message out of step. At `mobile` the visible tail is
+    // shortest, which is why it crossed the tolerance first.
     clip: '.chat-area',
+    mask: ['.message-view'],
   },
   {
     id: 'message-delete-confirm',
@@ -676,14 +854,16 @@ export const SURFACES: Surface[] = [
       'Deletion is a two-click confirm rather than a dialog. Capturing the armed state proves it ' +
       'is actually distinguishable from the idle one.',
     navigate: async (page) => {
-      await selectChannel(page, SEED.defaultChannel);
+      await selectChannel(page, SEED.channels.scratch);
       // Same 60s window as edit — see above.
       const bubble = await postFreshMessage(page, 'Message posted for the delete-confirm capture.');
       await bubble.hover();
       await bubble.locator('.delete-btn').click();
       await expect(bubble.locator('.delete-btn.confirming')).toBeVisible();
     },
-    clip: '.chat-area',
+    // Only one delete can be armed at a time, so this names exactly one row
+    // no matter how many messages the scratch channel has accumulated.
+    clip: '.message:has(.delete-btn.confirming)',
     mask: ['.edit-countdown'],
   },
   {
@@ -703,7 +883,8 @@ export const SURFACES: Surface[] = [
           .locator('.edited-badge'),
       ).toBeVisible({ timeout: 15_000 });
     },
-    clip: '.chat-area',
+    // The seeder edits exactly one message, so the badge names one row.
+    clip: '.message:has(.edited-badge)',
   },
   {
     id: 'message-edit-history',
@@ -724,7 +905,8 @@ export const SURFACES: Surface[] = [
       await expect(page.locator('.edit-history')).toBeVisible({ timeout: 15_000 });
       await expect(page.locator('.edit-history-loading')).toHaveCount(0);
     },
-    clip: '.chat-area',
+    // The panel is the subject; the column behind it is not.
+    clip: '.edit-history',
     mask: ['.edit-history-time'],
   },
   {
@@ -750,7 +932,7 @@ export const SURFACES: Surface[] = [
       await bubble.locator('.edited-badge').click();
       await expect(page.locator('.edit-history-error')).toBeVisible({ timeout: 15_000 });
     },
-    clip: '.chat-area',
+    clip: '.edit-history',
     waive: {
       network:
         'the 500 is the stub this surface installs on purpose — it is the condition under test, ' +
@@ -773,7 +955,8 @@ export const SURFACES: Surface[] = [
         timeout: 15_000,
       });
     },
-    clip: '.chat-area',
+    // The seeder deletes exactly one message.
+    clip: '.message:has(.message-deleted-text)',
   },
   {
     id: 'message-reply-rendered',
@@ -788,7 +971,8 @@ export const SURFACES: Surface[] = [
       await selectChannel(page, SEED.defaultChannel);
       await expect(page.locator('.reply-context').first()).toBeVisible({ timeout: 15_000 });
     },
-    clip: '.chat-area',
+    // The seeder writes exactly one reply.
+    clip: '.message:has(.reply-context)',
   },
   {
     id: 'message-reply-composer',
@@ -803,7 +987,8 @@ export const SURFACES: Surface[] = [
       await bubble.locator('.reply-btn').click();
       await expect(page.locator('.reply-bar')).toBeVisible();
     },
-    clip: '.chat-area',
+    // The reply bar sits above the composer, outside `.message-view`.
+    clip: '.message-input-wrapper',
   },
   {
     id: 'message-from-another-member',
@@ -825,7 +1010,10 @@ export const SURFACES: Surface[] = [
       await expect(incoming).toBeVisible({ timeout: 15_000 });
       await incoming.scrollIntoViewIfNeeded();
     },
-    clip: '.chat-area',
+    // The one bubble that is not the founder's own. Clipping to it means the
+    // incoming-message rendering is diffed and the scroll position of the
+    // column around it is not.
+    clip: '.message:not(.self)',
   },
   {
     id: 'message-reply-to-another-member',
@@ -847,7 +1035,8 @@ export const SURFACES: Surface[] = [
       await incoming.locator('.reply-btn').click();
       await expect(page.locator('.reply-bar')).toBeVisible();
     },
-    clip: '.chat-area',
+    // The subject is the reply bar naming somebody else, not the history.
+    clip: '.message-input-wrapper',
   },
   {
     id: 'composer-attachment-staged',
@@ -859,10 +1048,10 @@ export const SURFACES: Surface[] = [
       'and a way to back out. The whole attach-and-send flow was uncaptured, so this step — the ' +
       'only chance to notice you picked the wrong file — had never been looked at.',
     navigate: async (page) => {
-      await selectChannel(page, SEED.defaultChannel);
+      await selectChannel(page, SEED.channels.scratch);
       await stageAttachment(page, 'audit-fixture.png');
     },
-    clip: '.chat-area',
+    clip: '.message-input-wrapper',
   },
   {
     id: 'composer-upload-failed',
@@ -875,12 +1064,12 @@ export const SURFACES: Surface[] = [
       'to guess whether anything was sent.',
     setup: stub('**/api/channels/*/upload', { error: 'storage unavailable' }, 500),
     navigate: async (page) => {
-      await selectChannel(page, SEED.defaultChannel);
+      await selectChannel(page, SEED.channels.scratch);
       await stageAttachment(page, 'rejected.png');
       await page.getByRole('button', { name: 'Send' }).click();
       await expect(page.locator('.upload-error-bar')).toBeVisible({ timeout: 15_000 });
     },
-    clip: '.chat-area',
+    clip: '.message-input-wrapper',
     waive: {
       network:
         'the 500 is the stub this surface installs on purpose — it is the condition under test, ' +
@@ -905,8 +1094,12 @@ export const SURFACES: Surface[] = [
     // surface, none of them about the app. Uploading for real leaves behind a
     // message whose image actually loads, and exercises the upload path
     // end to end into the bargain.
+    //
+    // It now leaves that message in the scratch channel rather than the
+    // default one, so a picture of `General` does not depend on whether this
+    // surface has run yet.
     navigate: async (page) => {
-      await selectChannel(page, SEED.defaultChannel);
+      await selectChannel(page, SEED.channels.scratch);
       await stageAttachment(page, 'lightbox.png');
       await page.getByRole('button', { name: 'Send' }).click();
       const image = page.locator('.message-inline-image').last();
@@ -914,6 +1107,10 @@ export const SURFACES: Surface[] = [
       await image.click();
       await expect(page.locator('.image-lightbox')).toBeVisible({ timeout: 15_000 });
     },
+    // The lightbox covers the whole app, but the app is still behind its
+    // semi-transparent backdrop. Clipping to the modal keeps the subject and
+    // drops the page it happens to be floating over.
+    clip: '.image-lightbox',
   },
   {
     id: 'message-search-results',
@@ -1502,6 +1699,63 @@ export const SURFACES: Surface[] = [
       await expect(page.locator('.voice-panel, .voice-permissions-notice')).toBeVisible({
         timeout: 15_000,
       });
+    },
+  },
+  {
+    id: 'voice-captions-unavailable',
+    stage: '07-voice',
+    title: 'Live captions on a server with no speech model',
+    role: 'founder',
+    intent:
+      'Silence had two causes and they looked identical. Nobody speaking, and no transcriber ' +
+      'installed, both produced an empty caption strip — so a user on a server with no GGML ' +
+      'model saw exactly what a user in a quiet call saw, and the operator could not learn it ' +
+      'from the app either. CLAUDE.md defect class 1, in the one place a user would notice. ' +
+      'This is the capture of the notice that replaced it, including the sentence naming WHICH ' +
+      'file is missing — a bare `stt_ready: false` covers four situations and the one an ' +
+      'operator hits most is a binary without its executable bit.',
+    // The same real join as `voice-captions`: the strip only exists inside a
+    // connected call. No transcripts are injected, which is the point — an
+    // empty strip is the state under test.
+    setup: async (page) => {
+      // Voice ready, transcription not. `stt_detail` is what the server sends
+      // when the model file is absent; the client prefers it over its own
+      // generic sentence.
+      await page.route('**/api/voice/config-status', (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            voice_enabled: true,
+            policy_enabled: true,
+            infrastructure_ready: true,
+            has_public_url: true,
+            has_local_url: true,
+            stt_ready: false,
+            stt_detail:
+              'The GGML model file is missing: assets/models/ggml-base.en.bin. Run ' +
+              'scripts/setup-stt.sh to download it, or set ANNEX_STT_MODEL_PATH to an ' +
+              'existing model.',
+            setup_hint:
+              'Voice is ready, but live captions are not: The GGML model file is missing.',
+          }),
+        }),
+      );
+      await page.routeWebSocket(/\/ws/, (ws) => {
+        const server = ws.connectToServer();
+        ws.onMessage((raw) => server.send(raw));
+        server.onMessage((raw) => ws.send(raw));
+      });
+    },
+    navigate: async (page) => {
+      await selectChannel(page, SEED.channels.voice);
+      await page.locator('.voice-join-btn').first().click();
+      await expect(page.locator('.voice-captions-unavailable')).toBeVisible({ timeout: 45_000 });
+      await expect(page.getByRole('status')).toContainText('setup-stt.sh');
+    },
+    clip: '.voice-captions',
+    waive: {
+      console: 'the WebRTC session logs its negotiation against a lane with no SFU peer',
     },
   },
   {
@@ -2189,7 +2443,10 @@ export const SURFACES: Surface[] = [
     stage: '11-observability',
     title: 'Event log',
     role: 'founder',
-    intent: 'Signed, hash-chained audit trail — identity/presence/federation/agent/moderation events.',
+    intent:
+      'Signed, hash-chained audit trail — identity/presence/federation/agent/moderation events. ' +
+      'Stream fixed by EVENT_LOG_FIXTURE, whose shape is checked against the live endpoint first.',
+    setup: fixedEventLog(),
     navigate: async (page) => {
       await openTab(page, 'Events');
       await expect(page.locator('.event-log')).toBeVisible({ timeout: 15_000 });
@@ -2483,7 +2740,10 @@ export const SURFACES: Surface[] = [
     stage: '11-observability',
     title: 'Event log filtered to one domain',
     role: 'founder',
-    intent: 'Domain filter applied — proves the select actually narrows the table.',
+    intent:
+      'Domain filter applied — proves the select actually narrows the table. The stub honours ' +
+      '`domain`, so a filter that stopped filtering would still fail this.',
+    setup: fixedEventLog(),
     navigate: async (page) => {
       await openTab(page, 'Events');
       await page.locator('.domain-filter').selectOption('IDENTITY');
@@ -2575,7 +2835,10 @@ export const SURFACES: Surface[] = [
       // so by the time a later one runs there are several previews on screen.
       await expect(page.locator('.link-preview-card').first()).toBeVisible({ timeout: 20_000 });
     },
-    clip: '.chat-area',
+    // Clipped to the card for the same reason `.first()` is needed above: the
+    // channel accumulates one message per viewport, so `.chat-area` recorded
+    // a different number of cards at each one.
+    clip: '.link-preview-card >> nth=0',
   },
   {
     id: 'link-preview-unavailable',
@@ -2591,7 +2854,7 @@ export const SURFACES: Surface[] = [
       await postFreshMessage(page, 'Also worth a read: https://example.org/another-article');
       await expect(page.locator('.link-preview-minimal').first()).toBeVisible({ timeout: 20_000 });
     },
-    clip: '.chat-area',
+    clip: '.link-preview-minimal >> nth=0',
     waive: {
       network: 'the 502 is injected deliberately to reach the fallback state',
       console: 'the browser logs the injected 502 to the console as well',

@@ -170,6 +170,10 @@ describe('contract: WebSocket client → server frames', () => {
     expect(isString(fx.channelId)).toBe(true);
     expect(isString(fx.sdp)).toBe(true);
     expect(fx.sdp!.startsWith('v=0')).toBe(true);
+    // The join grant. The server requires it to enter a call; a client that
+    // omits it gets a refusal, so it belongs in the shared description of the
+    // frame rather than only in the server's parser.
+    expect(isString(fx.voiceToken)).toBe(true);
   });
 
   it('webrtc-ice-candidate matches WsSendFrame for type=webrtc_ice_candidate', () => {

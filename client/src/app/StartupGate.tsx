@@ -260,7 +260,7 @@ export function StartupGate(props: StartupGateProps) {
                   setClearStateError(null);
                   useServersStore.setState({ servers: [], activeServerId: null, serverImageUrl: null, pendingRegistrationServerId: null, switchError: null });
                   useIdentityStore.setState({ identity: null, phase: 'uninitialized', error: null, errorDetails: null });
-                  setSessionToken(null);
+                  setSessionToken(null, null);
                   retryBootstrap();
                 })();
               }}

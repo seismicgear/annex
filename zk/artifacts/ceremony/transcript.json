@@ -1,0 +1,110 @@
+{
+  "schemaVersion": 1,
+  "startedAt": "2026-09-15T15:06:39.060Z",
+  "tool": "zk/scripts/ceremony.js",
+  "snarkjs": "0.7.6",
+  "circom": "v2.2.3",
+  "drandChain": {
+    "api": "https://api.drand.sh",
+    "chainHash": "8990e7a9aaed2ffed73dbd7092123d6f289930540d7651336225dc172e51b2ce",
+    "periodSeconds": 30,
+    "publicKey": "868f005eb8e6e4ca0a47c8a77ceaa5309a47978a7c71bc5cce96366b5d7a569937c529eeda66c7293784a9402801af31"
+  },
+  "phase1": {
+    "source": "operator-supplied",
+    "originalPath": "/home/user/annex/zk/artifacts/ceremony/pot14_final.ptau",
+    "sha256": "15c73c5175f0951fea4ad2c7a1ee99c07188e42f03af6e865d8f2059b9d41ed2",
+    "power": 14,
+    "verified": true
+  },
+  "phase2": {
+    "contributorsPerCircuit": 1,
+    "beacon": {
+      "chainHash": "8990e7a9aaed2ffed73dbd7092123d6f289930540d7651336225dc172e51b2ce",
+      "chainPublicKey": "868f005eb8e6e4ca0a47c8a77ceaa5309a47978a7c71bc5cce96366b5d7a569937c529eeda66c7293784a9402801af31",
+      "round": 6468464,
+      "randomness": "aff423b1fb07e03b79434a94d90b59ad58a71e46c29de26dbbebeb28285fa86e",
+      "signature": "b9b8b34148558f4d90f9eaf2b6d0675307f13fe71149d4ae5d9ad1245f3b72830ef362eb47de0cb8a30341cca378f07c0d2f77f3f30be626f57934b2a0710c9a53c421a8fd9aff84da9a4b0e27c819b8f275d787b1634bd824fa9d6f9b837041",
+      "committedAt": "2026-09-15T15:07:24.661Z",
+      "latestRoundAtCommit": 6468460,
+      "commitment": {
+        "stage": "phase2",
+        "preBeaconZkeySha256": {
+          "identity": "35f338a61bcd368471f366d613c55616670edd541e4d479793ecd2966bc7f777",
+          "membership": "2275ef811ce6d50cef8245cad26312fb5db24fdfe4443a493e2de193c686fa00",
+          "membership_v2": "9117578f1b6c5351b697bf19bf8f6874015af48a30a4377a4739877ce9f1778d",
+          "channel_eligibility": "036c70e14f244812f1da99124266de8bf451127abf634b86bd1771adb39b735e",
+          "link_pseudonyms": "7c2c7cbcb952f216b9db5546e41a8594a74bfb46c9949c1c8836e9796597fd21",
+          "federation_attestation": "19a1a861f4424f6331d71981829e006c8916c8786085fc7bbc90ca275509293d"
+        }
+      }
+    },
+    "circuits": [
+      {
+        "circuit": "identity",
+        "contributions": [
+          {
+            "name": "annex-phase2-local-1",
+            "hash": "4cfab3d260e0ba8accf0ab0f25f24968e830388e91a267c9281ec3a1f4b9db6b9748aec172aa875d3a47dcbeb0bb491644e72a2ce1cbb91f653ffec821a17a25"
+          }
+        ],
+        "verified": true
+      },
+      {
+        "circuit": "membership",
+        "contributions": [
+          {
+            "name": "annex-phase2-local-1",
+            "hash": "ed499722237aeb4cc1b68f154330e1bb4fa3912ac8642fe62ca1b283133ec4b3c8dd28ddbc2b3acda30443007c25aa9d15052f9c0b1b58dc3e96c24c0ae20c7d"
+          }
+        ],
+        "verified": true
+      },
+      {
+        "circuit": "membership_v2",
+        "contributions": [
+          {
+            "name": "annex-phase2-local-1",
+            "hash": "37ae3713af453958be661bd2d8fda07b825158d92f22ae77d6a08ecc065ae7fcbc6b39b7b2546a490e8267b694da609fc16f9d1ea5defcccc3a79b53303d7e62"
+          }
+        ],
+        "verified": true
+      },
+      {
+        "circuit": "channel_eligibility",
+        "contributions": [
+          {
+            "name": "annex-phase2-local-1",
+            "hash": "ee7e5a1f2c7dd7f7fa765e0a5b9cf73f664fa3d45333ecfa653e795305f9c866795c362f79d5ee30d342a3c584b46b42d3b47612714205496c052ae408fdbf21"
+          }
+        ],
+        "verified": true
+      },
+      {
+        "circuit": "link_pseudonyms",
+        "contributions": [
+          {
+            "name": "annex-phase2-local-1",
+            "hash": "f65390799a1d103ad6df4944cf34288be0526bebecc1ba4f65c152a3c200a112521094823f0f3d8c488016c7098c7a96decdd85054f453ee74ba4e9c98e512d7"
+          }
+        ],
+        "verified": true
+      },
+      {
+        "circuit": "federation_attestation",
+        "contributions": [
+          {
+            "name": "annex-phase2-local-1",
+            "hash": "7d205240af7a8e4870b137cebffad0395b41449a3ac07aa1e2c2f0bc1ec82f8fb9c65674ed1803521fb99b741a9682334f2ad40d3fbb23deedaf7f9fe55a2d98"
+          }
+        ],
+        "verified": true
+      }
+    ]
+  },
+  "ptauFile": {
+    "path": "./pot14_final.ptau",
+    "sha256": "15c73c5175f0951fea4ad2c7a1ee99c07188e42f03af6e865d8f2059b9d41ed2"
+  },
+  "finishedAt": "2026-09-15T15:09:49.132Z"
+}

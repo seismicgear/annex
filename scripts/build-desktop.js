@@ -85,15 +85,17 @@ if (IS_PRODUCTION) {
   // v2 + the capability circuits, so a release that only gated membership could
   // bundle unverified (random/dev) v2/capability wasm/zkey/vkey — defeating the
   // pinned-ceremony gate for the DEFAULT identity path (AUDIT / Codex P1).
-  const PRODUCTION_MANIFESTS = [
+  // Hand-listing the manifests meant a sixth circuit could be added and gated
+  // by nothing. `--all` sweeps `zk/artifacts/*/manifest.json`, so a new
+  // circuit is covered the moment its manifest exists.
+  const REQUIRED_MANIFESTS = [
     "artifacts/membership/manifest.json",
     "artifacts/membership_v2/manifest.json",
     "artifacts/channel_eligibility/manifest.json",
     "artifacts/link_pseudonyms/manifest.json",
     "artifacts/federation_attestation/manifest.json",
   ];
-  log("Verifying pinned ZK artifacts against per-circuit manifests...");
-  for (const manifest of PRODUCTION_MANIFESTS) {
+  for (const manifest of REQUIRED_MANIFESTS) {
     if (!fs.existsSync(path.join(ZK_DIR, manifest))) {
       fatal(
         `${manifest} is missing. Production builds require a pinned manifest for every ` +
@@ -101,8 +103,23 @@ if (IS_PRODUCTION) {
           `— see docs/refactor/zk-merkle-production.md.`
       );
     }
-    run(`node scripts/verify-artifacts.js --manifest ${manifest}`, ZK_DIR);
   }
+  log("Verifying pinned ZK artifacts against per-circuit manifests...");
+  run("node scripts/verify-artifacts.js --all", ZK_DIR);
+
+  // Hashes prove the files are the pinned ones; they do not prove a ceremony
+  // produced them. `zkey verify` walks r1cs → ptau → contributions → beacon.
+  log("Verifying the ceremony chain...");
+  run("node scripts/verify-ceremony.js", ZK_DIR);
+
+  // The verified artifacts live in `zk/artifacts/`; every consumer below —
+  // the client copy step, tauri.conf.json's bundle.resources, the server's
+  // vkey loader — reads `zk/keys/` and `zk/build/`. Install re-hashes each
+  // copy against the manifest, so what gets bundled is provably what was
+  // just verified rather than whatever happened to be in the dev directory.
+  log("Installing pinned artifacts into zk/keys and zk/build...");
+  run("node scripts/install-ceremony.js", ZK_DIR);
+
   log("ZK artifacts verified.");
 } else if (process.env.SKIP_ZK === "1") {
   log("Skipping ZK build (SKIP_ZK=1, dev profile)");

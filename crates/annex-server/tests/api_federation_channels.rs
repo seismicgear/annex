@@ -92,6 +92,8 @@ async fn setup_app() -> (axum::Router, Arc<AppState>, TempDir) {
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
+        shutdown: Default::default(),
+        metrics: Default::default(),
     };
 
     let router = app(state.clone());
@@ -431,5 +433,263 @@ async fn a_peer_cannot_join_a_channel_that_does_not_exist() {
         response.status(),
         StatusCode::OK,
         "joined a phantom channel"
+    );
+}
+
+// ── The channel's own policy must apply to federated joins ──────────────────
+//
+// `join_federated_channel` verified the instance, the agreement, the
+// signature, the attestation and the channel's federation scope — and then
+// called `add_member`. Every gate the LOCAL join runs was absent: the
+// channel's `required_capabilities_json`, its agents-only restriction, its
+// `agent_min_alignment`, and whether the identity is active on this server at
+// all. So a channel's stated policy governed the people who joined through the
+// front door and nobody who arrived through federation, and a remote peer
+// could enrol a member the operator had banned.
+//
+// These drive the real HTTP route with a real signature, because the defect
+// was that the policy function was never reached — a test that called the
+// policy function directly would have proved nothing about it.
+
+/// Seed an attested remote peer and return a signed join payload.
+fn attested_peer(
+    conn: &rusqlite::Connection,
+    server_id: i64,
+    channel_id: &str,
+    pseudonym_id: &str,
+) -> serde_json::Value {
+    let mut csprng = OsRng;
+    let mut key_bytes = [0u8; 32];
+    csprng.fill_bytes(&mut key_bytes);
+    let signing_key = SigningKey::from_bytes(&key_bytes);
+    let public_key_hex = hex::encode(signing_key.verifying_key().as_bytes());
+
+    let remote_base_url = "https://remote.example.com";
+    conn.execute(
+        "INSERT INTO instances (base_url, public_key, label, status) \
+         VALUES (?1, ?2, 'Remote', 'ACTIVE')",
+        rusqlite::params![remote_base_url, public_key_hex],
+    )
+    .unwrap();
+    let remote_instance_id = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO federation_agreements (
+            local_server_id, remote_instance_id, alignment_status, transfer_scope,
+            agreement_json, active
+        ) VALUES (?1, ?2, 'ALIGNED', 'REFLECTION_SUMMARIES_ONLY', '{}', 1)",
+        rusqlite::params![server_id, remote_instance_id],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO federated_identities \
+         (server_id, remote_instance_id, commitment_hex, pseudonym_id, vrp_topic) \
+         VALUES (?1, ?2, 'commit-hex', ?3, 'topic')",
+        rusqlite::params![server_id, remote_instance_id, pseudonym_id],
+    )
+    .unwrap();
+
+    let message = format!("{channel_id}\n{pseudonym_id}");
+    let signature_hex = hex::encode(signing_key.sign(message.as_bytes()).to_bytes());
+    json!({
+        "originating_server": remote_base_url,
+        "pseudonym_id": pseudonym_id,
+        "signature": signature_hex
+    })
+}
+
+async fn federated_join(
+    app: axum::Router,
+    channel_id: &str,
+    payload: serde_json::Value,
+) -> StatusCode {
+    app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/federation/channels/{channel_id}/join"))
+            .header("Content-Type", "application/json")
+            .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 8080))))
+            .body(Body::from(payload.to_string()))
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+    .status()
+}
+
+/// A locally deactivated identity must not be re-admitted through federation.
+#[tokio::test]
+async fn a_deactivated_identity_cannot_join_through_federation() {
+    let (app, state, _temp_dir) = setup_app().await;
+    let channel_id = "fed-deactivated";
+    let pseudonym_id = "banned-user";
+
+    let payload = {
+        let conn = state.pool.get().unwrap();
+        conn.execute(
+            r#"INSERT INTO channels (server_id, channel_id, name, channel_type, federation_scope)
+               VALUES (?1, ?2, 'Fed', '"Text"', '"Federated"')"#,
+            rusqlite::params![state.server_id, channel_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO platform_identities \
+             (server_id, pseudonym_id, participant_type, active) VALUES (?1, ?2, 'HUMAN', 0)",
+            rusqlite::params![state.server_id, pseudonym_id],
+        )
+        .unwrap();
+        attested_peer(&conn, state.server_id, channel_id, pseudonym_id)
+    };
+
+    assert_ne!(
+        federated_join(app, channel_id, payload).await,
+        StatusCode::OK,
+        "a moderator's deactivation must not be undone by the banned party's \
+         home server saying they are still a member"
+    );
+
+    let members: i64 = state
+        .pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM channel_members WHERE channel_id = ?1",
+            [channel_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(members, 0, "a membership row was written anyway");
+}
+
+/// A channel's required capabilities must apply to federated joins.
+#[tokio::test]
+async fn a_capability_gated_channel_refuses_a_federated_join_without_it() {
+    let (app, state, _temp_dir) = setup_app().await;
+    let channel_id = "fed-caps";
+    let pseudonym_id = "remote-nocaps";
+
+    let payload = {
+        let conn = state.pool.get().unwrap();
+        conn.execute(
+            r#"INSERT INTO channels
+               (server_id, channel_id, name, channel_type, federation_scope,
+                required_capabilities_json)
+               VALUES (?1, ?2, 'Fed', '"Text"', '"Federated"', '["can_moderate"]')"#,
+            rusqlite::params![state.server_id, channel_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO platform_identities \
+             (server_id, pseudonym_id, participant_type, active, can_moderate) \
+             VALUES (?1, ?2, 'HUMAN', 1, 0)",
+            rusqlite::params![state.server_id, pseudonym_id],
+        )
+        .unwrap();
+        attested_peer(&conn, state.server_id, channel_id, pseudonym_id)
+    };
+
+    assert_ne!(
+        federated_join(app, channel_id, payload).await,
+        StatusCode::OK,
+        "a channel that requires can_moderate must refuse a federated member \
+         without it, exactly as it refuses a local one"
+    );
+}
+
+/// An agents-only channel must refuse a human arriving through federation.
+#[tokio::test]
+async fn an_agent_only_channel_refuses_a_federated_human() {
+    let (app, state, _temp_dir) = setup_app().await;
+    let channel_id = "fed-agents-only";
+    let pseudonym_id = "remote-human";
+
+    let payload = {
+        let conn = state.pool.get().unwrap();
+        conn.execute(
+            r#"INSERT INTO channels (server_id, channel_id, name, channel_type, federation_scope)
+               VALUES (?1, ?2, 'Agents', '"Agent"', '"Federated"')"#,
+            rusqlite::params![state.server_id, channel_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO platform_identities \
+             (server_id, pseudonym_id, participant_type, active) VALUES (?1, ?2, 'HUMAN', 1)",
+            rusqlite::params![state.server_id, pseudonym_id],
+        )
+        .unwrap();
+        attested_peer(&conn, state.server_id, channel_id, pseudonym_id)
+    };
+
+    assert_ne!(
+        federated_join(app, channel_id, payload).await,
+        StatusCode::OK,
+        "the agent-channel restriction exists so humans cannot bypass \
+         agent-specific policy; federation must not be the way around it"
+    );
+}
+
+/// A channel stating a minimum alignment must not admit an agent whose
+/// alignment this server cannot determine.
+#[tokio::test]
+async fn an_alignment_gated_channel_refuses_an_unregistered_federated_agent() {
+    let (app, state, _temp_dir) = setup_app().await;
+    let channel_id = "fed-aligned";
+    let pseudonym_id = "remote-agent";
+
+    let payload = {
+        let conn = state.pool.get().unwrap();
+        conn.execute(
+            r#"INSERT INTO channels
+               (server_id, channel_id, name, channel_type, federation_scope, agent_min_alignment)
+               VALUES (?1, ?2, 'Aligned', '"Text"', '"Federated"', '"Aligned"')"#,
+            rusqlite::params![state.server_id, channel_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO platform_identities \
+             (server_id, pseudonym_id, participant_type, active) VALUES (?1, ?2, 'AI_AGENT', 1)",
+            rusqlite::params![state.server_id, pseudonym_id],
+        )
+        .unwrap();
+        attested_peer(&conn, state.server_id, channel_id, pseudonym_id)
+    };
+
+    assert_ne!(
+        federated_join(app, channel_id, payload).await,
+        StatusCode::OK,
+        "an unknown alignment must never satisfy a stated minimum — an \
+         operator who asked for Aligned did not ask for 'or unmeasured'"
+    );
+}
+
+/// The counterweight. A federated agent whose alignment nobody has asked
+/// about must still be able to join an ordinary channel, or the fix has
+/// replaced a bypass with a blanket ban on federated agents.
+#[tokio::test]
+async fn an_unregistered_federated_agent_can_still_join_an_ungated_channel() {
+    let (app, state, _temp_dir) = setup_app().await;
+    let channel_id = "fed-open";
+    let pseudonym_id = "remote-agent-open";
+
+    let payload = {
+        let conn = state.pool.get().unwrap();
+        conn.execute(
+            r#"INSERT INTO channels (server_id, channel_id, name, channel_type, federation_scope)
+               VALUES (?1, ?2, 'Open', '"Text"', '"Federated"')"#,
+            rusqlite::params![state.server_id, channel_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO platform_identities \
+             (server_id, pseudonym_id, participant_type, active) VALUES (?1, ?2, 'AI_AGENT', 1)",
+            rusqlite::params![state.server_id, pseudonym_id],
+        )
+        .unwrap();
+        attested_peer(&conn, state.server_id, channel_id, pseudonym_id)
+    };
+
+    assert_eq!(
+        federated_join(app, channel_id, payload).await,
+        StatusCode::OK,
+        "a channel that states no alignment requirement must not acquire one"
     );
 }

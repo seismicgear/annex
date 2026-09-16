@@ -132,6 +132,81 @@ const CAPTURE_STYLESHEET = `
     flex: 1 0 100% !important;
   }
 
+  /*
+   * Masked text still occupies the width its content asks for.
+   *
+   * A mask paints over an element; it does not change the box the element
+   * takes part in. So every selector in NONDETERMINISTIC_SELECTORS is hidden
+   * and still moves its neighbours whenever its content changes length — and
+   * the whole reason those selectors are on that list is that their content
+   * changes every run.
+   *
+   * \`.timestamp\` is the clearest case and the one that caught this.
+   * MessageView renders \`new Date(..).toLocaleTimeString()\`, so a message
+   * sent at 9:49 PM measures ten characters and one sent at 11:10 PM measures
+   * eleven. Seven pixels. Measured, not guessed: the masked timestamp block on
+   * \`message-deleted-tombstone\` came out 75px wide against a 68px baseline,
+   * which widened the whole clipped bubble from 237px to 244px and failed
+   * before a single pixel inside it was compared. Three surfaces failed across
+   * eight viewport captures for no reason but the hour of the day, and would
+   * have flipped back on their own around midnight — a baseline that passes
+   * and fails on a rotation nobody would connect to the clock.
+   *
+   * Fixing the clock instead would mean faking the thing under test. Fixing
+   * the mask is not possible — Playwright has no fixed-size mask. So pin the
+   * LAYOUT of the masked regions: a fixed width, contents clipped, so the
+   * space each one occupies no longer depends on what it says. They are
+   * already unreadable in the capture; this makes them unmeasurable too.
+   *
+   * Deliberately NOT \`display: none\`. Removing them would change the
+   * surrounding layout in a way a reviewer looking at the baseline could not
+   * see, and would stop the audit noticing if one of them disappeared for
+   * real.
+   *
+   * \`text-overflow: ellipsis\`, not \`clip\`. The first attempt used \`clip\` and
+   * the overflow audit immediately produced 390 \`clipped-text\` findings —
+   * correctly, because a fixed width plus \`clip\` IS the signature it hunts
+   * for ("text clipped without ellipsis, scrollWidth 108 > clientWidth 72").
+   * Those findings described this stylesheet rather than the product, since
+   * nothing constrains these elements in the real UI. The capture stylesheet
+   * has to stabilise layout without inventing a defect, and an ellipsis on a
+   * truncated fixed-width label is both the accepted treatment and what
+   * \`audits.ts\` checks for. The glyphs it draws change no pixel: Playwright
+   * paints the mask over the element's whole box, so the ellipsis is under it.
+   *
+   * Scoped to the message header and the reply affordances, which is where
+   * the failures were MEASURED. The same argument applies in principle to the
+   * event-log columns and the admin member lists — their content is
+   * identity-derived and variable-width too — and they are left alone because
+   * nothing has observed them failing, and pinning a table column or a flex
+   * header on a hunch is how a fix invents its own regressions. If one of them
+   * starts flapping, measure it first and extend this rule with the numbers in
+   * hand, the way this one was.
+   */
+  .message-header .timestamp,
+  .message-header .sender,
+  .reply-bar-author,
+  .reply-context-author {
+    display: inline-block !important;
+    width: 72px !important;
+    max-width: 72px !important;
+    min-width: 72px !important;
+    overflow: hidden !important;
+    white-space: nowrap !important;
+    text-overflow: ellipsis !important;
+    vertical-align: middle !important;
+  }
+
+  /*
+   * The avatar is a square, not a text run: giving it the same 72px would
+   * distort every message header. It is masked for its letter, and its box is
+   * already fixed by the product's own CSS, so it only needs its content
+   * pinned — which the mask already does.
+   */
+  .message-avatar {
+    flex: 0 0 auto !important;
+  }
+
 `;
 
 /** Apply capture-time stabilisation. Safe to call more than once per page. */

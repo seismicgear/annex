@@ -70,6 +70,7 @@ async fn test_update_policy_and_recalculate() {
     let handshake = VrpFederationHandshake {
         anchor_snapshot: anchor,
         capability_contract: contract,
+        scorer: None,
     };
     let handshake_json = serde_json::to_string(&handshake).unwrap();
 
@@ -126,6 +127,8 @@ async fn test_update_policy_and_recalculate() {
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
+        shutdown: Default::default(),
+        metrics: Default::default(),
     };
     let app = app(state);
 

@@ -20,11 +20,43 @@ use std::{
     sync::Arc,
 };
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use tokio::sync::{mpsc, RwLock};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+/// One live session: its id, the writer channel, and the token that tells its
+/// reader loop to stop.
+///
+/// The token is the part that was missing. `add_session` replaces an existing
+/// session by dropping its `Sender`, which ends the *writer* task — but the
+/// reader loop in `ws::session` is `while let Some(Ok(msg)) = receiver.next()`,
+/// which ends only when the CLIENT closes. So an evicted socket stayed open,
+/// holding a reader task, an ICE task and a renegotiation task, and simply
+/// stopped receiving anything. One valid token could therefore pin an
+/// unbounded number of connections: open, get evicted, open again. Nothing in
+/// the registry grew, which is why it did not look like a leak.
+#[derive(Clone)]
+pub(crate) struct Session {
+    pub(crate) id: Uuid,
+    pub(crate) sender: mpsc::Sender<String>,
+    pub(crate) cancel: CancellationToken,
+}
+
 /// Type alias for session map to satisfy clippy complexity checks.
-type SessionMap = HashMap<String, (Uuid, mpsc::Sender<String>)>;
+type SessionMap = HashMap<String, Session>;
+
+/// Maximum concurrent WebSocket connections across all identities.
+///
+/// A per-identity cap of one already follows from replacement, but that only
+/// bounds an identity, not the process. Each socket costs a reader task, a
+/// writer task, two event-relay tasks and a 1024-slot channel, so the ceiling
+/// is about memory and scheduler pressure rather than about any one abuser.
+/// Refusing the upgrade with 503 is the honest answer — the client retries,
+/// and the alternative is accepting the connection and then failing to serve
+/// it.
+pub const MAX_WS_CONNECTIONS: usize = 10_000;
 
 /// Manages active WebSocket connections and subscriptions.
 #[derive(Clone, Default)]
@@ -35,6 +67,14 @@ pub struct ConnectionManager {
     channel_subscriptions: Arc<RwLock<HashMap<String, HashSet<String>>>>,
     /// Reverse mapping: pseudonym -> set of channel_ids.
     user_subscriptions: Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    /// Sockets that have been admitted and not yet released.
+    ///
+    /// Counted separately from `sessions.len()`, and that distinction is the
+    /// point: a socket is admitted at the upgrade, before the identity is
+    /// known, and `sessions` holds at most one entry per identity. Sizing the
+    /// cap off `sessions` would have counted every evicted-but-still-open
+    /// connection as zero.
+    open_connections: Arc<AtomicUsize>,
 }
 
 impl ConnectionManager {
@@ -43,7 +83,33 @@ impl ConnectionManager {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             channel_subscriptions: Arc::new(RwLock::new(HashMap::new())),
             user_subscriptions: Arc::new(RwLock::new(HashMap::new())),
+            open_connections: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// Claim a connection slot, or `None` if the server is at capacity.
+    ///
+    /// The returned guard releases the slot on drop, so every early return and
+    /// every panic in the session task gives the slot back. A manual
+    /// decrement at the end of the handler would have leaked on the paths that
+    /// matter most — the ones taken when something has already gone wrong.
+    pub fn try_admit(&self) -> Option<ConnectionSlot> {
+        let prev = self
+            .open_connections
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                (n < MAX_WS_CONNECTIONS).then_some(n + 1)
+            });
+        match prev {
+            Ok(_) => Some(ConnectionSlot {
+                counter: self.open_connections.clone(),
+            }),
+            Err(_) => None,
+        }
+    }
+
+    /// Sockets currently admitted.
+    pub fn open_connections(&self) -> usize {
+        self.open_connections.load(Ordering::SeqCst)
     }
 
     /// Registers a new session for a pseudonym.
@@ -61,19 +127,38 @@ impl ConnectionManager {
     /// chan_subs → user_subs order).
     ///
     /// Returns the unique session ID.
-    pub async fn add_session(&self, pseudonym: String, sender: mpsc::Sender<String>) -> Uuid {
+    pub async fn add_session(
+        &self,
+        pseudonym: String,
+        sender: mpsc::Sender<String>,
+    ) -> (Uuid, CancellationToken) {
         let session_id = Uuid::new_v4();
+        let cancel = CancellationToken::new();
 
         // 1. Atomically replace any existing session under a single
         //    write lock to prevent TOCTOU races when two connections
         //    for the same pseudonym arrive concurrently.
-        let had_previous = {
+        let replaced = {
             let mut sessions = self.sessions.write().await;
-            let old = sessions.insert(pseudonym.clone(), (session_id, sender));
-            old.is_some()
+            sessions.insert(
+                pseudonym.clone(),
+                Session {
+                    id: session_id,
+                    sender,
+                    cancel: cancel.clone(),
+                },
+            )
         };
 
-        if had_previous {
+        // Tell the evicted socket to close. Dropping its `Sender` only ends
+        // the writer task; the reader loop waits on the client, which may
+        // never speak again, and the socket would otherwise stay open holding
+        // four tasks and a 1024-slot channel for nothing.
+        if let Some(ref old) = replaced {
+            old.cancel.cancel();
+        }
+
+        if replaced.is_some() {
             // 2. Read user_subscriptions briefly to collect the old
             //    session's channel list. A read lock is sufficient
             //    because no other writer can race us — concurrent
@@ -111,14 +196,14 @@ impl ConnectionManager {
             );
         }
 
-        session_id
+        (session_id, cancel)
     }
 
     /// Disconnects a user by pseudonym, closing their WebSocket session.
     pub async fn disconnect_user(&self, pseudonym: &str) {
         let session_id = {
             let sessions = self.sessions.read().await;
-            sessions.get(pseudonym).map(|(id, _)| *id)
+            sessions.get(pseudonym).map(|s| s.id)
         };
 
         if let Some(id) = session_id {
@@ -135,14 +220,17 @@ impl ConnectionManager {
         // 1. Remove from sessions (independent lock, always acquired first).
         {
             let mut sessions = self.sessions.write().await;
-            if let Some((current_id, _)) = sessions.get(pseudonym) {
-                if *current_id != session_id {
-                    return; // Stale removal request
-                }
-            } else {
-                return; // Already removed
+            match sessions.get(pseudonym) {
+                Some(existing) if existing.id != session_id => return, // Stale removal request
+                Some(_) => {}
+                None => return, // Already removed
             }
-            sessions.remove(pseudonym);
+            if let Some(removed) = sessions.remove(pseudonym) {
+                // Idempotent, and the reason `disconnect_user` now actually
+                // disconnects: before, it cleared the registry and left the
+                // socket open.
+                removed.cancel.cancel();
+            }
         }
 
         // 2. Collect the channels this user was subscribed to.
@@ -229,8 +317,8 @@ impl ConnectionManager {
         if let Some(listeners) = chan_subs.get(channel_id) {
             let sessions = self.sessions.read().await;
             for pseudonym in listeners {
-                if let Some((_, sender)) = sessions.get(pseudonym) {
-                    if let Err(e) = sender.try_send(message_json.clone()) {
+                if let Some(session) = sessions.get(pseudonym) {
+                    if let Err(e) = session.sender.try_send(message_json.clone()) {
                         tracing::warn!(
                             pseudonym = %pseudonym,
                             channel_id = %channel_id,
@@ -246,8 +334,8 @@ impl ConnectionManager {
     /// Broadcasts a message string to ALL connected sessions (server-wide events).
     pub async fn broadcast_all(&self, message_json: String) {
         let sessions = self.sessions.read().await;
-        for (_, (_, sender)) in sessions.iter() {
-            if let Err(e) = sender.try_send(message_json.clone()) {
+        for session in sessions.values() {
+            if let Err(e) = session.sender.try_send(message_json.clone()) {
                 tracing::warn!("dropping broadcast_all message for slow consumer: {}", e);
             }
         }
@@ -256,8 +344,8 @@ impl ConnectionManager {
     /// Sends a message string to a specific user (pseudonym).
     pub async fn send(&self, pseudonym: &str, message_json: String) {
         let sessions = self.sessions.read().await;
-        if let Some((_, sender)) = sessions.get(pseudonym) {
-            if let Err(e) = sender.try_send(message_json) {
+        if let Some(session) = sessions.get(pseudonym) {
+            if let Err(e) = session.sender.try_send(message_json) {
                 tracing::warn!(
                     pseudonym = %pseudonym,
                     "dropping direct message for slow consumer: {}",
@@ -265,6 +353,17 @@ impl ConnectionManager {
                 );
             }
         }
+    }
+}
+
+/// Holds one WebSocket connection slot; releases it on drop.
+pub struct ConnectionSlot {
+    counter: Arc<AtomicUsize>,
+}
+
+impl Drop for ConnectionSlot {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::SeqCst);
     }
 }
 

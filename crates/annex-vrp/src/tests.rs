@@ -47,10 +47,49 @@ fn test_vrp_federation_handshake_serialization() {
             offered_capabilities: vec!["cap2".to_string()],
             redacted_topics: vec![],
         },
+        scorer: None,
     };
     let json = serde_json::to_string(&handshake).unwrap();
     let deserialized: VrpFederationHandshake = serde_json::from_str(&json).unwrap();
     assert_eq!(deserialized, handshake);
+}
+
+/// A handshake written before `scorer` existed must still parse.
+///
+/// This is not hypothetical politeness about old peers: stored handshakes live
+/// in `federation_agreements.remote_handshake_json`, and
+/// `federation_repository::active_agreement_redacted_topics` now REFUSES a
+/// peer's traffic when it cannot parse one. A required field here would have
+/// cut off every existing peer the moment this shipped.
+#[test]
+fn a_handshake_without_a_scorer_field_still_parses() {
+    let legacy = r#"{
+        "anchor_snapshot": {
+            "principles_hash": "0xabc",
+            "prohibited_actions_hash": "0xdef",
+            "timestamp": 100
+        },
+        "capability_contract": {
+            "required_capabilities": [],
+            "offered_capabilities": []
+        }
+    }"#;
+    let parsed: VrpFederationHandshake =
+        serde_json::from_str(legacy).expect("a pre-scorer handshake must still deserialize");
+    assert_eq!(parsed.scorer, None);
+
+    // And a peer that declares one round-trips.
+    let declared = VrpFederationHandshake {
+        scorer: Some(crate::embedding::ModelFingerprint {
+            model_id: "minishlab/potion-base-2M".to_string(),
+            weights_sha256: "f95ffde0".to_string(),
+        }),
+        ..parsed
+    };
+    let json = serde_json::to_string(&declared).unwrap();
+    assert!(json.contains("potion-base-2M"));
+    let back: VrpFederationHandshake = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, declared);
 }
 
 #[test]
@@ -60,6 +99,7 @@ fn test_vrp_validation_report_serialization() {
         transfer_scope: VrpTransferScope::NoTransfer,
         alignment_score: 0.5,
         negotiation_notes: vec!["note1".to_string()],
+        scoring: None,
     };
     let json = serde_json::to_string(&report).unwrap();
     let deserialized: VrpValidationReport = serde_json::from_str(&json).unwrap();
@@ -254,6 +294,7 @@ fn test_validate_federation_handshake_success() {
     let handshake = VrpFederationHandshake {
         anchor_snapshot: local_anchor.clone(),
         capability_contract: local_contract.clone(),
+        scorer: None,
     };
 
     let align_config = VrpAlignmentConfig {
@@ -291,6 +332,7 @@ fn test_validate_federation_handshake_conflict_principles() {
     let handshake = VrpFederationHandshake {
         anchor_snapshot: remote_anchor,
         capability_contract: local_contract.clone(),
+        scorer: None,
     };
 
     let align_config = VrpAlignmentConfig {
@@ -332,6 +374,7 @@ fn test_validate_federation_handshake_contract_fail() {
     let handshake = VrpFederationHandshake {
         anchor_snapshot: local_anchor.clone(),
         capability_contract: remote_contract,
+        scorer: None,
     };
 
     let align_config = VrpAlignmentConfig {
@@ -365,6 +408,7 @@ fn test_check_transfer_acceptance() {
         transfer_scope: VrpTransferScope::FullKnowledgeBundle,
         alignment_score: 1.0,
         negotiation_notes: vec![],
+        scoring: None,
     };
 
     let report_partial = VrpValidationReport {
@@ -372,6 +416,7 @@ fn test_check_transfer_acceptance() {
         transfer_scope: VrpTransferScope::ReflectionSummariesOnly,
         alignment_score: 0.5,
         negotiation_notes: vec![],
+        scoring: None,
     };
 
     let report_conflict = VrpValidationReport {
@@ -379,6 +424,7 @@ fn test_check_transfer_acceptance() {
         transfer_scope: VrpTransferScope::NoTransfer,
         alignment_score: 0.0,
         negotiation_notes: vec![],
+        scoring: None,
     };
 
     // 1. Conflict always fails
@@ -470,6 +516,7 @@ fn report(status: VrpAlignmentStatus, scope: VrpTransferScope, score: f32) -> Vr
         transfer_scope: scope,
         alignment_score: score,
         negotiation_notes: vec![],
+        scoring: None,
     }
 }
 

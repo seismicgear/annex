@@ -17,24 +17,32 @@ Phase 0: Project Scaffold .............. COMPLETE
 Phase 1: Identity Plane ................ PARTIAL  (membership solid; v2 secret-
                                                    derived nullifier now the
                                                    client default [2026-06-19];
-                                                   all 5 advertised circuits now
-                                                   exist — channel-eligibility,
-                                                   link-pseudonyms, federation-
-                                                   attestation added [2026-06-20]
-                                                   on a dev-fixture setup,
-                                                   ceremony still TODO)
+                                                   all six advertised circuits
+                                                   exist and are ceremony-
+                                                   produced: zk/artifacts/*/
+                                                   manifest.json records
+                                                   ceremony.type =
+                                                   single-contributor-beacon
+                                                   against drand round 6468464
+                                                   [2026-09-15]. What remains is
+                                                   independent participants, not
+                                                   a ceremony)
 Phase 2: Server Core ................... COMPLETE
-Phase 3: VRP Trust Negotiation ......... PARTIAL  (reputation gates outcomes +
-                                                   real measured alignment score
-                                                   [2026-06-19]; semantic now a
-                                                   paraphrase-aware concept
-                                                   embedding [2026-06-20], not a
-                                                   learned model)
+Phase 3: VRP Trust Negotiation ......... PARTIAL  (pinned static embedding
+                                                   model, floor-normalised
+                                                   scores, scorer fingerprint in
+                                                   the handshake [2026-09-15];
+                                                   thresholds measured on a
+                                                   16-pair corpus, which is too
+                                                   small to call them tuned)
 Phase 4: Text Communication ............ COMPLETE
 Phase 5: Presence Graph ................ COMPLETE
-Phase 6: Agent Protocol ................ PARTIAL  (negotiated capability
-                                                   contract not enforced at
-                                                   action time)
+Phase 6: Agent Protocol ................ COMPLETE (alignment is enforced at
+                                                   action time as of
+                                                   2026-09-15, and a Conflict
+                                                   verdict revokes the agent's
+                                                   sessions rather than only
+                                                   closing its socket)
 Phase 7: Voice Infrastructure .......... PARTIAL  (native in-process SFU, no
                                                    external media server;
                                                    human↔human voice real, now
@@ -44,16 +52,24 @@ Phase 7: Voice Infrastructure .......... PARTIAL  (native in-process SFU, no
                                                    box — built-in default profile
                                                    + espeak-ng System fallback +
                                                    DB profile loader [2026-06-20];
-                                                   Whisper STT still needs model
-                                                   provisioning)
+                                                   Whisper STT transcribes for
+                                                   real as of 2026-09-15 — it
+                                                   never had before, see 7.5 —
+                                                   but still ships without a
+                                                   GGML model by design)
 Phase 8: Federation .................... COMPLETE (message/edit/redaction relay
                                                    verified; revocation works)
-Phase 9: RTX Knowledge Exchange ........ PARTIAL  (relay content-bound vs
+Phase 9: RTX Knowledge Exchange ........ COMPLETE (relay content-bound vs
                                                    tampering + agreement TTL
                                                    [2026-06-19]; per-agent author
                                                    signature now verified against
                                                    handshake-captured Ed25519 key
-                                                   [2026-06-20]; single-hop only)
+                                                   [2026-06-20]; multi-hop with a
+                                                   signed hop chain, origin
+                                                   attestation, TTL and loop
+                                                   prevention [2026-09-15] —
+                                                   before which multi-hop did not
+                                                   exist at all)
 Phase 10: Observability ................ COMPLETE
 Phase 11: Client ....................... COMPLETE
 Phase 12: Hardening & Audit ............ COMPLETE
@@ -65,7 +81,7 @@ Phase 12: Hardening & Audit ............ COMPLETE
 > completion criterion is met" — they are downgraded to `PARTIAL` with the
 > specific gaps noted inline in the phase summaries below.
 
-**Last updated**: 2026-06-19
+**Last updated**: 2026-09-15
 
 When phases change status, update this block and add a dated entry to the [Changelog](#changelog) at the bottom of this document.
 
@@ -213,19 +229,27 @@ A repository that compiles, runs an empty server, passes CI, and has the workspa
 
 Phase 0 is **COMPLETE** when:
 
-- [ ] `cargo build` succeeds for all workspace crates with zero warnings
-- [ ] `cargo test` passes (including the database integration test)
-- [ ] `cargo clippy -- -D warnings` passes
-- [ ] CI pipeline is green on `main`
-- [ ] The server starts, serves `/health`, and shuts down cleanly
-- [ ] Every crate has a module-level doc comment
-- [ ] Every dependency is justified in an ADR or inline comment
+Ticked against the code on 2026-09-15. They were all unchecked while the
+Status line said COMPLETE — the same drift the reality check of 2026-06-19
+caught in the Status lines, one level down, where nothing was looking.
+
+- [x] `cargo build` succeeds for all workspace crates with zero warnings
+- [x] `cargo test` passes (including the database integration test) — 1284 tests / 134 binaries
+- [x] `cargo clippy -- -D warnings` passes
+- [ ] CI pipeline is green on `main`. Not yet: the fixes are on a branch. Run
+      `34006312223` on `b172edf` was green on eight jobs and red on UI Audit
+      (53 failed / 366 passed), and the cause — `retries: 1` re-running a
+      surface that posts into a shared channel, so one failure cascaded into
+      53 — is fixed here but has not merged.
+- [x] The server starts, serves `/health`, and shuts down cleanly — `/livez` and `/readyz` too, and `graceful_shutdown.rs` covers the drain
+- [x] Every crate has a module-level doc comment
+- [x] Every dependency is justified in an ADR or inline comment
 
 ---
 
 ## Phase 1: Identity Plane
 
-**Status**: `COMPLETE`
+**Status**: `PARTIAL` — the Groth16 trusted setup is single-operator with a public beacon, not a multi-party ceremony (`zk/artifacts/*/manifest.json` records `ceremony.type` honestly).
 **Prerequisites**: Phase 0 `COMPLETE`
 **Estimated scope**: ZKP circuits, Poseidon Merkle tree, VRP registry, identity commitment, pseudonym derivation
 
@@ -322,16 +346,26 @@ The cryptographic identity substrate. After this phase, an entity can generate a
 
 Phase 1 is **COMPLETE** when:
 
-- [ ] Poseidon hash produces correct outputs against reference test vectors
-- [ ] Merkle tree inserts, proves, and verifies correctly for 1000+ leaves
-- [ ] Merkle tree survives restart (persistence + rebuild verified)
-- [ ] Circom circuits compile, setup completes, and end-to-end proof generation + verification works in the JS toolchain
-- [ ] Proof generation and verification work from Rust
-- [ ] Pseudonym derivation is deterministic and topic-scoped
-- [ ] Nullifier tracking prevents double-join per topic
-- [ ] All database tables exist with migrations and are tested
-- [ ] All code passes quality gates (clippy, fmt, tests, docs)
-- [ ] ADR exists for ZK prover integration approach
+Every box below was unchecked while the Status line said the only gap was the
+ceremony type and the changelog recorded `2026-02-15 | Phase 1 COMPLETE`. Three
+statements, two of which could not both be true. Ticked against the code on
+2026-09-15; the one that stays open is the one the stated gap actually blocks.
+
+- [x] Poseidon hash produces correct outputs against reference test vectors
+- [x] Merkle tree inserts, proves, and verifies correctly for 1000+ leaves
+- [x] Merkle tree survives restart (persistence + rebuild verified) — `MerkleTree::restore`, and a root mismatch is a `StartupError` rather than a silent rebuild
+- [x] Circom circuits compile, setup completes, and end-to-end proof generation + verification works in the JS toolchain — `zk/scripts/test-proofs.js`, 57 assertions
+- [x] Proof generation and verification work from Rust
+- [x] Pseudonym derivation is deterministic and topic-scoped
+- [x] Nullifier tracking prevents double-join per topic
+- [x] All database tables exist with migrations and are tested
+- [x] All code passes quality gates (clippy, fmt, tests, docs)
+- [x] ADR exists for ZK prover integration approach — `docs/adr/0002-zk-proof-verification.md`
+- [ ] The trusted setup has independent participants. It does not: it is
+      single-operator with a public drand beacon, honestly labelled
+      `single-contributor-beacon`. This cannot be closed from inside a build
+      environment — it needs entropy from several mutually distrusting people —
+      and it is the only reason this phase is not COMPLETE.
 
 ---
 
@@ -431,22 +465,24 @@ A running server that accepts identity registrations, processes VRP membership p
 
 Phase 2 is **COMPLETE** when:
 
-- [ ] A client can: register commitment → receive Merkle path → generate proof (client-side) → submit proof → receive pseudonym — end to end over HTTP
-- [ ] Duplicate registrations are rejected
-- [ ] Duplicate nullifiers (same commitment + topic) are rejected
-- [ ] Invalid proofs are rejected
-- [ ] Stale roots are rejected
-- [ ] Identity queries return correct data
-- [ ] Authentication middleware correctly gates protected endpoints
-- [ ] Rate limiting works
-- [ ] All endpoints have integration tests with real SQLite
-- [ ] All endpoints have documented request/response contracts
+Ticked against the code on 2026-09-15, same as Phase 0's.
+
+- [x] A client can: register commitment → receive Merkle path → generate proof (client-side) → submit proof → receive pseudonym — end to end over HTTP — `scripts/smoke-server.sh` and the Playwright functional suite both drive it
+- [x] Duplicate registrations are rejected
+- [x] Duplicate nullifiers (same commitment + topic) are rejected
+- [x] Invalid proofs are rejected
+- [x] Stale roots are rejected — "stale" now means outside `ROOT_EPOCH_GRACE_SECONDS`; strict equality against the current root rejected every proof built a moment before an insertion
+- [x] Identity queries return correct data
+- [x] Authentication middleware correctly gates protected endpoints
+- [x] Rate limiting works
+- [x] All endpoints have integration tests with real SQLite (in-memory, via `tests/common/mod.rs`)
+- [x] All endpoints have documented request/response contracts
 
 ---
 
 ## Phase 3: VRP Trust Negotiation
 
-**Status**: `COMPLETE`
+**Status**: `PARTIAL` — semantic alignment now runs a pinned, digest-verified static embedding model (`minishlab/potion-base-2M`, ADR-0015), mandatory under a production profile, with scores normalised against the loaded scorer's measured noise floor and the scorer's fingerprint carried in the handshake. What keeps this `PARTIAL` is the evidence behind the threshold, not the instrument: the separating bands were measured on a **16-pair labelled corpus**, which is enough to show they do not overlap and not enough to call `agent_min_alignment_score: 0.06` tuned — and this score is the sole input deciding Aligned/Partial/Conflict for every handshake.
 **Prerequisites**: Phase 2 `COMPLETE`
 **Estimated scope**: Port/adapt MABOS VRP trust negotiation for server-agent and server-server contexts
 
@@ -487,9 +523,15 @@ The trust negotiation layer. After this phase, an entity (agent or server) can p
       deterministic and dependency-free, replacing bag-of-words as the default
       [2026-06-20]. Unit-tested: paraphrase pairs beat bag-of-words by a clear
       margin; opposing-value statements stay low.
-- [ ] (Optional) integrate a *learned* embedding model behind the
+- [x] (Optional) integrate a *learned* embedding model behind the
       `SemanticEmbedder` trait for deployments that accept the size/latency cost
-- [ ] ADR: which learned embedding model, local vs. API, latency budget
+      — `embedding::StaticEmbedder`, `minishlab/potion-base-2M` (MIT), a
+      29,528 × 64 static distilled table plus the canonical WordPiece
+      tokenizer, revision- and digest-pinned, 7.5 MB, mandatory under a
+      production profile with the lexicon kept as a dev-only fallback
+      [2026-09-15]
+- [x] ADR: which learned embedding model, local vs. API, latency budget —
+      `docs/adr/0015-vrp-alignment-embedding-model.md`
 - [x] If deferred: ensure `VrpAlignmentConfig.semantic_alignment_required` can be set to `false` without breaking the handshake flow
 
 #### 3.4 — Reputation system
@@ -503,7 +545,12 @@ The trust negotiation layer. After this phase, an entity (agent or server) can p
   - `principles: Vec<String>` — server's declared operating principles
   - `prohibited_actions: Vec<String>` — what the server prohibits
 - [x] Server policy root is derived from `server_policy_versions.policy_json`
-- [ ] Changes to server policy regenerate the policy root and trigger re-evaluation of all active agent and federation relationships
+- [x] Changes to server policy regenerate the policy root and trigger re-evaluation of all active agent and federation relationships
+      — `PUT /api/admin/policy` swaps the in-memory policy and then calls
+      `policy::recalculate_all_alignments`, which re-derives
+      `ServerPolicyRoot::from_policy` and re-scores every active agent
+      registration AND every federation agreement; the same function runs at
+      startup when the scorer fingerprint has changed
 
 #### 3.6 — Agent handshake endpoint
 - [x] `POST /api/vrp/agent-handshake`
@@ -739,6 +786,14 @@ Phase 5 is **COMPLETE** when:
 ## Phase 6: Agent Protocol
 
 **Status**: `COMPLETE`
+
+The gap this phase carried — "enforced at channel join, not at action time" —
+closed on 2026-09-15, and the description was half wrong while it stood. The
+*contract* is not an action permission set and never was: its
+`required_capabilities` / `offered_capabilities` arrays have one consumer,
+`contracts_mutually_accepted`, which is a handshake-time compatibility test
+between two peers' declarations. What was missing was ALIGNMENT at action time.
+See `crates/annex-server/src/services/agent_policy.rs`.
 **Prerequisites**: Phase 3 `COMPLETE`, Phase 4 `COMPLETE`, Phase 5 `COMPLETE`
 **Estimated scope**: Agent connection flow (VRP handshake → membership → channels), agent presence, capability enforcement
 
@@ -791,16 +846,36 @@ Phase 6 is **COMPLETE** when:
 
 - [x] An AI agent can connect, handshake, prove membership, join channels, and send/receive messages end-to-end
 - [x] Alignment and capability restrictions are enforced on channel join
+- [x] Alignment is enforced at ACTION time, not only at join. Closed
+      [2026-09-15]. Every box below this one was ticked while an agent swept to
+      `Conflict` kept sending, editing, deleting, speaking and creating
+      channels in every channel it had already joined: the sweep set
+      `agent_registrations.active = 0` and closed one socket, and
+      `channel_members` and `platform_identities.active` were both untouched,
+      so a reconnect restored everything it had taken away. `AgentDisconnected`
+      went into the hash-chained audit log about an agent that had not been
+      disconnected in any durable sense.
+- [x] A `Conflict` verdict revokes the agent's sessions. Closed [2026-09-15].
+      The token epoch is bumped in the SAME transaction as the deactivation,
+      by both writers of that verdict — the policy sweep and the handshake's
+      conflict branch — so there is no window in which the row reads inactive
+      and the token still verifies.
 - [x] Agents appear correctly in the presence graph with metadata
 - [x] Agent capabilities are inspectable by other participants
 - [x] Server policy changes trigger agent re-evaluation
 - [x] Integration test: full agent lifecycle from handshake to message exchange to disconnection
+- [x] Integration test: the verdict applies to an OPEN socket, to a reconnect,
+      and to every action alignment governs —
+      `crates/annex-server/tests/agent_action_enforcement.rs`, 11 tests, 7 of
+      which were red against the previous code.
 
 ---
 
 ## Phase 7: Voice Infrastructure
 
-**Status**: `COMPLETE`
+**Status**: `PARTIAL` — no GGML model is bundled; `scripts/setup-stt.sh` installs one
+with a pinned digest. The transcription path itself was repaired on 2026-09-15; before
+that it was wired end to end and produced no text in any deployment (see 7.5).
 **Prerequisites**: Phase 4 `COMPLETE`, Phase 6 `COMPLETE`
 **Estimated scope**: native WebRTC SFU, voice LLM TTS service, STT service, agent voice pipeline, voice profiles
 
@@ -845,6 +920,36 @@ Voice channels that work for both humans and agents. Humans speak via WebRTC to 
   - Delivers transcription to subscribed agents as text via their WebSocket connection
 - [x] Message format: `{ "type": "transcription", "channelId": "...", "speakerPseudonym": "...", "text": "..." }`
 - [x] ADR: STT model selection, latency vs. accuracy tradeoff, resource allocation
+- [x] The audio handed to whisper.cpp is audio whisper.cpp can read. Closed
+      [2026-09-15]. These boxes were ticked while the pipeline transcribed
+      nothing, anywhere, and could not have: the SFU tap emits headerless
+      48 kHz signed-16 PCM, and `read_audio_data` in whisper.cpp's
+      `examples/common.cpp` calls `drwav_init_memory` on stdin and then
+      rejects anything that is not a 16 kHz 16-bit WAV. Three checks, all
+      failed, on every frame. `annex-voice::audio` band-limits and decimates
+      48 kHz → 16 kHz and wraps the result in a RIFF/WAVE container.
+- [x] One transcription per window of speech, not per RTP packet. Closed
+      [2026-09-15]. The tap loop called `transcribe()` on each 20 ms frame —
+      a fork, a model load and an inference fifty times a second per speaker,
+      over a window too short for whisper to return anything. Audio is now
+      buffered per `(channel, speaker)` and flushed at 2 s or after 700 ms of
+      quiet, with at most two transcriptions in flight.
+- [x] A missing model says so. Closed [2026-09-15]. `SttReadiness`
+      distinguishes model-missing, binary-missing and binary-not-executable,
+      `/api/voice/config-status` carries it as `stt_detail`, and the client
+      renders it instead of an empty caption strip. The per-frame failure was
+      logged at DEBUG, so a subsystem that could not work in any container
+      ever built from this repo's Dockerfile said so nowhere.
+- [x] The image builds the whisper CLI, not its deprecation stub. Closed
+      [2026-09-15]. whisper.cpp v1.7.4 still produces a `build/bin/main`, and
+      it is `examples/deprecation-warning/deprecation-warning.cpp` — a program
+      whose only behaviour is to print a notice and exit non-zero. The
+      Dockerfile copied it. It now copies `whisper-cli` and fails the build if
+      the copied binary prints a deprecation notice.
+- [ ] A GGML model is provisioned automatically. `scripts/setup-stt.sh`
+      installs one with a pinned SHA-256, but the image still ships without a
+      model on purpose (141 MiB for an optional feature). This is what keeps
+      Phase 7 `PARTIAL`.
 
 #### 7.6 — Voice profile assignment
 - [x] Server operator assigns voice profiles to agents via `agent_registrations.voice_profile_id`
@@ -969,6 +1074,16 @@ Phase 8 is **COMPLETE** when:
 ## Phase 9: RTX Knowledge Exchange
 
 **Status**: `COMPLETE`
+
+The gap this phase carried said "single-hop; multi-hop relay chains lack origin
+validation and circular-relay prevention", and understated it twice over. Those
+two items were ticked in 9.4 — and they were guarding a path no bundle could
+take. `relay_rtx_bundles` reset `relay_path` to `vec![local_public_url]` on
+every send, so the list could never hold more than one entry and the cycle check
+could only ever detect a cycle back to this server; and
+`receive_federated_rtx` stored the bundle, fanned it out to local subscribers
+and stopped, so nothing re-relayed. No RTX bundle had ever taken a second hop.
+Closed 2026-09-15.
 **Prerequisites**: Phase 6 `COMPLETE`, Phase 8 `COMPLETE`
 **Estimated scope**: ReflectionSummaryBundle format, RTX publish/subscribe, transfer scope enforcement, governance endpoint
 
@@ -1012,6 +1127,34 @@ Agent-to-agent knowledge exchange across the federation. After this phase, an ag
 - [x] Federated servers relay RTX bundles to peers based on federation agreement transfer scope
 - [x] Bundle provenance chain is preserved (original source + relay path)
 - [x] Receiving server validates: bundle signature, VRP handshake reference, federation agreement permits transfer
+- [x] A received bundle is relayed ONWARDS. Closed [2026-09-15]. This is the
+      whole of multi-hop and it was absent: `receive_federated_rtx` stored,
+      delivered locally and returned.
+- [x] Each hop is attributable. Closed [2026-09-15]. `relay_path` was a
+      `Vec<String>` any relayer could rewrite freely — remove itself, invent an
+      upstream, claim a path it was never on. Each hop now signs its own place,
+      and the signature covers the previous hop's payload digest, so a chain is
+      a chain: dropping, reordering or splicing invalidates every signature
+      after the edit.
+- [x] The origin is attested by the origin. Closed [2026-09-15]. Every hop
+      signature is a relayer's, so a chain of them could never distinguish
+      "B relayed A's bundle" from "B wrote a bundle and put A's name on it". The
+      origin signs a digest that is INVARIANT under transfer-scope enforcement,
+      plus a commitment to the reasoning chain — so a relayer may strip the
+      chain for a `ReflectionSummariesOnly` peer (the policy working) and cannot
+      add or alter one.
+- [x] TTL and loop prevention. Closed [2026-09-15]. `federation.rtx_max_hops`
+      (default 3) is signed into the attestation and bounded by
+      `annex_rtx::RTX_HOP_CEILING` (5), so a publisher limits its own blast
+      radius and an operator limits what it will carry. A bundle is never sent
+      to a server already in its chain, a duplicate arrival is not re-relayed,
+      and an over-long chain is refused on a bounds check before any signature
+      work — `/api/federation/rtx` has no auth middleware in front of it.
+- [ ] Compatibility shim removed. `federation.rtx_require_hop_chain` defaults
+      `false` for one release so an envelope from a peer on an older build is
+      still accepted (delivered locally, never re-relayed). Flipping it is an
+      operator decision about a deployment, not something this repository can
+      decide.
 
 #### 9.5 — Governance mediation
 - [x] All RTX transfers are logged in `rtx_transfer_log` table
@@ -1216,6 +1359,10 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-09-15 | Phase 9 `COMPLETE`. Multi-hop RTX relay: a signed hop chain where each hop covers the previous hop's digest, an origin attestation over a scope-invariant content digest plus a reasoning-chain commitment, `rtx_max_hops` / `RTX_HOP_CEILING` as a TTL, and loop prevention that can see more than one hop. Before this, `relay_path` was reset to one entry on every send and nothing re-relayed, so multi-hop did not exist and the two items 9.4 recorded as done were guarding a path no bundle could take. Also: the RTX relay's SSRF gate ignored `allow_private_peer_addresses` while the message relay honoured it, so an operator who set that flag got messages relayed and RTX bundles silently dropped at the same peer. |
+| 2026-09-15 | Phase 6 `COMPLETE`. Alignment is enforced at action time (`services/agent_policy.rs`), a `Conflict` verdict revokes the agent's sessions in the same transaction that deactivates it, and the WebSocket send handler stopped reporting every refusal as "internal error". The phase's stated gap named the capability contract; the contract was never an action permission set, and the thing actually missing was alignment. |
+| 2026-09-15 | Phase 7.5 (`STT service`) REOPENED and repaired. The path was wired end to end and transcribed nothing: headerless 48 kHz PCM to a loader that requires a 16 kHz WAV, one process per 20 ms frame, and the resulting error logged at DEBUG. Audio conversion, per-speaker windowing, `SttReadiness`/`stt_detail`, and a Dockerfile that copies `whisper-cli` rather than its deprecation stub. |
+| 2026-09-15 | `agent_min_alignment_score` rescaled. The semantic comparison now normalises against the loaded scorer's measured noise floor, the shipped default moves 0.8 -> 0.06 on that scale, and migration 046 carries stored values across. The old default was above both scorers' separating bands: unreachable, not strict. |
 | 2026-08-07 | Phase 7 criteria corrected per update rule 5. Every step that named **LiveKit** was replaced with the component that actually shipped: a native WebRTC SFU built on `webrtc-rs`, compiled into the server (`crates/annex-voice/src/service.rs`), whose signalling rides the app's own `/ws` WebSocket. No LiveKit dependency exists in `Cargo.toml` or `client/package.json`, nothing dials an external media server, and `ensure_webrtc_running` in `crates/annex-server/src/startup.rs` is a no-op that spawns no sidecar. Affected: the tech-stack list, the crate tree, Phase 7 scope/7.1/7.2/7.4/7.5/7.7 and its completion criteria, Phase 11.4, and Phase 12.6. No criterion was removed — each was restated against the shipped design, and the completion status of every step is unchanged because the capability each described was in fact delivered, by different means. Changelog rows dated 2026-02-18 and earlier retain their original LiveKit wording as a record of what was believed at the time. |
 | 2026-06-10 | Code Standards Quality Gate #9 corrected per update rule 5: "all migrations are reversible (every up has a down)" replaced with "all migrations are forward-only, immutable, and integrity-checked." The original criterion contradicted the shipped design — migrations are append-only and protected by the SHA-256 checksum ledger (migration 039, invariant I-DB-1), and no down-migrations have ever existed. Rollback is operational (SQLite backup/restore per the deployment guide), not schema-level. |
 | 2026-02-18 | Phase 12 `COMPLETE`. All phases finished. ZKP circuit audit with 16 invalid-witness tests and ADR 0006. VRP adversarial reputation tests (oscillation, sustained conflict, per-pseudonym isolation). Federation transfer scope enforcement fix in message relay. Merkle performance benchmarks (7.33ms insert+proof, target <50ms). Documentation final pass with stale status corrections. Deployment packaging: multi-stage Dockerfile, Docker Compose with LiveKit, comprehensive deployment guide. |

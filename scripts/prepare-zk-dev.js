@@ -13,6 +13,7 @@
 // docs/refactor/zk-merkle-production.md.
 
 const { execSync } = require('child_process');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
@@ -189,20 +190,101 @@ function capabilityArtifactsPresent() {
   });
 }
 
-if (
-  exists(wasmDest) &&
-  exists(zkeyDest) &&
-  exists(wasmV2Dest) &&
-  exists(zkeyV2Dest) &&
-  capabilityArtifactsPresent()
-) {
-  log('client/public/zk artifacts already exist. Nothing to do.');
+// ── Staleness is about CONTENT, not existence ─────────────────────────────
+//
+// This block used to be `if (every dest exists) { nothing to do }`, and that
+// is wrong in the one case that matters. The client proves with the zkey it
+// finds in `client/public/zk`; the server verifies with the vkey in
+// `zk/keys`. Rotate the keys — a trusted-setup ceremony, a rebuild, a
+// rebase — and the destinations still EXIST, so this script declared victory
+// and left the client proving against the old proving key. Every proof then
+// failed verification and the user saw `invalid proof` on the very first
+// screen, with no indication that the two halves had drifted.
+//
+// It is the defect class CLAUDE.md already names: a fixture identified by a
+// PATH rather than by a FILE. The ceremony made it real — the audit's founder
+// setup failed with `invalid proof` and 0 of 104 surfaces ran.
+//
+// Hashing eight files costs ~50ms against a step that otherwise rebuilds
+// circuits.
+function sha256(filePath) {
+  return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+}
+
+/** Source → destination pairs the dev client needs, in copy order. */
+function artifactPairs() {
+  const pairs = [
+    { label: 'membership.wasm', from: wasmSource, to: wasmDest },
+    { label: 'membership_final.zkey', from: zkeySource, to: zkeyDest },
+    { label: 'membership_v2.wasm', from: wasmV2Source, to: wasmV2Dest },
+    { label: 'membership_v2_final.zkey', from: zkeyV2Source, to: zkeyV2Dest },
+  ];
+  for (const name of CAPABILITY_CIRCUITS) {
+    const p = capabilityArtifactPaths(name);
+    pairs.push({ label: `${name}.wasm`, from: p.wasmSource, to: p.wasmDest });
+    pairs.push({ label: `${name}_final.zkey`, from: p.zkeySource, to: p.zkeyDest });
+  }
+  return pairs;
+}
+
+/**
+ * Destinations that are missing, or whose bytes differ from their source.
+ * A source that does not exist yet is not "stale" — `ensureSourceArtifacts`
+ * builds it first.
+ */
+function staleArtifacts() {
+  const stale = [];
+  for (const pair of artifactPairs()) {
+    if (!exists(pair.from)) continue;
+    if (!exists(pair.to)) {
+      stale.push({ ...pair, reason: 'missing' });
+      continue;
+    }
+    if (sha256(pair.from) !== sha256(pair.to)) {
+      stale.push({ ...pair, reason: 'differs from zk/' });
+    }
+  }
+  return stale;
+}
+
+const sourcesReady = requiredSourceArtifacts().every((a) => exists(a.path));
+if (sourcesReady) {
+  const stale = staleArtifacts();
+  if (stale.length === 0) {
+    log('client/public/zk artifacts match zk/. Nothing to do.');
+    process.exit(0);
+  }
+  // Name each one. "Copying artifacts" tells an operator nothing; "the
+  // proving key differs from the one in zk/keys" tells them a rotation
+  // landed and this is the step that propagates it.
+  warn(`${stale.length} client ZK artifact(s) are out of date:`);
+  for (const a of stale) {
+    warn(`  ${a.label}: ${a.reason}`);
+  }
+  copyArtifactsToClient();
+  const remaining = staleArtifacts();
+  if (remaining.length > 0) {
+    fail(
+      'client/public/zk is still out of sync after copying (' +
+        remaining.map((a) => a.label).join(', ') +
+        '). The dev client would prove against a key the server does not verify.'
+    );
+  }
+  log('client/public/zk artifacts refreshed from zk/.');
   process.exit(0);
 }
 
-warn('Required ZK artifacts for the dev client are missing.');
-warn(`Expected: ${wasmDest}`);
-warn(`Expected: ${zkeyDest}`);
+warn('Required ZK source artifacts are missing.');
+warn(`Expected: ${zkeySource}`);
+warn(`Expected: ${zkeyV2Source}`);
 
 ensureSourceArtifacts();
 copyArtifactsToClient();
+const remaining = staleArtifacts();
+if (remaining.length > 0) {
+  fail(
+    'client/public/zk is still out of sync after building and copying (' +
+      remaining.map((a) => a.label).join(', ') +
+      ').'
+  );
+}

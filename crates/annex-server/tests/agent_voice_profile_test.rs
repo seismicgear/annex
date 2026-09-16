@@ -71,6 +71,8 @@ async fn test_update_agent_voice_profile() {
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
+        shutdown: Default::default(),
+        metrics: Default::default(),
     };
 
     let app = app(state);

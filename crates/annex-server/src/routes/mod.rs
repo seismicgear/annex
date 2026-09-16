@@ -39,17 +39,6 @@ use crate::http::static_files::{attach_client_dist, attach_uploads};
 use crate::middleware;
 use crate::state::AppState;
 
-/// Health check handler.
-///
-/// Reports basic server liveness, version, and whether voice (WebRTC) is configured.
-async fn health(Extension(state): Extension<Arc<AppState>>) -> Json<Value> {
-    Json(json!({
-        "status": "ok",
-        "version": env!("CARGO_PKG_VERSION"),
-        "voice_enabled": state.voice_service.is_enabled()
-    }))
-}
-
 /// Voice configuration status (public, no auth required).
 ///
 /// Reports both the server policy voice setting and whether the WebRTC
@@ -57,11 +46,14 @@ async fn health(Extension(state): Extension<Arc<AppState>>) -> Json<Value> {
 /// "voice disabled by admin" and "voice enabled but needs WebRTC setup".
 ///
 /// Also reports `stt_ready` — whether the whisper.cpp binary and GGML
-/// model file are both present on disk. Previously the response implied
-/// voice (and transcription) was ready as long as WebRTC was configured,
-/// even though the Docker image set `ANNEX_STT_MODEL_PATH` to a model it
-/// never copied in, so the first transcription attempt would 500. The
-/// `stt_ready` field surfaces that mismatch up to the client.
+/// model file are both present and the binary is executable — and
+/// `stt_detail`, which names the specific file when it is not.
+/// Previously the response implied voice (and transcription) was ready
+/// as long as WebRTC was configured, even though the Docker image set
+/// `ANNEX_STT_MODEL_PATH` to a model it never copied in, so the first
+/// transcription attempt would fail. `stt_ready` surfaces that mismatch
+/// up to the client; `stt_detail` tells the operator which of the four
+/// things it can be.
 async fn voice_config_status(Extension(state): Extension<Arc<AppState>>) -> Json<Value> {
     let infrastructure_ready = state.voice_service.is_enabled();
     // get_public_url() now returns "" for loopback-only URLs, so
@@ -74,20 +66,29 @@ async fn voice_config_status(Extension(state): Extension<Arc<AppState>>) -> Json
         .read()
         .unwrap_or_else(|p| p.into_inner())
         .voice_enabled;
-    let stt_ready = state.stt_service.is_ready();
+    let stt_readiness = state.stt_service.readiness();
+    let stt_ready = stt_readiness.is_ready();
 
-    let setup_hint = if !policy_enabled {
+    let setup_hint: String = if !policy_enabled {
         "Voice is disabled in the server policy. An admin can enable it in Server Policy settings."
+            .to_string()
     } else if !infrastructure_ready {
-        "Voice is enabled by policy but WebRTC is not configured. Set webrtc.url, webrtc.api_key, and webrtc.api_secret in config.toml or use ANNEX_WEBRTC_* environment variables."
+        "Voice is enabled by policy but WebRTC is not configured. Set webrtc.url, webrtc.api_key, and webrtc.api_secret in config.toml or use ANNEX_WEBRTC_* environment variables.".to_string()
     } else if !has_public_url && has_local_url {
-        "WebRTC is configured with a loopback-only URL. Voice works for the host but remote users who join via invite will not be able to connect to calls. Set webrtc.public_url in config.toml to a publicly reachable WebSocket address, or set ANNEX_WEBRTC_PUBLIC_URL."
+        "WebRTC is configured with a loopback-only URL. Voice works for the host but remote users who join via invite will not be able to connect to calls. Set webrtc.public_url in config.toml to a publicly reachable WebSocket address, or set ANNEX_WEBRTC_PUBLIC_URL.".to_string()
     } else if !has_public_url {
         "WebRTC URL is configured but no public URL is set. Clients may not be able to connect."
+            .to_string()
     } else if !stt_ready {
-        "WebRTC is ready, but STT is not: the whisper.cpp binary or GGML model file is missing. Transcription will fail. Provide a model and set ANNEX_STT_MODEL_PATH, or leave STT disabled."
+        // Not "the binary or the model is missing" — which of the two,
+        // by path, and what to run. The operator reading this is the
+        // person who can fix it.
+        format!(
+            "Voice is ready, but live captions are not: {}",
+            stt_readiness.detail()
+        )
     } else {
-        "Voice is configured and ready."
+        "Voice is configured and ready.".to_string()
     };
 
     Json(json!({
@@ -97,6 +98,10 @@ async fn voice_config_status(Extension(state): Extension<Arc<AppState>>) -> Json
         "has_public_url": has_public_url,
         "has_local_url": has_local_url,
         "stt_ready": stt_ready,
+        // `stt_ready` stays a bare bool for wire compatibility with
+        // clients that already read it; `stt_detail` is the sentence
+        // naming the specific file.
+        "stt_detail": stt_readiness.detail(),
         "setup_hint": setup_hint
     }))
 }
@@ -169,6 +174,11 @@ pub fn app(state: AppState) -> Router {
             "/api/rtx/governance/summary",
             get(api_rtx::governance_summary_handler),
         )
+        .route("/api/metrics", get(crate::api_metrics::metrics))
+        .route(
+            "/api/uploads/grant",
+            post(crate::api_uploads_access::issue_upload_grant),
+        )
         .route(
             "/api/admin/policy",
             get(api_admin::get_policy_handler).put(api_admin::update_policy_handler),
@@ -209,6 +219,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/api/admin/members/{pseudonymId}/capabilities",
             patch(api_admin::update_member_capabilities_handler),
+        )
+        .route(
+            "/api/admin/members/{pseudonymId}/revoke-sessions",
+            post(api_admin::revoke_member_sessions_handler),
         )
         .route(
             "/api/profile/username",
@@ -319,7 +333,31 @@ pub fn app(state: AppState) -> Router {
     // falls back to IP keying, which is the correct upstream cap for
     // anonymous traffic.
     let public_routes = Router::new()
-        .route("/health", get(health))
+        // `/health` keeps its old handler and its old body. Four things poll
+        // it — e2e-server.sh's readiness loop, startup.spec.ts, the puppeteer
+        // harness, and the Docker healthcheck — and none of them is asking the
+        // question `/readyz` answers.
+        .route("/health", get(crate::api_health::live))
+        .route("/livez", get(crate::api_health::live))
+        .route("/readyz", get(crate::api_health::ready))
+        // `/metrics` is mounted in BOTH groups and each half refuses when it
+        // is not the one in force: the public handler 404s unless
+        // ANNEX_METRICS_PUBLIC is set, and the authenticated one 403s a
+        // non-moderator unless it is. Mounting both unconditionally keeps the
+        // route table independent of process environment — a router built
+        // under one setting and served under another still behaves — and
+        // means the path never simply vanishes, which reads to an operator as
+        // a broken build rather than a policy.
+        .route("/metrics", get(crate::api_metrics::metrics_public))
+        // Not behind `auth_middleware` because a browser cannot attach an
+        // Authorization header to `<img src>` — which is the whole constraint
+        // that shapes this. The handler authorises internally against a signed
+        // grant plus a LIVE membership read, so leaving a channel takes effect
+        // on the next request rather than whenever a token expires.
+        .route(
+            "/uploads/chat/{category}/{filename}",
+            get(crate::api_uploads_access::serve_chat_upload),
+        )
         .route("/api/registry/register", post(api::register_handler))
         .route(
             "/api/registry/path/{commitmentHex}",
@@ -328,6 +366,14 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/api/registry/current-root",
             get(api::get_current_root_handler),
+        )
+        // Issued before a membership proof is generated, spent by the proof
+        // that follows. Public because a member signing in has no session yet;
+        // it discloses only a random number, and the outstanding-set cap in
+        // `api_zk_challenge` bounds what an unauthenticated caller can store.
+        .route(
+            "/api/zk/challenge",
+            post(crate::api_zk_challenge::issue_challenge_handler),
         )
         .route(
             "/api/zk/verify-membership",

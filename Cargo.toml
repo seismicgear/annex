@@ -16,7 +16,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.0.1"
+version = "0.1.0"
 edition = "2021"
 license = "LicenseRef-Annex-Noncommercial"
 repository = "https://github.com/seismicgear/annex"
@@ -24,11 +24,15 @@ repository = "https://github.com/seismicgear/annex"
 [workspace.dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }
+# CancellationToken: how a detached background task is told to stop.
+tokio-util = { version = "0.7", features = ["rt"] }
 
 # Web framework
 axum = { version = "0.8", features = ["ws", "multipart"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
+tower-http = { version = "0.6", features = ["catch-panic", "cors", "fs", "timeout", "trace"] }
+# Needed for the CatchPanicLayer response body; already in the tree via axum.
+http-body-util = "0.1"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -92,6 +96,21 @@ opt-level = 0
 # bulk of it. Step-through debugging in a debugger needs `debug = true`; set it
 # per-invocation with CARGO_PROFILE_DEV_DEBUG=true when you need that.
 debug = "line-tables-only"
+
+# ...and dependencies do not even need that. A test binary here statically
+# links webrtc-rs, arkworks, axum and tokio; their line tables are the bulk of
+# its size and nobody has ever stepped through them from a failing Annex test.
+# Dropping them nearly halves target/, while `panic!` backtraces through OUR
+# crates keep their file and line numbers, which is the part that gets used.
+#
+# Measured on this repo, comparing two complete `cargo test --workspace
+# --exclude annex-desktop` builds with nothing stale in target/: 126 test
+# binaries averaging 100 MB became 121 averaging 66 MB, the binaries alone went
+# from 12.6 GB to 7.8 GB, and target/ from 19 GB to 11 GB. Restore a
+# dependency's debug info for one session with
+# CARGO_PROFILE_DEV_PACKAGE_ALL_DEBUG=line-tables-only if you ever need it.
+[profile.dev.package."*"]
+debug = 0
 
 [profile.release]
 opt-level = 3

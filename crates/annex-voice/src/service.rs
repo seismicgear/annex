@@ -70,6 +70,21 @@ struct OutboundTracks {
 
 struct PeerSession {
     pc: Arc<RTCPeerConnection>,
+    /// Which connection this entry is, within (room, peer).
+    ///
+    /// The peer map is keyed by pseudonym alone, so a second offer from the
+    /// same person REPLACES the entry — a reconnect, a second tab, a refresh
+    /// mid-call. Without a generation the termination callback registered by
+    /// the FIRST connection cannot tell its own entry from its replacement:
+    /// it removes by (channel, peer), so the dying connection's cleanup tears
+    /// down the live one that just took its place. The symptom is a user who
+    /// reconnects and is dropped from the call a moment later, by their own
+    /// previous socket.
+    ///
+    /// Monotonic across the whole service rather than per-room, because the
+    /// comparison only ever happens within one (room, peer) and a single
+    /// counter needs no bookkeeping when a room is reaped.
+    generation: u64,
     /// One track pair per OTHER peer in the room, keyed by that peer's
     /// pseudonym.
     ///
@@ -224,6 +239,8 @@ pub struct VoiceService {
     config: WebRtcConfig,
     api: API,
     rooms: DashMap<String, Arc<Room>>,
+    /// Source of [`PeerSession::generation`].
+    peer_generation: std::sync::atomic::AtomicU64,
     runtime_public_url: RwLock<String>,
     runtime_disabled: RwLock<bool>,
     stt_tap_tx: broadcast::Sender<SttTapFrame>,
@@ -265,6 +282,7 @@ impl VoiceService {
             config,
             api,
             rooms: DashMap::new(),
+            peer_generation: std::sync::atomic::AtomicU64::new(0),
             runtime_public_url: RwLock::new(String::new()),
             runtime_disabled: RwLock::new(false),
             stt_tap_tx,
@@ -485,10 +503,44 @@ impl VoiceService {
         channel_id: &str,
         peer_id: &str,
     ) -> Option<Arc<PeerSession>> {
+        self.drop_peer_inner(channel_id, peer_id, None)
+    }
+
+    /// Remove a peer entry only if it is still the connection that asked.
+    ///
+    /// This is what a terminating connection's own callback must call. The
+    /// unconditional form above is right for `remove_participant`, which means
+    /// "this person is leaving, whatever socket they are on"; it is wrong for a
+    /// state-change callback, which means "MY connection died" and must not
+    /// evict the reconnect that replaced it.
+    fn drop_peer_if_generation(
+        &self,
+        channel_id: &str,
+        peer_id: &str,
+        generation: u64,
+    ) -> Option<Arc<PeerSession>> {
+        self.drop_peer_inner(channel_id, peer_id, Some(generation))
+    }
+
+    fn drop_peer_inner(
+        &self,
+        channel_id: &str,
+        peer_id: &str,
+        only_generation: Option<u64>,
+    ) -> Option<Arc<PeerSession>> {
         let mut peer_removed = None;
         let mut should_reap = false;
         if let Some(room_entry) = self.rooms.get(channel_id) {
-            if let Some((_, peer)) = room_entry.peers.remove(peer_id) {
+            // `remove_if` evaluates the predicate under the entry lock, so a
+            // concurrent insert of the replacement cannot slip between the
+            // check and the removal.
+            let removed = match only_generation {
+                Some(generation) => room_entry
+                    .peers
+                    .remove_if(peer_id, |_, p| p.generation == generation),
+                None => room_entry.peers.remove(peer_id),
+            };
+            if let Some((_, peer)) = removed {
                 peer_removed = Some(peer);
                 should_reap = room_entry.peers.is_empty();
             }
@@ -500,8 +552,30 @@ impl VoiceService {
         peer_removed
     }
 
+    /// Is this person already an admitted peer in this room?
+    ///
+    /// Used by the signalling layer to tell "entering a call" from
+    /// "renegotiating one already in progress" — the first needs a fresh
+    /// join grant, the second must not, or a call outliving the grant's TTL
+    /// would drop the moment anyone added a track.
+    pub fn has_peer(&self, channel_id: &str, peer_id: &str) -> bool {
+        self.rooms
+            .get(channel_id)
+            .is_some_and(|room| room.peers.contains_key(peer_id))
+    }
+
     pub fn subscribe_stt_taps(&self) -> broadcast::Receiver<SttTapFrame> {
         self.stt_tap_tx.subscribe()
+    }
+
+    /// Push a frame onto the STT tap without an RTP packet behind it.
+    ///
+    /// Test-only. The windowing in [`crate::agent`] is a property of what
+    /// the tap emits over time, and the only other way to drive it is a
+    /// real peer connection publishing real Opus.
+    #[cfg(test)]
+    pub(crate) fn emit_stt_tap_for_test(&self, frame: SttTapFrame) {
+        let _ = self.stt_tap_tx.send(frame);
     }
 
     pub fn subscribe_ice_candidates(&self) -> broadcast::Receiver<IceCandidateEvent> {
@@ -711,6 +785,12 @@ impl VoiceService {
             })
         }));
 
+        // Taken before the callback is registered, so the closure captures the
+        // identity of THIS connection and nothing later can change it.
+        let generation = self
+            .peer_generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
         let service = Arc::clone(self);
         let cleanup_channel = channel_id.to_string();
         let cleanup_peer = peer_id.to_string();
@@ -730,7 +810,18 @@ impl VoiceService {
                     // drop the peer, reap the room if empty. We don't
                     // call pc.close() here (the state change implies it
                     // is already closing).
-                    let _ = service.drop_peer_and_maybe_reap(&cleanup_channel, &cleanup_peer);
+                    //
+                    // Generation-scoped: this callback belongs to one
+                    // connection, and a reconnect that replaced it owns the
+                    // map entry now. Removing by key alone would make the
+                    // dying socket evict its own replacement — and once the
+                    // replaced connection is explicitly closed below, that
+                    // would happen on every reconnect rather than occasionally.
+                    let _ = service.drop_peer_if_generation(
+                        &cleanup_channel,
+                        &cleanup_peer,
+                        generation,
+                    );
                 }
             })
         }));
@@ -749,8 +840,31 @@ impl VoiceService {
             .await
             .map_err(|e| VoiceError::WebRtc(e.to_string()))?;
 
-        room.peers
-            .insert(peer_id.to_string(), Arc::new(PeerSession { pc, outbound }));
+        // Close whatever this offer replaced.
+        //
+        // `DashMap::insert` hands back the displaced entry and the old code
+        // discarded it, so the previous `RTCPeerConnection` was never closed —
+        // and never even dropped, because its own `on_track` closure holds an
+        // `Arc` clone of it. Every reconnect leaked a live peer connection,
+        // its ICE agent, and its forwarding tasks, for the lifetime of the
+        // process.
+        //
+        // Safe to do only because the state-change callback above is now
+        // generation-scoped: closing the old connection drives it to `Closed`,
+        // which fires that callback, which before this change would have
+        // removed the entry we have just inserted.
+        if let Some(displaced) = room.peers.insert(
+            peer_id.to_string(),
+            Arc::new(PeerSession {
+                pc,
+                outbound,
+                generation,
+            }),
+        ) {
+            if let Err(e) = displaced.pc.close().await {
+                debug!(error = %e, "failed to close the peer connection this offer replaced");
+            }
+        }
 
         // Now that the newcomer is in the room, give everyone else a track for
         // them and offer the updated description. Done after the insert so the
@@ -1103,6 +1217,10 @@ mod tests {
     }
 
     /// A `PeerSession` carrying a track pair for each named sender.
+    ///
+    /// `generation` is 0 for every fixture: these tests exercise track
+    /// fan-out, not connection replacement, and a shared generation is the
+    /// honest description of "this is the only connection for this peer".
     async fn peer_session(channel_id: &str, senders: &[&str]) -> Arc<PeerSession> {
         let pc = APIBuilder::new()
             .build()
@@ -1116,6 +1234,7 @@ mod tests {
         Arc::new(PeerSession {
             pc: Arc::new(pc),
             outbound,
+            generation: 0,
         })
     }
 

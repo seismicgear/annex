@@ -1,0 +1,211 @@
+# Production Compose for Annex.
+#
+# `docker-compose.yml` is labelled DEV/LOCAL ONLY at the top of the file and
+# means it: wildcard CORS, `ANNEX_BUILD_PROFILE=dev`, dev-fixture ZK keys. It
+# is the right file for local work and it was also the only file, so
+# `deploy.sh --mode docker` — the default mode — pointed a "deployment" at it.
+#
+# This one is the other half. Differences that matter:
+#
+#   * `ANNEX_BUILD_PROFILE=production`, so every gate is live: an explicit CORS
+#     origin list is required, ZK enforcement cannot be switched off, and weak
+#     or ephemeral signing keys are refused at startup.
+#   * A healthcheck, so an orchestrator can tell a running container from a
+#     working one.
+#   * Resource limits, a read-only root filesystem, dropped capabilities and
+#     `no-new-privileges`. None of these are exotic; all were absent.
+#   * Log rotation, because the default json-file driver grows without bound
+#     and filling the disk is how the storage gate gets exercised for real.
+#   * A backup sidecar, because `scripts/backup.sh` is only a backup if
+#     something runs it.
+#
+# Usage:
+#   ANNEX_CORS_ORIGINS=https://annex.example.com \
+#   ANNEX_PUBLIC_URL=https://annex.example.com \
+#     docker compose -f docker-compose.prod.yml up -d
+#
+# Put TLS in front of it. The server speaks HTTP only, by design; see
+# docs/deployment.md.
+
+services:
+  # Ownership of the data volume, done once, by the only thing that needs a
+  # capability to do it.
+  #
+  # A named volume is created root-owned on first use, and the server runs as
+  # uid 10001 with `cap_drop: ALL`. The entrypoint used to reconcile that by
+  # starting as root, `chown -R`-ing the volume and dropping privileges with
+  # gosu — all of which need capabilities the hardening below removes, so the
+  # documented production compose file could not run its own entrypoint.
+  #
+  # This holds CAP_CHOWN for the length of one chown and then exits. The server
+  # then runs unprivileged for its whole life.
+  annex-init:
+    image: busybox:1.36
+    user: "0:0"
+    command: >
+      sh -c "mkdir -p /data && chown -R 10001:10001 /data && chmod 0750 /data
+             && echo 'data volume ready (uid 10001)'"
+    volumes:
+      - annex-data:/data
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - FOWNER
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
+  annex:
+    depends_on:
+      annex-init:
+        condition: service_completed_successfully
+    # Matches the uid/gid baked into the image, pinned in both places so an
+    # upgrade cannot silently land on a different id and read as corruption.
+    user: "10001:10001"
+    build:
+      context: .
+      args:
+        # Production here selects the ZK path that VERIFIES pinned artifacts
+        # instead of generating dev fixtures, and arms the supply-chain pins
+        # for Piper, whisper.cpp and the default voice model.
+        #
+        # Those pins now have measured defaults in the Dockerfile, so this
+        # command builds as written. It previously did not: PIPER_SHA256 and
+        # WHISPER_CPP_COMMIT were deliberately empty and the production stages
+        # refuse to proceed without them, so the documented ordinary startup
+        # command could not build its own image. Override with --build-arg to
+        # move to a different upstream release.
+        ANNEX_BUILD_PROFILE: production
+    # Build locally by default; point ANNEX_IMAGE at a published tag to pull one
+    # instead. The release workflow pushes `ghcr.io/seismicgear/annex:<version>`
+    # on a tag, so
+    #
+    #     ANNEX_IMAGE=ghcr.io/seismicgear/annex:0.1.0 docker compose \
+    #       -f docker-compose.prod.yml pull && ... up -d
+    #
+    # runs the image CI built, verified and started, rather than one built here
+    # from whatever the working tree happens to hold. `latest` is deliberately
+    # never published: the GitHub Release is a draft until a human publishes it.
+    image: ${ANNEX_IMAGE:-annex:production}
+    restart: unless-stopped
+
+    environment:
+      ANNEX_BUILD_PROFILE: production
+      ANNEX_HOST: 0.0.0.0          # inside the container; publish selectively below
+      ANNEX_PORT: 3000
+      ANNEX_DB_PATH: /app/data/annex.db
+      ANNEX_LOG_LEVEL: ${ANNEX_LOG_LEVEL:-info}
+      ANNEX_LOG_JSON: ${ANNEX_LOG_JSON:-true}
+      # Required. The server refuses to start under a production profile with
+      # an empty or wildcard origin list, which is the point.
+      ANNEX_CORS_ORIGINS: ${ANNEX_CORS_ORIGINS:?set ANNEX_CORS_ORIGINS to your real origin(s)}
+      ANNEX_PUBLIC_URL: ${ANNEX_PUBLIC_URL:?set ANNEX_PUBLIC_URL to the externally reachable https URL}
+      # Size cap for the database, so the storage gate has something to gate
+      # against. Without it the two headroom thresholds do nothing.
+      ANNEX_STORAGE_MAX_DB_BYTES: ${ANNEX_STORAGE_MAX_DB_BYTES:-10737418240}
+
+    # Bound to loopback: TLS termination belongs to the reverse proxy, and a
+    # container that publishes 3000 on 0.0.0.0 is serving plaintext HTTP to the
+    # internet.
+    ports:
+      - "127.0.0.1:3000:3000"
+
+    volumes:
+      - annex-data:/app/data
+      # Optional: a GGML model enables STT. None is bundled; see
+      # docs/deployment.md.
+      # - ./models:/app/assets/models:ro
+
+    # The server writes only to /app/data. Everything else can be immutable.
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/readyz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
+      retries: 3
+
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+        reservations:
+          memory: 512m
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # A backup nobody runs is a belief. This runs `scripts/backup.sh` daily
+  # against the same volume, keeps 14 archives, and verifies each one it
+  # writes — including the signing key, which the old manual procedure did not
+  # copy at all.
+  backup:
+    # Same image as the server on purpose — it runs `scripts/backup.sh` from it,
+    # so a version skew between the two would back up with a different sqlite3
+    # than the one that wrote the database.
+    image: ${ANNEX_IMAGE:-annex:production}
+    restart: unless-stopped
+    depends_on:
+      annex:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          bash /app/scripts/backup.sh --data-dir /app/data --out /backups --keep 14 || \
+            echo "[backup] FAILED — the next run will try again, but investigate." >&2
+          sleep 86400
+        done
+    volumes:
+      # Read-write, deliberately. `sqlite3 .backup` against a WAL database
+      # needs to open the source read-write — it creates the `-shm` file that
+      # makes a consistent snapshot of a LIVE database possible, which is the
+      # whole reason this is not a `cp`. A read-only mount fails at that step,
+      # and it fails in a way that reads like a permissions problem.
+      - annex-data:/app/data
+      - annex-backups:/backups
+    # Runs as the same uid as the server: it reads the live database and the
+    # owner-only signing key, and writes archives that the server's user must
+    # be able to restore from.
+    user: "10001:10001"
+    read_only: true
+    # The staging area has to fit the database, not a token amount.
+    #
+    # This was 256 MiB while the server is configured for a 10 GiB database
+    # (ANNEX_STORAGE_MAX_DB_BYTES above). backup.sh stages the database and
+    # uploads under mktemp and then extracts the archive into a SECOND
+    # temporary directory to verify it, so the peak requirement is roughly
+    # twice the data — and the failure arrives as a truncated archive from a
+    # "No space left on device" partway through, long after the size was
+    # chosen.
+    #
+    # Sized from the storage cap by default. A tmpfs is memory, so an operator
+    # running near 10 GiB should point ANNEX_BACKUP_TMPFS_SIZE at something
+    # smaller and mount real disk at /tmp instead.
+    tmpfs:
+      - /tmp:size=${ANNEX_BACKUP_TMPFS_SIZE:-24g},mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  annex-data:
+  annex-backups:

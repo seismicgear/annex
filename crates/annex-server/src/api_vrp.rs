@@ -40,10 +40,10 @@ pub struct AgentHandshakeRequest {
 /// Verifies a `Authorization: Bearer <session-token>` header and returns the
 /// pseudonym bound by the token. Used to gate re-handshakes against
 /// hijacking from unauthenticated callers.
-fn pseudonym_from_authorization_header(
+fn verified_token_from_authorization_header(
     headers: &HeaderMap,
     secret: &[u8; 32],
-) -> Result<Option<String>, ApiError> {
+) -> Result<Option<crate::api_ws::VerifiedToken>, ApiError> {
     let Some(val) = headers.get("Authorization") else {
         return Ok(None);
     };
@@ -54,7 +54,23 @@ fn pseudonym_from_authorization_header(
         return Ok(None);
     };
     match verify_ws_token_for_auth(token, secret) {
-        Ok(pseudonym) => Ok(Some(pseudonym)),
+        // The WHOLE verified token, epoch included.
+        //
+        // This returned only the pseudonym, with a comment asserting that the
+        // route ran behind `auth_middleware` and that the middleware compared
+        // the epoch. It does not: `/api/vrp/agent-handshake` is mounted in
+        // `public_routes`, deliberately, so a brand-new agent can make its
+        // first handshake before any identity row exists. The comment
+        // described a route that was never there.
+        //
+        // The consequence was that `POST /api/admin/members/{id}/revoke-sessions`
+        // — and deactivation, which also bumps the epoch — stopped a revoked
+        // token everywhere EXCEPT here, where it still authorised rewriting the
+        // agent's capability contract, alignment status, transfer scope and
+        // signing public key, or forcing it into Conflict (which deactivates
+        // the registration and cuts its socket). Revoking a credential has to
+        // mean it cannot keep exercising authority through a different door.
+        Ok(verified) => Ok(Some(verified)),
         Err(StatusCode::UNAUTHORIZED) => Err(ApiError::Forbidden(
             "agent handshake rejected: invalid or expired session token".to_string(),
         )),
@@ -74,7 +90,8 @@ pub async fn agent_handshake_handler(
     // malformed token never produces a partial state change. The token is
     // optional here — pre-registration handshakes do not have one yet —
     // but if present it must be valid.
-    let token_pseudonym = pseudonym_from_authorization_header(&headers, &state.ws_token_secret)?;
+    let presented_token =
+        verified_token_from_authorization_header(&headers, &state.ws_token_secret)?;
 
     // Validate the optional agent signing pubkey up-front: it must be a
     // well-formed 32-byte Ed25519 public key (64-char hex) before we persist
@@ -132,44 +149,76 @@ pub async fn agent_handshake_handler(
         // silently turn a successful row read into a rusqlite type-coercion
         // error, masking the lookup as a 500. We compare strings instead.
         {
-            let participant_type: Option<String> = conn
+            // NO `active = 1` filter.
+            //
+            // With it, a deactivated identity read as absent and fell straight
+            // into the pre-registration branch below — the unauthenticated
+            // one. So deactivating an agent did not protect its registration;
+            // it OPENED it, to anyone who knew the pseudonym. Pseudonyms are
+            // public: they appear in `/api/public/agents`, channel listings
+            // and the events stream.
+            //
+            // "A row exists" and "the row is usable" are different questions
+            // and have to be asked separately.
+            let existing: Option<(String, bool, i64)> = conn
                 .query_row(
-                    "SELECT pi.participant_type FROM platform_identities pi
-                     WHERE pi.server_id = ?1 AND pi.pseudonym_id = ?2 AND pi.active = 1",
+                    "SELECT pi.participant_type, pi.active, pi.token_epoch
+                     FROM platform_identities pi
+                     WHERE pi.server_id = ?1 AND pi.pseudonym_id = ?2",
                     rusqlite::params![state.server_id, &payload.pseudonym_id],
-                    |row| row.get(0),
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, i64>(1)? != 0,
+                            row.get::<_, i64>(2)?,
+                        ))
+                    },
                 )
                 .optional()
                 .map_err(|e| ApiError::InternalServerError(format!("db query failed: {e}")))?;
 
-            match participant_type.as_deref() {
-                Some(label) if label == annex_types::RoleCode::AiAgent.label() => {
-                    // Re-handshake path: require a session token bound to
-                    // this exact pseudonym.
-                    match token_pseudonym.as_deref() {
-                        Some(p) if p == payload.pseudonym_id => { /* OK */ }
-                        Some(_) => {
-                            return Err(ApiError::Forbidden(
-                                "agent handshake rejected: session token does not match pseudonymId"
-                                    .to_string(),
-                            ));
-                        }
-                        None => {
-                            return Err(ApiError::Forbidden(
-                                "agent handshake rejected: registered agent must present a valid \
-                                 session token for re-handshake".to_string(),
-                            ));
-                        }
+            match existing {
+                Some((label, active, token_epoch))
+                    if label == annex_types::RoleCode::AiAgent.label() =>
+                {
+                    // Re-handshake path. Every one of these must hold, and
+                    // each was a way in on its own.
+                    let Some(token) = presented_token.as_ref() else {
+                        return Err(ApiError::Forbidden(
+                            "agent handshake rejected: registered agent must present a valid \
+                             session token for re-handshake"
+                                .to_string(),
+                        ));
+                    };
+                    if token.pseudonym != payload.pseudonym_id {
+                        return Err(ApiError::Forbidden(
+                            "agent handshake rejected: session token does not match pseudonymId"
+                                .to_string(),
+                        ));
+                    }
+                    if token.epoch != token_epoch {
+                        // The check this endpoint never made. Same wording as
+                        // the middleware's, so an operator reading either log
+                        // sees the same event.
+                        return Err(ApiError::Forbidden(
+                            "agent handshake rejected: session token has been revoked".to_string(),
+                        ));
+                    }
+                    if !active {
+                        return Err(ApiError::Forbidden(
+                            "agent handshake rejected: identity is deactivated".to_string(),
+                        ));
                     }
                 }
-                Some(_) => {
+                Some((_, _, _)) => {
                     return Err(ApiError::Forbidden(
-                        "agent handshake rejected: identity is not registered as AI_AGENT".to_string(),
+                        "agent handshake rejected: identity is not registered as AI_AGENT"
+                            .to_string(),
                     ));
                 }
                 None => {
-                    // Allow handshake from unregistered pseudonyms (pre-registration agents)
-                    // but log a warning for monitoring
+                    // Genuinely unregistered: no row at all. This is the only
+                    // case the unauthenticated path is for.
                     tracing::debug!(
                         pseudonym_id = %payload.pseudonym_id,
                         "agent handshake from unregistered pseudonym (pre-registration)"
@@ -367,21 +416,55 @@ pub async fn agent_handshake_handler(
             // If an existing agent re-handshakes and gets Conflict, update their
             // status in the DB and deactivate them. New agents with Conflict are
             // simply not inserted (they never had a row).
+            // `VrpAlignmentStatus::Conflict.to_string()`, not the literal
+            // `'Conflict'`. This branch wrote a different spelling from every
+            // other writer of the column — the success path above and
+            // `policy.rs` both use `.to_string()`, which produces `CONFLICT` —
+            // so a row this branch touched read back as an unparseable status
+            // in `api_agent.rs` and 500'd there. The tolerant two-step parse in
+            // `agent_policy` and `channel_policy` exists because of exactly
+            // this, and one fewer spelling is better than a more tolerant
+            // parser.
             let updated = tx
                 .execute(
                     "UPDATE agent_registrations
-                     SET alignment_status = 'Conflict',
+                     SET alignment_status = ?3,
                          transfer_scope = 'NO_TRANSFER',
                          active = 0,
                          updated_at = datetime('now')
                      WHERE server_id = ?1 AND pseudonym_id = ?2",
-                    rusqlite::params![state.server_id, payload.pseudonym_id],
+                    rusqlite::params![
+                        state.server_id,
+                        payload.pseudonym_id,
+                        VrpAlignmentStatus::Conflict.to_string()
+                    ],
                 )
                 .map_err(|e| {
                     ApiError::InternalServerError(format!(
                         "failed to deactivate conflict agent: {e}"
                     ))
                 })?;
+
+            // Revoke the agent's sessions in the SAME transaction, so a
+            // Conflict verdict survives a reconnect. Without this the row said
+            // `active = 0` while the agent's existing token still verified.
+            if updated > 0 {
+                match annex_identity::platform::bump_token_epoch(
+                    &tx,
+                    state.server_id,
+                    &payload.pseudonym_id,
+                ) {
+                    Ok(epoch) => tracing::info!(
+                        agent = %payload.pseudonym_id,
+                        token_epoch = epoch,
+                        "conflict-aligned agent's sessions revoked",
+                    ),
+                    Err(e) => tracing::warn!(
+                        agent = %payload.pseudonym_id,
+                        "could not revoke sessions for a conflict agent: {e}",
+                    ),
+                }
+            }
 
             tx.commit().map_err(|e| {
                 ApiError::InternalServerError(format!("failed to commit transaction: {e}"))

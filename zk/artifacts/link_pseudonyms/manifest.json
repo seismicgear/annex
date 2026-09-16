@@ -5,20 +5,30 @@
   "curve": "bn254",
   "provingSystem": "groth16",
   "treeDepth": 0,
-  "publicSignals": ["nullifierA", "nullifierB", "topicHashA", "topicHashB"],
+  "publicSignals": [
+    "nullifierA",
+    "nullifierB",
+    "topicHashA",
+    "topicHashB"
+  ],
   "wasm_sha256": "c2ff8f1ea9971ba8edeb637ea934bf20668ce4a168d60880ef87c00b3562a87e",
-  "zkey_sha256": "9176595ba9ff10e9697051194cef9f0f5ac8ce2a50218045fbcb9047272bfebf",
-  "vkey_sha256": "420d983fb252b520f942b5410f6c4d61c6d003735a04885e352ed88960073583",
+  "zkey_sha256": "c6abda3a74be4940112f2a0ab015602acfd2d216d122300c702cd3f868d761f8",
+  "vkey_sha256": "de5ef820e6c435876083970df1b25a59fd3281b6fdd32630f2ee812ed504670c",
   "r1cs_sha256": "083b4021b8e5e1974bb1df952f7518544413dbbc7690bdf9a2ad95e24373f0c9",
   "paths": {
-    "wasm": "../../build/link_pseudonyms_js/link_pseudonyms.wasm",
-    "zkey": "../../keys/link_pseudonyms_final.zkey",
-    "vkey": "../../keys/link_pseudonyms_vkey.json",
-    "r1cs": "../../build/link_pseudonyms.r1cs"
+    "wasm": "./link_pseudonyms.wasm",
+    "zkey": "./link_pseudonyms_final.zkey",
+    "vkey": "./link_pseudonyms_vkey.json",
+    "r1cs": "./link_pseudonyms.r1cs"
   },
   "ceremony": {
-    "type": "dev-fixture",
-    "generatedAt": "2026-06-20",
-    "note": "These hashes pin the link-pseudonyms artifacts produced by zk/scripts/dev-setup-groth16.js with random entropy. treeDepth is 0 because this circuit has no Merkle inclusion check (it only proves two nullifiers share a secret key). NOT a multi-party ceremony; replace artifacts AND hashes before a public production release, regenerating ALL circuit manifests together. See docs/refactor/zk-merkle-production.md."
+    "type": "single-contributor-beacon",
+    "generatedAt": "2026-09-15T15:06:39.060Z",
+    "transcript": "../ceremony/transcript.json",
+    "phase1Source": "operator-supplied",
+    "beaconRound": 6468464,
+    "beaconChainHash": "8990e7a9aaed2ffed73dbd7092123d6f289930540d7651336225dc172e51b2ce",
+    "zkeyVerified": true,
+    "note": "Produced by zk/scripts/ceremony.js. Phase 2 was finalised with drand round 6468464 on chain 8990e7a9aaed2ffed73dbd7092123d6f289930540d7651336225dc172e51b2ce, committed to before that round existed (see the transcript's commitment field). `snarkjs zkey verify` passed against the pinned r1cs and ptau. This is NOT a multi-party ceremony with independent participants; see docs/refactor/zk-merkle-production.md for what that would add."
   }
 }

@@ -173,7 +173,10 @@ must agree on the wire shape.
 - `circuits/membership.circom` — Membership circuit at `Membership(20)`: depth-20 Merkle inclusion + identity recomputation + leafIndex/pathIndexBits binding. Public outputs are `[root, commitment]`. 5,184 non-linear constraints.
 - `scripts/build-circuits.js` — runs `circom`, emits `build/{name}.r1cs`, `build/{name}.sym`, `build/{name}_js/{name}.wasm`.
 - `scripts/setup-groth16.js` — generates `pot14_*.ptau` (depth-14 powers of tau) and per-circuit zkeys + vkeys.
-- `scripts/test-proofs.js` — smoke tests for identity + membership proofs (16 assertions).
+- `scripts/test-proofs.js` — end-to-end proof generation and verification for identity,
+  membership (v1) and membership_v2, including the tamper rejections and the v2 challenge
+  binding. No count is quoted: the "16 assertions" that stood here outlived three
+  additions to the script and four commits during which it did not run at all.
 - `bin/circom` — vendored circom binary used by build-circuits.js when system circom is absent.
 
 Production artifact requirements are spelled out in `zk-merkle-production.md`.

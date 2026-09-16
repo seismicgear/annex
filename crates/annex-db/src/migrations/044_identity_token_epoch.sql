@@ -1,0 +1,17 @@
+-- Session tokens are revocable.
+--
+-- Before this column there was no way to invalidate a single session. A token
+-- is an HMAC over `pseudonym|expires`, verified with no database read, so the
+-- only way to stop one being accepted was to deactivate the identity or rotate
+-- the server signing key — which invalidates every session on the server.
+--
+-- Worse, a leaked token was effectively permanent: `verify_token_allow_expired`
+-- accepted tokens up to seven days past expiry and `POST /api/session/refresh`
+-- is a public endpoint that trades such a token for a fresh one. Anyone holding
+-- a stolen token could refresh it indefinitely by touching it once a week.
+--
+-- The epoch goes INTO the token and is checked against this column at verify
+-- time. Bumping it invalidates every token issued for that identity and nothing
+-- else. Tokens minted before this migration carry no epoch and are read as
+-- epoch 0, so the default matches them and nobody is signed out by the upgrade.
+ALTER TABLE platform_identities ADD COLUMN token_epoch INTEGER NOT NULL DEFAULT 0;

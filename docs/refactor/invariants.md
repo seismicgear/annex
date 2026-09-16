@@ -21,6 +21,7 @@ forbidden.
 
 **Enforced by:**
 - `crates/annex-server/src/config.rs` — field declaration and default.
+- `crates/annex-server/src/config.rs::validate_zk_enforcement_for_build_profile` — under `build_profile::requires_multi_tenant_gates()` a `false` value is a startup error, not a warning. This is new: the flag was the only dangerous setting with no production gate, while every lesser one had one. Tests: `production_profile_rejects_disabled_zk_enforcement`, `..._accepts_enabled_...`, `dev_profile_allows_disabled_zk_enforcement`.
 - `crates/annex-server/src/middleware.rs::verify_zk_membership_header` (and call sites guarded by `state.enforce_zk_proofs`).
 - `crates/annex-server/src/api_ws.rs` — raw-pseudonym auth gate; search `enforce_zk_proofs`.
 - Test: `config::tests::defaults_are_loaded_when_file_missing` — its final assertion (tagged `FINDING-001`) is what pins the default to `true`.
@@ -58,18 +59,44 @@ been generated yet.
 
 ## I-ZK-3 — Membership proofs must bind to the expected identity/session
 
-**Property.** A membership proof's public signals are the **two** values
-`[root, commitment]` (in that order), produced by
-`zk/circuits/membership.circom::Membership(20)` (`signal output root; signal output commitment;`).
+**Property.** A membership proof's public signals are versioned, and the
+version decides the layout:
+
+- **v1** — two values `[root, commitment]`, from
+  `zk/circuits/membership.circom::Membership(20)`.
+- **v2** — five values `[root, commitment, nullifier, topicHash, challenge]`,
+  from `zk/circuits/membership_v2.circom::MembershipV2(20)`. This is the
+  default: `security.enabled_zk_versions` ships as `["v2"]`, and a production
+  profile REFUSES `"v1"` (see `config.rs`, `validate_config`). Signal order is
+  outputs first, then public inputs in declaration order — check
+  `zk/build/membership_v2.sym` rather than assuming.
+
 Verification must:
-1. Parse the public signals as exactly two field elements in the documented order.
-2. Compare `root` against the server's current Merkle root (`state.merkle_tree.root_hex()`).
-3. Bind the proof to the caller's claimed pseudonym/commitment by verifying that the same `commitment` is the leaf the caller is using to log in (via `nullifierHex` derived from `commitment` + topic, or via a direct pseudonym-to-commitment lookup).
+1. Parse the public signals as exactly the count the declared version specifies,
+   in the documented order.
+2. Check the root is ACCEPTABLE, not merely current:
+   `annex_identity::merkle::is_root_acceptable` admits the active root plus any
+   root inside `ROOT_EPOCH_GRACE_SECONDS`. A strict equality check against
+   `root_hex()` rejects every proof built a moment before an insertion, which
+   under load is most of them.
+3. Bind the proof to the caller's claimed pseudonym/commitment by verifying that
+   the same `commitment` is the leaf the caller is using to log in (via
+   `nullifierHex` derived from `commitment` + topic, or via a direct
+   pseudonym-to-commitment lookup).
+4. **On the session-minting path only**, spend a single-use challenge — see
+   I-ZK-5. The header path deliberately does not re-check it: liveness there is
+   the session token, and a proof in a header is not minting anything.
 
 **Enforced by:**
-- `crates/annex-server/src/middleware.rs` — search `// Parse public inputs: [merkle_root, commitment]` (currently around line 551). The function rejects when `current_root != payload.root_hex` (around line 573).
-- `zk/scripts/test-proofs.js` (16/16 must pass): asserts root match, commitment match, rejects tampered public signals.
-- `annex-identity::nullifier::insert_nullifier` enforces single-use binding per topic.
+- `crates/annex-server/src/middleware.rs` — search
+  `// Parse public inputs: [merkle_root, commitment]`. The function rejects a
+  root `is_root_acceptable` refuses.
+- `zk/scripts/test-proofs.js`: asserts root match, commitment match, rejects
+  tampered public signals, and rejects a v2 proof presented against a different
+  challenge. No pass count is quoted here — the previous "16/16" survived three
+  additions to the script and four commits of the script being broken outright.
+- `annex-identity::nullifier::insert_nullifier` enforces single-use binding per
+  topic.
 
 **Failure mode forbidden:** Accepting a proof but then trusting a separate,
 client-supplied `commitment` field instead of the one in the verified public
@@ -86,16 +113,19 @@ zero stripping (i.e. a fixed-width 64-char hex string). All comparisons must
 treat the root as a fixed-width hex string of that exact form.
 
 The tree is append-only at runtime. On every server boot, the persisted root
-is recomputed from `identities` and compared; mismatch panics with
-`MerkleRootMismatch` (see `crates/annex-identity/src/merkle.rs` around line
-232). Any feature that mutates leaves in place — re-keying, deletion, bulk
-re-insertion — must update both the tree state and a recorded epoch counter,
-and must reject inbound proofs whose `root` corresponds to a previous epoch
-unless the agent has been migrated to the new root explicitly.
+is recomputed from `identities` and compared; a mismatch returns
+`Err(IdentityError::MerkleRootMismatch)`, which `startup.rs` propagates into a
+`StartupError` — the server refuses to boot. It does not panic; this file said
+it did. Any feature that mutates leaves in place — re-keying, deletion, bulk
+re-insertion — must update both the tree state and the recorded epoch counter,
+and must reject inbound proofs whose `root` corresponds to an epoch outside the
+grace window.
 
-The current code does **not** yet implement epoch metadata explicitly; the
-"epoch model" target is described in `zk-merkle-production.md`. Until it
-lands, the invariant remains: never silently rotate the root in production.
+The epoch model has landed: migration 034 added `vrp_root_epochs`, and
+`current_epoch`, `ROOT_EPOCH_GRACE_SECONDS` and `is_root_acceptable` implement
+it. The paragraph that used to sit here said epoch metadata was not implemented
+and asked only that the root never rotate silently, which now understates the
+guarantee.
 
 **Enforced by:**
 - `crates/annex-identity/src/merkle.rs` — root recomputation and mismatch panic.
@@ -174,19 +204,30 @@ short of a documented bootstrap exception that is itself signed.
 ## I-DB-1 — SQLite migrations are append-only
 
 **Property.** Every schema change is a new numbered file in
-`crates/annex-db/src/migrations/`. The current sequence is
-`000_init.sql` … `033_server_public_url.sql`. Numbers are dense and never
-reused. Edits to a published migration are forbidden — even comment-only
-edits — because some installations have already applied that file and would
-re-checksum it.
+`crates/annex-db/src/migrations/`, taking the next unused number in that
+directory — quoting the current last filename here only produced a number that
+went stale thirteen migrations ago. Numbers are dense and never reused. Edits to
+a published migration are forbidden — even comment-only edits — because some
+installations have already applied that file and would re-checksum it.
 
 If a migration is wrong in production, the fix is **another migration** that
-corrects the schema. If a migration must be reverted, write an inverse
-migration.
+corrects the schema. There are no down-migrations and never have been: rollback
+is operational, not schema-level — restore from a backup, per
+`scripts/restore.sh` and the deployment guide. This paragraph used to say "write
+an inverse migration", which contradicted `ROADMAP.md` quality gate 9 after that
+gate was amended on 2026-06-10 to say the opposite. Two documents, opposite
+instructions, for three months.
 
 **Enforced by:**
-- File numbering convention (no tooling enforcement yet — humans must hold the line).
-- `crates/annex-db/src/migrations.rs::apply_migrations` (runs files in lexicographic order).
+- `crates/annex-db/src/migrations.rs` — the embedded list is applied in order and
+  recorded in `_annex_migrations`.
+- **A checksum ledger, not a convention.** Migration 039 added `sha256_hex` and
+  `ordinal`; `run_migrations_from_list` fails boot with
+  `MigrationError::ChecksumMismatch` when an already-applied migration's SQL has
+  changed, and with `DuplicateOrdinal` when two files claim the same number.
+  Pinned by `checksum_mismatch_after_edit_is_rejected`. This entry previously
+  said "no tooling enforcement yet — humans must hold the line", which stopped
+  being true at migration 039.
 
 **Failure mode forbidden:** "I'll just fix the typo in `010_messages.sql`" —
 no. Add `034_*.sql`.
@@ -230,3 +271,242 @@ costs the project the ability to re-enable macOS without a re-derivation.
 **Failure mode forbidden:** "macOS doesn't ship right now, let me delete the
 plist + entitlements + matrix entry to clean up." No — keep them; mark as
 non-blocking if needed, but keep them.
+
+---
+
+## I-PROFILE-1 — production gates default to ON, and the binary decides
+
+**Property.** The build profile is one of `dev`, `desktop`, `production`, and
+its default comes from the BINARY: a release build is `production`, a debug
+build is `dev`. `ANNEX_BUILD_PROFILE` overrides it; an unrecognised value falls
+back to the compiled default, never to `dev`. No gate may read the environment
+variable directly.
+
+Gates are grouped by what they protect, and the grouping is the reason there
+are three profiles rather than two:
+
+* `requires_artifact_provenance()` — `desktop` and `production`. "The bytes I
+  load must be the bytes that were signed off": ZK verification keys, signing
+  key strength and persistence.
+* `requires_multi_tenant_gates()` — `production` only. "Strangers can reach
+  this": CORS origins, ZK enforcement, clustered rate limiting, and the
+  founder bootstrap when it lands.
+
+**Enforced by:**
+- `crates/annex-server/src/build_profile.rs` — the resolver and its tests.
+- `crates/annex-server/src/config.rs` (`validate_cors_for_build_profile`,
+  `validate_deployment_for_build_profile`,
+  `validate_zk_enforcement_for_build_profile`),
+  `crates/annex-server/src/http/cors.rs`, `crates/annex-server/src/startup.rs`.
+- `crates/annex-desktop/src/main.rs` sets `desktop` in the FIRST statement of
+  `main`, before the Tokio runtime spawns a thread and `set_var` stops being
+  sound.
+
+**Failure mode forbidden:** a new gate that does its own
+`std::env::var("ANNEX_BUILD_PROFILE")` and returns `Ok(())` when unset. That is
+what four of them did, and it made the entire production posture opt-in through
+a variable nothing in `deploy.sh`, `deploy.ps1` or the operator documentation
+ever set — with a typo in it indistinguishable from a dev profile.
+
+---
+
+## I-ZK-4 — a ceremony claim must be backed by a transcript
+
+**Property.** `zk/artifacts/<circuit>/manifest.json` may declare
+`ceremony.type` only from a known set: `dev-fixture`,
+`single-contributor-beacon`, `multi-contributor-beacon`, `mpc`. Under a
+production profile, `dev-fixture` is refused, an unrecognised value is refused,
+and any other value must name a `ceremony.transcript` **that exists on disk**.
+Nothing in this repository writes `mpc`; a manifest claiming it must still
+carry a transcript, so the claim is checkable rather than asserted.
+
+Hashes and provenance are different questions and both must be asked.
+`verify-artifacts.js` proves the files are the pinned ones — which anyone with
+commit access could arrange. `verify-ceremony.js` proves a ceremony produced
+them: `snarkjs zkey verify` over r1cs → ptau → every contribution → beacon, the
+verification key re-derived from the proving key rather than trusted, and the
+transcript's drand round checked against what was actually published.
+
+**Enforced by:**
+- `zk/scripts/verify-artifacts.js` (the ceremony gate and `--all`).
+- `zk/scripts/verify-ceremony.js`.
+- `scripts/verify-production-rejects-dev-fixtures.sh` — tests the gate against
+  throwaway manifests, asserts the exact exit code for each refusal, runs every
+  child under `env -u ANNEX_ALLOW_DEV_CEREMONY`, and asserts the release
+  workflow runs `--all` and never sets that bypass.
+- `scripts/build-desktop.js` and `.github/workflows/release-desktop.yml`.
+
+**Failure mode forbidden:** editing `dev-fixture` to `mpc` to get a build out.
+Also forbidden: a gate that accepts "any non-zero exit" as proof it worked —
+exit 1 means the manifest is unparseable, and the previous version of that
+script read it as success.
+
+---
+
+## I-ZK-5 — a membership proof that mints a session must spend a challenge
+
+**Property.** Every field of a `POST /api/zk/verify-membership` body was stable
+for a given member and topic: the Merkle root, the commitment, the nullifier,
+the topic hash and the Groth16 proof over them. The whole body was therefore a
+bearer credential — capture one successful request and re-submit it verbatim,
+after the member's sessions had been revoked, without ever holding `sk`, and the
+server minted a fresh session token at the identity's CURRENT revocation epoch.
+Revocation did not survive its own re-authentication path.
+
+Note that proof-hash dedup does not close this: Groth16 proofs are
+re-randomisable for fixed public inputs, so an attacker can produce a
+byte-different proof over the same signals. The freshness has to be in the
+public inputs.
+
+So: a v2 proof presented to the session-minting endpoint MUST carry a
+`challengeHex` this server issued, and that challenge MUST be spent inside the
+same `BEGIN IMMEDIATE` transaction that mints the token, BEFORE the nullifier
+branch — because that branch treats a repeat nullifier as re-authentication,
+which is precisely what made a captured body replayable.
+
+**Enforced by:**
+- `zk/circuits/membership_v2.circom` — `challengeSquared <== challenge * challenge`.
+  The constraint is the point: circom DROPS a public input that appears in no
+  constraint, so a declared-but-unused `challenge` would not be in the witness
+  and could be swapped freely. This is Semaphore's `signalHashSquared` idiom.
+- `crates/annex-server/src/api_zk_challenge.rs` — issue, TTL, per-commitment
+  outstanding cap, and single-use consumption.
+- `crates/annex-server/src/services/identity_service.rs` — parse and cross-check
+  the challenge before `verify_proof`, spend it inside the IMMEDIATE transaction
+  ahead of the nullifier branch.
+- `crates/annex-server/tests/zk_auth_challenge.rs`, `zk/scripts/test-proofs.js`
+  (tampered challenge rejected; a second challenge needs a second proof),
+  `scripts/smoke-server-flow.mjs`.
+
+**Failure mode forbidden:** Accepting a v2 proof with no challenge; spending the
+challenge outside the minting transaction; deduplicating on the proof bytes and
+calling it replay protection; or re-enabling `"v1"` under a production profile,
+which has no challenge input at all.
+
+---
+
+## I-VRP-1 — a trust verdict must name the instrument that produced it
+
+**Property.** `agent_min_alignment_score` decides Aligned / Partial / Conflict
+for every agent registration and every federation handshake. Three things follow
+and none of them are optional:
+
+1. **The scale is normalised, not raw.** A raw cosine is not a portable unit.
+   Measured on the same sixteen labelled pairs, the pinned `potion-base-2M`
+   table puts every unrelated pair at or below 0.5134 and every genuine
+   paraphrase at or above 0.5740; the lexicon fallback's figures are 0.3060 and
+   0.3918. The bands do not overlap, so no single raw threshold can serve both.
+   Scores are normalised against the loaded scorer's own measured floor
+   (`annex_vrp::semantic::normalize_against_floor`) and quantised before the
+   comparison, so architecture-dependent summation order cannot move a pair
+   across a category boundary.
+2. **A production server refuses to score with a fallback.**
+   `install_alignment_scorer` returns `StartupError::UnusableAlignmentModel`
+   under a profile that takes the multi-tenant gates. Dev and Desktop fall back
+   to the lexicon and say so — and carry `lexicon-v1` as their fingerprint, so a
+   peer can see what scored it. The model is deliberately NOT under
+   `requires_artifact_provenance`: `assets/embedding/` is gitignored, and a
+   desktop bundle refusing to launch over a 7.5 MB optional asset is a worse
+   failure than a documented, announced fallback on a loopback listener.
+3. **Stored verdicts are re-derived when the instrument changes.**
+   `servers.alignment_scorer_id` records the scorer; startup compares it and
+   re-scores `agent_registrations` and `federation_agreements` once on a
+   mismatch. Without this an upgraded server admits and refuses on an instrument
+   it no longer runs, and the only path that recomputed those rows was
+   `PUT /api/admin/policy`.
+
+**Enforced by:**
+- `crates/annex-vrp/src/scorer.rs`, `embedding.rs`, `semantic.rs`
+- `crates/annex-server/src/startup.rs::install_alignment_scorer`,
+  `rescore_alignments_if_scorer_changed`
+- `crates/annex-db/src/migrations/046_alignment_score_rescale.sql`,
+  `047_alignment_scorer_id.sql`
+- `crates/annex-vrp/tests/alignment_calibration.rs` (the calibration corpus),
+  `crates/annex-vrp/tests/unmeasurable_alignment.rs`,
+  `crates/annex-server/tests/alignment_model_startup.rs`
+
+**Failure mode forbidden:** Comparing a raw cosine to a configured threshold;
+shipping a default above the scorer's separating band (0.8 was above BOTH, so
+the only agents it ever admitted were those matching by anchor hash); a
+production server silently using the lexicon; reporting a scorer FAILURE as a
+measured 0.0 — `annex_vrp::UNMEASURABLE_SCORE` is negative precisely so it
+cannot be confused with a measurement.
+
+---
+
+## I-FED-2 — a relayed bundle's provenance must be attributable at every hop
+
+**Property.** `BundleProvenance.relay_path` was a `Vec<String>` and the only
+signature on an RTX envelope was the immediate relayer's. Three things followed,
+and all three were live:
+
+1. A relayer could rewrite the path freely — remove itself, invent an upstream,
+   claim a path it was never on.
+2. "B relayed A's bundle" and "B wrote a bundle and put A's name on it" were the
+   same envelope, because no signature in it was A's.
+3. It could not grow anyway: `relay_rtx_bundles` reset it to
+   `vec![local_public_url]` on every send, and `receive_federated_rtx` never
+   re-relayed. So the circular-relay check and the origin check that ROADMAP 9.4
+   recorded as complete were guarding a path no bundle could take.
+
+So: every hop carries its own Ed25519 signature over a payload that includes the
+PREVIOUS hop's payload digest, and the origin carries an attestation no relayer
+can forge. Specifically —
+
+- The origin signs a digest that is **invariant under transfer-scope
+  enforcement** (`scope_invariant_content_digest`, which omits
+  `reasoning_chain`) plus `SHA-256` of the reasoning chain as published. It
+  cannot sign the content hash a receiver computes, because stripping the chain
+  for a `ReflectionSummariesOnly` peer is the policy working. A relayer may
+  therefore REMOVE the chain and cannot ADD or alter one.
+- Each hop payload binds `hop_index`, `next_peer` and `prev_chain_digest`, so a
+  hop signature cannot be replayed at another depth, cannot authorise forwarding
+  elsewhere, and cannot be presented out of order. `annex_rtx::hop_payloads`
+  computes the vector for both the relayer and the receiver — two
+  implementations would be two chances to disagree about what was signed.
+- Loop prevention fails **closed** on an unknown local URL. A server that cannot
+  name itself cannot prove it is not already in the path.
+- The hop budget is `min(origin.max_hops, RTX_HOP_CEILING)`: a publisher limits
+  its own blast radius, an operator limits what it will carry, and neither alone
+  is the right answer.
+- Structural bounds are checked BEFORE any signature work, because
+  `POST /api/federation/rtx` has no auth middleware in front of it.
+
+**Enforced by:** `crates/annex-rtx/src/validation.rs` (the canonical payloads,
+`RTX_HOP_CEILING`, `validate_provenance_structure`),
+`crates/annex-server/src/services/rtx_service.rs`
+(`sign_origin_attestation`, `relay_rtx_bundle_onwards`),
+`crates/annex-server/src/services/federation_service.rs`
+(`receive_federated_rtx` steps 1.4–1.9),
+`crates/annex-server/tests/rtx_multihop_relay.rs` (22 tests),
+`docs/protocol/rtx-relay.md`.
+
+**Failure mode forbidden:** Reading `relay_path` for a trust decision; extending
+a chain that carries no origin attestation; re-relaying a duplicate arrival;
+relaying before the receive transaction commits; accepting a chain whose first
+hop is not the origin or whose last hop is not the sender; or letting the origin
+sign `rtx_bundle_content_hash`, which would make every legitimate scope-strip
+look like tampering.
+
+---
+
+## I-AUDIT-1 — a capture's pixels may not depend on what ran before it
+
+**Property.** Audit surfaces run serially against one server and one database.
+A surface that WRITES to a channel other surfaces PHOTOGRAPH makes every later
+picture a function of run order, viewport count and whether anything retried.
+So writes go to `SEED.channels.scratch`, `SEED.defaultChannel` is a fixture
+that nothing appends to, and a surface clipped to `.chat-area` either masks
+`.message-view` or is on a two-name list that deliberately photographs the
+fixture column.
+
+**Enforced by:**
+- `client/e2e/audit/manifest.spec.ts` — "no surface writes into the fixture
+  channel" and "surfaces clipped to .chat-area do not photograph a mutable
+  column".
+- `client/playwright.config.ts` — `retries: 0` on the `audit` project only.
+
+**Failure mode forbidden:** calling `postFreshMessage` with
+`SEED.defaultChannel` selected. One genuine failure, retried once under CI,
+posted a second copy of its message and took 52 further surfaces with it — 53
+failures and 106 ledger findings, none of which said anything about the cause.

@@ -102,8 +102,14 @@ pub(crate) fn build_cors_layer(origins: &[String]) -> CorsLayer {
 
         // Resolved once here; the predicate closure captures the bool,
         // so there is no per-request env read.
+        //
+        // The profile comes from `build_profile::current()` rather than the
+        // raw environment variable. Reading the variable directly meant an
+        // unset one landed on `cfg!(debug_assertions)` — which is the right
+        // answer for a binary you built yourself and the wrong one for a
+        // release binary an operator deployed without setting it.
         let allow_dev_localhost = dev_localhost_enabled(
-            std::env::var("ANNEX_BUILD_PROFILE").ok().as_deref(),
+            Some(crate::build_profile::current().as_str()),
             std::env::var("ANNEX_CORS_ALLOW_DEV_LOCALHOST")
                 .ok()
                 .as_deref(),

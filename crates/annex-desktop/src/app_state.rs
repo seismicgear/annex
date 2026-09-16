@@ -12,6 +12,14 @@ use crate::deep_links::DeepLinkInvite;
 /// Tracks whether the embedded server is running.
 pub(crate) struct ServerState {
     pub(crate) url: String,
+    /// Cancelled on `RunEvent::Exit` to stop the server's background workers.
+    ///
+    /// The desktop app used to leave them running until the process image was
+    /// torn down. That is survivable for a timer and not for the federation
+    /// outbox, which can be interrupted between marking a delivery attempted
+    /// and sending it — so the peer never receives a message this server
+    /// believes it delivered, and the row will not be retried.
+    pub(crate) shutdown: tokio_util::sync::CancellationToken,
 }
 
 /// Tracks an Annex router session that provides a public endpoint for the

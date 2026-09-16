@@ -96,6 +96,8 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool, SigningKey) {
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
+        shutdown: Default::default(),
+        metrics: Default::default(),
     };
 
     (app(state), pool, remote_key)
@@ -115,6 +117,7 @@ async fn test_federation_handshake_success() {
     let handshake = VrpFederationHandshake {
         anchor_snapshot: anchor,
         capability_contract: contract,
+        scorer: None,
     };
 
     let base_url = "https://remote.example.com";
@@ -175,6 +178,7 @@ async fn test_federation_handshake_unknown_instance() {
     let handshake = VrpFederationHandshake {
         anchor_snapshot: anchor,
         capability_contract: contract,
+        scorer: None,
     };
 
     let base_url = "https://unknown.example.com";
@@ -231,6 +235,7 @@ fn the_re_handshake_body_deserializes_as_a_handshake_request() {
             offered_capabilities: vec!["TEXT".to_string()],
             redacted_topics: vec![],
         },
+        scorer: None,
     };
 
     let body =

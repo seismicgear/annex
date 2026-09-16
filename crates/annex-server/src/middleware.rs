@@ -69,13 +69,25 @@ pub async fn auth_middleware(mut req: Request<Body>, next: Next) -> Result<Respo
     // be HMAC-signed session tokens (same format as WebSocket tokens) rather
     // than raw pseudonyms. The `X-Annex-Pseudonym` header is also rejected in
     // enforced mode to prevent impersonation via public pseudonym strings.
+    // The epoch the presented token claims, when it is a session token.
+    //
+    // `None` for the unenforced raw-pseudonym paths, which have no token and
+    // therefore nothing to revoke. Checked against the identity's current
+    // `token_epoch` once that row is loaded below — this function has no
+    // database of its own, and doing the lookup twice would double the cost of
+    // every authenticated request.
+    let mut claimed_epoch: Option<i64> = None;
+
     let pseudonym = if let Some(val) = req.headers().get("Authorization") {
         let val_str = val.to_str().map_err(|_| StatusCode::UNAUTHORIZED)?;
         if let Some(token) = val_str.strip_prefix("Bearer ") {
             if state.enforce_zk_proofs {
                 // In enforced mode, the Bearer token must be an HMAC-signed
                 // session token, not a raw pseudonym.
-                crate::api_ws::verify_ws_token_for_auth(token, &state.ws_token_secret)?
+                let verified =
+                    crate::api_ws::verify_ws_token_for_auth(token, &state.ws_token_secret)?;
+                claimed_epoch = Some(verified.epoch);
+                verified.pseudonym
             } else {
                 let p = token.to_string();
                 if !is_valid_pseudonym_format(&p) {
@@ -122,6 +134,30 @@ pub async fn auth_middleware(mut req: Request<Body>, next: Next) -> Result<Respo
     // 4. Check if active
     if !identity.active {
         return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    // 4b. Check the token has not been revoked.
+    //
+    // A session token is an HMAC with no server-side state, so before the
+    // epoch existed there was no way to stop one being accepted short of
+    // deactivating the identity or rotating the server signing key — which
+    // signs out everyone. An admin revoke, a capability change or a
+    // deactivation bumps `token_epoch`, and every token minted before that
+    // stops verifying here.
+    //
+    // A token minted before migration 044 carries no epoch and reads as 0,
+    // which is the column's default — so upgrading does not sign anyone out,
+    // and the first revocation for an identity moves it past every such token.
+    if let Some(claimed) = claimed_epoch {
+        if claimed != identity.token_epoch {
+            tracing::debug!(
+                pseudonym = %identity.pseudonym_id,
+                claimed,
+                current = identity.token_epoch,
+                "rejecting a session token from a revoked epoch"
+            );
+            return Err(StatusCode::UNAUTHORIZED);
+        }
     }
 
     // 5. Storage gate: reject mutating methods when the storage gate
@@ -178,6 +214,21 @@ fn is_mutating_method(method: &axum::http::Method) -> bool {
 pub enum RateLimitCategory {
     Registration,
     Verification,
+    /// `/health`, `/livez`, `/readyz`.
+    ///
+    /// These have their own counter so orchestrator polling cannot be starved
+    /// by ordinary anonymous traffic. They used to sit in `Default`, which is
+    /// keyed per source IP — and behind a reverse proxy at the default
+    /// `trusted_proxy_depth = 0` every anonymous request keys to the *proxy's*
+    /// address, so one busy minute of public traffic could spend the whole
+    /// 60-request budget and the next liveness probe would read 429. An
+    /// orchestrator reads that as "not alive" and restarts a server that was
+    /// merely busy, which is the opposite of what a liveness probe is for.
+    ///
+    /// Still capped, and at the same number: the point is an independent
+    /// bucket, not an exemption. The three handlers behind it read an atomic,
+    /// take a pooled connection and run one `SELECT count(*)`.
+    Probe,
     Default,
 }
 
@@ -637,6 +688,8 @@ pub async fn rate_limit_middleware(req: Request<Body>, next: Next) -> Result<Res
                 RateLimitCategory::Verification,
                 policy.rate_limit.verification_limit,
             )
+        } else if matches!(path, "/health" | "/livez" | "/readyz") {
+            (RateLimitCategory::Probe, policy.rate_limit.default_limit)
         } else {
             (RateLimitCategory::Default, policy.rate_limit.default_limit)
         }
@@ -736,7 +789,7 @@ pub struct ZkProofPayload {
 /// the authenticated identity's commitment (prevents proof replay across users).
 ///
 /// Dispatches to the v1 or v2 verifier based on `payload.protocol_version`.
-/// v2 proofs additionally require `publicSignals` (length 4) and a `topic`
+/// v2 proofs additionally require `publicSignals` (length 5) and a `topic`
 /// for the canonical topicHash cross-check; without those the request is
 /// rejected exactly the way the local `/api/zk/verify-membership` endpoint
 /// rejects them.
@@ -796,7 +849,19 @@ pub fn verify_zk_membership_header(
                 );
                 StatusCode::FORBIDDEN
             })?;
-            (v2_key, 4usize)
+            // Five since the challenge binding landed:
+            // [root, commitment, nullifier, topicHash, challenge].
+            //
+            // The challenge is NOT re-checked here, and that is deliberate.
+            // This header is a cached membership assertion presented on every
+            // protected request; requiring a fresh, single-use challenge would
+            // mean a server round trip and a Groth16 proof per request. The
+            // liveness credential on this path is the session token, which the
+            // auth middleware has already verified against the identity's
+            // revocation epoch. What the challenge closes is the path that
+            // MINTS that token — `verify_membership` — where a replayable body
+            // was the whole credential.
+            (v2_key, 5usize)
         }
         other => {
             tracing::warn!("ZK proof header has unsupported protocolVersion '{other}'");

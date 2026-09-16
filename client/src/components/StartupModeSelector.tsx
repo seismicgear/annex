@@ -107,6 +107,12 @@ export function StartupModeSelector({ onReady }: Props) {
         setPhase('starting_server');
         const url = await startEmbeddedServer();
         setApiBaseUrl(url);
+        // Repointing the client ends the credential context, so the identity
+        // loaded at bootstrap — before the embedded server had an address —
+        // has to say again that its credentials apply here. Without this a
+        // returning host user reaches the chat UI with no bearer token and
+        // every protected call 401s behind a signed-in-looking app.
+        await useIdentityStore.getState().reassertCredentials();
 
         // Acquire a public endpoint via the Annex router so the server is
         // reachable from the internet. The returned URL is used as the
@@ -226,6 +232,11 @@ export function StartupModeSelector({ onReady }: Props) {
     (skipSave: boolean) => {
       // Empty base URL = relative paths = current origin
       setApiBaseUrl('');
+      // Normally a no-op here — the client already points at the current
+      // origin — but stated rather than assumed, so the invariant "a change of
+      // target is followed by a re-assertion" holds at every call site rather
+      // than at the ones someone checked.
+      void useIdentityStore.getState().reassertCredentials();
       // Clear any stale voice-disabled state from a previous startup failure.
       useVoiceStore.getState().setVoiceSessionDisabled(false);
       if (!skipSave) {

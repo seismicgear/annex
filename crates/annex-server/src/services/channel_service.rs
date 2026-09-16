@@ -60,6 +60,8 @@ use axum::http::{HeaderMap, StatusCode};
 use rusqlite::{params, OptionalExtension};
 use thiserror::Error;
 
+use crate::services::agent_policy::{self, ActionRefusal};
+
 use crate::api_federation::find_commitment_for_pseudonym;
 use crate::middleware::verify_zk_membership_header;
 use crate::AppState;
@@ -119,6 +121,17 @@ pub enum ChannelServiceError {
     /// Carries no payload because the JSON body is fixed.
     #[error("voice not configured")]
     VoiceNotConfigured,
+}
+
+/// `agent_policy` answers to no protocol of its own, so each caller maps its
+/// refusal. Two callers do it identically, which is what this `From` is for.
+impl From<ActionRefusal> for ChannelServiceError {
+    fn from(refusal: ActionRefusal) -> Self {
+        match refusal {
+            ActionRefusal::Forbidden(m) => ChannelServiceError::Forbidden(m),
+            ActionRefusal::Internal(m) => ChannelServiceError::Internal(m),
+        }
+    }
 }
 
 impl ChannelServiceError {
@@ -274,6 +287,29 @@ impl ChannelService {
         identity: &PlatformIdentity,
         req: CreateChannelRequest,
     ) -> Result<CreateChannelOutcome, ChannelServiceError> {
+        // Creating a channel sets policy other participants live under, so it
+        // is grouped with voice rather than with text for a partially-aligned
+        // agent. See `AgentAction::allowed_when_partial`.
+        {
+            let pool = self.state.pool.clone();
+            let server_id = self.state.server_id;
+            let pid = identity.pseudonym_id.clone();
+            tokio::task::spawn_blocking(move || -> Result<(), ChannelServiceError> {
+                let conn = pool
+                    .get()
+                    .map_err(|e| ChannelServiceError::Internal(format!("pool: {e}")))?;
+                agent_policy::check_agent_action(
+                    &conn,
+                    server_id,
+                    &pid,
+                    agent_policy::AgentAction::CreateChannel,
+                )
+                .map_err(ChannelServiceError::from)
+            })
+            .await
+            .map_err(|e| ChannelServiceError::Internal(format!("join: {e}")))??;
+        }
+
         if !identity.can_moderate {
             return Err(ChannelServiceError::Forbidden(
                 "insufficient capabilities".to_string(),
@@ -485,92 +521,37 @@ impl ChannelService {
 
         let channel = self.fetch_channel(channel_id.to_string()).await?;
 
-        if let Some(caps_json) = &channel.required_capabilities_json {
-            let required: Vec<String> = serde_json::from_str(caps_json).map_err(|e| {
-                ChannelServiceError::Internal(format!("malformed required_capabilities_json: {e}"))
-            })?;
-
-            for req in required {
-                let has_cap = match req.as_str() {
-                    "can_voice" => identity.can_voice,
-                    "can_moderate" => identity.can_moderate,
-                    "can_invite" => identity.can_invite,
-                    "can_federate" => identity.can_federate,
-                    "can_bridge" => identity.can_bridge,
-                    _ => false, // Unknown capability required -> deny
-                };
-                if !has_cap {
-                    return Err(ChannelServiceError::Forbidden(
-                        "missing required capability".to_string(),
-                    ));
-                }
+        // The join gates, from the same function the federated path calls.
+        //
+        // These used to be written out here and nowhere else, which is how
+        // `FederationService::join_federated_channel` came to insert members
+        // with none of them applied — a channel's capability requirement, its
+        // agent-only restriction and its minimum alignment governed local
+        // members and no one else.
+        tokio::task::spawn_blocking({
+            let pool = self.state.pool.clone();
+            let server_id = self.state.server_id;
+            let channel = channel.clone();
+            let identity = identity.clone();
+            move || -> Result<(), ChannelServiceError> {
+                let conn = pool
+                    .get()
+                    .map_err(|e| ChannelServiceError::Internal(format!("pool: {e}")))?;
+                crate::services::channel_policy::check_join_policy(
+                    &conn, server_id, &channel, &identity,
+                )
+                .map_err(|e| match e {
+                    crate::services::channel_policy::JoinRefusal::Forbidden(m) => {
+                        ChannelServiceError::Forbidden(m)
+                    }
+                    crate::services::channel_policy::JoinRefusal::Internal(m) => {
+                        ChannelServiceError::Internal(m)
+                    }
+                })
             }
-        }
-
-        // Agent channels are restricted to AI agents only. Allowing humans
-        // would let them bypass agent-specific policy controls (alignment,
-        // VRP handshake, transfer scope).
-        if channel.channel_type == ChannelType::Agent
-            && identity.participant_type != RoleCode::AiAgent
-        {
-            return Err(ChannelServiceError::Forbidden(
-                "agent channel requires AiAgent participant".to_string(),
-            ));
-        }
-
-        if identity.participant_type == RoleCode::AiAgent {
-            let alignment_status: Option<String> = tokio::task::spawn_blocking({
-                let pool = self.state.pool.clone();
-                let server_id = self.state.server_id;
-                let pseudo = identity.pseudonym_id.clone();
-                move || -> Result<Option<String>, ChannelServiceError> {
-                    let conn = pool
-                        .get()
-                        .map_err(|e| ChannelServiceError::Internal(format!("pool: {e}")))?;
-                    conn.query_row(
-                        "SELECT alignment_status FROM agent_registrations WHERE server_id = ?1 AND pseudonym_id = ?2",
-                        params![server_id, pseudo],
-                        |row| row.get(0),
-                    )
-                    .optional()
-                    .map_err(|e| ChannelServiceError::Internal(format!("alignment query: {e}")))
-                }
-            })
-            .await
-            .map_err(|e| ChannelServiceError::Internal(format!("join: {e}")))??;
-
-            let status_str = alignment_status.ok_or_else(|| {
-                ChannelServiceError::Forbidden("agent not registered".to_string())
-            })?;
-            let status: AlignmentStatus = serde_json::from_str(&status_str)
-                .or_else(|_| serde_json::from_str(&format!("\"{status_str}\"")))
-                .map_err(|e| ChannelServiceError::Internal(format!("alignment parse: {e}")))?;
-
-            if status == AlignmentStatus::Conflict {
-                return Err(ChannelServiceError::Forbidden(
-                    "conflict-aligned agents may not join channels".to_string(),
-                ));
-            }
-
-            if status == AlignmentStatus::Partial && channel.channel_type != ChannelType::Text {
-                return Err(ChannelServiceError::Forbidden(
-                    "partial-aligned agents are restricted to text channels".to_string(),
-                ));
-            }
-
-            if let Some(min_alignment) = channel.agent_min_alignment {
-                let allowed = match min_alignment {
-                    AlignmentStatus::Conflict => true,
-                    AlignmentStatus::Partial => status != AlignmentStatus::Conflict,
-                    AlignmentStatus::Aligned => status == AlignmentStatus::Aligned,
-                };
-                if !allowed {
-                    return Err(ChannelServiceError::Forbidden(
-                        "channel min alignment not met".to_string(),
-                    ));
-                }
-            }
-        }
+        })
+        .await
+        .map_err(|e| ChannelServiceError::Internal(format!("join: {e}")))??;
 
         // Insert membership row and, for agents, an AgentServing edge.
         tokio::task::spawn_blocking({
@@ -826,7 +807,17 @@ impl ChannelService {
                     scanned_per_channel: SEARCH_SCAN_CAP,
                 })
             } else {
-                let (results, complete) = scan(channel_id.as_deref().unwrap())?;
+                // The `if` arm above covers the all-channels search, so this
+                // branch only runs when a channel id was supplied — but the
+                // compiler does not know that, and `.unwrap()` here would
+                // panic inside a `spawn_blocking`, which reaches the client as
+                // an unexplained 500. Name the condition instead.
+                let Some(id) = channel_id.as_deref() else {
+                    return Err(ChannelServiceError::Internal(
+                        "search reached the single-channel branch with no channel id".to_string(),
+                    ));
+                };
+                let (results, complete) = scan(id)?;
                 Ok(SearchResponse {
                     results,
                     complete,
@@ -898,11 +889,19 @@ impl ChannelService {
         reply_to: Option<String>,
         client_request_id: Option<String>,
     ) -> Result<(Message, bool, SendOutcome), ChannelServiceError> {
-        self.require_membership(sender_pseudonym, channel_id)
-            .await?;
+        self.require_membership_for(
+            sender_pseudonym,
+            channel_id,
+            Some(agent_policy::AgentAction::SendText),
+        )
+        .await?;
 
         let server_id = self.state.server_id;
         let pool = self.state.pool.clone();
+        // The whole state, because the federation enqueue below runs inside
+        // this transaction and needs the signing key, the public URL, the
+        // federation config and the at-rest cipher.
+        let state = self.state.clone();
         let cid = channel_id.to_string();
         let sender = sender_pseudonym.to_string();
         let request_id = client_request_id;
@@ -913,13 +912,39 @@ impl ChannelService {
                     .get()
                     .map_err(|e| ChannelServiceError::Internal(format!("pool: {e}")))?;
 
+                // ONE transaction, opened before the idempotency lookup.
+                //
+                // The lookup used to run on the bare pooled connection, 46
+                // lines before the transaction began. Two concurrent sends
+                // sharing (sender, client_request_id) both reached that SELECT
+                // before either had written, both saw nothing, and both
+                // committed a message — two rows against one idempotency
+                // record, because the ledger INSERT is `OR IGNORE` and its
+                // rowcount was discarded. Reproduced against SQLite; invisible
+                // on the standard in-memory harness, which has a single
+                // connection and therefore serialises the two closures.
+                //
+                // `IMMEDIATE` takes the RESERVED lock at BEGIN, so the second
+                // racer now blocks here and, when it proceeds, reads a snapshot
+                // that already contains the winner's ledger row. It takes the
+                // replay branch, which is what the caller expects and what the
+                // UNIQUE constraint in migration 035 was added to guarantee.
+                //
+                // Deliberately NOT a fast-path read outside the transaction
+                // with a re-check inside it: the fast path is the bug, and a
+                // version that keeps it "for performance" is the same defect
+                // with a narrower window.
+                let tx = conn
+                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                    .map_err(|e| ChannelServiceError::Internal(format!("tx begin: {e}")))?;
+
                 // Idempotency lookup: if the same sender repeats the same
                 // client_request_id, return the original message instead
                 // of inserting a duplicate. Scope is
                 // (server_id, sender_pseudonym, client_request_id) — see
                 // migration 035 for the rationale.
                 if let Some(ref rid) = request_id {
-                    let existing_message_id: Option<String> = conn
+                    let existing_message_id: Option<String> = tx
                         .query_row(
                             "SELECT message_id FROM message_request_ids \
                              WHERE server_id = ?1 AND sender_pseudonym = ?2 \
@@ -932,20 +957,23 @@ impl ChannelService {
 
                     if let Some(mid) = existing_message_id {
                         // Hydrate the original message and short-circuit.
-                        let mut msg = get_message(&conn, &mid).map_err(map_channel_err)?;
+                        let mut msg = get_message(&tx, &mid).map_err(map_channel_err)?;
                         cipher.decrypt_in_place(&mut msg.content);
-                        let channel = get_channel(&conn, &cid).map_err(map_channel_err)?;
+                        let channel = get_channel(&tx, &cid).map_err(map_channel_err)?;
                         let is_federated =
                             matches!(channel.federation_scope, FederationScope::Federated);
+                        // Release the write lock immediately: a pure replay
+                        // wrote nothing and must not hold RESERVED across the
+                        // return.
+                        tx.rollback()
+                            .map_err(|e| ChannelServiceError::Internal(format!("tx rollback: {e}")))?;
                         return Ok((msg, is_federated, SendOutcome::Replayed));
                     }
                 }
 
-                // Fresh send: open a transaction so the message and its
-                // idempotency row are durable together. A concurrent racer
-                // with the same (sender, request_id) will lose on the
-                // UNIQUE constraint and fall back to the lookup branch on
-                // its next attempt.
+                // Fresh send. The message, its idempotency row and its
+                // federation outbox rows are all written here and commit
+                // together.
                 // BEGIN IMMEDIATE, not DEFERRED.
                 //
                 // `create_message` reads before it writes — it resolves the
@@ -964,9 +992,6 @@ impl ChannelService {
                 // sending was missed. IMMEDIATE takes the RESERVED lock at
                 // BEGIN, so contention becomes a wait bounded by
                 // `busy_timeout` instead of an instant failure.
-                let tx = conn
-                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-                    .map_err(|e| ChannelServiceError::Internal(format!("tx begin: {e}")))?;
 
                 let message_id = uuid::Uuid::new_v4().to_string();
                 // Encrypt the body at rest; keep the plaintext to return so the
@@ -983,23 +1008,87 @@ impl ChannelService {
                 msg.content = plaintext;
 
                 if let Some(ref rid) = request_id {
-                    // Ignore UNIQUE conflicts: another in-flight request
-                    // raced us in. We keep our own message (the racer's
-                    // commit may have already inserted theirs as well —
-                    // both are valid messages, only the second mapping is
-                    // dropped). This degrades to two messages under a true
-                    // race; clients send a single message under a stable
-                    // request_id in practice.
-                    let _ = tx.execute(
-                        "INSERT OR IGNORE INTO message_request_ids \
-                         (server_id, channel_id, sender_pseudonym, client_request_id, message_id) \
-                         VALUES (?1, ?2, ?3, ?4, ?5)",
-                        rusqlite::params![server_id, &cid, &sender, rid, &message_id],
-                    );
+                    // The rowcount is checked, not discarded.
+                    //
+                    // `let _ =` was the second half of the duplicate-message
+                    // defect: when the OR IGNORE hit the UNIQUE constraint it
+                    // meant a racer had already claimed this request id, and
+                    // the code committed its own message anyway. The old
+                    // comment called that "both are valid messages, only the
+                    // second mapping is dropped" — but the caller asked for
+                    // one message and got two, which is exactly what an
+                    // idempotency key exists to prevent.
+                    //
+                    // With the transaction opened above this should now be
+                    // unreachable; it is kept because it is the only signal
+                    // that it has become reachable again.
+                    let inserted = tx
+                        .execute(
+                            "INSERT OR IGNORE INTO message_request_ids \
+                             (server_id, channel_id, sender_pseudonym, client_request_id, message_id) \
+                             VALUES (?1, ?2, ?3, ?4, ?5)",
+                            rusqlite::params![server_id, &cid, &sender, rid, &message_id],
+                        )
+                        .map_err(|e| ChannelServiceError::Internal(format!("idem insert: {e}")))?;
+                    if inserted == 0 {
+                        tracing::warn!(
+                            sender = %sender,
+                            channel_id = %cid,
+                            "a concurrent send claimed this client_request_id despite the \
+                             IMMEDIATE transaction; returning the winner's message rather than \
+                             committing a duplicate"
+                        );
+                        let winner: String = tx
+                            .query_row(
+                                "SELECT message_id FROM message_request_ids \
+                                 WHERE server_id = ?1 AND sender_pseudonym = ?2 \
+                                   AND client_request_id = ?3",
+                                rusqlite::params![server_id, &sender, rid],
+                                |row| row.get(0),
+                            )
+                            .map_err(|e| {
+                                ChannelServiceError::Internal(format!("idem winner lookup: {e}"))
+                            })?;
+                        let mut won = get_message(&tx, &winner).map_err(map_channel_err)?;
+                        cipher.decrypt_in_place(&mut won.content);
+                        let channel = get_channel(&tx, &cid).map_err(map_channel_err)?;
+                        let is_federated =
+                            matches!(channel.federation_scope, FederationScope::Federated);
+                        tx.rollback().map_err(|e| {
+                            ChannelServiceError::Internal(format!("tx rollback: {e}"))
+                        })?;
+                        return Ok((won, is_federated, SendOutcome::Replayed));
+                    }
                 }
 
                 let channel = get_channel(&tx, &cid).map_err(map_channel_err)?;
                 let is_federated = matches!(channel.federation_scope, FederationScope::Federated);
+
+                // The federation obligation commits WITH the message.
+                //
+                // It used to be a detached `tokio::spawn` fired after this
+                // commit, two task hops and a separate pooled connection later.
+                // Everything in that gap — a crash, a pool failure, the storage
+                // gate tripping — left a message that had been persisted and
+                // broadcast locally, with no outbox row and nothing recording
+                // that it owed one. The sender was told it had sent. A retry did
+                // not heal it either: a retry returns `Replayed`, and the caller
+                // skipped the relay on `Replayed` by design.
+                //
+                // Failing the send when the enqueue fails is deliberate. A
+                // federated message that cannot be queued for delivery has not
+                // been sent, and reporting success is how the old path lost
+                // messages quietly.
+                if is_federated {
+                    crate::services::federation_service::enqueue_message_envelope(
+                        &tx, &state, &cid, &msg,
+                    )
+                    .map_err(|e| {
+                        ChannelServiceError::Internal(format!(
+                            "could not queue this message for federation: {e}"
+                        ))
+                    })?;
+                }
 
                 tx.commit()
                     .map_err(|e| ChannelServiceError::Internal(format!("tx commit: {e}")))?;
@@ -1025,8 +1114,12 @@ impl ChannelService {
         message_id: &str,
         new_content: &str,
     ) -> Result<(Message, bool), ChannelServiceError> {
-        self.require_membership(sender_pseudonym, channel_id)
-            .await?;
+        self.require_membership_for(
+            sender_pseudonym,
+            channel_id,
+            Some(agent_policy::AgentAction::EditText),
+        )
+        .await?;
 
         let pool = self.state.pool.clone();
         let mid = message_id.to_string();
@@ -1090,8 +1183,12 @@ impl ChannelService {
         channel_id: &str,
         message_id: &str,
     ) -> Result<(Message, bool), ChannelServiceError> {
-        self.require_membership(sender_pseudonym, channel_id)
-            .await?;
+        self.require_membership_for(
+            sender_pseudonym,
+            channel_id,
+            Some(agent_policy::AgentAction::DeleteText),
+        )
+        .await?;
 
         let pool = self.state.pool.clone();
         let mid = message_id.to_string();
@@ -1138,6 +1235,90 @@ impl ChannelService {
     // Voice
     // ─────────────────────────────────────────────────────────────────────
 
+    /// Every condition that must hold before this identity may have a live
+    /// peer connection in this channel.
+    ///
+    /// Shared by the two paths that can open one, because they had drifted and
+    /// the WebSocket one had drifted to nothing: `ws/commands/webrtc.rs`
+    /// checked channel membership and then called `handle_sdp_offer` directly.
+    /// An admin who set `voice_enabled = false` got a 403 on
+    /// `POST /voice/join` and no effect whatsoever on a `webrtc_offer` frame —
+    /// the operator's kill switch was a client-side suggestion. A member of a
+    /// Text channel could open an SFU peer connection in it the same way.
+    ///
+    /// `can_voice` is checked here for the first time anywhere at voice-join
+    /// time. It was consulted only as a channel-level `required_capabilities`
+    /// entry, so `PATCH /api/admin/members/{id}/capabilities` advertised a
+    /// per-person voice revocation that did nothing at all: the flag defaults
+    /// to 1 for every member (see `create_platform_identity`), and clearing it
+    /// changed no behaviour on any path. A control that reports success and has
+    /// no effect is worse than no control.
+    ///
+    /// Membership is deliberately NOT part of this: the two callers check it
+    /// differently — the HTTP path through `require_membership`, the WebSocket
+    /// path through `check_ws_membership` against its own connection — and
+    /// folding it in here would mean one of them checking twice.
+    pub(crate) async fn ensure_voice_allowed(
+        &self,
+        identity: &PlatformIdentity,
+        channel_id: &str,
+    ) -> Result<(), ChannelServiceError> {
+        let policy_voice_enabled = self
+            .state
+            .policy
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .voice_enabled;
+        if !policy_voice_enabled {
+            return Err(ChannelServiceError::VoiceDisabled);
+        }
+
+        if !self.state.voice_service.is_enabled() {
+            return Err(ChannelServiceError::VoiceNotConfigured);
+        }
+
+        if !identity.can_voice {
+            return Err(ChannelServiceError::Forbidden(
+                "voice is not enabled for this identity".to_string(),
+            ));
+        }
+
+        // And, for an agent, whether its alignment still permits voice. This
+        // function is the shared gate for BOTH voice paths — the HTTP join and
+        // the WebSocket `webrtc_offer` frame — which is why the check goes here
+        // rather than at either call site; that drift is what this function was
+        // extracted to end.
+        {
+            let pool = self.state.pool.clone();
+            let server_id = self.state.server_id;
+            let pid = identity.pseudonym_id.clone();
+            tokio::task::spawn_blocking(move || -> Result<(), ChannelServiceError> {
+                let conn = pool
+                    .get()
+                    .map_err(|e| ChannelServiceError::Internal(format!("pool: {e}")))?;
+                agent_policy::check_agent_action(
+                    &conn,
+                    server_id,
+                    &pid,
+                    agent_policy::AgentAction::VoiceMedia,
+                )
+                .map_err(ChannelServiceError::from)
+            })
+            .await
+            .map_err(|e| ChannelServiceError::Internal(format!("join: {e}")))??;
+        }
+
+        let channel = self.fetch_channel(channel_id.to_string()).await?;
+        if channel.channel_type != ChannelType::Voice && channel.channel_type != ChannelType::Hybrid
+        {
+            return Err(ChannelServiceError::BadRequest(
+                "channel does not support voice".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
     /// `POST /api/channels/:id/voice/join` orchestration.
     ///
     /// `is_local_client` is supplied by the handler after inspecting
@@ -1163,30 +1344,13 @@ impl ChannelService {
             self.state.voice_service.get_public_url().to_string()
         };
 
-        let policy_voice_enabled = self
-            .state
-            .policy
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .voice_enabled;
-        if !policy_voice_enabled {
-            return Err(ChannelServiceError::VoiceDisabled);
-        }
-
-        if !self.state.voice_service.is_enabled() || webrtc_url.is_empty() {
+        if webrtc_url.is_empty() {
             return Err(ChannelServiceError::VoiceNotConfigured);
         }
 
         self.require_membership(&identity.pseudonym_id, channel_id)
             .await?;
-
-        let channel = self.fetch_channel(channel_id.to_string()).await?;
-        if channel.channel_type != ChannelType::Voice && channel.channel_type != ChannelType::Hybrid
-        {
-            return Err(ChannelServiceError::BadRequest(
-                "channel does not support voice".to_string(),
-            ));
-        }
+        self.ensure_voice_allowed(identity, channel_id).await?;
 
         let token = self
             .state
@@ -1359,27 +1523,54 @@ impl ChannelService {
         pseudonym_id: &str,
         channel_id: &str,
     ) -> Result<(), ChannelServiceError> {
+        self.require_membership_for(pseudonym_id, channel_id, None)
+            .await
+    }
+
+    /// Membership, and — for an action alignment governs — whether this agent
+    /// may still take it.
+    ///
+    /// Alignment used to be checked once, at the join, and never again.
+    /// `recalculate_agent_alignments` exists to cut off an agent whose
+    /// principles no longer match the server's; all it did was set
+    /// `agent_registrations.active = 0` and drop the socket. It did not touch
+    /// `channel_members` and it did not touch `platform_identities.active`, so
+    /// the agent's session token still verified, it reconnected, and it kept
+    /// sending, editing and deleting in every channel it had already joined —
+    /// while `AgentDisconnected` sat in the audit log saying otherwise.
+    ///
+    /// Both queries run in ONE `spawn_blocking` on ONE pooled connection.
+    /// Message send is the busiest path in the app and already pays for a
+    /// checkout; a second one per frame would double that.
+    async fn require_membership_for(
+        &self,
+        pseudonym_id: &str,
+        channel_id: &str,
+        action: Option<agent_policy::AgentAction>,
+    ) -> Result<(), ChannelServiceError> {
         let pool = self.state.pool.clone();
         let server_id = self.state.server_id;
         let cid = channel_id.to_string();
         let pid = pseudonym_id.to_string();
-        let member: bool =
-            tokio::task::spawn_blocking(move || -> Result<bool, ChannelServiceError> {
-                let conn = pool
-                    .get()
-                    .map_err(|e| ChannelServiceError::Internal(format!("pool: {e}")))?;
-                is_member(&conn, server_id, &cid, &pid)
-                    .map_err(|e| ChannelServiceError::Internal(format!("is_member: {e}")))
-            })
-            .await
-            .map_err(|e| ChannelServiceError::Internal(format!("join: {e}")))??;
-
-        if !member {
-            return Err(ChannelServiceError::Forbidden(
-                "not a channel member".to_string(),
-            ));
-        }
-        Ok(())
+        tokio::task::spawn_blocking(move || -> Result<(), ChannelServiceError> {
+            let conn = pool
+                .get()
+                .map_err(|e| ChannelServiceError::Internal(format!("pool: {e}")))?;
+            let member = is_member(&conn, server_id, &cid, &pid)
+                .map_err(|e| ChannelServiceError::Internal(format!("is_member: {e}")))?;
+            if !member {
+                return Err(ChannelServiceError::Forbidden(
+                    "not a channel member".to_string(),
+                ));
+            }
+            if let Some(action) = action {
+                agent_policy::check_agent_action(&conn, server_id, &pid, action)
+                    .map_err(ChannelServiceError::from)?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| ChannelServiceError::Internal(format!("join: {e}")))?
     }
 
     /// AI-agent voice client lifecycle for the join path. Idempotent: if a

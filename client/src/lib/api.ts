@@ -9,11 +9,18 @@
 
 export {
   ApiError,
+  StaleCredentialContextError,
   authHeaders,
   fetchWithTimeout,
+  clearUploadGrant,
+  ensureUploadGrant,
   getApiBaseUrl,
+  getCredentialContext,
+  getCurrentPseudonym,
   getSessionToken,
+  getUploadGrantVersion,
   getZkProofPayload,
+  isCredentialContextCurrent,
   isTokenExpired,
   refreshSessionToken,
   request,
@@ -24,14 +31,17 @@ export {
   setZkProofPayload,
   startTokenRefresh,
   stopTokenRefresh,
+  subscribeUploadGrant,
 } from '@/api/core';
 
 export {
   createInvite,
   getCurrentRoot,
   getIdentityInfo,
+  getMerklePath,
   redeemInvite,
   register,
+  requestAuthChallenge,
   verifyMembership,
 } from '@/api/identity';
 

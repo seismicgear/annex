@@ -99,6 +99,8 @@ fn build_state(db_path: &str, initial_policy: ServerPolicy) -> (Arc<AppState>, a
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
+        shutdown: Default::default(),
+        metrics: Default::default(),
     };
 
     (Arc::new(state), pool)
@@ -190,6 +192,7 @@ async fn test_federation_full_lifecycle() {
     let handshake = VrpFederationHandshake {
         anchor_snapshot: anchor.clone(),
         capability_contract: contract.clone(),
+        scorer: None,
     };
 
     // Sign the handshake with the remote signing key

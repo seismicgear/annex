@@ -123,6 +123,8 @@ fn setup_test_env(transfer_scope: &str) -> TestEnv {
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
+        shutdown: Default::default(),
+        metrics: Default::default(),
     };
 
     TestEnv {
@@ -184,10 +186,16 @@ fn build_envelope(
         &relay_path,
     );
 
+    // No hop chain and no attestation: this helper builds the LEGACY
+    // single-hop envelope on purpose, which is what a peer on an older build
+    // sends and what `rtx_require_hop_chain = false` still accepts. The
+    // multi-hop path has its own tests in `rtx_multihop_relay.rs`.
     let provenance = BundleProvenance {
         origin_server,
         relay_path,
         bundle_id: bundle.bundle_id.clone(),
+        hops: Vec::new(),
+        origin: None,
     };
 
     FederatedRtxEnvelope {
@@ -509,6 +517,8 @@ async fn test_receive_federated_rtx_rejects_unknown_server() {
         origin_server: "http://unknown-server.com".to_string(),
         relay_path: vec!["http://unknown-server.com".to_string()],
         bundle_id: bundle.bundle_id.clone(),
+        hops: Vec::new(),
+        origin: None,
     };
 
     let envelope = FederatedRtxEnvelope {

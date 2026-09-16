@@ -3,13 +3,31 @@
 //! Starts an axum HTTP server with structured logging, database initialization,
 //! and graceful shutdown on SIGTERM/SIGINT.
 
-use annex_server::{config, init_tracing, prepare_server, StartupError};
+use annex_server::{config, init_tracing, migrate_only, prepare_server, StartupError};
 use std::net::SocketAddr;
+
+/// True when the caller asked for migrations only.
+///
+/// Checked across all arguments rather than just the first so
+/// `annex-server config.toml --migrate` works as well as
+/// `annex-server --migrate config.toml`.
+fn wants_migrate_only() -> bool {
+    has_flag("--migrate")
+}
+
+/// True when the caller asked to validate the installation and exit.
+fn wants_check_only() -> bool {
+    has_flag("--check")
+}
+
+fn has_flag(flag: &str) -> bool {
+    std::env::args().skip(1).any(|a| a == flag)
+}
 
 fn resolve_config_path() -> (Option<String>, &'static str) {
     if let Some(path) = std::env::args()
-        .nth(1)
-        .filter(|value| !value.trim().is_empty())
+        .skip(1)
+        .find(|value| !value.trim().is_empty() && !value.starts_with("--"))
     {
         return (Some(path), "cli-arg");
     }
@@ -49,7 +67,81 @@ fn run() -> Result<(), StartupError> {
         .thread_stack_size(16 * 1024 * 1024)
         .build()
         .map_err(StartupError::IoError)?
-        .block_on(run_server())
+        .block_on(async {
+            if wants_migrate_only() {
+                run_migrations_and_exit().await
+            } else if wants_check_only() {
+                run_check_and_exit().await
+            } else {
+                run_server().await
+            }
+        })
+}
+
+/// `annex-server --migrate` — apply migrations, report, exit.
+///
+/// A deployment boundary with a real success signal. The Docker entrypoint
+/// previously ran the whole server under `timeout 10` and read exit code 124
+/// as "migrations succeeded", which is elapsed time standing in for a result:
+/// the check could only fail if the server exited early, which is the one
+/// thing a healthy server does not do.
+async fn run_migrations_and_exit() -> Result<(), StartupError> {
+    let (resolved_config_path, config_source) = resolve_config_path();
+    let selected_config_path = resolved_config_path.as_deref().or(Some("config.toml"));
+    let config = config::load_config(selected_config_path)?;
+    init_tracing(&config.logging)?;
+    tracing::info!(
+        source = config_source,
+        path = selected_config_path.unwrap_or("<none>"),
+        db = %config.database.path,
+        "running migrations only"
+    );
+    let applied = migrate_only(config).await?;
+    tracing::info!(applied, "migrations finished; exiting without serving");
+    Ok(())
+}
+
+/// `annex-server --check` — validate everything startup validates, then exit 0.
+///
+/// A deployment boundary, and a release gate. Under the default posture a server
+/// refuses to start without a v2 ZK verification key and, on a production
+/// profile, without the pinned VRP alignment model — and both live in
+/// directories that are gitignored (`zk/keys/`, `assets/embedding/`), installed
+/// by separate scripts. A tarball or an image that omits either is a tarball
+/// that cannot boot, and the only way that was discoverable was to try to boot
+/// it and read the error.
+///
+/// This runs the whole of `prepare_server`, which is where every one of those
+/// checks lives — config validation, the profile gates, the signing key, the
+/// vkeys, the alignment scorer, the migrations, the Merkle root recomputation —
+/// and then drops the result instead of serving. It binds a listener, because
+/// `prepare_server` does; `ANNEX_PORT=0` gives an ephemeral one.
+///
+/// Deliberately not a separate validation path. A `--check` that ran its own
+/// subset of the checks would be a second implementation to drift from the
+/// first, and would pass while the server failed.
+async fn run_check_and_exit() -> Result<(), StartupError> {
+    let (resolved_config_path, config_source) = resolve_config_path();
+    let selected_config_path = resolved_config_path.as_deref().or(Some("config.toml"));
+    let config = config::load_config(selected_config_path)?;
+    init_tracing(&config.logging)?;
+    tracing::info!(
+        source = config_source,
+        path = selected_config_path.unwrap_or("<none>"),
+        "checking configuration and installed artifacts"
+    );
+
+    let prepared = prepare_server(config).await?;
+    let addr = prepared.listener.local_addr().ok();
+    prepared.shutdown.cancel();
+    drain_workers(prepared.workers).await;
+    drop(prepared.listener);
+
+    match addr {
+        Some(a) => tracing::info!(would_bind = %a, "configuration and artifacts are usable"),
+        None => tracing::info!("configuration and artifacts are usable"),
+    }
+    Ok(())
 }
 
 async fn run_server() -> Result<(), StartupError> {
@@ -81,20 +173,34 @@ async fn run_server() -> Result<(), StartupError> {
     }
 
     // Prepare and start the server
-    let (listener, app) = prepare_server(config).await?;
+    let prepared = prepare_server(config).await?;
+    let annex_server::PreparedServer {
+        listener,
+        router,
+        shutdown,
+        workers,
+    } = prepared;
 
     // Auto-open browser unless suppressed or running in Docker.
     // ANNEX_OPEN_BROWSER: "true" → force open, "false" → suppress, absent → auto-detect.
     maybe_open_browser(&listener);
 
     // Serve with graceful shutdown
-    axum::serve(
+    let serve_result = axum::serve(
         listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
+        router.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown_signal())
-    .await
-    .map_err(|e| {
+    .await;
+
+    // `with_graceful_shutdown` drains in-flight HTTP requests and knows
+    // nothing about the background workers, which are detached tasks. Tell
+    // them, then wait — bounded, because a worker that will not stop must not
+    // turn a SIGTERM into a SIGKILL either.
+    shutdown.cancel();
+    drain_workers(workers).await;
+
+    serve_result.map_err(|e| {
         tracing::error!("server runtime error: {}", e);
         StartupError::IoError(e)
     })?;
@@ -102,6 +208,40 @@ async fn run_server() -> Result<(), StartupError> {
     tracing::info!("annex server shut down");
 
     Ok(())
+}
+
+/// How long to wait for background workers after cancelling them.
+///
+/// Comfortably inside a container runtime's default 10s stop grace period, so
+/// the process exits on its own rather than being killed — which for the
+/// federation outbox is the difference between finishing a delivery and
+/// leaving a row marked attempted that nobody received.
+const WORKER_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+async fn drain_workers(workers: Vec<tokio::task::JoinHandle<()>>) {
+    if workers.is_empty() {
+        return;
+    }
+    let count = workers.len();
+    tracing::info!(count, "waiting for background workers to stop");
+    let all = futures_util::future::join_all(workers);
+    match tokio::time::timeout(WORKER_DRAIN_TIMEOUT, all).await {
+        Ok(results) => {
+            for r in results {
+                if let Err(e) = r {
+                    // A panic here already happened; say so rather than
+                    // letting the JoinError vanish into a discarded Result.
+                    tracing::error!(error = %e, "background worker ended abnormally");
+                }
+            }
+            tracing::info!(count, "background workers stopped");
+        }
+        Err(_) => tracing::warn!(
+            count,
+            timeout_secs = WORKER_DRAIN_TIMEOUT.as_secs(),
+            "background workers did not stop in time; exiting anyway"
+        ),
+    }
 }
 
 /// Opens the default browser to the server's address unless suppressed.

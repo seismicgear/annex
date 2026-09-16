@@ -195,6 +195,46 @@ pub fn touch_agreement(
     Ok(rows)
 }
 
+/// The instance id a signaling key belongs to, if that instance is ACTIVE and
+/// holds a live agreement with `local_server_id`.
+///
+/// This is the check the relay cannot make. Under rendezvous addressing an
+/// envelope carries no server slug — the relay is not permitted to learn which
+/// servers federate — so all the relay can enforce is "this key is on the
+/// operator's allowlist". Which peer a key IS, and whether we have agreed to
+/// talk to it, is knowable only here.
+///
+/// Returning the instance id rather than a bool is deliberate: the caller
+/// needs it to attribute inbound traffic, and a verifier that answers only
+/// yes/no invites the caller to look the peer up a second time by a different
+/// column — the "check keyed on a different identifier than the query it
+/// guards" defect this codebase has produced before.
+///
+/// `public_key` is compared case-insensitively: it is hex, and the two sides
+/// that write it (handshake ingest and operator configuration) have no shared
+/// normalisation step.
+pub fn authorized_signaling_peer(
+    conn: &Connection,
+    local_server_id: i64,
+    public_key_hex: &str,
+) -> Result<Option<i64>> {
+    let mut stmt = conn.prepare(
+        "SELECT i.id
+         FROM instances i
+         JOIN federation_agreements fa ON fa.remote_instance_id = i.id
+         WHERE fa.local_server_id = ?1
+           AND fa.active = 1
+           AND i.status = 'ACTIVE'
+           AND lower(i.public_key) = lower(?2)
+         LIMIT 1",
+    )?;
+    let mut rows = stmt.query_map(params![local_server_id, public_key_hex], |row| row.get(0))?;
+    match rows.next() {
+        Some(id) => Ok(Some(id?)),
+        None => Ok(None),
+    }
+}
+
 /// Expires agreements older than the given number of days.
 pub fn expire_stale_agreements(
     conn: &Connection,
@@ -242,6 +282,7 @@ mod tests {
             transfer_scope: VrpTransferScope::ReflectionSummariesOnly,
             alignment_score: 1.0,
             negotiation_notes: vec![],
+            scoring: None,
         }
     }
 
@@ -342,6 +383,7 @@ mod liveness_tests {
             transfer_scope: VrpTransferScope::ReflectionSummariesOnly,
             alignment_score: 1.0,
             negotiation_notes: vec![],
+            scoring: None,
         }
     }
 

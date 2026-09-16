@@ -105,6 +105,19 @@ pub enum IncomingMessage {
         channel_id: String,
         #[serde(rename = "sdp")]
         sdp: String,
+        /// The join grant `POST /api/channels/:id/voice/join` issued.
+        ///
+        /// Required to ENTER a call. Before this field the offer frame carried
+        /// nothing but a channel id and an SDP blob, so the HTTP join — which
+        /// is where server voice policy, channel type and `can_voice` are
+        /// checked, and which already minted exactly this token — could be
+        /// skipped entirely by speaking signalling directly.
+        ///
+        /// `Option` rather than required in the type so an older client gets a
+        /// message naming the problem instead of a frame that fails to parse
+        /// into any variant and is reported as an unknown command.
+        #[serde(rename = "voiceToken", default)]
+        voice_token: Option<String>,
     },
     /// The client's answer to an offer the SERVER initiated.
     ///

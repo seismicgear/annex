@@ -43,6 +43,17 @@ vi.mock('@/lib/startup-prefs', () => ({
   clearWebStartupMode: vi.fn(),
 }));
 
+vi.mock('@/stores/identity', () => ({
+  useIdentityStore: {
+    getState: () => ({
+      selectIdentity: vi.fn(async () => {}),
+      // See the sibling mock in StartupModeSelector.test.tsx: the selector
+      // re-asserts credentials after every change of server target.
+      reassertCredentials: vi.fn(async () => {}),
+    }),
+  },
+}));
+
 vi.mock('@/stores/voice', () => ({
   useVoiceStore: {
     getState: () => ({ setVoiceSessionDisabled: vi.fn() }),

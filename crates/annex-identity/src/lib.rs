@@ -87,6 +87,9 @@ pub enum IdentityError {
     /// different size — that would invalidate every previously-issued proof.
     #[error("merkle tree depth mismatch: persisted={stored}, configured={configured}")]
     MerkleTreeDepthMismatch { stored: usize, configured: usize },
+    /// No platform identity with that pseudonym on this server.
+    #[error("no such identity: {0}")]
+    IdentityNotFound(String),
     /// Database error.
     #[error("database error: {0}")]
     DatabaseError(#[from] rusqlite::Error),
@@ -110,6 +113,7 @@ impl PartialEq for IdentityError {
             (Self::DuplicateNullifier(a), Self::DuplicateNullifier(b)) => a == b,
             (Self::DuplicateCommitment(a), Self::DuplicateCommitment(b)) => a == b,
             (Self::CommitmentNotFound(a), Self::CommitmentNotFound(b)) => a == b,
+            (Self::IdentityNotFound(a), Self::IdentityNotFound(b)) => a == b,
             (
                 Self::MerkleRootMismatch {
                     stored: s1,

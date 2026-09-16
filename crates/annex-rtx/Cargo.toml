@@ -10,3 +10,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+# The relay hop chain: the origin attestation and each hop signature are made
+# over SHA-256 of a canonical payload, and `chain_digest` links one hop to the
+# next. The canonical forms belong beside the types they describe rather than in
+# the server crate, so a second implementation (or the client) can reproduce them.
+sha2 = { workspace = true }
+hex = "0.4"

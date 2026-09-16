@@ -139,6 +139,8 @@ fn build_harness(seed_original_receipt: bool) -> Harness {
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
+        shutdown: Default::default(),
+        metrics: Default::default(),
     };
 
     Harness {
@@ -418,7 +420,16 @@ async fn relay_edit_enqueues_per_event_outbox_rows() {
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
+        shutdown: Default::default(),
+        metrics: Default::default(),
     });
+
+    // Captured before `state` is consumed below. NOT `h.cipher`: the harness
+    // and this AppState derive their ciphers from different signing keys, so
+    // using the harness one decrypts nothing and the assertion below would
+    // pass for the wrong reason — it would be comparing an undecryptable
+    // ciphertext against itself.
+    let relay_cipher = state.message_cipher();
 
     // Two edits to the same message must produce two distinct outbox
     // rows (per-event keys), not collide on UNIQUE(peer, message_id).
@@ -454,7 +465,20 @@ async fn relay_edit_enqueues_per_event_outbox_rows() {
     assert!(rows[1].0.starts_with("edit:"));
     assert_ne!(rows[0].0, rows[1].0, "edit events must have distinct keys");
 
-    let parsed: FederatedEditEnvelope = serde_json::from_str(&rows[1].1).unwrap();
+    // Decrypt, as the delivery worker does.
+    //
+    // `federation_outbox.envelope_json` is stored encrypted: it carries the
+    // message body in cleartext (the relay is deliberately handed plaintext),
+    // and these rows outlive the retention sweep, which deletes from `messages`
+    // and nothing else. Reading the column raw used to work and is exactly the
+    // thing that should not.
+    let mut envelope_json = rows[1].1.clone();
+    relay_cipher.decrypt_in_place(&mut envelope_json);
+    assert_ne!(
+        envelope_json, rows[1].1,
+        "the queued envelope must be encrypted at rest"
+    );
+    let parsed: FederatedEditEnvelope = serde_json::from_str(&envelope_json).unwrap();
     assert_eq!(parsed.envelope_kind, "edit");
     assert_eq!(parsed.message_id, MESSAGE_ID);
     assert_eq!(parsed.content, "second edit");

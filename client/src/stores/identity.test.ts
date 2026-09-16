@@ -1,12 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type * as db from '@/lib/db';
+import type { IdentityInfo } from '@/types';
 
 const mockSetSessionToken = vi.fn();
 const mockSetZkProofPayload = vi.fn();
 const mockGetCurrentRoot = vi.fn(async () => ({ rootHex: 'ROOT', leafCount: 1 }));
-const mockListIdentities = vi.fn(async () => []);
-const mockGetIdentity = vi.fn(async () => null);
-const mockImportIdentity = vi.fn(async (json: string) => JSON.parse(json));
-const mockSaveIdentity = vi.fn(async () => {});
+const mockListIdentities = vi.fn<typeof db.listIdentities>(async () => []);
+const mockGetIdentity = vi.fn<typeof db.getIdentity>(async () => undefined);
+const mockImportIdentity = vi.fn<typeof db.importIdentity>(async (json: string) => JSON.parse(json));
+const mockSaveIdentity = vi.fn<typeof db.saveIdentity>(async () => {});
 
 class MockApiError extends Error {
   status: number;
@@ -17,21 +19,31 @@ class MockApiError extends Error {
   }
 }
 
+// The forwarding arrows below are load-bearing: `vi.mock` is hoisted, so a
+// factory that named these mocks directly would read them before their `const`
+// initialisers had run. Their rest parameters are typed as each mock's own
+// argument tuple because a spread of `unknown[]` has no tuple type to spread —
+// at runtime a rest parameter still collects every argument either way.
 vi.mock('@/lib/api', () => ({
   setSessionToken: (...args: unknown[]) => mockSetSessionToken(...args),
   setZkProofPayload: (...args: unknown[]) => mockSetZkProofPayload(...args),
-  getCurrentRoot: (...args: unknown[]) => mockGetCurrentRoot(...args),
+  getCurrentRoot: (...args: Parameters<typeof mockGetCurrentRoot>) => mockGetCurrentRoot(...args),
   register: vi.fn(async () => ({ leafIndex: 0, pathElements: [], pathIndexBits: [] })),
+  // The single-use authentication challenge the v2 proof is bound to. Without
+  // it in this factory the store's sign-in path throws before it reaches the
+  // proof, and the failure names a missing mock export rather than anything
+  // the test is about.
+  requestAuthChallenge: vi.fn(async () => ({ challenge: 'c'.repeat(64), expiresInSecs: 300 })),
   verifyMembership: vi.fn(async () => ({ pseudonymId: 'p1', sessionToken: 'tok1' })),
   getIdentityInfo: vi.fn(async () => ({})),
   ApiError: MockApiError,
 }));
 
 vi.mock('@/lib/db', () => ({
-  listIdentities: (...args: unknown[]) => mockListIdentities(...args),
-  getIdentity: (...args: unknown[]) => mockGetIdentity(...args),
-  saveIdentity: (...args: unknown[]) => mockSaveIdentity(...args),
-  importIdentity: (...args: unknown[]) => mockImportIdentity(...args),
+  listIdentities: (...args: Parameters<typeof mockListIdentities>) => mockListIdentities(...args),
+  getIdentity: (...args: Parameters<typeof mockGetIdentity>) => mockGetIdentity(...args),
+  saveIdentity: (...args: Parameters<typeof mockSaveIdentity>) => mockSaveIdentity(...args),
+  importIdentity: (...args: Parameters<typeof mockImportIdentity>) => mockImportIdentity(...args),
   exportIdentity: vi.fn(() => '{}'),
 }));
 
@@ -46,6 +58,7 @@ vi.mock('@/lib/zk', () => ({
     publicSignals: [],
     nullifierHex: 'n1',
     topicHashHex: 't1',
+    challengeHex: 'c'.repeat(64),
   })),
   cancelMembershipProofGeneration: vi.fn(async () => {}),
   isProofGenerationInFlight: vi.fn(() => false),
@@ -62,8 +75,8 @@ vi.mock('./voice', () => ({
     getState: () => ({
       connectedChannelId: 'ch-1',
       voiceToken: 'voice-tok-1',
-      leaveCall: (...args: unknown[]) => mockLeaveCall(...args),
-      forceReset: (...args: unknown[]) => mockForceReset(...args),
+      leaveCall: (...args: Parameters<typeof mockLeaveCall>) => mockLeaveCall(...args),
+      forceReset: (...args: Parameters<typeof mockForceReset>) => mockForceReset(...args),
     }),
   },
 }));
@@ -75,13 +88,13 @@ describe('identity store — API auth state sync', () => {
 
   it('loadIdentities sets token when ready identity has a sessionToken', async () => {
     mockListIdentities.mockResolvedValueOnce([
-      { id: '1', sk: 'abc', pseudonymId: 'p1', sessionToken: 'tok1', commitmentHex: 'c1', roleCode: 0, nodeId: 'n1', serverSlug: 's1', leafIndex: 0, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '' },
+      { id: '1', sk: 'abc', pseudonymId: 'p1', sessionToken: 'tok1', commitmentHex: 'c1', roleCode: 0, nodeId: 1, serverSlug: 's1', leafIndex: 0, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '' },
     ]);
 
     const { useIdentityStore } = await import('./identity');
     await useIdentityStore.getState().loadIdentities();
 
-    expect(mockSetSessionToken).toHaveBeenCalledWith('tok1');
+    expect(mockSetSessionToken).toHaveBeenCalledWith('tok1', expect.anything());
     expect(useIdentityStore.getState().phase).toBe('ready');
   });
 
@@ -90,13 +103,13 @@ describe('identity store — API auth state sync', () => {
     mockSetSessionToken.mockClear();
 
     mockListIdentities.mockResolvedValueOnce([
-      { id: '1', sk: 'abc', pseudonymId: 'p1', sessionToken: null, commitmentHex: 'c1', roleCode: 0, nodeId: 'n1', serverSlug: 's1', leafIndex: 0, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '' },
+      { id: '1', sk: 'abc', pseudonymId: 'p1', sessionToken: null, commitmentHex: 'c1', roleCode: 0, nodeId: 1, serverSlug: 's1', leafIndex: 0, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '' },
     ]);
 
     const { useIdentityStore } = await import('./identity');
     await useIdentityStore.getState().loadIdentities();
 
-    expect(mockSetSessionToken).toHaveBeenCalledWith(null);
+    expect(mockSetSessionToken).toHaveBeenCalledWith(null, expect.anything());
     expect(useIdentityStore.getState().phase).toBe('ready');
   });
 
@@ -105,13 +118,13 @@ describe('identity store — API auth state sync', () => {
     mockSetSessionToken.mockClear();
 
     mockListIdentities.mockResolvedValueOnce([
-      { id: '2', sk: 'def', pseudonymId: null, sessionToken: null, commitmentHex: 'c2', roleCode: 0, nodeId: 'n2', serverSlug: '', leafIndex: null, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '' },
+      { id: '2', sk: 'def', pseudonymId: null, sessionToken: null, commitmentHex: 'c2', roleCode: 0, nodeId: 2, serverSlug: '', leafIndex: null, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '' },
     ]);
 
     const { useIdentityStore } = await import('./identity');
     await useIdentityStore.getState().loadIdentities();
 
-    expect(mockSetSessionToken).toHaveBeenCalledWith(null);
+    expect(mockSetSessionToken).toHaveBeenCalledWith(null, null);
     expect(useIdentityStore.getState().phase).toBe('keys_ready');
   });
 
@@ -124,7 +137,7 @@ describe('identity store — API auth state sync', () => {
     const { useIdentityStore } = await import('./identity');
     await useIdentityStore.getState().loadIdentities();
 
-    expect(mockSetSessionToken).toHaveBeenCalledWith(null);
+    expect(mockSetSessionToken).toHaveBeenCalledWith(null, null);
     expect(useIdentityStore.getState().phase).toBe('uninitialized');
   });
 
@@ -132,13 +145,13 @@ describe('identity store — API auth state sync', () => {
     vi.resetModules();
     mockSetSessionToken.mockClear();
 
-    const identity = { id: '1', sk: 'abc', pseudonymId: 'p1', sessionToken: 'tok1', commitmentHex: 'c1', roleCode: 0, nodeId: 'n1', serverSlug: 's1', leafIndex: 0, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '' };
+    const identity = { id: '1', sk: 'abc', pseudonymId: 'p1', sessionToken: 'tok1', commitmentHex: 'c1', roleCode: 0, nodeId: 1, serverSlug: 's1', leafIndex: 0, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '' };
     mockGetIdentity.mockResolvedValueOnce(identity);
 
     const { useIdentityStore } = await import('./identity');
     await useIdentityStore.getState().selectIdentity('1');
 
-    expect(mockSetSessionToken).toHaveBeenCalledWith('tok1');
+    expect(mockSetSessionToken).toHaveBeenCalledWith('tok1', expect.anything());
     expect(useIdentityStore.getState().phase).toBe('ready');
   });
 
@@ -146,13 +159,13 @@ describe('identity store — API auth state sync', () => {
     vi.resetModules();
     mockSetSessionToken.mockClear();
 
-    const identity = { id: '1', sk: 'abc', pseudonymId: 'p1', sessionToken: null, commitmentHex: 'c1', roleCode: 0, nodeId: 'n1', serverSlug: 's1', leafIndex: 0, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '' };
+    const identity = { id: '1', sk: 'abc', pseudonymId: 'p1', sessionToken: null, commitmentHex: 'c1', roleCode: 0, nodeId: 1, serverSlug: 's1', leafIndex: 0, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '' };
     mockGetIdentity.mockResolvedValueOnce(identity);
 
     const { useIdentityStore } = await import('./identity');
     await useIdentityStore.getState().selectIdentity('1');
 
-    expect(mockSetSessionToken).toHaveBeenCalledWith(null);
+    expect(mockSetSessionToken).toHaveBeenCalledWith(null, expect.anything());
     expect(useIdentityStore.getState().phase).toBe('ready');
   });
 
@@ -160,13 +173,13 @@ describe('identity store — API auth state sync', () => {
     vi.resetModules();
     mockSetSessionToken.mockClear();
 
-    const identity = { id: '2', sk: 'def', pseudonymId: null, sessionToken: null, commitmentHex: 'c2', roleCode: 0, nodeId: 'n2', serverSlug: '', leafIndex: null, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '' };
+    const identity = { id: '2', sk: 'def', pseudonymId: null, sessionToken: null, commitmentHex: 'c2', roleCode: 0, nodeId: 2, serverSlug: '', leafIndex: null, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '' };
     mockGetIdentity.mockResolvedValueOnce(identity);
 
     const { useIdentityStore } = await import('./identity');
     await useIdentityStore.getState().selectIdentity('2');
 
-    expect(mockSetSessionToken).toHaveBeenCalledWith(null);
+    expect(mockSetSessionToken).toHaveBeenCalledWith(null, null);
     expect(useIdentityStore.getState().phase).toBe('keys_ready');
   });
 
@@ -177,7 +190,7 @@ describe('identity store — API auth state sync', () => {
     const { useIdentityStore } = await import('./identity');
     useIdentityStore.getState().logout();
 
-    expect(mockSetSessionToken).toHaveBeenCalledWith(null);
+    expect(mockSetSessionToken).toHaveBeenCalledWith(null, null);
     expect(useIdentityStore.getState().phase).toBe('uninitialized');
   });
 
@@ -191,7 +204,7 @@ describe('identity store — API auth state sync', () => {
 
     // Set up an identity with a pseudonymId (simulating an active session)
     useIdentityStore.setState({
-      identity: { id: '1', sk: 'abc', pseudonymId: 'p1', sessionToken: 'tok1', commitmentHex: 'c1', roleCode: 0, nodeId: 'n1', serverSlug: 's1', leafIndex: 0, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '' } as Record<string, unknown>,
+      identity: { id: '1', sk: 'abc', pseudonymId: 'p1', sessionToken: 'tok1', commitmentHex: 'c1', roleCode: 0, nodeId: 1, serverSlug: 's1', leafIndex: 0, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '' },
       phase: 'ready',
     });
 
@@ -200,7 +213,7 @@ describe('identity store — API auth state sync', () => {
     // Voice teardown should happen before token is cleared
     expect(mockLeaveCall).toHaveBeenCalledWith('p1');
     expect(mockForceReset).toHaveBeenCalled();
-    expect(mockSetSessionToken).toHaveBeenCalledWith(null);
+    expect(mockSetSessionToken).toHaveBeenCalledWith(null, null);
     expect(useIdentityStore.getState().phase).toBe('uninitialized');
   });
 
@@ -209,13 +222,13 @@ describe('identity store — API auth state sync', () => {
     mockSetSessionToken.mockClear();
     mockListIdentities.mockResolvedValueOnce([]);
 
-    const imported = { id: '3', sk: 'ghi', pseudonymId: 'p3', sessionToken: 'tok3', commitmentHex: 'c3', roleCode: 0, nodeId: 'n3', serverSlug: 's3', leafIndex: 0, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '' };
+    const imported = { id: '3', sk: 'ghi', pseudonymId: 'p3', sessionToken: 'tok3', commitmentHex: 'c3', roleCode: 0, nodeId: 3, serverSlug: 's3', leafIndex: 0, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '' };
     mockImportIdentity.mockResolvedValueOnce(imported);
 
     const { useIdentityStore } = await import('./identity');
     await useIdentityStore.getState().importBackup(JSON.stringify(imported));
 
-    expect(mockSetSessionToken).toHaveBeenCalledWith('tok3');
+    expect(mockSetSessionToken).toHaveBeenCalledWith('tok3', expect.anything());
   });
 
   it('importBackup clears token for keys_ready identity', async () => {
@@ -223,13 +236,13 @@ describe('identity store — API auth state sync', () => {
     mockSetSessionToken.mockClear();
     mockListIdentities.mockResolvedValueOnce([]);
 
-    const imported = { id: '4', sk: 'jkl', pseudonymId: null, sessionToken: null, commitmentHex: 'c4', roleCode: 0, nodeId: 'n4', serverSlug: '', leafIndex: null, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '' };
+    const imported = { id: '4', sk: 'jkl', pseudonymId: null, sessionToken: null, commitmentHex: 'c4', roleCode: 0, nodeId: 4, serverSlug: '', leafIndex: null, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '' };
     mockImportIdentity.mockResolvedValueOnce(imported);
 
     const { useIdentityStore } = await import('./identity');
     await useIdentityStore.getState().importBackup(JSON.stringify(imported));
 
-    expect(mockSetSessionToken).toHaveBeenCalledWith(null);
+    expect(mockSetSessionToken).toHaveBeenCalledWith(null, null);
   });
 
   it('loadIdentities selects the most recently used ready identity', async () => {
@@ -237,8 +250,8 @@ describe('identity store — API auth state sync', () => {
     mockSetSessionToken.mockClear();
 
     mockListIdentities.mockResolvedValueOnce([
-      { id: '1', sk: 'a', pseudonymId: 'p1', sessionToken: 'tok1', commitmentHex: 'c1', roleCode: 0, nodeId: 'n1', serverSlug: 's1', leafIndex: 0, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '2024-01-01', lastUsedAt: '2024-01-01' },
-      { id: '2', sk: 'b', pseudonymId: 'p2', sessionToken: 'tok2', commitmentHex: 'c2', roleCode: 0, nodeId: 'n2', serverSlug: 's2', leafIndex: 0, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '2024-01-02', lastUsedAt: '2024-06-01' },
+      { id: '1', sk: 'a', pseudonymId: 'p1', sessionToken: 'tok1', commitmentHex: 'c1', roleCode: 0, nodeId: 1, serverSlug: 's1', leafIndex: 0, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '2024-01-01', lastUsedAt: '2024-01-01' },
+      { id: '2', sk: 'b', pseudonymId: 'p2', sessionToken: 'tok2', commitmentHex: 'c2', roleCode: 0, nodeId: 2, serverSlug: 's2', leafIndex: 0, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '2024-01-02', lastUsedAt: '2024-06-01' },
     ]);
 
     const { useIdentityStore } = await import('./identity');
@@ -246,21 +259,21 @@ describe('identity store — API auth state sync', () => {
 
     // Should select the identity with the most recent lastUsedAt
     expect(useIdentityStore.getState().identity?.id).toBe('2');
-    expect(mockSetSessionToken).toHaveBeenCalledWith('tok2');
+    expect(mockSetSessionToken).toHaveBeenCalledWith('tok2', expect.anything());
   });
 
   it('selectIdentity clears permissions from previous identity', async () => {
     vi.resetModules();
     mockSetSessionToken.mockClear();
 
-    const identity = { id: '1', sk: 'abc', pseudonymId: 'p1', sessionToken: 'tok1', commitmentHex: 'c1', roleCode: 0, nodeId: 'n1', serverSlug: 's1', leafIndex: 0, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '' };
+    const identity = { id: '1', sk: 'abc', pseudonymId: 'p1', sessionToken: 'tok1', commitmentHex: 'c1', roleCode: 0, nodeId: 1, serverSlug: 's1', leafIndex: 0, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '' };
     mockGetIdentity.mockResolvedValueOnce(identity);
 
     const { useIdentityStore } = await import('./identity');
 
     // Pre-set permissions from a previous server
     useIdentityStore.setState({
-      permissions: { pseudonymId: 'old-p', participantType: 'HUMAN', active: true, capabilities: { can_voice: true, can_moderate: true, can_invite: true, can_federate: false, can_bridge: false } } as Record<string, unknown>,
+      permissions: { pseudonymId: 'old-p', participantType: 'HUMAN', active: true, capabilities: { can_voice: true, can_moderate: true, can_invite: true, can_federate: false, can_bridge: false } },
       permissionsStatus: 'ready',
       permissionsPseudonymId: 'old-p',
     });
@@ -282,8 +295,8 @@ describe('identity store — API auth state sync', () => {
 
     // Simulate: permissions from server A (pseudonym 'p-old'), now on server B (pseudonym 'p-new')
     useIdentityStore.setState({
-      identity: { id: '1', sk: 'abc', pseudonymId: 'p-new', sessionToken: 'tok', commitmentHex: 'c1', roleCode: 0, nodeId: 'n1', serverSlug: 's2', leafIndex: 0, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '' } as Record<string, unknown>,
-      permissions: { pseudonymId: 'p-old', capabilities: { can_voice: true, can_moderate: true } } as Record<string, unknown>,
+      identity: { id: '1', sk: 'abc', pseudonymId: 'p-new', sessionToken: 'tok', commitmentHex: 'c1', roleCode: 0, nodeId: 1, serverSlug: 's2', leafIndex: 0, zkProofPayload: JSON.stringify({ root_hex: 'ROOT' }), createdAt: '' },
+      permissions: { pseudonymId: 'p-old', capabilities: { can_voice: true, can_moderate: true } } as unknown as IdentityInfo,
       permissionsStatus: 'ready',
       permissionsPseudonymId: 'p-old',
     });
@@ -317,7 +330,7 @@ describe('identity store — a corrupt cached proof must not open the door', () 
 
   const base = {
     id: '1', sk: 'abc', pseudonymId: 'p1', sessionToken: 'tok1', commitmentHex: 'c1',
-    roleCode: 0, nodeId: 'n1', serverSlug: 's1', leafIndex: 0, createdAt: '',
+    roleCode: 0, nodeId: 1, serverSlug: 's1', leafIndex: 0, createdAt: '',
   };
 
   it('loadIdentities re-proves when the cached proof is not JSON', async () => {
@@ -442,7 +455,7 @@ describe('identity store — proof timeout message', () => {
         sk: 'ff',
         commitmentHex: 'c1',
         roleCode: 0,
-        nodeId: 'n1',
+        nodeId: 1,
         serverSlug: null,
         leafIndex: null,
         pseudonymId: null,

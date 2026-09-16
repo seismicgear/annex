@@ -268,10 +268,24 @@ fn contract_ws_voice_offer_fixture_deserializes() {
     let frame: IncomingMessage = serde_json::from_str(FX_WS_VOICE_OFFER)
         .expect("voice-offer.json must deserialize into IncomingMessage::WebRtcOffer");
     match frame {
-        IncomingMessage::WebRtcOffer { channel_id, sdp } => {
+        IncomingMessage::WebRtcOffer {
+            channel_id,
+            sdp,
+            voice_token,
+        } => {
             assert_eq!(channel_id, "voice-1");
             assert!(sdp.starts_with("v=0"));
             assert!(sdp.contains("m=audio"));
+            // The join grant the server requires to ENTER a call. Asserted
+            // here because the fixture is the shared description of this
+            // frame: a client that stops sending it produces an offer the
+            // server refuses, and the failure would otherwise surface as a
+            // voice call that silently never connects.
+            assert!(
+                voice_token.is_some(),
+                "the offer fixture must carry a voiceToken — it is what stops the \
+                 signalling path being a way around POST /voice/join"
+            );
         }
         other => panic!("expected IncomingMessage::WebRtcOffer, got {other:?}"),
     }

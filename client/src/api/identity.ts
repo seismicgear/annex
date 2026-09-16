@@ -38,13 +38,32 @@ export async function redeemInvite(
   return resp.json();
 }
 
+/**
+ * Ask the server for a single-use authentication challenge.
+ *
+ * Must be called BEFORE generating a v2 membership proof: the challenge is a
+ * public input to the circuit, so it has to be in hand when the witness is
+ * computed. Calling it afterwards would mean proving against a value the
+ * server has not issued, which fails verification — which is exactly the
+ * property that makes a captured proof unreplayable.
+ */
+export async function requestAuthChallenge(
+  commitment: string,
+  topic: string,
+): Promise<{ challenge: string; expiresInSecs: number }> {
+  return request<{ challenge: string; expiresInSecs: number }>('/api/zk/challenge', {
+    method: 'POST',
+    body: JSON.stringify({ commitment, topic }),
+  });
+}
+
 export async function verifyMembership(
   root: string,
   commitment: string,
   topic: string,
   proof: unknown,
   publicSignals: string[],
-  v2?: { nullifierHex: string; topicHashHex: string },
+  v2?: { nullifierHex: string; topicHashHex: string; challengeHex: string },
 ): Promise<VerifyMembershipResponse> {
   const body: Record<string, unknown> = { root, commitment, topic, proof, publicSignals };
   if (v2) {
@@ -53,11 +72,41 @@ export async function verifyMembership(
     body.protocolVersion = 'v2';
     body.nullifierHex = v2.nullifierHex;
     body.topicHashHex = v2.topicHashHex;
+    // publicSignals[4]. The server spends this challenge in the same
+    // transaction that mints the session, so a second presentation of the
+    // same proof finds it already consumed.
+    body.challengeHex = v2.challengeHex;
   }
   return request<VerifyMembershipResponse>('/api/zk/verify-membership', {
     method: 'POST',
     body: JSON.stringify(body),
   });
+}
+
+/**
+ * Fetch the Merkle path for a commitment that is already enrolled.
+ *
+ * This is the re-authentication half of what `register` does, and it is a
+ * separate call because the two are separate decisions. `register` answers
+ * "may this stranger join" — invite code, server password, member cap, invite
+ * seat — and only then hands back a path. An enrolled member asking to
+ * re-prove is not a stranger, and routing them through those questions locked
+ * them out whenever an answer happened to be no: the server filled up, their
+ * invite ran out of uses, the operator switched to invite_only. None of it was
+ * about them.
+ *
+ * The server refuses the admission checks for an enrolled commitment now, so
+ * `register` would work here too — but sending an invite code and a password
+ * that mean nothing, on a request that is not a registration, is the kind of
+ * thing that gets re-coupled by the next person to read it.
+ */
+export async function getMerklePath(commitmentHex: string): Promise<{
+  leafIndex: number;
+  rootHex: string;
+  pathElements: string[];
+  pathIndexBits: number[];
+}> {
+  return request(`/api/registry/path/${encodeURIComponent(commitmentHex)}`);
 }
 
 /** The server's currently-active Merkle root (for proof-freshness checks). */

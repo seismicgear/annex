@@ -20,6 +20,10 @@ const mockSearchMessages = vi.fn();
 vi.mock('@/lib/api', () => ({
   searchMessages: (...args: unknown[]) => mockSearchMessages(...args),
   resolveUrl: (u: string) => u,
+  // MessageBubble subscribes to the attachment grant, so any mock of
+  // `@/lib/api` that a message component renders through needs these.
+  subscribeUploadGrant: () => () => {},
+  getUploadGrantVersion: () => 0,
 }));
 
 const HIT = {

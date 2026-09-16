@@ -13,13 +13,31 @@
  * raises neither, whichever camera is missing.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { WebRtcSession } from './webrtc';
+import { WebRtcSession, type SignalingCallbacks } from './webrtc';
 
 const getUserMedia = vi.fn();
 const original = globalThis.navigator?.mediaDevices;
 
 function fakeTrack(kind: 'audio' | 'video') {
   return { kind, stop: vi.fn(), enabled: true } as unknown as MediaStreamTrack;
+}
+
+/**
+ * A session built with the four arguments `WebRtcSession` actually takes.
+ *
+ * These call sites used to read `new WebRtcSession({ url, token } as never)` —
+ * a LiveKit room-options bag left over from before the native SFU, cast to
+ * `never`, which is what let three missing arguments go unnoticed. Nothing in
+ * these tests reaches signalling: the mic and camera paths touch only `pc` and
+ * `navigator.mediaDevices`.
+ */
+function newSession(): WebRtcSession {
+  const signaling: SignalingCallbacks = {
+    sendOffer: vi.fn(),
+    sendAnswer: vi.fn(),
+    sendIceCandidate: vi.fn(),
+  };
+  return new WebRtcSession([], 'chan-1', 'p1', signaling);
 }
 
 /** A peer connection stub with only what `setCameraEnabled` touches. */
@@ -54,7 +72,7 @@ afterEach(() => {
 
 describe('saved device selection', () => {
   it('asks for the saved microphone exactly, so a missing one is an error not a substitution', async () => {
-    const s = new WebRtcSession({ url: 'ws://x', token: 't' } as never);
+    const s = newSession();
     attachFakePc(s);
     await s.setMicrophoneEnabled(true, { deviceId: 'mic-7' });
 
@@ -63,7 +81,7 @@ describe('saved device selection', () => {
   });
 
   it('asks for the saved camera exactly, which is what makes the recovery prompt reachable', async () => {
-    const s = new WebRtcSession({ url: 'ws://x', token: 't' } as never);
+    const s = newSession();
     attachFakePc(s);
     await s.setCameraEnabled(true, { deviceId: 'cam-3' });
 
@@ -72,7 +90,7 @@ describe('saved device selection', () => {
   });
 
   it('sends no deviceId at all when nothing is saved', async () => {
-    const s = new WebRtcSession({ url: 'ws://x', token: 't' } as never);
+    const s = newSession();
     attachFakePc(s);
     await s.setMicrophoneEnabled(true);
 

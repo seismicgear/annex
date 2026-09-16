@@ -32,6 +32,76 @@ function readAllSources(dir: string): { file: string; text: string }[] {
 }
 
 test.describe('surface manifest', () => {
+  /**
+   * Writes never go into the fixture channel.
+   *
+   * `SEED.defaultChannel` is a fixture: the seeder fills it once and every
+   * surface that photographs a conversation reads it. A surface that also
+   * WRITES to it turns that fixture into a running total — the channel gains
+   * a message per surface per viewport, and every picture containing the
+   * column becomes a function of manifest order rather than of the code.
+   *
+   * That is not a hypothetical cost. One genuine failure at
+   * `message-edit-refused @ mobile`, retried once under CI, put a second copy
+   * of its message into the default channel and took 52 further surfaces down
+   * with it — 53 failures and 106 ledger findings from one defect, with the
+   * pixel magnitudes of the cascade saying nothing about the cause.
+   *
+   * Source-scanning rather than behavioural, for the reason
+   * `annex-server/tests/write_transactions_are_immediate.rs` gives: the defect
+   * is an interaction between surfaces, so a behavioural test for it is either
+   * the whole 17-minute run or nothing.
+   */
+  test('no surface writes into the fixture channel', () => {
+    // `process.cwd()` rather than `__dirname`: this file is ESM, where
+    // `__dirname` does not exist, and Playwright runs with the cwd set to
+    // `client/`. `SRC` above resolves the same way for the same reason.
+    const src = readFileSync(path.join(process.cwd(), 'e2e', 'audit', 'surfaces.ts'), 'utf8');
+    // Split on the two-space object opener the manifest is formatted with, so
+    // each chunk is one surface and an id can be attributed to the write.
+    const chunks = src.split(/\n {2}\{\n/);
+    const offenders: string[] = [];
+    for (const chunk of chunks) {
+      const id = /id: '([^']+)'/.exec(chunk)?.[1];
+      if (!id) continue;
+      const writes = /postFreshMessage\(|stageAttachment\(/.test(chunk);
+      const usesDefault = /selectChannel\(page, SEED\.defaultChannel\)/.test(chunk);
+      if (writes && usesDefault) offenders.push(id);
+    }
+    expect(
+      offenders,
+      'these surfaces post during capture while the default channel is selected — post into ' +
+        'SEED.channels.scratch instead, or the picture of every later surface depends on this one',
+    ).toEqual([]);
+  });
+
+  /**
+   * A picture of the message column has to be a picture of a fixture.
+   *
+   * `.chat-area` contains `.message-view`, which auto-scrolls to the newest
+   * message. Clipping to it is only safe when the channel underneath is not
+   * being written to — so a surface either masks the column out, or is on the
+   * short list below that deliberately photographs the seeded conversation.
+   */
+  test('surfaces clipped to .chat-area do not photograph a mutable column', () => {
+    // Both of these are ABOUT the seeded conversation, and both read the
+    // default channel, which nothing writes to during capture.
+    const PHOTOGRAPHS_THE_FIXTURE_COLUMN = new Set([
+      'message-list-populated',
+      'message-send-failed',
+    ]);
+    const offenders = SURFACES.filter(
+      (s) =>
+        s.clip === '.chat-area' &&
+        !PHOTOGRAPHS_THE_FIXTURE_COLUMN.has(s.id) &&
+        !(s.mask ?? []).includes('.message-view'),
+    ).map((s) => s.id);
+    expect(
+      offenders,
+      'clip narrowly to the element under test, or add \'.message-view\' to mask',
+    ).toEqual([]);
+  });
+
   test('surface ids are unique', () => {
     const seen = new Map<string, number>();
     for (const s of SURFACES) seen.set(s.id, (seen.get(s.id) ?? 0) + 1);

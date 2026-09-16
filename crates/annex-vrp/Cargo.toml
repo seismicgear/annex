@@ -13,6 +13,17 @@ hex = "0.4"
 rusqlite = { workspace = true }
 annex-db = { workspace = true }
 serde_json = { workspace = true }
+# The canonical WordPiece/BertNormalizer implementation, reading the model's
+# own tokenizer.json. `default-features = false` drops the `onig` (C) and
+# `esaxx_fast` (C++) backends and the progress bar. It does NOT drop the need
+# for a regex engine: the crate requires one of `onig` or `fancy-regex` and
+# emits its own `compile_error!` with neither (utils/mod.rs:14), so the
+# pure-Rust `fancy-regex` is named explicitly. Dropping defaults without it
+# does not merely lose a feature — the crate refuses to build. Reimplementing WordPiece would be ~120 lines and a standing
+# invitation to the defect this repo has already paid for once: two
+# self-consistent implementations of one contract, silently disagreeing.
+tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"] }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+tempfile = { workspace = true }

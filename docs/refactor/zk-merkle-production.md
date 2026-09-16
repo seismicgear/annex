@@ -47,7 +47,47 @@ The reader is assumed to know that production-grade requires:
 ### Merkle storage (`crates/annex-identity/src/merkle.rs`, table `identities`)
 
 - Append-only Poseidon Merkle tree. Leaves are identity commitments stored in the `identities` SQL table (migrations 001+).
-- On boot, the tree is rebuilt from `identities` and the recomputed root is compared against a persisted root; mismatch raises `MerkleRootMismatch` (search `merkle.rs` for the variant; it is raised from two sites) and panics. This is the only "tamper detection" today.
+- **Stale as written; corrected here.** The tree is no longer rebuilt from
+  leaves on every boot, and it has not been for some time. `MerkleTree::restore`
+  takes a fast path from persisted metadata plus the sparse `vrp_merkle_nodes`
+  table, and falls back to `rebuild_from_leaves` only for a fresh or legacy
+  database that has no persisted node state. Nodes are held in a sparse
+  `HashMap<(level, index), Fr>`, so depth 20 (1,048,576 leaves) does not imply
+  a million-node walk per start.
+- A root mismatch raises `MerkleRootMismatch` rather than silently continuing.
+  **What that check covers is narrower than it sounds**, and the gap is worth
+  stating rather than leaving for someone to discover: the fast restore path
+  compares the loaded top-level root against the root in the metadata row. It
+  does not recompute the interior from the leaves. A corrupted node at a lower
+  level, with both of those two values left intact, is therefore not detected
+  by this path. Proofs generated against it would fail verification — which is
+  a symptom, not a diagnosis, and it arrives at the user rather than at the
+  operator.
+- **Detection now exists, and its scope is narrower than "detects a corrupted
+  tree" — say the narrow thing.** `get_proof` recomputes the root from the leaf
+  and the path it is about to return, and refuses to hand out a path that does
+  not reach the tree's root (`IdentityError::MerkleRootMismatch`). Twenty
+  Poseidon hashes per proof, and it covers every path anyone actually relies on
+  rather than only the state at boot.
+
+  What it catches is a corrupted value that a proof DEPENDS on — i.e. a damaged
+  sibling. A proof recomputes the nodes on its own path and reads only the
+  siblings, so damage to a node that a given leaf rebuilds anyway does not
+  affect that leaf's proof, and should not: the proof is still correct. In a
+  depth-5 tree with node (1,0) damaged, leaves 0 and 1 still verify (they
+  rebuild it), leaves 2 and 3 are refused (it is their level-1 sibling), and
+  leaves 4-7 are unaffected. All four cases are pinned in
+  `crates/annex-identity/tests/merkle_interior_corruption.rs`, including the
+  assertion that `restore` still ACCEPTS that database — which is what makes
+  the separate check necessary.
+
+  REPAIR is still manual: `MerkleTree::audit_against_leaves` and
+  `repair_persisted_nodes` exist and are not wired to anything automatic.
+- Still NOT established, and not claimed: a measured operating envelope at
+  large registries — registration and proof latency, memory, lock contention
+  and cold-start time at 100k leaves and near the depth-20 capacity of
+  1,048,576. `crates/annex-identity/tests/perf_merkle.rs` exists but is not
+  that measurement.
 - Roots are formatted by encoding the Fr field element as big-endian bytes via `into_bigint().to_bytes_be()` then `hex::encode(...)` — lowercase, no `0x`, fixed width.
 - The current root is exposed at `GET /api/registry/current-root` (handler `crates/annex-server/src/api.rs::get_current_root_handler`; route registered in `crates/annex-server/src/routes/mod.rs`). Earlier revisions of this doc gave the path as `/api/registry/root` and put the registration in `lib.rs` — neither is correct, and a client built from that path gets a 404.
 - Path lookup for clients uses `annex_identity::registry::get_path_for_commitment`.
@@ -63,9 +103,11 @@ The reader is assumed to know that production-grade requires:
 - ~~**No epoch model.**~~ **IMPLEMENTED in migration `034_merkle_nodes.sql`.** `vrp_merkle_meta`, `vrp_merkle_nodes`, and `vrp_root_epochs` are now live; `annex_identity::merkle::is_root_acceptable` accepts the active root plus retired roots inside the grace window (`ROOT_EPOCH_GRACE_SECONDS`). Middleware and `verify_membership` both call `is_root_acceptable` instead of strict-equality comparison.
 - **Nullifier scoping is per-topic only.** There is no per-epoch or per-server-slug nullifier prefix. Two servers that happen to import the same identity registry would collide on nullifier rows.
 - **Root canonical form is implicit.** The middleware compares `current_root` (a hex string from `tree.root_hex()`) against `payload.root_hex` (a hex string from the client). Both happen to use lowercase no-prefix; a client serializing differently would silently fail. There is no normalisation layer.
-- **Trusted setup is not auditable.** Single-machine ceremony, ephemeral entropy, no public contribution log. Acceptable for staging; insufficient for a public release that claims production-grade ZK.
-- **Vkey provenance is not enforced AT RUNTIME.** Build-time verification now exists (see "Implemented: dev / production artifact split" below) but the server does not yet recompute and assert the vkey hash on startup. A swap between build and install is still undetected by the running process.
-- **CI workflow `.github/workflows/release-desktop.yml`** uses `|| true` after the ZK setup step on Windows/macOS to avoid failing the build when the snarkjs ceremony hits transient errors. That fallback can produce a `membership_vkey.json` that is the literal `'{}'` placeholder. A release artifact built from that tree ships an empty vkey. **Mitigation**: set `ANNEX_BUILD_PROFILE=production` in that workflow so `build-desktop.js` calls `verify-artifacts.js`, which refuses an empty / mismatched vkey. This is a one-line follow-up; until it lands, the `|| true` is the remaining hole.
+- ~~**Trusted setup is not auditable.**~~ **Addressed, honestly and partially.** `zk/scripts/ceremony.js` runs the standard construction — phase 1, then a phase-2 contribution per circuit — and finalises with a **drand round whose number is committed to before that round exists**, together with the hashes of the pre-beacon artifacts. Nobody, including whoever ran it, could know the beacon while choosing a contribution, so nobody could steer the result. Every contribution hash goes into `zk/artifacts/ceremony/transcript.json`, and `snarkjs zkey verify` is run over the whole chain and recorded.
+
+  It is still a **single-operator** ceremony and the manifests say exactly that: `ceremony.type` is `single-contributor-beacon`, never `mpc`. What it does not provide is independent participants. Two things make that upgrade cheap and neither changes anything downstream: `ceremony.js --contributors N` records each round in the transcript, and `--ptau <file> --ptau-sha256 <hex>` adopts a real perpetual Powers of Tau — hash-checked, then `powersoftau verify`-ed — in place of the locally generated phase 1. The local phase 1 exists because the public ptau hosts are unreachable from the build environment, not because a local one is preferable.
+- **Vkey provenance is not enforced AT RUNTIME.** Build-time verification exists and is now two-layered — `verify-artifacts.js --all` hashes every pinned artifact and `verify-ceremony.js` proves a ceremony produced them — and `install-ceremony.js` re-hashes each copy it places into `zk/keys`, so what is bundled is provably what was verified. The server still does not recompute the vkey hash against the manifest at startup, so a swap between install and launch remains undetected by the running process. That is the next step and it is small: the manifest ships beside the vkey in `bundle.resources`.
+- ~~**CI workflow `.github/workflows/release-desktop.yml`** uses `|| true` after the ZK setup step.~~ **Resolved, and the description outlived the code.** There is no `|| true` in that workflow; it sets `ANNEX_BUILD_PROFILE=production` and runs `verify-artifacts.js --all` plus `verify-ceremony.js` on all three platforms. A different hole was live in its place: the workflow ran `verify-artifacts.js` with no `--manifest`, which defaults to `membership` alone — so five circuits of six, including the DEFAULT identity path `membership_v2`, were gated by nothing. `scripts/verify-production-rejects-dev-fixtures.sh` now asserts the `--all`.
 
 ---
 
@@ -165,9 +207,20 @@ moves forward.
   `r1cs`, plus circuit metadata (`circuit`, `circuitVersion`, `curve`,
   `provingSystem`, `treeDepth`, `publicSignals`). The
   `ceremony.type` field labels how the pinned artifacts were produced.
-  Today every shipped manifest carries `ceremony.type: "dev-fixture"`;
-  flipping that to `"ceremony-vN"` is the documentation event that
-  accompanies a real ceremony.
+
+  **This paragraph used to say every shipped manifest carried
+  `ceremony.type: "dev-fixture"`. That is no longer true and had not been
+  true since the ceremony was run.** Every manifest now carries
+  `"multi-contributor-beacon"`, with a `transcript` pointer, the drand round
+  its phase-2 beacon came from, and a `note` stating plainly that this is NOT
+  a multi-party ceremony with independent participants.
+
+  Two statements that must not drift apart again: the artifacts descend from a
+  recorded, verifiable trusted setup whose beacon is authenticated against the
+  League of Entropy chain (`verify-ceremony.js` checks the BLS signature, and
+  that the commitment predates the beacon round); and the contributions are all
+  local to one operator. More local contributions are not independence. The
+  ROADMAP entry stays `PARTIAL` for exactly that reason.
 - `zk/scripts/verify-artifacts.js` — side-effect-free verifier. Reads a
   manifest (default `zk/artifacts/membership/manifest.json`), computes
   SHA-256 of each referenced file, exits 0 only if every required artifact
@@ -331,7 +384,8 @@ commitment alone is not enough.
 
 ### Server config + dispatch
 
-- `Config::security.enabled_zk_versions: Vec<String>` (default `["v1"]`).
+- `Config::security.enabled_zk_versions: Vec<String>` (default `["v2"]` — this
+  said `["v1"]`, which was the default when v2 was a plan).
   Recognised values: `"v1"`, `"v2"`. Anything else fails startup with
   `StartupError::UnknownZkVersion`.
 - `AppState::membership_vkey_v2: Option<Arc<VerifyingKey<Bn254>>>`.
@@ -339,6 +393,15 @@ commitment alone is not enough.
   `ANNEX_ZK_KEY_PATH_V2`, otherwise `zk/keys/membership_v2_vkey.json`.
   Same enforcement as v1: with `enforce_zk_proofs = true`, missing or
   invalid v2 vkey is `StartupError::MissingVerificationKey`.
+- `VerifyMembershipRequest.challengeHex` — required for a v2 proof. The
+  challenge is issued by `POST /api/zk/challenge` (migration
+  `045_zk_auth_challenges`, `CHALLENGE_TTL_SECS = 300`,
+  `MAX_OUTSTANDING_PER_COMMITMENT = 8`), cross-checked against
+  `publicSignals[4]` before `verify_proof` runs, and CONSUMED inside the same
+  `BEGIN IMMEDIATE` transaction that mints the session token — ahead of the
+  nullifier branch, because that branch treats a repeat nullifier as
+  re-authentication and is what made a captured body replayable. See invariant
+  I-ZK-5.
 - `VerifyMembershipRequest` adds three optional fields:
     - `protocolVersion: Option<String>` — `None` or `"v1"` selects the
       legacy verifier; `"v2"` selects the secret-derived-nullifier
@@ -353,7 +416,8 @@ commitment alone is not enough.
     1. Resolves `protocolVersion` first, before any DB or proof work,
        so an unknown version is `400 Bad Request` regardless of state.
     2. Selects the right vkey + expected `publicSignals.len()` (2 for
-       v1, 4 for v2).
+       v1, **5** for v2 — `[root, commitment, nullifier, topicHash,
+       challenge]`; this said 4, from before the challenge landed).
     3. Verifies the proof against the version-matched vkey. A v2 proof
        against the v1 vkey (or vice-versa) is rejected as a
        verification failure — the vkey size encodes the public-input
@@ -366,7 +430,7 @@ commitment alone is not enough.
        `derive_nullifier_hex(commitment, topic)` is never called for
        a v2 proof.
 - `crates/annex-server/tests/zk_startup.rs` adds four v2-specific tests:
-  default `enabled_zk_versions == ["v1"]`; unknown version is a
+  default `enabled_zk_versions == ["v2"]`; unknown version is a
   startup error; v2 enabled with v2 vkey present boots cleanly; v2
   enabled with v2 vkey missing under enforcement is
   `StartupError::MissingVerificationKey`.
@@ -379,10 +443,11 @@ commitment alone is not enough.
 
 - v1 keys, vkey, circuit, and on-the-wire shape are **untouched**. The
   only behavioural change for v1 clients on v1-only servers is: none.
-- v2 is opt-in per server (`enabled_zk_versions` must include `"v2"`)
-  AND opt-in per request (`protocolVersion: "v2"`). A server that
-  enables both still rejects v1 payloads against the v2 vkey and
-  vice versa.
+- v2 is the DEFAULT per server and a production profile REFUSES `"v1"`
+  (`config.rs::validate_zk_protocol_versions_for_build_profile`). It remains
+  selected per request by `protocolVersion`, and a server that enables both
+  still rejects v1 payloads against the v2 vkey and vice versa. "Opt-in"
+  described the migration's first week.
 - v1 nullifiers in `zk_nullifiers` and v2 nullifiers in the same table
   are different 64-char hex strings; rows do not collide.
 - v1 cannot be removed until every client has been updated. Both
@@ -409,15 +474,18 @@ are tracked here:
 - **v1 retirement**. Once every shipped client has switched to v2 and
   every active VRP nullifier is v2-derived, drop v1 from
   `enabled_zk_versions`, then remove the v1 wasm/zkey bundle and the
-  v1 verification path. No active deployment is at this stage yet.
+  v1 verification path. **This has begun**: the shipped client produces v2
+  proofs only, the default excludes v1, and a production profile refuses it.
+  What remains is deleting the v1 code path, which is deliberately still
+  present for dev and desktop profiles.
 - **Federation `protocolVersion` exchange**. Two federated servers
   must both be on v2 (or both on v1) for cross-server proof acceptance
   to work. The handshake envelope in `crates/annex-federation::handshake`
   needs to advertise the supported set and reject mismatched peers.
-- **Client-side v2 prover**. `client/src/lib/zk.ts` and the proof
-  worker still build v1 proofs only. A future task adds the v2 prover
-  with `topicHash` as a public input and `protocolVersion: "v2"` in
-  the verify-membership request.
+- ~~**Client-side v2 prover**.~~ **Shipped.** `client/src/lib/zk.ts`
+  generates v2 proofs, checks for five public signals, and
+  `client/src/api/identity.ts` sends `protocolVersion: "v2"` with
+  `nullifierHex`, `topicHashHex` and `challengeHex`.
 
 ---
 

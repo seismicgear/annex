@@ -59,6 +59,22 @@ export const SEED = {
     hybrid: 'audit-hybrid',
     agent: 'audit-agent',
     broadcast: 'audit-broadcast',
+    /**
+     * Where surfaces that POST a message during capture write.
+     *
+     * Several surfaces need a message younger than the 60s edit window and so
+     * cannot reuse the fixtures above. They used to post into
+     * `defaultChannel`, which meant the default channel grew by one message
+     * per surface per viewport — and every capture that photographed that
+     * column recorded a picture whose contents depended on how many surfaces
+     * had run before it. A retry, an added surface or a reordered manifest
+     * changed all of them at once.
+     *
+     * Keeping the writes in their own channel makes `General` a fixture:
+     * seeded once, never appended to, identical in every picture that
+     * contains it.
+     */
+    scratch: 'audit-scratch',
   },
   /** A channel deliberately left with no messages, to capture the empty state. */
   emptyChannel: 'audit-empty',

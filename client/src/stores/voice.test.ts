@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { JoinVoiceResponse } from '@/lib/api';
 
 vi.mock('@/lib/api', () => ({
   joinVoice: vi.fn(async () => ({ token: 'tok', url: 'wss://lk', ice_servers: [] })),
@@ -165,7 +166,7 @@ describe('voice store', () => {
     const { useVoiceStore } = await import('./voice');
 
     // Make joinVoice return slowly for chan-1, instantly for chan-2
-    let resolveFirst: ((val: unknown) => void) | null = null;
+    let resolveFirst!: (val: JoinVoiceResponse) => void;
     vi.mocked(apiMod.joinVoice)
       .mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve; }))
       .mockResolvedValueOnce({ token: 'tok-2', url: 'wss://lk-2', ice_servers: [] });
@@ -180,7 +181,7 @@ describe('voice store', () => {
     expect(useVoiceStore.getState().voiceToken).toBe('tok-2');
 
     // Now resolve the first (stale) request
-    resolveFirst!({ token: 'tok-1', url: 'wss://lk-1', ice_servers: [] });
+    resolveFirst({ token: 'tok-1', url: 'wss://lk-1', ice_servers: [] });
     await p1;
 
     // State should still be from chan-2 (stale ignored)

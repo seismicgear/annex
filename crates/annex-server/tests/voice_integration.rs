@@ -73,6 +73,8 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool) {
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
+        shutdown: Default::default(),
+        metrics: Default::default(),
     };
 
     (app(state), pool)
@@ -133,7 +135,17 @@ async fn test_join_voice_channel_success() {
     {
         let conn = pool.get().unwrap();
         conn.execute(
-            "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active) VALUES (1, 'user-1', 'HUMAN', 1)",
+            // `can_voice` is set explicitly because this INSERT bypasses
+            // `create_platform_identity`, which is the only production path
+            // that creates a member and which always sets it to 1. The column
+            // itself defaults to 0 (migration 004), so a raw fixture models a
+            // member whose voice has been revoked — not an ordinary one. That
+            // distinction became visible when voice-join started consulting the
+            // capability; before that the flag was inert and the fixture's
+            // omission could not be noticed.
+            "INSERT INTO platform_identities \
+             (server_id, pseudonym_id, participant_type, active, can_voice) \
+             VALUES (1, 'user-1', 'HUMAN', 1, 1)",
             [],
         )
         .unwrap();
@@ -203,7 +215,17 @@ async fn test_join_voice_channel_forbidden_not_member() {
     {
         let conn = pool.get().unwrap();
         conn.execute(
-            "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active) VALUES (1, 'user-1', 'HUMAN', 1)",
+            // `can_voice` is set explicitly because this INSERT bypasses
+            // `create_platform_identity`, which is the only production path
+            // that creates a member and which always sets it to 1. The column
+            // itself defaults to 0 (migration 004), so a raw fixture models a
+            // member whose voice has been revoked — not an ordinary one. That
+            // distinction became visible when voice-join started consulting the
+            // capability; before that the flag was inert and the fixture's
+            // omission could not be noticed.
+            "INSERT INTO platform_identities \
+             (server_id, pseudonym_id, participant_type, active, can_voice) \
+             VALUES (1, 'user-1', 'HUMAN', 1, 1)",
             [],
         )
         .unwrap();
@@ -244,7 +266,17 @@ async fn test_join_voice_channel_bad_request_wrong_type() {
     {
         let conn = pool.get().unwrap();
         conn.execute(
-            "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active) VALUES (1, 'user-1', 'HUMAN', 1)",
+            // `can_voice` is set explicitly because this INSERT bypasses
+            // `create_platform_identity`, which is the only production path
+            // that creates a member and which always sets it to 1. The column
+            // itself defaults to 0 (migration 004), so a raw fixture models a
+            // member whose voice has been revoked — not an ordinary one. That
+            // distinction became visible when voice-join started consulting the
+            // capability; before that the flag was inert and the fixture's
+            // omission could not be noticed.
+            "INSERT INTO platform_identities \
+             (server_id, pseudonym_id, participant_type, active, can_voice) \
+             VALUES (1, 'user-1', 'HUMAN', 1, 1)",
             [],
         )
         .unwrap();
@@ -287,7 +319,17 @@ async fn test_leave_voice_channel_success() {
     {
         let conn = pool.get().unwrap();
         conn.execute(
-            "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active) VALUES (1, 'user-1', 'HUMAN', 1)",
+            // `can_voice` is set explicitly because this INSERT bypasses
+            // `create_platform_identity`, which is the only production path
+            // that creates a member and which always sets it to 1. The column
+            // itself defaults to 0 (migration 004), so a raw fixture models a
+            // member whose voice has been revoked — not an ordinary one. That
+            // distinction became visible when voice-join started consulting the
+            // capability; before that the flag was inert and the fixture's
+            // omission could not be noticed.
+            "INSERT INTO platform_identities \
+             (server_id, pseudonym_id, participant_type, active, can_voice) \
+             VALUES (1, 'user-1', 'HUMAN', 1, 1)",
             [],
         )
         .unwrap();
@@ -385,6 +427,8 @@ async fn setup_app_voice_disabled() -> axum::Router {
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
+        shutdown: Default::default(),
+        metrics: Default::default(),
     };
 
     app(state)
@@ -469,6 +513,47 @@ async fn test_voice_config_status_disabled() {
     );
 }
 
+/// `stt_detail` has to reach the wire, not just exist on the server.
+///
+/// This is CLAUDE.md defect class 2 — a value that never crosses a
+/// boundary it is assumed to cross. `SttReadiness::detail()` is computed
+/// in `voice_config_status`, and the response body is a hand-built
+/// `json!` literal: adding a field to the readiness type does nothing
+/// unless the literal lists it, and nothing in the type system says so.
+#[tokio::test]
+async fn config_status_names_the_missing_stt_file_on_the_wire() {
+    let app = setup_app_voice_disabled().await;
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
+    let mut request = Request::builder()
+        .uri("/api/voice/config-status")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(addr));
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    assert_eq!(body["stt_ready"].as_bool(), Some(false));
+    let detail = body["stt_detail"]
+        .as_str()
+        .expect("stt_detail must be present on the wire");
+    // The fixture configures model path "dummy", which does not exist.
+    assert!(
+        detail.contains("dummy"),
+        "stt_detail must name the file: {detail}",
+    );
+    assert!(
+        detail.contains("setup-stt.sh"),
+        "stt_detail must say what to run: {detail}",
+    );
+}
+
 #[tokio::test]
 async fn test_voice_config_status_enabled() {
     // Build an app whose WebRTC config has a non-loopback public URL so the
@@ -527,6 +612,8 @@ async fn test_voice_config_status_enabled() {
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
+        shutdown: Default::default(),
+        metrics: Default::default(),
     };
 
     let app_router = app(state);
@@ -569,7 +656,17 @@ async fn test_voice_join_not_configured_returns_structured_error() {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active) VALUES (1, 'user-1', 'HUMAN', 1)",
+            // `can_voice` is set explicitly because this INSERT bypasses
+            // `create_platform_identity`, which is the only production path
+            // that creates a member and which always sets it to 1. The column
+            // itself defaults to 0 (migration 004), so a raw fixture models a
+            // member whose voice has been revoked — not an ordinary one. That
+            // distinction became visible when voice-join started consulting the
+            // capability; before that the flag was inert and the fixture's
+            // omission could not be noticed.
+            "INSERT INTO platform_identities \
+             (server_id, pseudonym_id, participant_type, active, can_voice) \
+             VALUES (1, 'user-1', 'HUMAN', 1, 1)",
             [],
         )
         .unwrap();
@@ -630,6 +727,8 @@ async fn test_voice_join_not_configured_returns_structured_error() {
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
+        shutdown: Default::default(),
+        metrics: Default::default(),
     };
 
     let router = app(state);

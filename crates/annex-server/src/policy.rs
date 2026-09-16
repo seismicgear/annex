@@ -144,9 +144,13 @@ pub async fn recalculate_agent_alignments(state: Arc<AppState>) -> Result<(), Ap
                         }
                     };
 
+                // Re-evaluating a LOCAL agent's stored anchor, not talking to
+                // a peer — the agent declared no scorer and this server is the
+                // only one measuring, so there is nothing to compare against.
                 let handshake = VrpFederationHandshake {
                     anchor_snapshot: anchor,
                     capability_contract: contract,
+                    scorer: None,
                 };
 
                 let report = validate_federation_handshake(
@@ -190,6 +194,37 @@ pub async fn recalculate_agent_alignments(state: Arc<AppState>) -> Result<(), Ap
                     pseudonym
                 ],
             ).map_err(|e| ApiError::InternalServerError(format!("update failed: {e}")))?;
+
+            // A deactivated agent's TOKENS have to stop verifying too.
+            //
+            // The sweep used to set `active = 0` and close the current socket,
+            // and stop there. `platform_identities.active` was untouched, so
+            // `auth_middleware` still accepted the agent's session token; it
+            // reconnected and carried on. `AgentDisconnected` went into the
+            // audit log about an agent that had not been disconnected in any
+            // durable sense. Bumping the token epoch inside THIS transaction
+            // means the deactivation and the revocation commit together —
+            // revoking afterwards would leave a window in which the row says
+            // inactive and the token still works.
+            if !active {
+                match annex_identity::platform::bump_token_epoch(
+                    &tx,
+                    state_clone.server_id,
+                    &pseudonym,
+                ) {
+                    Ok(epoch) => tracing::info!(
+                        agent = %pseudonym,
+                        token_epoch = epoch,
+                        "conflict-aligned agent's sessions revoked",
+                    ),
+                    // An agent registration with no platform identity is a
+                    // broken row, not a reason to abandon the sweep.
+                    Err(e) => tracing::warn!(
+                        agent = %pseudonym,
+                        "could not revoke sessions for a deactivated agent: {e}",
+                    ),
+                }
+            }
 
             // Emit presence event (SSE)
              let _ = state_clone.presence_tx.send(PresenceEvent::NodeUpdated {
@@ -582,9 +617,12 @@ pub async fn notify_federation_peers_of_policy_change(
             redacted_topics: vec![],
         };
 
+        // Outbound: tell the peer what we are scoring with, so it can see
+        // whether its verdict about us is reproducible by us.
         let handshake = VrpFederationHandshake {
             anchor_snapshot: local_anchor,
             capability_contract: local_contract,
+            scorer: Some(annex_vrp::scorer::active_fingerprint()),
         };
 
         (handshake, state.get_public_url())

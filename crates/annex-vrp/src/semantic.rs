@@ -4,6 +4,74 @@ use std::collections::{BTreeSet, HashMap};
 pub trait SemanticEmbedder {
     /// Embeds a text string into a vector of floats.
     fn embed(&self, text: &str) -> Result<Vec<f32>, String>;
+
+    /// The cosine similarity at which this scorer stops distinguishing
+    /// unrelated text from related text.
+    ///
+    /// # Why every scorer needs one, and why it is not the same number
+    ///
+    /// The raw cosine between two principle-set centroids is not portable
+    /// across scorers. Measured on the labelled corpus in
+    /// `tests/alignment_calibration.rs`, with the SAME sixteen pairs:
+    ///
+    /// | scorer                          | unrelated max | aligned min | band |
+    /// |---------------------------------|---------------|-------------|------|
+    /// | `StaticEmbedder` (potion-base-2M) | 0.5134      | 0.5740      | 0.06 |
+    /// | `ConceptEmbedder` (lexicon)       | 0.3060      | 0.3918      | 0.09 |
+    ///
+    /// The two separating bands do not overlap, so no single raw threshold can
+    /// serve both — a number tuned for one silently means something else on the
+    /// other. Static embeddings have a high floor because ordinary English
+    /// sentences share a large common direction; the lexicon's floor is lower
+    /// because it only fires on curated concepts. Neither is wrong; they are
+    /// different instruments.
+    ///
+    /// Reporting each scorer's floor lets [`normalize_against_floor`] put them
+    /// on one scale, so `agent_min_alignment_score` means the same strictness
+    /// whichever scorer is loaded. The default is `0.0` — a scorer that has not
+    /// been calibrated is treated as having no floor, which is the permissive
+    /// reading and the correct one for a mock.
+    fn unrelated_floor(&self) -> f32 {
+        0.0
+    }
+
+    /// Identifies this scorer, so a peer running a different one is detected
+    /// rather than silently scoring differently. See
+    /// [`crate::embedding::ModelFingerprint`].
+    fn fingerprint(&self) -> crate::embedding::ModelFingerprint {
+        crate::embedding::ModelFingerprint::lexicon()
+    }
+}
+
+/// Put a raw cosine on a scale that means the same thing for every scorer.
+///
+/// `0.0` is "indistinguishable from unrelated text for this scorer"; `1.0` is
+/// "identical". The transform is linear over the range a scorer actually has
+/// left above its own noise:
+///
+/// ```text
+///     normalized = (raw - floor) / (1 - floor), clamped to [0, 1]
+/// ```
+///
+/// The point is portability, and it is measurable rather than asserted. At each
+/// scorer's floor the aligned minimum lands at:
+///
+/// * `StaticEmbedder`:  (0.5740 - 0.5134) / 0.4866 = **0.1246**
+/// * `ConceptEmbedder`: (0.3918 - 0.3060) / 0.6940 = **0.1236**
+///
+/// — within 0.001 of each other, from two instruments whose raw numbers differ
+/// by 0.18. That is what makes one configured threshold honest across both, and
+/// `alignment_calibration.rs` pins it.
+///
+/// The raw value is NOT discarded: it is what an operator is shown, because
+/// "0.5740 cosine under potion-base-2M" is a fact about the measurement and
+/// "0.1246" is a fact about this scale.
+pub fn normalize_against_floor(raw: f32, floor: f32) -> f32 {
+    if !raw.is_finite() {
+        return 0.0;
+    }
+    let floor = floor.clamp(0.0, 0.99);
+    ((raw - floor) / (1.0 - floor)).clamp(0.0, 1.0)
 }
 
 /// A bag-of-words embedder that creates sparse TF vectors from text.
@@ -225,6 +293,15 @@ impl Default for ConceptEmbedder {
 }
 
 impl SemanticEmbedder for ConceptEmbedder {
+    /// Measured at 0.3060 — the highest score any unrelated pair in
+    /// `tests/alignment_calibration.rs` reaches under this scorer. Taking the
+    /// MAXIMUM rather than the mean is deliberate: a floor set at the mean
+    /// would leave half the unrelated pairs scoring above zero, and the
+    /// direction of that error is "admit a peer we should not".
+    fn unrelated_floor(&self) -> f32 {
+        0.3060
+    }
+
     fn embed(&self, text: &str) -> Result<Vec<f32>, String> {
         let mut vec = vec![0.0f32; EMBED_DIM];
         let tokens = tokenize(text);
@@ -316,7 +393,7 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 /// Computes the centroid (mean vector) of a list of embeddings.
 fn compute_centroid(
     principles: &[String],
-    embedder: &impl SemanticEmbedder,
+    embedder: &dyn SemanticEmbedder,
 ) -> Result<Vec<f32>, String> {
     if principles.is_empty() {
         return Ok(Vec::new());
@@ -356,7 +433,7 @@ fn compute_centroid(
 pub fn calculate_semantic_alignment(
     local_principles: &[String],
     remote_principles: &[String],
-    embedder: &impl SemanticEmbedder,
+    embedder: &dyn SemanticEmbedder,
 ) -> Result<f32, String> {
     if local_principles.is_empty() && remote_principles.is_empty() {
         return Ok(1.0); // Both empty = aligned

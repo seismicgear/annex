@@ -88,15 +88,6 @@ pub(crate) fn find_instance_id_and_key(
     .optional()
 }
 
-/// Returns true iff the named base_url is a known instance.
-pub(crate) fn instance_known(conn: &Connection, base_url: &str) -> Result<bool, rusqlite::Error> {
-    conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM instances WHERE base_url = ?1)",
-        params![base_url],
-        |row| row.get(0),
-    )
-}
-
 /// Returns true iff there is an active federation_agreements row between
 /// `local_server_id` and `remote_instance_id`.
 ///
@@ -132,27 +123,43 @@ pub(crate) fn active_agreement_transfer_scope(
     .optional()
 }
 
-/// Returns the redacted_topics list declared in the remote peer's
-/// capability_contract for the active agreement between `local_server_id`
-/// and `remote_instance_id`. On any read / parse failure returns an empty
-/// vector — matching the existing inline behaviour where corrupt or
-/// missing handshake JSON is treated as "no redactions to enforce".
+/// The `redacted_topics` the remote peer declared in its capability contract
+/// for the active agreement between `local_server_id` and `remote_instance_id`.
 ///
-/// That is a FAIL-OPEN, and the caller
-/// (`federation_service`'s inbound relay path) skips `check_redacted_topics`
-/// entirely on an empty list — so a handshake row that will not parse means
-/// the peer's declared redactions are not enforced against anything it sends
-/// us. Until this session the three causes were indistinguishable from a peer
-/// that simply declared none, and produced no signal at all. Behaviour is
-/// unchanged — rejecting instead would cut off a peer whose stored handshake
-/// predates a schema change, which is a deployment decision, not a bug fix —
-/// but the operator now gets a line naming the peer, which is the difference
-/// between a policy that is off and a policy that is off silently.
+/// # Why this returns a `Result`
+///
+/// It used to return `Vec<String>`, which made "the peer declared no
+/// redactions" and "I could not find out what the peer declared"
+/// indistinguishable — and the caller reads an empty list as *unrestricted*.
+/// `annex_rtx::validation::check_redacted_topics` returns `Ok(())` immediately
+/// on an empty list, so an unreadable handshake meant the peer's own declared
+/// restrictions were enforced against nothing it sent us. A corrupt row read
+/// as maximum permission.
+///
+/// The previous version of this comment said that was deliberate, on the
+/// grounds that rejecting "would cut off a peer whose stored handshake
+/// predates a schema change, which is a deployment decision, not a bug fix",
+/// and settled for a log line. Two things are wrong with that. The deployment
+/// concern is about a NULL column — a legacy or hand-seeded row — and that
+/// case is still permissive below. What was being defended is the case where
+/// the row is PRESENT and does not parse, which is not a legacy shape; it is
+/// data this server cannot interpret, and treating uninterpretable policy as
+/// absent policy is the fail-open. And the same function eighty lines away in
+/// `federation_service` already handles corrupt transfer-governing JSON by
+/// failing closed, with the reasoning written out — so this was the exception
+/// to a convention the codebase had already settled.
+///
+/// The arms now:
+/// * no active agreement row, or a NULL `remote_handshake_json` → `Ok(empty)`.
+///   The production handshake path always persists a handshake
+///   (`annex_federation::handshake`), so NULL means a row that predates it.
+/// * a read error, or stored JSON that will not parse → `Err`, and the caller
+///   refuses the bundle.
 pub(crate) fn active_agreement_redacted_topics(
     conn: &Connection,
     local_server_id: i64,
     remote_instance_id: i64,
-) -> Vec<String> {
+) -> Result<Vec<String>, String> {
     let stored = match conn.query_row(
         "SELECT remote_handshake_json FROM federation_agreements
          WHERE local_server_id = ?1 AND remote_instance_id = ?2 AND active = 1",
@@ -160,10 +167,19 @@ pub(crate) fn active_agreement_redacted_topics(
         |row| row.get::<_, Option<String>>(0),
     ) {
         Ok(Some(json)) => json,
-        // No active agreement row, or the column is NULL. The caller has
-        // already resolved an agreement to get here, so a missing row is
-        // worth saying out loud.
-        Ok(None) => return Vec::new(),
+        // The column is NULL: a row written before handshakes were persisted,
+        // or seeded by hand. Permissive, and said out loud — the previous
+        // version of this arm returned silently while the comment above it
+        // claimed a missing row was "worth saying out loud".
+        Ok(None) => {
+            tracing::warn!(
+                local_server_id,
+                remote_instance_id,
+                "the active federation agreement stores no remote handshake — this \
+                 peer's declared redactions cannot be enforced"
+            );
+            return Ok(Vec::new());
+        }
         Err(rusqlite::Error::QueryReturnedNoRows) => {
             tracing::warn!(
                 local_server_id,
@@ -171,31 +187,30 @@ pub(crate) fn active_agreement_redacted_topics(
                 "no active federation agreement while resolving redacted topics — \
                  declared redactions will not be enforced"
             );
-            return Vec::new();
+            return Ok(Vec::new());
         }
         Err(e) => {
-            tracing::warn!(
+            tracing::error!(
                 local_server_id,
                 remote_instance_id,
                 error = %e,
-                "could not read the remote handshake while resolving redacted topics — \
-                 declared redactions will not be enforced"
+                "could not read the remote handshake while resolving redacted topics"
             );
-            return Vec::new();
+            return Err(format!("could not read the peer's stored handshake: {e}"));
         }
     };
 
     match serde_json::from_str::<VrpFederationHandshake>(&stored) {
-        Ok(h) => h.capability_contract.redacted_topics,
+        Ok(h) => Ok(h.capability_contract.redacted_topics),
         Err(e) => {
-            tracing::warn!(
+            tracing::error!(
                 local_server_id,
                 remote_instance_id,
                 error = %e,
-                "stored remote handshake does not parse — declared redactions will \
-                 not be enforced for this peer"
+                "stored remote handshake does not parse — refusing the peer's traffic \
+                 rather than treating its declared redactions as absent"
             );
-            Vec::new()
+            Err(format!("the peer's stored handshake does not parse: {e}"))
         }
     }
 }
@@ -272,8 +287,21 @@ pub(crate) fn upsert_federated_identity(
 }
 
 /// Ensure a `platform_identities` row exists / is active for this pseudonym,
-/// promoting `participant_type` if it changed. Mirrors the existing inline
-/// `INSERT … ON CONFLICT … DO UPDATE` byte-for-byte.
+/// promoting `participant_type` if it changed.
+///
+/// `active` is set on INSERT and never on UPDATE, and that asymmetry is the
+/// point. The statement used to carry `active = 1` in its `DO UPDATE` clause,
+/// so a federated attestation from a remote peer reactivated an identity a
+/// local moderator had deactivated — `POST /api/federation/attest-membership`
+/// is reachable by any peer holding an agreement, the pseudonym derives the
+/// same way local ones do, and `auth_middleware` gates every authenticated
+/// route on exactly this column. A ban was undone by the banned party's home
+/// server saying they were still a member.
+///
+/// Deactivation also bumps `token_epoch`, which the upsert did not reset, so
+/// outstanding tokens stayed dead — that is what bounded the damage to "the
+/// account works again with a fresh token" rather than "the old session
+/// resumes". It is not what made it acceptable.
 pub(crate) fn upsert_platform_identity(
     tx: &Transaction<'_>,
     server_id: i64,
@@ -285,7 +313,6 @@ pub(crate) fn upsert_platform_identity(
             server_id, pseudonym_id, participant_type, active
         ) VALUES (?1, ?2, ?3, 1)
         ON CONFLICT(server_id, pseudonym_id) DO UPDATE SET
-            active = 1,
             participant_type = excluded.participant_type
         ",
         params![server_id, pseudonym_id, participant_type],
@@ -638,7 +665,121 @@ mod tests {
             "server 2 must not see server 1's transfer scope"
         );
 
-        assert!(active_agreement_redacted_topics(&conn, 2, instance_id).is_empty());
+        // No agreement for server 2: permissive and Ok, because "this peer has
+        // no agreement here" is a known state rather than an unreadable one.
+        assert!(active_agreement_redacted_topics(&conn, 2, instance_id)
+            .expect("a missing agreement is not an error")
+            .is_empty());
+    }
+
+    /// Unreadable policy must not read as absent policy.
+    ///
+    /// `check_redacted_topics` short-circuits to `Ok(())` on an empty list, so
+    /// a handshake this server cannot parse used to grant the peer everything
+    /// its own declared restrictions were meant to withhold. The two cases
+    /// have to be distinguishable at this boundary, because nothing above it
+    /// can tell them apart afterwards.
+    #[test]
+    fn a_handshake_that_does_not_parse_is_an_error_not_an_empty_list() {
+        let conn = setup_db();
+        conn.execute(
+            "INSERT INTO instances (base_url, public_key, label) VALUES ('https://peer.example', 'aa', 'Peer')",
+            [],
+        )
+        .expect("seed instance");
+        let instance_id = conn.last_insert_rowid();
+
+        // A NULL handshake is the legacy shape and stays permissive: the
+        // production handshake path always stores one, so NULL means a row
+        // that predates it or was seeded by hand.
+        conn.execute(
+            "INSERT INTO federation_agreements (
+                local_server_id, remote_instance_id, alignment_status, transfer_scope,
+                agreement_json, active, remote_handshake_json
+            ) VALUES (1, ?1, 'ALIGNED', 'FullKnowledge', '{}', 1, NULL)",
+            params![instance_id],
+        )
+        .expect("seed agreement");
+        assert!(active_agreement_redacted_topics(&conn, 1, instance_id)
+            .expect("a NULL handshake is legacy, not corrupt")
+            .is_empty());
+
+        // Present and unparseable is a different fact entirely.
+        conn.execute(
+            "UPDATE federation_agreements SET remote_handshake_json = '{not json'
+             WHERE local_server_id = 1 AND remote_instance_id = ?1",
+            params![instance_id],
+        )
+        .expect("corrupt the handshake");
+        let err = active_agreement_redacted_topics(&conn, 1, instance_id)
+            .expect_err("an unparseable handshake must not be reported as no redactions");
+        assert!(
+            err.contains("does not parse"),
+            "the error must say what went wrong, got: {err}"
+        );
+    }
+
+    /// A ban must not be undone by the banned party's home server.
+    ///
+    /// `upsert_platform_identity` carried `active = 1` in its `DO UPDATE`
+    /// clause, so a federated attestation reactivated an identity a local
+    /// moderator had disabled. `auth_middleware` gates every authenticated
+    /// route on that column, so flipping it back restored the account — and
+    /// the attestation endpoint is reachable by any peer holding an
+    /// agreement. The pseudonym derives the same way local ones do, which is
+    /// what made the collision possible in the first place.
+    #[test]
+    fn an_attestation_does_not_reactivate_a_deactivated_identity() {
+        let mut conn = setup_db();
+        conn.execute(
+            "INSERT INTO platform_identities \
+             (server_id, pseudonym_id, participant_type, active) \
+             VALUES (1, 'banned', 'HUMAN', 1)",
+            [],
+        )
+        .expect("seed identity");
+
+        // A moderator deactivates them. This also bumps `token_epoch`, which
+        // the upsert never reset — the reason the old behaviour produced "the
+        // account works again with a fresh token" rather than "the old session
+        // resumes". That bound the damage; it did not make it acceptable.
+        annex_identity::platform::deactivate_platform_identity(&conn, 1, "banned")
+            .expect("deactivate");
+
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .expect("tx");
+        upsert_platform_identity(&tx, 1, "banned", "HUMAN").expect("upsert");
+        tx.commit().expect("commit");
+
+        let active: i64 = conn
+            .query_row(
+                "SELECT active FROM platform_identities WHERE server_id = 1 AND pseudonym_id = 'banned'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("read back");
+        assert_eq!(
+            active, 0,
+            "a federated attestation reactivated a locally deactivated identity"
+        );
+
+        // And a first attestation for someone unknown still creates an active
+        // identity — the insert half must keep working, or federation cannot
+        // enrol anyone at all.
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .expect("tx");
+        upsert_platform_identity(&tx, 1, "newcomer", "HUMAN").expect("upsert");
+        tx.commit().expect("commit");
+        let active: i64 = conn
+            .query_row(
+                "SELECT active FROM platform_identities WHERE server_id = 1 AND pseudonym_id = 'newcomer'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("read back");
+        assert_eq!(active, 1);
     }
 
     /// Pseudonyms with no nullifier row resolve to `None`. The relay path

@@ -363,11 +363,26 @@ async fn the_token_endpoint_mints_a_short_lived_token_bound_to_the_caller() {
 
     let token = json["token"].as_str().expect("no token field");
     let decoded = decode_token(token);
-    let mut fields = decoded.splitn(3, '|');
+    // v2 layout: `pseudonym|epoch|expires|hmac`. The epoch was inserted ahead
+    // of the expiry when per-identity session revocation landed, so a reader
+    // still splitting on the v1 shape silently reads the epoch as a timestamp
+    // — which is 0 for an identity that has never been revoked, and therefore
+    // fails against every clock rather than looking like a format change.
+    let mut fields = decoded.splitn(4, '|');
     assert_eq!(
         fields.next(),
         Some("alice"),
         "the token names someone other than the caller: {decoded}"
+    );
+
+    let epoch: i64 = fields
+        .next()
+        .expect("no epoch field")
+        .parse()
+        .expect("epoch must be an integer");
+    assert_eq!(
+        epoch, 0,
+        "a freshly-minted token for a never-revoked identity should carry epoch 0: {decoded}"
     );
 
     let expires: u64 = fields
@@ -507,7 +522,7 @@ async fn a_token_with_a_non_hex_signature_is_refused() {
 #[tokio::test]
 async fn a_token_with_a_truncated_signature_is_refused() {
     let app = setup(false).await;
-    let real = generate_session_token("alice", &SERVER_SECRET, WS_TOKEN_TTL_SECS);
+    let real = generate_session_token("alice", &SERVER_SECRET, WS_TOKEN_TTL_SECS, 0);
     let body = decode_token(&real);
     let (prefix, sig) = body.rsplit_once('|').expect("token has a signature field");
     let token = encode_token(&format!("{prefix}|{}", &sig[..8]));
@@ -526,7 +541,7 @@ async fn a_token_with_a_truncated_signature_is_refused() {
 #[tokio::test]
 async fn a_token_signed_with_a_different_secret_is_refused() {
     let app = setup(false).await;
-    let token = generate_session_token("alice", &FOREIGN_SECRET, WS_TOKEN_TTL_SECS);
+    let token = generate_session_token("alice", &FOREIGN_SECRET, WS_TOKEN_TTL_SECS, 0);
     assert_eq!(
         upgrade_rejection(app.addr, &format!("token={token}")).await,
         StatusCode::UNAUTHORIZED,
@@ -542,7 +557,7 @@ async fn a_token_signed_with_a_different_secret_is_refused() {
 #[tokio::test]
 async fn a_token_minted_for_alice_cannot_be_rewritten_to_name_carol() {
     let app = setup(false).await;
-    let real = generate_session_token("alice", &SERVER_SECRET, WS_TOKEN_TTL_SECS);
+    let real = generate_session_token("alice", &SERVER_SECRET, WS_TOKEN_TTL_SECS, 0);
     let forged = encode_token(&decode_token(&real).replacen("alice", "carol", 1));
 
     assert_eq!(
@@ -558,7 +573,7 @@ async fn a_token_minted_for_alice_cannot_be_rewritten_to_name_carol() {
 #[tokio::test]
 async fn a_token_whose_expiry_was_extended_by_the_holder_is_refused() {
     let app = setup(false).await;
-    let real = generate_session_token("alice", &SERVER_SECRET, WS_TOKEN_TTL_SECS);
+    let real = generate_session_token("alice", &SERVER_SECRET, WS_TOKEN_TTL_SECS, 0);
     let body = decode_token(&real);
     let fields: Vec<&str> = body.splitn(3, '|').collect();
     let extended: u64 = fields[1].parse::<u64>().unwrap() + 86_400;
@@ -633,7 +648,7 @@ async fn a_signed_token_with_a_non_numeric_expiry_is_refused() {
 #[tokio::test]
 async fn a_validly_signed_token_for_an_unknown_pseudonym_is_refused() {
     let app = setup(false).await;
-    let token = generate_session_token("ghost", &SERVER_SECRET, WS_TOKEN_TTL_SECS);
+    let token = generate_session_token("ghost", &SERVER_SECRET, WS_TOKEN_TTL_SECS, 0);
     assert_eq!(
         upgrade_rejection(app.addr, &format!("token={token}")).await,
         StatusCode::UNAUTHORIZED,
@@ -647,7 +662,7 @@ async fn a_validly_signed_token_for_an_unknown_pseudonym_is_refused() {
 #[tokio::test]
 async fn a_token_for_a_deactivated_identity_is_refused() {
     let app = setup(false).await;
-    let token = generate_session_token("zombie", &SERVER_SECRET, WS_TOKEN_TTL_SECS);
+    let token = generate_session_token("zombie", &SERVER_SECRET, WS_TOKEN_TTL_SECS, 0);
     assert_eq!(
         upgrade_rejection(app.addr, &format!("token={token}")).await,
         StatusCode::FORBIDDEN,
@@ -763,7 +778,7 @@ async fn a_token_for_alice_still_acts_as_alice_when_the_query_also_names_bob() {
 #[tokio::test]
 async fn a_bad_token_does_not_fall_back_to_the_legacy_pseudonym_parameter() {
     let app = setup(false).await;
-    let forged = generate_session_token("alice", &FOREIGN_SECRET, WS_TOKEN_TTL_SECS);
+    let forged = generate_session_token("alice", &FOREIGN_SECRET, WS_TOKEN_TTL_SECS, 0);
 
     assert_eq!(
         upgrade_rejection(app.addr, &format!("token={forged}&pseudonym=alice")).await,
@@ -795,7 +810,7 @@ async fn a_signed_token_still_upgrades_when_zk_enforcement_is_on() {
     // Minted directly: with enforcement on, `POST /api/ws/token` no longer
     // accepts the `X-Annex-Pseudonym` header, so the HTTP mint path is not
     // available to a test that has no ZK proof to trade in.
-    let token = generate_session_token("alice", &SERVER_SECRET, WS_TOKEN_TTL_SECS);
+    let token = generate_session_token("alice", &SERVER_SECRET, WS_TOKEN_TTL_SECS, 0);
 
     let mut ws = upgrade(app.addr, &format!("token={token}"))
         .await
@@ -812,7 +827,7 @@ async fn a_signed_token_still_upgrades_when_zk_enforcement_is_on() {
 #[tokio::test]
 async fn a_foreign_signed_token_is_still_refused_when_zk_enforcement_is_on() {
     let app = setup(true).await;
-    let token = generate_session_token("alice", &FOREIGN_SECRET, WS_TOKEN_TTL_SECS);
+    let token = generate_session_token("alice", &FOREIGN_SECRET, WS_TOKEN_TTL_SECS, 0);
     assert_eq!(
         upgrade_rejection(app.addr, &format!("token={token}")).await,
         StatusCode::UNAUTHORIZED,
@@ -872,58 +887,69 @@ async fn a_ws_token_is_replayable_within_its_ttl() {
 }
 
 /// The consequence of the replay above, made concrete: the replayed socket
-/// takes over the original's place in the broadcast registry.
+/// takes over, and the original is CLOSED rather than left half-alive.
 ///
-/// `first` sends a message and `second` is the socket it comes out of. That
-/// can only happen because `add_session` overwrote the single entry keyed by
-/// `alice`, so every broadcast addressed to alice — including the echo of
-/// her own send — is now routed to whoever connected last. A leaked token is
-/// therefore not just an eavesdropping risk; spending it silently detaches
-/// the real user's client from the channels it is sitting in.
+/// `add_session` keeps one entry per pseudonym, so a second connection
+/// displaces the first in the broadcast registry. That much was always true.
+/// What the displaced socket did afterwards is the part that changed.
 ///
-/// Asserted as a positive delivery rather than as `first` receiving nothing,
-/// so there is no waiting-for-absence timeout to make the test flaky.
+/// It used to stay open. Dropping its `Sender` ended the writer task, but the
+/// reader loop waited on the client, so the socket lived on: able to send,
+/// unable to receive, and invisible to any count keyed on the registry. Two
+/// consequences, and the second is worse than the eavesdropping the doc
+/// comment above describes. A user whose token leaked went quiet without
+/// being disconnected — no close frame, no reconnect, just a client that had
+/// stopped hearing anything. And a client reconnecting in a loop with ONE
+/// valid token accumulated sockets without bound, each holding a reader task,
+/// two event relays and a 1024-slot channel.
+///
+/// Now the displaced session is cancelled, so `first` observes a close. That
+/// is both the resource fix and the better user-visible behaviour: a client
+/// that is disconnected reconnects, and a real user notices being kicked off.
 #[tokio::test]
-async fn a_replayed_token_takes_over_the_original_sockets_delivery() {
+async fn a_replayed_token_closes_the_socket_it_displaces() {
     let app = setup(false).await;
     let token = mint_token_over_http(&app.router, "alice").await;
 
     let mut first = upgrade(app.addr, &format!("token={token}"))
         .await
         .expect("first use of the token must work");
-    send_json(
-        &mut first,
-        json!({ "type": "subscribe", "channelId": "chan-alice" }),
-    )
-    .await;
+    // Speak once, so the first socket is demonstrably live before the replay.
+    // Without this the close below could equally mean it was never working.
+    let frame = speak(&mut first, "chan-alice", "before the replay").await;
+    assert_eq!(frame["senderPseudonym"], "alice", "frame: {frame}");
 
     let mut second = upgrade(app.addr, &format!("token={token}"))
         .await
         .expect("the replay must succeed for this test to mean anything");
-    send_json(
-        &mut second,
-        json!({ "type": "subscribe", "channelId": "chan-alice" }),
-    )
-    .await;
 
-    send_json(
-        &mut first,
-        json!({
-            "type": "message",
-            "channelId": "chan-alice",
-            "content": "sent by the original socket",
-            "replyTo": null,
-        }),
-    )
-    .await;
-
-    let frame = next_json(&mut second).await;
-    assert_eq!(
-        frame["type"], "message",
-        "expected the broadcast on the replayed socket, got: {frame}"
+    // The displaced socket ends. Read until the stream terminates rather than
+    // asserting on one specific frame: a close may be preceded by whatever the
+    // session had already queued, and which of those lands first is a race
+    // this test has no reason to care about.
+    let closed = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match first.next().await {
+                None => return true,
+                Some(Err(_)) => return true,
+                Some(Ok(Message::Close(_))) => return true,
+                Some(Ok(_)) => continue,
+            }
+        }
+    })
+    .await
+    .expect(
+        "the displaced socket must be closed, not left open-but-deaf — a client \
+         that is never disconnected never reconnects, and one valid token could \
+         otherwise pin unbounded sockets",
     );
+    assert!(closed);
+
+    // And the replacement is fully functional: displacing the old session must
+    // not have damaged the new one.
+    let frame = speak(&mut second, "chan-alice", "after the replay").await;
     assert_eq!(
-        frame["content"], "sent by the original socket",
-        "the replayed socket did not inherit the original's delivery: {frame}"
+        frame["senderPseudonym"], "alice",
+        "the replayed socket should be a working session: {frame}"
     );
 }

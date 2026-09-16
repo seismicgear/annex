@@ -53,12 +53,64 @@ jobs:
           node scripts/build-circuits.js
           node scripts/setup-groth16.js
 
+      # Synchronise the browser's copies with the keys just generated.
+      #
+      # `setup-groth16.js` writes fresh random-entropy proving keys into
+      # `zk/keys`. Anything that then asserts the client and server agree — the
+      # harness tests below, and any browser lane — is asserting against inputs
+      # this workflow just invalidated. The client artifacts are gitignored, so
+      # a clean runner has none at all until this step creates them.
+      #
+      # This is the ordering, not a convenience: regenerate, then synchronise,
+      # then test the consumers.
+      - name: Synchronise client ZK artifacts
+        run: node scripts/prepare-zk-dev.js
+
+      # The VRP alignment model: 7.5 MB, digest-pinned, fetched from
+      # huggingface.co.
+      #
+      # Not optional for this job. A production-profile server REFUSES to start
+      # without it (`StartupError::UnusableAlignmentModel`), because the score
+      # it produces decides which peers and agents are trusted and the lexicon
+      # fallback is a different instrument whose verdicts a peer running the
+      # pinned model cannot reproduce. Several tests start such a server.
+      #
+      # It also un-skips the two calibration suites. `alignment_calibration.rs`
+      # and `wordpiece_vectors.rs` both SKIP when the model is absent, so
+      # without this step they pass while measuring nothing — the shape
+      # CLAUDE.md calls a test that stops testing what it claims.
+      - name: Fetch VRP alignment model
+        run: bash scripts/setup-embedding-model.sh
+
       # Tests the production-profile dev-fixture gate in verify-artifacts.js.
       # Cheap (~1s) and the regression class — release silently shipping
       # dev keys — is too painful to leave ungated.
       - name: ZK script tests
         run: npm test
         working-directory: zk
+
+      # `zk-proof` is a named gate in docs/refactor/release-gates.md and ran
+      # in no workflow. The step above covers verify-artifacts.js only; this
+      # is the one that generates and verifies real proofs, including the
+      # tamper rejections the gate is described by.
+      - name: ZK proof round-trip
+        run: node scripts/test-proofs.js
+        working-directory: zk
+
+      # `zk-production-gate`, the other named gate that ran nowhere. The
+      # globbed "Harness script tests" step below matches
+      # scripts/tests/*.test.sh; this script is in scripts/ and is not named
+      # *.test.sh, so it matched nothing. It asserts that this step exists.
+      - name: Production ZK provenance gate
+        run: sh scripts/verify-production-rejects-dev-fixtures.sh
+
+      # 41 tests over api/signal.js — the federation signaling relay, and the
+      # canonical signing string that crates/annex-federation/src/signal.rs
+      # has to match byte for byte. Named by no workflow until now, which is
+      # how the two implementations came to disagree about whether
+      # `rendezvous_tag` is part of that string.
+      - name: Signaling relay tests
+        run: node --test api/signal.test.mjs
 
       # The scripts everything else runs through. Their failures were the
       # silent kind: e2e-server.sh reported "Server ready" about a server it
@@ -154,7 +206,15 @@ jobs:
       # Rust regression fails CI in under a minute rather than after a
       # full bundle attempt.
       - name: Ensure asset stub dirs exist
-        run: mkdir -p assets/piper assets/voices
+        run: mkdir -p assets/piper assets/voices assets/embedding
+
+      # `tauri.conf.json` declares `assets/embedding` in `bundle.resources`, and
+      # the bundler validates every declared path at build time. The directory
+      # above satisfies that; fetching the real model additionally proves the
+      # bundle can carry it, which is what a desktop install depends on for
+      # anything but the lexicon fallback.
+      - name: Fetch VRP alignment model
+        run: bash scripts/setup-embedding-model.sh
 
       - name: cargo check (annex-desktop)
         run: cargo check -p annex-desktop
@@ -467,6 +527,16 @@ jobs:
           (cd client && npm run test:e2e:puppeteer)
           bash scripts/e2e-server.sh stop
 
+      # `client/e2e-results/` is the half that was missing, and it is the half
+      # that can actually diagnose a failure. Playwright writes
+      # `<surface>-actual.png` and `<surface>-diff.png` there on every
+      # `toHaveScreenshot` mismatch — the actual taken with the SAME mask and
+      # clip as the baseline, plus a pixel diff. Without it the only evidence
+      # leaving CI was `diagnostics/`, which is an unmasked, unclipped
+      # full-page shot and therefore cannot be compared to a baseline at all.
+      #
+      # A 53-surface failure was read three different ways from the wrong
+      # artifact before anyone noticed the right one was never uploaded.
       - name: Upload audit report
         if: always()
         uses: actions/upload-artifact@v4
@@ -475,8 +545,90 @@ jobs:
           path: |
             docs/ui-audit/
             client/e2e/audit/diagnostics/
-          retention-days: 14
+            client/e2e-results/
+            client/e2e-report/
+          retention-days: 30
           if-no-files-found: ignore
+
+  # ── Supply chain ────────────────────────────────────────────────────────
+  #
+  # Nothing told this repository when a dependency picked up a CVE. `cargo
+  # deny` covers advisories, licences and source registries in one pass; the
+  # npm halves are audited at `high` and above, with the two contained chains
+  # documented in CLAUDE.md's "snarkjs vulnerability containment" section.
+  #
+  # `continue-on-error` on the npm steps and NOT on cargo-deny is deliberate.
+  # A new Rust advisory is actionable: the fix is a version bump. The npm
+  # findings are a known, analysed, tree-shaken-out chain that cannot be
+  # resolved without replacing snarkjs, so failing on them would train
+  # everyone to ignore a red check — which is the failure mode this whole
+  # branch has been unpicking. They are reported, not enforced, until the
+  # chain is replaced.
+  supply-chain:
+    name: Supply chain (advisories, licences, sources)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.88
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: supply-chain
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked --version ^0.16
+
+      - name: cargo deny
+        run: cargo deny --all-features check
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            client/package-lock.json
+            zk/package-lock.json
+
+      # ── One of these three is a gate; the other two are reports ─────────
+      #
+      # Both audits were `continue-on-error: true`, so a new high never failed
+      # anything and the job's green tick meant only that npm had been asked.
+      # Making them blocking as they stand is not the fix either: the full
+      # client audit reports 15 high/critical packages today — vite, vitest,
+      # puppeteer, postcss, browserslist, undici — every one a devDependency
+      # that never reaches a user, and an allowlist of fifteen entries would
+      # need maintaining and would still fail every PR the day a new advisory
+      # lands in vite.
+      #
+      # What DOES ship to a browser is `client`'s production dependency tree,
+      # and measured on this commit it is clean at `--audit-level=high`. So that
+      # one is a gate, with no allowlist to rot: a new high reaching the bundle's
+      # dependency tree now fails CI.
+      - name: npm audit (client production dependencies) — BLOCKING
+        run: npm audit --omit=dev --audit-level=high
+        working-directory: client
+
+      # `zk`'s production tree carries 5 highs, all the
+      # `snarkjs -> bfj -> jsonpath -> underscore` chain. CLAUDE.md's "snarkjs
+      # vulnerability containment" section records the measurement: none of those
+      # package names appear in `client/dist/assets/*.js`, because the proof
+      # worker only calls `groth16.fullProve` and Vite tree-shakes the streaming
+      # JSON parser out. The chain is reachable from Node-side tooling only —
+      # build-time, not runtime traffic — and `zk/` is build tooling, marked
+      # `"private": true`. Report, not gate, until snarkjs drops bfj.
+      - name: npm audit (zk, full) — report only
+        continue-on-error: true
+        run: npm audit --audit-level=high
+        working-directory: zk
+
+      # The full client audit, for the devDependency picture. Report only, for
+      # the reason above.
+      - name: npm audit (client, full) — report only
+        continue-on-error: true
+        run: npm audit --audit-level=high
+        working-directory: client
 
   # Desktop audit — journey stage 01, "app install".
   #

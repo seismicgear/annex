@@ -21,6 +21,13 @@ pub struct PlatformIdentity {
     pub can_federate: bool,
     pub can_bridge: bool,
     pub active: bool,
+    /// Monotonic counter that invalidates this identity's session tokens.
+    ///
+    /// A session token carries the epoch it was minted against; verification
+    /// compares it to this value and refuses a mismatch. Bumping it is how a
+    /// single identity's sessions are revoked without rotating the server
+    /// signing key, which would sign out everyone.
+    pub token_epoch: i64,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -102,7 +109,7 @@ pub fn get_platform_identity(
         "SELECT
             id, server_id, pseudonym_id, participant_type,
             can_voice, can_moderate, can_invite, can_federate, can_bridge,
-            active, created_at, updated_at
+            active, token_epoch, created_at, updated_at
         FROM platform_identities
         WHERE server_id = ?1 AND pseudonym_id = ?2",
         params![server_id, pseudonym_id],
@@ -127,10 +134,79 @@ pub fn get_platform_identity(
                 can_federate: row.get(7)?,
                 can_bridge: row.get(8)?,
                 active: row.get(9)?,
-                created_at: row.get(10)?,
-                updated_at: row.get(11)?,
+                token_epoch: row.get(10)?,
+                created_at: row.get(11)?,
+                updated_at: row.get(12)?,
             })
         },
+    )
+    .map_err(IdentityError::DatabaseError)
+}
+
+/// Invalidate every session token issued for one identity.
+///
+/// Bumps `token_epoch`, which every token carries inside its MAC and every
+/// verification compares against. Returns the new epoch.
+///
+/// This is the only way to revoke a single session. Before it existed the
+/// options were deactivating the identity — which also stops them
+/// re-authenticating — or rotating the server signing key, which invalidates
+/// every session, every voice-join token and every federation signature the
+/// server has issued.
+///
+/// `BEGIN IMMEDIATE` because this reads the current value and writes back: a
+/// DEFERRED transaction would take a snapshot and then have to upgrade, and a
+/// concurrent commit turns that into `SQLITE_BUSY_SNAPSHOT` with the busy
+/// handler never invoked. See `annex-server/tests/write_transactions_are_immediate.rs`.
+pub fn revoke_identity_sessions(
+    conn: &mut Connection,
+    server_id: i64,
+    pseudonym_id: &str,
+) -> Result<i64, IdentityError> {
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(IdentityError::DatabaseError)?;
+    let epoch = bump_token_epoch(&tx, server_id, pseudonym_id)?;
+    tx.commit().map_err(IdentityError::DatabaseError)?;
+    Ok(epoch)
+}
+
+/// The revocation itself, on a connection that is ALREADY inside a transaction.
+///
+/// [`revoke_identity_sessions`] takes a `&mut Connection` because it opens its
+/// own `IMMEDIATE` transaction, which makes it unusable from a caller that is
+/// already inside one — and the conflict sweep in the server's
+/// `recalculate_agent_alignments` is exactly that caller. Opening a nested
+/// transaction there is not an option (SQLite has none, and a `SAVEPOINT` is
+/// DEFERRED underneath), and dropping the sweep's transaction to revoke and
+/// then reopening it would make the deactivation and the revocation two
+/// separate commits with a window between them in which the agent is marked
+/// inactive and its tokens still verify.
+///
+/// So the body lives here and both callers share it. Anything taking a
+/// `&Connection` inside a transaction is trusting the caller to have opened it
+/// `IMMEDIATE`; both do.
+pub fn bump_token_epoch(
+    conn: &Connection,
+    server_id: i64,
+    pseudonym_id: &str,
+) -> Result<i64, IdentityError> {
+    let changed = conn
+        .execute(
+            "UPDATE platform_identities
+             SET token_epoch = token_epoch + 1, updated_at = datetime('now')
+             WHERE server_id = ?1 AND pseudonym_id = ?2",
+            params![server_id, pseudonym_id],
+        )
+        .map_err(IdentityError::DatabaseError)?;
+    if changed == 0 {
+        return Err(IdentityError::IdentityNotFound(pseudonym_id.to_string()));
+    }
+    conn.query_row(
+        "SELECT token_epoch FROM platform_identities
+         WHERE server_id = ?1 AND pseudonym_id = ?2",
+        params![server_id, pseudonym_id],
+        |row| row.get(0),
     )
     .map_err(IdentityError::DatabaseError)
 }
@@ -278,9 +354,16 @@ pub fn deactivate_platform_identity(
     server_id: i64,
     pseudonym_id: &str,
 ) -> Result<(), IdentityError> {
+    // Bumping the epoch alongside `active = 0` is what makes deactivation
+    // immediate. Without it a deactivated identity's outstanding session
+    // tokens still verify their MAC; every request would be refused by the
+    // `active` check, but a token that survives a deactivation is a token
+    // that survives a reactivation too — and the point of deactivating
+    // somebody is that their existing credentials stop working.
     let changed = conn.execute(
         "UPDATE platform_identities SET
             active = 0,
+            token_epoch = token_epoch + 1,
             updated_at = datetime('now')
         WHERE server_id = ?1 AND pseudonym_id = ?2",
         params![server_id, pseudonym_id],

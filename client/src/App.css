@@ -3381,6 +3381,32 @@
   content: ':';
 }
 
+/* The strip when the server has told us it cannot transcribe.
+ *
+ * Deliberately muted and not an error colour: nothing has failed, a capability
+ * is absent. An alarm here would train people to ignore the strip on every
+ * deployment that has not installed a model. */
+.voice-captions-unavailable {
+  max-height: none;
+  overflow: visible;
+}
+
+.voice-caption-notice {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.voice-caption-notice code {
+  font-size: 0.72rem;
+  padding: 0 0.15rem;
+  border-radius: 3px;
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+
 /* ── Federation agreements (admin) ── */
 
 .agreements-empty {

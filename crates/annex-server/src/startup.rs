@@ -46,6 +46,9 @@ pub enum StartupError {
     /// Failed to initialize the database connection pool.
     #[error("failed to initialize database pool: {0}")]
     DatabaseError(#[from] annex_db::PoolError),
+    /// A `--migrate` run could not complete.
+    #[error("migration failed: {0}")]
+    MigrationFailed(String),
     /// Failed to initialize or restore the Merkle tree.
     #[error("failed to initialize merkle tree: {0}")]
     IdentityError(#[from] annex_identity::IdentityError),
@@ -106,6 +109,48 @@ pub enum StartupError {
          data directory is writable, set ANNEX_SIGNING_KEY explicitly, or run a dev profile."
     )]
     EphemeralSigningKeyInProduction { path: String, reason: String },
+
+    /// A signing key file exists but could not be used.
+    ///
+    /// Distinguished from "no key yet" on purpose, and it is the whole point
+    /// of this variant. Generating a key on genuine first boot is correct;
+    /// generating one because an EXISTING key is unreadable replaces the
+    /// server's identity. Federation peers stop recognising it, every issued
+    /// session and voice-join token becomes unverifiable, and the audit log's
+    /// signature chain breaks at that boundary — all reported as a warning
+    /// line in a log nobody was watching, because the server came up fine.
+    ///
+    /// A transient cause (a permissions change, a not-yet-mounted volume, a
+    /// half-written file after a power cut) is far more likely than genuine
+    /// key loss, and all of them are recoverable — but only if the server
+    /// refuses to paper over them first.
+    #[error(
+        "the signing key at '{path}' exists but could not be used: {reason}. \
+         Refusing to start: generating a replacement would give this server a NEW \
+         identity, and federation peers, issued tokens and the audit log's signature \
+         chain are all bound to the old one. Restore the key from backup, fix its \
+         permissions, or — if the identity really is lost and a new one is intended — \
+         move the file aside deliberately."
+    )]
+    UnusableSigningKey { path: String, reason: String },
+    /// The VRP alignment model could not be loaded under a profile that
+    /// requires it.
+    ///
+    /// The score this model produces decides Aligned / Partial / Conflict for
+    /// every agent registration and every federation handshake. Falling back to
+    /// the lexicon would not be a degraded mode; it would be a DIFFERENT
+    /// instrument, with its own calibration, producing verdicts a peer running
+    /// the pinned model cannot reproduce — and nothing at runtime would say so
+    /// beyond a fingerprint mismatch in a handshake nobody reads.
+    #[error(
+        "the VRP alignment model at '{path}' could not be loaded: {reason}. \
+         Refusing to start: this model decides which peers and agents are trusted, \
+         and the lexicon fallback scores differently, so a server silently using it \
+         would reach verdicts its peers cannot reproduce. Run \
+         scripts/setup-embedding-model.sh, or set ANNEX_EMBEDDING_MODEL_DIR to where \
+         the model is installed."
+    )]
+    UnusableAlignmentModel { path: String, reason: String },
     /// Production rejected an obviously-weak signing key (all-zero, all-`0xff`,
     /// or any single-byte fill). These patterns show up in test fixtures and
     /// in mis-pasted env vars; accepting one in production would compromise
@@ -282,6 +327,12 @@ pub fn init_tracing(logging: &config::LoggingConfig) -> Result<(), StartupError>
         tracing_subscriber::fmt().with_env_filter(filter).init();
     }
 
+    // The first thing worth knowing about a running Annex is which gates are
+    // live. Logged here because it needs a subscriber, and this is the moment
+    // one exists — and because the one case that matters, a release binary
+    // explicitly downgraded to `dev`, is otherwise invisible.
+    crate::build_profile::log_resolution();
+
     Ok(())
 }
 
@@ -301,14 +352,13 @@ pub fn init_tracing(logging: &config::LoggingConfig) -> Result<(), StartupError>
 /// production never wants that surprise. Dev profiles still tolerate the
 /// fallback with a loud warning, matching previous behaviour.
 fn resolve_signing_key(db_path: &str) -> Result<SigningKey, StartupError> {
-    let is_production = matches!(
-        std::env::var("ANNEX_BUILD_PROFILE")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "production" | "release"
-    );
+    // `requires_artifact_provenance`, not "is production": a desktop install
+    // is a shipped binary whose signing key backs WS tokens, voice-join
+    // tokens and federation signatures exactly as a server's does. An
+    // ephemeral or all-zero key is as wrong there as anywhere else, and the
+    // desktop app was previously exempt only because the profile was two-
+    // valued and making it production would have broken its CORS.
+    let is_production = crate::build_profile::requires_artifact_provenance();
 
     // 1. Check environment variable
     if let Ok(hex_key) = std::env::var("ANNEX_SIGNING_KEY") {
@@ -353,13 +403,28 @@ fn resolve_signing_key(db_path: &str) -> Result<SigningKey, StartupError> {
                         tracing::info!(path = %key_file.display(), "loaded signing key from persistent file");
                         return Ok(SigningKey::from_bytes(&byte_array));
                     }
-                    _ => {
-                        tracing::warn!(path = %key_file.display(), "signing key file exists but is malformed — generating new key");
+                    Ok(bytes) => {
+                        return Err(StartupError::UnusableSigningKey {
+                            path: key_file.display().to_string(),
+                            reason: format!(
+                                "decoded to {} bytes, expected 32 — the file is truncated or corrupt",
+                                bytes.len()
+                            ),
+                        });
+                    }
+                    Err(e) => {
+                        return Err(StartupError::UnusableSigningKey {
+                            path: key_file.display().to_string(),
+                            reason: format!("not valid hex: {e}"),
+                        });
                     }
                 }
             }
             Err(e) => {
-                tracing::warn!(path = %key_file.display(), error = %e, "could not read signing key file — generating new key");
+                return Err(StartupError::UnusableSigningKey {
+                    path: key_file.display().to_string(),
+                    reason: format!("could not be read: {e}"),
+                });
             }
         }
     }
@@ -383,14 +448,8 @@ fn resolve_signing_key(db_path: &str) -> Result<SigningKey, StartupError> {
         }
     }
 
-    match std::fs::write(&key_file, &hex_key) {
+    match write_key_file_atomically(&key_file, &hex_key) {
         Ok(()) => {
-            // Set file permissions to owner-only (0600) on Unix
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&key_file, std::fs::Permissions::from_mode(0o600));
-            }
             tracing::info!(path = %key_file.display(), "generated and persisted new signing key");
         }
         Err(e) => {
@@ -409,6 +468,68 @@ fn resolve_signing_key(db_path: &str) -> Result<SigningKey, StartupError> {
     }
 
     Ok(key)
+}
+
+/// Write the signing key so that a reader either sees the whole key or no file
+/// at all, and never sees it through a permissive mode.
+///
+/// Three problems with the `fs::write` + `set_permissions` it replaces:
+///
+/// * **A window at 0644.** `fs::write` creates the file with the process
+///   umask, and the `chmod` lands afterwards. A private key was briefly
+///   world-readable every time one was generated.
+/// * **The chmod result was discarded** (`let _ = ...`), so on a filesystem
+///   that refuses it the key simply stayed readable and nothing said so.
+/// * **It was not atomic.** A crash or a full disk mid-write leaves a
+///   truncated file, which on the next boot is a key that "exists but is
+///   malformed" — and that used to mean the server generated a fresh identity
+///   for itself. The failure mode of the write fed directly into the failure
+///   mode above it.
+///
+/// Create-new-with-mode, fsync, then rename: the rename is atomic within a
+/// directory, so the key file is only ever absent or complete.
+fn write_key_file_atomically(key_file: &std::path::Path, hex_key: &str) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let tmp = key_file.with_extension("key.tmp");
+    // Remove a leftover from an interrupted previous attempt; `create_new`
+    // below would otherwise refuse.
+    let _ = std::fs::remove_file(&tmp);
+
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+
+    let mut file = options.open(&tmp)?;
+    file.write_all(hex_key.as_bytes())?;
+    // Flush to the device before the rename, so a power loss cannot leave the
+    // rename durable and the contents not.
+    file.sync_all()?;
+    drop(file);
+
+    // On Windows there is no `mode`, so narrow the permissions after creation
+    // and treat a failure as a failure rather than ignoring it.
+    #[cfg(not(unix))]
+    {
+        let mut perms = std::fs::metadata(&tmp)?.permissions();
+        perms.set_readonly(false);
+        std::fs::set_permissions(&tmp, perms)?;
+    }
+
+    std::fs::rename(&tmp, key_file)?;
+
+    // fsync the directory so the rename itself is durable.
+    #[cfg(unix)]
+    if let Some(dir) = key_file.parent() {
+        if let Ok(d) = std::fs::File::open(dir) {
+            let _ = d.sync_all();
+        }
+    }
+    Ok(())
 }
 
 /// Identify obviously-weak signing keys that must not be accepted in
@@ -447,6 +568,158 @@ fn is_weak_signing_key_bytes(bytes: &[u8; 32]) -> bool {
 ///
 /// Unparseable values are logged and ignored rather than failing startup: a
 /// typo in an optional tuning knob should not take a server down.
+/// Choose and install the scorer that decides VRP alignment.
+///
+/// Under a profile that takes the multi-tenant gates, the pinned model is
+/// mandatory: the score decides which peers and agents are trusted, the lexicon
+/// fallback is a different instrument with its own calibration, and a server
+/// silently using it reaches verdicts a peer running the pinned model cannot
+/// reproduce. Same treatment as the dummy vkey, for the same reason.
+///
+/// Dev and desktop fall back and say so. A desktop server is a loopback server
+/// for one person; a dev server is not making trust decisions anybody depends
+/// on. Both carry `lexicon-v1` as their fingerprint, so a peer that does
+/// federate with them can see what they scored with.
+fn install_alignment_scorer() -> Result<(), StartupError> {
+    let profile = crate::build_profile::current();
+    let dir = annex_vrp::embedding::StaticEmbedder::default_dir();
+
+    match annex_vrp::embedding::StaticEmbedder::load(&dir) {
+        Ok(model) => {
+            let fingerprint = model.fingerprint().clone();
+            // An install failure here means something already installed a
+            // scorer, which for a server means `prepare_server` ran twice in
+            // one process — the integration tests do exactly that. Not fatal,
+            // but it must not be silent: the second server is scoring with the
+            // first one's model.
+            if let Err(e) = annex_vrp::scorer::install(std::sync::Arc::new(model)) {
+                tracing::warn!("{e}");
+            } else {
+                tracing::info!(
+                    model_id = %fingerprint.model_id,
+                    weights_sha256 = %&fingerprint.weights_sha256[..16],
+                    "VRP alignment scorer installed"
+                );
+            }
+            Ok(())
+        }
+        Err(e) if profile.requires_multi_tenant_gates() => {
+            Err(StartupError::UnusableAlignmentModel {
+                path: dir.display().to_string(),
+                reason: e.to_string(),
+            })
+        }
+        Err(e) => {
+            tracing::warn!(
+                path = %dir.display(),
+                error = %e,
+                profile = profile.as_str(),
+                "VRP alignment model not loaded; falling back to the lexicon scorer. \
+                 Its verdicts are NOT reproducible by a peer running the pinned model \
+                 — the handshake carries `lexicon-v1` as this server's scorer so peers \
+                 can see that. Run scripts/setup-embedding-model.sh to use the real one."
+            );
+            Ok(())
+        }
+    }
+}
+
+/// The identifier written to `servers.alignment_scorer_id`.
+///
+/// Model id plus the first 16 hex of the weights digest: enough that two
+/// different models, or two revisions of one, never collide, and short enough
+/// to read in a log line.
+fn alignment_scorer_id() -> String {
+    let fp = annex_vrp::scorer::active_fingerprint();
+    let digest = &fp.weights_sha256[..16.min(fp.weights_sha256.len())];
+    format!("{}@{}", fp.model_id, digest)
+}
+
+/// Re-score every stored alignment verdict when the instrument has changed.
+///
+/// `agent_registrations.alignment_status` and
+/// `federation_agreements.alignment_status` are durable, and the only thing
+/// that recomputes them is `PUT /api/admin/policy`. A server that upgraded to a
+/// different scorer — or to the floor-normalised scale, on which the previous
+/// default threshold of 0.8 was unreachable — therefore kept admitting and
+/// refusing on verdicts it would no longer reach, until an operator edited the
+/// policy for some unrelated reason. Nothing surfaced that; the rows simply
+/// said what they had always said.
+///
+/// A failure here is a warning and NOT a boot refusal, and the fingerprint is
+/// deliberately not recorded when it fails, so the next boot tries again.
+/// Refusing to start would turn a stale-verdict problem into an outage; leaving
+/// the marker unwritten is what makes the retry happen rather than the failure
+/// being papered over.
+async fn rescore_alignments_if_scorer_changed(state: Arc<AppState>) {
+    let current = alignment_scorer_id();
+    let server_id = state.server_id;
+
+    let stored: Option<String> = {
+        let Ok(conn) = state.pool.get() else {
+            tracing::warn!("could not check the stored alignment scorer id: pool unavailable");
+            return;
+        };
+        match conn.query_row(
+            "SELECT alignment_scorer_id FROM servers WHERE id = ?1",
+            rusqlite::params![server_id],
+            |row| row.get::<_, Option<String>>(0),
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = %e, "could not read alignment_scorer_id");
+                return;
+            }
+        }
+    };
+
+    if stored.as_deref() == Some(current.as_str()) {
+        return;
+    }
+
+    // A server with nothing scored yet has nothing to re-score; recording the
+    // fingerprint is the whole job. This is the fresh-install path and it must
+    // not pay for a sweep.
+    let has_rows: bool = {
+        let Ok(conn) = state.pool.get() else {
+            return;
+        };
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM agent_registrations WHERE server_id = ?1)              OR EXISTS(SELECT 1 FROM federation_agreements)",
+            rusqlite::params![server_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+            != 0
+    };
+
+    if has_rows {
+        tracing::info!(
+            previous = stored.as_deref().unwrap_or("<unrecorded>"),
+            current = %current,
+            "alignment scorer changed; re-scoring stored agent and federation verdicts",
+        );
+        if let Err(e) = crate::policy::recalculate_all_alignments(state.clone()).await {
+            tracing::warn!(
+                error = %e,
+                "re-scoring stored alignment verdicts failed; they still hold the previous \
+                 scorer's answers and this will be retried on the next start",
+            );
+            return;
+        }
+    }
+
+    let Ok(conn) = state.pool.get() else {
+        return;
+    };
+    if let Err(e) = conn.execute(
+        "UPDATE servers SET alignment_scorer_id = ?1 WHERE id = ?2",
+        rusqlite::params![current, server_id],
+    ) {
+        tracing::warn!(error = %e, "could not record alignment_scorer_id");
+    }
+}
+
 fn apply_rate_limit_env_overrides(policy: &mut ServerPolicy) {
     /// Picks the limit field an override applies to.
     type LimitField = fn(&mut ServerPolicy) -> &mut u32;
@@ -484,7 +757,79 @@ fn apply_rate_limit_env_overrides(policy: &mut ServerPolicy) {
     }
 }
 
-pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Router), StartupError> {
+/// Everything `main.rs` needs to serve and then stop cleanly.
+///
+/// `prepare_server` used to return `(listener, router)`, which left the caller
+/// no way to tell the background workers the process is going down — so
+/// `with_graceful_shutdown` drained HTTP requests while six detached timers,
+/// the federation outbox mid-delivery among them, ran until the runtime was
+/// dropped out from under them.
+#[derive(Debug)]
+pub struct PreparedServer {
+    pub listener: TcpListener,
+    pub router: Router,
+    /// Cancel to stop every background worker, then await `workers`.
+    pub shutdown: tokio_util::sync::CancellationToken,
+    /// Handles for the workers that hold external state — the ones whose
+    /// abrupt death is visible to somebody else. The purely local timers are
+    /// still fire-and-forget; cancelling the token stops them too, and there
+    /// is nothing to wait for.
+    pub workers: Vec<tokio::task::JoinHandle<()>>,
+}
+
+/// Apply database migrations and exit — a deployment boundary with an
+/// explicit success signal.
+///
+/// The Docker entrypoint used to run the whole server under `timeout 10` and
+/// treat exit code 124 as proof that migrations had succeeded. Elapsed time is
+/// not a completion signal: a slow disk, a cold container or a large migration
+/// looks identical to a fast one, and the only way the check could FAIL was for
+/// the server to exit early — which is the one thing a healthy server does not
+/// do. It also meant every deploy started, bound, served and killed a real
+/// server before starting the real one.
+///
+/// This runs the migrations, the event-log chain backfill, and nothing else,
+/// then returns. Exit 0 means applied; any other exit means it did not, and
+/// the caller can stop instead of starting a server against a half-migrated
+/// database.
+pub async fn migrate_only(config: config::Config) -> Result<usize, StartupError> {
+    let pool = annex_db::create_pool(
+        &config.database.path,
+        annex_db::DbRuntimeSettings {
+            busy_timeout_ms: config.database.busy_timeout_ms,
+            pool_max_size: config.database.pool_max_size,
+        },
+    )?;
+    let conn = pool.get()?;
+    let applied = annex_db::run_migrations(&conn)?;
+
+    // Same repair the normal startup path performs, for the same reason: a
+    // database upgraded across migration 038 has empty chain columns, and no
+    // new events may be emitted against a broken chain.
+    match annex_observe::backfill_event_log_chain(&conn) {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(
+            servers = n,
+            "rebuilt event-log hash chain for upgraded databases"
+        ),
+        Err(e) => {
+            // A failure here is fatal in a migrate-only run, where the whole
+            // point is a trustworthy exit code. On the normal startup path it
+            // is logged and tolerated, because refusing to boot a running
+            // server over a repair is worse than running with it pending.
+            return Err(StartupError::MigrationFailed(format!(
+                "event-log hash-chain backfill failed: {e}"
+            )));
+        }
+    }
+
+    tracing::info!(applied, "migrations complete");
+    Ok(applied)
+}
+
+pub async fn prepare_server(config: config::Config) -> Result<PreparedServer, StartupError> {
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let mut workers: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     // Initialize database
     let pool = annex_db::create_pool(
         &config.database.path,
@@ -653,6 +998,17 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
              Declare principles via PUT /api/admin/policy to turn it on."
         );
     }
+
+    // Install the VRP alignment scorer.
+    //
+    // `compare_peer_anchor_scored` used to construct a `ConceptEmbedder`
+    // inline, so the scorer was not a deployment choice and the pinned
+    // potion-base-2M table — written, tested, digest-verified — was reachable
+    // from nothing. It is a deployment choice now, and which way it goes is
+    // gated on the profile for the same reason the vkey is: a server that
+    // decides who to trust with an instrument its peers do not have is not
+    // degraded, it is unreproducible.
+    install_alignment_scorer()?;
 
     // Load ZK verification key.
     //
@@ -865,29 +1221,6 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
     let stt_service =
         annex_voice::SttService::new(&config.voice.stt_model_path, &config.voice.stt_binary_path);
 
-    // The experimental relay transport is configurable and unwired.
-    //
-    // `annex_federation::transport` is complete — `FederationTransport`,
-    // `spawn_signal_listener`, `establish_peer` — and `annex-server` does not
-    // reference the module at all. The flag reaches `DeploymentConfig` and is
-    // validated, and nothing reads it after that. On a production profile the
-    // validation goes further and *demands* `ANNEX_SIGNAL_TRUSTED_PEERS`
-    // before it will start, so an operator can be made to configure a trust
-    // map for a subsystem that will not run.
-    //
-    // Saying so is the whole fix. Wiring the transport is feature work; a
-    // setting that silently does nothing is a defect on its own, and one line
-    // at startup is the difference between "not implemented yet" and "I
-    // configured this and cannot tell whether it is on".
-    if config.deployment.experimental_relay_transport_enabled {
-        tracing::warn!(
-            "deployment.experimental_relay_transport_enabled is set, but the relay \
-             transport is not wired into this server yet — the setting is accepted \
-             and validated, and no relay listener is started. Federation continues \
-             over the HTTP outbox."
-        );
-    }
-
     // Resolve upload directory
     let upload_dir =
         std::env::var("ANNEX_UPLOAD_DIR").unwrap_or_else(|_| "data/uploads".to_string());
@@ -936,8 +1269,16 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
         federation_config: config.federation.clone(),
         storage_config: config.storage.clone(),
         storage_health,
+        metrics: Default::default(),
         trusted_proxy_depth: config.deployment.trusted_proxy_depth,
+        shutdown: shutdown.clone(),
     };
+
+    // Stored alignment verdicts are only as current as the scorer that produced
+    // them. Awaited rather than spawned: a peer handshake that arrives in the
+    // first second of uptime must not be answered from the previous
+    // instrument's rows.
+    rescore_alignments_if_scorer_changed(Arc::new(state.clone())).await;
 
     // Start background pruning task
     let pruning_handle = tokio::spawn(background::start_pruning_task(
@@ -953,13 +1294,19 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
     // Start rate limiter cleanup task
     tokio::spawn(background::start_rate_limit_cleanup_task(
         state.rate_limiter.clone(),
+        shutdown.clone(),
     ));
 
     // Start federation outbox worker (replaces the pre-hardening
     // fire-and-forget `relay_message` spawn — see migration 037 and
     // ADR-0007 / ADR-0008 for the durability rationale).
-    tokio::spawn(background::start_federation_outbox_task(Arc::new(
-        state.clone(),
+    //
+    // Waited on at shutdown, unlike the purely local timers: it is the one
+    // worker that can be interrupted between "marked attempted" and "sent",
+    // which is a delivery a peer never receives and this server believes it
+    // made.
+    workers.push(tokio::spawn(background::start_federation_outbox_task(
+        Arc::new(state.clone()),
     )));
 
     // Start SQLite maintenance worker if enabled. The worker is a no-op
@@ -984,6 +1331,26 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
         Arc::new(state.clone()),
     ));
 
+    // Start the relay signaling listener, if the operator opted in.
+    if config.deployment.experimental_relay_transport_enabled {
+        match start_relay_transport(
+            Arc::new(state.clone()),
+            &config.server.server_slug,
+            shutdown.clone(),
+        ) {
+            Ok(handle) => workers.push(handle),
+            Err(e) => {
+                // A relay that cannot start is not a warning. The operator
+                // turned this on, and the validator already made them
+                // configure `ANNEX_SIGNAL_TRUSTED_PEERS` for it; carrying on
+                // with federation quietly on the HTTP path is precisely the
+                // "I configured this and cannot tell whether it is on" state
+                // this replaced.
+                return Err(e);
+            }
+        }
+    }
+
     // Build application
     let router = routes::app(state);
     let addr = SocketAddr::new(config.server.host, config.server.port);
@@ -995,7 +1362,132 @@ pub async fn prepare_server(config: config::Config) -> Result<(TcpListener, Rout
         StartupError::IoError(e)
     })?;
 
-    Ok((listener, router))
+    Ok(PreparedServer {
+        listener,
+        router,
+        shutdown,
+        workers,
+    })
+}
+
+/// Build a [`FederationTransport`] and start its inbound listener.
+///
+/// The two callbacks are where this server's half of the trust model lives.
+///
+/// * **Signer** — signs the canonical envelope with the server's Ed25519 key.
+///   The relay verifies it and refuses unsigned traffic.
+/// * **Verifier** — the check the relay *cannot* make. Under rendezvous
+///   addressing an envelope carries no server slug, because the relay is not
+///   permitted to learn which servers federate; all the relay can enforce is
+///   "this key is on the operator's allowlist". Whether the key belongs to a
+///   peer we have an active agreement with is knowable only here, against
+///   `instances` and `federation_agreements`.
+///
+/// Both are required. Without the relay's check, anyone can fill our queue;
+/// without ours, any peer the relay operator has allowlisted — including one
+/// we have severed — can inject SDP into a session we never initiated.
+fn start_relay_transport(
+    state: Arc<AppState>,
+    local_server_slug: &str,
+    shutdown: tokio_util::sync::CancellationToken,
+) -> Result<tokio::task::JoinHandle<()>, StartupError> {
+    use annex_federation::signal::SignalClient;
+    use annex_federation::transport::FederationTransport;
+    use ed25519_dalek::Signer;
+
+    let base_url = std::env::var("ANNEX_SIGNAL_BASE_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    let signal = match base_url {
+        Some(url) => SignalClient::with_base_url(url),
+        None => SignalClient::new(),
+    }
+    .map_err(|e| {
+        StartupError::ConfigError(config::ConfigError::InvalidValue {
+            field: "ANNEX_SIGNAL_BASE_URL",
+            reason: format!("could not build a signaling HTTP client: {e}"),
+        })
+    })?;
+
+    let signing_key = state.signing_key.clone();
+    let local_public_key_hex = signing_key
+        .verifying_key()
+        .to_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+
+    let signer_key = signing_key.clone();
+    let signal_signer: annex_federation::transport::SignalSigner = Arc::new(
+        move |payload: &annex_federation::signal::SignalingPayload| {
+            use base64::Engine;
+            Some(
+                base64::engine::general_purpose::STANDARD.encode(
+                    signer_key
+                        .sign(payload.canonical_signing_input().as_bytes())
+                        .to_bytes(),
+                ),
+            )
+        },
+    );
+
+    let verify_pool = state.pool.clone();
+    let verify_server_id = state.server_id;
+    let signal_verifier: annex_federation::transport::SignalVerifier = Arc::new(
+        move |payload: &annex_federation::signal::SignalingPayload| {
+            let conn = verify_pool
+                .get()
+                .map_err(|e| format!("database unavailable while authorising a peer: {e}"))?;
+            // Named, not collapsed into one message. "signaling rejected" on
+            // its own has sent people to check a network that was fine; the
+            // three causes below need three different actions.
+            match annex_federation::db::authorized_signaling_peer(
+                &conn,
+                verify_server_id,
+                &payload.from_pubkey_hex,
+            ) {
+                Ok(Some(_instance_id)) => Ok(()),
+                Ok(None) => Err(format!(
+                    "no active federation agreement with the key {}…; the peer may have been \
+                     severed, or its instance row may carry a different public_key",
+                    payload.from_pubkey_hex.chars().take(16).collect::<String>()
+                )),
+                Err(e) => Err(format!("authorisation lookup failed: {e}")),
+            }
+        },
+    );
+
+    let inbound_state = state.clone();
+    let inbound_handler: annex_federation::transport::InboundHandler =
+        Arc::new(move |envelope_json: String| {
+            let state = inbound_state.clone();
+            Box::pin(async move {
+                if let Err(e) = crate::api_federation::receive_federated_message_from_data_channel(
+                    state,
+                    &envelope_json,
+                )
+                .await
+                {
+                    tracing::warn!(error = %e, "inbound relay envelope rejected");
+                }
+            })
+        });
+
+    let transport = Arc::new(FederationTransport::new(
+        local_server_slug.to_string(),
+        local_public_key_hex.clone(),
+        signing_key,
+        signal,
+        inbound_handler,
+        signal_signer,
+        signal_verifier,
+    ));
+
+    tracing::info!(
+        local_public_key = %&local_public_key_hex[..16],
+        "starting federation relay signaling listener"
+    );
+    Ok(transport.spawn_signal_listener(shutdown))
 }
 
 #[cfg(test)]

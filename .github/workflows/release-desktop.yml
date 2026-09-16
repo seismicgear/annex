@@ -14,6 +14,22 @@ on:
         options:
           - "false"
           - "true"
+      dry_run:
+        description: "Prove the pipeline without tagging: builds everything and creates a draft release named dry-run-<sha>"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      unsigned_dry_run:
+        description: "Build WITHOUT updater signing keys. The only way to get an unsigned build; refused on a tag."
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 env:
   CARGO_TERM_COLOR: always
@@ -22,9 +38,239 @@ env:
   ANNEX_BUILD_PROFILE: production
 
 jobs:
+  # ── Cheap gates, before 30-60 minutes of Tauri builds ─────────────────────
+  #
+  # Both of these were written, both pass, and both ran in no release path.
+  # Running them here rather than only in `release` matters: a mismatched tag or
+  # a dev-fixture proving key would otherwise be discovered after two Tauri
+  # builds and a `cargo install tauri-cli` had burned.
+  #
+  # Deliberately NOT `if: startsWith(github.ref, 'refs/tags/')`. The comment in
+  # the `release` job records that the dry-run path once enforced LESS than the
+  # tag path; a conditional gate is how that asymmetry comes back somewhere new.
+  preflight:
+    name: Pre-flight gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Ties the tag to the version. Nothing did: a `v0.2.0` tag pushed against
+      # a tree at `0.1.0` produced a release named v0.2.0 whose `latest.json`
+      # advertised 0.1.0 to every updater that polled it. Also fails a missing
+      # CHANGELOG section for the version being shipped.
+      - name: Version, tag and CHANGELOG agree
+        run: bash scripts/tests/version-sync.test.sh
+
+      # Decides whether a release can ship dev-fixture proving keys.
+      # `release-gates.md` claimed this ran in ci.yml's globbed harness step;
+      # that step matches `scripts/tests/*.test.sh` and this is `scripts/*.sh`,
+      # so it matched nothing. Needs `node` for verify-artifacts.js, hence the
+      # setup-node above.
+      - name: Production ZK provenance gate
+        run: sh scripts/verify-production-rejects-dev-fixtures.sh
+
+  # ── The server, which had no release artifact at all ──────────────────────
+  #
+  # The only release pipeline in this repository built the DESKTOP app. An
+  # operator who wanted to run a server had `docker build` from source and
+  # nothing else: no binary, no tarball, no published image. This produces the
+  # tarball; the image is a separate concern and is not attempted here (see
+  # CHANGELOG).
+  #
+  # The contents are not just the binary, and the reason is a consequence of two
+  # of this session's own changes:
+  #
+  #   * `zk/keys/` is gitignored — the production vkeys are installed from
+  #     `zk/artifacts/` by `install-ceremony.js`, which re-hashes each file after
+  #     it lands. With the default `enabled_zk_versions = ["v2"]` a missing
+  #     `membership_v2_vkey.json` is a hard startup error, not a degraded mode.
+  #   * `assets/embedding/` is gitignored too, and a production-profile server
+  #     REFUSES TO START without the alignment model. A tarball without it is a
+  #     tarball that cannot boot under the profile it is built for.
+  #
+  # Migrations need no packaging: they are `include_str!`-ed into the binary.
+  build-server:
+    name: Build (server tarball)
+    needs: preflight
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.88
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: server-release
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Hash-checked on the way in and re-hashed on the way out.
+      - name: Install ceremony-produced ZK artifacts
+        run: node zk/scripts/install-ceremony.js
+
+      - name: Fetch the pinned VRP alignment model
+        run: bash scripts/setup-embedding-model.sh
+
+      - name: Build the server
+        run: cargo build --release -p annex-server
+
+      - name: Assemble the tarball
+        run: |
+          set -euo pipefail
+          version=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          stage="annex-server-${version}-x86_64-unknown-linux-gnu"
+          mkdir -p "dist/${stage}"/{zk/keys,assets/embedding}
+          cp target/release/annex-server "dist/${stage}/"
+          cp zk/keys/*_vkey.json "dist/${stage}/zk/keys/"
+          cp assets/embedding/* "dist/${stage}/assets/embedding/"
+          cp README.md LICENSE.md "dist/${stage}/"
+          cp docs/deployment.md "dist/${stage}/DEPLOYMENT.md"
+
+          # A tarball that cannot start is not a release artifact, and "it
+          # compiled" does not answer that. `--check` runs the whole of
+          # `prepare_server` and exits, so this fails if the vkeys or the
+          # alignment model did not make it in. Verified locally both ways:
+          # removing `assets/embedding/model.safetensors` gives
+          # `UnusableAlignmentModel`, removing `zk/keys/membership_v2_vkey.json`
+          # gives `MissingVerificationKey`, each naming the file.
+          #
+          # A REAL random key. A production profile rejects a single-byte fill as
+          # a weak key, so `'ab' * 32` — the obvious placeholder, and the one I
+          # wrote first — fails this step for a reason that has nothing to do
+          # with the tarball.
+          (
+            cd "dist/${stage}"
+            ANNEX_BUILD_PROFILE=production \
+            ANNEX_CORS_ORIGINS=https://example.invalid \
+            ANNEX_SIGNING_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))") \
+            ANNEX_DB_PATH=./smoke.db \
+            ANNEX_PORT=0 \
+            ./annex-server --check
+          )
+          rm -f "dist/${stage}/smoke.db"*
+
+          tar -C dist -czf "annex-server-${version}-x86_64-unknown-linux-gnu.tar.gz" "${stage}"
+          sha256sum "annex-server-${version}-x86_64-unknown-linux-gnu.tar.gz"
+
+      - name: Upload the server tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-linux-x86_64
+          path: annex-server-*.tar.gz
+          if-no-files-found: error
+
+  # ── The server container image ───────────────────────────────────────────
+  #
+  # `docs/RELEASING.md` said "there is no published container image yet" and
+  # `docker-compose.prod.yml` named a locally-built tag, so the documented
+  # production deployment path ended at "build it yourself" while the desktop
+  # app had a signed, checksummed, SBOM'd release pipeline. The Dockerfile was
+  # already the strict half of that story — it verifies all five ZK manifests,
+  # runs the ceremony verifier, installs the VERIFIED bytes rather than whatever
+  # is in `zk/keys`, and pins every download by digest — and none of it was ever
+  # built by CI.
+  #
+  # Build always, push only on a tag. A dispatch proves the Dockerfile still
+  # builds and that the image STARTS, without publishing anything: publishing is
+  # not reversible, and a dry run that pushes is not a dry run.
+  build-image:
+    name: Build (server container image)
+    needs: preflight
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # This build compiles the Rust workspace in release mode, builds
+      # whisper.cpp from source and bundles the client, in one context. A
+      # standard runner has ~14 GB free and the toolcaches nothing here uses
+      # account for several of them.
+      - name: Reclaim runner disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Resolve the image reference
+        id: img
+        run: |
+          set -euo pipefail
+          version=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          repo=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          echo "ref=ghcr.io/${repo}:${version}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      # `load: true`, not `push: true`, even on a tag — the image has to be in
+      # the local daemon for the start check below, and an image is pushed only
+      # after something has run it.
+      - name: Build the image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          push: false
+          tags: ${{ steps.img.outputs.ref }}
+          build-args: |
+            ANNEX_BUILD_PROFILE=production
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The same question the tarball answers, asked of the image: does it
+      # START? `--check` runs the whole of `prepare_server` — config validation,
+      # the production-profile gates, the signing key, the v2 vkeys, the pinned
+      # alignment model, the migrations — and exits without serving. An image
+      # that built but omitted a vkey or the model passes every other check in
+      # this workflow and fails on an operator's machine.
+      #
+      # A real random signing key: a production profile rejects a single-byte
+      # fill as weak, so a placeholder fails this step for a reason that has
+      # nothing to do with the image.
+      - name: Prove the image starts
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --entrypoint /app/annex-server \
+            -e ANNEX_BUILD_PROFILE=production \
+            -e ANNEX_CORS_ORIGINS=https://example.invalid \
+            -e ANNEX_SIGNING_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" \
+            -e ANNEX_DB_PATH=/tmp/check.db \
+            -e ANNEX_PORT=0 \
+            "${{ steps.img.outputs.ref }}" --check
+
+      - name: Log in to GHCR
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Only the exact version, never `latest`. The GitHub Release this workflow
+      # produces is a DRAFT that a human publishes; moving `latest` here would
+      # hand every `docker pull` a version nobody had yet decided to ship.
+      # `docs/RELEASING.md` records moving it as a step after publishing.
+      - name: Push the image
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          docker push "${{ steps.img.outputs.ref }}"
+          echo "pushed ${{ steps.img.outputs.ref }}"
+
   # ── Required platforms: Linux + Windows. A failure here fails the release. ──
   build-linux:
     name: Build (Linux x86_64, required)
+    needs: preflight
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -80,14 +326,40 @@ jobs:
       # SHA-256 hashes. We do NOT regenerate keys here — the manifest +
       # tracked-in-git artifacts are the source of truth.
       #
-      # While the pinned manifest still says ceremony.type="dev-fixture",
-      # this step exits non-zero (code 3) by design — the production gate
-      # refuses to certify random-entropy keys for release. Don't bypass
-      # it with ANNEX_ALLOW_DEV_CEREMONY=1 for a public tag. See
-      # scripts/verify-production-rejects-dev-fixtures.sh for a standalone
-      # proof of that behaviour.
+      # `--all` rather than a bare invocation: the bare form defaults to the
+      # `membership` manifest alone, and the DEFAULT identity path is
+      # membership_v2. Gating one circuit of six let the other five reach a
+      # bundle unverified.
+      #
+      # The dev-fixture bypass env var is deliberately absent from this
+      # workflow; scripts/verify-production-rejects-dev-fixtures.sh asserts
+      # that it stays absent, and that this step still says `--all`.
+      # `verify-ceremony.js` needs zk/node_modules.
+      #
+      # It shells out to `zk/node_modules/snarkjs/build/cli.cjs` for
+      # `zkey verify`, and requires `@noble/curves` to check the drand beacon's
+      # BLS signature. Neither exists on a clean runner. Configuring an npm
+      # CACHE — which the Setup Node step above does — does not create the
+      # directory; it only makes populating it faster. So the verification step
+      # that the release contract rests on could not run at all.
+      #
+      # `verify-artifacts.js` needs none of this (it only hashes files), which
+      # is why the gap survived: the cheap gate passed and the expensive one
+      # was never reached.
+      - name: Install ZK dependencies
+        run: npm ci
+        working-directory: zk
+
       - name: Verify pinned ZK artifacts
-        run: node scripts/verify-artifacts.js
+        run: node scripts/verify-artifacts.js --all
+        working-directory: zk
+
+      # Hashes prove the files have not changed since the ceremony. They do
+      # not prove a ceremony happened. `zkey verify` walks r1cs → ptau →
+      # every contribution → beacon, and the beacon is checked against the
+      # drand round the transcript committed to before that round existed.
+      - name: Verify the ZK ceremony
+        run: node scripts/verify-ceremony.js
         working-directory: zk
 
       - name: Install Tauri CLI
@@ -95,9 +367,32 @@ jobs:
 
       - name: Build Tauri app (Linux)
         working-directory: crates/annex-desktop
-        run: cargo tauri build --target x86_64-unknown-linux-gnu
+        run: |
+          set -euo pipefail
+          # Updater artifacts exist only when there is a key to sign them with.
+          #
+          # `createUpdaterArtifacts` is NOT committed in tauri.conf.json and the
+          # public key is NOT in the repository. The pubkey is the operator's
+          # half of their own signing key; a value baked into the tree would
+          # either be a placeholder that produces unverifiable updates, or a key
+          # whose private half somebody else holds. It is injected here with
+          # `--config`, from a repository secret, so the committed config stays
+          # truthful about what it can prove.
+          if [ -n "${TAURI_SIGNING_PUBLIC_KEY:-}" ]; then
+            echo "Signing key configured — building updater artifacts."
+            CONFIG=$(printf '{"bundle":{"createUpdaterArtifacts":true},"plugins":{"updater":{"pubkey":"%s","endpoints":["%s"]}}}' \
+              "${TAURI_SIGNING_PUBLIC_KEY}" "${ANNEX_UPDATER_ENDPOINT}")
+          else
+            echo "No TAURI_SIGNING_PUBLIC_KEY — building WITHOUT updater artifacts."
+            echo "The release job refuses this unless unsigned_dry_run was set."
+            CONFIG='{}'
+          fi
+          cargo tauri build --target x86_64-unknown-linux-gnu --config "${CONFIG}"
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ""
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
+          ANNEX_UPDATER_ENDPOINT: ${{ vars.ANNEX_UPDATER_ENDPOINT || 'https://github.com/seismicgear/annex/releases/latest/download/latest.json' }}
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
@@ -106,9 +401,17 @@ jobs:
           path: |
             target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
             target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
+            # The updater bundle and its detached signature. Without these two
+            # lines the signatures never left the build job, so the release job
+            # below looked for `.sig` files in artifacts that could not contain
+            # any — and a correctly-configured signing key would still have
+            # produced a release with nothing to verify.
+            target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage.tar.gz
+            target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage.tar.gz.sig
           if-no-files-found: error
 
   build-windows:
+    needs: preflight
     name: Build (Windows x86_64, required)
     runs-on: windows-latest
     steps:
@@ -139,9 +442,21 @@ jobs:
             -property installationPath
         shell: pwsh
 
+      # See the Linux job: verify-ceremony.js needs zk/node_modules, and an
+      # npm cache is not the same thing as an install.
+      - name: Install ZK dependencies
+        shell: bash
+        run: npm ci
+        working-directory: zk
+
       - name: Verify pinned ZK artifacts
         shell: bash
-        run: node scripts/verify-artifacts.js
+        run: node scripts/verify-artifacts.js --all
+        working-directory: zk
+
+      - name: Verify the ZK ceremony
+        shell: bash
+        run: node scripts/verify-ceremony.js
         working-directory: zk
 
       - name: Install Tauri CLI
@@ -149,10 +464,26 @@ jobs:
 
       - name: Build Tauri app (Windows)
         working-directory: crates/annex-desktop
-        run: cargo tauri build --target x86_64-pc-windows-msvc
+        shell: bash
+        run: |
+          set -euo pipefail
+          # See the Linux job for why the pubkey is injected rather than
+          # committed.
+          if [ -n "${TAURI_SIGNING_PUBLIC_KEY:-}" ]; then
+            echo "Signing key configured — building updater artifacts."
+            CONFIG=$(printf '{"bundle":{"createUpdaterArtifacts":true},"plugins":{"updater":{"pubkey":"%s","endpoints":["%s"]}}}' \
+              "${TAURI_SIGNING_PUBLIC_KEY}" "${ANNEX_UPDATER_ENDPOINT}")
+          else
+            echo "No TAURI_SIGNING_PUBLIC_KEY — building WITHOUT updater artifacts."
+            CONFIG='{}'
+          fi
+          cargo tauri build --target x86_64-pc-windows-msvc --config "${CONFIG}"
         env:
           CMAKE_ARGS: -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-          TAURI_SIGNING_PRIVATE_KEY: ""
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
+          ANNEX_UPDATER_ENDPOINT: ${{ vars.ANNEX_UPDATER_ENDPOINT || 'https://github.com/seismicgear/annex/releases/latest/download/latest.json' }}
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -161,6 +492,11 @@ jobs:
           path: |
             target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
             target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+            # Same omission as Linux: the updater bundles and signatures.
+            target/x86_64-pc-windows-msvc/release/bundle/nsis/*.nsis.zip
+            target/x86_64-pc-windows-msvc/release/bundle/nsis/*.nsis.zip.sig
+            target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi.zip
+            target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi.zip.sig
           if-no-files-found: error
 
   # ── Deferred platform: macOS. Opt-in via workflow_dispatch only. ──
@@ -170,6 +506,7 @@ jobs:
   # `continue-on-error` keeps a Mac-side breakage from blocking the
   # Linux + Windows release.
   build-macos:
+    needs: preflight
     name: Build (macOS, deferred)
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.include_macos == 'true' }}
     continue-on-error: true
@@ -203,8 +540,28 @@ jobs:
             client/package-lock.json
             zk/package-lock.json
 
+      # `verify-ceremony.js` needs zk/node_modules.
+      #
+      # It shells out to `zk/node_modules/snarkjs/build/cli.cjs` for
+      # `zkey verify`, and requires `@noble/curves` to check the drand beacon's
+      # BLS signature. Neither exists on a clean runner. Configuring an npm
+      # CACHE — which the Setup Node step above does — does not create the
+      # directory; it only makes populating it faster. So the verification step
+      # that the release contract rests on could not run at all.
+      #
+      # `verify-artifacts.js` needs none of this (it only hashes files), which
+      # is why the gap survived: the cheap gate passed and the expensive one
+      # was never reached.
+      - name: Install ZK dependencies
+        run: npm ci
+        working-directory: zk
+
       - name: Verify pinned ZK artifacts
-        run: node scripts/verify-artifacts.js
+        run: node scripts/verify-artifacts.js --all
+        working-directory: zk
+
+      - name: Verify the ZK ceremony
+        run: node scripts/verify-ceremony.js
         working-directory: zk
 
       - name: Install Tauri CLI
@@ -212,15 +569,32 @@ jobs:
 
       - name: Build Tauri app (macOS)
         working-directory: crates/annex-desktop
-        run: cargo tauri build --target ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          # See the Linux job for why the pubkey is injected rather than
+          # committed.
+          if [ -n "${TAURI_SIGNING_PUBLIC_KEY:-}" ]; then
+            echo "Signing key configured — building updater artifacts."
+            CONFIG=$(printf '{"bundle":{"createUpdaterArtifacts":true},"plugins":{"updater":{"pubkey":"%s","endpoints":["%s"]}}}' \
+              "${TAURI_SIGNING_PUBLIC_KEY}" "${ANNEX_UPDATER_ENDPOINT}")
+          else
+            echo "No TAURI_SIGNING_PUBLIC_KEY — building WITHOUT updater artifacts."
+            CONFIG='{}'
+          fi
+          cargo tauri build --target ${{ matrix.target }} --config "${CONFIG}"
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ""
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
+          ANNEX_UPDATER_ENDPOINT: ${{ vars.ANNEX_UPDATER_ENDPOINT || 'https://github.com/seismicgear/annex/releases/latest/download/latest.json' }}
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
           name: annex-macos-${{ matrix.arch }}
           path: |
+            target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz
+            target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz.sig
             target/${{ matrix.target }}/release/bundle/dmg/*.dmg
           if-no-files-found: warn
 
@@ -230,13 +604,20 @@ jobs:
   # build did produce artifacts, they'll be picked up by download-artifact
   # via the artifacts/** glob below.
   release:
-    needs: [build-linux, build-windows]
+    needs: [build-linux, build-windows, build-server, build-image]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    # A tag publishes; a dispatch with dry_run proves the pipeline without one.
+    # Before this, the only way to find out whether the release job worked was
+    # to push a tag — which is the one action you cannot take back.
+    if: >-
+      startsWith(github.ref, 'refs/tags/') ||
+      (github.event_name == 'workflow_dispatch' && inputs.dry_run == 'true')
     permissions:
       contents: write
 
     steps:
+      - uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -245,14 +626,290 @@ jobs:
       - name: List artifacts
         run: find artifacts -type f | sort
 
+      # Unsigned artifacts used to be produced silently: the workflow passed
+      # `TAURI_SIGNING_PRIVATE_KEY: ""`, Tauri skipped signing, and the release
+      # went out with no `.sig` files and nothing saying so. That is defect
+      # class 1 — a failure rendered as an ordinary result — applied to the one
+      # step whose whole job is proving the bytes are ours.
+      #
+      # A dry run reports; a tag fails. See docs/RELEASING.md for how to
+      # generate the key and where each half goes.
+      # Every updater bundle must carry its OWN signature.
+      #
+      # This counted `.sig` files and passed if the count was non-zero, which
+      # answers a different question than the one that matters: one signed
+      # Linux bundle would have satisfied it for a release whose Windows
+      # bundles were entirely unsigned. Pair them up instead.
+      #
+      # And the dry run enforced LESS than the tag — a missing signature was a
+      # warning on `workflow_dispatch` and an error on a tag. So a green dry
+      # run established nothing about whether the tagged-release contract
+      # worked, which is the one thing a dry run exists to establish. Both
+      # paths now run the same check. `unsigned_dry_run` is the single,
+      # explicit way to get an unsigned build, and it is refused on a tag.
+      - name: Verify updater signatures
+        run: |
+          set -euo pipefail
+
+          unsigned_ok="${{ github.event_name == 'workflow_dispatch' && inputs.unsigned_dry_run || 'false' }}"
+          is_tag="${{ startsWith(github.ref, 'refs/tags/') }}"
+
+          if [ "${is_tag}" = "true" ] && [ "${unsigned_ok}" = "true" ]; then
+            echo "::error::unsigned_dry_run cannot be used on a tagged release."
+            exit 1
+          fi
+
+          # The bundles the updater actually consumes. The .deb/.exe/.msi a
+          # user downloads by hand are NOT signed by Tauri — conflating the two
+          # is how "every artifact needs a .sig" becomes an unsatisfiable rule.
+          mapfile -t bundles < <(find artifacts \
+            \( -name '*.AppImage.tar.gz' -o -name '*.nsis.zip' -o -name '*.msi.zip' \
+               -o -name '*.app.tar.gz' \) -print | sort)
+
+          echo "Found ${#bundles[@]} updater bundle(s)."
+          missing=0
+          for b in "${bundles[@]}"; do
+            if [ -f "${b}.sig" ]; then
+              echo "  signed   $(basename "${b}")"
+            else
+              echo "::error::unsigned $(basename "${b}") — no ${b}.sig"
+              missing=$((missing + 1))
+            fi
+          done
+
+          if [ "${#bundles[@]}" -eq 0 ]; then
+            if [ "${unsigned_ok}" = "true" ]; then
+              echo "::warning::No updater bundles. createUpdaterArtifacts is off because"
+              echo "::warning::no signing key was supplied, and unsigned_dry_run was set."
+              exit 0
+            fi
+            echo "::error::No updater bundles were produced. Set TAURI_SIGNING_PRIVATE_KEY"
+            echo "::error::and TAURI_SIGNING_PUBLIC_KEY (docs/RELEASING.md), or re-run a"
+            echo "::error::workflow_dispatch with unsigned_dry_run=true to build without them."
+            exit 1
+          fi
+
+          if [ "${missing}" -gt 0 ]; then
+            echo "::error::${missing} updater bundle(s) have no signature. Refusing to publish"
+            echo "::error::artifacts the updater cannot verify."
+            exit 1
+          fi
+
+      # Checksums are the verification path while OS code signing is not in
+      # place: a user who hits SmartScreen or Gatekeeper can still confirm the
+      # download is the one this workflow built.
+      - name: Generate SHA256SUMS
+        run: |
+          cd artifacts
+          # The updater BUNDLES were missing here, and they are the artifacts
+          # the app downloads unattended. A user could checksum the installer
+          # they clicked and not the payload their machine fetches next week —
+          # which is the one they never see.
+          find . -type f \( -name '*.deb' -o -name '*.AppImage' -o -name '*.exe' \
+            -o -name '*.msi' -o -name '*.dmg' -o -name '*.sig' \
+            -o -name '*.AppImage.tar.gz' -o -name '*.nsis.zip' \
+            -o -name '*.msi.zip' -o -name '*.app.tar.gz' -o -name 'latest.json' \
+            -o -name 'annex-server-*.tar.gz' \) \
+            -exec sha256sum {} + | sed 's| \./| |' | sort -k2 > ../SHA256SUMS
+          cd ..
+          cat SHA256SUMS
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Again here, and not only in `preflight`. A `workflow_dispatch` dry run
+      # reaches this job, and a gate that can be reached by a path that skips it
+      # is not a gate. Cheap enough to run twice.
+      - name: Version, tag and CHANGELOG agree
+        run: bash scripts/tests/version-sync.test.sh
+
+      - name: Production ZK provenance gate
+        run: sh scripts/verify-production-rejects-dev-fixtures.sh
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.88
+
+      # Three SBOMs because there are three dependency graphs, and a release
+      # that names only the Rust one is not an inventory of what shipped.
+      # SBOMs are part of the release contract, so a failure to produce one
+      # fails the release.
+      #
+      # Each of these ended with `|| echo "::warning::… SBOM failed"`, so a
+      # release could be published having merely ATTEMPTED its dependency
+      # inventory. An inventory that might not exist is not an inventory, and
+      # the warning was in a log nobody reads after a green run. Same defect
+      # class as the beacon check that discarded its result.
+      #
+      # The generators are version-pinned for the same reason the ZK artifacts
+      # are: an inventory produced by an unknown tool version is not
+      # reproducible, and reproducibility is most of what it is for.
+      - name: Generate SBOMs
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/sbom
+
+          # `cargo cyclonedx --all` writes one bom.json PER CRATE, beside each
+          # Cargo.toml. The old `find | cp {} rust-workspace.json` copied each
+          # in turn to the same destination, so the file named "rust-workspace"
+          # held whichever of the twelve crates `find` reached last — one
+          # crate's dependency list under the workspace's name, and the
+          # completeness check below passed on it, because one crate does have
+          # components. Collect them all, named for their crate, then take the
+          # union.
+          cargo install cargo-cyclonedx@0.5.7 --locked
+          cargo cyclonedx --format json --all
+          mkdir -p artifacts/sbom/rust
+          find crates -name 'bom.json' | while read -r bom; do
+            cp "$bom" "artifacts/sbom/rust/$(basename "$(dirname "$bom")").json"
+          done
+          [ -f bom.json ] && cp bom.json artifacts/sbom/rust/workspace-root.json
+          python3 scripts/combine-rust-sboms.py \
+            artifacts/sbom/rust artifacts/sbom/rust-workspace.json
+
+          npx --yes @cyclonedx/cyclonedx-npm@1.19.3 \
+            --output-file artifacts/sbom/client.json \
+            --package-lock-only client/package-lock.json
+          npx --yes @cyclonedx/cyclonedx-npm@1.19.3 \
+            --output-file artifacts/sbom/zk.json \
+            --package-lock-only zk/package-lock.json
+
+          # Produced is not the same as complete. An empty components array is
+          # what a misconfigured generator emits, and it would otherwise ship
+          # looking exactly like a real inventory.
+          for f in artifacts/sbom/rust-workspace.json artifacts/sbom/client.json artifacts/sbom/zk.json; do
+            if [ ! -s "$f" ]; then
+              echo "::error::${f} was not produced."
+              exit 1
+            fi
+            count=$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1])).get('components',[])))" "$f")
+            echo "${f}: ${count} component(s)"
+            if [ "${count}" -lt 1 ]; then
+              echo "::error::${f} lists no components — the inventory is empty, not clean."
+              exit 1
+            fi
+          done
+
+      # The update manifest the plugin polls.
+      #
+      # `plugins.updater.endpoints` points at `latest.json`, and nothing
+      # generated one — so a correctly signed, correctly uploaded set of
+      # updater bundles would still have produced an app that checked for
+      # updates, got a 404, and reported no update available. Signed artifacts
+      # nobody can discover are the same as no artifacts.
+      #
+      # Built from the .sig files themselves rather than from a template: the
+      # signature content IS the field the plugin verifies, so deriving the
+      # manifest from the signatures makes the two impossible to disagree.
+      - name: Generate update manifest
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.unsigned_dry_run == 'true') }}
+        run: |
+          set -euo pipefail
+          version="${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('0.0.0-dryrun-{0}', github.sha) }}"
+          version="${version#v}"
+          base="${{ github.server_url }}/${{ github.repository }}/releases/download/${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('dry-run-{0}', github.sha) }}"
+
+          python3 - "$version" "$base" <<'PYEOF'
+          import json, pathlib, sys
+
+          version, base = sys.argv[1], sys.argv[2]
+          # Tauri's platform keys. Only the ones we actually built appear.
+          patterns = {
+              "linux-x86_64": "*.AppImage.tar.gz",
+              "windows-x86_64": "*.nsis.zip",
+              "darwin-x86_64": "*.app.tar.gz",
+              "darwin-aarch64": "*.app.tar.gz",
+          }
+          arts = pathlib.Path("artifacts")
+          platforms = {}
+          for key, pat in patterns.items():
+              want_arch = key.split("-", 1)[1]
+              for bundle in sorted(arts.rglob(pat)):
+                  # macOS ships per-arch directories; match on the artifact
+                  # folder name so x86_64 and aarch64 do not overwrite each other.
+                  if key.startswith("darwin") and want_arch not in str(bundle):
+                      continue
+                  sig = bundle.with_suffix(bundle.suffix + ".sig")
+                  if not sig.exists():
+                      continue
+                  platforms[key] = {
+                      "signature": sig.read_text().strip(),
+                      "url": f"{base}/{bundle.name}",
+                  }
+                  break
+
+          if not platforms:
+              raise SystemExit("no signed updater bundles found; refusing to write an empty manifest")
+
+          manifest = {
+              "version": version,
+              "notes": f"Annex {version}",
+              "pub_date": __import__("datetime").datetime.now(
+                  __import__("datetime").timezone.utc
+              ).isoformat().replace("+00:00", "Z"),
+              "platforms": platforms,
+          }
+          out = arts / "latest.json"
+          out.write_text(json.dumps(manifest, indent=2) + "\n")
+          print(f"wrote {out} for {sorted(platforms)}")
+          PYEOF
+
+      - name: Stage ZK provenance
+        run: |
+          mkdir -p provenance
+          cp zk/artifacts/ceremony/transcript.json provenance/ 2>/dev/null || \
+            echo "::warning::no ceremony transcript to attach"
+          for m in zk/artifacts/*/manifest.json; do
+            [ -e "$m" ] || continue
+            cp "$m" "provenance/$(basename "$(dirname "$m")").manifest.json"
+          done
+          ls -la provenance || true
+
+      # The release body used to be `generate_release_notes: true` alone — a
+      # list of commit subjects — while the hand-written `## [x.y.z]` section of
+      # CHANGELOG.md went unused. The changelog is where the reasoning is; a
+      # commit list is what you read when there isn't one. Generated notes stay
+      # on as an appendix.
+      #
+      # Fails the release when the section is absent, which is the same fact
+      # `version-sync.test.sh` asserts, enforced at the point of use.
+      - name: Release notes from the CHANGELOG
+        run: |
+          set -euo pipefail
+          version=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          python3 scripts/changelog-section.py CHANGELOG.md "${version}" > RELEASE_NOTES.md
+          echo "--- release body ---"
+          head -30 RELEASE_NOTES.md
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           draft: true
+          body_path: RELEASE_NOTES.md
           generate_release_notes: true
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('dry-run-{0}', github.sha) }}
+          name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('Dry run {0}', github.sha) }}
+          # The `.sig` files were uploaded and the bundles they sign were not.
+          # `latest.json` points the updater at `*.AppImage.tar.gz`,
+          # `*.nsis.zip`, `*.msi.zip` and `*.app.tar.gz`; none were in this
+          # list, so every update the manifest advertised 404'd and every
+          # signing improvement above it was inert. The SBOMs the step above
+          # hard-validates were not uploaded either, and `./*.cdx.json` was a
+          # pattern nothing in this workflow writes.
           files: |
             artifacts/**/*.deb
             artifacts/**/*.AppImage
             artifacts/**/*.exe
             artifacts/**/*.msi
             artifacts/**/*.dmg
+            artifacts/**/*.sig
+            artifacts/**/*.AppImage.tar.gz
+            artifacts/**/*.nsis.zip
+            artifacts/**/*.msi.zip
+            artifacts/**/*.app.tar.gz
+            artifacts/**/annex-server-*.tar.gz
+            artifacts/latest.json
+            artifacts/sbom/*.json
+            artifacts/sbom/rust/*.json
+            SHA256SUMS
+            provenance/*

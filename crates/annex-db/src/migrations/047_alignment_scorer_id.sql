@@ -1,0 +1,19 @@
+-- Which instrument the stored alignment verdicts were measured with.
+--
+-- `agent_registrations.alignment_status` and
+-- `federation_agreements.alignment_status` are durable verdicts, and nothing
+-- re-derives them: `recalculate_all_alignments` runs from exactly one place,
+-- `PUT /api/admin/policy`. So after the scorer changed — a different embedding
+-- model, or the move from raw cosines to floor-normalised scores — every stored
+-- row kept the previous instrument's answer until an operator happened to edit
+-- the policy for an unrelated reason. An upgraded server would federate and
+-- admit agents on verdicts it would no longer reach.
+--
+-- Recording the fingerprint here rather than per row is deliberate: one server
+-- runs one scorer at a time, and the question being answered is "have all the
+-- stored verdicts gone stale at once", which they have.
+--
+-- NULL means "unknown" — every row that existed before this migration. That is
+-- treated as a mismatch, so the first boot after upgrading re-scores once and
+-- then records what it used.
+ALTER TABLE servers ADD COLUMN alignment_scorer_id TEXT;

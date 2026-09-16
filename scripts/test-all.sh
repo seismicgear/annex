@@ -77,6 +77,42 @@ for _t in scripts/tests/*.test.sh; do
     run_step "$(basename "$_t" .test.sh) (harness)" bash "$_t"
 done
 
+# ---------- Federation signaling relay ----------
+#
+# `api/signal.test.mjs` is 41 tests over `api/signal.js`, the relay that
+# `crates/annex-federation/src/transport.rs` talks to — including the
+# canonical signing string both sides have to agree on. It was named by no
+# workflow, no script and no doc, which is how the Rust side and the JS side
+# came to disagree about whether `rendezvous_tag` is part of that string.
+#
+# There is no root package.json; `node --test` needs none.
+run_step "node --test (signaling relay)" node --test api/signal.test.mjs
+
+# ---------- ZK proof round-trip ----------
+#
+# `zk-proof` is a named release gate in docs/refactor/release-gates.md and ran
+# in no workflow: CI's `zk npm test` covers verify-artifacts.js only. This is
+# the one that actually generates and verifies proofs, including the tamper
+# rejections. Skipped with a stated reason when the artifacts are absent,
+# rather than silently passing — a gate that quietly does nothing is the
+# failure mode this file exists to prevent.
+if [ -f zk/keys/membership_final.zkey ] && [ -f zk/build/membership_js/membership.wasm ]; then
+    run_step "zk proof round-trip" bash -c "cd zk && node scripts/test-proofs.js"
+else
+    echo ""
+    echo -e "${YELLOW}>>> SKIPPED${NC}: zk proof round-trip (no artifacts in zk/keys — run 'cd zk && npm ci && node scripts/build-circuits.js && node scripts/dev-setup-groth16.js')"
+fi
+
+# ---------- Production ZK provenance gate ----------
+#
+# `zk-production-gate` is a named release gate and, until this line existed, it
+# ran nowhere: `release-gates.md` claimed a workflow step for it, and the
+# globbed `scripts/tests/*.test.sh` loop above matches neither this file's
+# directory nor its suffix. Twelve assertions about whether a release can ship
+# dev-fixture ZK keys, invoked by hand when somebody remembered. The script now
+# asserts that this line is here.
+run_step "production ZK provenance gate" sh scripts/verify-production-rejects-dev-fixtures.sh
+
 # ---------- Rust tests ----------
 if [ -n "$CARGO_TEST_EXTRA" ]; then
     run_step "cargo test (Rust)" cargo test --workspace --exclude annex-desktop $CARGO_TEST_EXTRA

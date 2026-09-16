@@ -1,0 +1,26 @@
+{
+  /*
+   * The tests, typechecked.
+   *
+   * `tsconfig.app.json` excludes `src/**\/*.test.ts(x)` and `src/test-setup.ts`,
+   * so until this project existed NOTHING typechecked them — `tsc -b` compiled
+   * the app and the vite config and stopped. Vitest transpiles without checking,
+   * so a test could call a two-argument function with one argument and pass.
+   *
+   * That is not hypothetical here. `setSessionToken(token, pseudonymId)` has a
+   * comment in `src/api/core.ts` saying the pseudonym is REQUIRED "so the
+   * compiler enumerates every call site" — and `token-refresh.test.ts` was
+   * calling it with one argument the whole time, because the compiler was never
+   * shown that file.
+   *
+   * Separate from the app project rather than folded into it because the tests
+   * need the vitest/jsdom globals and the app must not.
+   */
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.test.tsbuildinfo",
+    "types": ["vite/client", "vitest/globals", "node"]
+  },
+  "include": ["src", "e2e", "vitest.config.ts", "playwright.config.ts"],
+  "exclude": []
+}

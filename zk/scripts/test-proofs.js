@@ -206,6 +206,17 @@ async function run() {
     const topicHashB = 8888888888888888n;
     const DOMAIN_NULLIFIER_V2 = 1n;
 
+    // The server-issued challenge. In the live protocol this is 32 CSPRNG
+    // bytes with the top three bits cleared so it is always inside the BN254
+    // scalar field — see `draw_challenge_hex` in
+    // `crates/annex-server/src/api_zk_challenge.rs`. Two distinct values,
+    // because the point of the input is that a proof for one is worthless for
+    // the other.
+    const challengeA =
+        0x1f3a5c7e9b0d2f4618a3c5e7092b4d6f81a3c5e7092b4d6f81a3c5e7092b4d6fn;
+    const challengeB =
+        0x0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9n;
+
     function expectedNullifier(skVal, topicVal) {
         return poseidon.F.toString(
             poseidon([skVal, topicVal, DOMAIN_NULLIFIER_V2]),
@@ -222,12 +233,15 @@ async function run() {
         pathElements: pathElements0,
         pathIndexBits: pathIndexBits0,
         topicHash: topicHashA.toString(),
+        challenge: challengeA.toString(),
     };
     const { proof: v2ProofA, publicSignals: v2SignalsA } =
         await snarkjs.groth16.fullProve(v2InputA, v2Wasm, v2Zkey);
 
-    // Public signals layout: [root, commitment, nullifier, topicHash].
-    assert(v2SignalsA.length === 4, "v2 publicSignals.length === 4");
+    // Public signals layout: [root, commitment, nullifier, topicHash,
+    // challenge] — outputs first, then public inputs in declaration order, as
+    // `build/membership_v2.sym` shows.
+    assert(v2SignalsA.length === 5, "v2 publicSignals.length === 5");
     const v2VerifiedA = await snarkjs.groth16.verify(
         memV2VKey,
         v2SignalsA,
@@ -246,6 +260,10 @@ async function run() {
     assert(
         v2SignalsA[3] === topicHashA.toString(),
         "v2 publicSignals[3] echoes topicHash",
+    );
+    assert(
+        v2SignalsA[4] === challengeA.toString(),
+        "v2 publicSignals[4] echoes the server-issued challenge",
     );
 
     console.log("\n=== Membership v2: Tampered Nullifier ===");
@@ -274,6 +292,57 @@ async function run() {
     assert(
         !tamperedTopicVerified,
         "v2 proof with tampered topicHash is rejected",
+    );
+
+    console.log("\n=== Membership v2: Tampered challenge ===");
+
+    // This is the assertion the whole challenge mechanism rests on, and it is
+    // not a formality. circom DROPS a public input that appears in no
+    // constraint, so a `signal input challenge;` that nothing references
+    // would not be in the witness at all and could be swapped freely. The
+    // circuit therefore spends one constraint on it —
+    // `challengeSquared <== challenge * challenge`, Semaphore's
+    // signalHashSquared idiom — and this is what proves that constraint is
+    // doing its job.
+    const tamperedChallengeSignals = [...v2SignalsA];
+    tamperedChallengeSignals[4] = challengeB.toString();
+    const tamperedChallengeVerified = await snarkjs.groth16.verify(
+        memV2VKey,
+        tamperedChallengeSignals,
+        v2ProofA,
+    );
+    assert(
+        !tamperedChallengeVerified,
+        "v2 proof presented against a different challenge is rejected",
+    );
+
+    console.log("\n=== Membership v2: A second challenge needs a second proof ===");
+
+    // Same member, same topic, same tree: only the challenge differs. The
+    // nullifier is unchanged — it is derived from sk and topicHash, so
+    // double-spend detection still works across challenges — but the proof
+    // and the public signals are not interchangeable.
+    const { proof: v2ProofFresh, publicSignals: v2SignalsFresh } =
+        await snarkjs.groth16.fullProve(
+            { ...v2InputA, challenge: challengeB.toString() },
+            v2Wasm,
+            v2Zkey,
+        );
+    assert(
+        v2SignalsFresh[4] === challengeB.toString(),
+        "the fresh proof carries the fresh challenge",
+    );
+    assert(
+        v2SignalsFresh[2] === v2SignalsA[2],
+        "the nullifier does not depend on the challenge",
+    );
+    assert(
+        await snarkjs.groth16.verify(memV2VKey, v2SignalsFresh, v2ProofFresh),
+        "the fresh proof verifies against its own challenge",
+    );
+    assert(
+        !(await snarkjs.groth16.verify(memV2VKey, v2SignalsA, v2ProofFresh)),
+        "the fresh proof does not verify against the first challenge's signals",
     );
 
     console.log("\n=== Membership v2: Mismatched leafIndex vs pathIndexBits ===");

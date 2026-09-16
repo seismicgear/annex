@@ -202,7 +202,18 @@ export class AnnexWebSocket {
   deleteMessage(channelId: string, messageId: string, clientRequestId?: string): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) throw new Error('WebSocket is not connected'); this.ws.send(JSON.stringify({ type: 'delete_message', channelId, messageId, clientRequestId } as WsSendFrame)); }
   trackLastMessageId(channelId: string, messageId: string): void { this.lastMessageIds.set(channelId, messageId); }
   sendTyping(channelId: string): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return; this.ws.send(JSON.stringify({ type: 'typing', channelId })); }
-  sendWebRtcOffer(channelId: string, sdp: string): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return; this.ws.send(JSON.stringify({ type: 'webrtc_offer', channelId, sdp } as WsSendFrame)); }
+  /**
+   * Send an SDP offer, carrying the join grant from
+   * `POST /api/channels/:id/voice/join`.
+   *
+   * The server requires the grant to ENTER a call: without it the offer frame
+   * was a way to open a live SFU peer connection while skipping every check
+   * the HTTP join performs — server voice policy, whether voice is configured,
+   * whether the channel supports voice, and the identity's `can_voice`. A
+   * renegotiation offer from a peer already in the room does not need one, so
+   * passing `null` is legitimate there and refused on entry.
+   */
+  sendWebRtcOffer(channelId: string, sdp: string, voiceToken: string | null): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return; this.ws.send(JSON.stringify({ type: 'webrtc_offer', channelId, sdp, voiceToken } as WsSendFrame)); }
   sendWebRtcAnswer(channelId: string, sdp: string): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return; this.ws.send(JSON.stringify({ type: 'webrtc_answer', channelId, sdp } as WsSendFrame)); }
   sendIceCandidate(channelId: string, candidate: string, sdpMid: string | null = null, sdpMLineIndex: number | null = null): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return; this.ws.send(JSON.stringify({ type: 'webrtc_ice_candidate', channelId, candidate, sdpMid, sdpMLineIndex } as WsSendFrame)); }
 

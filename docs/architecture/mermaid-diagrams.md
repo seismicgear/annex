@@ -134,12 +134,16 @@ sequenceDiagram
         I-->>S: path elements + path index bits
         S-->>A: registration response
 
-        A->>A: build Groth16 proof via membership.circom
+        A->>S: POST /api/zk/challenge<br/>{commitment, topic}
+        S-->>A: {challenge, expiresInSecs}<br/>(single-use, 5 min TTL, max 8 outstanding per commitment)
 
-        A->>S: POST /api/zk/verify-membership<br/>{root, commitment, proof, publicSignals,<br/> protocolVersion (v1 | v2)}
+        A->>A: build Groth16 proof via membership_v2.circom<br/>(challenge is a CIRCUIT INPUT, not a header)
+
+        A->>S: POST /api/zk/verify-membership<br/>{root, commitment, proof, publicSignals (5),<br/> nullifierHex, topicHashHex, challengeHex,<br/> protocolVersion: "v2"}
+        S->>S: parse + cross-check challengeHex against publicSignals[4]
         S->>I: is_root_acceptable + verify_proof
         I-->>S: ok + canonical nullifier
-        S->>S: tx: insert zk_nullifiers,<br/>upsert platform_identities,<br/>upsert graph_nodes (AI_AGENT, active=1),<br/>emit PseudonymDerived + NodeAdded
+        S->>S: tx (IMMEDIATE): consume challenge BEFORE the nullifier branch,<br/>insert zk_nullifiers,<br/>upsert platform_identities,<br/>upsert graph_nodes (AI_AGENT, active=1),<br/>emit PseudonymDerived + NodeAdded
         S-->>A: pseudonym activated + HMAC session token
 
         A->>S: POST /api/ws/token<br/>Authorization: Bearer &lt;session token&gt;
@@ -406,6 +410,12 @@ A short, honest list of places where the repo did not pin down a single shape an
 
 - **Channel lifecycle is conceptual.** The `channels` table has no `status` column ([`009_channels.sql`](../../crates/annex-db/src/migrations/009_channels.sql)). Diagram 5 collapses to one real state (`Active`) plus a federation-scope toggle, and calls out that join-time admission is governed by row *properties*, not state transitions. If a future migration adds an explicit status column, update the diagram.
 - **Voice transport.** `crates/annex-voice/src/lib.rs` documents a "Native WebRTC SFU" and the workspace pulls `webrtc = "0.11"`. The SFU runs in-process and its signalling rides the app's own `/ws` WebSocket, so there is no separate media control plane in the diagrams because there is none in the code. [`docker-compose.yml`](../../docker-compose.yml) no longer launches a LiveKit sidecar and [`docs/deployment.md`](../deployment.md) no longer describes one; the only surviving LiveKit artefact is the unreferenced [`docker-compose.livekit.yml`](../../docker-compose.livekit.yml), which nothing includes. The diagrams follow the in-tree code (`annex-voice` native SFU).
-- **Federation handshake envelope fields.** [`README.md`](../../README.md) line 302 lists handshake fields (`protocol_version`, `identity_hash`, `ethical_root_hash`, `declared_transfer_scopes`, `declared_capabilities`) that do **not** match the in-tree `annex_vrp::VrpFederationHandshake` struct, which carries only `anchor_snapshot` + `capability_contract` wrapped by `HandshakeRequest { base_url, signature, handshake }`. The diagram follows the code, not the README prose.
-- **Membership v1 vs v2.** Both ship side-by-side. The server selects a verifier per request from the `protocolVersion` field; the v1 vkey is always loaded and the v2 vkey is loaded only when `Config::security.enabled_zk_versions` includes `"v2"` ([`crates/annex-server/src/middleware.rs`](../../crates/annex-server/src/middleware.rs), `verify_zk_membership_header`).
+- **Membership v1 vs v2.** Not a symmetric choice. `enabled_zk_versions`
+  defaults to `["v2"]` and a production profile **refuses** `"v1"`, because a v1
+  `verify-membership` body has no fresh field and is therefore replayable. The
+  server selects a verifier per request from the `protocolVersion` field; the v1
+  vkey is always loaded and the v2 vkey only when `enabled_zk_versions` includes
+  `"v2"` ([`crates/annex-server/src/middleware.rs`](../../crates/annex-server/src/middleware.rs),
+  `verify_zk_membership_header`), which reads backwards against the default and
+  is worth knowing when a v2-only server appears to load a v1 key for nothing.
 - **Federation transport.** `crates/annex-federation/src/signal.rs` uses `router.monolithannex.com` only as a stateless SDP/ICE rendezvous; `crates/annex-federation/src/transport.rs` opens the WebRTC P2P data channel from there. The `POST /api/federation/handshake`, `/attest-membership`, `/messages`, and `/rtx` endpoints are HTTPS and remain reachable independently. Steady-state envelopes can flow over either path.

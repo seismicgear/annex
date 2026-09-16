@@ -74,6 +74,8 @@ async fn setup_app_with_policy(policy: ServerPolicy) -> (axum::Router, annex_db:
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
+        shutdown: Default::default(),
+        metrics: Default::default(),
     };
 
     (app(state), pool)
@@ -97,6 +99,7 @@ async fn test_agent_handshake_aligned() {
     let handshake = VrpFederationHandshake {
         anchor_snapshot: anchor,
         capability_contract: contract,
+        scorer: None,
     };
 
     let payload = serde_json::json!({
@@ -191,6 +194,7 @@ async fn test_agent_handshake_conflict() {
     let handshake = VrpFederationHandshake {
         anchor_snapshot: anchor,
         capability_contract: contract,
+        scorer: None,
     };
 
     let payload = serde_json::json!({
@@ -283,6 +287,7 @@ async fn rehandshake_without_token_is_rejected_for_registered_agent() {
     let handshake = VrpFederationHandshake {
         anchor_snapshot: anchor,
         capability_contract: contract,
+        scorer: None,
     };
     let payload = serde_json::json!({
         "pseudonymId": "agent-already-registered",
@@ -331,6 +336,7 @@ async fn rehandshake_with_mismatched_token_is_rejected() {
         "attacker-pseudonym",
         &[0u8; 32],
         annex_server::api_ws::SESSION_TOKEN_TTL_SECS,
+        0,
     );
 
     let anchor = VrpAnchorSnapshot::new(&[], &[]).unwrap();
@@ -342,6 +348,7 @@ async fn rehandshake_with_mismatched_token_is_rejected() {
     let handshake = VrpFederationHandshake {
         anchor_snapshot: anchor,
         capability_contract: contract,
+        scorer: None,
     };
     let payload = serde_json::json!({
         "pseudonymId": "agent-victim",
@@ -383,6 +390,7 @@ async fn pre_registration_handshake_remains_unauthenticated() {
     let handshake = VrpFederationHandshake {
         anchor_snapshot: anchor,
         capability_contract: contract,
+        scorer: None,
     };
     let payload = serde_json::json!({
         "pseudonymId": "agent-fresh",
@@ -428,6 +436,7 @@ async fn rehandshake_with_matching_token_is_allowed() {
         "agent-owner",
         &[0u8; 32],
         annex_server::api_ws::SESSION_TOKEN_TTL_SECS,
+        0,
     );
 
     let anchor = VrpAnchorSnapshot::new(&[], &[]).unwrap();
@@ -439,6 +448,7 @@ async fn rehandshake_with_matching_token_is_allowed() {
     let handshake = VrpFederationHandshake {
         anchor_snapshot: anchor,
         capability_contract: contract,
+        scorer: None,
     };
     let payload = serde_json::json!({
         "pseudonymId": "agent-owner",
@@ -487,6 +497,7 @@ async fn test_agent_handshake_admitted_when_server_declares_no_principles() {
             offered_capabilities: vec![],
             redacted_topics: vec![],
         },
+        scorer: None,
     };
 
     let payload = serde_json::json!({
@@ -527,4 +538,189 @@ async fn test_agent_handshake_admitted_when_server_declares_no_principles() {
         )
         .unwrap();
     assert!(exists, "no agent_registrations row was written");
+}
+
+// ── Revocation must reach this endpoint too ───────────────────────────────
+//
+// `/api/vrp/agent-handshake` is mounted in `public_routes`, deliberately, so a
+// brand-new agent can make its first handshake before any identity row exists.
+// The helper that read its `Authorization` header therefore ran with no
+// middleware above it — and skipped the token-epoch check, on a written
+// assumption that `auth_middleware` had already done it. That middleware never
+// saw this route.
+//
+// So `POST /api/admin/members/{id}/revoke-sessions`, and deactivation (which
+// also bumps the epoch), stopped a revoked token everywhere except here, where
+// it still authorised rewriting the agent's capability contract, alignment
+// status, transfer scope and signing public key.
+
+/// Insert an agent identity at a given epoch and activity state.
+fn seed_agent(pool: &annex_db::DbPool, pseudonym: &str, epoch: i64, active: bool) {
+    let conn = pool.get().unwrap();
+    conn.execute(
+        "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active, token_epoch)
+         VALUES (1, ?1, ?2, ?3, ?4)",
+        rusqlite::params![
+            pseudonym,
+            annex_types::RoleCode::AiAgent.label(),
+            active as i64,
+            epoch
+        ],
+    )
+    .unwrap();
+}
+
+fn handshake_payload(pseudonym: &str) -> serde_json::Value {
+    let anchor = VrpAnchorSnapshot::new(&[], &[]).unwrap();
+    let contract = VrpCapabilitySharingContract {
+        required_capabilities: vec![],
+        offered_capabilities: vec!["TEXT".to_string(), "VRP".to_string()],
+        redacted_topics: vec![],
+    };
+    serde_json::json!({
+        "pseudonymId": pseudonym,
+        "handshake": VrpFederationHandshake {
+            anchor_snapshot: anchor,
+            capability_contract: contract,
+            scorer: None,
+        }
+    })
+}
+
+async fn handshake_with_token(
+    app: &axum::Router,
+    pseudonym: &str,
+    token: &str,
+) -> (StatusCode, String) {
+    let mut req = Request::builder()
+        .uri("/api/vrp/agent-handshake")
+        .method("POST")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(handshake_payload(pseudonym).to_string()))
+        .unwrap();
+    req.extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12345))));
+    let response = app.clone().oneshot(req).await.unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, String::from_utf8_lossy(&bytes).to_string())
+}
+
+#[tokio::test]
+async fn a_revoked_token_cannot_re_handshake_an_agent() {
+    let (app, pool) = setup_app().await;
+    seed_agent(&pool, "agent-revoked", 0, true);
+
+    // Minted against epoch 0 — valid, unexpired, correctly signed.
+    let token = annex_server::api_ws::generate_session_token(
+        "agent-revoked",
+        &[0u8; 32],
+        annex_server::api_ws::SESSION_TOKEN_TTL_SECS,
+        0,
+    );
+
+    // It works before revocation, so the refusal below cannot be blamed on a
+    // malformed token.
+    let (status, body) = handshake_with_token(&app, "agent-revoked", &token).await;
+    assert_eq!(status, StatusCode::OK, "precondition failed: {body}");
+
+    // Revoke: exactly what the admin endpoint and deactivation both do.
+    {
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "UPDATE platform_identities SET token_epoch = token_epoch + 1
+             WHERE server_id = 1 AND pseudonym_id = 'agent-revoked'",
+            [],
+        )
+        .unwrap();
+    }
+
+    let (status, body) = handshake_with_token(&app, "agent-revoked", &token).await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a revoked token re-handshaked the agent. Revoking a credential has to mean \
+         it cannot keep exercising authority through a different endpoint. Body: {body}"
+    );
+    assert!(
+        body.contains("revoked"),
+        "the refusal should name revocation so an operator can tell it from an \
+         expired or mismatched token: {body}"
+    );
+}
+
+/// A deactivated identity used to read as ABSENT, because the lookup filtered
+/// on `active = 1`. Absent meant "pre-registration", which is the
+/// unauthenticated path — so deactivating an agent did not protect its
+/// registration, it opened it to anyone who knew the pseudonym. Pseudonyms are
+/// public: `/api/public/agents`, channel listings, the events stream.
+#[tokio::test]
+async fn a_deactivated_agent_cannot_be_re_handshaked_anonymously() {
+    let (app, pool) = setup_app().await;
+    seed_agent(&pool, "agent-deactivated", 0, false);
+
+    let mut req = Request::builder()
+        .uri("/api/vrp/agent-handshake")
+        .method("POST")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            handshake_payload("agent-deactivated").to_string(),
+        ))
+        .unwrap();
+    req.extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12345))));
+    let response = app.oneshot(req).await.unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "a deactivated agent's registration was mutable with NO token at all"
+    );
+}
+
+/// Even with a correctly-signed current-epoch token, a deactivated identity
+/// must not re-handshake. Deactivated means deactivated.
+#[tokio::test]
+async fn a_deactivated_agent_cannot_re_handshake_with_a_valid_token() {
+    let (app, pool) = setup_app().await;
+    seed_agent(&pool, "agent-off", 0, false);
+
+    let token = annex_server::api_ws::generate_session_token(
+        "agent-off",
+        &[0u8; 32],
+        annex_server::api_ws::SESSION_TOKEN_TTL_SECS,
+        0,
+    );
+
+    let (status, body) = handshake_with_token(&app, "agent-off", &token).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body: {body}");
+    assert!(
+        body.contains("deactivated"),
+        "the refusal should say the identity is deactivated: {body}"
+    );
+}
+
+/// The pre-registration path must still work — it is why this route is public.
+#[tokio::test]
+async fn an_unregistered_pseudonym_can_still_make_a_first_handshake() {
+    let (app, _pool) = setup_app().await;
+
+    let mut req = Request::builder()
+        .uri("/api/vrp/agent-handshake")
+        .method("POST")
+        .header("content-type", "application/json")
+        .body(Body::from(handshake_payload("brand-new-agent").to_string()))
+        .unwrap();
+    req.extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12345))));
+    let response = app.oneshot(req).await.unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "tightening the re-handshake gate must not close the first-handshake path"
+    );
 }

@@ -15,8 +15,40 @@ fn env_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// Point the alignment gate at the workspace's model, or say why we cannot.
+///
+/// A production-profile server refuses to start without the VRP alignment
+/// model — it decides which peers and agents are trusted, and the lexicon
+/// fallback is a different instrument. These tests are about SIGNING KEYS, but
+/// they start a production-profile server, so they have to satisfy that gate
+/// the same way a deployment does.
+///
+/// `ANNEX_EMBEDDING_MODEL_DIR` rather than the default, because
+/// `DEFAULT_MODEL_DIR` is relative to the working directory and cargo runs a
+/// test with the CRATE root as its working directory — so the default resolves
+/// to `crates/annex-server/assets/embedding`, which does not exist.
+///
+/// Returns false (having printed why) on a checkout that has not run
+/// `scripts/setup-embedding-model.sh`. A skip that names the missing asset is
+/// better than a red test that blames signing keys for an embedding model.
+fn point_at_alignment_model() -> bool {
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/embedding");
+    if !dir.join("model.safetensors").exists() {
+        eprintln!(
+            "SKIP: no VRP alignment model at {} — run scripts/setup-embedding-model.sh. \
+             A production-profile server refuses to start without it, so this test \
+             cannot run.",
+            dir.display()
+        );
+        return false;
+    }
+    std::env::set_var("ANNEX_EMBEDDING_MODEL_DIR", &dir);
+    true
+}
+
 fn clear_env() {
     for k in [
+        "ANNEX_EMBEDDING_MODEL_DIR",
         "ANNEX_BUILD_PROFILE",
         "ANNEX_SIGNING_KEY",
         "ANNEX_ZK_KEY_PATH",
@@ -55,6 +87,10 @@ async fn production_rejects_all_zero_signing_key_env() {
     clear_env();
 
     std::env::set_var("ANNEX_BUILD_PROFILE", "production");
+    if !point_at_alignment_model() {
+        clear_env();
+        return;
+    }
     std::env::set_var(
         "ANNEX_SIGNING_KEY",
         // 64 zero hex chars — 32 zero bytes. The classic placeholder.
@@ -77,6 +113,10 @@ async fn production_rejects_all_ff_signing_key_env() {
     clear_env();
 
     std::env::set_var("ANNEX_BUILD_PROFILE", "production");
+    if !point_at_alignment_model() {
+        clear_env();
+        return;
+    }
     std::env::set_var(
         "ANNEX_SIGNING_KEY",
         "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
@@ -98,6 +138,10 @@ async fn production_rejects_single_byte_fill_signing_key_env() {
     clear_env();
 
     std::env::set_var("ANNEX_BUILD_PROFILE", "production");
+    if !point_at_alignment_model() {
+        clear_env();
+        return;
+    }
     // 0xab repeated 32 times — common dev fixture pattern.
     std::env::set_var(
         "ANNEX_SIGNING_KEY",
@@ -120,6 +164,10 @@ async fn production_accepts_real_signing_key_env() {
     clear_env();
 
     std::env::set_var("ANNEX_BUILD_PROFILE", "production");
+    if !point_at_alignment_model() {
+        clear_env();
+        return;
+    }
     // A real-looking random key (no pattern). Generated once at fixture
     // authoring time via `openssl rand -hex 32`; bytes are independent.
     std::env::set_var(
@@ -128,7 +176,7 @@ async fn production_accepts_real_signing_key_env() {
     );
 
     let cfg = config_for_production_signing_test(":memory:");
-    let (listener, _router) = prepare_server(cfg)
+    let annex_server::PreparedServer { listener, .. } = prepare_server(cfg)
         .await
         .expect("production accepts a real 32-byte key");
     drop(listener); // free the OS port immediately
@@ -161,7 +209,12 @@ async fn voice_tokens_survive_restart_with_same_persistent_key() {
 
     let cfg1 = config_for_production_signing_test(&db_str);
     std::env::set_var("ANNEX_BUILD_PROFILE", "production");
-    let (l1, _r1) = prepare_server(cfg1).await.expect("first start ok");
+    if !point_at_alignment_model() {
+        clear_env();
+        return;
+    }
+    let annex_server::PreparedServer { listener: l1, .. } =
+        prepare_server(cfg1).await.expect("first start ok");
     drop(l1);
 
     // Capture the secret from disk: rebuild it ourselves using the
@@ -180,7 +233,8 @@ async fn voice_tokens_survive_restart_with_same_persistent_key() {
 
     // Second start: same db_path → same on-disk key → same derived secret.
     let cfg2 = config_for_production_signing_test(&db_str);
-    let (l2, _r2) = prepare_server(cfg2).await.expect("second start ok");
+    let annex_server::PreparedServer { listener: l2, .. } =
+        prepare_server(cfg2).await.expect("second start ok");
     drop(l2);
 
     let hex_key2 = std::fs::read_to_string(&key_file).expect("still persisted");
@@ -231,4 +285,128 @@ async fn voice_tokens_become_invalid_when_signing_key_rotates() {
     let err = annex_voice::verify_join_token(&token, &secret_b, None, None)
         .expect_err("rotated secret invalidates old tokens");
     assert_eq!(err, annex_voice::VoiceTokenError::Tampered);
+}
+
+// ── A damaged key must never become a new identity ────────────────────────
+//
+// `resolve_signing_key` used to warn and generate a replacement whenever an
+// EXISTING key file could not be read or decoded. Generating a key on genuine
+// first boot is right; generating one because the existing key is unreadable
+// silently replaces the server's identity. Federation peers stop recognising
+// it, every issued session and voice-join token becomes unverifiable, and the
+// audit log's signature chain breaks at that boundary — while the server comes
+// up looking perfectly healthy.
+//
+// The likely causes are all transient and all recoverable: a permissions
+// change, a volume not yet mounted, a file half-written when the power went.
+// Recoverable only if the server refuses to paper over them first.
+
+/// Write a key file into a temp dir and return `(dir, db_path)`.
+fn seeded_data_dir(contents: &[u8]) -> (tempfile::TempDir, String) {
+    let dir = tempfile::tempdir().expect("temp dir");
+    std::fs::write(dir.path().join("signing.key"), contents).expect("seed key file");
+    let db = dir.path().join("annex.db");
+    (dir, db.to_string_lossy().to_string())
+}
+
+async fn expect_unusable_key(contents: &[u8], what: &str) {
+    let _guard = env_lock().lock().await;
+    clear_env();
+
+    let (dir, db_path) = seeded_data_dir(contents);
+    let before = std::fs::read(dir.path().join("signing.key")).expect("key file readable");
+
+    let result = prepare_server(config_for_production_signing_test(&db_path)).await;
+
+    match result {
+        Err(StartupError::UnusableSigningKey { path, reason }) => {
+            assert!(
+                path.contains("signing.key"),
+                "the error must name the file an operator has to recover: {path}"
+            );
+            assert!(!reason.is_empty(), "the error must say what was wrong");
+        }
+        Err(other) => panic!("{what}: expected UnusableSigningKey, got {other}"),
+        Ok(_) => panic!(
+            "{what}: the server STARTED with a damaged key file. It has just given \
+             itself a new identity and nothing will report that until a federation \
+             peer rejects it."
+        ),
+    }
+
+    // The decisive assertion: the damaged file is still there, byte for byte.
+    // A server that refuses to start but overwrites the key on the way out has
+    // destroyed exactly what the refusal was protecting.
+    let after = std::fs::read(dir.path().join("signing.key")).expect("key file still present");
+    assert_eq!(
+        before, after,
+        "{what}: the existing key file was modified. Refusing to start is only \
+         useful if the key survives to be recovered."
+    );
+}
+
+#[tokio::test]
+async fn a_truncated_signing_key_refuses_startup_and_is_preserved() {
+    // 16 bytes of valid hex rather than 32 — the shape a half-finished write
+    // leaves behind.
+    expect_unusable_key(b"00112233445566778899aabbccddeeff", "truncated key").await;
+}
+
+#[tokio::test]
+async fn a_corrupt_signing_key_refuses_startup_and_is_preserved() {
+    expect_unusable_key(b"this is not hex at all", "corrupt key").await;
+}
+
+#[tokio::test]
+async fn an_empty_signing_key_file_refuses_startup() {
+    // An empty file is the classic result of a disk filling mid-write. It
+    // decodes as zero bytes, which is neither 32 nor a hex error, so it needs
+    // its own branch to not fall through to "generate a new one".
+    expect_unusable_key(b"", "empty key file").await;
+}
+
+/// First boot is still allowed to create a key — the distinction this whole
+/// change rests on is "no key has ever existed" versus "the key is damaged".
+#[tokio::test]
+async fn a_genuinely_absent_key_is_still_generated_on_first_boot() {
+    let _guard = env_lock().lock().await;
+    clear_env();
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir.path().join("annex.db").to_string_lossy().to_string();
+    assert!(
+        !dir.path().join("signing.key").exists(),
+        "precondition: no key yet"
+    );
+
+    let result = prepare_server(config_for_production_signing_test(&db_path)).await;
+    assert!(
+        result.is_ok(),
+        "first boot must still be able to create an identity: {:?}",
+        result.err().map(|e| e.to_string())
+    );
+
+    let key_path = dir.path().join("signing.key");
+    assert!(key_path.exists(), "the key should have been persisted");
+
+    // Created private, not chmod-ed private afterwards. The old code wrote the
+    // file with the process umask and narrowed it in a second step, so a
+    // private key was briefly world-readable every time one was generated —
+    // and the chmod's result was discarded, so a filesystem that refused it
+    // left the key readable with nothing said.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&key_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "a freshly generated signing key must be owner-only, got {mode:o}"
+        );
+    }
+
+    // And no temporary file left behind.
+    assert!(
+        !dir.path().join("signing.key.tmp").exists(),
+        "the atomic-write temporary should have been renamed away"
+    );
 }

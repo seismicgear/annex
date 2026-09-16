@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "circuit": "identity",
+  "circuitVersion": "1.0.0",
+  "curve": "bn254",
+  "provingSystem": "groth16",
+  "treeDepth": 0,
+  "publicSignals": [
+    "commitment"
+  ],
+  "wasm_sha256": "8da5966252df0373651ef8aa00d81a112c7c84a700a3c93fd5e4e5a015c986ee",
+  "zkey_sha256": "f9d594030afe77a8f242a4222961ee5735b3e5cf7b6d081606519fc22b16ea3a",
+  "vkey_sha256": "1c1319c87c0d781cf0cb27262fe18714e2423b4a9877e396f0ef33662c860583",
+  "r1cs_sha256": "665efcc2da911de25bf08cc8e03fa6f4102cda12f6712dc0fd21b0b6da9cc235",
+  "paths": {
+    "wasm": "./identity.wasm",
+    "zkey": "./identity_final.zkey",
+    "vkey": "./identity_vkey.json",
+    "r1cs": "./identity.r1cs"
+  },
+  "ceremony": {
+    "type": "single-contributor-beacon",
+    "generatedAt": "2026-09-15T15:06:39.060Z",
+    "transcript": "../ceremony/transcript.json",
+    "phase1Source": "operator-supplied",
+    "beaconRound": 6468464,
+    "beaconChainHash": "8990e7a9aaed2ffed73dbd7092123d6f289930540d7651336225dc172e51b2ce",
+    "zkeyVerified": true,
+    "note": "Produced by zk/scripts/ceremony.js. Phase 2 was finalised with drand round 6468464 on chain 8990e7a9aaed2ffed73dbd7092123d6f289930540d7651336225dc172e51b2ce, committed to before that round existed (see the transcript's commitment field). `snarkjs zkey verify` passed against the pinned r1cs and ptau. This is NOT a multi-party ceremony with independent participants; see docs/refactor/zk-merkle-production.md for what that would add."
+  }
+}

@@ -25,7 +25,6 @@
 //!      message asynchronously. The federation relay call site is
 //!      preserved; the relay logic itself is unchanged.
 
-use crate::api_federation::relay_message;
 use crate::ws::context::CommandContext;
 use crate::ws::dispatch::{check_ws_membership, MembershipResult, MAX_WS_MESSAGE_CONTENT_LEN};
 use crate::ws::error::send_ws_error_with_id;
@@ -129,33 +128,64 @@ pub(crate) async fn handle(
                 }
             }
 
-            // Relay only on the first insert. A Replayed outcome means
-            // the federation relay already happened on the original
-            // send (or was enqueued in the outbox); re-relaying would
-            // double-deliver to peers that have not yet seen the
-            // message_id (their UNIQUE constraint catches it, but the
-            // freshness ledger would also reject the duplicate envelope
-            // hash if the body somehow differs).
-            if is_federated && outcome == SendOutcome::Inserted {
-                tokio::spawn(relay_message(
-                    ctx.state.clone(),
-                    message.channel_id.clone(),
-                    message,
-                ));
-            }
+            // No relay spawn here any more.
+            //
+            // `send_message` writes the `federation_outbox` rows inside the
+            // same transaction that persists the message, so by the time this
+            // arm runs the delivery obligation is already durable and the
+            // outbox worker owns it. Spawning again would be a redundant
+            // no-op — `UNIQUE (peer_instance_id, message_id)` plus
+            // `INSERT OR IGNORE` — but it would also keep alive the belief
+            // that federation happens after the commit, which is the belief
+            // that lost messages: a crash, a pool failure or a tripped
+            // storage gate between the commit and the spawn left a message
+            // delivered locally, reported as sent, and never federated. A
+            // retry did not heal it either, because the retry returned
+            // `Replayed` and this branch skipped the relay on `Replayed`.
+            //
+            // `outcome` is still read below only to keep the local broadcast
+            // semantics explicit.
+            let _ = (is_federated, outcome == SendOutcome::Inserted);
         }
         Err(e) => {
-            tracing::error!(
-                pseudonym = %ctx.pseudonym,
-                channel_id = %channel_id,
-                "failed to persist message: {}",
-                e
-            );
-            send_ws_error_with_id(
-                ctx.tx,
-                "Failed to send message: internal error".to_string(),
-                client_request_id,
-            );
+            // Say which of the reasons it was.
+            //
+            // Every cause used to collapse into "Failed to send message:
+            // internal error" and be logged at ERROR: a non-member, an agent
+            // whose alignment no longer permits sending, a blank or oversized
+            // body, a tripped storage gate. Four of the five are the caller's
+            // own doing and one is ours, and the client could not tell them
+            // apart — so a policy refusal read as a server fault, and the
+            // operator's logs filled with ERROR lines about working software.
+            // The edit and delete handlers beside this one already surfaced
+            // `Edit failed: <e>`; this is CLAUDE.md defect class 6, a generic
+            // branch standing next to specific siblings.
+            use crate::services::channel_service::ChannelServiceError as CSE;
+            let (level_is_error, text) = match &e {
+                CSE::Internal(_) => (true, "Failed to send message: internal error".to_string()),
+                CSE::BadRequest(m)
+                | CSE::Forbidden(m)
+                | CSE::NotFound(m)
+                | CSE::Conflict(m)
+                | CSE::ServiceUnavailable(m) => (false, format!("Failed to send message: {m}")),
+                CSE::VoiceDisabled | CSE::VoiceNotConfigured => {
+                    (false, format!("Failed to send message: {e}"))
+                }
+            };
+            if level_is_error {
+                tracing::error!(
+                    pseudonym = %ctx.pseudonym,
+                    channel_id = %channel_id,
+                    "failed to persist message: {e}",
+                );
+            } else {
+                tracing::debug!(
+                    pseudonym = %ctx.pseudonym,
+                    channel_id = %channel_id,
+                    "message refused: {e}",
+                );
+            }
+            send_ws_error_with_id(ctx.tx, text, client_request_id);
         }
     }
 }

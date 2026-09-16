@@ -132,7 +132,7 @@ async fn zk_unenforced_mode_missing_vkey_starts_with_dummy() {
     let result = prepare_server(cfg).await;
     clear_env();
 
-    let (listener, _router) = result
+    let annex_server::PreparedServer { listener, .. } = result
         .expect("prepare_server must succeed with a missing vkey when enforce_zk_proofs is false");
     // Sanity: the listener should be bound to a valid port — drop it so the
     // OS reclaims the socket before the test exits.
@@ -145,17 +145,24 @@ async fn zk_unenforced_mode_missing_vkey_starts_with_dummy() {
 
 #[test]
 fn zk_config_default_enables_v1_and_v2() {
-    // The shipped client now generates v2 (secret-derived nullifier) proofs by
-    // default, which closes the disclosed v1 nullifier-linkability hole. The
-    // default config therefore accepts BOTH versions: v2 for new clients and v1
-    // so existing registrations / older clients keep working during migration.
+    // v2 only, and that is a security default rather than a tidy-up.
+    //
+    // v1 derives its per-topic nullifier from the PUBLIC identity commitment,
+    // so a registry snapshot yields every member's pseudonym for every topic;
+    // and a v1 proof has no authentication challenge among its public signals,
+    // so a captured v1 sign-in mints sessions indefinitely. Defaulting to
+    // `["v1", "v2"]` — which this asserted before, on the grounds that older
+    // clients needed the migration path — meant the weaker protocol was on by
+    // default and was the bypass around everything v2 provides. Nothing had
+    // shipped, so there were no older clients to accommodate.
+    //
     // Enabling v2 means the v2 vkey must load at startup under enforce mode
     // (covered by `zk_v2_enforced_missing_vkey_returns_startup_error`).
     let cfg = config::Config::default();
     assert_eq!(
         cfg.security.enabled_zk_versions,
-        vec!["v1".to_string(), "v2".to_string()],
-        "Config::default().security.enabled_zk_versions must be [\"v1\", \"v2\"]"
+        vec!["v2".to_string()],
+        "Config::default().security.enabled_zk_versions must be [\"v2\"]"
     );
 }
 
@@ -216,7 +223,7 @@ async fn zk_v2_enabled_loads_v2_vkey() {
     let result = prepare_server(cfg).await;
     clear_env();
 
-    let (listener, _router) =
+    let annex_server::PreparedServer { listener, .. } =
         result.expect("v1+v2 enabled with both keys present must boot cleanly");
     drop(listener);
 }
@@ -337,7 +344,7 @@ async fn zk_unenforced_mode_accepts_on_disk_dummy_vkey() {
     clear_env();
     let _ = std::fs::remove_file(&dummy_path);
 
-    let (listener, _router) = result
+    let annex_server::PreparedServer { listener, .. } = result
         .expect("dev mode must accept an on-disk dummy vkey (matches the in-memory fallback path)");
     drop(listener);
 }

@@ -95,11 +95,34 @@ RUN npm ci
 # produce random-entropy keys. dev-setup-groth16.js itself refuses to run
 # when ANNEX_BUILD_PROFILE=production, so even if the branch logic ever
 # regresses, the inner script catches it.
+# `--all`, then the ceremony, then INSTALL the verified bytes.
+#
+# This stage used to run `verify-artifacts.js` with no arguments — a single
+# manifest — and stop there. Three gaps, all of which the desktop path had
+# already closed:
+#
+#   * `--all` covers every circuit's manifest, not just membership. Without it
+#     a tampered channel-eligibility or federation-attestation key passes.
+#   * `verify-ceremony.js` is what checks the artifacts descend from the
+#     recorded trusted setup and that its beacon is the published one. The
+#     desktop release runs it; Docker did not, so the container's guarantee was
+#     strictly weaker than the installer's for the same commit.
+#   * `install-ceremony.js` copies the VERIFIED bytes from `zk/artifacts/` into
+#     `zk/keys/`, re-hashing each one as it lands. Without it the image shipped
+#     whatever happened to be in `zk/keys` — which, in a developer's checkout,
+#     is the random-entropy dev fixtures, and which in a clean checkout is
+#     nothing at all. Verifying one set of files and shipping another is not a
+#     chain of custody.
+#
+# `--offline` is NOT used: a production image build that cannot reach drand
+# should fail rather than quietly ship an unverified beacon.
 RUN set -e; \
     case "${ANNEX_BUILD_PROFILE}" in \
       production|release) \
         echo "[docker zk-builder] profile=${ANNEX_BUILD_PROFILE}: verifying pinned ZK artifacts (no fixture generation)"; \
-        node scripts/verify-artifacts.js; \
+        node scripts/verify-artifacts.js --all; \
+        node scripts/verify-ceremony.js; \
+        node scripts/install-ceremony.js; \
         ;; \
       dev|development|"") \
         echo "[docker zk-builder] profile=${ANNEX_BUILD_PROFILE:-dev}: generating dev-fixture Groth16 keys (DEV ONLY)"; \
@@ -112,8 +135,57 @@ RUN set -e; \
         ;; \
     esac
 
+# ── Download the VRP alignment model ──
+#
+# `minishlab/potion-base-2M` (MIT), 7.5 MB, revision-pinned and digest-verified.
+# Not optional for this image: `ANNEX_BUILD_PROFILE=production` makes the server
+# REFUSE TO START without it, because the score it produces decides which peers
+# and agents are trusted and the lexicon fallback is a different instrument
+# whose verdicts a peer running the pinned model cannot reproduce.
+#
+# Unlike the Piper binary above, the digests here are not placeholders — the
+# model is fetched from huggingface.co, which this build environment can reach,
+# so they were measured rather than asserted. They must match
+# `scripts/setup-embedding-model.sh` and the constants in
+# `crates/annex-vrp/src/embedding.rs`; the server re-verifies both files at load
+# and refuses a mismatch, so a drift here surfaces at startup rather than as a
+# peer that quietly disagrees.
+FROM debian:bookworm-slim AS embedding-downloader
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /embedding
+
+ARG EMBEDDING_MODEL_ID=minishlab/potion-base-2M
+ARG EMBEDDING_REVISION=389b9f64be5aa4ae7a6bc6fe95ef20ce485ae5da
+ARG EMBEDDING_WEIGHTS_SHA256=f95ffde02ad06f63ae38eb9d400038cd5ccaf8411ec3cb650c6025113f96cbb8
+ARG EMBEDDING_TOKENIZER_SHA256=e67e803f624fb4d67dea1c730d06e1067e1b14d830e2c2202569e3ef0f70bb50
+RUN set -e; \
+    base="https://huggingface.co/${EMBEDDING_MODEL_ID}/resolve/${EMBEDDING_REVISION}"; \
+    for pair in "model.safetensors:${EMBEDDING_WEIGHTS_SHA256}" "tokenizer.json:${EMBEDDING_TOKENIZER_SHA256}"; do \
+      name="${pair%%:*}"; expected="${pair##*:}"; \
+      curl -fSL "${base}/${name}" -o "${name}"; \
+      actual="$(sha256sum "${name}" | cut -d" " -f1)"; \
+      echo "${name} sha256 = ${actual}"; \
+      if [ "${actual}" != "${expected}" ]; then \
+        echo "${name} digest mismatch" >&2; \
+        echo "  expected ${expected}" >&2; \
+        echo "  actual   ${actual}" >&2; \
+        echo "A different revision scores principle sets differently, so a server" >&2; \
+        echo "built from it would reach verdicts its peers cannot reproduce." >&2; \
+        exit 1; \
+      fi; \
+    done
+
 # ── Download Piper TTS + default voice model ──
 FROM debian:bookworm-slim AS piper-downloader
+
+# Re-declared: a global ARG is not in scope inside a stage until the stage
+# names it. Without this line the production check below reads an empty string
+# and silently never fires — a gate that cannot trigger.
+ARG ANNEX_BUILD_PROFILE
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates \
@@ -121,20 +193,80 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /piper
 
-# Download Piper binary (linux x86_64)
+# Download Piper binary (linux x86_64), checksum-verified under production.
+#
+# Version-pinned is not the same as verified: a release asset can be replaced
+# under the same tag, and this binary is executed by the server. The digest is
+# what makes the pin mean something.
+#
+# `PIPER_SHA256` is deliberately EMPTY here rather than carrying a value
+# nobody measured. This build environment cannot reach GitHub release assets,
+# so a digest written here would have been invented — which is worse than no
+# pin, because it looks like verification. The build prints the digest it
+# measured and refuses to continue under a production profile until someone
+# pins it, so the value arrives from a real download rather than from prose.
+#
+# It has now been measured, and the default below is that measurement:
+# `piper_linux_x86_64.tar.gz` for 2023.11.14-2 downloaded from the GitHub
+# release and hashed. Leaving it empty meant the DOCUMENTED production command
+# (`docker compose -f docker-compose.prod.yml up`, which passes only
+# ANNEX_BUILD_PROFILE) could not build at all — the safeguard was correct and
+# nothing satisfied it. A pin nobody supplies is a build break, not a gate.
+# Override with --build-arg to move to a different release.
 ARG PIPER_VERSION=2023.11.14-2
+ARG PIPER_SHA256=a50cb45f355b7af1f6d758c1b360717877ba0a398cc8cbe6d2a7a3a26e225992
 RUN curl -fSL "https://github.com/rhasspy/piper/releases/download/${PIPER_VERSION}/piper_linux_x86_64.tar.gz" \
     -o piper.tar.gz \
+    && actual="$(sha256sum piper.tar.gz | cut -d' ' -f1)" \
+    && echo "piper_linux_x86_64.tar.gz sha256 = ${actual}" \
+    && if [ -z "${PIPER_SHA256}" ]; then \
+         if [ "${ANNEX_BUILD_PROFILE}" = "production" ] || [ "${ANNEX_BUILD_PROFILE}" = "release" ]; then \
+           echo "PIPER_SHA256 is unset. A production image will not execute a binary" >&2; \
+           echo "it has not verified. Pin it with --build-arg PIPER_SHA256=${actual}" >&2; \
+           echo "after confirming that digest against the upstream release." >&2; \
+           exit 1; \
+         fi; \
+         echo "WARNING PIPER_SHA256 unset — not verifying (dev build)." >&2; \
+       elif [ "${actual}" != "${PIPER_SHA256}" ]; then \
+         echo "piper_linux_x86_64.tar.gz digest mismatch" >&2; \
+         echo "  expected ${PIPER_SHA256}" >&2; \
+         echo "  actual   ${actual}" >&2; \
+         exit 1; \
+       fi \
     && tar -xzf piper.tar.gz --strip-components=1 \
     && rm piper.tar.gz \
     && chmod +x piper
 
 # Download en_US-lessac-medium voice model
 WORKDIR /voices
-RUN curl -fSL "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx" \
-    -o en_US-lessac-medium.onnx \
-    && curl -fSL "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json" \
-    -o en_US-lessac-medium.onnx.json
+# The default voice model, pinned to a revision and verified.
+#
+# This fetched from `resolve/main`, which is a moving target: the same
+# Dockerfile built a week apart could bundle different model weights, and
+# nothing downstream would notice. Two images claiming the same version would
+# then speak with different voices.
+#
+# Pinned to a commit on the model repo, with both files' digests checked. The
+# revision and digests were obtained by fetching them, not transcribed.
+ARG PIPER_VOICE_REVISION=1162a9173d0ce503555aed757976b7a9912eae4c
+ARG PIPER_VOICE_ONNX_SHA256=5efe09e69902187827af646e1a6e9d269dee769f9877d17b16b1b46eeaaf019f
+ARG PIPER_VOICE_JSON_SHA256=efe19c417bed055f2d69908248c6ba650fa135bc868b0e6abb3da181dab690a0
+RUN set -e; \
+    base="https://huggingface.co/rhasspy/piper-voices/resolve/${PIPER_VOICE_REVISION}/en/en_US/lessac/medium"; \
+    curl -fSL "${base}/en_US-lessac-medium.onnx" -o en_US-lessac-medium.onnx; \
+    curl -fSL "${base}/en_US-lessac-medium.onnx.json" -o en_US-lessac-medium.onnx.json; \
+    for pair in "en_US-lessac-medium.onnx ${PIPER_VOICE_ONNX_SHA256}" \
+                "en_US-lessac-medium.onnx.json ${PIPER_VOICE_JSON_SHA256}"; do \
+      set -- ${pair}; \
+      actual="$(sha256sum "$1" | cut -c1-64)"; \
+      if [ "${actual}" != "$2" ]; then \
+        echo "voice model $1 digest mismatch" >&2; \
+        echo "  expected $2" >&2; \
+        echo "  actual   ${actual}" >&2; \
+        exit 1; \
+      fi; \
+      echo "voice model $1 sha256 verified"; \
+    done
 
 # ── Build whisper.cpp binary ──
 #
@@ -146,15 +278,79 @@ RUN curl -fSL "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US
 # by mounting a model and setting ANNEX_STT_MODEL_PATH.
 FROM debian:bookworm-slim AS whisper-builder
 
+# Re-declared for the same reason as in `piper-downloader`.
+ARG ANNEX_BUILD_PROFILE
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates git cmake build-essential \
     && rm -rf /var/lib/apt/lists/*
 
+# Pinned to a tag, and under production verified against a commit SHA.
+#
+# This was `git clone --depth 1` of `master`. Two images built a week apart
+# contained different, unreviewed C++ compiled into the thing that processes
+# audio a user uploads — and neither build recorded which. A tag alone is not
+# enough either: a tag can be moved, and `rev-parse` is what turns a
+# repeatable build into a reproducible one.
+#
+# Measured, like PIPER_SHA256 above: `git ls-remote https://github.com/
+# ggerganov/whisper.cpp refs/tags/v1.7.4` resolves to the commit pinned below.
+# The original note follows, and still explains why a value must never be
+# written here from prose.
+#
+# `WHISPER_CPP_COMMIT` was empty for the same reason `PIPER_SHA256` was: it is
+# not knowable from this environment, and a guessed SHA would fail every build
+# while looking authoritative. The build prints what the tag resolved to.
+#
+# The binary copied out is `whisper-cli`, and the tag and the path move
+# together. This stage used to copy `build/bin/main`, which at v1.7.4 is not
+# the CLI: `examples/main/main.cpp` does not exist in that tree (404 on
+# raw.githubusercontent.com), `examples/cli/CMakeLists.txt` reads
+# `set(TARGET whisper-cli)`, and `examples/deprecation-warning/CMakeLists.txt`
+# builds `main`, `bench`, `stream` and `command` from `deprecation-warning.cpp`
+# — no-op executables that print a warning and exit.
+#
+# So the image shipped a stub under the name `whisper`, and
+# `SttService::is_ready()` — which tests `is_file()` and nothing else —
+# reported STT ready. `/api/voice/config-status` said `stt_ready: true`, the
+# client showed an empty caption strip, and the per-frame transcription error
+# was logged at DEBUG, below the default level. Live captions could not have
+# worked in any container ever built from this file, and nothing said so.
+#
+# The grep after the copy is there because the next rename should break the
+# build rather than ship silence.
 WORKDIR /whisper
-RUN git clone --depth 1 https://github.com/ggerganov/whisper.cpp.git /tmp/whisper && \
-    cd /tmp/whisper && cmake -B build && cmake --build build --config Release && \
+ARG WHISPER_CPP_TAG=v1.7.4
+ARG WHISPER_CPP_COMMIT=8a9ad7844d6e2a10cddf4b92de4089d7ac2b14a9
+RUN git clone --depth 1 --branch "${WHISPER_CPP_TAG}" \
+        https://github.com/ggerganov/whisper.cpp.git /tmp/whisper && \
+    cd /tmp/whisper && \
+    actual="$(git rev-parse HEAD)" && \
+    echo "whisper.cpp ${WHISPER_CPP_TAG} = ${actual}" && \
+    if [ -z "${WHISPER_CPP_COMMIT}" ]; then \
+        if [ "${ANNEX_BUILD_PROFILE}" = "production" ] || [ "${ANNEX_BUILD_PROFILE}" = "release" ]; then \
+            echo "WHISPER_CPP_COMMIT is unset. A production image will not compile a tree" >&2; \
+            echo "it has not pinned — a tag can be moved. Pin it with" >&2; \
+            echo "--build-arg WHISPER_CPP_COMMIT=${actual} after checking that commit." >&2; \
+            exit 1; \
+        fi; \
+        echo "WARNING WHISPER_CPP_COMMIT unset — building an unpinned tag (dev build)." >&2; \
+    elif [ "${actual}" != "${WHISPER_CPP_COMMIT}" ]; then \
+        echo "whisper.cpp ${WHISPER_CPP_TAG} resolved to ${actual}, expected ${WHISPER_CPP_COMMIT}." >&2; \
+        echo "The tag moved, or the pin is stale. Refusing to compile an unreviewed tree." >&2; \
+        exit 1; \
+    fi && \
+    cmake -B build && cmake --build build --config Release && \
     mkdir -p /whisper/bin && \
-    cp /tmp/whisper/build/bin/main /whisper/bin/whisper && \
+    cp /tmp/whisper/build/bin/whisper-cli /whisper/bin/whisper && \
+    if /whisper/bin/whisper 2>&1 | grep -qi "deprecat"; then \
+        echo "the copied binary is whisper.cpp's DEPRECATION STUB, not the CLI." >&2; \
+        echo "From v1.7.x the CLI target is whisper-cli; examples/deprecation-warning" >&2; \
+        echo "builds no-op executables named main/bench/stream/command that print a" >&2; \
+        echo "warning and exit. Shipping one makes SttService::is_ready() report true" >&2; \
+        echo "for a binary that cannot transcribe anything." >&2; \
+        exit 1; \
+    fi && \
     rm -rf /tmp/whisper
 
 # ── Build client ──
@@ -175,8 +371,16 @@ FROM debian:bookworm-slim
 ARG ANNEX_BUILD_PROFILE
 ENV ANNEX_BUILD_PROFILE=${ANNEX_BUILD_PROFILE}
 
+# `curl` is here for the HEALTHCHECK below and nothing else. It is a real, if
+# small, addition to the runtime surface; the alternative is a container that
+# reports "running" while unable to serve a request, which is the failure this
+# image had. `sqlite3` is already present for the entrypoint's seeding and for
+# `scripts/backup.sh`.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates sqlite3 gosu \
+    # `gosu` is gone with the root phase of the entrypoint. `sqlite3` stays:
+    # scripts/backup.sh and scripts/restore.sh both use it, and an operator
+    # recovering inside the container needs it.
+    ca-certificates sqlite3 curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -187,15 +391,31 @@ COPY --from=server-builder /build/target/release/annex-server /app/annex-server
 # Client static files
 COPY --from=client-builder /build/client/dist /app/client/dist
 
-# ZK verification keys.
+# ZK verification keys — EVERY circuit the server can be asked to verify.
 #
-# Only the membership vkey is used at runtime — the server's startup
-# loads it via ANNEX_ZK_KEY_PATH and verifies every channel-access proof
-# against it. The identity vkey is exercised only by test fixtures in
-# `crates/annex-identity/tests` and `zk/scripts/test-proofs.js`, not by
-# the production server, so it is intentionally NOT copied into the
-# runtime image.
-COPY --from=zk-builder /build/zk/keys/membership_vkey.json /app/zk/keys/
+# This copied `membership_vkey.json` alone, on the reasoning that it is the
+# only key the runtime needs. That was wrong in two ways, and the first one
+# meant the default image could not start at all:
+#
+#   * `SecurityConfig` defaults `enabled_zk_versions` to BOTH `v1` and `v2`,
+#     and under the default `enforce_zk_proofs = true` startup refuses to run
+#     without the v2 verifying key. So a `docker compose -f
+#     docker-compose.prod.yml up` — the documented ordinary command — built an
+#     image that aborted on boot, and the only way past it was to disable v2 or
+#     relax enforcement, i.e. to weaken the thing the image exists to enforce.
+#   * The capability circuits are treated as OPTIONAL by the loader, so their
+#     absence disables those endpoints rather than stopping the server. That is
+#     worse than a hard failure, not better: the container comes up healthy and
+#     proof-backed features answer "not configured" forever, with nothing in
+#     the logs connecting that to a packaging decision.
+#
+# The whole directory is copied so that adding a circuit does not silently
+# require remembering this line.
+COPY --from=zk-builder /build/zk/keys/ /app/zk/keys/
+
+# The VRP alignment model. Digest-verified in its own stage above, and
+# re-verified by the server at load.
+COPY --from=embedding-downloader /embedding/ /app/assets/embedding/
 
 # Piper TTS binary and libraries
 COPY --from=piper-downloader /piper/ /app/assets/piper/
@@ -211,19 +431,43 @@ COPY config.toml /app/config.toml
 
 # Entrypoint script (runs migrations + seeds server row on first start)
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+
+# The operator scripts travel with the image.
+#
+# `docker-compose.prod.yml` runs `scripts/backup.sh` from a sidecar against the
+# same volume, and an operator recovering from a bad upgrade needs
+# `scripts/restore.sh` inside the container where the data is. Shipping the
+# runbook's tools separately from the runtime is how a recovery procedure ends
+# up depending on a checkout nobody has at 3am.
+COPY scripts/backup.sh scripts/restore.sh /app/scripts/
+RUN chmod +x /app/scripts/backup.sh /app/scripts/restore.sh
 RUN sed -i 's/\r$//' /app/docker-entrypoint.sh && chmod +x /app/docker-entrypoint.sh
 
-# Create non-root user for runtime
-RUN groupadd --system annex && useradd --system --gid annex --no-create-home annex
+# Non-root runtime user, at a FIXED uid/gid.
+#
+# Pinned rather than left to the next free system id, because
+# `docker-compose.prod.yml` names the same numbers in its `user:` line and its
+# volume-init service. A uid that drifts between base-image versions would
+# silently mismatch the volume's ownership and produce a permission error on
+# upgrade that looks like data corruption.
+RUN groupadd --system --gid 10001 annex \
+    && useradd --system --uid 10001 --gid annex --no-create-home annex
 
 # Create data directory for SQLite (owned by runtime user)
 RUN mkdir -p /app/data && chown annex:annex /app/data
 
 ENV ANNEX_CONFIG_PATH=/app/config.toml
 ENV ANNEX_ZK_KEY_PATH=/app/zk/keys/membership_vkey.json
+# v2 is enabled by default and startup refuses to run without its key under
+# enforcement, so this is not optional configuration — it is the difference
+# between an image that boots and one that does not.
+ENV ANNEX_ZK_KEY_PATH_V2=/app/zk/keys/membership_v2_vkey.json
 ENV ANNEX_DB_PATH=/app/data/annex.db
 ENV ANNEX_TTS_BINARY_PATH=/app/assets/piper/piper
 ENV ANNEX_TTS_VOICES_DIR=/app/assets/voices
+# Absolute, because `DEFAULT_MODEL_DIR` is relative to the working directory and
+# the server does not necessarily run from /app.
+ENV ANNEX_EMBEDDING_MODEL_DIR=/app/assets/embedding
 ENV ANNEX_CLIENT_DIR=/app/client/dist
 ENV ANNEX_STT_BINARY_PATH=/app/assets/whisper/whisper
 # ANNEX_STT_MODEL_PATH is intentionally NOT set. Operators who want STT
@@ -241,6 +485,25 @@ ENV ANNEX_STT_BINARY_PATH=/app/assets/whisper/whisper
 
 EXPOSE 3000
 
-# The entrypoint starts as root to fix data-volume ownership, then
-# drops to the non-root "annex" user via gosu before exec-ing the server.
+# Runs as `annex` from PID 1 onward — no root phase, no gosu, no capabilities.
+#
+# `docker-compose.prod.yml` drops ALL capabilities, and the previous entrypoint
+# needed several of them (CAP_CHOWN/CAP_FOWNER to chown the volume,
+# CAP_SETUID/CAP_SETGID for gosu). Volume ownership is now done once by a
+# short-lived init service that holds only CAP_CHOWN, so the long-lived process
+# needs none.
+# The container is only healthy when it can actually serve a request.
+#
+# There was no HEALTHCHECK at all, so Docker and Compose reported "running" for
+# a container whose database was unreachable — and `/health` would have agreed,
+# because it returned a literal. `/readyz` takes a pooled connection, queries,
+# and reads the storage gate and the Merkle tree.
+#
+# `start-period` is generous: first boot runs migrations and, on a fresh
+# volume, generates a signing key.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+    CMD curl -fsS "http://127.0.0.1:${ANNEX_PORT:-3000}/readyz" >/dev/null || exit 1
+
+USER annex
+
 ENTRYPOINT ["/app/docker-entrypoint.sh"]

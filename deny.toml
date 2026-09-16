@@ -1,0 +1,98 @@
+# cargo-deny configuration.
+#
+# Four checks, and the reason each is here rather than left at its default:
+#
+#   advisories — the point of the file. Nothing told this repository when a
+#                dependency picked up a CVE.
+#   bans       — duplicate versions of the same crate are a build-size and
+#                correctness hazard, but this tree genuinely has several
+#                (webrtc pulls its own generation of a few ecosystem crates),
+#                so they are a warning rather than a failure until the list
+#                stops growing.
+#   licenses   — a noncommercial-licensed project has to know what it is
+#                linking. The workspace's own LicenseRef is allowed explicitly.
+#   sources    — everything must come from crates.io. A git dependency in a
+#                release build is an unpinned third party.
+
+[graph]
+all-features = false
+targets = [
+    { triple = "x86_64-unknown-linux-gnu" },
+    { triple = "x86_64-pc-windows-msvc" },
+    { triple = "aarch64-apple-darwin" },
+]
+
+[advisories]
+version = 2
+yanked = "deny"
+# Populate as findings are triaged, each with the reason and a link — an empty
+# ignore list is the honest starting point, and an entry without a reason is
+# how a real advisory gets waved through twice.
+ignore = []
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "CC0-1.0",
+    "MPL-2.0",
+    "OpenSSL",
+    "BSL-1.0",
+]
+
+# Annex's own crates carry a non-SPDX licence expression. They are first-party;
+# the check exists to know what THIRD parties are linked in.
+[[licenses.exceptions]]
+name = "annex-server"
+allow = ["LicenseRef-Annex-Noncommercial"]
+[[licenses.exceptions]]
+name = "annex-identity"
+allow = ["LicenseRef-Annex-Noncommercial"]
+[[licenses.exceptions]]
+name = "annex-vrp"
+allow = ["LicenseRef-Annex-Noncommercial"]
+[[licenses.exceptions]]
+name = "annex-graph"
+allow = ["LicenseRef-Annex-Noncommercial"]
+[[licenses.exceptions]]
+name = "annex-channels"
+allow = ["LicenseRef-Annex-Noncommercial"]
+[[licenses.exceptions]]
+name = "annex-voice"
+allow = ["LicenseRef-Annex-Noncommercial"]
+[[licenses.exceptions]]
+name = "annex-federation"
+allow = ["LicenseRef-Annex-Noncommercial"]
+[[licenses.exceptions]]
+name = "annex-rtx"
+allow = ["LicenseRef-Annex-Noncommercial"]
+[[licenses.exceptions]]
+name = "annex-observe"
+allow = ["LicenseRef-Annex-Noncommercial"]
+[[licenses.exceptions]]
+name = "annex-db"
+allow = ["LicenseRef-Annex-Noncommercial"]
+[[licenses.exceptions]]
+name = "annex-types"
+allow = ["LicenseRef-Annex-Noncommercial"]
+[[licenses.exceptions]]
+name = "annex-desktop"
+allow = ["LicenseRef-Annex-Noncommercial"]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

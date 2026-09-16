@@ -6,12 +6,24 @@
 //
 // Steps (all required to claim the smoke is green):
 //   1. POST /api/registry/register with a freshly generated sk + commitment.
-//   2. Generate a Groth16 membership proof from the registration response,
-//      using snarkjs + the membership.wasm + membership_final.zkey.
-//   3. POST /api/zk/verify-membership; the server signs an HMAC session
-//      token if and only if the proof verifies and matches the claimed
-//      commitment.
-//   4. POST /api/channels with the session token to confirm authenticated
+//   2. POST /api/zk/challenge for a single-use authentication challenge.
+//   3. Generate a Groth16 membership_v2 proof from the registration response
+//      and that challenge, using snarkjs + membership_v2.wasm +
+//      membership_v2_final.zkey.
+//   4. POST /api/zk/verify-membership; the server signs an HMAC session
+//      token if and only if the proof verifies, matches the claimed
+//      commitment, and spends a challenge it issued and has not yet seen.
+//   5. REPLAY the byte-identical verify-membership body and require it to be
+//      REFUSED. This is the smoke's security assertion, not a formality:
+//      before the challenge existed every field of that body was stable for a
+//      given member and topic, so a captured request was a bearer credential
+//      that minted a fresh session at the identity's CURRENT revocation
+//      epoch — i.e. revoking sessions did not survive re-authentication.
+//   6. Revoke the identity's sessions, replay again (still refused), then
+//      complete a FRESH challenge and proof and require that to succeed. A
+//      fix that closed the replay by breaking legitimate re-authentication
+//      would pass step 5 and fail here.
+//   7. POST /api/channels with the session token to confirm authenticated
 //      writes go through.
 //
 // Skips the proof + downstream steps (with a non-zero exit code) only when
@@ -32,14 +44,21 @@ const REPO_ROOT = resolve(__dirname, '..');
 const ZK_DIR = join(REPO_ROOT, 'zk');
 const ZK_BUILD_DIR = join(ZK_DIR, 'build');
 const ZK_KEYS_DIR = join(ZK_DIR, 'keys');
-const MEMBERSHIP_WASM = join(ZK_BUILD_DIR, 'membership_js', 'membership.wasm');
-const MEMBERSHIP_ZKEY = join(ZK_KEYS_DIR, 'membership_final.zkey');
-const MEMBERSHIP_VKEY = join(ZK_KEYS_DIR, 'membership_vkey.json');
+const MEMBERSHIP_WASM = join(ZK_BUILD_DIR, 'membership_v2_js', 'membership_v2.wasm');
+const MEMBERSHIP_ZKEY = join(ZK_KEYS_DIR, 'membership_v2_final.zkey');
+const MEMBERSHIP_VKEY = join(ZK_KEYS_DIR, 'membership_v2_vkey.json');
 
 // Resolve snarkjs / circomlibjs through zk/node_modules.
 const zkRequire = createRequire(join(ZK_DIR, 'package.json'));
 
-const TOPIC = 'annex:identity:v1';
+// v2 topics are server-scoped, exactly as the client builds them in
+// `client/src/stores/identity.ts`. The server recomputes `topicHash` from this
+// string and rejects a proof bound to any other, so the two must agree
+// literally.
+const TOPIC = 'annex:server:smoke:v2';
+// Must match `annex_identity::zk::topic_hash_for_v2` and the client's
+// `computeTopicHashV2`: Fr::from_be_bytes_mod_order(SHA256(domain || topic)).
+const V2_TOPIC_HASH_DOMAIN = 'annex/v2/topicHash:';
 const TREE_DEPTH = 20;
 // BN254 scalar field prime.
 const FIELD_P = BigInt(
@@ -92,6 +111,39 @@ function toHex64(value) {
   return value.toString(16).padStart(64, '0');
 }
 
+/** The v2 topicHash as a decimal field element, matching the server exactly. */
+async function topicHashV2(topic) {
+  const bytes = new TextEncoder().encode(V2_TOPIC_HASH_DOMAIN + topic);
+  const digest = new Uint8Array(await webcrypto.subtle.digest('SHA-256', bytes));
+  let n = 0n;
+  for (const b of digest) n = (n << 8n) | BigInt(b);
+  return n % FIELD_P;
+}
+
+/**
+ * POST and return the status alongside the body, WITHOUT throwing.
+ *
+ * `postJson` below throws on any non-2xx, which is right for the happy path
+ * and useless for the replay assertions — there the refusal IS the result
+ * being measured, and a helper that turns it into an exception makes the
+ * interesting case indistinguishable from a broken server.
+ */
+async function postJsonRaw(url, body, headers = {}) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...headers },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  let parsed = null;
+  try {
+    parsed = text.length > 0 ? JSON.parse(text) : null;
+  } catch {
+    parsed = null;
+  }
+  return { status: res.status, text, body: parsed };
+}
+
 async function postJson(url, body, headers = {}) {
   const res = await fetch(url, {
     method: 'POST',
@@ -113,9 +165,9 @@ async function main() {
 
   // ── 0. Tooling / artifact preflight ────────────────────────────────
   for (const [label, path] of [
-    ['membership_vkey.json', MEMBERSHIP_VKEY],
-    ['membership.wasm', MEMBERSHIP_WASM],
-    ['membership_final.zkey', MEMBERSHIP_ZKEY],
+    ['membership_v2_vkey.json', MEMBERSHIP_VKEY],
+    ['membership_v2.wasm', MEMBERSHIP_WASM],
+    ['membership_v2_final.zkey', MEMBERSHIP_ZKEY],
   ]) {
     if (!existsSync(path)) {
       fail(
@@ -200,53 +252,103 @@ async function main() {
   }
   step(`merkle path matches register response (depth=${pathElements.length})`);
 
-  // ── 5. Generate Groth16 membership proof ──────────────────────────
-  step('generating Groth16 membership proof');
-  const witnessInput = {
-    sk: sk.toString(),
-    roleCode: roleCode.toString(),
-    nodeId: nodeId.toString(),
-    leafIndex: leafIndex.toString(),
-    pathElements: pathElements.map((s) => '0x' + s),
-    pathIndexBits: pathIndexBits.map((b) => b.toString()),
-  };
-  const t0 = Date.now();
-  const { proof, publicSignals } = await snarkjs.groth16.fullProve(
-    witnessInput,
-    MEMBERSHIP_WASM,
-    MEMBERSHIP_ZKEY,
-  );
-  step(`proof generated in ${Date.now() - t0}ms`);
-  if (publicSignals.length !== 2) {
-    fail(`expected 2 public signals (root, commitment), got ${publicSignals.length}`);
-  }
+  // ── 5. Sign in: challenge → proof → verify ────────────────────────
+  //
+  // Factored into a closure because the flow signs in THREE times below —
+  // once legitimately, once after a revocation, and the replay attempts in
+  // between reuse a captured body. Writing it once means the "a legitimate
+  // holder can still sign in" assertions exercise the same code path as the
+  // first sign-in rather than a second copy that could drift from it.
+  const topicHash = await topicHashV2(TOPIC);
   if (pathElements.length !== TREE_DEPTH) {
     fail(`expected Merkle path of depth ${TREE_DEPTH}, got ${pathElements.length}`);
   }
 
-  // Sanity: signal[1] (commitment) must match what we registered.
-  const sigCommitmentHex = toHex64(BigInt(publicSignals[1]));
-  if (sigCommitmentHex !== commitmentHex) {
-    fail(
-      `proof commitment ${sigCommitmentHex} does not match registered commitment ${commitmentHex}`,
+  async function buildVerifyBody(label) {
+    step(`${label}: POST /api/zk/challenge`);
+    const chal = await postJson(`${url}/api/zk/challenge`, {
+      commitment: commitmentHex,
+      topic: TOPIC,
+    });
+    if (typeof chal.challenge !== 'string' || !/^[0-9a-f]{64}$/.test(chal.challenge)) {
+      fail(`/api/zk/challenge returned an unusable challenge: ${JSON.stringify(chal)}`);
+    }
+
+    step(`${label}: generating Groth16 membership_v2 proof`);
+    const t0 = Date.now();
+    const { proof, publicSignals } = await snarkjs.groth16.fullProve(
+      {
+        sk: sk.toString(),
+        roleCode: roleCode.toString(),
+        nodeId: nodeId.toString(),
+        leafIndex: leafIndex.toString(),
+        pathElements: pathElements.map((s) => '0x' + s),
+        pathIndexBits: pathIndexBits.map((b) => b.toString()),
+        topicHash: topicHash.toString(),
+        challenge: BigInt('0x' + chal.challenge).toString(),
+      },
+      MEMBERSHIP_WASM,
+      MEMBERSHIP_ZKEY,
     );
+    step(`${label}: proof generated in ${Date.now() - t0}ms`);
+
+    // [root, commitment, nullifier, topicHash, challenge]
+    if (publicSignals.length !== 5) {
+      fail(
+        `expected 5 public signals (root, commitment, nullifier, topicHash, ` +
+          `challenge), got ${publicSignals.length}`,
+      );
+    }
+    const sigCommitmentHex = toHex64(BigInt(publicSignals[1]));
+    if (sigCommitmentHex !== commitmentHex) {
+      fail(
+        `proof commitment ${sigCommitmentHex} does not match registered commitment ${commitmentHex}`,
+      );
+    }
+    // The challenge really is inside the proof. If this ever fails, the
+    // circuit stopped binding it and every assertion below would be vacuous.
+    if (toHex64(BigInt(publicSignals[4])) !== chal.challenge) {
+      fail(
+        `the proof's challenge signal (${toHex64(BigInt(publicSignals[4]))}) is not the ` +
+          `challenge the server issued (${chal.challenge}) — the circuit is not binding it`,
+      );
+    }
+
+    return {
+      root: rootHex,
+      commitment: commitmentHex,
+      topic: TOPIC,
+      proof,
+      publicSignals,
+      protocolVersion: 'v2',
+      nullifierHex: toHex64(BigInt(publicSignals[2])),
+      topicHashHex: toHex64(BigInt(publicSignals[3])),
+      challengeHex: chal.challenge,
+    };
   }
 
   // ── 6. POST /api/zk/verify-membership ──────────────────────────────
+  const firstBody = await buildVerifyBody('sign-in');
   step('POST /api/zk/verify-membership');
-  const verifyResp = await postJson(`${url}/api/zk/verify-membership`, {
-    root: rootHex,
-    commitment: commitmentHex,
-    topic: TOPIC,
-    proof,
-    publicSignals,
-  });
+  const verifyResp = await postJson(`${url}/api/zk/verify-membership`, firstBody);
   if (verifyResp.ok !== true || typeof verifyResp.sessionToken !== 'string') {
     fail(`verify-membership did not issue a session token: ${JSON.stringify(verifyResp)}`);
   }
-  const sessionToken = verifyResp.sessionToken;
+  let sessionToken = verifyResp.sessionToken;
   const pseudonymId = verifyResp.pseudonymId;
   step(`verified membership; pseudonym=${pseudonymId.slice(0, 16)}…`);
+
+  // ── 6a. The captured body must not sign in a second time ───────────
+  step('REPLAY: re-POST the identical verify-membership body');
+  const replay1 = await postJsonRaw(`${url}/api/zk/verify-membership`, firstBody);
+  if (replay1.status < 400) {
+    fail(
+      `a byte-identical verify-membership body was accepted a second time ` +
+        `(HTTP ${replay1.status}). The request is a bearer credential: anyone who ` +
+        `captures it can mint sessions for this identity without holding sk.`,
+    );
+  }
+  step(`replay refused with HTTP ${replay1.status} (expected)`);
 
   // ── 7. GET /api/identity/{pseudonymId} ─────────────────────────────
   // The first identity registered against a fresh server is granted
@@ -302,6 +404,93 @@ async function main() {
   }
   step(`channel created: ${channelId}`);
 
+  // ── 9. Revocation must survive re-authentication ───────────────────
+  //
+  // The defect this closes: revoking an identity's sessions bumps its token
+  // epoch, which invalidates outstanding tokens — but re-authentication mints
+  // a NEW token at the new epoch, and re-authentication took a request body
+  // that was entirely replayable. So whoever held a captured sign-in could
+  // simply present it again and walk back in past the revocation, never having
+  // held `sk`. Revocation was undone by its own recovery path.
+  //
+  // This member is the founder, so it can revoke itself — which is all this
+  // assertion needs and avoids provisioning a second identity.
+  step(`POST /api/admin/members/${pseudonymId.slice(0, 8)}…/revoke-sessions`);
+  const revokeRes = await fetch(
+    `${url}/api/admin/members/${pseudonymId}/revoke-sessions`,
+    {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${sessionToken}`,
+      },
+      body: '{}',
+    },
+  );
+  if (!revokeRes.ok) {
+    fail(`revoke-sessions returned ${revokeRes.status}: ${await revokeRes.text()}`);
+  }
+  const revokeBody = await revokeRes.json();
+  step(`sessions revoked; token_epoch now ${revokeBody.token_epoch}`);
+
+  // The old token must be dead.
+  const staleRes = await fetch(`${url}/api/channels`, {
+    headers: { authorization: `Bearer ${sessionToken}` },
+  });
+  if (staleRes.status !== 401 && staleRes.status !== 403) {
+    fail(
+      `a token from before the revocation was still accepted (HTTP ${staleRes.status}) — ` +
+        'the epoch bump is not being enforced',
+    );
+  }
+  step(`pre-revocation token refused with HTTP ${staleRes.status} (expected)`);
+
+  // And the captured sign-in must not mint a replacement.
+  step('REPLAY after revocation: re-POST the captured verify-membership body');
+  const replay2 = await postJsonRaw(`${url}/api/zk/verify-membership`, firstBody);
+  if (replay2.status < 400) {
+    fail(
+      `the captured sign-in minted a session AFTER revocation (HTTP ${replay2.status}). ` +
+        'Revocation does not survive its own re-authentication path.',
+    );
+  }
+  step(`post-revocation replay refused with HTTP ${replay2.status} (expected)`);
+
+  // ── 10. The legitimate holder must still be able to sign in ────────
+  //
+  // Without this the closure above could be satisfied by simply breaking
+  // re-authentication, which is a worse defect than the one being fixed: an
+  // enrolled member who cannot get back in has been locked out of a server
+  // they belong to.
+  const secondBody = await buildVerifyBody('re-auth');
+  const reauth = await postJsonRaw(`${url}/api/zk/verify-membership`, secondBody);
+  if (reauth.status !== 200 || typeof reauth.body?.sessionToken !== 'string') {
+    fail(
+      `a legitimate holder could not re-authenticate with a fresh challenge ` +
+        `(HTTP ${reauth.status}): ${reauth.text}`,
+    );
+  }
+  if (reauth.body.pseudonymId !== pseudonymId) {
+    fail(
+      `re-authentication resolved to a different pseudonym (${reauth.body.pseudonymId} ` +
+        `vs ${pseudonymId}) — the nullifier is no longer deterministic`,
+    );
+  }
+  sessionToken = reauth.body.sessionToken;
+  step('re-authentication with a fresh challenge succeeded, same pseudonym');
+
+  // The new token works against the same authenticated route the old one did.
+  const postRevokeRes = await fetch(`${url}/api/channels`, {
+    headers: { authorization: `Bearer ${sessionToken}` },
+  });
+  if (!postRevokeRes.ok) {
+    fail(
+      `the freshly minted token was refused (HTTP ${postRevokeRes.status}): ` +
+        (await postRevokeRes.text()),
+    );
+  }
+  step('post-revocation session token is accepted');
+
   // Quietly read back the verification key so the file we asked the
   // server to load is at least valid JSON we can parse on this side too.
   try {
@@ -310,7 +499,10 @@ async function main() {
     fail('membership_vkey.json is not parseable JSON', err);
   }
 
-  step('OK — full identity flow succeeded against enforce_zk_proofs=true server');
+  step(
+    'OK — full identity flow succeeded against enforce_zk_proofs=true server, ' +
+      'and a captured sign-in could not be replayed before or after revocation',
+  );
 }
 
 // snarkjs's `groth16.fullProve` spins up a global BN128 curve worker-thread

@@ -15,3 +15,7 @@ sha2 = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+# Migration 046 rewrites a field inside `servers.policy_json`; its tests
+# build the before-state as a real `ServerPolicy` rather than a JSON
+# literal that could drift from the struct.
+serde_json = { workspace = true }

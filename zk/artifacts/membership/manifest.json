@@ -5,20 +5,28 @@
   "curve": "bn254",
   "provingSystem": "groth16",
   "treeDepth": 20,
-  "publicSignals": ["root", "commitment"],
+  "publicSignals": [
+    "root",
+    "commitment"
+  ],
   "wasm_sha256": "c6d5057059a9696174f92f23323ca0dbe7dbb157602ea779ec0c3b3043fffee7",
-  "zkey_sha256": "d8991bf1fc81a335f03e3f52b387bed1db9222a89f3d8cffb68d7ce22ab7ef13",
-  "vkey_sha256": "9412beaaeaab3d68ac4a323947f06fd8be5f9ccef6aa713ffea0793277dcee94",
+  "zkey_sha256": "db09e219f73062f887a0ca9aec295b6eee299158120709978163a53ad297687e",
+  "vkey_sha256": "e616740f16c34be135bb72c990092473c34e9c2d671dd88e0c8cff790f2ee5d8",
   "r1cs_sha256": "a9a7976e08b8fa52568860e22653d1784d55b0c800bc88c1e44669d0e36bac46",
   "paths": {
-    "wasm": "../../build/membership_js/membership.wasm",
-    "zkey": "../../keys/membership_final.zkey",
-    "vkey": "../../keys/membership_vkey.json",
-    "r1cs": "../../build/membership.r1cs"
+    "wasm": "./membership.wasm",
+    "zkey": "./membership_final.zkey",
+    "vkey": "./membership_vkey.json",
+    "r1cs": "./membership.r1cs"
   },
   "ceremony": {
-    "type": "dev-fixture",
-    "generatedAt": "2026-05-05",
-    "note": "These hashes pin the artifacts produced by zk/scripts/dev-setup-groth16.js with random entropy on 2026-05-05. They are NOT the output of a multi-party trusted-setup ceremony and MUST be replaced (along with the artifacts themselves) before any public production release. See docs/refactor/zk-merkle-production.md."
+    "type": "single-contributor-beacon",
+    "generatedAt": "2026-09-15T15:06:39.060Z",
+    "transcript": "../ceremony/transcript.json",
+    "phase1Source": "operator-supplied",
+    "beaconRound": 6468464,
+    "beaconChainHash": "8990e7a9aaed2ffed73dbd7092123d6f289930540d7651336225dc172e51b2ce",
+    "zkeyVerified": true,
+    "note": "Produced by zk/scripts/ceremony.js. Phase 2 was finalised with drand round 6468464 on chain 8990e7a9aaed2ffed73dbd7092123d6f289930540d7651336225dc172e51b2ce, committed to before that round existed (see the transcript's commitment field). `snarkjs zkey verify` passed against the pinned r1cs and ptau. This is NOT a multi-party ceremony with independent participants; see docs/refactor/zk-merkle-production.md for what that would add."
   }
 }

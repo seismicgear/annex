@@ -357,6 +357,9 @@ export async function generateMembershipProof(
 export interface MembershipProofV2Output extends MembershipProofOutput {
   nullifierHex: string;
   topicHashHex: string;
+  /** The challenge this proof was produced for. Echoed back so the caller
+   *  cannot accidentally submit a proof under a different one. */
+  challengeHex: string;
 }
 
 /** Canonical BN254 field-element hex: 64-char zero-padded lowercase, NO `0x`
@@ -364,6 +367,19 @@ export interface MembershipProofV2Output extends MembershipProofOutput {
  * `parse_fr_from_hex` expect. */
 function fieldDecToCanonicalHex(dec: string): string {
   return BigInt(dec).toString(16).padStart(64, '0');
+}
+
+/** The inverse: canonical hex (as the server issues it) to the decimal string
+ *  snarkjs wants for a circuit input. Rejects anything that is not exactly the
+ *  canonical encoding, so a malformed challenge fails here rather than after a
+ *  minute of proving. */
+function canonicalHexToFieldDec(hex: string): string {
+  if (!/^[0-9a-f]{64}$/.test(hex)) {
+    throw new Error(
+      'challenge must be 64 lowercase hex characters (the server\'s canonical field-element encoding)',
+    );
+  }
+  return BigInt('0x' + hex).toString();
 }
 
 /**
@@ -376,13 +392,24 @@ function fieldDecToCanonicalHex(dec: string): string {
  * the proof; the server recomputes it from the topic string and rejects any
  * mismatch.
  *
- * publicSignals ordering is `[root, commitment, nullifier, topicHash]`.
+ * `challengeHex` is the server's single-use challenge for THIS sign-in, taken
+ * as a second public input. It is what makes a v2 proof evidence of a live
+ * authentication rather than a bearer credential: every other field is stable
+ * for a given member and topic, so without it a captured verify-membership
+ * body could be replayed — after revocation, by someone who never held `sk` —
+ * and the server would mint a fresh session. Because Groth16 commits to every
+ * public input, this proof is rejected if presented with any other challenge.
+ *
+ * publicSignals ordering is
+ * `[root, commitment, nullifier, topicHash, challenge]`.
  */
 export async function generateMembershipProofV2(
   input: MembershipProofInput,
   topic: string,
+  challengeHex: string,
   options?: GenerateMembershipProofOptions,
 ): Promise<MembershipProofV2Output> {
+  const challenge = canonicalHexToFieldDec(challengeHex);
   const topicHash = await computeTopicHashV2(topic);
   const circuitInput = {
     sk: input.sk.toString(),
@@ -392,6 +419,7 @@ export async function generateMembershipProofV2(
     pathElements: input.pathElements.map((s) => '0x' + s),
     pathIndexBits: input.pathIndexBits.map(String),
     topicHash: topicHash.toString(),
+    challenge,
   };
 
   const out = await runProofInWorker(
@@ -400,16 +428,24 @@ export async function generateMembershipProofV2(
     options,
   );
 
-  // publicSignals = [root, commitment, nullifier, topicHash] (decimal strings).
-  if (out.publicSignals.length < 4) {
+  // publicSignals = [root, commitment, nullifier, topicHash, challenge]
+  // (decimal strings).
+  if (out.publicSignals.length < 5) {
     throw new Error(
-      `v2 proof produced ${out.publicSignals.length} public signals, expected 4`,
+      `v2 proof produced ${out.publicSignals.length} public signals, expected 5`,
     );
   }
+  // Read back from the proof rather than echoing the argument: if the witness
+  // ever disagreed with what was asked for, submitting the argument would send
+  // a challenge the proof does not carry and the server would reject it with a
+  // message about mismatched signals. Taking it from the proof means the
+  // client submits what it actually proved.
+  const provenChallenge = fieldDecToCanonicalHex(out.publicSignals[4]);
   return {
     ...out,
     nullifierHex: fieldDecToCanonicalHex(out.publicSignals[2]),
     topicHashHex: fieldDecToCanonicalHex(out.publicSignals[3]),
+    challengeHex: provenChallenge,
   };
 }
 

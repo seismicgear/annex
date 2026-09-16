@@ -28,6 +28,12 @@ assets/voices/*
 !assets/voices/.gitkeep
 assets/models/
 assets/whisper/
+# VRP semantic embedding model — 7.5 MB, fetched and SHA-256-pinned by
+# scripts/setup-embedding-model.sh. The .gitkeep is tracked so the Tauri
+# bundler's resource validation passes on a fresh checkout, the same way
+# assets/piper and assets/voices work.
+assets/embedding/*
+!assets/embedding/.gitkeep
 
 # Tauri build output (copied from client/dist by build-desktop.js)
 crates/annex-desktop/dist/
@@ -92,3 +98,14 @@ docs/ui-audit/index.html
 # server instance's stored files.
 data/
 
+# Ceremony SCRATCH — the intermediate contributions, not the published output.
+#
+# `zk/scripts/ceremony.js` writes every phase-1 and phase-2 contribution here
+# on its way to producing `zk/artifacts/<circuit>/`. Those intermediates are
+# 119 MB, they are not what anything verifies against, and `verify-ceremony.js`
+# reads the transcript and the published artifacts rather than this directory.
+#
+# They were committed once, by a `git add -A` that did not know the difference.
+# The published artifacts in `zk/artifacts/` ARE tracked and pinned; this is the
+# working area that produced them.
+zk/ceremony-work/

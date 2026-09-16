@@ -17,11 +17,15 @@ as authoritative for CI and update this file.
 | Linux desktop     | `lin-syslibs`, `lin-build`, `lin-bundle-deb`, `lin-bundle-appimage`                         |
 | Windows desktop   | `win-vc`, `win-build`, `win-bundle-nsis`                                                    |
 | Frontend          | `fe-deps`, `fe-lint`, `fe-test`, `fe-build`                                                 |
-| ZK artifacts      | `zk-deps`, `zk-circuit`, `zk-setup`, `zk-proof`, `zk-vkey-shipped`                          |
+| ZK artifacts      | `zk-deps`, `zk-circuit`, `zk-setup`, `zk-proof`, `zk-vkey-shipped`, `zk-ceremony-verified`, `zk-production-gate` |
 | Migrations        | `mig-numbered`, `mig-no-edit`, `mig-applies`                                                |
 | Smoke / E2E       | `e2e-server-up`, `e2e-startup-flow`, `e2e-group-call`, `e2e-puppeteer`, `e2e-no-console-errors`, `smoke-server`, `smoke-federation`, `smoke-desktop-build` |
-| UI audit          | `ui-audit-surfaces`, `ui-audit-baselines`, `ui-audit-a11y`                                    |
+| UI audit          | `ui-audit-surfaces`, `ui-audit-baselines`, `ui-audit-a11y`, `ui-audit-order-independence`      |
 | Desktop install   | `desktop-audit-package`                                                                       |
+| Federation        | `signal-relay-contract`                                                                       |
+| Documentation     | `roadmap-consistent`                                                                          |
+| Supply chain      | `dep-deny`, `npm-audit-prod`, `npm-audit-report`, `codeql`                                     |
+| Release pipeline  | `rel-preflight`, `rel-server-tarball`, `rel-assets`, `rel-notes`                               |
 
 ---
 
@@ -39,9 +43,9 @@ as authoritative for CI and update this file.
 - Catches: lints with the project's deny-warnings policy. The `-D warnings` is non-negotiable; PRs that introduce a clippy warning must fix it, not silence it.
 
 ### srv-test
-- Command: `cargo test --workspace --exclude annex-desktop --no-fail-fast`
+- Command: `cargo test --workspace --exclude annex-desktop`
 - Workflow: `.github/workflows/ci.yml::check-server::cargo test`
-- Catches: lib + integration test regressions. `--no-fail-fast` is required so the full inventory is reported instead of bailing on the first crate failure.
+- Catches: lib + integration test regressions. Add `--no-fail-fast` locally when you want the full inventory rather than a bail on the first crate failure; CI does not pass it, and this entry asserted that it did.
 - Local note: tests use in-memory SQLite (`:memory:`) via `tests/common/mod.rs::setup_test_app`. Some WS tests bind a real `TcpListener` on `127.0.0.1:0`.
 
 ### srv-zk-keys-present
@@ -59,9 +63,9 @@ as authoritative for CI and update this file.
 - Catches: missing GTK3 / WebKitGTK / PipeWire dev packages. **Verify the WebKitGTK version with `pkg-config --modversion webkit2gtk-4.1`**. Do not use `webkitgtk-4.1` (no "2") — only `webkit2gtk-4.1.pc` ships with `libwebkit2gtk-4.1-dev`.
 
 ### lin-build
-- Command: `cargo build -p annex-desktop --release`
-- Workflow: `.github/workflows/ci.yml::check-desktop::cargo build (release)`
-- Catches: link-time and compile-time desktop breakages.
+- Command: `cargo check -p annex-desktop` (CI) / `cargo build -p annex-desktop --release` (local pre-flight)
+- Workflow: `.github/workflows/ci.yml::check-desktop-linux::cargo check (annex-desktop)`, then `cargo clippy (annex-desktop)`, then `Tauri build (debug — validates bundle wiring)`. The job name is `check-desktop-linux`, not `check-desktop`, and it never ran a release build.
+- Catches: link-time and compile-time desktop breakages, and the bundle-resource validation the debug Tauri build performs.
 
 ### lin-bundle-deb / lin-bundle-appimage
 - Command: `cargo tauri build --target x86_64-unknown-linux-gnu` (run from `crates/annex-desktop/`)
@@ -79,8 +83,8 @@ as authoritative for CI and update this file.
 - Catches: missing MSVC build tools — annex-desktop and several Rust deps need a C++ toolchain.
 
 ### win-build
-- Command: `cargo build -p annex-desktop --release`
-- Workflow: `.github/workflows/ci.yml::build-windows::cargo build (release)`
+- Command: `SKIP_PIPER=1 cargo tauri build --debug --bundles nsis`
+- Workflow: `.github/workflows/ci.yml::check-desktop-windows::Tauri build (debug — validates bundle wiring)`. There is no `build-windows` job and CI runs no release build on Windows.
 - Env: `CMAKE_ARGS: -DCMAKE_POLICY_VERSION_MINIMUM=3.5` (required for an upstream cmake-using crate to build on the matrix).
 
 ### win-bundle-nsis
@@ -107,7 +111,8 @@ as authoritative for CI and update this file.
 ### fe-test
 - Command: `npm --prefix client test -- --run`
 - Workflow: `.github/workflows/ci.yml::test-frontend::npm test`
-- Catches: Vitest unit + RTL component test regressions. 149 tests at last baseline.
+- Catches: Vitest unit + RTL component test regressions. 502 tests across 54 files at last baseline (`cd client && npm test`).
+- Also typechecked, which it was not until recently: `ci.yml::test-frontend` runs `npx tsc -b` before `npm test`, and `client/tsconfig.json` references `tsconfig.test.json`, so `src/**/*.test.ts(x)` and `e2e/` are covered. Vitest transpiles with esbuild and cannot fail on a type error, so without that project a broken test file passed by being unparsed.
 
 ### fe-build
 - Command: `npm --prefix client run build`
@@ -133,16 +138,146 @@ as authoritative for CI and update this file.
 - Command: `(cd zk && node scripts/setup-groth16.js)`
 - Outputs: `zk/keys/pot14_*.ptau`, `{identity,membership}_0.zkey`, `{identity,membership}_final.zkey`, `{identity,membership}_vkey.json`.
 - Catches: trusted-setup failures, missing entropy.
-- Note: the script reuses `pot14_final.ptau` if it already exists; only the per-circuit zkey/vkey are regenerated. **Production-quality keys must come from a real ceremony** — see `zk-merkle-production.md`.
+- Note: the script reuses `pot14_final.ptau` if it already exists; only the per-circuit zkey/vkey are regenerated. It is **dev-only** and refuses to run under a production profile. The production path is `zk/scripts/ceremony.js` — see `zk-ceremony-verified` below.
 
 ### zk-proof
 - Command: `(cd zk && node scripts/test-proofs.js)`
-- Catches: 16/16 must pass: identity validity, identity tampering rejection, identity input differentiation, membership validity for index 0 + 1, membership tamper rejection (proof, root, commitment), and the `mismatched leafIndex/pathIndexBits` rejection at witness generation time.
+- Workflow: `.github/workflows/ci.yml::check-server::ZK proof round-trip`, and `scripts/test-all.sh` (skipped there, with a stated reason, when `zk/keys` is empty).
+- Ran in NO workflow until that step was added. CI's `ZK script tests` step runs `zk npm test`, which is `verify-artifacts.test.js` alone — it never generated or verified a proof. A gate this file described in detail was, for its whole life, a command nobody executed.
+- Catches: identity validity, identity tampering rejection, identity input differentiation, membership validity for index 0 + 1, membership tamper rejection (proof, root, commitment), the `mismatched leafIndex/pathIndexBits` rejection at witness generation time, and the `membership_v2` assertions including the challenge binding. No count is quoted here on purpose — the previous "16/16" outlived three additions to the script.
+- **It was broken for four commits and this file said 16/16 throughout.** `membership_v2.circom` gained `main {public [topicHash, challenge]}`; the script built its v2 witness with `topicHash` alone and asserted `publicSignals.length === 4` against a circuit producing five, so `fullProve` failed with "Only 45 out of 46 inputs set" in CI and in `test-all.sh`. Quoting a pass count in a document is not the same as running the command.
 
 ### zk-vkey-shipped
-- Pre-bundle: `test -f zk/keys/membership_vkey.json` and **its content must be the result of a real `setup-groth16.js` run** (not the dummy emitted by the workflow's `|| true` fallback).
-- Workflow: `.github/workflows/release-desktop.yml::build::Setup Node.js + Build Tauri app`. The `tauri.conf.json::bundle::resources` references `../../zk/keys/membership_vkey.json`; if the dummy is shipped, every bundled client will reject every real proof on startup.
-- Failure mode: the `release-desktop.yml` script currently includes a `|| true` after the ZK setup step on Windows/macOS to keep the build moving in CI; **before tagging a release, confirm the ZK step actually succeeded by checking the produced vkey file's structure** (it should contain Groth16 protocol metadata).
+- Command: `ANNEX_BUILD_PROFILE=production node zk/scripts/verify-artifacts.js --all`
+- Workflow: `.github/workflows/release-desktop.yml::build-{linux,windows,macos}::Verify pinned ZK artifacts`, and again inside `scripts/build-desktop.js` on the bundle path.
+- Catches: a missing, dummy, or hash-mismatched verification key for ANY enabled circuit. `tauri.conf.json::bundle::resources` ships `../../zk/keys/membership_vkey.json`; a dummy there makes every bundled client reject every real proof.
+- **`--all` is load-bearing.** A bare invocation defaults to the `membership` manifest alone, and the default identity path is `membership_v2`. The workflow ran the bare form until `scripts/verify-production-rejects-dev-fixtures.sh` was rewritten to check for it — five circuits of six were gated by nothing.
+- This entry previously described a `|| true` after the ZK setup step on Windows/macOS. That fallback no longer exists in `release-desktop.yml`; the description outlived it and would have sent a reader looking for a hole that had been filled.
+
+### zk-ceremony-verified
+- Command: `node zk/scripts/verify-ceremony.js`
+- Workflow: `.github/workflows/release-desktop.yml::build-*::Verify the ZK ceremony`, and inside `scripts/build-desktop.js`.
+- Catches what hashes cannot. `verify-artifacts.js` proves the files are the pinned ones; it cannot prove a ceremony produced them, because a manifest and a matching set of files can both be written by anyone with commit access. This runs `snarkjs zkey verify` over r1cs → ptau → every contribution → beacon, re-derives the verification key from the proving key and compares it to the shipped one, and checks the transcript's drand round against what the League of Entropy actually published.
+- `--offline` skips only the beacon check and says so in its summary rather than reporting a weaker check as the full one.
+
+### zk-production-gate
+- Command: `sh scripts/verify-production-rejects-dev-fixtures.sh`
+- Workflow: `.github/workflows/ci.yml::check-server::Production ZK provenance gate` and `scripts/test-all.sh`.
+- **That line was false until the step existed.** The globbed `Harness script tests` step runs `scripts/tests/*.test.sh`; this script lives in `scripts/` and is not named `*.test.sh`, so it matched neither the directory nor the suffix and ran in no workflow at all. `scripts/test-all.sh` did not call it either. Twelve assertions about whether a release can ship dev-fixture ZK keys, executed by hand when somebody remembered. The script now asserts that both callers invoke it, so this cannot come back quietly. 14 assertions.
+- Tests the GATE, not the tree: it builds throwaway manifests in a temp directory and asserts each is refused with the right exit code — dev-fixture under production is exactly 3, an unknown ceremony type is 3, a ceremony claim with no transcript is 3, a named-but-absent transcript is 3, a tampered artifact is 2, and the same dev-fixture manifest under a dev profile is 0. Every invocation runs under `env -u ANNEX_ALLOW_DEV_CEREMONY`, because every expectation is meaningless if that bypass is set.
+- Also asserts the release workflow runs `--all` and never sets the bypass. A gate nothing invokes is decoration; the previous version proved the script refuses and never checked that a release calls it.
+
+---
+
+## Supply-chain gates
+
+An entire CI job was missing from this file, which claims to be "intentionally
+redundant with ci.yml".
+
+### dep-deny
+- Command: `cargo deny --all-features check`
+- Workflow: `.github/workflows/ci.yml::supply-chain::cargo deny`
+- Catches: advisories, banned/duplicate crates, disallowed licences and
+  unexpected sources across the whole Rust graph. Blocking — no
+  `continue-on-error`.
+
+### npm-audit-prod
+- Command: `npm audit --omit=dev --audit-level=high` in `client/`
+- Workflow: `.github/workflows/ci.yml::supply-chain::npm audit (client production dependencies) — BLOCKING`
+- Catches a high or critical advisory in the dependency tree that actually
+  reaches a browser. Clean at the commit this was introduced, so it needs no
+  allowlist — which is the point: an allowlist of the fifteen devDependency highs
+  the full audit reports would need maintaining and would fail every PR the day a
+  new advisory lands in vite.
+
+### npm-audit-report
+- Command: `npm audit --audit-level=high` in `client/` and in `zk/`
+- Workflow: `ci.yml::supply-chain::npm audit (zk, full)` and
+  `npm audit (client, full)`, both `continue-on-error: true`
+- **Reports, not gates,** and the reason is measured rather than assumed:
+  `zk/`'s production tree carries 5 highs, all the
+  `snarkjs → bfj → jsonpath → underscore` chain, and a build-time scan of
+  `client/dist/assets/*.js` shows none of those names — nor `elliptic`,
+  `ethersproject` or `secp256k1` from the `circomlibjs → ethers` chain — in the
+  production bundle (CLAUDE.md, "snarkjs vulnerability containment"). `zk/` is
+  build tooling, marked `"private": true`. Revisit when snarkjs drops bfj.
+
+### codeql
+- Command: n/a (`github/codeql-action`)
+- Workflow: `.github/workflows/codeql.yml`, matrix over
+  `javascript-typescript` and `actions`, query set `security-and-quality`,
+  plus a weekly schedule because advisories land without a push.
+- **Rust is deliberately not scanned.** It would need `security-extended` and a
+  full build, which on Linux means the GTK / WebKit / soup / pipewire dev
+  packages and a Tauri bundle — a second, slower copy of `check-desktop-linux`
+  for a marginal signal. The substitute is `cargo clippy --all-targets -D
+  warnings` plus `cargo deny`, and that trade is stated in the workflow rather
+  than left implied.
+
+---
+
+## Release-pipeline gates
+
+Everything below is in `.github/workflows/release-desktop.yml`.
+
+### rel-preflight
+- Workflow: `release-desktop.yml::preflight`
+- Runs `version-sync.test.sh` and `verify-production-rejects-dev-fixtures.sh`
+  BEFORE the builds, and `needs`-gates all three build jobs on it. Previously
+  neither ran in any release path, so a mismatched tag or a dev-fixture proving
+  key was discoverable only after 30-60 minutes of Tauri builds — or not at all.
+- Both run again in `release`, unconditionally. A `workflow_dispatch` dry run
+  reaches that job, and the workflow's own history includes a dry-run path that
+  enforced LESS than the tag path.
+
+### rel-server-tarball
+- Workflow: `release-desktop.yml::build-server`
+- The server had **no release artifact at all**: the only pipeline in this
+  repository built the desktop app, and an operator who wanted to run a server
+  had `docker build` from source.
+- The tarball carries the binary, the ceremony-installed vkeys and the pinned
+  VRP alignment model, because under the default posture a missing
+  `membership_v2_vkey.json` is a hard startup error and under a production
+  profile a missing alignment model is too — and both directories are gitignored.
+  Migrations need no packaging; they are `include_str!`-ed into the binary.
+- **The gate is `./annex-server --check`**, which runs the whole of
+  `prepare_server` and exits. A tarball that cannot boot is not a release
+  artifact, and "it built" does not answer that.
+
+### rel-assets
+- Workflow: `release-desktop.yml::release::Create GitHub Release`
+- The `files:` list must include the updater BUNDLES, not only their `.sig`
+  files. It did not until 2026-09-15: `latest.json` advertised
+  `*.AppImage.tar.gz`, `*.nsis.zip`, `*.msi.zip` and `*.app.tar.gz`, none of
+  which were uploaded, so every update 404'd and every signature check above it
+  was inert. `SHA256SUMS` covers them and `latest.json` too — a user could
+  previously checksum the installer they clicked and not the payload their
+  machine fetches unattended.
+
+### rel-notes
+- Command: `python3 scripts/changelog-section.py CHANGELOG.md <version>`
+- Workflow: `release-desktop.yml::release::Release notes from the CHANGELOG`
+- The body was `generate_release_notes: true` alone — a list of commit subjects —
+  while the hand-written `## [x.y.z]` section went unused. Fails the release when
+  the section is absent.
+
+---
+
+## Federation gates
+
+### signal-relay-contract
+- Command: `node --test api/signal.test.mjs`
+- Workflow: `.github/workflows/ci.yml::check-server::Signaling relay tests`, and `scripts/test-all.sh`.
+- 59 tests over `api/signal.js`, the relay `crates/annex-federation/src/transport.rs` talks to — including the canonical signing string both sides must agree on byte for byte. Named by no workflow, script or doc until now, which is how the two implementations came to disagree about whether `rendezvous_tag` is part of that string.
+
+---
+
+## Documentation gates
+
+### roadmap-consistent
+- Command: `bash scripts/tests/roadmap-consistency.test.sh`
+- Workflow: `.github/workflows/ci.yml::check-server::Harness script tests` (globbed).
+- `ROADMAP.md` carries each phase's status in two places and they disagreed in five of them for months — the summary said PARTIAL, the phase section said COMPLETE. Also requires a PARTIAL phase to name the gap that keeps it partial, so the cheapest way to pass is not to delete the information.
 
 ---
 
@@ -219,7 +354,12 @@ as authoritative for CI and update this file.
 ### ui-audit-baselines
 - Command: same run; comparison is `toHaveScreenshot` against `client/e2e/audit/baselines/`.
 - Catches: unintended visual drift, at a 0.5% pixel tolerance across four viewports (1440x900, 1280x800, 1024x768, 390x844). This is the guard that makes a CSS refactor safe: change a token, see exactly which screens moved.
-- Updating: `bash scripts/ui-audit.sh --update-baselines`, committed separately and reviewed as a diff of images. Never update baselines in the same commit as the change that moved them without saying so.
+- Updating: `bash scripts/ui-audit.sh --update-baselines`, committed separately and reviewed as a diff of images. Never update baselines in the same commit as the change that moved them without saying so. Delete the files first — `--update-baselines` only rewrites a baseline whose comparison FAILS, so a change landing just inside the 0.5% tolerance leaves the old PNG in place.
+
+### ui-audit-order-independence
+- Command: same run; two static checks in `client/e2e/audit/manifest.spec.ts`.
+- Catches a surface that posts a message while `SEED.defaultChannel` is selected, and a surface clipped to `.chat-area` that does not mask `.message-view`.
+- Why it exists: surfaces run serially against one server and one database, so a surface that WRITES to the channel other surfaces PHOTOGRAPH makes every later picture a function of run order. With `retries: 1` on CI, one genuine failure re-ran its `navigate`, posted a second copy of its message, and took 52 further surfaces down with it — 53 failures and 106 ledger findings from one defect, none of which said anything about the cause. Writes go to `SEED.channels.scratch` now, and these two checks are what stop that drifting back.
 - Note: baselines are recorded on Linux/Chromium. Font hinting differs enough across platforms that re-recording on macOS or Windows will produce spurious diffs — record on Linux.
 
 ### ui-audit-a11y

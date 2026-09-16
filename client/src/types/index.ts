@@ -132,6 +132,13 @@ export interface WsSendFrame {
   lastMessageId?: string;
   // WebRTC signaling fields
   sdp?: string;
+  /**
+   * The join grant from `POST /api/channels/:id/voice/join`, sent with an
+   * offer. Required by the server to ENTER a call — without it the offer frame
+   * bypassed every check that endpoint performs. `null` for a renegotiation
+   * offer from a peer already in the room, which the server permits.
+   */
+  voiceToken?: string | null;
   candidate?: string;
   sdpMid?: string | null;
   sdpMLineIndex?: number | null;
@@ -181,6 +188,13 @@ export interface WsReceiveFrame {
   rawPayloadPreview?: string;
   // WebRTC signaling fields
   sdp?: string;
+  /**
+   * The join grant from `POST /api/channels/:id/voice/join`, sent with an
+   * offer. Required by the server to ENTER a call — without it the offer frame
+   * bypassed every check that endpoint performs. `null` for a renegotiation
+   * offer from a peer already in the room, which the server permits.
+   */
+  voiceToken?: string | null;
   candidate?: string;
   sdpMid?: string | null;
   sdpMLineIndex?: number | null;

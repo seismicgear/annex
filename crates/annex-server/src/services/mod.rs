@@ -22,6 +22,8 @@ pub use federation_service::{FederationError, FederationService};
 pub use identity_service::{IdentityService, IdentityServiceError};
 pub use rtx_service::RtxService;
 
+pub mod agent_policy;
+pub mod channel_policy;
 pub mod channel_service;
 pub mod federation_repository;
 pub mod federation_service;

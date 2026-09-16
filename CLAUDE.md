@@ -103,6 +103,35 @@ invalidating one:
   to a database that is not the one it created. Launching record+verify as one
   background command is not enough — wait for the VERIFY to finish, not just
   the record.
+- **A retry is not a second sample — it is a second write.** The audit runs
+  serially against one server and one database, and `postFreshMessage` posts a
+  real, persisted message. `playwright.config.ts` had `retries: process.env.CI
+  ? 1 : 0` applying to the `audit` project, so on CI a failing surface re-ran
+  its `navigate`, posted a second copy of its message into the shared channel,
+  and every later capture whose picture contained that column was then wrong.
+  One genuine failure at `06-messaging · message-edit-refused @ mobile` became
+  53 failures and 106 ledger findings — every one of them
+  `rule: "visual-regression"`, so the ledger said nothing was wrong with any
+  screen while saying 106 things were wrong.
+
+  Locally, at `retries: 0`, the same commit was green, which is why this went
+  unexplained: it could not be reproduced by running the documented command.
+  `CI=1 bash scripts/ui-audit.sh` reproduces it exactly, down to the first
+  failing surface. Retries are off for the `audit` project now, writes go to
+  `SEED.channels.scratch`, and `manifest.spec.ts` fails a surface that posts
+  while the default channel is selected.
+
+- **The evidence you want is in `client/e2e-results/`, not `diagnostics/`.**
+  Playwright writes `<surface>-actual.png` and `<surface>-diff.png` there on
+  every `toHaveScreenshot` mismatch — the actual taken with the SAME mask and
+  clip as the baseline, beside a pixel diff. `diagnostics/` was a bare
+  `page.screenshot({path})`: no mask, no clip, so it cannot be compared to a
+  baseline by construction. CI uploaded only the second one, and the 53-surface
+  failure above was read three different ways from it before anyone noticed.
+  Both are fixed — the workflow uploads `e2e-results/`, and the diagnostic now
+  uses the capture's own clip and mask — but the ordering still matters: decode
+  the diff, then theorise.
+
 - **`--grep` cannot validate every surface.** The surfaces share one database
   and several post messages, so an unclipped capture — `error-boundary` and
   `agent-detail-overlay` are the two — shows a message column whose contents
@@ -161,6 +190,17 @@ invalidating one:
   0.0022 and 0.0003, under the tolerance, which is exactly why the
   baselines have to be deleted before re-recording rather than left for
   `--update-baselines` to notice.
+
+  **`node scripts/baseline-drift.mjs` does this counting for you** — every
+  changed baseline against `HEAD`, sorted, split into RESIZED (a clip moved:
+  a different picture, not a drifted one, and never averaged into a ratio),
+  MOVED past `maxDiffPixelRatio`, and noise within it. It has no dependencies
+  (zlib plus PNG's five row filters), so it runs during a bisect where
+  `client/node_modules` belongs to the wrong commit. `scripts/tests/
+  baseline-drift.test.sh` pins the decoder against a fixture built to tie
+  Paeth's predictor distances — without that tie, the usual mis-write of the
+  tie-break decodes identically and the test passes against a broken
+  decoder, which is what the first version of it did.
 - **A recording run proves nothing.** `--update-baselines` rewrites whatever
   it sees, so it cannot fail on drift and cannot tell you the guard holds.
   Every claim about the audit comes from a plain run afterwards, against the
@@ -454,6 +494,28 @@ the reading of it was wrong in an interesting-sounding way. Restore with `cp`,
 or `touch` the file afterwards. The same applies to any revert-to-confirm-red
 cycle, which is most of them here.
 
+### Disk: the suite's own link step can run out of it
+
+`cargo test --workspace --exclude annex-desktop` builds ~121 test binaries and
+every one statically links webrtc-rs, arkworks, axum and tokio. Two things keep
+that inside a fixed disk allowance, and the failure mode when they don't reads as
+a broken machine rather than a full one — `error: linking with 'cc' failed`,
+several times, with no mention of space.
+
+- **`[profile.dev.package."*"] debug = 0`** in the root `Cargo.toml`. Measured
+  across two complete builds with nothing stale in `target/`: 126 binaries
+  averaging 100 MB became 121 averaging 66 MB, the executables alone 12.6 GB →
+  7.8 GB, `target/` 19 GB → 11 GB. Workspace crates keep `line-tables-only`, so
+  panic backtraces through OUR code still carry file and line numbers.
+- **`bash scripts/prune-stale-test-binaries.sh`** when a run dies for space.
+  Cargo never removes the previous hash of a rebuilt test binary, so a session
+  with many edits accumulates orphans — 9.0 GB of them in one measured case. The
+  script keeps the newest per target; anything it removes, cargo rebuilds.
+  `--dry-run` reports without deleting.
+
+`df` misleads here: "Avail" at 0 with low "Used" means the per-session allowance
+is spent, not that the disk is broken. Deletes still succeed while writes fail.
+
 ### Linting
 ```bash
 cargo fmt --all --check
@@ -565,7 +627,20 @@ The second desktop job, `desktop-audit`, runs
 `bash scripts/desktop-audit.sh` — it takes the bundle past "does it
 build" to **does it install and run**: `dpkg -i`, binary on PATH, the
 `annex://` scheme handler registered with the OS, a headless Xvfb launch
-that survives startup, then `dpkg -r` and confirmed removal. It *does*
+that survives startup, then `dpkg -r` and confirmed removal.
+
+**That job is not redundant with the three above it, and here is the proof.**
+A commit registering `tauri_plugin_updater` unconditionally shipped an app
+that panicked in `tauri::Builder::build()` — `PluginInitialization("updater",
+"invalid type: null, expected struct Config")` — because `plugins.updater` is
+deliberately absent from `tauri.conf.json` (the public key is injected at
+build time from a secret). The app exited before its first window, for every
+build made without that secret: every `cargo tauri dev`, every local build.
+`cargo check`, `cargo clippy --all-targets`, `cargo test -p annex-desktop`
+(24 tests) and `cargo tauri build` were all GREEN on that commit. None of them
+runs the binary. If a change touches plugin registration, the builder chain,
+or anything else that executes before the first window, the only lane that can
+speak to it is this one. It *does*
 attempt `cargo test -p annex-desktop`, but gates it on ~8 GB of free
 disk and reports a skip rather than dying mid-link, so a tight runner
 degrades instead of failing. See `docs/ui-audit/README.md`.

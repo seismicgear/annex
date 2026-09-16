@@ -11,6 +11,24 @@ use annex_observe::EventPayload;
 use annex_types::PresenceEvent;
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
+use tokio_util::sync::CancellationToken;
+
+/// Sleep for `interval`, unless the process is shutting down.
+///
+/// Returns `false` when shutdown was signalled; every worker loop below
+/// treats that as "stop now". A bare `sleep(interval).await` in a detached
+/// task is why SIGTERM used to stall to SIGKILL: `axum::serve`'s graceful
+/// shutdown drains in-flight HTTP requests and knows nothing about these
+/// workers, so the process waited out the container's kill grace period with
+/// six timers still pending. Worse than slow — the outbox worker could be
+/// killed between "marked attempted" and "sent".
+async fn sleep_or_shutdown(interval: Duration, shutdown: &CancellationToken) -> bool {
+    tokio::select! {
+        biased;
+        _ = shutdown.cancelled() => false,
+        _ = sleep(interval) => true,
+    }
+}
 
 /// Starts the graph node pruning task.
 ///
@@ -33,7 +51,10 @@ pub async fn start_pruning_task(state: Arc<AppState>, threshold_seconds: u64) {
     );
 
     loop {
-        sleep(interval).await;
+        if !sleep_or_shutdown(interval, &state.shutdown).await {
+            tracing::info!("graph pruning task stopping");
+            return;
+        }
 
         let pool = state.pool.clone();
         let server_id = state.server_id;
@@ -88,12 +109,15 @@ pub async fn start_pruning_task(state: Arc<AppState>, threshold_seconds: u64) {
 ///
 /// This prevents unbounded memory growth from many unique IPs/pseudonyms
 /// sending requests. Runs every 120 seconds.
-pub async fn start_rate_limit_cleanup_task(rate_limiter: RateLimiter) {
+pub async fn start_rate_limit_cleanup_task(rate_limiter: RateLimiter, shutdown: CancellationToken) {
     let interval = Duration::from_secs(120);
     tracing::info!("starting rate limiter cleanup task (every 120s)");
 
     loop {
-        sleep(interval).await;
+        if !sleep_or_shutdown(interval, &shutdown).await {
+            tracing::info!("rate limiter cleanup task stopping");
+            return;
+        }
         rate_limiter.cleanup_expired();
     }
 }
@@ -132,7 +156,10 @@ pub async fn start_federation_outbox_task(state: Arc<AppState>) {
     }
 
     loop {
-        sleep(interval).await;
+        if !sleep_or_shutdown(interval, &state.shutdown).await {
+            tracing::info!("federation outbox task stopping");
+            return;
+        }
 
         // The worker fetches a small batch under spawn_blocking, then
         // POSTs each envelope back on the async side. We avoid holding
@@ -292,7 +319,16 @@ pub async fn drain_outbox_batch(state: Arc<AppState>, batch_size: i64) -> Result
     };
 
     let mut handles = Vec::new();
-    for (id, peer_id, envelope_json, attempts) in rows {
+    for (id, peer_id, stored_envelope, attempts) in rows {
+        // Decrypt once, at the top: the envelope is stored encrypted because
+        // it carries the message body in cleartext and `federation_outbox`
+        // rows outlive the retention sweep that deletes from `messages`. Both
+        // uses below — routing by `envelopeKind` and the POST body — need the
+        // plaintext. `MessageCipher::decrypt` passes unmarked values through
+        // unchanged, so rows enqueued before the column was encrypted still
+        // route and deliver without a migration.
+        let mut envelope_json = stored_envelope;
+        state.message_cipher().decrypt_in_place(&mut envelope_json);
         let peer_base = match peer_urls.get(&peer_id).cloned() {
             Some(u) => u,
             None => {
@@ -488,7 +524,10 @@ pub async fn start_db_maintenance_task(state: Arc<AppState>) {
     );
 
     loop {
-        sleep(tick).await;
+        if !sleep_or_shutdown(tick, &state.shutdown).await {
+            tracing::info!("database maintenance task stopping");
+            return;
+        }
         if !state.storage_config.maintenance_enabled {
             continue;
         }
@@ -587,7 +626,10 @@ pub async fn start_storage_probe_task(state: Arc<AppState>, db_path: std::path::
     }
 
     loop {
-        sleep(STORAGE_PROBE_INTERVAL).await;
+        if !sleep_or_shutdown(STORAGE_PROBE_INTERVAL, &state.shutdown).await {
+            tracing::info!("storage probe task stopping");
+            return;
+        }
         let now = probe_once(&state, &db_path, warn_free, block_free, max_bytes).await;
         // Log transitions only. At one probe a minute, logging every
         // tick would bury the transition that matters in noise.
@@ -657,7 +699,10 @@ pub async fn start_federation_agreement_expiry_task(state: Arc<AppState>) {
     );
 
     loop {
-        sleep(tick).await;
+        if !sleep_or_shutdown(tick, &state.shutdown).await {
+            tracing::info!("federation agreement expiry task stopping");
+            return;
+        }
         let pool = state.pool.clone();
         let server_id = state.server_id;
         let _ = tokio::task::spawn_blocking(move || {

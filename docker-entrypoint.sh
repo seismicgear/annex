@@ -1,66 +1,67 @@
 #!/bin/sh
+# Runtime entrypoint. Runs as the non-root `annex` user, needs no Linux
+# capabilities, and does not write outside the data volume.
+#
+# ── What changed and why ──────────────────────────────────────────────────
+#
+# This used to start as root, `chown -R` the whole data directory, and drop to
+# `annex` via `gosu`. `docker-compose.prod.yml` sets `cap_drop: ALL`, and all
+# three of those need capabilities it removes — CAP_CHOWN and CAP_FOWNER for
+# the recursive chown, CAP_SETUID/CAP_SETGID for gosu. That is a startup
+# contract in direct conflict with the hardening beside it, not a missing
+# recommendation: the documented production compose file could not run its own
+# documented entrypoint.
+#
+# The repair is not to hand the capabilities back. The image declares
+# `USER annex`, Compose names the same uid, and volume ownership is done ONCE
+# by a short init service that holds only the capability it needs for exactly
+# as long as it needs it. The server process then runs unprivileged for its
+# whole life with a read-only root filesystem and no capabilities at all.
+#
+# Migrations are likewise no longer inferred. The previous version ran the
+# entire server under `timeout 10` and treated exit code 124 as proof that
+# migrations had succeeded — elapsed time standing in for a result, and a check
+# that could only fail if the server exited early, which is the one thing a
+# healthy server does not do. `annex-server --migrate` applies migrations and
+# exits: 0 means applied, anything else means it did not.
+
 set -eu
 
-DATA_DIR="$(dirname "${ANNEX_DB_PATH:-/app/data/annex.db}")"
 DB_PATH="${ANNEX_DB_PATH:-/app/data/annex.db}"
+DATA_DIR="$(dirname "$DB_PATH")"
 
-# Ensure the data directory exists and is owned by the runtime user.
-# The container starts as root so it can fix volume ownership from prior
-# runs, then drops to "annex" via gosu before exec-ing the server.
-mkdir -p "$DATA_DIR"
-chown -R annex:annex "$DATA_DIR"
-SLUG="${ANNEX_SERVER_SLUG:-default}"
-LABEL="${ANNEX_SERVER_LABEL:-Annex Server}"
-DEFAULT_POLICY='{"agent_min_alignment_score":0.8,"agent_required_capabilities":[],"federation_enabled":true,"default_retention_days":30,"voice_enabled":true,"max_members":1000}'
-KEY_FILE="$DATA_DIR/signing.key"
-
-# Sanitize slug/label for SQL: escape single quotes by doubling them.
-SAFE_SLUG="$(printf '%s' "$SLUG" | sed "s/'/''/g")"
-SAFE_LABEL="$(printf '%s' "$LABEL" | sed "s/'/''/g")"
-
-# ── Signing key ──
-# If ANNEX_SIGNING_KEY is not set, generate a persistent key on the data
-# volume so it survives container restarts.
-if [ -z "${ANNEX_SIGNING_KEY:-}" ]; then
-    if [ -f "$KEY_FILE" ]; then
-        ANNEX_SIGNING_KEY="$(cat "$KEY_FILE")"
-        export ANNEX_SIGNING_KEY
-    else
-        ANNEX_SIGNING_KEY="$(head -c 32 /dev/urandom | od -A n -t x1 | tr -d ' \n')"
-        export ANNEX_SIGNING_KEY
-        printf '%s' "$ANNEX_SIGNING_KEY" > "$KEY_FILE"
-        chmod 600 "$KEY_FILE"
-        chown annex:annex "$KEY_FILE"
-        echo "Generated signing key at $KEY_FILE"
-    fi
+if [ ! -d "$DATA_DIR" ]; then
+    echo "FATAL: data directory $DATA_DIR does not exist." >&2
+    echo "The volume-init service should have created it. See docker-compose.prod.yml." >&2
+    exit 1
 fi
 
-# ── Database migrations + seeding ──
-# Run the server briefly as the runtime user to trigger migrations.
-# Bind to an ephemeral port (port 0) so it doesn't conflict with the
-# real server that starts later. Timeout kills it once migrations are done.
-MIGRATION_LOG="$(mktemp)"
-if ANNEX_HOST=127.0.0.1 ANNEX_PORT=0 ANNEX_LOG_LEVEL=warn \
-   timeout 10 gosu annex /app/annex-server > /dev/null 2>"$MIGRATION_LOG"; then
-    : # Server ran and exited cleanly
-else
-    EXIT_CODE=$?
-    # Exit code 124 = timeout (expected: server started serving after migrations).
-    if [ "$EXIT_CODE" != "124" ] && [ -s "$MIGRATION_LOG" ]; then
-        echo "Migration run output:" >&2
-        cat "$MIGRATION_LOG" >&2
-    fi
+# Writability is checked here rather than discovered three steps later as a
+# confusing SQLite error. `mktemp` in the directory is the only honest test:
+# `[ -w ]` consults permission bits and says nothing about a read-only mount.
+if ! probe="$(mktemp "$DATA_DIR/.writable.XXXXXX" 2>/dev/null)"; then
+    echo "FATAL: $DATA_DIR is not writable by $(id -un) (uid $(id -u))." >&2
+    echo "Check the volume's ownership against the 'user:' in your compose file." >&2
+    exit 1
 fi
-rm -f "$MIGRATION_LOG"
+rm -f "$probe"
 
-# Seed the servers table if it is empty.
-COUNT=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM servers;" 2>/dev/null || echo "0")
-if [ "$COUNT" = "0" ]; then
-    sqlite3 "$DB_PATH" "INSERT INTO servers (slug, label, policy_json) VALUES ('$SAFE_SLUG', '$SAFE_LABEL', '$DEFAULT_POLICY');"
-    echo "Seeded server: slug='$SLUG', label='$LABEL'"
-else
-    # Fix any rows that were seeded with empty '{}' policy_json.
-    sqlite3 "$DB_PATH" "UPDATE servers SET policy_json = '$DEFAULT_POLICY' WHERE policy_json = '{}';" || true
+# ── Migrations ──
+# An explicit command with an explicit exit code. A failure stops the container
+# rather than falling through to serve traffic against a half-migrated
+# database: the migration runner is forward-only, and the recovery path from a
+# partial apply is restore-from-backup, which is a bad place to arrive by
+# accident.
+echo "Applying database migrations..."
+if ! /app/annex-server --migrate; then
+    echo "FATAL: migrations failed. Refusing to start the server." >&2
+    exit 1
 fi
 
-exec gosu annex /app/annex-server
+# The server row is seeded by `prepare_server` on first start, using
+# ANNEX_SERVER_SLUG / ANNEX_SERVER_LABEL. It used to be inserted here with
+# `sqlite3` and hand-escaped SQL; two code paths writing the same row is one
+# more than necessary, and the escaping was the kind that works until a label
+# contains something surprising.
+
+exec /app/annex-server
