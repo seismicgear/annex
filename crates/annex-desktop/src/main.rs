@@ -70,7 +70,6 @@ fn bundled_resource_paths(exe_dir: &Path, suffix: &[&str]) -> Vec<PathBuf> {
         .collect()
 }
 
-
 /// Whether this build's compiled config carries a usable `plugins.updater`.
 ///
 /// Null and empty both count as absent. `tauri.conf.json` omits the key
