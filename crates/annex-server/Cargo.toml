@@ -55,7 +55,7 @@ open = "5"
 
 [dev-dependencies]
 annex-voice = { workspace = true }
-tokio-tungstenite = "0.28"
+tokio-tungstenite = "0.29"
 futures-util = "0.3"
 tokio = { workspace = true, features = ["test-util"] }
 num-bigint = "0.4"
