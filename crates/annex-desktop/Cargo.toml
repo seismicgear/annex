@@ -30,7 +30,7 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 dirs = "6"
 reqwest = { workspace = true }
-rfd = "0.15"
+rfd = "0.17"
 
 toml = { workspace = true }
 uuid = { workspace = true }
