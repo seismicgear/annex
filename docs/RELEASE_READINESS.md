@@ -130,12 +130,17 @@ Windows or macOS, and CI has not executed on this branch at all — see below.
 > jobs that `needs` them were skipped, so each run reports as a failure with
 > nine of ten jobs having executed nothing.
 >
-> **So this branch has no CI result, and nothing here should be read as one** —
-> including the ten red checks on #296, which are this and not the diff. The
-> remedy is on the account rather than in the branch: an Actions spending limit
-> reached, or a runner/workflow permission policy. The lanes were run locally
-> instead — see "The sweep behind these numbers" above — which covers Linux and
-> says nothing about Windows or macOS.
+> It is not branch-specific and it did not end with the merge. `main` at
+> `622534e` — the merge of #296 — got run 757, which died in six seconds the
+> same way, and the CodeQL workflow (`Analyze (actions)`,
+> `Analyze (javascript-typescript)`) does too. So **the repository currently has
+> no CI result at all**, on any branch, and nothing here should be read as one —
+> the red checks on #296 and on `main` are this, not the diff.
+>
+> The remedy is on the account rather than in any branch: an Actions spending
+> limit reached, or a runner/workflow permission policy. Until it is fixed, a
+> merge to `main` buys no verification, so the local sweep above is the whole of
+> the evidence — Linux only, and silent about Windows and macOS.
 >
 > **So tell the two apart before reading either one as a result**, in this
 > order, because they render identically in the checks list:
