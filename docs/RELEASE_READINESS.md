@@ -67,7 +67,7 @@ job, and `scripts/test-all.sh` runs the ones that need no browser.
 
 ### The sweep behind these numbers
 
-Every row above was run on one machine, in sequence, at `a96e275` (2026-09-16) —
+Every row above was run on one machine, in sequence, at `f491be8` (2026-09-16) —
 not assembled from different commits on different days:
 
 | Lane | Result |
@@ -98,8 +98,15 @@ the binary. The Xvfb launch step is the only thing in this repository that
 could have caught it, and a release built from that commit would have shipped
 an app that does not start.
 
-**What this sweep is not.** It is a local run. It says nothing about Windows or
-macOS, and CI has not executed on this branch at all — see below.
+**The sha is `f491be8` and not `a96e275` for a reason worth keeping.** This block
+first named the earlier commit, and at that commit `cargo fmt --all --check`
+would have failed — a stray blank line from a scripted edit, made after the
+suite last ran. The table was therefore describing a state that never existed at
+once, which is the failure it exists to prevent. The fix was to format, commit,
+and run the suite again at the result, not to edit the sha.
+
+**What this sweep is not.** It is a local run on Linux. It says nothing about
+Windows or macOS, and CI has not executed on this branch at all — see below.
 
 > **CI executes when it gets runners, and whether it gets them is not
 > reliable.** The paragraph that first stood here said CI proved nothing, because
@@ -114,9 +121,9 @@ macOS, and CI has not executed on this branch at all — see below.
 > real runners for 41 minutes: `Check (Server)`, `Frontend Tests`, both desktop
 > builds, both server smokes, the federation smoke and the desktop audit all
 > passed; `UI Audit (Linux)` failed; macOS was skipped by design. Run
-> runs 751 through 754, dispatched on
-> `claude/beautiful-bohr-9qb34p` over about eighty minutes, ALL died in three to
-> six seconds — five attempts counting 751's re-run, five jobs each time,
+> runs 751 through 755, dispatched on
+> `claude/beautiful-bohr-9qb34p` over about ninety minutes, ALL died in three to
+> ten seconds — six attempts counting 751's re-run, five jobs each time,
 > `ubuntu-latest` and `windows-latest` alike, `runner_id: 0`, `runner_name`
 > empty, and HTTP 404 for the job logs because no log was ever written. The five
 > jobs that `needs` them were skipped, so each run reports as a failure with
