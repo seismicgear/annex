@@ -121,17 +121,21 @@ Windows or macOS, and CI has not executed on this branch at all — see below.
 > real runners for 41 minutes: `Check (Server)`, `Frontend Tests`, both desktop
 > builds, both server smokes, the federation smoke and the desktop audit all
 > passed; `UI Audit (Linux)` failed; macOS was skipped by design. Run
-> runs 751 through 755, dispatched on
-> `claude/beautiful-bohr-9qb34p` over about ninety minutes, ALL died in three to
-> ten seconds — six attempts counting 751's re-run, five jobs each time,
+> runs 751 through 756 on
+> `claude/beautiful-bohr-9qb34p` — five `workflow_dispatch` runs and the
+> `pull_request` run for #296, eight attempts counting two re-runs, over about
+> four hours — ALL died in three to ten seconds: five jobs each time,
 > `ubuntu-latest` and `windows-latest` alike, `runner_id: 0`, `runner_name`
 > empty, and HTTP 404 for the job logs because no log was ever written. The five
 > jobs that `needs` them were skipped, so each run reports as a failure with
 > nine of ten jobs having executed nothing.
 >
-> **So this branch has no CI result, and nothing here should be read as one.**
-> The lanes were run locally instead — see "The sweep behind these numbers"
-> above — which covers Linux and says nothing about Windows or macOS.
+> **So this branch has no CI result, and nothing here should be read as one** —
+> including the ten red checks on #296, which are this and not the diff. The
+> remedy is on the account rather than in the branch: an Actions spending limit
+> reached, or a runner/workflow permission policy. The lanes were run locally
+> instead — see "The sweep behind these numbers" above — which covers Linux and
+> says nothing about Windows or macOS.
 >
 > **So tell the two apart before reading either one as a result**, in this
 > order, because they render identically in the checks list:
