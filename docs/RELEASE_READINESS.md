@@ -11,7 +11,7 @@ backed by a command you can re-run.
 | Rust workspace (excl. annex-desktop) | 1284 tests / 134 binaries, 0 clippy warnings | `cargo test --workspace --exclude annex-desktop` |
 | Frontend (vitest) | 502 tests across 54 files + eslint + `tsc -b` (which now covers the test files themselves — see below) | `cd client && npm test && npm run lint && npx tsc -b` |
 | Playwright functional suite | 13 tests | `bash scripts/e2e-server.sh start && cd client && npm run test:e2e` |
-| Group call (3 real browser contexts, fake media) | 2 tests | `bash scripts/e2e-all.sh group-call` |
+| Group call (3 real browser contexts, fake media) | 6 tests | `bash scripts/e2e-all.sh group-call` |
 | Harness scripts | 12 files | `for t in scripts/tests/*.test.sh; do bash "$t"; done` |
 | Federation signaling relay | 59 tests | `node --test api/signal.test.mjs` |
 | ZK proof round-trip (57 assertions: tamper rejection, and the v2 challenge binding) | `zk-proof` gate | `cd zk && node scripts/test-proofs.js` |
@@ -19,7 +19,7 @@ backed by a command you can re-run.
 | Live federation relay (signed envelope, second server) | 1 end-to-end path | `bash scripts/smoke-federation.sh` |
 | Puppeteer journey (cold start → identity → proof → chat → channel create) | 1 driver-independent pass | `bash scripts/e2e-all.sh puppeteer` |
 | UI audit (screenshots + a11y + console + network + overflow + keyboard) | 105 surfaces, 413 captures + 9 manifest checks + 3 setups = 425, 0 findings | `bash scripts/ui-audit.sh` |
-| Desktop install → run → uninstall | 9 checks | `bash scripts/desktop-audit.sh` |
+| Desktop install → run → uninstall | 10 checks, and the only lane that RUNS the binary | `bash scripts/desktop-audit.sh` |
 | ZK artifact gate | dev-fixture rejection under production profile | `cd zk && npm test` |
 | Marketing-site invite router (`monolith-annex`) — **cross-repo, not verifiable from this checkout** | 62 tests as last reported | `cd ../monolith-annex && npm test` |
 | Server smoke (register → Merkle → Groth16 → verify → channel) | Linux + Windows | `bash scripts/smoke-server.sh` / `scripts/smoke-server.ps1` |

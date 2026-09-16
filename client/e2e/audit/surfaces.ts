@@ -158,6 +158,153 @@ async function stageAttachment(page: import('@playwright/test').Page, name: stri
  */
 const SEEDED_CHANNEL_COUNT = 1 + Object.keys(SEED.channels).length + 1;
 
+/**
+ * A fixed event stream for the two event-log surfaces.
+ *
+ * These were the last surfaces whose pixels depended on what ran BEFORE them.
+ * `/api/public/events` defaults to a limit of 100 and the audit's database
+ * holds roughly fifteen events by stage 11, so the picture was every event the
+ * run had accumulated — and adding any surface earlier in the manifest that
+ * registers an identity silently rewrote two baselines at four viewports each.
+ * Between two builds in this session the table lost two rows and changed its
+ * tail, which measured 0.011-0.020 against a 0.005 tolerance: a failure that
+ * would read as an event-log regression and be neither.
+ *
+ * Clipping cannot fix this one. The variance is in the row COUNT, so the
+ * table's height moves, and a clip to the table takes the variance with it.
+ *
+ * So the data is fixed instead — the same treatment `channel-encryption-enabled`
+ * needed, for the same reason. What that costs is the boundary check: a stub
+ * cannot notice that the server's event shape has drifted, and a stub that has
+ * drifted is a screenshot of a lie. So the real endpoint is called first and
+ * its fields compared with the fixture's, in BOTH directions: a field the
+ * server has and the fixture lacks fails, and so does the reverse. The picture
+ * is then fixed and the contract is still checked.
+ *
+ * The route honours `domain`, so `event-log-filtered` still proves the select
+ * narrows the table rather than photographing a filter that does nothing.
+ */
+const EVENT_LOG_FIXTURE: ReadonlyArray<Record<string, unknown>> = [
+  {
+    id: 1, server_id: 1, domain: 'IDENTITY', event_type: 'IDENTITY_REGISTERED',
+    entity_type: 'identity', entity_id: 'f3a91c7d4b02e8a5', seq: 1,
+    payload_json: '{"event":"IDENTITY_REGISTERED","role_code":1}',
+    occurred_at: '2026-03-04T09:12:41Z',
+  },
+  {
+    id: 2, server_id: 1, domain: 'IDENTITY', event_type: 'IDENTITY_VERIFIED',
+    entity_type: 'identity', entity_id: 'f3a91c7d4b02e8a5', seq: 2,
+    payload_json: '{"event":"IDENTITY_VERIFIED","topic":"annex:server:audit:v2"}',
+    occurred_at: '2026-03-04T09:12:43Z',
+  },
+  {
+    id: 3, server_id: 1, domain: 'IDENTITY', event_type: 'PSEUDONYM_DERIVED',
+    entity_type: 'pseudonym', entity_id: '5c20be914af7d3e6', seq: 3,
+    payload_json: '{"event":"PSEUDONYM_DERIVED","topic":"annex:server:audit:v2"}',
+    occurred_at: '2026-03-04T09:12:44Z',
+  },
+  {
+    id: 4, server_id: 1, domain: 'PRESENCE', event_type: 'NODE_ADDED',
+    entity_type: 'node', entity_id: '5c20be914af7d3e6', seq: 4,
+    payload_json: '{"event":"NODE_ADDED","node_type":"HUMAN"}',
+    occurred_at: '2026-03-04T09:12:45Z',
+  },
+  {
+    id: 5, server_id: 1, domain: 'PRESENCE', event_type: 'NODE_PRUNED',
+    entity_type: 'node', entity_id: 'a17f40c9e5b2d883', seq: 5,
+    payload_json: '{"event":"NODE_PRUNED"}',
+    occurred_at: '2026-03-04T09:31:02Z',
+  },
+  {
+    id: 6, server_id: 1, domain: 'PRESENCE', event_type: 'NODE_REACTIVATED',
+    entity_type: 'node', entity_id: 'a17f40c9e5b2d883', seq: 6,
+    payload_json: '{"event":"NODE_REACTIVATED"}',
+    occurred_at: '2026-03-04T09:44:18Z',
+  },
+  {
+    id: 7, server_id: 1, domain: 'FEDERATION', event_type: 'FEDERATION_ESTABLISHED',
+    entity_type: 'peer', entity_id: 'beta.example', seq: 7,
+    payload_json:
+      '{"event":"FEDERATION_ESTABLISHED","remote_url":"https://beta.example","alignment_status":"FULLY_ALIGNED"}',
+    occurred_at: '2026-03-04T10:02:55Z',
+  },
+  {
+    id: 8, server_id: 1, domain: 'FEDERATION', event_type: 'FEDERATION_REALIGNED',
+    entity_type: 'peer', entity_id: 'beta.example', seq: 8,
+    payload_json:
+      '{"event":"FEDERATION_REALIGNED","remote_url":"https://beta.example",' +
+      '"previous_status":"FULLY_ALIGNED","alignment_status":"PARTIALLY_ALIGNED"}',
+    occurred_at: '2026-03-04T10:19:07Z',
+  },
+  {
+    id: 9, server_id: 1, domain: 'FEDERATION', event_type: 'FEDERATION_SEVERED',
+    entity_type: 'peer', entity_id: 'gamma.example', seq: 9,
+    payload_json:
+      '{"event":"FEDERATION_SEVERED","remote_url":"https://gamma.example","reason":"alignment conflict"}',
+    occurred_at: '2026-03-04T10:26:31Z',
+  },
+  {
+    id: 10, server_id: 1, domain: 'AGENT', event_type: 'AGENT_CONNECTED',
+    entity_type: 'agent', entity_id: '9be34d7a1f60c2e8', seq: 10,
+    payload_json: '{"event":"AGENT_CONNECTED","alignment_status":"FULLY_ALIGNED"}',
+    occurred_at: '2026-03-04T11:05:12Z',
+  },
+  {
+    id: 11, server_id: 1, domain: 'AGENT', event_type: 'AGENT_REALIGNED',
+    entity_type: 'agent', entity_id: '9be34d7a1f60c2e8', seq: 11,
+    payload_json:
+      '{"event":"AGENT_REALIGNED","previous_status":"FULLY_ALIGNED","alignment_status":"CONFLICT"}',
+    occurred_at: '2026-03-04T11:41:59Z',
+  },
+  {
+    id: 12, server_id: 1, domain: 'MODERATION', event_type: 'MODERATION_ACTION',
+    entity_type: 'channel', entity_id: 'general', seq: 12,
+    payload_json:
+      '{"event":"MODERATION_ACTION","action_type":"MESSAGE_REMOVED",' +
+      '"description":"Message removed by a moderator"}',
+    occurred_at: '2026-03-04T12:08:20Z',
+  },
+];
+
+function fixedEventLog() {
+  return async (page: import('@playwright/test').Page) => {
+    // The contract half. `page.request` resolves against `baseURL` and shares
+    // the context's storage state, and the endpoint is public anyway.
+    const live = await page.request.get('/api/public/events?limit=1');
+    expect(live.ok(), 'the real events endpoint must answer before it is stubbed').toBe(true);
+    const body = await live.json();
+    expect(Array.isArray(body.events)).toBe(true);
+    expect(typeof body.count).toBe('number');
+    expect(
+      body.events.length,
+      'the audit database should always hold identity events by this stage',
+    ).toBeGreaterThan(0);
+
+    const real = body.events[0] as Record<string, unknown>;
+    const fixture = EVENT_LOG_FIXTURE[0];
+    for (const key of Object.keys(fixture)) {
+      expect(real, `EVENT_LOG_FIXTURE carries a field the server does not: ${key}`)
+        .toHaveProperty(key);
+    }
+    for (const key of Object.keys(real)) {
+      expect(fixture, `the server returns a field EVENT_LOG_FIXTURE omits: ${key}`)
+        .toHaveProperty(key);
+    }
+
+    await page.route('**/api/public/events*', (route) => {
+      const domain = new URL(route.request().url()).searchParams.get('domain');
+      const events = domain
+        ? EVENT_LOG_FIXTURE.filter((e) => e.domain === domain)
+        : EVENT_LOG_FIXTURE;
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ events, count: events.length }),
+      });
+    });
+  };
+}
+
 export const SURFACES: Surface[] = [
   // ─────────────────────── 02 · identity ───────────────────────
   {
@@ -2296,7 +2443,10 @@ export const SURFACES: Surface[] = [
     stage: '11-observability',
     title: 'Event log',
     role: 'founder',
-    intent: 'Signed, hash-chained audit trail — identity/presence/federation/agent/moderation events.',
+    intent:
+      'Signed, hash-chained audit trail — identity/presence/federation/agent/moderation events. ' +
+      'Stream fixed by EVENT_LOG_FIXTURE, whose shape is checked against the live endpoint first.',
+    setup: fixedEventLog(),
     navigate: async (page) => {
       await openTab(page, 'Events');
       await expect(page.locator('.event-log')).toBeVisible({ timeout: 15_000 });
@@ -2590,7 +2740,10 @@ export const SURFACES: Surface[] = [
     stage: '11-observability',
     title: 'Event log filtered to one domain',
     role: 'founder',
-    intent: 'Domain filter applied — proves the select actually narrows the table.',
+    intent:
+      'Domain filter applied — proves the select actually narrows the table. The stub honours ' +
+      '`domain`, so a filter that stopped filtering would still fail this.',
+    setup: fixedEventLog(),
     navigate: async (page) => {
       await openTab(page, 'Events');
       await page.locator('.domain-filter').selectOption('IDENTITY');
