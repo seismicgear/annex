@@ -1,90 +1,91 @@
-/**
- * Apply the voice store's output preferences (output device, volume,
- * deafen) to every remote `<audio>` element rendered by the room.
- *
- * Existing elements are updated whenever any of the three preferences
- * changes; a `MutationObserver` watches `document.body` so that any
- * `<audio>` element added later (directly or as a descendant of a
- * dynamically inserted container) inherits the same preferences.
- */
-
+/** Apply call output preferences only to media rendered by the voice room. */
 import { useEffect, useRef } from 'react';
 import { useVoiceStore } from '@/stores/voice';
 
-/** Try to set the audio output device on an HTMLMediaElement (setSinkId).
- *  When `deviceId` is null/empty, resets to the system default ('').
- */
-function trySetSinkId(el: HTMLMediaElement, deviceId: string | null): void {
-  if (typeof (el as unknown as Record<string, unknown>).setSinkId === 'function') {
-    ((el as unknown as Record<string, (...args: unknown[]) => Promise<void>>).setSinkId)(deviceId || '').catch(() => {});
-  }
-}
+const CALL_AUDIO = 'audio[data-webrtc-remote], [data-testid="webrtc-room"] audio';
 
-/** Apply current audio preferences (deafen, volume, output device) to a single audio element. */
-function applyAudioPrefs(
-  el: HTMLAudioElement,
-  deafened: boolean,
-  outputVolume: number,
-  outputDeviceId: string | null,
-): void {
-  el.muted = deafened;
-  el.volume = deafened ? 0 : Math.max(0, Math.min(1, outputVolume / 100));
-  trySetSinkId(el, outputDeviceId);
+async function setSink(el: HTMLAudioElement, deviceId: string | null): Promise<void> {
+  if (typeof el.setSinkId === 'function') {
+    await el.setSinkId(deviceId ?? '');
+  } else if (deviceId) {
+    throw new Error('Output device selection is unavailable in this browser.');
+  }
 }
 
 export function useRemoteAudio(): void {
   const deafened = useVoiceStore((s) => s.deafened);
   const outputVolume = useVoiceStore((s) => s.outputVolume);
   const outputDeviceId = useVoiceStore((s) => s.outputDeviceId);
-
-  // Apply output device and volume to all <audio> elements rendered by RemoteAudioRenderer.
-  // Also handles deafen by muting those elements.
-  // When outputDeviceId is null/empty, reset to system default via setSinkId('').
-  useEffect(() => {
-    const audioElements = document.querySelectorAll<HTMLAudioElement>('audio[data-webrtc-remote]');
-    audioElements.forEach((el) => {
-      applyAudioPrefs(el, deafened, outputVolume, outputDeviceId);
-    });
-
-    // Also handle any audio elements inside webrtc containers
-    const containerAudioElements = document.querySelectorAll<HTMLAudioElement>('[data-testid="webrtc-room"] audio');
-    containerAudioElements.forEach((el) => {
-      applyAudioPrefs(el, deafened, outputVolume, outputDeviceId);
-    });
-  }, [deafened, outputVolume, outputDeviceId]);
-
-  // Set up a MutationObserver to catch dynamically added audio elements.
-  // Handles both direct <audio> nodes and container nodes with <audio> descendants.
-  // Capture current values in a ref so the observer callback always uses fresh state.
-  const deafenedRef = useRef(deafened);
-  const outputVolumeRef = useRef(outputVolume);
-  const outputDeviceIdRef = useRef(outputDeviceId);
-  useEffect(() => {
-    deafenedRef.current = deafened;
-    outputVolumeRef.current = outputVolume;
-    outputDeviceIdRef.current = outputDeviceId;
-  });
+  const applyRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
-    const applyToAudio = (el: HTMLAudioElement) => {
-      applyAudioPrefs(el, deafenedRef.current, outputVolumeRef.current, outputDeviceIdRef.current);
-    };
+    let disposed = false;
+    let acceptedDevice: string | null = null;
+    let queue = Promise.resolve();
+    const applied = new WeakMap<HTMLAudioElement, string | null>();
+    const elements = () => [...document.querySelectorAll<HTMLAudioElement>(CALL_AUDIO)];
 
-    const observer = new MutationObserver((mutations) => {
-      for (const mutation of mutations) {
-        for (const node of mutation.addedNodes) {
-          if (node instanceof HTMLAudioElement) {
-            applyToAudio(node);
-          } else if (node instanceof HTMLElement) {
-            // Scan descendants for <audio> elements inside container nodes
-            const nested = node.querySelectorAll<HTMLAudioElement>('audio');
-            nested.forEach(applyToAudio);
-          }
-        }
+    const apply = () => {
+      const { deafened, outputVolume } = useVoiceStore.getState();
+      for (const el of elements()) {
+        el.muted = deafened;
+        el.volume = deafened ? 0 : Math.max(0, Math.min(1, outputVolume / 100));
       }
-    });
+      // Serialize hardware operations: a slow earlier setSinkId must never
+      // finish after the user's newest selection and silently override it.
+      queue = queue.then(async () => {
+        if (disposed) return;
+        const device = useVoiceStore.getState().outputDeviceId;
+        const audio = elements();
+        if (!audio.length) return; // Validate once call audio actually exists.
+        const route = async (target: string | null) => Promise.allSettled(audio.map(async (el) => {
+          if (applied.has(el) && applied.get(el) === target) return;
+          await setSink(el, target);
+          applied.set(el, target);
+        }));
+        const results = await route(device);
+        if (disposed || useVoiceStore.getState().outputDeviceId !== device) return;
+        const failure = results.find((r) => r.status === 'rejected');
+        if (!failure) {
+          acceptedDevice = device;
+          return;
+        }
 
+        // Restore every call element, including ones that accepted the failed
+        // selection. A newly added participant can expose a lost saved device.
+        let fallback = acceptedDevice === device ? null : acceptedDevice;
+        let restored = await route(fallback);
+        if (disposed || useVoiceStore.getState().outputDeviceId !== device) return;
+        if (fallback && restored.some((r) => r.status === 'rejected')) {
+          fallback = null;
+          restored = await route(null);
+          if (disposed || useVoiceStore.getState().outputDeviceId !== device) return;
+        }
+        acceptedDevice = fallback;
+        const state = useVoiceStore.getState();
+        state.setOutputDevice(fallback);
+        const detail = failure.reason instanceof Error ? failure.reason.message : 'The device could not be selected.';
+        const recovery = restored.some((r) => r.status === 'rejected')
+          ? 'Call audio could not be restored. Check your output device and reconnect.'
+          : fallback ? 'Restored the previous output device.' : 'Using the system default output.';
+        state.setOutputDeviceError(`Output device change failed: ${detail} ${recovery}`);
+      });
+    };
+    applyRef.current = apply;
+    const observer = new MutationObserver((mutations) => {
+      if (mutations.some((mutation) => [...mutation.addedNodes].some((node) =>
+        node instanceof Element && (node.matches(CALL_AUDIO) || node.querySelector(CALL_AUDIO))
+      ))) apply();
+    });
     observer.observe(document.body, { childList: true, subtree: true });
-    return () => observer.disconnect();
+    return () => {
+      disposed = true;
+      applyRef.current = null;
+      observer.disconnect();
+    };
   }, []);
+
+  useEffect(() => {
+    applyRef.current?.();
+  }, [deafened, outputVolume, outputDeviceId]);
 }

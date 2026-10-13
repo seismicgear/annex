@@ -278,6 +278,7 @@ mod tests {
 
     fn make_report() -> VrpValidationReport {
         VrpValidationReport {
+            negotiated_rtx: None,
             alignment_status: VrpAlignmentStatus::Aligned,
             transfer_scope: VrpTransferScope::ReflectionSummariesOnly,
             alignment_score: 1.0,
@@ -379,6 +380,7 @@ mod liveness_tests {
 
     fn report() -> VrpValidationReport {
         VrpValidationReport {
+            negotiated_rtx: None,
             alignment_status: VrpAlignmentStatus::Aligned,
             transfer_scope: VrpTransferScope::ReflectionSummariesOnly,
             alignment_score: 1.0,

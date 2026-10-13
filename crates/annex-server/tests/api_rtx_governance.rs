@@ -8,6 +8,8 @@
 //! - Pagination (limit, offset)
 
 use annex_db::{create_pool, DbRuntimeSettings};
+#[path = "common/rtx_author.rs"]
+mod rtx_author;
 use annex_identity::MerkleTree;
 use annex_server::{app, middleware::RateLimiter, AppState};
 use annex_types::ServerPolicy;
@@ -26,6 +28,10 @@ fn load_dummy_vkey() -> Arc<annex_identity::zk::VerifyingKey<annex_identity::zk:
 }
 
 async fn setup_app() -> (axum::Router, annex_db::DbPool) {
+    setup_app_with_policy(ServerPolicy::default()).await
+}
+
+async fn setup_app_with_policy(policy: ServerPolicy) -> (axum::Router, annex_db::DbPool) {
     let pool = create_pool(":memory:", DbRuntimeSettings::default()).unwrap();
     let conn = pool.get().unwrap();
     annex_db::run_migrations(&conn).unwrap();
@@ -39,7 +45,6 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool) {
     drop(conn);
 
     let tree = MerkleTree::new(20).unwrap();
-    let policy = ServerPolicy::default();
 
     let state = AppState {
         pool: pool.clone(),
@@ -72,6 +77,7 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool) {
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
         voice_token_secret: std::sync::Arc::new([0u8; 32]),
+        federation_transport: Default::default(),
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
@@ -569,7 +575,12 @@ async fn test_governance_summary_with_data() {
 
 #[tokio::test]
 async fn test_publish_then_governance_audit() {
-    let (app, pool) = setup_app().await;
+    let (app, pool) = setup_app_with_policy(ServerPolicy {
+        allow_full_knowledge: true,
+        ..Default::default()
+    })
+    .await;
+    let author = rtx_author::accept(&app, "agent-op", None).await;
 
     // Register operator (can_moderate=1) who is also an agent
     {
@@ -580,26 +591,10 @@ async fn test_publish_then_governance_audit() {
             [],
         )
         .unwrap();
-
-        let contract_json = serde_json::json!({
-            "required_capabilities": [],
-            "offered_capabilities": ["TEXT", "VRP"],
-            "redacted_topics": []
-        })
-        .to_string();
-
-        conn.execute(
-            "INSERT INTO agent_registrations (
-                server_id, pseudonym_id, alignment_status, transfer_scope,
-                capability_contract_json, reputation_score, last_handshake_at
-            ) VALUES (1, 'agent-op', 'ALIGNED', 'FULL_KNOWLEDGE_BUNDLE', ?1, 1.0, datetime('now'))",
-            [&contract_json],
-        )
-        .unwrap();
     }
 
     // Publish a bundle
-    let bundle = serde_json::json!({
+    let mut bundle = serde_json::json!({
         "bundle_id": "governance-test-bundle",
         "source_pseudonym": "agent-op",
         "source_server": "http://localhost:3000",
@@ -608,9 +603,10 @@ async fn test_publish_then_governance_audit() {
         "reasoning_chain": "Step 1; Step 2.",
         "caveats": [],
         "created_at": 1700000000000_u64,
-        "signature": "test-sig-123",
-        "vrp_handshake_ref": "1:1:1"
+        "signature": "",
+        "vrp_handshake_ref": ""
     });
+    author.sign(&mut bundle);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
     let mut publish_req = Request::builder()

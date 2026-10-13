@@ -48,6 +48,8 @@ export interface MainLayoutProps {
   permissionsStatus: PermissionsStatus;
   loadPermissions: () => Promise<void>;
   pendingProtocolInviteConfirmation: InvitePayload | null;
+  protocolInviteBusy?: boolean;
+  protocolInviteError?: string | null;
   handleAcceptProtocolInvite: () => Promise<void>;
   handleIgnoreProtocolInvite: () => void;
   degradedStartup: DegradedStartupInfo | null;
@@ -65,6 +67,8 @@ export function MainLayout({
   permissionsStatus,
   loadPermissions,
   pendingProtocolInviteConfirmation,
+  protocolInviteBusy,
+  protocolInviteError,
   handleAcceptProtocolInvite,
   handleIgnoreProtocolInvite,
   degradedStartup,
@@ -267,6 +271,8 @@ export function MainLayout({
 
       <InviteConfirmation
         invite={pendingProtocolInviteConfirmation}
+        busy={protocolInviteBusy}
+        error={protocolInviteError}
         onAccept={handleAcceptProtocolInvite}
         onIgnore={handleIgnoreProtocolInvite}
       />

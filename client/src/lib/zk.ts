@@ -147,6 +147,13 @@ export async function computeCommitment(
   return val.toString(16).padStart(64, '0');
 }
 
+/** Same secret-derived identity binding as membership_v2.circom. */
+export async function computeTopicNullifierV2(sk: bigint, topic: string): Promise<string> {
+  await initPoseidon();
+  const topicHash = await computeTopicHashV2(topic);
+  return F.toObject(poseidonFn([sk, topicHash, 1n])).toString(16).padStart(64, '0');
+}
+
 /**
  * Generate a random secret key as a BN254 scalar field element.
  * Uses Web Crypto for randomness.

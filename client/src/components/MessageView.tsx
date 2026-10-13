@@ -19,11 +19,16 @@ import { useIdentityStore } from '@/stores/identity';
 import { useServersStore } from '@/stores/servers';
 import { useUsernameStore } from '@/stores/usernames';
 import { LinkPreview } from '@/components/LinkPreview';
+import { FederationHistoryNotice } from '@/components/FederationHistoryNotice';
 import { Modal } from '@/components/Modal';
 import { extractUrls } from '@/lib/link-preview';
 import { useUploadGrant } from '@/lib/useUploadGrant';
 import { getPersonasForIdentity } from '@/lib/personas';
 import { resolveUrl } from '@/lib/api';
+import { parsePrivateMessage, privateMessage, messageText } from '@/lib/encrypted-attachments';
+import { decryptForDisplay } from '@/lib/message-crypto';
+import { EncryptedAttachment } from './EncryptedAttachment';
+import { FederatedAttachment } from './FederatedAttachment';
 import * as api from '@/lib/api';
 import type { Message, MessageEdit, Persona } from '@/types';
 
@@ -143,18 +148,25 @@ function MessageBubble({
   const createdMs = parseMessageTimestamp(message.created_at);
   const time = isNaN(createdMs) ? '??' : new Date(createdMs).toLocaleTimeString();
   const isDeleted = !!message.deleted_at;
+  const privateBody = useMemo(() => {
+    try { return isDeleted ? null : parsePrivateMessage(message.content); }
+    catch { return { text: 'Encrypted attachment could not be verified', attachments: [] }; }
+  }, [message.content, isDeleted]);
   const { text, imageUrls, videoUrls, fileUrls } = parseMessageContent(
-    isDeleted ? '' : message.content,
+    isDeleted ? '' : privateBody?.text ?? message.content,
   );
   const getDisplayName = useUsernameStore((s) => s.getDisplayName);
   const editMessage = useChannelsStore((s) => s.editMessage);
   const deleteMessage = useChannelsStore((s) => s.deleteMessage);
   const setReplyTo = useChannelsStore((s) => s.setReplyTo);
   const activeChannelId = useChannelsStore((s) => s.activeChannelId);
+  const federated = useChannelsStore(s => s.channels.some(channel => channel.channel_id === message.channel_id && channel.federation_scope === 'Federated'));
   const allMessages = useChannelsStore((s) => s.messages);
+  const sessionTakenOver = useChannelsStore((s) => s.wsSessionState === 'taken_over');
 
   const [editing, setEditing] = useState(false);
-  const [editText, setEditText] = useState(message.content);
+  const [editText, setEditText] = useState(privateBody?.text ?? message.content);
+  const [removedAttachments, setRemovedAttachments] = useState<string[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [editHistory, setEditHistory] = useState<MessageEdit[] | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -229,22 +241,26 @@ function MessageBubble({
   const avatar = isSelf && selfPersona?.avatarUrl ? selfPersona.avatarUrl : null;
 
   const handleEdit = useCallback(() => {
-    setEditText(message.content);
+    setEditText(privateBody?.text ?? message.content);
+    setRemovedAttachments([]);
     setEditing(true);
-  }, [message.content]);
+  }, [message.content, privateBody]);
 
   const handleEditSave = useCallback(() => {
     const trimmed = editText.trim();
-    if (trimmed && trimmed !== message.content) {
-      editMessage(message.message_id, trimmed);
+    const retained = privateBody?.attachments.filter(a => !removedAttachments.includes(a.id));
+    const replacement = retained ? privateMessage(trimmed, retained) : trimmed;
+    if ((trimmed || retained?.length) && replacement !== message.content) {
+      if (retained) editMessage(message.message_id, replacement, retained.map(a => a.id));
+      else editMessage(message.message_id, replacement);
     }
     setEditing(false);
-  }, [editText, message.content, message.message_id, editMessage]);
+  }, [editText, message.content, message.message_id, editMessage, privateBody, removedAttachments]);
 
   const handleEditCancel = useCallback(() => {
     setEditing(false);
-    setEditText(message.content);
-  }, [message.content]);
+    setEditText(privateBody?.text ?? message.content);
+  }, [message.content, privateBody]);
 
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
@@ -271,7 +287,9 @@ function MessageBubble({
     setHistoryError(null);
     try {
       const edits = await api.getMessageEdits(pseudonymId, activeChannelId, message.message_id);
-      setEditHistory(edits);
+      setEditHistory(await Promise.all(edits.map(async edit => ({ ...edit,
+        old_content: messageText(await decryptForDisplay(activeChannelId, edit.old_content)),
+      }))));
     } catch (err) {
       setEditHistory(null);
       setHistoryError(
@@ -336,7 +354,7 @@ function MessageBubble({
         <span className="timestamp">{time}</span>
         {canModify && !editing && (
           <span className="message-actions">
-            <button className="msg-action-btn edit-btn" onClick={handleEdit} title={editSecondsLeft !== null ? `Edit (${editSecondsLeft}s left)` : 'Edit message'}>
+            <button className="msg-action-btn edit-btn" disabled={sessionTakenOver} onClick={handleEdit} title={editSecondsLeft !== null ? `Edit (${editSecondsLeft}s left)` : 'Edit message'}>
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
                 <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
@@ -347,6 +365,7 @@ function MessageBubble({
             </button>
             <button
               className={`msg-action-btn delete-btn ${confirmingDelete ? 'confirming' : ''}`}
+              disabled={sessionTakenOver}
               onClick={handleDelete}
               onBlur={() => setConfirmingDelete(false)}
               title={confirmingDelete ? 'Click again to confirm deletion' : 'Delete message'}
@@ -368,7 +387,7 @@ function MessageBubble({
         {message.failed && (
           <span className="message-status failed-status">
             failed
-            <button className="msg-retry-btn" onClick={() => {
+            <button className="msg-retry-btn" disabled={sessionTakenOver} onClick={() => {
               if (message.clientRequestId) {
                 useChannelsStore.getState().retryMessage(message.clientRequestId, pseudonymId);
               }
@@ -383,6 +402,7 @@ function MessageBubble({
         {!isDeleted && !message.pending && !message.failed && (
           <button
             className="msg-action-btn reply-btn"
+            disabled={sessionTakenOver}
             onClick={() => setReplyTo(message)}
             title="Reply to this message"
           >
@@ -409,7 +429,7 @@ function MessageBubble({
             >
               {parentName}
             </span>
-            <span className="reply-context-text">{parent.content.slice(0, 100)}{parent.content.length > 100 ? '...' : ''}</span>
+            <span className="reply-context-text">{messageText(parent.content).slice(0, 100)}{messageText(parent.content).length > 100 ? '...' : ''}</span>
           </div>
         );
       })()}
@@ -421,6 +441,7 @@ function MessageBubble({
           <textarea
             ref={editInputRef}
             className="message-edit-input"
+            disabled={sessionTakenOver}
             aria-label="Edit message"
             value={editText}
             onChange={(e) => setEditText(e.target.value)}
@@ -428,16 +449,24 @@ function MessageBubble({
             rows={2}
           />
           <div className="message-edit-actions">
-            <button className="msg-edit-save" onClick={handleEditSave}>Save</button>
+            {privateBody?.attachments.map(a => <label key={a.id}>
+              <input type="checkbox" checked={removedAttachments.includes(a.id)} disabled={sessionTakenOver}
+                onChange={event => setRemovedAttachments(ids => event.target.checked ? [...ids, a.id] : ids.filter(id => id !== a.id))} />
+              Remove {a.name}
+            </label>)}
+            <button className="msg-edit-save" disabled={sessionTakenOver} onClick={handleEditSave}>Save</button>
             <button className="msg-edit-cancel" onClick={handleEditCancel}>Cancel</button>
           </div>
         </div>
       ) : (
         <>
           {text && <div className="message-content">{text}</div>}
+          {privateBody?.attachments.map(a => <EncryptedAttachment key={a.id} attachment={a} channelId={message.channel_id} pseudonym={pseudonymId} />)}
           {imageUrls.length > 0 && (
             <div className="message-images">
-              {imageUrls.map((url) => (
+              {imageUrls.map((url) => federated ? (
+                <FederatedAttachment key={url} path={url} category="image" channelId={message.channel_id} pseudonym={pseudonymId} />
+              ) : (
                 // Opening an image at full size was mouse-only: an `<img>`
                 // with an onClick, no role, no tabIndex and no key handler.
                 // The lightbox it opens is the one surface that covers the
@@ -464,7 +493,9 @@ function MessageBubble({
           )}
           {videoUrls.length > 0 && (
             <div className="message-videos">
-              {videoUrls.map((url) => (
+              {videoUrls.map((url) => federated ? (
+                <FederatedAttachment key={url} path={url} category="video" channelId={message.channel_id} pseudonym={pseudonymId} />
+              ) : (
                 <video
                   key={url}
                   src={resolveUrl(url)}
@@ -478,7 +509,9 @@ function MessageBubble({
           )}
           {fileUrls.length > 0 && (
             <div className="message-files">
-              {fileUrls.map((url) => (
+              {fileUrls.map((url) => federated ? (
+                <FederatedAttachment key={url} path={url} category="file" channelId={message.channel_id} pseudonym={pseudonymId} />
+              ) : (
                 <a
                   key={url}
                   href={resolveUrl(url)}
@@ -530,7 +563,7 @@ function MessageBubble({
                 </div>
               ))}
               <div className="edit-history-item edit-history-current">
-                <div className="edit-history-content">{message.content}</div>
+                <div className="edit-history-content">{messageText(message.content)}</div>
                 <div className="edit-history-time">Current version</div>
               </div>
             </div>
@@ -552,6 +585,8 @@ export function MessageView() {
   const channelListError = useChannelsStore((s) => s.error);
   const channelListLoading = useChannelsStore((s) => s.loading);
   const selectChannel = useChannelsStore((s) => s.selectChannel);
+  const activeChannel = useChannelsStore((s) => s.channels.find((channel) => channel.channel_id === s.activeChannelId));
+  const activeServerId = useServersStore((s) => s.activeServerId);
   const loadVisibleUsernames = useUsernameStore((s) => s.loadVisibleUsernames);
   // The cache itself, not the getter: this has to re-evaluate when a fetch
   // fills in names, or the effect below would refetch on every render.
@@ -656,6 +691,9 @@ export function MessageView() {
   // destroyed the live region and the first message to arrive created it and
   // landed in the same tick — which is exactly the case a screen reader does
   // not announce.
+  const federationNotice = !historyLoading && !historyError && activeChannel?.federation_scope === 'Federated' && activeChannelId && identity?.pseudonymId
+    ? <FederationHistoryNotice key={`${activeServerId}:${activeChannelId}:${identity.pseudonymId}`} channelId={activeChannelId} pseudonymId={identity.pseudonymId} />
+    : null;
   const shell = (children: ReactNode, extraClass = '') => (
     <div
       className={`message-view ${extraClass}`.trim()}
@@ -664,6 +702,7 @@ export function MessageView() {
       aria-live="polite"
       tabIndex={0}
     >
+      {federationNotice}
       {children}
     </div>
   );
@@ -712,7 +751,7 @@ export function MessageView() {
   }
 
   if (messages.length === 0 && !loadingOlder) {
-    return shell(<p>No messages yet — be the first to say something!</p>, 'empty');
+    return shell(<p>No messages to display.</p>, 'empty');
   }
 
   return (
@@ -728,6 +767,7 @@ export function MessageView() {
         aria-live="polite"
         tabIndex={0}
       >
+        {federationNotice}
         {olderError && (
           <div className="scrollback-error" role="alert">
             <span>{olderError}</span>

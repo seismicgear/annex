@@ -23,7 +23,29 @@ describe('api/core error handling', () => {
     vi.resetModules();
     vi.stubGlobal('fetch', vi.fn());
   });
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
+
+  it('preserves external cancellation with a timeout and does not mislabel it as timeout', async () => {
+    const { fetchWithTimeout } = await import('./core');
+    vi.mocked(fetch).mockImplementation((_url, init) => new Promise((_resolve, reject) => {
+      init!.signal!.addEventListener('abort', () => reject(init!.signal!.reason));
+    }));
+    const controller = new AbortController();
+    const request = fetchWithTimeout('/voice/join', { signal: controller.signal }, 30_000);
+    controller.abort(new Error('This identity is active on another device.'));
+    await expect(request).rejects.toThrow('This identity is active on another device.');
+  });
+
+  it('still identifies an actual timeout', async () => {
+    vi.useFakeTimers();
+    const { fetchWithTimeout } = await import('./core');
+    vi.mocked(fetch).mockImplementation((_url, init) => new Promise((_resolve, reject) => {
+      init!.signal!.addEventListener('abort', () => reject(init!.signal!.reason));
+    }));
+    const request = expect(fetchWithTimeout('/voice/join', {}, 1_000)).rejects.toThrow('Request timed out after 1000ms');
+    await vi.advanceTimersByTimeAsync(1_000);
+    await request;
+  });
 
   it('tells a remote caller how long to wait, the same as a local one', async () => {
     const { request, requestRemote } = await import('./core');

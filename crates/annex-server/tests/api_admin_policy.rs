@@ -66,6 +66,7 @@ async fn test_update_policy_and_recalculate() {
         required_capabilities: vec![],
         offered_capabilities: vec!["federation".to_string()],
         redacted_topics: vec![],
+        ..Default::default()
     };
     let handshake = VrpFederationHandshake {
         anchor_snapshot: anchor,
@@ -123,6 +124,7 @@ async fn test_update_policy_and_recalculate() {
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
         voice_token_secret: std::sync::Arc::new([0u8; 32]),
+        federation_transport: Default::default(),
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),

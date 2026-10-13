@@ -6,9 +6,11 @@
  */
 
 import type { WsSendFrame, WsReceiveFrame } from '@/types';
+import { isSessionTakenOver, markSessionTakenOver, reclaimSession, TAKEOVER_MESSAGE } from './session-ownership';
 
 export type WsMessageHandler = (frame: WsReceiveFrame) => void;
-export type WsStatusHandler = (connected: boolean) => void;
+export type WsSessionState = 'disconnected' | 'connecting' | 'connected' | 'taken_over' | 'revoked';
+export type WsStatusHandler = (connected: boolean, state?: WsSessionState) => void;
 
 const FRAME_TYPES_REQUIRING_CHANNEL_ID = new Set<WsReceiveFrame['type']>([
   'message',
@@ -17,6 +19,10 @@ const FRAME_TYPES_REQUIRING_CHANNEL_ID = new Set<WsReceiveFrame['type']>([
   'typing',
   'resumed',
   'transcription',
+  'federation_history_pruned',
+  'channel_key_state_changed',
+  'channel_membership_changed',
+  'attachment_transfer_changed',
   'webrtc_answer',
   // The server offers when a peer joins or leaves a call and this peer's
   // track set changes. Without this in the allow-list the frame is dropped
@@ -38,6 +44,7 @@ export class AnnexWebSocket {
   private reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private intentionalClose = false;
+  private state: WsSessionState = 'disconnected';
   /** Channels we should be subscribed to — re-sent on (re)connect. */
   private subscribedChannels: Set<string> = new Set();
   /** Last received message ID per channel — used for resume on reconnect. */
@@ -58,7 +65,14 @@ export class AnnexWebSocket {
 
   /** Connect to the WebSocket server. */
   connect(): void {
+    if (isSessionTakenOver(this.baseUrl, this.pseudonymId)) {
+      this.notifyStatus(false, 'taken_over');
+      return;
+    }
+    if (this.state === 'revoked') return;
     this.intentionalClose = false;
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+    this.notifyStatus(false, 'connecting');
 
     // Build auth query parameter: prefer signed token over raw pseudonym.
     const authParam = this.sessionToken
@@ -107,13 +121,23 @@ export class AnnexWebSocket {
         }
       }
       this.hasConnectedBefore = true;
-      this.notifyStatus(true);
+      this.notifyStatus(true, 'connected');
     };
 
     socket.onclose = (event) => {
       if (this.ws !== socket) return;
       console.warn('[ws] closed', { code: event.code, reason: event.reason, wasClean: event.wasClean });
-      this.notifyStatus(false);
+      if (event.code === 4090) {
+        if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+        markSessionTakenOver(this.baseUrl, this.pseudonymId);
+        this.notifyStatus(false, 'taken_over');
+        return;
+      }
+      if (event.code === 4001 && event.reason === 'session_revoked') {
+        this.notifyStatus(false, 'revoked');
+        return;
+      }
+      this.notifyStatus(false, 'disconnected');
       if (!this.intentionalClose) {
         this.scheduleReconnect();
       }
@@ -150,6 +174,7 @@ export class AnnexWebSocket {
    */
   reconnectForAuthRefresh(token: string | null): void {
     this.sessionToken = token;
+    if (this.state === 'taken_over' || this.state === 'revoked') return;
     if (!this.ws || this.ws.readyState === WebSocket.CLOSED) return;
     this.intentionalClose = true;
     if (this.reconnectTimer) {
@@ -158,6 +183,14 @@ export class AnnexWebSocket {
     }
     this.ws.close(4001, 'auth_refresh');
     this.ws = null;
+    this.connect();
+  }
+
+  /** Explicit transfer of the live session back to this device. */
+  reconnectHere(): void {
+    if (this.state !== 'taken_over') return;
+    reclaimSession(this.baseUrl, this.pseudonymId);
+    this.state = 'disconnected';
     this.connect();
   }
 
@@ -173,9 +206,9 @@ export class AnnexWebSocket {
     this.ws.send(JSON.stringify({ type: 'unsubscribe', channelId }));
   }
 
-  send(channelId: string, content: string, replyTo: string | null = null): string {
+  send(channelId: string, content: string, replyTo: string | null = null, attachmentIds?: string[]): string {
     const clientRequestId = crypto.randomUUID();
-    this.sendWithRequestId(channelId, content, replyTo, clientRequestId);
+    this.sendWithRequestId(channelId, content, replyTo, clientRequestId, attachmentIds);
     return clientRequestId;
   }
 
@@ -190,15 +223,18 @@ export class AnnexWebSocket {
     content: string,
     replyTo: string | null,
     clientRequestId: string,
+    attachmentIds?: string[],
   ): void {
+    if (this.state === 'taken_over') throw new Error(TAKEOVER_MESSAGE);
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error('WebSocket is not connected');
     }
     const frame: WsSendFrame = { type: 'message', channelId, content, replyTo, clientRequestId };
+    if (attachmentIds !== undefined) frame.attachmentIds = attachmentIds;
     this.ws.send(JSON.stringify(frame));
   }
 
-  editMessage(channelId: string, messageId: string, content: string, clientRequestId?: string): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) throw new Error('WebSocket is not connected'); this.ws.send(JSON.stringify({ type: 'edit_message', channelId, messageId, content, clientRequestId } as WsSendFrame)); }
+  editMessage(channelId: string, messageId: string, content: string, clientRequestId?: string, attachmentIds?: string[]): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) throw new Error('WebSocket is not connected'); this.ws.send(JSON.stringify({ type: 'edit_message', channelId, messageId, content, clientRequestId, ...(attachmentIds ? { attachmentIds } : {}) } as WsSendFrame)); }
   deleteMessage(channelId: string, messageId: string, clientRequestId?: string): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) throw new Error('WebSocket is not connected'); this.ws.send(JSON.stringify({ type: 'delete_message', channelId, messageId, clientRequestId } as WsSendFrame)); }
   trackLastMessageId(channelId: string, messageId: string): void { this.lastMessageIds.set(channelId, messageId); }
   sendTyping(channelId: string): void { if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return; this.ws.send(JSON.stringify({ type: 'typing', channelId })); }
@@ -250,12 +286,18 @@ export class AnnexWebSocket {
   private isFrameDispatchable(frame: WsReceiveFrame): boolean {
     if (!frame || typeof frame !== 'object') return false;
     if (!frame.type || typeof frame.type !== 'string') return false;
+    if (frame.type === 'identity_capabilities_changed' && typeof frame.canVoice !== 'boolean') return false;
     if (FRAME_TYPES_REQUIRING_CHANNEL_ID.has(frame.type) && !frame.channelId) return false;
     return true;
   }
   get connected(): boolean { return this.ws?.readyState === WebSocket.OPEN; }
-  private notifyStatus(connected: boolean): void { this.statusHandlers.forEach((h) => h(connected)); }
+  get sessionState(): WsSessionState { return this.state; }
+  private notifyStatus(connected: boolean, state: WsSessionState): void {
+    this.state = state;
+    this.statusHandlers.forEach((h) => h(connected, state));
+  }
   private scheduleReconnect(): void {
+    if (this.state === 'taken_over' || this.state === 'revoked') return;
     // Replace (don't stack) any pending reconnect so overlapping close
     // events can't fan out into multiple parallel connections.
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);

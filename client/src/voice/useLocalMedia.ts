@@ -103,7 +103,12 @@ export function useLocalMedia({
   const cameraMicUnknown = cameraMicStatus === 'unknown';
 
   // Error state for media toggle failures
-  const [mediaError, setMediaError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const mediaError = actionError ?? localParticipant.localMediaError ?? null;
+  const setMediaError = useCallback((message: string | null) => {
+    setActionError(message);
+    localParticipant.clearLocalMediaError?.();
+  }, [localParticipant]);
 
   // Track whether a stale-camera confirmation is pending
   const [staleCameraPrompt, setStaleCameraPrompt] = useState(false);
@@ -134,7 +139,11 @@ export function useLocalMedia({
     const shouldBeEnabled = !micMuted;
     if (lp.isMicrophoneEnabled !== shouldBeEnabled) {
       const priorEnabled = lp.isMicrophoneEnabled;
-      lp.setMicrophoneEnabled(shouldBeEnabled).catch((err) => {
+      const opts = shouldBeEnabled && inputDeviceId ? { deviceId: inputDeviceId } : undefined;
+      const update = opts
+        ? lp.setMicrophoneEnabled(shouldBeEnabled, opts)
+        : lp.setMicrophoneEnabled(shouldBeEnabled);
+      update.catch((err) => {
         console.warn('[VoicePanel] mic sync failed:', err);
         // Revert store to match the real WebRTC microphone state
         setMicMuted(!priorEnabled);
@@ -150,6 +159,8 @@ export function useLocalMedia({
         setMicToggleError(message);
       });
     }
+  // Device changes are handled separately without stopping the working track.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [micMuted, localParticipant, setMicMuted, setMicToggleError]);
 
   // Sync WebRTC mic state → store when WebRTC state changes externally.
@@ -161,7 +172,7 @@ export function useLocalMedia({
   }, [micEnabled]);
 
   const toggleMic = useCallback(async () => {
-    if (!canCameraMic) {
+    if (!canCameraMic && !micEnabled) {
       setMediaError('Microphone is unavailable on this platform. Check your browser/OS privacy settings.');
       return;
     }
@@ -192,14 +203,14 @@ export function useLocalMedia({
           );
         }
       }
-      setMicMuted(micEnabled); // toggling: if was enabled, now muted
+      setMicMuted(!localParticipant.isMicrophoneEnabled);
     } catch (err) {
       setMediaError(mediaErrorMessage(err, micEnabled ? 'Mute microphone' : 'Unmute microphone'));
     }
-  }, [localParticipant, micEnabled, canCameraMic, setMicMuted, inputDeviceId]);
+  }, [localParticipant, micEnabled, canCameraMic, setMicMuted, inputDeviceId, setMediaError]);
 
   const toggleCamera = useCallback(async () => {
-    if (!canCameraMic) {
+    if (!canCameraMic && !camEnabled) {
       setMediaError('Camera is unavailable on this platform. Check your browser/OS privacy settings.');
       return;
     }
@@ -225,7 +236,7 @@ export function useLocalMedia({
     } catch (err) {
       setMediaError(mediaErrorMessage(err, camEnabled ? 'Turn off camera' : 'Turn on camera'));
     }
-  }, [localParticipant, camEnabled, canCameraMic, cameraDeviceId]);
+  }, [localParticipant, camEnabled, canCameraMic, cameraDeviceId, setMediaError]);
 
   // Recovery action: clear saved device and retry with default camera
   const handleCameraFallback = useCallback(async () => {
@@ -236,7 +247,7 @@ export function useLocalMedia({
     } catch (err) {
       setMediaError(mediaErrorMessage(err, 'Turn on camera'));
     }
-  }, [localParticipant, setCameraDevice]);
+  }, [localParticipant, setCameraDevice, setMediaError]);
 
   // Clear stale camera state when camera starts, device changes, or call ends
   useEffect(() => {
@@ -288,7 +299,7 @@ export function useLocalMedia({
         setMediaError(hint);
       }
     }
-  }, [localParticipant, screenEnabled, canScreenShare, platformWarnings, mediaStatus]);
+  }, [localParticipant, screenEnabled, canScreenShare, platformWarnings, mediaStatus, setMediaError]);
 
   const screenShareTitle = !canScreenShare
     ? 'Screen sharing is unavailable on this platform'
@@ -324,11 +335,13 @@ export function useLocalMedia({
     if (!lp.isMicrophoneEnabled) return;
     // Re-publish microphone with the selected device, or default constraints
     const opts = inputDeviceId ? { deviceId: inputDeviceId } : undefined;
-    lp.setMicrophoneEnabled(false)
-      .then(() => lp.setMicrophoneEnabled(true, opts))
+    lp.setMicrophoneEnabled(true, opts)
       .catch((err) => {
         console.warn('[VoicePanel] mic device switch failed:', err);
-        // Roll back to the previous working device ID
+        // A newer selection owns the preference now; a late failure must not
+        // overwrite it. The original live track survives a failed replacement.
+        if (useVoiceStore.getState().inputDeviceId !== inputDeviceId) return;
+        prevInputDeviceRef.current = prevDeviceId;
         setInputDevice(prevDeviceId);
         useVoiceStore.getState().setMicMuted(!lp.isMicrophoneEnabled);
         useVoiceStore.setState({
@@ -345,16 +358,17 @@ export function useLocalMedia({
   const prevCameraDeviceRef = useRef(cameraDeviceId);
   useEffect(() => {
     const prevDeviceId = prevCameraDeviceRef.current;
+    if (prevDeviceId === cameraDeviceId) return;
     prevCameraDeviceRef.current = cameraDeviceId;
 
     const lp = localParticipant;
     if (!lp.isCameraEnabled) return;
     const opts = cameraDeviceId ? { deviceId: cameraDeviceId } : undefined;
-    lp.setCameraEnabled(false)
-      .then(() => lp.setCameraEnabled(true, opts))
+    lp.setCameraEnabled(true, opts)
       .catch((err) => {
         console.warn('[VoicePanel] camera device switch failed:', err);
-        // Roll back to the previous working device ID
+        if (useVoiceStore.getState().cameraDeviceId !== cameraDeviceId) return;
+        prevCameraDeviceRef.current = prevDeviceId;
         setCameraDevice(prevDeviceId);
         useVoiceStore.setState({
           micToggleError: mediaErrorMessage(err, 'Camera device switch'),
@@ -416,6 +430,7 @@ export function useTauriMediaRestore(
     if (!isTauri()) return;
 
     let restoring = false;
+    let disposed = false;
 
     const restoreMedia = async () => {
       // Guard against visibilitychange and focus both firing in quick succession
@@ -427,6 +442,7 @@ export function useTauriMediaRestore(
       try {
         // Brief delay for the webview to fully resume
         await new Promise((r) => setTimeout(r, 200));
+        if (disposed) return;
 
         const lp = localParticipant;
 
@@ -439,22 +455,22 @@ export function useTauriMediaRestore(
         };
 
         // Re-enable mic if it was on but the track ended
-        if (lp.isMicrophoneEnabled) {
-          const pub = findPub(TrackSource.Microphone);
-          if (pub?.track?.mediaStreamTrack?.readyState === 'ended') {
+        const micPub = findPub(TrackSource.Microphone);
+        const microphoneInterrupted = lp.wasMediaInterrupted?.(TrackSource.Microphone) === true;
+        if (microphoneInterrupted || !useVoiceStore.getState().micMuted) {
+          if (microphoneInterrupted || micPub?.track?.mediaStreamTrack?.readyState === 'ended') {
             try {
-              await lp.setMicrophoneEnabled(false);
-              await lp.setMicrophoneEnabled(true);
+              const selected = useVoiceStore.getState().inputDeviceId;
+              await lp.setMicrophoneEnabled(true, selected ? { deviceId: selected } : undefined);
             } catch { /* best effort */ }
           }
         }
 
         // Re-enable camera if it was on but the track ended
-        if (lp.isCameraEnabled) {
-          const pub = findPub(TrackSource.Camera);
-          if (pub?.track?.mediaStreamTrack?.readyState === 'ended') {
+        const cameraPub = findPub(TrackSource.Camera);
+        if (!disposed) {
+          if (lp.wasMediaInterrupted?.(TrackSource.Camera) || cameraPub?.track?.mediaStreamTrack?.readyState === 'ended') {
             try {
-              await lp.setCameraEnabled(false);
               const camOpts = cameraDeviceId ? { deviceId: cameraDeviceId } : undefined;
               await lp.setCameraEnabled(true, camOpts);
             } catch { /* best effort */ }
@@ -464,9 +480,9 @@ export function useTauriMediaRestore(
         // Screen share: attempt silent auto-restart first. WebView2 may
         // allow getDisplayMedia() without a user gesture (unlike Chrome).
         // If that fails, clean up and notify the UI to show a resume banner.
-        if (lp.isScreenShareEnabled) {
-          const pub = findPub(TrackSource.ScreenShare);
-          if (pub?.track?.mediaStreamTrack?.readyState === 'ended') {
+        const screenPub = findPub(TrackSource.ScreenShare);
+        if (!disposed) {
+          if (screenPub?.track?.mediaStreamTrack?.readyState === 'ended') {
             try {
               await lp.setScreenShareEnabled(false);
               await lp.setScreenShareEnabled(true);
@@ -485,6 +501,7 @@ export function useTauriMediaRestore(
     document.addEventListener('visibilitychange', restoreMedia);
     window.addEventListener('focus', restoreMedia);
     return () => {
+      disposed = true;
       document.removeEventListener('visibilitychange', restoreMedia);
       window.removeEventListener('focus', restoreMedia);
     };

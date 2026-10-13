@@ -8,29 +8,68 @@
  * conferencing grid rather than stacked green boxes.
  */
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { TrackSource, type WebRtcSession } from '@/lib/webrtc';
 import { useVoiceStore } from '@/stores/voice';
 import { useUsernameStore } from '@/stores/usernames';
 
 /** Renders a MediaStreamTrack into a <video>. `mirror` flips the local camera. */
-function VideoTile({ track, mirror = false }: { track: MediaStreamTrack; mirror?: boolean }) {
+function VideoTile({ track, publication, mirror = false }: {
+  track: MediaStreamTrack;
+  /** A fresh ontrack publication can reuse the same browser receiver track. */
+  publication?: object;
+  mirror?: boolean;
+}) {
   const ref = useRef<HTMLVideoElement>(null);
+  const resumeRef = useRef<() => void>(() => {});
+  const [playbackBlocked, setPlaybackBlocked] = useState(false);
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    el.srcObject = new MediaStream([track]);
-    return () => { el.srcObject = null; };
-  }, [track]);
+    let active = true;
+    let attempt = 0;
+    const play = () => {
+      if (!active || track.readyState !== 'live' || track.muted) return;
+      const currentAttempt = ++attempt;
+      void el.play()?.then(() => {
+        if (active && currentAttempt === attempt) setPlaybackBlocked(false);
+      }).catch(() => {
+        if (active && currentAttempt === attempt) setPlaybackBlocked(true);
+      });
+    };
+    const attach = () => {
+      // An inactive SFU transceiver can resume with the same track object.
+      // Reattach a fresh stream and explicitly resume the media element;
+      // autoplay alone can leave the previous, exhausted stream paused.
+      el.srcObject = new MediaStream([track]);
+      play();
+    };
+    resumeRef.current = play;
+    track.addEventListener('unmute', attach);
+    el.addEventListener('canplay', play);
+    attach();
+    return () => {
+      active = false;
+      resumeRef.current = () => {};
+      track.removeEventListener('unmute', attach);
+      el.removeEventListener('canplay', play);
+      el.srcObject = null;
+    };
+  }, [track, publication]);
   return (
-    <video
-      ref={ref}
-      autoPlay
-      playsInline
-      muted
-      className="tile-video"
-      style={mirror ? { transform: 'scaleX(-1)' } : undefined}
-    />
+    <>
+      <video
+        ref={ref}
+        autoPlay
+        playsInline
+        muted
+        className="tile-video"
+        style={mirror ? { transform: 'scaleX(-1)' } : undefined}
+      />
+      {playbackBlocked && (
+        <button className="tile-video-resume" onClick={() => resumeRef.current()}>Resume video</button>
+      )}
+    </>
   );
 }
 
@@ -115,20 +154,13 @@ export function ParticipantGrid({ session }: { session: WebRtcSession }) {
         </div>
       )}
 
-      {/* Remote cameras.
-          A tile can only be attributed to a person when there is exactly one
-          other person in the call: the SFU writes every sender's RTP into a
-          single outbound track per receiver, so with two or more remote
-          senders there is no per-sender track to attribute. Naming a tile in
-          that case would be a guess, and a wrong one half the time — so the
-          roster is shown as a list instead and the tiles stay unnamed. See
-          `fan_out_collapses_every_sender_onto_one_track_per_receiver` in
-          crates/annex-voice. */}
+      {/* Camera and screen publications have separate, attributable tracks. */}
       {remoteVideos.map((v) => (
-        <div key={v.id} className="call-tile">
-          <VideoTile track={v.track} />
+        <div key={v.id} className={`call-tile${v.id.startsWith('screen-') ? ' screen' : ''}`}>
+          <VideoTile track={v.track} publication={v} />
           <span className="tile-name">
             {v.sender ? nameFor(v.sender) : 'Participant'}
+            {v.id.startsWith('screen-') ? ' — screen' : ''}
           </span>
         </div>
       ))}

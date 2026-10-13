@@ -14,6 +14,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useVoiceStore } from '@/stores/voice';
+import { useChannelsStore } from '@/stores/channels';
 import { isTauri } from '@/lib/tauri';
 import { Modal } from '@/components/Modal';
 import { useDialogTitleId } from '@/lib/use-dialog-title-id';
@@ -98,9 +99,11 @@ async function requestDeviceAccess(audio: boolean, video: boolean): Promise<Devi
 
 export function AudioSettings({ onClose }: { onClose: () => void }) {
   const titleId = useDialogTitleId();
+  const sessionTakenOver = useChannelsStore((state) => state.wsSessionState === 'taken_over');
   const {
     inputDeviceId,
     outputDeviceId,
+    outputDeviceError,
     outputVolume,
     cameraDeviceId,
     setInputDevice,
@@ -153,6 +156,7 @@ export function AudioSettings({ onClose }: { onClose: () => void }) {
   }, [refreshDevices]);
 
   const handleRequestMicAccess = async () => {
+    if (sessionTakenOver) return;
     setRequestingMic(true);
     setEnumError(null);
     try {
@@ -170,6 +174,7 @@ export function AudioSettings({ onClose }: { onClose: () => void }) {
   };
 
   const handleRequestCameraAccess = async () => {
+    if (sessionTakenOver) return;
     setRequestingCamera(true);
     setEnumError(null);
     try {
@@ -228,7 +233,7 @@ export function AudioSettings({ onClose }: { onClose: () => void }) {
                 type="button"
                 className="inline-action-btn"
                 onClick={handleRequestMicAccess}
-                disabled={requestingMic}
+                disabled={requestingMic || sessionTakenOver}
               >
                 {requestingMic ? 'Requesting...' : 'Request microphone access'}
               </button>
@@ -299,6 +304,7 @@ export function AudioSettings({ onClose }: { onClose: () => void }) {
           )}
         </label>
 
+        {outputDeviceError && <p className="settings-note settings-unsupported" role="alert">{outputDeviceError}</p>}
         <label>
           Output Volume
           <div className="volume-row">
@@ -330,7 +336,7 @@ export function AudioSettings({ onClose }: { onClose: () => void }) {
                 type="button"
                 className="inline-action-btn"
                 onClick={handleRequestCameraAccess}
-                disabled={requestingCamera}
+                disabled={requestingCamera || sessionTakenOver}
               >
                 {requestingCamera ? 'Requesting...' : 'Request camera access'}
               </button>

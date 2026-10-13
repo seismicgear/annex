@@ -63,11 +63,13 @@ pub struct ReflectionSummaryBundle {
     pub created_at: u128,
     /// Ed25519 signature of the bundle payload (hex-encoded).
     ///
-    /// Signed payload: `SHA256(bundle_id + source_pseudonym + source_server + summary + created_at)`.
+    /// Signed payload: `SHA256(author_signing_payload(bundle))`; all fields are bound
+    /// with domain separation and length-prefix encoding.
     pub signature: String,
     /// Reference to the VRP handshake that authorized this transfer.
     ///
-    /// Format: handshake log ID or `"server_id:remote_instance_id:agreement_id"`.
+    /// Format: `"vrp:<server_id>:<accepted_handshake_log_id>"`, exactly as
+    /// returned by the author's latest accepted agent handshake (`handshakeRef`).
     pub vrp_handshake_ref: String,
 }
 
@@ -83,6 +85,9 @@ pub struct ReflectionSummaryBundle {
 /// signature after the edit.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RelayHop {
+    /// Version 2 hop payload signs the complete monotonic restriction set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract: Option<annex_vrp::NegotiatedRtxContract>,
     /// The public URL of the server that forwarded the bundle at this hop.
     pub server: String,
     /// `rtx_bundle_content_hash` of the bundle as this hop sent it.
@@ -104,6 +109,13 @@ pub struct RelayHop {
 /// bundle and put A's name on it" are the same envelope.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OriginAttestation {
+    /// Version 3 origin payload signs the original negotiated restrictions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract: Option<annex_vrp::NegotiatedRtxContract>,
+    /// Missing means legacy v1. New publishers use v2, which also binds tags
+    /// and caveats while permitting only reasoning-chain removal.
+    #[serde(default = "legacy_origin_version")]
+    pub version: u8,
     /// Hex Ed25519 signature over `origin_attestation_payload(..)`, made with
     /// the origin server's instance signing key.
     pub signature: String,
@@ -123,6 +135,10 @@ pub struct OriginAttestation {
     /// operator limiting what it will carry are different questions and both
     /// get an answer.
     pub max_hops: u8,
+}
+
+fn legacy_origin_version() -> u8 {
+    1
 }
 
 /// The provenance chain for a relayed RTX bundle.

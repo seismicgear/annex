@@ -35,10 +35,10 @@
 use std::sync::Arc;
 
 use annex_channels::{
-    add_member, create_channel, create_message, delete_channel, delete_message, edit_message,
-    get_channel, get_edit_history, get_message, is_member, list_channels, list_messages,
-    remove_member, Channel, ChannelError, CreateChannelParams, CreateMessageParams, Message,
-    MessageEdit,
+    add_member, create_channel, create_message, delete_channel, delete_message_in_transaction,
+    edit_message_in_transaction, get_channel, get_edit_history, get_message, is_member,
+    list_channels, list_messages, remove_member, Channel, ChannelError, CreateChannelParams,
+    CreateMessageParams, Message, MessageEdit,
 };
 
 /// Outcome of `send_message`: tells the caller whether the persisted
@@ -53,7 +53,7 @@ pub enum SendOutcome {
     /// `Message` is the original.
     Replayed,
 }
-use annex_graph::{create_edge, delete_edge};
+use annex_graph::delete_edge;
 use annex_identity::PlatformIdentity;
 use annex_types::{AlignmentStatus, ChannelType, EdgeKind, FederationScope, RoleCode};
 use axum::http::{HeaderMap, StatusCode};
@@ -99,6 +99,9 @@ pub enum ChannelServiceError {
     /// request (capability gate, alignment, non-member, ZK proof rejected).
     #[error("{0}")]
     Forbidden(String),
+    /// The proof is valid but its published root has expired. No effect occurred.
+    #[error("zk_root_retired")]
+    ZkRootRetired,
     /// 404 — referenced channel or message does not exist.
     #[error("{0}")]
     NotFound(String),
@@ -113,6 +116,8 @@ pub enum ChannelServiceError {
     /// 500 — internal error. Always logged before being returned.
     #[error("{0}")]
     Internal(String),
+    #[error("{0}")]
+    Remote(annex_federation::transport::ApplicationError),
     /// 403 voice-specific — server policy `voice_enabled = false`.
     /// Carries no payload because the JSON body is fixed.
     #[error("voice disabled by server policy")]
@@ -133,6 +138,20 @@ impl From<ActionRefusal> for ChannelServiceError {
         }
     }
 }
+impl From<super::channel_authority::AuthorityError> for ChannelServiceError {
+    fn from(error: super::channel_authority::AuthorityError) -> Self {
+        use super::channel_authority::AuthorityError as E;
+        match error {
+            E::BadRequest(s) => Self::BadRequest(s),
+            E::Forbidden(s) => Self::Forbidden(s),
+            E::NotFound(s) => Self::NotFound(s),
+            E::Conflict(s) => Self::Conflict(s),
+            E::Unavailable(s) => Self::ServiceUnavailable(s),
+            E::Internal(s) => Self::Internal(s),
+            E::Remote(error) => Self::Remote(error),
+        }
+    }
+}
 
 impl ChannelServiceError {
     /// HTTP status the handler should reply with for this variant. Voice
@@ -141,16 +160,112 @@ impl ChannelServiceError {
     pub fn status_code(&self) -> StatusCode {
         match self {
             ChannelServiceError::BadRequest(_) => StatusCode::BAD_REQUEST,
-            ChannelServiceError::Forbidden(_) | ChannelServiceError::VoiceDisabled => {
-                StatusCode::FORBIDDEN
-            }
+            ChannelServiceError::Forbidden(_)
+            | ChannelServiceError::VoiceDisabled
+            | ChannelServiceError::ZkRootRetired => StatusCode::FORBIDDEN,
             ChannelServiceError::NotFound(_) => StatusCode::NOT_FOUND,
             ChannelServiceError::Conflict(_) => StatusCode::CONFLICT,
             ChannelServiceError::ServiceUnavailable(_)
             | ChannelServiceError::VoiceNotConfigured => StatusCode::SERVICE_UNAVAILABLE,
             ChannelServiceError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            ChannelServiceError::Remote(error) => {
+                StatusCode::from_u16(error.status).unwrap_or(StatusCode::BAD_GATEWAY)
+            }
         }
     }
+}
+
+fn storage_error(error: crate::at_rest::AtRestError, message_id: &str) -> ChannelServiceError {
+    tracing::error!(message_id, %error, "message storage integrity failure");
+    ChannelServiceError::Internal("stored message integrity check failed".into())
+}
+
+/// Called under the message writer transaction. Broadcast channels allow
+/// members to read announcements, but only current moderators may publish or
+/// revise them. A later capability grant/revocation takes effect immediately.
+pub(crate) fn check_publish_permission(
+    conn: &rusqlite::Connection,
+    server_id: i64,
+    pseudonym_id: &str,
+    channel_id: &str,
+    action: agent_policy::AgentAction,
+) -> Result<(), ChannelServiceError> {
+    let channel = get_channel(conn, channel_id).map_err(map_channel_err)?;
+    if channel.server_id != server_id {
+        return Err(ChannelServiceError::NotFound("channel not found".into()));
+    }
+    if !is_member(conn, server_id, channel_id, pseudonym_id).map_err(map_channel_err)? {
+        return Err(ChannelServiceError::Forbidden(
+            "not a channel member".into(),
+        ));
+    }
+    let identity = annex_identity::get_platform_identity(conn, server_id, pseudonym_id)
+        .map_err(|e| ChannelServiceError::Internal(format!("identity: {e}")))?;
+    if !identity.active {
+        return Err(ChannelServiceError::Forbidden(
+            "identity is inactive".into(),
+        ));
+    }
+    if channel.channel_type == ChannelType::Broadcast && !identity.can_moderate {
+        return Err(ChannelServiceError::Forbidden(
+            "only moderators can publish in a broadcast channel".into(),
+        ));
+    }
+    agent_policy::check_agent_action(conn, server_id, pseudonym_id, action)
+        .map_err(ChannelServiceError::from)
+}
+
+/// Final local membership writer boundary. The earlier routing/read checks
+/// cannot authorize an unsigned mutation after reconciliation attaches a remote
+/// authority, nor after the captured session or join policy changes.
+fn write_local_membership(
+    conn: &rusqlite::Connection,
+    server_id: i64,
+    captured: &PlatformIdentity,
+    channel_id: &str,
+    joining: bool,
+) -> Result<(), ChannelServiceError> {
+    if conn.is_autocommit() {
+        return Err(ChannelServiceError::Internal(
+            "membership authorization requires the writer transaction".into(),
+        ));
+    }
+    let current = annex_identity::get_platform_identity(conn, server_id, &captured.pseudonym_id)
+        .map_err(|_| ChannelServiceError::Forbidden("local identity is unavailable".into()))?;
+    if !current.active || current.token_epoch != captured.token_epoch {
+        return Err(ChannelServiceError::Forbidden(
+            "local session was revoked".into(),
+        ));
+    }
+    let remote:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM channel_authorities WHERE server_id=?1 AND channel_id=?2 AND local_authority=0)",params![server_id,channel_id],|r|r.get(0)).map_err(|e|ChannelServiceError::Internal(e.to_string()))?;
+    if remote {
+        return Err(ChannelServiceError::Conflict(
+            "channel authority changed; retry through the pinned authority".into(),
+        ));
+    }
+    let channel = get_channel(conn, channel_id).map_err(map_channel_err)?;
+    if channel.server_id != server_id {
+        return Err(ChannelServiceError::NotFound("channel not found".into()));
+    }
+    if joining {
+        super::channel_policy::check_join_policy(conn, server_id, &channel, &current).map_err(
+            |error| match error {
+                super::channel_policy::JoinRefusal::Forbidden(message) => {
+                    ChannelServiceError::Forbidden(message)
+                }
+                super::channel_policy::JoinRefusal::Internal(message) => {
+                    ChannelServiceError::Internal(message)
+                }
+            },
+        )?;
+    }
+    if joining {
+        add_member(conn, server_id, channel_id, &captured.pseudonym_id).map_err(map_channel_err)?;
+    } else {
+        remove_member(conn, server_id, channel_id, &captured.pseudonym_id)
+            .map_err(map_channel_err)?;
+    }
+    Ok(())
 }
 
 /// Maps a [`ChannelError`] to a [`ChannelServiceError`], logging non-NotFound
@@ -434,6 +549,13 @@ impl ChannelService {
         identity: &PlatformIdentity,
         channel_id: &str,
     ) -> Result<Channel, ChannelServiceError> {
+        super::channel_replication::refresh_for_request(
+            self.state.clone(),
+            identity,
+            channel_id,
+            None,
+        )
+        .await?;
         let pool = self.state.pool.clone();
         let server_id = self.state.server_id;
         let cid = channel_id.to_string();
@@ -491,7 +613,29 @@ impl ChannelService {
         .map_err(|e| {
             tracing::error!(error = %e, "delete_channel task join error");
             ChannelServiceError::Internal(format!("join: {e}"))
-        })?
+        })??;
+
+        {
+            let mut sessions = self
+                .state
+                .voice_sessions
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
+            sessions.retain(|(_, room), client| {
+                if room == channel_id {
+                    client.close();
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        self.state
+            .voice_service
+            .delete_room(channel_id)
+            .await
+            .map_err(|e| ChannelServiceError::Internal(format!("delete voice room: {e}")))?;
+        Ok(())
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -520,6 +664,29 @@ impl ChannelService {
         self.enforce_zk(identity, headers).await?;
 
         let channel = self.fetch_channel(channel_id.to_string()).await?;
+
+        if super::channel_replication::maybe_forward(
+            self.state.clone(),
+            identity,
+            channel_id,
+            None,
+            Some(&uuid::Uuid::new_v4().to_string()),
+            serde_json::json!({"kind":"join"}),
+        )
+        .await?
+        .is_some()
+        {
+            if identity.participant_type == RoleCode::AiAgent
+                && matches!(
+                    channel.channel_type,
+                    ChannelType::Voice | ChannelType::Hybrid
+                )
+            {
+                self.connect_agent_voice_client(identity, channel_id)
+                    .await?;
+            }
+            return Ok(());
+        }
 
         // The join gates, from the same function the federated path calls.
         //
@@ -553,6 +720,15 @@ impl ChannelService {
         .await
         .map_err(|e| ChannelServiceError::Internal(format!("join: {e}")))??;
 
+        if identity.participant_type == RoleCode::AiAgent
+            && matches!(
+                channel.channel_type,
+                ChannelType::Voice | ChannelType::Hybrid
+            )
+        {
+            self.ensure_voice_allowed(identity, channel_id).await?;
+        }
+
         // Insert membership row and, for agents, an AgentServing edge.
         tokio::task::spawn_blocking({
             let pool = self.state.pool.clone();
@@ -560,16 +736,19 @@ impl ChannelService {
             let cid = channel_id.to_string();
             let pid = identity.pseudonym_id.clone();
             let is_agent = identity.participant_type == RoleCode::AiAgent;
+            let admitted_identity=identity.clone();
             move || -> Result<(), ChannelServiceError> {
                 let conn = pool
                     .get()
                     .map_err(|e| ChannelServiceError::Internal(format!("pool: {e}")))?;
-                add_member(&conn, server_id, &cid, &pid).map_err(map_channel_err)?;
-
+                let tx = rusqlite::Transaction::new_unchecked(&conn, rusqlite::TransactionBehavior::Immediate)
+                    .map_err(|e| ChannelServiceError::Internal(format!("join transaction: {e}")))?;
+                write_local_membership(&tx,server_id,&admitted_identity,&cid,true)?;
                 if is_agent {
-                    create_edge(&conn, server_id, &pid, &cid, EdgeKind::AgentServing, 1.0)
-                        .map_err(|e| ChannelServiceError::Internal(format!("create_edge: {e}")))?;
+                    tx.execute("INSERT INTO graph_edges (server_id,from_node,to_node,kind,weight) VALUES (?1,?2,?3,'AGENT_SERVING',1.0) ON CONFLICT(server_id,from_node,to_node,kind) DO NOTHING", params![server_id, pid, annex_graph::channel_vertex(server_id, &cid)])
+                        .map_err(|e| ChannelServiceError::Internal(format!("serving edge: {e}")))?;
                 }
+                tx.commit().map_err(|e| ChannelServiceError::Internal(format!("join commit: {e}")))?;
                 Ok(())
             }
         })
@@ -580,7 +759,7 @@ impl ChannelService {
             && (channel.channel_type == ChannelType::Voice
                 || channel.channel_type == ChannelType::Hybrid)
         {
-            self.connect_agent_voice_client(&identity.pseudonym_id, channel_id)
+            self.connect_agent_voice_client(identity, channel_id)
                 .await?;
         }
 
@@ -600,31 +779,88 @@ impl ChannelService {
     ) -> Result<Channel, ChannelServiceError> {
         let channel = self.fetch_channel(channel_id.to_string()).await?;
 
+        let remote = {
+            let conn = self
+                .state
+                .pool
+                .get()
+                .map_err(|e| ChannelServiceError::Internal(e.to_string()))?;
+            super::channel_replication::remote_binding(&conn, &self.state, channel_id)?.is_some()
+        };
+        if remote {
+            // A preceding signed self-leave already removed ordinary membership
+            // and saved its accepted receipt. The conventional HTTP leave stays
+            // idempotent without issuing another authority mutation.
+            let member = {
+                let conn = self
+                    .state
+                    .pool
+                    .get()
+                    .map_err(|e| ChannelServiceError::Internal(e.to_string()))?;
+                is_member(
+                    &conn,
+                    self.state.server_id,
+                    channel_id,
+                    &identity.pseudonym_id,
+                )
+                .map_err(map_channel_err)?
+            };
+            if member {
+                super::channel_replication::maybe_forward(
+                    self.state.clone(),
+                    identity,
+                    channel_id,
+                    None,
+                    Some(&uuid::Uuid::new_v4().to_string()),
+                    serde_json::json!({"kind":"leave"}),
+                )
+                .await?;
+            }
+            self.end_channel_participation(&identity.pseudonym_id, channel_id)
+                .await;
+            return Ok(channel);
+        }
+
         tokio::task::spawn_blocking({
+            let state = self.state.clone();
             let pool = self.state.pool.clone();
             let server_id = self.state.server_id;
             let cid = channel_id.to_string();
             let pid = identity.pseudonym_id.clone();
             let is_agent = identity.participant_type == RoleCode::AiAgent;
+            let admitted_identity = identity.clone();
             move || -> Result<(), ChannelServiceError> {
                 let conn = pool
                     .get()
                     .map_err(|e| ChannelServiceError::Internal(format!("pool: {e}")))?;
-                remove_member(&conn, server_id, &cid, &pid).map_err(map_channel_err)?;
+                let tx = rusqlite::Transaction::new_unchecked(
+                    &conn,
+                    rusqlite::TransactionBehavior::Immediate,
+                )
+                .map_err(|e| ChannelServiceError::Internal(e.to_string()))?;
+                super::channel_manifest::require_signed_departure(&tx, &state, &cid, &pid)?;
+                write_local_membership(&tx, server_id, &admitted_identity, &cid, false)?;
 
                 if is_agent {
-                    delete_edge(&conn, server_id, &pid, &cid, EdgeKind::AgentServing)
-                        .map_err(|e| ChannelServiceError::Internal(format!("delete_edge: {e}")))?;
+                    delete_edge(
+                        &tx,
+                        server_id,
+                        &pid,
+                        &annex_graph::channel_vertex(server_id, &cid),
+                        EdgeKind::AgentServing,
+                    )
+                    .map_err(|e| ChannelServiceError::Internal(format!("delete_edge: {e}")))?;
                 }
+                tx.commit()
+                    .map_err(|e| ChannelServiceError::Internal(e.to_string()))?;
                 Ok(())
             }
         })
         .await
         .map_err(|e| ChannelServiceError::Internal(format!("join: {e}")))??;
 
-        if (channel.channel_type == ChannelType::Voice
-            || channel.channel_type == ChannelType::Hybrid)
-            && self.state.voice_service.is_enabled()
+        self.disconnect_agent_voice_client(&identity.pseudonym_id, channel_id);
+        if channel.channel_type == ChannelType::Voice || channel.channel_type == ChannelType::Hybrid
         {
             if let Err(e) = self
                 .state
@@ -641,6 +877,7 @@ impl ChannelService {
             }
         }
 
+        self.cleanup_room_transcription(channel_id).await;
         Ok(channel)
     }
 
@@ -660,6 +897,13 @@ impl ChannelService {
         limit: Option<u32>,
     ) -> Result<Vec<Message>, ChannelServiceError> {
         self.enforce_zk(identity, headers).await?;
+        super::channel_replication::refresh_for_request(
+            self.state.clone(),
+            identity,
+            channel_id,
+            None,
+        )
+        .await?;
         self.require_membership(&identity.pseudonym_id, channel_id)
             .await?;
 
@@ -677,7 +921,9 @@ impl ChannelService {
             // Decrypt at-rest content for display (no-op for legacy plaintext
             // or for E2E client ciphertext, which is not ours to open).
             for m in &mut messages {
-                cipher.decrypt_in_place(&mut m.content);
+                cipher
+                    .decrypt_in_place(&mut m.content)
+                    .map_err(|error| storage_error(error, &m.message_id))?;
             }
             Ok(messages)
         })
@@ -723,7 +969,40 @@ impl ChannelService {
         }
 
         if let Some(cid) = channel_id.as_deref() {
+            super::channel_replication::refresh_for_request(
+                self.state.clone(),
+                identity,
+                cid,
+                None,
+            )
+            .await?;
             self.require_membership(&identity.pseudonym_id, cid).await?;
+        } else {
+            let channels = {
+                let conn = self
+                    .state
+                    .pool
+                    .get()
+                    .map_err(|e| ChannelServiceError::Internal(e.to_string()))?;
+                let mut stmt=conn.prepare("SELECT a.channel_id FROM channel_authorities a JOIN channel_members m ON m.server_id=a.server_id AND m.channel_id=a.channel_id WHERE a.server_id=?1 AND a.local_authority=0 AND m.pseudonym_id=?2 ORDER BY a.channel_id").map_err(|e|ChannelServiceError::Internal(e.to_string()))?;
+                let rows = stmt
+                    .query_map(params![self.state.server_id, identity.pseudonym_id], |r| {
+                        r.get::<_, String>(0)
+                    })
+                    .map_err(|e| ChannelServiceError::Internal(e.to_string()))?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| ChannelServiceError::Internal(e.to_string()))?;
+                rows
+            };
+            for cid in channels {
+                super::channel_replication::refresh_for_request(
+                    self.state.clone(),
+                    identity,
+                    &cid,
+                    None,
+                )
+                .await?;
+            }
         }
 
         let pool = self.state.pool.clone();
@@ -753,7 +1032,7 @@ impl ChannelService {
                     .map_err(map_channel_err)?;
                 let exhausted = (candidates.len() as u32) < SEARCH_SCAN_CAP;
                 for mut m in candidates {
-                    cipher.decrypt_in_place(&mut m.content);
+                    cipher.decrypt_in_place(&mut m.content).map_err(|error| storage_error(error, &m.message_id))?;
                     if m.content.to_lowercase().contains(&needle) {
                         hits.push(m);
                         if hits.len() >= limit as usize {
@@ -837,6 +1116,13 @@ impl ChannelService {
         channel_id: &str,
         message_id: &str,
     ) -> Result<Vec<MessageEdit>, ChannelServiceError> {
+        super::channel_replication::refresh_for_request(
+            self.state.clone(),
+            identity,
+            channel_id,
+            None,
+        )
+        .await?;
         self.require_membership(&identity.pseudonym_id, channel_id)
             .await?;
 
@@ -856,7 +1142,9 @@ impl ChannelService {
             let mut edits =
                 get_edit_history(&conn, server_id, &cid, &mid).map_err(map_channel_err)?;
             for e in &mut edits {
-                cipher.decrypt_in_place(&mut e.old_content);
+                cipher
+                    .decrypt_in_place(&mut e.old_content)
+                    .map_err(|error| storage_error(error, &mid))?;
             }
             Ok(edits)
         })
@@ -888,6 +1176,26 @@ impl ChannelService {
         content: String,
         reply_to: Option<String>,
         client_request_id: Option<String>,
+    ) -> Result<(Message, bool, SendOutcome), ChannelServiceError> {
+        self.send_message_with_attachments(
+            sender_pseudonym,
+            channel_id,
+            content,
+            reply_to,
+            client_request_id,
+            Vec::new(),
+        )
+        .await
+    }
+
+    pub async fn send_message_with_attachments(
+        &self,
+        sender_pseudonym: &str,
+        channel_id: &str,
+        content: String,
+        reply_to: Option<String>,
+        client_request_id: Option<String>,
+        attachment_ids: Vec<String>,
     ) -> Result<(Message, bool, SendOutcome), ChannelServiceError> {
         self.require_membership_for(
             sender_pseudonym,
@@ -938,6 +1246,13 @@ impl ChannelService {
                     .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
                     .map_err(|e| ChannelServiceError::Internal(format!("tx begin: {e}")))?;
 
+                  // Publishing authority can change while this send waits for
+                  // the writer lock. Check the current membership/capability
+                  // in the transaction that will persist and enqueue it.
+                  check_publish_permission(
+                      &tx, server_id, &sender, &cid, agent_policy::AgentAction::SendText,
+                  )?;
+
                 // Idempotency lookup: if the same sender repeats the same
                 // client_request_id, return the original message instead
                 // of inserting a duplicate. Scope is
@@ -958,7 +1273,10 @@ impl ChannelService {
                     if let Some(mid) = existing_message_id {
                         // Hydrate the original message and short-circuit.
                         let mut msg = get_message(&tx, &mid).map_err(map_channel_err)?;
-                        cipher.decrypt_in_place(&mut msg.content);
+                        if msg.channel_id != cid {
+                            return Err(ChannelServiceError::Conflict("client request ID was already used in another channel".into()));
+                        }
+                        cipher.decrypt_in_place(&mut msg.content).map_err(|error| storage_error(error, &msg.message_id))?;
                         let channel = get_channel(&tx, &cid).map_err(map_channel_err)?;
                         let is_federated =
                             matches!(channel.federation_scope, FederationScope::Federated);
@@ -993,6 +1311,7 @@ impl ChannelService {
                 // BEGIN, so contention becomes a wait bounded by
                 // `busy_timeout` instead of an instant failure.
 
+                let encrypted_epoch = super::e2e_service::validate_message_body(&tx,&state,&cid,&sender,&content)?;
                 let message_id = uuid::Uuid::new_v4().to_string();
                 // Encrypt the body at rest; keep the plaintext to return so the
                 // broadcast + federation relay see cleartext.
@@ -1001,10 +1320,11 @@ impl ChannelService {
                     channel_id: cid.clone(),
                     message_id: message_id.clone(),
                     sender_pseudonym: sender.clone(),
-                    content: cipher.encrypt(&plaintext),
+                    content: cipher.encrypt(&plaintext).map_err(|error| storage_error(error, &message_id))?,
                     reply_to_message_id: reply_to,
                 };
                 let mut msg = create_message(&tx, &params).map_err(map_channel_err)?;
+                super::upload_service::associate_message_uploads(&tx,&state,&cid,&sender,&message_id,&attachment_ids,encrypted_epoch.as_ref().map(|(epoch,key)|(*epoch,key.as_str())))?;
                 msg.content = plaintext;
 
                 if let Some(ref rid) = request_id {
@@ -1050,7 +1370,7 @@ impl ChannelService {
                                 ChannelServiceError::Internal(format!("idem winner lookup: {e}"))
                             })?;
                         let mut won = get_message(&tx, &winner).map_err(map_channel_err)?;
-                        cipher.decrypt_in_place(&mut won.content);
+                        cipher.decrypt_in_place(&mut won.content).map_err(|error| storage_error(error, &won.message_id))?;
                         let channel = get_channel(&tx, &cid).map_err(map_channel_err)?;
                         let is_federated =
                             matches!(channel.federation_scope, FederationScope::Federated);
@@ -1079,7 +1399,8 @@ impl ChannelService {
                 // federated message that cannot be queued for delivery has not
                 // been sent, and reporting success is how the old path lost
                 // messages quietly.
-                if is_federated {
+                let ordered=super::channel_authority::record_local_message(&tx,&state,&cid,&msg,super::channel_authority::EventKind::MessageAccepted,Some(&attachment_ids))?;
+                if is_federated && !ordered {
                     crate::services::federation_service::enqueue_message_envelope(
                         &tx, &state, &cid, &msg,
                     )
@@ -1102,17 +1423,36 @@ impl ChannelService {
 
     /// `IncomingMessage::EditMessage` orchestration. Membership check +
     /// `annex_channels::edit_message` (which enforces ownership and the
-    /// edit window). Caller owns the broadcast.
+    /// edit window). Edit/history/federation outbox commit together; the caller
+    /// owns only the post-commit broadcast.
     ///
     /// Returns the updated message plus whether the channel is
-    /// `FEDERATED`-scoped, so the caller can relay the edit to
-    /// federation peers — same shape as [`Self::delete_message`].
+    /// `FEDERATED`-scoped. Federation is already durably queued when this
+    /// method returns; callers must not enqueue the edit a second time.
     pub async fn edit_message(
         &self,
         sender_pseudonym: &str,
         channel_id: &str,
         message_id: &str,
         new_content: &str,
+    ) -> Result<(Message, bool), ChannelServiceError> {
+        self.edit_message_with_attachments(
+            sender_pseudonym,
+            channel_id,
+            message_id,
+            new_content,
+            None,
+        )
+        .await
+    }
+
+    pub async fn edit_message_with_attachments(
+        &self,
+        sender_pseudonym: &str,
+        channel_id: &str,
+        message_id: &str,
+        new_content: &str,
+        attachment_ids: Option<Vec<String>>,
     ) -> Result<(Message, bool), ChannelServiceError> {
         self.require_membership_for(
             sender_pseudonym,
@@ -1127,10 +1467,21 @@ impl ChannelService {
         let pseudo = sender_pseudonym.to_string();
         let content = new_content.to_string();
         let cipher = self.state.message_cipher();
+        let state = self.state.clone();
         tokio::task::spawn_blocking(move || -> Result<(Message, bool), ChannelServiceError> {
-            let conn = pool
+            let mut conn = pool
                 .get()
                 .map_err(|e| ChannelServiceError::Internal(format!("pool: {e}")))?;
+            let tx = conn
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .map_err(|e| ChannelServiceError::Internal(format!("edit tx begin: {e}")))?;
+            check_publish_permission(
+                &tx,
+                state.server_id,
+                &pseudo,
+                &cid,
+                agent_policy::AgentAction::EditText,
+            )?;
             // Store the new body encrypted; the prior (encrypted) body is moved
             // into message_edits by edit_message as-is. Return plaintext for the
             // broadcast/relay.
@@ -1152,88 +1503,137 @@ impl ChannelService {
             // never relayed — peers keep the old text and the servers
             // diverge with nothing logged. Same defect class as the edit
             // history keyed on message_id alone.
-            let existing = get_message(&conn, &mid).map_err(map_channel_err)?;
+            let existing = get_message(&tx, &mid).map_err(map_channel_err)?;
             if existing.channel_id != cid {
                 return Err(ChannelServiceError::NotFound(format!(
                     "message {mid} is not in channel {cid}"
                 )));
             }
-            let stored = cipher.encrypt(&content);
-            let mut msg = edit_message(&conn, &mid, &pseudo, &stored).map_err(map_channel_err)?;
+            // Validate the original before moving it into immutable edit history.
+            // Corruption must not be hidden by replacing the current body.
+            cipher
+                .decrypt(&existing.content)
+                .map_err(|error| storage_error(error, &mid))?;
+            let encrypted_epoch =
+                super::e2e_service::validate_message_body(&tx, &state, &cid, &pseudo, &content)?;
+            let stored = cipher
+                .encrypt(&content)
+                .map_err(|error| storage_error(error, &mid))?;
+            let mut msg = edit_message_in_transaction(&tx, &mid, &pseudo, &stored)
+                .map_err(map_channel_err)?;
             msg.content = content;
-            let channel = get_channel(&conn, &cid).map_err(map_channel_err)?;
+            if let Some(ref ids) = attachment_ids {
+                super::upload_service::associate_message_uploads(
+                    &tx,
+                    &state,
+                    &cid,
+                    &pseudo,
+                    &mid,
+                    ids,
+                    encrypted_epoch
+                        .as_ref()
+                        .map(|(epoch, key)| (*epoch, key.as_str())),
+                )?;
+            }
+            let channel = get_channel(&tx, &cid).map_err(map_channel_err)?;
             let is_federated = matches!(channel.federation_scope, FederationScope::Federated);
+            let ordered = super::channel_authority::record_local_message(
+                &tx,
+                &state,
+                &cid,
+                &msg,
+                super::channel_authority::EventKind::MessageEdited,
+                attachment_ids.as_deref(),
+            )?;
+            if is_federated && !ordered {
+                crate::services::federation_service::enqueue_edit_envelope(
+                    &tx,
+                    &state,
+                    &cid,
+                    &mid,
+                    &pseudo,
+                    &msg.content,
+                )
+                .map_err(|e| {
+                    ChannelServiceError::Internal(format!(
+                        "could not queue this edit for federation: {e}"
+                    ))
+                })?;
+            }
+            tx.commit()
+                .map_err(|e| ChannelServiceError::Internal(format!("edit tx commit: {e}")))?;
             Ok((msg, is_federated))
         })
         .await
         .map_err(|e| ChannelServiceError::Internal(format!("join: {e}")))?
     }
 
-    /// `IncomingMessage::DeleteMessage` orchestration. Membership check +
-    /// `annex_channels::delete_message` (ownership + window enforced).
-    /// Caller owns the broadcast.
-    ///
-    /// Returns the updated (blanked) message plus whether the channel is
-    /// `FEDERATED`-scoped, so the caller can enqueue a redaction
-    /// tombstone for federation peers (ADR-0011) — same shape as
-    /// [`Self::send_message`]'s federation flag.
+    /// Delete the message, its revision history, and enqueue every remote
+    /// tombstone in one writer transaction. The caller broadcasts only after
+    /// the complete deletion obligation is durable.
     pub async fn delete_message(
         &self,
         sender_pseudonym: &str,
         channel_id: &str,
         message_id: &str,
     ) -> Result<(Message, bool), ChannelServiceError> {
-        self.require_membership_for(
-            sender_pseudonym,
-            channel_id,
-            Some(agent_policy::AgentAction::DeleteText),
-        )
-        .await?;
-
-        let pool = self.state.pool.clone();
+        let state = self.state.clone();
         let mid = message_id.to_string();
         let cid = channel_id.to_string();
         let pseudo = sender_pseudonym.to_string();
         tokio::task::spawn_blocking(move || -> Result<(Message, bool), ChannelServiceError> {
-            let conn = pool
+            let mut conn = state
+                .pool
                 .get()
                 .map_err(|e| ChannelServiceError::Internal(format!("pool: {e}")))?;
-            // The message must belong to the channel the caller named.
-            //
-            // `require_membership` above checks the CLIENT-SUPPLIED
-            // channel_id; the mutation below is keyed on message_id alone.
-            // Without tying them together, a member of channel B could edit
-            // or delete their own messages in channel A — one they had left
-            // or been removed from — by naming B in the frame. Ownership is
-            // still enforced by `edit_message`/`delete_message`, so this is
-            // narrower than reading another channel's content, but it
-            // defeats the rule that you cannot change anything in a channel
-            // you are not in.
-            //
-            // It also decides federation. `is_federated` is read from the
-            // channel the caller NAMED, so an edit to a message in a
-            // federated channel, submitted under a local channel id, is
-            // never relayed — peers keep the old text and the servers
-            // diverge with nothing logged. Same defect class as the edit
-            // history keyed on message_id alone.
-            let existing = get_message(&conn, &mid).map_err(map_channel_err)?;
+            let tx = conn
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .map_err(|e| ChannelServiceError::Internal(format!("delete tx: {e}")))?;
+            // Deleting one's prior announcement remains permitted after losing
+            // moderator rights, but active membership and agent policy still apply.
+            super::e2e_service::require_member(&tx, &state, &cid, &pseudo)?;
+            agent_policy::check_agent_action(
+                &tx,
+                state.server_id,
+                &pseudo,
+                agent_policy::AgentAction::DeleteText,
+            )?;
+            let existing = get_message(&tx, &mid).map_err(map_channel_err)?;
             if existing.channel_id != cid {
                 return Err(ChannelServiceError::NotFound(format!(
                     "message {mid} is not in channel {cid}"
                 )));
             }
-            let msg = delete_message(&conn, &mid, &pseudo).map_err(map_channel_err)?;
-            let channel = get_channel(&conn, &cid).map_err(map_channel_err)?;
+            let msg = delete_message_in_transaction(&tx, &mid, &pseudo).map_err(map_channel_err)?;
+            let channel = get_channel(&tx, &cid).map_err(map_channel_err)?;
             let is_federated = matches!(channel.federation_scope, FederationScope::Federated);
+            let ordered = super::channel_authority::record_local_message(
+                &tx,
+                &state,
+                &cid,
+                &msg,
+                super::channel_authority::EventKind::MessageDeleted,
+                None,
+            )?;
+            if is_federated && !ordered {
+                super::federation_service::enqueue_redaction_envelope(
+                    &tx, &state, &cid, &mid, &pseudo, "deleted",
+                )
+                .map_err(|e| {
+                    ChannelServiceError::Internal(format!(
+                        "could not queue this deletion for federation: {e}"
+                    ))
+                })?;
+            }
+            tx.commit()
+                .map_err(|e| ChannelServiceError::Internal(format!("delete tx commit: {e}")))?;
             Ok((msg, is_federated))
         })
         .await
         .map_err(|e| ChannelServiceError::Internal(format!("join: {e}")))?
     }
 
-    // ─────────────────────────────────────────────────────────────────────
     // Voice
-    // ─────────────────────────────────────────────────────────────────────
 
     /// Every condition that must hold before this identity may have a live
     /// peer connection in this channel.
@@ -1277,12 +1677,6 @@ impl ChannelService {
             return Err(ChannelServiceError::VoiceNotConfigured);
         }
 
-        if !identity.can_voice {
-            return Err(ChannelServiceError::Forbidden(
-                "voice is not enabled for this identity".to_string(),
-            ));
-        }
-
         // And, for an agent, whether its alignment still permits voice. This
         // function is the shared gate for BOTH voice paths — the HTTP join and
         // the WebSocket `webrtc_offer` frame — which is why the check goes here
@@ -1292,10 +1686,23 @@ impl ChannelService {
             let pool = self.state.pool.clone();
             let server_id = self.state.server_id;
             let pid = identity.pseudonym_id.clone();
+            let admitted_epoch = identity.token_epoch;
             tokio::task::spawn_blocking(move || -> Result<(), ChannelServiceError> {
                 let conn = pool
                     .get()
                     .map_err(|e| ChannelServiceError::Internal(format!("pool: {e}")))?;
+                let current = annex_identity::get_platform_identity(&conn, server_id, &pid)
+                    .map_err(|e| ChannelServiceError::Internal(format!("identity: {e}")))?;
+                if current.token_epoch != admitted_epoch {
+                    return Err(ChannelServiceError::Forbidden(
+                        "session was revoked before voice admission".to_string(),
+                    ));
+                }
+                if !current.active || !current.can_voice {
+                    return Err(ChannelServiceError::Forbidden(
+                        "voice is not enabled for this identity".to_string(),
+                    ));
+                }
                 agent_policy::check_agent_action(
                     &conn,
                     server_id,
@@ -1334,6 +1741,22 @@ impl ChannelService {
         is_local_client: bool,
     ) -> Result<JoinVoiceResponse, ChannelServiceError> {
         self.enforce_zk(identity, headers).await?;
+        super::channel_replication::refresh_for_request(
+            self.state.clone(),
+            identity,
+            channel_id,
+            None,
+        )
+        .await?;
+
+        // Share the revocation/registration lock through the final epoch check
+        // and grant issuance. Middleware may have admitted this HTTP request
+        // before a moderator revoked its session.
+        let _lifecycle = self
+            .state
+            .connection_manager
+            .lock_lifecycle(&identity.pseudonym_id)
+            .await;
 
         let webrtc_url = if is_local_client {
             self.state
@@ -1406,7 +1829,8 @@ impl ChannelService {
             ));
         }
 
-        if self.state.voice_service.is_enabled() {
+        self.disconnect_agent_voice_client(&identity.pseudonym_id, channel_id);
+        {
             if let Err(e) = self
                 .state
                 .voice_service
@@ -1422,6 +1846,7 @@ impl ChannelService {
             }
         }
 
+        self.cleanup_room_transcription(channel_id).await;
         Ok(())
     }
 
@@ -1469,12 +1894,17 @@ impl ChannelService {
         headers: &HeaderMap,
     ) -> Result<(), ChannelServiceError> {
         let commitment = self.lookup_commitment(&identity.pseudonym_id).await?;
-        verify_zk_membership_header(&self.state, headers, commitment.as_deref()).map_err(|status| {
-            match status {
-                StatusCode::FORBIDDEN => {
+        verify_zk_membership_header(&self.state, headers, commitment.as_deref()).map_err(|error| {
+            match error {
+                crate::middleware::MembershipProofError::RootRetired => {
+                    ChannelServiceError::ZkRootRetired
+                }
+                crate::middleware::MembershipProofError::Rejected => {
                     ChannelServiceError::Forbidden("zk proof rejected".to_string())
                 }
-                _ => ChannelServiceError::Internal(format!("zk verify status {status}")),
+                crate::middleware::MembershipProofError::Internal => {
+                    ChannelServiceError::Internal("zk verification storage failure".into())
+                }
             }
         })
     }
@@ -1573,41 +2003,219 @@ impl ChannelService {
         .map_err(|e| ChannelServiceError::Internal(format!("join: {e}")))?
     }
 
-    /// AI-agent voice client lifecycle for the join path. Idempotent: if a
-    /// session for the agent already exists we keep it; otherwise we
+    /// AI-agent voice client lifecycle for both join and speech. Idempotent: if a
+    /// session for this agent in this channel exists we keep it; otherwise we
     /// connect one, then atomically insert the handle (dropping our copy
     /// if a concurrent request beat us to it). The transcription loop is
     /// only spawned for the winning insert.
-    async fn connect_agent_voice_client(
+    pub(crate) async fn connect_agent_voice_client(
+        &self,
+        identity: &PlatformIdentity,
+        channel_id: &str,
+    ) -> Result<Arc<annex_voice::AgentVoiceClient>, ChannelServiceError> {
+        super::channel_replication::refresh_for_request(
+            self.state.clone(),
+            identity,
+            channel_id,
+            None,
+        )
+        .await?;
+        let _lifecycle = self
+            .state
+            .connection_manager
+            .lock_lifecycle(&identity.pseudonym_id)
+            .await;
+        self.require_membership(&identity.pseudonym_id, channel_id)
+            .await?;
+        self.ensure_voice_allowed(identity, channel_id).await?;
+        self.ensure_room_transcription(channel_id).await?;
+        let client = self
+            .connect_voice_client(&identity.pseudonym_id, channel_id, false, true)
+            .await?;
+        if let Err(error) = self.ensure_voice_allowed(identity, channel_id).await {
+            self.disconnect_voice_participant(&identity.pseudonym_id)
+                .await;
+            return Err(error);
+        }
+        Ok(client)
+    }
+
+    /// One transcription process pipeline per room, shared by humans and agents.
+    pub(crate) async fn ensure_room_transcription(
+        &self,
+        channel_id: &str,
+    ) -> Result<(), ChannelServiceError> {
+        self.connect_voice_client("", channel_id, true, false)
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn cleanup_room_transcription(&self, channel_id: &str) {
+        if self
+            .state
+            .voice_service
+            .participant_count(channel_id)
+            .await
+            .unwrap_or(0)
+            == 0
+        {
+            self.disconnect_agent_voice_client("", channel_id);
+        }
+    }
+
+    pub(crate) async fn end_channel_participation(&self, pseudonym: &str, channel: &str) {
+        let _lifecycle = self
+            .state
+            .connection_manager
+            .lock_lifecycle(pseudonym)
+            .await;
+        self.disconnect_agent_voice_client(pseudonym, channel);
+        if let Err(error) = self
+            .state
+            .voice_service
+            .remove_participant(channel, pseudonym)
+            .await
+        {
+            tracing::debug!(%error,"departed member had no live media");
+        }
+        self.cleanup_room_transcription(channel).await;
+    }
+
+    /// A durable reconciliation cleanup may run after a crash or explicit
+    /// rejoin. Recheck membership under the publisher lifecycle guard so an
+    /// obsolete cleanup obligation cannot destroy a newly authorized call.
+    pub(crate) async fn end_reconciled_departure(
+        &self,
+        pseudonym: &str,
+        channel: &str,
+    ) -> Result<bool, ChannelServiceError> {
+        let _lifecycle = self
+            .state
+            .connection_manager
+            .lock_lifecycle(pseudonym)
+            .await;
+        let member = {
+            let conn = self
+                .state
+                .pool
+                .get()
+                .map_err(|e| ChannelServiceError::Internal(e.to_string()))?;
+            conn.query_row("SELECT EXISTS(SELECT 1 FROM channel_members WHERE server_id=?1 AND channel_id=?2 AND pseudonym_id=?3)",rusqlite::params![self.state.server_id,channel,pseudonym],|r|r.get::<_,bool>(0)).map_err(|e|ChannelServiceError::Internal(e.to_string()))?
+        };
+        if member {
+            return Ok(false);
+        }
+        self.disconnect_agent_voice_client(pseudonym, channel);
+        if let Err(error) = self
+            .state
+            .voice_service
+            .remove_participant(channel, pseudonym)
+            .await
+        {
+            tracing::debug!(%error,"reconciled member had no live media");
+        }
+        self.cleanup_room_transcription(channel).await;
+        Ok(true)
+    }
+
+    pub(crate) async fn cleanup_empty_room_transcriptions(&self) {
+        let rooms: Vec<_> = self
+            .state
+            .voice_sessions
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .filter(|(pseudonym, _)| pseudonym.is_empty())
+            .map(|(_, room)| room.clone())
+            .collect();
+        for room in rooms {
+            self.cleanup_room_transcription(&room).await;
+        }
+    }
+
+    /// Revoke outstanding publisher handles before closing their SFU tracks.
+    /// Used by socket teardown and by moderator actions, including agents that
+    /// entered voice through HTTP and have no WebSocket to disconnect.
+    pub(crate) async fn disconnect_voice_participant(&self, pseudonym: &str) {
+        {
+            let mut sessions = self
+                .state
+                .voice_sessions
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
+            sessions.retain(|(participant, _), client| {
+                if participant == pseudonym {
+                    client.close();
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        self.state
+            .voice_service
+            .remove_participant_everywhere(pseudonym)
+            .await;
+        self.cleanup_empty_room_transcriptions().await;
+    }
+
+    pub(crate) async fn disconnect_all_voice(&self) -> Result<(), ChannelServiceError> {
+        {
+            let mut sessions = self
+                .state
+                .voice_sessions
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
+            for client in sessions.values() {
+                client.close();
+            }
+            sessions.clear();
+        }
+        self.state
+            .voice_service
+            .close_all_rooms()
+            .await
+            .map_err(|e| ChannelServiceError::Internal(format!("close voice rooms: {e}")))
+    }
+
+    async fn connect_voice_client(
         &self,
         pseudonym_id: &str,
         channel_id: &str,
-    ) -> Result<(), ChannelServiceError> {
-        let already_exists = {
+        transcribe: bool,
+        publish: bool,
+    ) -> Result<Arc<annex_voice::AgentVoiceClient>, ChannelServiceError> {
+        let key = (pseudonym_id.to_string(), channel_id.to_string());
+        let existing = {
             let sessions =
                 self.state.voice_sessions.read().map_err(|e| {
                     ChannelServiceError::Internal(format!("voice_sessions read: {e}"))
                 })?;
-            sessions.contains_key(pseudonym_id)
+            sessions.get(&key).cloned()
         };
-        if already_exists {
-            return Ok(());
+        if let Some(client) = existing {
+            return Ok(client);
         }
 
+        let subject = if pseudonym_id.is_empty() {
+            "annex-room-captions"
+        } else {
+            pseudonym_id
+        };
         let token = self
             .state
             .voice_service
             .generate_join_token(
                 channel_id,
-                pseudonym_id,
-                pseudonym_id,
+                subject,
+                subject,
                 &self.state.voice_token_secret,
                 annex_voice::VOICE_TOKEN_DEFAULT_TTL_SECS,
             )
             .map_err(|e| ChannelServiceError::Internal(format!("token: {e}")))?;
         let url = self.state.voice_service.get_url();
 
-        let client = annex_voice::AgentVoiceClient::connect(
+        let client = annex_voice::AgentVoiceClient::connect_with_mode(
             url,
             &token,
             channel_id,
@@ -1616,6 +2224,8 @@ impl ChannelService {
             self.state.voice_service.api_key(),
             self.state.voice_service.api_secret(),
             self.state.voice_service.clone(),
+            transcribe,
+            publish,
         )
         .await
         .map_err(|e| {
@@ -1635,50 +2245,163 @@ impl ChannelService {
             .write()
             .map_err(|e| ChannelServiceError::Internal(format!("voice_sessions write: {e}")))?;
 
-        if let std::collections::hash_map::Entry::Vacant(entry) =
-            sessions.entry(pseudonym_id.to_string())
-        {
-            let mut rx = client.subscribe_transcriptions();
-            let cm = self.state.connection_manager.clone();
-            let p_clone = entry.key().clone();
-
-            // Differentiate `Lagged` from `Closed` so a brief burst that
-            // overflows the 256-deep broadcast window does NOT terminate
-            // this forwarder permanently — see [F36].
-            tokio::spawn(async move {
-                loop {
-                    let event = match rx.recv().await {
-                        Ok(e) => e,
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                            tracing::warn!(
-                                pseudonym = %p_clone,
-                                skipped = n,
-                                "transcription broadcast lagged; some events skipped",
-                            );
+        if let std::collections::hash_map::Entry::Vacant(entry) = sessions.entry(key.clone()) {
+            if transcribe {
+                let mut rx = client.subscribe_transcriptions();
+                let state = self.state.clone();
+                let live_client = Arc::downgrade(&client);
+                tokio::spawn(async move {
+                    loop {
+                        let received = tokio::select! {
+                            _ = state.shutdown.cancelled() => break,
+                            event = rx.recv() => event,
+                        };
+                        let event = match received {
+                            Ok(event) => event,
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                tracing::warn!(skipped = n, "room transcription receiver lagged");
+                                continue;
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        };
+                        if !live_client
+                            .upgrade()
+                            .is_some_and(|client| client.is_connected())
+                        {
+                            break;
+                        }
+                        if !state
+                            .policy
+                            .read()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .voice_enabled
+                        {
                             continue;
                         }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                    };
-                    let msg = crate::api_ws::OutgoingMessage::Transcription {
-                        channel_id: event.channel_id,
-                        speaker_pseudonym: event.speaker_pseudonym,
-                        text: event.text,
-                    };
-
-                    match serde_json::to_string(&msg) {
-                        Ok(json) => {
-                            cm.send(&p_clone, json).await;
-                        }
-                        Err(e) => {
-                            tracing::error!("failed to serialize transcription message: {}", e);
+                        let participants =
+                            state.voice_service.participant_ids(&event.channel_id).await;
+                        let allowed = tokio::task::spawn_blocking({
+                            let pool = state.pool.clone();
+                            let server_id = state.server_id;
+                            let channel_id = event.channel_id.clone();
+                            move || -> Result<Vec<String>, String> {
+                                let conn = pool.get().map_err(|e| e.to_string())?;
+                                let mut allowed = Vec::new();
+                                for participant in participants {
+                                    let active: bool = conn.query_row(
+                                        "SELECT EXISTS(SELECT 1 FROM platform_identities pi JOIN channel_members cm ON pi.server_id = cm.server_id AND pi.pseudonym_id = cm.pseudonym_id WHERE pi.server_id = ?1 AND pi.pseudonym_id = ?2 AND pi.active = 1 AND pi.can_voice = 1 AND cm.channel_id = ?3)",
+                                        params![server_id, participant, channel_id], |r| r.get(0),
+                                    ).map_err(|e| e.to_string())?;
+                                    if active && agent_policy::check_agent_action(&conn, server_id, &participant, agent_policy::AgentAction::VoiceMedia).is_ok() {
+                                        allowed.push(participant);
+                                    }
+                                }
+                                Ok(allowed)
+                            }
+                        }).await;
+                        let Ok(Ok(allowed)) = allowed else {
+                            tracing::warn!("could not authorize room caption recipients");
+                            continue;
+                        };
+                        let message = crate::api_ws::OutgoingMessage::Transcription {
+                            channel_id: event.channel_id,
+                            speaker_pseudonym: event.speaker_pseudonym,
+                            text: event.text,
+                        };
+                        if let Ok(json) = serde_json::to_string(&message) {
+                            for recipient in allowed {
+                                state
+                                    .connection_manager
+                                    .send(&recipient, json.clone())
+                                    .await;
+                            }
                         }
                     }
-                }
-            });
+                });
+            }
 
             entry.insert(client);
         }
 
-        Ok(())
+        Ok(sessions
+            .get(&key)
+            .expect("voice session inserted under write lock")
+            .clone())
+    }
+
+    fn disconnect_agent_voice_client(&self, pseudonym_id: &str, channel_id: &str) {
+        let key = (pseudonym_id.to_string(), channel_id.to_string());
+        let mut sessions = self
+            .state
+            .voice_sessions
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(client) = sessions.remove(&key) {
+            client.close();
+        }
+    }
+}
+
+#[cfg(test)]
+mod local_membership_writer_tests {
+    use super::*;
+    fn fixture() -> (rusqlite::Connection, PlatformIdentity) {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        annex_db::run_migrations(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO servers(id,slug,label,policy_json) VALUES(1,'local','Local','{}')",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO platform_identities(server_id,pseudonym_id,participant_type,can_voice) VALUES(1,'member-1','HUMAN',1)",[]).unwrap();
+        conn.execute("INSERT INTO channels(server_id,channel_id,name,channel_type,federation_scope) VALUES(1,'shared','Shared',json_quote('Text'),json_quote('Federated'))",[]).unwrap();
+        let identity = annex_identity::get_platform_identity(&conn, 1, "member-1").unwrap();
+        (conn, identity)
+    }
+    #[test]
+    fn captured_local_join_and_leave_refuse_authority_installed_before_writer_boundary() {
+        let (mut conn, captured) = fixture();
+        annex_channels::add_member(&conn, 1, "shared", &captured.pseudonym_id).unwrap();
+        // Models a request that selected the legacy branch before the authority
+        // commit. Its actual final production writer helper must recheck.
+        conn.execute("INSERT INTO channel_authorities(server_id,channel_id,authority_identity,authority_key_hex,authority_url,local_authority) VALUES(1,'shared','authority','key','https://authority.test',0)",[]).unwrap();
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        for joining in [true, false] {
+            assert!(matches!(
+                write_local_membership(&tx, 1, &captured, "shared", joining),
+                Err(ChannelServiceError::Conflict(_))
+            ));
+        }
+        assert!(annex_channels::is_member(&tx, 1, "shared", &captured.pseudonym_id).unwrap());
+    }
+    #[test]
+    fn captured_local_membership_rechecks_session_activity_and_current_channel_policy() {
+        let (mut conn, captured) = fixture();
+        assert!(write_local_membership(&conn, 1, &captured, "shared", true).is_err());
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        write_local_membership(&tx, 1, &captured, "shared", true).unwrap();
+        tx.execute("UPDATE platform_identities SET token_epoch=1", [])
+            .unwrap();
+        assert!(write_local_membership(&tx, 1, &captured, "shared", true).is_err());
+        assert!(write_local_membership(&tx, 1, &captured, "shared", false).is_err());
+        tx.execute("UPDATE platform_identities SET token_epoch=0,active=0", [])
+            .unwrap();
+        assert!(write_local_membership(&tx, 1, &captured, "shared", true).is_err());
+        tx.execute("UPDATE platform_identities SET active=1,can_voice=0", [])
+            .unwrap();
+        tx.execute(
+            "UPDATE channels SET required_capabilities_json=?1",
+            [r#"["can_voice"]"#],
+        )
+        .unwrap();
+        assert!(write_local_membership(&tx, 1, &captured, "shared", true).is_err());
+        write_local_membership(&tx, 1, &captured, "shared", false).unwrap();
+        tx.execute("UPDATE platform_identities SET can_voice=1", [])
+            .unwrap();
+        write_local_membership(&tx, 1, &captured, "shared", true).unwrap();
     }
 }

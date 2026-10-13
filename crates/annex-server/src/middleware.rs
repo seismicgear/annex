@@ -28,7 +28,7 @@ pub struct IdentityContext(pub PlatformIdentity);
 /// - At most 128 bytes (well above the 64-char hex norm)
 /// - Only ASCII alphanumeric, hyphens, and underscores (no control chars,
 ///   whitespace, quotes, semicolons, or other injection-friendly characters)
-fn is_valid_pseudonym_format(p: &str) -> bool {
+pub(crate) fn is_valid_pseudonym_format(p: &str) -> bool {
     !p.is_empty()
         && p.len() <= 128
         && p.as_bytes()
@@ -246,9 +246,9 @@ pub enum RateLimitKey {
 #[derive(Debug, Clone)]
 struct WindowState {
     /// Count in the previous (completed) window.
-    prev_count: u32,
+    prev_count: u64,
     /// Count in the current window so far.
-    curr_count: u32,
+    curr_count: u64,
     /// Start of the current window.
     window_start: Instant,
 }
@@ -285,12 +285,53 @@ fn retry_after_header() -> axum::http::HeaderValue {
 #[derive(Clone, Debug)]
 pub struct RateLimiter {
     state: Arc<Mutex<HashMap<RateLimitKey, WindowState>>>,
+    shared: Option<crate::shared_rate_limit::SharedRateLimiter>,
 }
 
 impl RateLimiter {
     pub fn new() -> Self {
         Self {
             state: Arc::new(Mutex::new(HashMap::new())),
+            shared: None,
+        }
+    }
+
+    pub fn from_shared(shared: crate::shared_rate_limit::SharedRateLimiter) -> Self {
+        Self {
+            shared: Some(shared),
+            ..Self::new()
+        }
+    }
+
+    pub async fn from_config(
+        config: &crate::config::DeploymentConfig,
+    ) -> Result<Self, crate::shared_rate_limit::SharedRateLimitError> {
+        match config
+            .rate_limit_backend
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "memory" => Ok(Self::new()),
+            "redis" => Ok(Self::from_shared(
+                crate::shared_rate_limit::SharedRateLimiter::connect(
+                    &config.rate_limit_redis_url,
+                    &config.rate_limit_namespace,
+                )
+                .await?,
+            )),
+            _ => Err(crate::shared_rate_limit::SharedRateLimitError::Configuration),
+        }
+    }
+
+    pub async fn check_async(
+        &self,
+        key: RateLimitKey,
+        limit: u32,
+    ) -> Result<bool, crate::shared_rate_limit::SharedRateLimitError> {
+        match &self.shared {
+            Some(shared) => shared.check(&key, limit).await,
+            None => Ok(self.check(key, limit)),
         }
     }
 
@@ -314,6 +355,12 @@ impl RateLimiter {
     ///
     /// Returns `true` if allowed, `false` if limit exceeded.
     pub fn check(&self, key: RateLimitKey, limit: u32) -> bool {
+        // The legacy synchronous API is memory-only. Accidentally using it on
+        // a shared limiter must never create an independent local allowance.
+        if self.shared.is_some() {
+            tracing::error!("shared rate limiter requires asynchronous admission");
+            return false;
+        }
         let mut state = match self.state.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
@@ -341,14 +388,18 @@ impl RateLimiter {
 
         let elapsed = now.duration_since(ws.window_start);
 
-        if elapsed > RATE_LIMIT_WINDOW {
+        if elapsed >= RATE_LIMIT_WINDOW * 2 {
+            ws.prev_count = 0;
+            ws.curr_count = 0;
+            ws.window_start = now;
+        } else if elapsed >= RATE_LIMIT_WINDOW {
             // Rotate: current becomes previous, start a new current window.
             ws.prev_count = ws.curr_count;
             ws.curr_count = 0;
-            ws.window_start = now;
+            ws.window_start += RATE_LIMIT_WINDOW;
         }
 
-        ws.curr_count += 1;
+        ws.curr_count = (ws.curr_count + 1).min(u64::from(u32::MAX) + 1);
 
         // Sliding window estimate: weight the previous window's count by the
         // fraction of the window that has NOT yet elapsed.
@@ -466,10 +517,10 @@ pub fn resolve_client_ip_from_xff(
 /// realtime traffic was allowed while the cross-origin fetch that sets it up
 /// was blocked.
 ///
-/// `http:` is deliberately NOT included, so a page served over HTTPS cannot be
-/// talked into a plaintext downgrade. Local development against an
-/// `http://localhost` peer is served over plain HTTP itself, where the
-/// browser treats the connection as same-scheme.
+/// HTTPS and unconfigured deployments do not allow plaintext peer fetches.
+/// Explicit HTTP deployments use the second policy below: even on an HTTP
+/// document, another host or port is cross-origin, so `'self'` does not cover
+/// a local or LAN peer. Request headers never select the weaker policy.
 const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; \
      script-src 'self' 'wasm-unsafe-eval'; \
      connect-src 'self' https: ws: wss:; \
@@ -479,9 +530,37 @@ const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; \
      frame-ancestors 'none'; \
      object-src 'none'";
 
+const HTTP_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; \
+     script-src 'self' 'wasm-unsafe-eval'; \
+     connect-src 'self' http: https: ws: wss:; \
+     img-src 'self' data: blob:; \
+     media-src 'self' blob: data: mediastream:; \
+     style-src 'self' 'unsafe-inline'; \
+     frame-ancestors 'none'; \
+     object-src 'none'";
+
+fn document_security_policy(public_url: &str) -> &'static str {
+    if url::Url::parse(public_url)
+        .is_ok_and(|url| url.scheme() == "http" && url.host_str().is_some())
+    {
+        HTTP_CONTENT_SECURITY_POLICY
+    } else {
+        CONTENT_SECURITY_POLICY
+    }
+}
+
 /// Setting them on API (JSON) responses is unnecessary and can confuse
 /// some WebView implementations (e.g. Tauri desktop mode).
 pub async fn security_headers_middleware(req: Request<Body>, next: Next) -> Response {
+    // Capture before the handler runs: a request cannot change its own CSP via
+    // forwarded headers or the public-URL auto-detection in inner middleware.
+    let policy = req
+        .extensions()
+        .get::<Arc<AppState>>()
+        .map(|state| {
+            document_security_policy(&state.public_url.read().unwrap_or_else(|p| p.into_inner()))
+        })
+        .unwrap_or(CONTENT_SECURITY_POLICY);
     let mut response = next.run(req).await;
     let headers = response.headers_mut();
 
@@ -521,7 +600,7 @@ pub async fn security_headers_middleware(req: Request<Body>, next: Next) -> Resp
         );
         headers.insert(
             header::HeaderName::from_static("content-security-policy"),
-            header::HeaderValue::from_static(CONTENT_SECURITY_POLICY),
+            header::HeaderValue::from_static(policy),
         );
     }
 
@@ -735,7 +814,15 @@ pub async fn rate_limit_middleware(req: Request<Body>, next: Next) -> Result<Res
     };
 
     // 4. Check Limit
-    if !state.rate_limiter.check(key, limit) {
+    let allowed = state
+        .rate_limiter
+        .check_async(key, limit)
+        .await
+        .map_err(|error| {
+            tracing::error!(%error, "request admission unavailable");
+            StatusCode::SERVICE_UNAVAILABLE
+        })?;
+    if !allowed {
         let mut response = Response::new(Body::empty());
         *response.status_mut() = StatusCode::TOO_MANY_REQUESTS;
         response
@@ -781,6 +868,16 @@ pub struct ZkProofPayload {
     pub topic: Option<String>,
 }
 
+/// Distinguish an expired assertion from permission/cryptographic refusal.
+/// Only RootRetired permits a client to regenerate its assertion while retaining
+/// the same authenticated session token; it never authorizes reauthentication.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MembershipProofError {
+    Rejected,
+    RootRetired,
+    Internal,
+}
+
 /// Verifies a ZK membership proof from the `x-annex-zk-proof` header.
 ///
 /// When `state.enforce_zk_proofs` is true and the header is present, the proof
@@ -796,12 +893,14 @@ pub struct ZkProofPayload {
 ///
 /// Returns:
 /// - `Ok(())` if enforcement is disabled, or the proof is valid and bound
-/// - `Err(StatusCode::FORBIDDEN)` if enforcement is enabled and proof is missing/invalid/mismatched
+/// - `Rejected` for missing/invalid/mismatched proofs or unknown roots
+/// - `RootRetired` only for a valid bound proof against a known expired root
+/// - `Internal` for database failures
 pub fn verify_zk_membership_header(
     state: &AppState,
     headers: &axum::http::HeaderMap,
     expected_commitment_hex: Option<&str>,
-) -> Result<(), StatusCode> {
+) -> Result<(), MembershipProofError> {
     if !state.enforce_zk_proofs {
         return Ok(());
     }
@@ -811,30 +910,32 @@ pub fn verify_zk_membership_header(
     // verification — they must re-register through the ZK identity flow.
     if expected_commitment_hex.is_none() {
         tracing::warn!("ZK enforcement enabled but identity has no registered commitment");
-        return Err(StatusCode::FORBIDDEN);
+        return Err(MembershipProofError::Rejected);
     }
 
     let header_val = headers
         .get("x-annex-zk-proof")
-        .ok_or(StatusCode::FORBIDDEN)?;
+        .ok_or(MembershipProofError::Rejected)?;
 
-    let header_str = header_val.to_str().map_err(|_| StatusCode::FORBIDDEN)?;
+    let header_str = header_val
+        .to_str()
+        .map_err(|_| MembershipProofError::Rejected)?;
 
     // Decode base64 to JSON
     use base64::Engine;
     let decoded = base64::engine::general_purpose::STANDARD
         .decode(header_str)
-        .map_err(|_| StatusCode::FORBIDDEN)?;
+        .map_err(|_| MembershipProofError::Rejected)?;
 
     let payload: ZkProofPayload =
-        serde_json::from_slice(&decoded).map_err(|_| StatusCode::FORBIDDEN)?;
+        serde_json::from_slice(&decoded).map_err(|_| MembershipProofError::Rejected)?;
 
     // Bind proof to authenticated identity: reject if the proof's commitment
     // does not match the pseudonym's registered commitment.
     if let Some(expected) = expected_commitment_hex {
         if payload.commitment_hex != expected {
             tracing::warn!("ZK proof commitment does not match authenticated identity");
-            return Err(StatusCode::FORBIDDEN);
+            return Err(MembershipProofError::Rejected);
         }
     }
 
@@ -847,7 +948,7 @@ pub fn verify_zk_membership_header(
                 tracing::warn!(
                     "v2 ZK proof header rejected: membership v2 not enabled on this server"
                 );
-                StatusCode::FORBIDDEN
+                MembershipProofError::Rejected
             })?;
             // Five since the challenge binding landed:
             // [root, commitment, nullifier, topicHash, challenge].
@@ -865,41 +966,43 @@ pub fn verify_zk_membership_header(
         }
         other => {
             tracing::warn!("ZK proof header has unsupported protocolVersion '{other}'");
-            return Err(StatusCode::FORBIDDEN);
+            return Err(MembershipProofError::Rejected);
         }
     };
 
     // Parse the proof
-    let proof_json = serde_json::to_string(&payload.proof).map_err(|_| StatusCode::FORBIDDEN)?;
-    let proof = parse_proof(&proof_json).map_err(|_| StatusCode::FORBIDDEN)?;
+    let proof_json =
+        serde_json::to_string(&payload.proof).map_err(|_| MembershipProofError::Rejected)?;
+    let proof = parse_proof(&proof_json).map_err(|_| MembershipProofError::Rejected)?;
 
     // Build public-inputs vector (version-matched).
-    let root_fr = parse_fr_from_hex(&payload.root_hex).map_err(|_| StatusCode::FORBIDDEN)?;
+    let root_fr =
+        parse_fr_from_hex(&payload.root_hex).map_err(|_| MembershipProofError::Rejected)?;
     let commitment_fr =
-        parse_fr_from_hex(&payload.commitment_hex).map_err(|_| StatusCode::FORBIDDEN)?;
+        parse_fr_from_hex(&payload.commitment_hex).map_err(|_| MembershipProofError::Rejected)?;
 
     let public_inputs = if protocol_version == "v2" {
         let raw_public_signals = payload.public_signals.as_ref().ok_or_else(|| {
             tracing::warn!("v2 ZK proof header missing publicSignals");
-            StatusCode::FORBIDDEN
+            MembershipProofError::Rejected
         })?;
         if raw_public_signals.len() != expected_signals_len {
             tracing::warn!(
                 "v2 ZK proof header publicSignals length is {} (expected {expected_signals_len})",
                 raw_public_signals.len()
             );
-            return Err(StatusCode::FORBIDDEN);
+            return Err(MembershipProofError::Rejected);
         }
-        let signals_json =
-            serde_json::to_string(raw_public_signals).map_err(|_| StatusCode::FORBIDDEN)?;
+        let signals_json = serde_json::to_string(raw_public_signals)
+            .map_err(|_| MembershipProofError::Rejected)?;
         let signals = annex_identity::zk::parse_public_signals(&signals_json)
-            .map_err(|_| StatusCode::FORBIDDEN)?;
+            .map_err(|_| MembershipProofError::Rejected)?;
 
         // Cross-check publicSignals[0] / [1] match the request's claimed
         // root + commitment.
         if signals[0] != root_fr || signals[1] != commitment_fr {
             tracing::warn!("v2 ZK proof publicSignals[0..2] do not match claimed root+commitment");
-            return Err(StatusCode::FORBIDDEN);
+            return Err(MembershipProofError::Rejected);
         }
 
         // Topic-binding: require `topic` and check
@@ -909,15 +1012,15 @@ pub fn verify_zk_membership_header(
         // produced for topic A as a "proof of membership" for topic B.
         let topic = payload.topic.as_deref().ok_or_else(|| {
             tracing::warn!("v2 ZK proof header missing required `topic` field");
-            StatusCode::FORBIDDEN
+            MembershipProofError::Rejected
         })?;
-        let expected_topic_hash =
-            annex_identity::zk::topic_hash_for_v2(topic).map_err(|_| StatusCode::FORBIDDEN)?;
+        let expected_topic_hash = annex_identity::zk::topic_hash_for_v2(topic)
+            .map_err(|_| MembershipProofError::Rejected)?;
         if signals[3] != expected_topic_hash {
             tracing::warn!(
                 "v2 ZK proof publicSignals[3] (topicHash) does not match canonical hash of topic"
             );
-            return Err(StatusCode::FORBIDDEN);
+            return Err(MembershipProofError::Rejected);
         }
 
         signals
@@ -926,11 +1029,11 @@ pub fn verify_zk_membership_header(
     };
 
     // Verify the proof against the version-matched vkey.
-    let valid =
-        verify_proof(&vkey_for_proof, &proof, &public_inputs).map_err(|_| StatusCode::FORBIDDEN)?;
+    let valid = verify_proof(&vkey_for_proof, &proof, &public_inputs)
+        .map_err(|_| MembershipProofError::Rejected)?;
 
     if !valid {
-        return Err(StatusCode::FORBIDDEN);
+        return Err(MembershipProofError::Rejected);
     }
 
     // Verify the merkle root is acceptable.
@@ -951,12 +1054,20 @@ pub fn verify_zk_membership_header(
     let conn = state
         .pool
         .get()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|_| MembershipProofError::Internal)?;
     let acceptable = annex_identity::merkle::is_root_acceptable(&conn, &payload.root_hex)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|_| MembershipProofError::Internal)?;
     if !acceptable {
         tracing::warn!("ZK proof root is not currently acceptable");
-        return Err(StatusCode::FORBIDDEN);
+        let retired: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM vrp_root_epochs WHERE root_hex=?1
+             AND active_until IS NOT NULL AND (accepted_until IS NULL OR accepted_until < datetime('now')))",
+            [payload.root_hex.to_ascii_lowercase()], |row| row.get(0),
+        ).map_err(|_| MembershipProofError::Internal)?;
+        if retired {
+            return Err(MembershipProofError::RootRetired);
+        }
+        return Err(MembershipProofError::Rejected);
     }
 
     Ok(())
@@ -1026,6 +1137,33 @@ mod tests {
         }
         // 6th request should be denied
         assert!(!limiter.check(key, 5));
+    }
+
+    #[test]
+    fn rate_limiter_long_idle_drops_both_windows_and_counter_never_wraps() {
+        let limiter = RateLimiter::new();
+        let key = RateLimitKey::Ip("127.0.0.1".parse().unwrap(), RateLimitCategory::Default);
+        limiter.state.lock().unwrap().insert(
+            key.clone(),
+            WindowState {
+                prev_count: u64::from(u32::MAX),
+                curr_count: u64::from(u32::MAX),
+                window_start: Instant::now(),
+            },
+        );
+        assert!(!limiter.check(key.clone(), u32::MAX));
+        limiter
+            .state
+            .lock()
+            .unwrap()
+            .get_mut(&key)
+            .unwrap()
+            .window_start = Instant::now() - RATE_LIMIT_WINDOW * 3;
+        assert!(
+            limiter.check(key.clone(), 1),
+            "expired history cannot penalize a new window"
+        );
+        assert!(!limiter.check(key, 1));
     }
 
     #[test]

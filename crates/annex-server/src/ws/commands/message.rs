@@ -35,6 +35,7 @@ pub(crate) async fn handle(
     channel_id: String,
     content: String,
     reply_to: Option<String>,
+    attachment_ids: Vec<String>,
     client_request_id: Option<String>,
 ) {
     if content.trim().is_empty() {
@@ -88,16 +89,35 @@ pub(crate) async fn handle(
     }
 
     let svc = crate::services::ChannelService::new(ctx.state.clone());
-    match svc
-        .send_message(
-            ctx.pseudonym,
-            &channel_id,
-            content,
-            reply_to,
-            client_request_id.clone(),
-        )
-        .await
-    {
+    let remote = crate::services::channel_replication::maybe_message(
+        ctx.state.clone(),
+        ctx.identity,
+        &channel_id,
+        client_request_id.as_deref(),
+        serde_json::json!({"kind":"send","content":content,"reply_to":reply_to,"attachments":[]}),
+        Some(&attachment_ids),
+    )
+    .await;
+    let result = match remote {
+        Ok(Some(message)) => Ok((
+            message,
+            true,
+            crate::services::channel_service::SendOutcome::Inserted,
+        )),
+        Err(error) => Err(error.into()),
+        Ok(None) => {
+            svc.send_message_with_attachments(
+                ctx.pseudonym,
+                &channel_id,
+                content,
+                reply_to,
+                client_request_id.clone(),
+                attachment_ids,
+            )
+            .await
+        }
+    };
+    match result {
         Ok((message, is_federated, outcome)) => {
             use crate::services::channel_service::SendOutcome;
             // Broadcast via WebSocket (camelCase payload).
@@ -168,9 +188,10 @@ pub(crate) async fn handle(
                 | CSE::NotFound(m)
                 | CSE::Conflict(m)
                 | CSE::ServiceUnavailable(m) => (false, format!("Failed to send message: {m}")),
-                CSE::VoiceDisabled | CSE::VoiceNotConfigured => {
-                    (false, format!("Failed to send message: {e}"))
-                }
+                CSE::Remote(_)
+                | CSE::VoiceDisabled
+                | CSE::VoiceNotConfigured
+                | CSE::ZkRootRetired => (false, format!("Failed to send message: {e}")),
             };
             if level_is_error {
                 tracing::error!(

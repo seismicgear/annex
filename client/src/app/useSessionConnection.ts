@@ -41,6 +41,15 @@ export function useSessionConnection({
   loadPermissions,
   fetchServerImage,
 }: UseSessionConnectionArgs): void {
+  const wsSessionState = useChannelsStore((state) => state.wsSessionState);
+  useEffect(() => {
+    if (wsSessionState !== 'revoked') return;
+    stopTokenRefresh();
+    setSessionToken(null, null);
+    useChannelsStore.setState({ wsSessionState: 'disconnected' });
+    useIdentityStore.setState({ phase: 'keys_ready' });
+  }, [wsSessionState]);
+
   useEffect(() => {
     if (phase === 'ready' && pseudonymId) {
       let cancelled = false;

@@ -55,6 +55,7 @@ pub fn process_incoming_handshake(
         required_capabilities,
         offered_capabilities,
         redacted_topics: vec![],
+        ..VrpCapabilitySharingContract::from_policy(local_policy)
     };
 
     // 3. Define alignment config
@@ -64,10 +65,11 @@ pub fn process_incoming_handshake(
     };
 
     // 4. Define transfer acceptance config
-    // For now, we allow reflection summaries if federation is enabled.
+    // Full knowledge requires explicit operator opt-in as well as alignment.
     let transfer_config = VrpTransferAcceptanceConfig {
-        allow_reflection_summaries: local_policy.federation_enabled,
-        allow_full_knowledge: false, // Conservative default
+        allow_reflection_summaries: local_policy.federation_enabled
+            && local_policy.allow_reflection_summaries,
+        allow_full_knowledge: local_policy.federation_enabled && local_policy.allow_full_knowledge,
     };
 
     // 5. Validate handshake
@@ -134,6 +136,7 @@ mod tests {
             required_capabilities: vec![],
             offered_capabilities: vec![],
             redacted_topics: vec![],
+            ..Default::default()
         };
         let handshake = VrpFederationHandshake {
             anchor_snapshot: anchor,
@@ -156,6 +159,45 @@ mod tests {
     }
 
     #[test]
+    fn full_knowledge_requires_operator_opt_in_and_federation() {
+        use annex_vrp::VrpTransferScope;
+        for (enabled, full, reflection, expected) in [
+            (true, false, true, VrpTransferScope::ReflectionSummariesOnly),
+            (true, true, true, VrpTransferScope::FullKnowledgeBundle),
+            (true, false, false, VrpTransferScope::NoTransfer),
+            (false, true, true, VrpTransferScope::NoTransfer),
+        ] {
+            let mut conn = setup_db();
+            let policy = ServerPolicy {
+                federation_enabled: enabled,
+                allow_full_knowledge: full,
+                allow_reflection_summaries: reflection,
+                ..Default::default()
+            };
+            let handshake = VrpFederationHandshake {
+                anchor_snapshot: VrpAnchorSnapshot::new(&[], &[]).unwrap(),
+                capability_contract: VrpCapabilitySharingContract {
+                    required_capabilities: vec![],
+                    offered_capabilities: vec![],
+                    redacted_topics: vec![],
+                    ..Default::default()
+                },
+                scorer: None,
+            };
+            let report = process_incoming_handshake(&mut conn, 1, &policy, 10, &handshake).unwrap();
+            assert_eq!(report.transfer_scope, expected);
+            let stored: String = conn
+                .query_row(
+                    "SELECT transfer_scope FROM federation_agreements",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(stored, expected.to_string());
+        }
+    }
+
+    #[test]
     fn conflict_handshake_rejected_no_agreement_persisted() {
         let mut conn = setup_db();
 
@@ -172,6 +214,7 @@ mod tests {
             required_capabilities: vec![],
             offered_capabilities: vec![],
             redacted_topics: vec![],
+            ..Default::default()
         };
         let handshake = VrpFederationHandshake {
             anchor_snapshot: remote_anchor,

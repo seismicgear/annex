@@ -89,7 +89,14 @@ pub struct VrpAnchorSnapshot {
 
 /// A contract defining required and offered capabilities for an interaction.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct VrpCapabilitySharingContract {
+    /// Legacy contracts omitted this field. Restrictions require version 2.
+    #[serde(
+        default = "legacy_contract_version",
+        skip_serializing_if = "is_legacy_contract"
+    )]
+    pub version: u8,
     /// Capabilities required by this entity from the counterparty.
     pub required_capabilities: Vec<String>,
     /// Capabilities offered by this entity to the counterparty.
@@ -100,6 +107,52 @@ pub struct VrpCapabilitySharingContract {
     /// from transfer per the VRP agreement.
     #[serde(default)]
     pub redacted_topics: Vec<String>,
+    /// None permits all declared domains; [] permits no RTX bundle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub knowledge_domains_allowed: Option<Vec<String>>,
+    /// An explicit retention declaration is required by version 2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_policy: Option<VrpRetentionPolicy>,
+    /// Canonical serialized bundle bytes, including signature and metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_exchange_size: Option<u64>,
+}
+
+fn legacy_contract_version() -> u8 {
+    1
+}
+fn is_legacy_contract(version: &u8) -> bool {
+    *version == 1
+}
+
+impl Default for VrpCapabilitySharingContract {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            required_capabilities: vec![],
+            offered_capabilities: vec![],
+            redacted_topics: vec![],
+            knowledge_domains_allowed: None,
+            retention_policy: None,
+            max_exchange_size: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum VrpRetentionPolicy {
+    Unlimited,
+    MaxAge { seconds: u64 },
+}
+
+/// The intersection of both participants' authenticated RTX restrictions.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct NegotiatedRtxContract {
+    pub knowledge_domains_allowed: Option<Vec<String>>,
+    pub retention_seconds: Option<u64>,
+    pub max_exchange_size: u64,
 }
 
 /// The payload exchanged during a VRP handshake.
@@ -152,6 +205,9 @@ pub struct VrpTransferAcceptanceConfig {
 /// The result of a VRP validation/handshake process.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct VrpValidationReport {
+    /// None on historical reports or an incompatible contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub negotiated_rtx: Option<NegotiatedRtxContract>,
     /// The resulting alignment status.
     pub alignment_status: VrpAlignmentStatus,
     /// The negotiated transfer scope.

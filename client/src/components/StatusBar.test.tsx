@@ -13,6 +13,8 @@ let identityState: {
 let channelsState: {
   wsConnected: boolean;
   wsAuthRefreshing: boolean;
+  wsSessionState: string;
+  reconnectHere: ReturnType<typeof vi.fn>;
   channels: Array<{ channel_id: string; name: string }>;
 };
 
@@ -78,6 +80,8 @@ describe('StatusBar voice strip', () => {
     channelsState = {
       wsConnected: true,
       wsAuthRefreshing: false,
+      wsSessionState: 'connected',
+      reconnectHere: vi.fn(),
       channels: [{ channel_id: 'chan-1', name: 'General' }],
     };
 
@@ -99,6 +103,16 @@ describe('StatusBar voice strip', () => {
     render(<StatusBar />);
     expect(screen.getByText('Voice Connected')).toBeInTheDocument();
     expect(screen.getByText('General')).toBeInTheDocument();
+  });
+
+  it('explains takeover and transfers ownership only through the visible action', () => {
+    channelsState.wsConnected = false;
+    channelsState.wsSessionState = 'taken_over';
+    render(<StatusBar />);
+    expect(screen.getByText('This identity is active on another device.')).toBeVisible();
+    expect(channelsState.reconnectHere).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Reconnect here' }));
+    expect(channelsState.reconnectHere).toHaveBeenCalledTimes(1);
   });
 
   it('does not render voice strip when not in a call', () => {

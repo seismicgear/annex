@@ -25,9 +25,15 @@
       `transcribe()` once per 20 ms RTP packet — a fork, a model load and an
       inference fifty times a second per speaker — over a window shorter than
       whisper returns anything for. Corrected 2026-09-15: audio is buffered
-      per `(channel, speaker)` and flushed at 2 s or after 700 ms of quiet,
+      per `(channel, speaker)` and flushed at 6 s or after 700 ms without
+      packets from that speaker. The context window was extended from 2 s
+      after actual browser/Whisper sessions exposed repeated word-boundary
+      recognition loss. Idle deadlines are checked per speaker even while
+      another speaker or room stays active,
       with at most two transcriptions in flight per room. The per-invocation
       model is kept; it is the per-*packet* invocation that was wrong.
+      Inference tasks belong to the room transcriber and are canceled with
+      it; closing a room also terminates its pending provider processes.
     - Requires the `whisper` binary to be installed/available on the host.
   - **Mitigation**:
     - Future iterations can integrate `candle-whisper` directly into the binary for better performance and deployment simplicity.

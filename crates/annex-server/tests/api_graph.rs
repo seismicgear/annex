@@ -68,6 +68,7 @@ fn setup_test_app() -> (axum::Router, annex_db::DbPool, tempfile::NamedTempFile)
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
         voice_token_secret: std::sync::Arc::new([0u8; 32]),
+        federation_transport: Default::default(),
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
@@ -299,4 +300,162 @@ async fn the_trust_graph_is_not_readable_without_an_identity() {
         StatusCode::OK,
         "the social graph was served to an anonymous caller",
     );
+}
+
+async fn graph_request(
+    app: &axum::Router,
+    method: &str,
+    uri: &str,
+    caller: Option<&str>,
+) -> (StatusCode, serde_json::Value) {
+    let mut request = Request::builder().method(method).uri(uri);
+    if let Some(caller) = caller {
+        request = request.header("X-Annex-Pseudonym", caller);
+    }
+    let mut request = request.body(Body::empty()).unwrap();
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12345))));
+    let response = app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 1_048_576)
+        .await
+        .unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+    )
+}
+
+#[tokio::test]
+async fn metadata_grants_are_authenticated_owner_scoped_and_immediately_revocable() {
+    let (app, pool, _temp) = setup_test_app();
+    {
+        let conn = pool.get().unwrap();
+        for name in ["owner", "reader", "other"] {
+            conn.execute("INSERT INTO platform_identities(server_id,pseudonym_id,participant_type,active) VALUES(1,?1,'HUMAN',1)", [name]).unwrap();
+            ensure_graph_node(
+                &conn,
+                1,
+                name,
+                NodeType::Human,
+                Some(format!("{{\"owner\":\"{name}\"}}")),
+            )
+            .unwrap();
+        }
+        create_edge(&conn, 1, "owner", "reader", EdgeKind::Connected, 1.0).unwrap();
+        create_edge(&conn, 1, "owner", "other", EdgeKind::Connected, 1.0).unwrap();
+    }
+    for method in ["GET", "PUT", "DELETE"] {
+        let uri = if method == "GET" {
+            "/api/graph/metadata-grants"
+        } else {
+            "/api/graph/metadata-grants/reader"
+        };
+        assert_eq!(
+            graph_request(&app, method, uri, None).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    let (_, own) = graph_request(&app, "GET", "/api/graph/metadata-grants", Some("owner")).await;
+    assert_eq!(own["owner_pseudonym"], "owner");
+    assert_eq!(own["metadata_json"], "{\"owner\":\"owner\"}");
+    assert_eq!(own["grantees"], serde_json::json!([]));
+    let (_, hidden) = graph_request(&app, "GET", "/api/graph/profile/owner", Some("reader")).await;
+    assert!(hidden["metadata_json"].is_null());
+    assert_eq!(
+        graph_request(
+            &app,
+            "PUT",
+            "/api/graph/metadata-grants/owner",
+            Some("owner")
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        graph_request(
+            &app,
+            "PUT",
+            "/api/graph/metadata-grants/missing",
+            Some("owner")
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    let (status, granted) = graph_request(
+        &app,
+        "PUT",
+        "/api/graph/metadata-grants/reader",
+        Some("owner"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(granted["granted"], true);
+    let (_, visible) = graph_request(&app, "GET", "/api/graph/profile/owner", Some("reader")).await;
+    assert_eq!(visible["metadata_json"], own["metadata_json"]);
+    let (_, other) = graph_request(&app, "GET", "/api/graph/profile/owner", Some("other")).await;
+    assert!(other["metadata_json"].is_null());
+    let (_, other_grants) =
+        graph_request(&app, "GET", "/api/graph/metadata-grants", Some("other")).await;
+    assert_eq!(other_grants["owner_pseudonym"], "other");
+    assert_eq!(other_grants["metadata_json"], "{\"owner\":\"other\"}");
+    // Another caller can withdraw only its own grant, never the owner's.
+    assert_eq!(
+        graph_request(
+            &app,
+            "DELETE",
+            "/api/graph/metadata-grants/reader",
+            Some("other")
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let (_, still_visible) =
+        graph_request(&app, "GET", "/api/graph/profile/owner", Some("reader")).await;
+    assert_eq!(still_visible["metadata_json"], own["metadata_json"]);
+    pool.get()
+        .unwrap()
+        .execute(
+            "UPDATE platform_identities SET active=0 WHERE pseudonym_id='reader'",
+            [],
+        )
+        .unwrap();
+    let (_, dormant) =
+        graph_request(&app, "GET", "/api/graph/metadata-grants", Some("owner")).await;
+    assert_eq!(dormant["grantees"], serde_json::json!(["reader"]));
+    assert_eq!(
+        graph_request(
+            &app,
+            "PUT",
+            "/api/graph/metadata-grants/reader",
+            Some("owner")
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        graph_request(
+            &app,
+            "DELETE",
+            "/api/graph/metadata-grants/reader",
+            Some("owner")
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    pool.get()
+        .unwrap()
+        .execute(
+            "UPDATE platform_identities SET active=1 WHERE pseudonym_id='reader'",
+            [],
+        )
+        .unwrap();
+    let (_, revoked) = graph_request(&app, "GET", "/api/graph/profile/owner", Some("reader")).await;
+    assert!(revoked["metadata_json"].is_null());
 }

@@ -3,7 +3,18 @@
  */
 
 import type { FederationPeer, ServerSummary } from '@/types';
-import { request, requestRemote } from './core';
+import { authHeaders, request, requestRemote } from './core';
+
+export interface FederationHistoryGap {
+  originating_server: string;
+  through_seq: number;
+}
+
+export async function getFederationGaps(pseudonymId: string, channelId: string): Promise<FederationHistoryGap[]> {
+  return request<FederationHistoryGap[]>(`/api/channels/${encodeURIComponent(channelId)}/federation-gaps`, {
+    headers: authHeaders(pseudonymId),
+  });
+}
 
 export async function getServerSummary(): Promise<ServerSummary> {
   return request<ServerSummary>('/api/public/server/summary');

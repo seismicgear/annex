@@ -7,14 +7,12 @@
 //! type spoofing (e.g. zip bombs disguised as images).
 
 use crate::{api::ApiError, middleware::IdentityContext, AppState};
-use annex_channels::is_member;
 use annex_observe::EventPayload;
 use axum::{
     extract::{Extension, Multipart, Path},
     response::{IntoResponse, Response},
     Json as AxumJson,
 };
-use rusqlite::OptionalExtension;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -37,27 +35,19 @@ impl UploadCategory {
             Self::File => "file",
         }
     }
-
-    /// Returns the subdirectory name for file storage.
-    fn subdir(self) -> &'static str {
-        match self {
-            Self::Image => "images",
-            Self::Video => "videos",
-            Self::File => "files",
-        }
-    }
 }
 
 // ── Allowed Content Types ──
 
 /// Allowed image MIME types.
-const ALLOWED_IMAGE_TYPES: &[&str] = &["image/jpeg", "image/png", "image/gif", "image/webp"];
+pub(crate) const ALLOWED_IMAGE_TYPES: &[&str] =
+    &["image/jpeg", "image/png", "image/gif", "image/webp"];
 
 /// Allowed video MIME types.
-const ALLOWED_VIDEO_TYPES: &[&str] = &["video/mp4", "video/webm", "video/quicktime"];
+pub(crate) const ALLOWED_VIDEO_TYPES: &[&str] = &["video/mp4", "video/webm", "video/quicktime"];
 
 /// Blocked MIME types that are never allowed (executables, etc.).
-const BLOCKED_TYPES: &[&str] = &[
+pub(crate) const BLOCKED_TYPES: &[&str] = &[
     "application/x-executable",
     "application/x-dosexec",
     "application/x-sharedlib",
@@ -69,7 +59,7 @@ const MAX_SERVER_IMAGE_SIZE: usize = 10 * 1024 * 1024;
 // ── Content Type Detection ──
 
 /// Determines file extension from content type.
-fn ext_from_content_type(ct: &str) -> &str {
+pub(crate) fn ext_from_content_type(ct: &str) -> &str {
     match ct {
         "image/jpeg" => "jpg",
         "image/png" => "png",
@@ -88,7 +78,7 @@ fn ext_from_content_type(ct: &str) -> &str {
 /// Detects content type from the first bytes of a file (magic-byte detection).
 ///
 /// Returns `(mime_type, category)` if recognized, or `None` for unknown formats.
-fn detect_content_type(data: &[u8]) -> Option<(&'static str, UploadCategory)> {
+pub(crate) fn detect_content_type(data: &[u8]) -> Option<(&'static str, UploadCategory)> {
     // Images
     if data.len() >= 2 && data[0] == 0xFF && data[1] == 0xD8 {
         return Some(("image/jpeg", UploadCategory::Image));
@@ -143,6 +133,7 @@ fn detect_content_type(data: &[u8]) -> Option<(&'static str, UploadCategory)> {
 }
 
 /// Returns the maximum upload size in bytes for a given category based on server policy.
+#[cfg(test)]
 fn max_size_for_category(policy: &annex_types::ServerPolicy, category: UploadCategory) -> usize {
     let mb = match category {
         UploadCategory::Image => policy.max_image_size_mb,
@@ -153,6 +144,7 @@ fn max_size_for_category(policy: &annex_types::ServerPolicy, category: UploadCat
 }
 
 /// Checks whether a given upload category is enabled in the server policy.
+#[cfg(test)]
 fn is_category_enabled(policy: &annex_types::ServerPolicy, category: UploadCategory) -> bool {
     match category {
         UploadCategory::Image => policy.images_enabled,
@@ -163,140 +155,26 @@ fn is_category_enabled(policy: &annex_types::ServerPolicy, category: UploadCateg
 
 // ── EXIF / Metadata Stripping ──
 
-/// Strips EXIF and other metadata from JPEG files without re-encoding.
-///
-/// Removes APP1 (EXIF/XMP), APP12 (Ducky), APP13 (IPTC), and COM segments
-/// while preserving image data and quality.
-fn strip_jpeg_metadata(data: &[u8]) -> Vec<u8> {
-    if data.len() < 2 || data[0] != 0xFF || data[1] != 0xD8 {
-        return data.to_vec();
-    }
+mod image_privacy;
 
-    let mut result = vec![0xFF, 0xD8];
-    let mut i = 2;
-
-    while i < data.len().saturating_sub(1) {
-        if data[i] != 0xFF {
-            // Not at a marker — copy remaining data as-is
-            result.extend_from_slice(&data[i..]);
-            break;
-        }
-
-        let marker = data[i + 1];
-
-        // SOS (Start of Scan) — everything after this is image data
-        if marker == 0xDA {
-            result.extend_from_slice(&data[i..]);
-            break;
-        }
-
-        // Markers without length (RST0-RST7, SOI, EOI)
-        if marker == 0xD8 || marker == 0xD9 || (0xD0..=0xD7).contains(&marker) {
-            result.push(0xFF);
-            result.push(marker);
-            i += 2;
-            continue;
-        }
-
-        // Read segment length (2 bytes, big-endian)
-        if i + 3 >= data.len() {
-            break;
-        }
-        let seg_len = ((data[i + 2] as usize) << 8) | (data[i + 3] as usize);
-        let total_len = seg_len + 2; // includes the FF xx marker bytes
-
-        if i + total_len > data.len() {
-            // Corrupted segment — copy rest as-is
-            result.extend_from_slice(&data[i..]);
-            break;
-        }
-
-        // Strip metadata markers:
-        // APP1  (0xE1) = EXIF, XMP
-        // APP12 (0xEC) = Ducky
-        // APP13 (0xED) = IPTC / Photoshop
-        // COM   (0xFE) = Comment
-        let strip = matches!(marker, 0xE1 | 0xEC | 0xED | 0xFE);
-
-        if !strip {
-            result.extend_from_slice(&data[i..i + total_len]);
-        }
-
-        i += total_len;
-    }
-
-    result
+/// Remove descriptive/private image metadata without re-encoding pixels or
+/// flattening animation. Required color profiles and presentation controls stay.
+/// Malformed containers are refused before any file or upload row is persisted.
+pub(crate) fn strip_metadata(data: &[u8], content_type: &str) -> Result<Vec<u8>, ApiError> {
+    let result = match content_type {
+        "image/jpeg" => image_privacy::jpeg(data),
+        "image/png" => image_privacy::png(data),
+        "image/gif" => image_privacy::gif(data),
+        "image/webp" => image_privacy::webp(data),
+        _ => Ok(data.to_vec()),
+    };
+    result.map_err(|error| ApiError::BadRequest(error.into()))
 }
-
-/// Strips metadata chunks from PNG files without re-encoding.
-///
-/// Removes tEXt, iTXt, zTXt, and eXIf chunks while preserving
-/// all image data chunks.
-fn strip_png_metadata(data: &[u8]) -> Vec<u8> {
-    let png_sig: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
-
-    if data.len() < 8 || data[..8] != png_sig {
-        return data.to_vec();
-    }
-
-    let mut result = png_sig.to_vec();
-    let mut i = 8;
-
-    while i + 12 <= data.len() {
-        let length = u32::from_be_bytes([data[i], data[i + 1], data[i + 2], data[i + 3]]) as usize;
-        let chunk_type = &data[i + 4..i + 8];
-        let total = match 12usize.checked_add(length) {
-            Some(t) => t,
-            None => break, // Malformed chunk — stop processing
-        };
-
-        if i + total > data.len() {
-            // Partial chunk — copy rest
-            result.extend_from_slice(&data[i..]);
-            break;
-        }
-
-        // Strip metadata chunks
-        let strip = chunk_type == b"tEXt"
-            || chunk_type == b"iTXt"
-            || chunk_type == b"zTXt"
-            || chunk_type == b"eXIf";
-
-        if !strip {
-            result.extend_from_slice(&data[i..i + total]);
-        }
-
-        i += total;
-    }
-
-    // Copy any trailing bytes
-    if i < data.len() {
-        result.extend_from_slice(&data[i..]);
-    }
-
-    result
-}
-
-/// Strips metadata from an image based on its content type.
-/// Non-image types are returned as-is.
-fn strip_metadata(data: &[u8], content_type: &str) -> Vec<u8> {
-    match content_type {
-        "image/jpeg" => strip_jpeg_metadata(data),
-        "image/png" => strip_png_metadata(data),
-        // GIF, WebP, videos, files: pass through
-        _ => data.to_vec(),
-    }
-}
-
-/// Hard ceiling for streaming multipart reads (50 MiB). Prevents any
-/// single upload field from consuming unbounded memory before category-
-/// specific limits are checked. The per-category limits may be lower.
-const UPLOAD_STREAM_CEILING: usize = 50 * 1024 * 1024;
 
 /// Reads a multipart field in chunks, enforcing a byte limit during
 /// streaming. Returns `Err` as soon as the limit is exceeded, preventing
 /// oversized payloads from being fully buffered into RAM.
-async fn read_field_capped(
+pub(crate) async fn read_field_capped(
     field: &mut axum::extract::multipart::Field<'_>,
     max_bytes: usize,
 ) -> Result<Vec<u8>, ApiError> {
@@ -326,127 +204,94 @@ pub async fn upload_server_image_handler(
     Extension(IdentityContext(identity)): Extension<IdentityContext>,
     mut multipart: Multipart,
 ) -> Result<Response, ApiError> {
-    if !identity.can_moderate {
-        return Err(ApiError::Forbidden(
-            "insufficient permissions to upload server image".to_string(),
-        ));
-    }
-
-    // Extract the file field from multipart
+    let current = state.clone();
+    let actor = identity.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = current
+            .pool
+            .get()
+            .map_err(|error| ApiError::InternalServerError(error.to_string()))?;
+        crate::services::upload_service::authorize_server_image(
+            &conn,
+            &current,
+            &actor.pseudonym_id,
+            actor.token_epoch,
+        )
+        .map_err(ApiError::from)
+    })
+    .await
+    .map_err(|error| ApiError::InternalServerError(error.to_string()))??;
     let mut field = multipart
         .next_field()
         .await
-        .map_err(|e| ApiError::BadRequest(format!("multipart error: {e}")))?
-        .ok_or_else(|| ApiError::BadRequest("no file provided".to_string()))?;
-
-    // Client-declared content type is intentionally ignored in favour of
-    // magic-byte detection (see detected_ct below).
-    let _declared_ct = field
-        .content_type()
-        .unwrap_or("application/octet-stream")
-        .to_string();
-
+        .map_err(|error| ApiError::BadRequest(error.to_string()))?
+        .ok_or_else(|| ApiError::BadRequest("no file provided".into()))?;
+    if field.name() != Some("file") {
+        return Err(ApiError::BadRequest("expected one image file field".into()));
+    }
     let original_filename = field.file_name().unwrap_or("image").to_string();
-
-    // Stream with size enforcement — rejects before fully buffering
+    if original_filename.len() > 512 || original_filename.contains('\0') {
+        return Err(ApiError::BadRequest("invalid filename".into()));
+    }
     let data = read_field_capped(&mut field, MAX_SERVER_IMAGE_SIZE).await?;
-    let data = axum::body::Bytes::from(data);
-
-    // Detect actual content type from magic bytes (server images must be images)
-    let (detected_ct, category) = detect_content_type(&data)
-        .ok_or_else(|| ApiError::BadRequest("unsupported file format".to_string()))?;
-
-    if category != UploadCategory::Image || !ALLOWED_IMAGE_TYPES.contains(&detected_ct) {
+    drop(field);
+    if multipart
+        .next_field()
+        .await
+        .map_err(|error| ApiError::BadRequest(error.to_string()))?
+        .is_some()
+    {
         return Err(ApiError::BadRequest(
-            "server image must be JPEG, PNG, GIF, or WebP".to_string(),
+            "only one server image is supported".into(),
         ));
     }
-
-    // Strip metadata
-    let cleaned = strip_metadata(&data, detected_ct);
-
-    // Save to disk
-    let ext = ext_from_content_type(detected_ct);
+    let (detected_ct, category) = detect_content_type(&data)
+        .ok_or_else(|| ApiError::BadRequest("unsupported file format".into()))?;
+    if category != UploadCategory::Image || !ALLOWED_IMAGE_TYPES.contains(&detected_ct) {
+        return Err(ApiError::BadRequest(
+            "server image must be JPEG, PNG, GIF, or WebP".into(),
+        ));
+    }
+    let cleaned = strip_metadata(&data, detected_ct)?;
     let upload_id = Uuid::new_v4().to_string();
-    let filename = format!("server_{upload_id}.{ext}");
-    let upload_dir = state.upload_dir.clone();
-    let server_dir = format!("{upload_dir}/server");
-
-    tokio::fs::create_dir_all(&server_dir)
-        .await
-        .map_err(|e| ApiError::InternalServerError(format!("failed to create upload dir: {e}")))?;
-
-    let file_path = format!("{server_dir}/{filename}");
-    tokio::fs::write(&file_path, &cleaned)
-        .await
-        .map_err(|e| ApiError::InternalServerError(format!("failed to write file: {e}")))?;
-
-    let image_url = format!("/uploads/server/{filename}");
-
-    // Update database
-    let state_clone = state.clone();
-    let image_url_clone = image_url.clone();
-    let upload_id_clone = upload_id.clone();
-    let original_filename_clone = original_filename.clone();
-    // Store the magic-byte-detected MIME type, not the client-declared one,
-    // to ensure downstream consumers see a consistent, verified content type.
-    let content_type_clone = detected_ct.to_string();
-    let size = cleaned.len() as i64;
-    let moderator = identity.pseudonym_id.clone();
-
-    tokio::task::spawn_blocking(move || {
-        let conn = state_clone.pool.get().map_err(|e| {
-            ApiError::InternalServerError(format!("db connection failed: {e}"))
-        })?;
-
-        // Update server image URL
-        conn.execute(
-            "UPDATE servers SET image_url = ?1 WHERE id = ?2",
-            rusqlite::params![image_url_clone, state_clone.server_id],
-        )
-        .map_err(|e| ApiError::InternalServerError(format!("failed to update server: {e}")))?;
-
-        // Record upload
-        conn.execute(
-            "INSERT INTO uploads (server_id, upload_id, uploader_pseudonym, original_filename, content_type, size_bytes, purpose, category)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'server_image', 'image')",
-            rusqlite::params![
-                state_clone.server_id,
-                upload_id_clone,
-                moderator,
-                original_filename_clone,
-                content_type_clone,
-                size,
-            ],
-        )
-        .map_err(|e| ApiError::InternalServerError(format!("failed to record upload: {e}")))?;
-
-        let observe_payload = EventPayload::ModerationAction {
-            moderator_pseudonym: moderator.clone(),
-            action_type: "server_image_upload".to_string(),
-            target_pseudonym: None,
-            description: "Server image updated".to_string(),
-        };
-        crate::emit_and_broadcast(
-            &conn,
-            state_clone.server_id,
-            &moderator,
-            &observe_payload,
-            &state_clone.observe_tx,
-            &state_clone.signing_key,
-        );
-
-        Ok::<(), ApiError>(())
+    let metadata = crate::services::upload_service::UploadMetadata {
+        upload_id: upload_id.clone(),
+        channel_id: String::new(),
+        uploader: identity.pseudonym_id.clone(),
+        token_epoch: identity.token_epoch,
+        category: "image".into(),
+        original_filename,
+        content_type: detected_ct.into(),
+        extension: ext_from_content_type(detected_ct).into(),
+        encrypted_epoch: None,
+    };
+    let image_url = tokio::task::spawn_blocking(move || {
+        let (url, _) =
+            crate::services::upload_service::persist_server_image(&state, &metadata, &cleaned)?;
+        if let Ok(conn) = state.pool.get() {
+            let payload = EventPayload::ModerationAction {
+                moderator_pseudonym: metadata.uploader.clone(),
+                action_type: "server_image_upload".into(),
+                target_pseudonym: None,
+                description: "Server image updated".into(),
+            };
+            crate::emit_and_broadcast(
+                &conn,
+                state.server_id,
+                &metadata.uploader,
+                &payload,
+                &state.observe_tx,
+                &state.signing_key,
+            );
+        }
+        Ok::<_, ApiError>(url)
     })
     .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
-
-    Ok(AxumJson(serde_json::json!({
-        "status": "ok",
-        "upload_id": upload_id,
-        "url": image_url,
-    }))
-    .into_response())
+    .map_err(|error| ApiError::InternalServerError(error.to_string()))??;
+    Ok(
+        AxumJson(serde_json::json!({"status":"ok","upload_id":upload_id,"url":image_url}))
+            .into_response(),
+    )
 }
 
 /// Handler for `POST /api/channels/{channelId}/upload`.
@@ -455,227 +300,12 @@ pub async fn upload_server_image_handler(
 /// Automatically strips EXIF and other metadata from images for privacy.
 /// Enforces per-category size limits and enabled/disabled toggles from server policy.
 pub async fn upload_chat_handler(
-    Extension(state): Extension<Arc<AppState>>,
-    Extension(IdentityContext(identity)): Extension<IdentityContext>,
-    Path(channel_id): Path<String>,
-    mut multipart: Multipart,
+    state: Extension<Arc<AppState>>,
+    identity: Extension<IdentityContext>,
+    channel: Path<String>,
+    multipart: Multipart,
 ) -> Result<Response, ApiError> {
-    // Check channel membership
-    let state_clone = state.clone();
-    let channel_id_clone = channel_id.clone();
-    let pseudonym = identity.pseudonym_id.clone();
-
-    // Membership AND the channel's encryption mode, in one round trip. They are
-    // asked together because the answer to the second one changes whether this
-    // request may proceed at all.
-    let (is_member_result, e2e_enabled) = tokio::task::spawn_blocking(move || {
-        let conn = state_clone
-            .pool
-            .get()
-            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
-        let member = is_member(&conn, state_clone.server_id, &channel_id_clone, &pseudonym)
-            .map_err(|e| ApiError::InternalServerError(format!("membership check failed: {e}")))?;
-        let e2e: i64 = conn
-            .query_row(
-                "SELECT e2e_enabled FROM channels WHERE server_id = ?1 AND channel_id = ?2",
-                rusqlite::params![state_clone.server_id, &channel_id_clone],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|e| ApiError::InternalServerError(format!("db query failed: {e}")))?
-            .unwrap_or(0);
-        Ok::<_, ApiError>((member, e2e != 0))
-    })
-    .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
-
-    // Refuse attachments in an end-to-end encrypted channel.
-    //
-    // The composer encrypts the MESSAGE and then uploads the attachment
-    // through this endpoint as ordinary multipart form data. Encrypting a
-    // message that contains a link does not encrypt the file behind the link:
-    // the server received, stripped metadata from, and wrote to disk the
-    // readable original, in a channel whose whole presentation to the user is
-    // that the server cannot read it.
-    //
-    // That is a promise broken silently, which is worse than a feature that is
-    // missing. Refusing is the honest state until the client encrypts
-    // attachments under the channel key the way it already encrypts bodies —
-    // at which point this gate becomes a check that the upload IS encrypted,
-    // not that it is absent.
-    //
-    // Enforced on the SERVER, not only in the composer: a client that has not
-    // been updated, or one that simply posts to this endpoint, must not be
-    // able to put a plaintext file in an encrypted channel.
-    if e2e_enabled {
-        return Err(ApiError::BadRequest(
-            "attachments are not yet supported in end-to-end encrypted channels. \
-             The message body is encrypted but the file would be uploaded readable, \
-             so the server would hold in plaintext exactly what this channel promises \
-             it cannot see."
-                .to_string(),
-        ));
-    }
-
-    if !is_member_result {
-        return Err(ApiError::Forbidden(
-            "not a member of this channel".to_string(),
-        ));
-    }
-
-    // Read current server policy for limits
-    let policy = state
-        .policy
-        .read()
-        .map_err(|_| ApiError::InternalServerError("policy lock poisoned".to_string()))?
-        .clone();
-
-    // Extract file field
-    let mut field = multipart
-        .next_field()
-        .await
-        .map_err(|e| ApiError::BadRequest(format!("multipart error: {e}")))?
-        .ok_or_else(|| ApiError::BadRequest("no file provided".to_string()))?;
-
-    let _declared_ct = field
-        .content_type()
-        .unwrap_or("application/octet-stream")
-        .to_string();
-
-    let original_filename = field.file_name().unwrap_or("upload").to_string();
-
-    // Stream with size enforcement — rejects before fully buffering.
-    // Uses a hard ceiling; per-category limits are enforced after detection.
-    let data = read_field_capped(&mut field, UPLOAD_STREAM_CEILING).await?;
-    let data = axum::body::Bytes::from(data);
-
-    // Detect actual content type from magic bytes.
-    // When magic bytes are unrecognized, treat the file as a generic binary
-    // regardless of the declared Content-Type header. This prevents:
-    // (1) memory leaks from the previous Box::leak approach, and
-    // (2) declared-MIME bypass of magic byte verification.
-    let (detected_ct, category) =
-        detect_content_type(&data).unwrap_or(("application/octet-stream", UploadCategory::File));
-
-    // Check for blocked types
-    if BLOCKED_TYPES.contains(&detected_ct) {
-        return Err(ApiError::BadRequest(format!(
-            "file type not allowed: {detected_ct}"
-        )));
-    }
-
-    // Check if this category is enabled
-    if !is_category_enabled(&policy, category) {
-        return Err(ApiError::BadRequest(format!(
-            "{} uploads are disabled on this server",
-            category.as_str()
-        )));
-    }
-
-    // Enforce per-category size limit
-    let max_size = max_size_for_category(&policy, category);
-    if data.len() > max_size {
-        return Err(ApiError::BadRequest(format!(
-            "file too large: {} bytes (max {} bytes for {})",
-            data.len(),
-            max_size,
-            category.as_str()
-        )));
-    }
-
-    // Validate specific types within categories
-    if category == UploadCategory::Image && !ALLOWED_IMAGE_TYPES.contains(&detected_ct) {
-        return Err(ApiError::BadRequest(format!(
-            "unsupported image type: {detected_ct}"
-        )));
-    }
-    if category == UploadCategory::Video && !ALLOWED_VIDEO_TYPES.contains(&detected_ct) {
-        return Err(ApiError::BadRequest(format!(
-            "unsupported video type: {detected_ct}"
-        )));
-    }
-
-    // Strip metadata for images; videos and files pass through
-    let cleaned = strip_metadata(&data, detected_ct);
-    let stripped_bytes = data.len() - cleaned.len();
-
-    // Save to disk (category-specific subdirectory)
-    let ext = ext_from_content_type(detected_ct);
-    let upload_id = Uuid::new_v4().to_string();
-    let safe_filename = format!("{upload_id}.{ext}");
-    let upload_dir = state.upload_dir.clone();
-    let chat_dir = format!("{}/chat/{}", upload_dir, category.subdir());
-
-    tokio::fs::create_dir_all(&chat_dir)
-        .await
-        .map_err(|e| ApiError::InternalServerError(format!("failed to create upload dir: {e}")))?;
-
-    let file_path = format!("{chat_dir}/{safe_filename}");
-    tokio::fs::write(&file_path, &cleaned)
-        .await
-        .map_err(|e| ApiError::InternalServerError(format!("failed to write file: {e}")))?;
-
-    let upload_url = format!("/uploads/chat/{}/{}", category.subdir(), safe_filename);
-
-    // Record in database
-    let state_clone = state.clone();
-    let upload_id_clone = upload_id.clone();
-    let original_filename_clone = original_filename.clone();
-    let detected_ct_str = detected_ct.to_string();
-    let category_str = category.as_str().to_string();
-    let size = cleaned.len() as i64;
-    let uploader = identity.pseudonym_id.clone();
-    let channel_id_db = channel_id.clone();
-
-    tokio::task::spawn_blocking(move || {
-        let conn = state_clone.pool.get().map_err(|e| {
-            ApiError::InternalServerError(format!("db connection failed: {e}"))
-        })?;
-
-        conn.execute(
-            "INSERT INTO uploads (server_id, upload_id, uploader_pseudonym, original_filename, content_type, size_bytes, purpose, channel_id, category)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'chat', ?7, ?8)",
-            rusqlite::params![
-                state_clone.server_id,
-                upload_id_clone,
-                uploader,
-                original_filename_clone,
-                detected_ct_str,
-                size,
-                channel_id_db,
-                category_str,
-            ],
-        )
-        .map_err(|e| ApiError::InternalServerError(format!("failed to record upload: {e}")))?;
-
-        Ok::<(), ApiError>(())
-    })
-    .await
-    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
-
-    tracing::info!(
-        upload_id = %upload_id,
-        channel_id = %channel_id,
-        uploader = %identity.pseudonym_id,
-        original_filename = %original_filename,
-        content_type = %detected_ct,
-        category = %category.as_str(),
-        size_bytes = size,
-        metadata_stripped_bytes = stripped_bytes,
-        "chat upload completed"
-    );
-
-    Ok(AxumJson(serde_json::json!({
-        "status": "ok",
-        "upload_id": upload_id,
-        "url": upload_url,
-        "filename": original_filename,
-        "content_type": detected_ct,
-        "category": category.as_str(),
-        "size": size,
-        "metadata_stripped_bytes": stripped_bytes,
-    }))
-    .into_response())
+    crate::api_upload_lifecycle::upload_chat_handler(state, identity, channel, multipart).await
 }
 
 /// Handler for `GET /api/admin/server/image`.
@@ -716,64 +346,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn strip_jpeg_preserves_image_data() {
-        // Minimal JPEG: SOI + APP0 + SOS + EOI
-        let mut jpeg = vec![0xFF, 0xD8]; // SOI
-                                         // APP0 (keep)
-        jpeg.extend_from_slice(&[0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00]);
-        // APP1/EXIF (strip)
-        jpeg.extend_from_slice(&[0xFF, 0xE1, 0x00, 0x06, 0x45, 0x78, 0x69, 0x66]);
-        // SOS + image data
-        jpeg.extend_from_slice(&[0xFF, 0xDA, 0x00, 0x02, 0x01, 0x02, 0x03]);
-
-        let stripped = strip_jpeg_metadata(&jpeg);
-
-        // Should contain SOI
-        assert_eq!(stripped[0], 0xFF);
-        assert_eq!(stripped[1], 0xD8);
-        // Should contain APP0
-        assert!(stripped.windows(2).any(|w| w == [0xFF, 0xE0]));
-        // Should NOT contain APP1
-        assert!(!stripped.windows(2).any(|w| w == [0xFF, 0xE1]));
-        // Should contain SOS
-        assert!(stripped.windows(2).any(|w| w == [0xFF, 0xDA]));
-    }
-
-    #[test]
-    fn strip_png_removes_text_chunks() {
-        let sig = [137, 80, 78, 71, 13, 10, 26, 10];
-        let mut png = sig.to_vec();
-
-        // IHDR chunk (keep) - 13 bytes data
-        let ihdr_data = [0u8; 13];
-        png.extend_from_slice(&(13u32).to_be_bytes()); // length
-        png.extend_from_slice(b"IHDR");
-        png.extend_from_slice(&ihdr_data);
-        png.extend_from_slice(&[0, 0, 0, 0]); // CRC placeholder
-
-        // tEXt chunk (strip) - 5 bytes data
-        let text_data = [0u8; 5];
-        png.extend_from_slice(&(5u32).to_be_bytes());
-        png.extend_from_slice(b"tEXt");
-        png.extend_from_slice(&text_data);
-        png.extend_from_slice(&[0, 0, 0, 0]);
-
-        // IEND chunk (keep) - 0 bytes data
-        png.extend_from_slice(&(0u32).to_be_bytes());
-        png.extend_from_slice(b"IEND");
-        png.extend_from_slice(&[0, 0, 0, 0]);
-
-        let stripped = strip_png_metadata(&png);
-
-        // Should start with PNG signature
-        assert_eq!(&stripped[..8], &sig);
-        // Should contain IHDR and IEND
-        assert!(stripped.windows(4).any(|w| w == *b"IHDR"));
-        assert!(stripped.windows(4).any(|w| w == *b"IEND"));
-        // Should NOT contain tEXt
-        assert!(!stripped.windows(4).any(|w| w == *b"tEXt"));
-        // Should be smaller
-        assert!(stripped.len() < png.len());
+    fn image_metadata_errors_are_typed_before_persistence() {
+        for (mime, data) in [
+            ("image/jpeg", b"\xff\xd8".as_slice()),
+            ("image/png", b"\x89PNG\r\n\x1a\n".as_slice()),
+            ("image/gif", b"GIF89a".as_slice()),
+            ("image/webp", b"RIFF\x04\0\0\0WEBP".as_slice()),
+        ] {
+            assert!(
+                matches!(strip_metadata(data, mime), Err(ApiError::BadRequest(_))),
+                "{mime}"
+            );
+        }
+        assert_eq!(
+            strip_metadata(b"ordinary attachment", "application/octet-stream").unwrap(),
+            b"ordinary attachment"
+        );
     }
 
     #[test]

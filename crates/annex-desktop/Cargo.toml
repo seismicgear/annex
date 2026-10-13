@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 description = "Annex desktop application — Tauri wrapper for the Annex server and client."
 
+[features]
+# Enables the embedded frontend for packaged builds and native acceptance;
+# development without this feature continues to use Tauri's Vite dev URL.
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

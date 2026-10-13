@@ -49,7 +49,7 @@ function session(identity: string, senders: string[], audioCount = 3): WebRtcSes
     remoteVideoTracks: senders.map((sender, i) => ({
       id: `video-${sender}-${i}`,
       sender,
-      track: { readyState: 'live', muted: false } as unknown as MediaStreamTrack,
+      track: Object.assign(new EventTarget(), { readyState: 'live', muted: false }) as unknown as MediaStreamTrack,
       stream: {} as MediaStream,
     })),
     remoteAudioTracks: Array.from({ length: audioCount }, (_, i) => ({
@@ -64,6 +64,7 @@ function session(identity: string, senders: string[], audioCount = 3): WebRtcSes
 // to attach the track to a <video>. The grid's naming logic is what is under
 // test here, so a constructor stub is enough.
 beforeEach(() => {
+  vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue();
   vi.stubGlobal(
     'MediaStream',
     class {

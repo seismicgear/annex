@@ -1,10 +1,10 @@
-//! Comprehensive tests for the WebSocket VoiceIntent handler.
+//! Component/process-protocol tests for the WebSocket VoiceIntent handler.
 //!
-//! Covers every code path in the VoiceIntent arm of `api_ws.rs`:
+//! Covers these bounded paths (live inference and receiver audio are separate):
 //! - Authorization (only AI agents may use VoiceIntent)
 //! - Channel membership check (allowed, denied, error)
 //! - Voice profile lookup with default fallback
-//! - TTS synthesis success and failure
+//! - Provider command completion and failure using deterministic PCM fixtures
 //! - Voice client creation and audio publishing
 //! - Voice session read/write lock interaction
 
@@ -25,7 +25,8 @@ use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessa
 /// Shared setup that creates an AppState with a mock TTS binary and model file.
 ///
 /// The mock piper script reads stdin and writes predictable PCM data to stdout.
-/// This allows the full VoiceIntent→TTS→VoiceClient→publish pipeline to succeed.
+/// This checks handler/provider/session lifecycle, not speech inference or an
+/// independently receiving WebRTC peer.
 async fn setup_app_with_mock_tts(
     temp_dir: &tempfile::TempDir,
 ) -> (axum::Router, annex_db::DbPool, Arc<AppState>) {
@@ -45,32 +46,41 @@ async fn setup_app_with_mock_tts(
 
     let tree = MerkleTree::new(20).expect("failed to create merkle tree");
 
-    // Create mock piper binary that reads stdin and writes raw bytes to stdout
-    let mock_piper = temp_dir.path().join("mock_piper.sh");
-    tokio::fs::write(
-        &mock_piper,
-        "#!/bin/sh\ncat > /dev/null\nprintf 'MOCK_PCM_AUDIO_DATA_16BIT'",
-    )
-    .await
-    .expect("failed to write mock piper script");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = tokio::fs::metadata(&mock_piper)
-            .await
-            .expect("mock piper metadata")
-            .permissions();
-        perms.set_mode(0o755);
-        tokio::fs::set_permissions(&mock_piper, perms)
-            .await
-            .expect("failed to set mock piper permissions");
-    }
+    // Real subprocess I/O with deterministic valid 16-bit PCM; this is a
+    // protocol test, not evidence of speech synthesis quality.
+    let mock_piper = common::process_fixture::python_process(
+        temp_dir.path(),
+        "mock_piper",
+        r#"import argparse, json, pathlib, sys
+parser = argparse.ArgumentParser()
+parser.add_argument('--model', required=True)
+parser.add_argument('--config', required=True)
+parser.add_argument('--output_raw', action='store_true')
+parser.add_argument('--length_scale', type=float, required=True)
+args = parser.parse_args()
+assert args.output_raw and args.length_scale == 1.0
+assert pathlib.Path(args.model).read_bytes() == b'dummy model data'
+assert json.loads(pathlib.Path(args.config).read_text())['audio']['sample_rate'] == 16000
+text = sys.stdin.buffer.read().decode('utf-8')
+assert text.strip()
+sys.stdout.buffer.write(bytes(640))
+sys.stdout.buffer.flush()
+with pathlib.Path(__file__).with_name('provider-calls.jsonl').open('a', encoding='utf-8') as receipt:
+    receipt.write(json.dumps({'text': text, 'samples': 320, 'sample_rate': 16000}) + '\n')
+"#,
+    );
 
     // Create a dummy model file (piper checks existence)
     let model_file = temp_dir.path().join("test_model.onnx");
     tokio::fs::write(&model_file, b"dummy model data")
         .await
         .expect("failed to write dummy model file");
+    tokio::fs::write(
+        temp_dir.path().join("test_model.onnx.json"),
+        br#"{"audio":{"sample_rate":16000}}"#,
+    )
+    .await
+    .unwrap();
 
     let webrtc_config =
         annex_voice::WebRtcConfig::new("http://localhost:7880", "devkey", "devsecret");
@@ -123,6 +133,7 @@ async fn setup_app_with_mock_tts(
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
         voice_token_secret: std::sync::Arc::new([0u8; 32]),
+        federation_transport: Default::default(),
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
@@ -132,6 +143,89 @@ async fn setup_app_with_mock_tts(
     };
 
     (app(state.clone()), pool, Arc::new(state))
+}
+
+/// The identity is a controlled authentication fixture; the active agent
+/// registration and ledger reference come from the actual handshake handler.
+async fn register_voice_agent(app: &axum::Router, pseudonym: &str) {
+    use tower::ServiceExt;
+    let token = annex_server::api_ws::generate_session_token(
+        pseudonym,
+        &[0; 32],
+        annex_server::api_ws::SESSION_TOKEN_TTL_SECS,
+        0,
+    );
+    let handshake = annex_vrp::VrpFederationHandshake {
+        anchor_snapshot: annex_vrp::VrpAnchorSnapshot::new(&[], &[]).unwrap(),
+        capability_contract: annex_vrp::VrpCapabilitySharingContract::default(),
+        scorer: None,
+    };
+    let mut request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/api/vrp/agent-handshake")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .body(axum::body::Body::from(
+            json!({"pseudonymId": pseudonym, "handshake": handshake}).to_string(),
+        ))
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(axum::extract::ConnectInfo(SocketAddr::from((
+            [127, 0, 0, 1],
+            12345,
+        ))));
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let report: Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), 16384)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(report["handshakeRef"]
+        .as_str()
+        .unwrap()
+        .starts_with("vrp:1:"));
+    assert_eq!(report["alignment_status"], "Aligned");
+}
+
+/// Wait for positive process and in-process room evidence, never infer success
+/// from a socket timeout. A remote receiver is qualified by the live lane.
+async fn wait_for_provider_session(
+    state: &Arc<AppState>,
+    dir: &std::path::Path,
+    pseudonym: &str,
+    channel: &str,
+    calls: usize,
+) {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let recorded = std::fs::read_to_string(dir.join("provider-calls.jsonl"))
+                .map(|text| text.lines().filter(|line| !line.is_empty()).count())
+                .unwrap_or(0);
+            let connected = state
+                .voice_sessions
+                .read()
+                .unwrap()
+                .get(&(pseudonym.to_owned(), channel.to_owned()))
+                .is_some_and(|client| client.is_connected());
+            if recorded >= calls
+                && connected
+                && state
+                    .voice_service
+                    .participant_ids(channel)
+                    .await
+                    .iter()
+                    .any(|id| id == pseudonym)
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("provider completion and live agent room were not established");
 }
 
 /// Helper: start the server, return address.
@@ -205,8 +299,8 @@ async fn test_voice_intent_non_agent_rejected() {
     {
         let conn = pool.get().expect("pool error");
         conn.execute(
-            "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active)
-             VALUES (1, 'human-1', 'HUMAN', 1)",
+            "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active, can_voice)
+             VALUES (1, 'human-1', 'HUMAN', 1, 1)",
             [],
         )
         .expect("failed to insert human identity");
@@ -259,8 +353,8 @@ async fn test_voice_intent_non_member_rejected() {
     {
         let conn = pool.get().expect("pool error");
         conn.execute(
-            "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active)
-             VALUES (1, 'agent-nomem', 'AI_AGENT', 1)",
+            "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active, can_voice)
+             VALUES (1, 'agent-nomem', 'AI_AGENT', 1, 1)",
             [],
         )
         .expect("failed to insert agent identity");
@@ -304,7 +398,6 @@ async fn test_voice_intent_non_member_rejected() {
 // Test: Full happy path - TTS succeeds, voice client created, audio published
 // ---------------------------------------------------------------------------
 #[tokio::test]
-#[ignore = "requires WebRTC server running on localhost:7880"]
 async fn test_voice_intent_tts_success_full_pipeline() {
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
     let (app, pool, state) = setup_app_with_mock_tts(&temp_dir).await;
@@ -313,8 +406,8 @@ async fn test_voice_intent_tts_success_full_pipeline() {
     {
         let conn = pool.get().expect("pool error");
         conn.execute(
-            "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active)
-             VALUES (1, 'agent-voice', 'AI_AGENT', 1)",
+            "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active, can_voice)
+             VALUES (1, 'agent-voice', 'AI_AGENT', 1, 1)",
             [],
         )
         .expect("failed to insert agent identity");
@@ -335,6 +428,7 @@ async fn test_voice_intent_tts_success_full_pipeline() {
         add_member(&conn, 1, "voice-happy", "agent-voice").expect("failed to add member");
     }
 
+    register_voice_agent(&app, "agent-voice").await;
     let addr = start_server(app).await;
     let mut socket = connect_ws(addr, "agent-voice").await;
 
@@ -355,7 +449,7 @@ async fn test_voice_intent_tts_success_full_pipeline() {
 
     match result {
         Err(_) => {
-            // Timeout = no error message = success!
+            // Positive provider/session evidence is required below.
         }
         Ok(Some(Ok(WsMessage::Text(text)))) => {
             let v: Value = serde_json::from_str(text.as_str()).unwrap_or_default();
@@ -381,16 +475,20 @@ async fn test_voice_intent_tts_success_full_pipeline() {
         _ => {}
     }
 
+    wait_for_provider_session(&state, temp_dir.path(), "agent-voice", "voice-happy", 1).await;
+
     // Verify a voice session was created for the agent
     let sessions = state
         .voice_sessions
         .read()
         .expect("voice_sessions lock poisoned");
     assert!(
-        sessions.contains_key("agent-voice"),
+        sessions.contains_key(&("agent-voice".to_string(), "voice-happy".to_string())),
         "Voice session should have been created for agent-voice"
     );
-    let client = sessions.get("agent-voice").expect("session missing");
+    let client = sessions
+        .get(&("agent-voice".to_string(), "voice-happy".to_string()))
+        .expect("session missing");
     assert!(client.connected, "Voice client should be connected");
     assert_eq!(client.room_name, "voice-happy");
 }
@@ -453,6 +551,7 @@ async fn test_voice_intent_tts_profile_not_found() {
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
         voice_token_secret: std::sync::Arc::new([0u8; 32]),
+        federation_transport: Default::default(),
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
@@ -465,8 +564,8 @@ async fn test_voice_intent_tts_profile_not_found() {
     {
         let conn = pool.get().expect("pool error");
         conn.execute(
-            "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active)
-             VALUES (1, 'agent-noprof', 'AI_AGENT', 1)",
+            "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active, can_voice)
+             VALUES (1, 'agent-noprof', 'AI_AGENT', 1, 1)",
             [],
         )
         .expect("failed to insert identity");
@@ -488,6 +587,7 @@ async fn test_voice_intent_tts_profile_not_found() {
     }
 
     let router = app(state);
+    register_voice_agent(&router, "agent-noprof").await;
     let addr = start_server(router).await;
     let mut socket = connect_ws(addr, "agent-noprof").await;
 
@@ -512,19 +612,18 @@ async fn test_voice_intent_tts_profile_not_found() {
 // Test: Voice profile default fallback when agent has no voice_profile_id
 // ---------------------------------------------------------------------------
 #[tokio::test]
-#[ignore = "requires WebRTC server running on localhost:7880"]
 async fn test_voice_intent_default_profile_fallback() {
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
     let (app, pool, state) = setup_app_with_mock_tts(&temp_dir).await;
 
     // Seed an agent WITHOUT a voice_profile_id in agent_registrations.
     // The VoiceIntent handler queries agent_registrations JOIN voice_profiles.
-    // When no row is found, it falls back to profile_id "default".
+    // An active registration with a NULL assignment selects profile_id "default".
     {
         let conn = pool.get().expect("pool error");
         conn.execute(
-            "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active)
-             VALUES (1, 'agent-defprof', 'AI_AGENT', 1)",
+            "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active, can_voice)
+             VALUES (1, 'agent-defprof', 'AI_AGENT', 1, 1)",
             [],
         )
         .expect("failed to insert identity");
@@ -553,6 +652,7 @@ async fn test_voice_intent_default_profile_fallback() {
         add_member(&conn, 1, "voice-defprof", "agent-defprof").expect("failed to add member");
     }
 
+    register_voice_agent(&app, "agent-defprof").await;
     let addr = start_server(app).await;
     let mut socket = connect_ws(addr, "agent-defprof").await;
 
@@ -572,7 +672,7 @@ async fn test_voice_intent_default_profile_fallback() {
 
     match result {
         Err(_) => {
-            // Timeout = no error = success
+            // Positive provider/session evidence is required below.
         }
         Ok(Some(Ok(WsMessage::Text(text)))) => {
             let v: Value = serde_json::from_str(text.as_str()).unwrap_or_default();
@@ -588,13 +688,15 @@ async fn test_voice_intent_default_profile_fallback() {
         _ => {}
     }
 
+    wait_for_provider_session(&state, temp_dir.path(), "agent-defprof", "voice-defprof", 1).await;
+
     // Verify voice session was created
     let sessions = state
         .voice_sessions
         .read()
         .expect("voice_sessions lock poisoned");
     assert!(
-        sessions.contains_key("agent-defprof"),
+        sessions.contains_key(&("agent-defprof".to_string(), "voice-defprof".to_string())),
         "Voice session should have been created with default profile fallback"
     );
 }
@@ -611,8 +713,8 @@ async fn test_voice_intent_reuses_existing_voice_session() {
     {
         let conn = pool.get().expect("pool error");
         conn.execute(
-            "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active)
-             VALUES (1, 'agent-reuse', 'AI_AGENT', 1)",
+            "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active, can_voice)
+             VALUES (1, 'agent-reuse', 'AI_AGENT', 1, 1)",
             [],
         )
         .expect("failed to insert identity");
@@ -633,6 +735,7 @@ async fn test_voice_intent_reuses_existing_voice_session() {
         add_member(&conn, 1, "voice-reuse", "agent-reuse").expect("failed to add member");
     }
 
+    register_voice_agent(&app, "agent-reuse").await;
     let addr = start_server(app).await;
     let mut socket = connect_ws(addr, "agent-reuse").await;
 
@@ -647,8 +750,7 @@ async fn test_voice_intent_reuses_existing_voice_session() {
         .await
         .expect("failed to send first VoiceIntent");
 
-    // Wait for processing
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    wait_for_provider_session(&state, temp_dir.path(), "agent-reuse", "voice-reuse", 1).await;
 
     // Verify session was created and capture the pointer for comparison
     let first_session_ptr = {
@@ -657,7 +759,7 @@ async fn test_voice_intent_reuses_existing_voice_session() {
             .read()
             .expect("voice_sessions lock poisoned");
         let client = sessions
-            .get("agent-reuse")
+            .get(&("agent-reuse".to_string(), "voice-reuse".to_string()))
             .expect("session should exist after first VoiceIntent");
         Arc::as_ptr(client)
     };
@@ -673,8 +775,7 @@ async fn test_voice_intent_reuses_existing_voice_session() {
         .await
         .expect("failed to send second VoiceIntent");
 
-    // Wait for processing
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    wait_for_provider_session(&state, temp_dir.path(), "agent-reuse", "voice-reuse", 2).await;
 
     // Verify same session is still in the map (pointer comparison)
     let second_session_ptr = {
@@ -683,7 +784,7 @@ async fn test_voice_intent_reuses_existing_voice_session() {
             .read()
             .expect("voice_sessions lock poisoned");
         let client = sessions
-            .get("agent-reuse")
+            .get(&("agent-reuse".to_string(), "voice-reuse".to_string()))
             .expect("session should still exist after second VoiceIntent");
         Arc::as_ptr(client)
     };
@@ -709,8 +810,8 @@ async fn test_voice_session_cleaned_up_on_disconnect() {
     {
         let conn = pool.get().expect("pool error");
         conn.execute(
-            "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active)
-             VALUES (1, 'agent-cleanup', 'AI_AGENT', 1)",
+            "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active, can_voice)
+             VALUES (1, 'agent-cleanup', 'AI_AGENT', 1, 1)",
             [],
         )
         .expect("failed to insert identity");
@@ -731,6 +832,7 @@ async fn test_voice_session_cleaned_up_on_disconnect() {
         add_member(&conn, 1, "voice-cleanup", "agent-cleanup").expect("failed to add member");
     }
 
+    register_voice_agent(&app, "agent-cleanup").await;
     let addr = start_server(app).await;
     let mut socket = connect_ws(addr, "agent-cleanup").await;
 
@@ -745,8 +847,7 @@ async fn test_voice_session_cleaned_up_on_disconnect() {
         .await
         .expect("failed to send VoiceIntent");
 
-    // Wait for processing
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    wait_for_provider_session(&state, temp_dir.path(), "agent-cleanup", "voice-cleanup", 1).await;
 
     // Verify session exists
     {
@@ -755,7 +856,7 @@ async fn test_voice_session_cleaned_up_on_disconnect() {
             .read()
             .expect("voice_sessions lock poisoned");
         assert!(
-            sessions.contains_key("agent-cleanup"),
+            sessions.contains_key(&("agent-cleanup".to_string(), "voice-cleanup".to_string())),
             "Voice session should exist before disconnect"
         );
     }
@@ -763,8 +864,28 @@ async fn test_voice_session_cleaned_up_on_disconnect() {
     // Close WebSocket (disconnect)
     socket.close(None).await.expect("failed to close WebSocket");
 
-    // Wait for cleanup to propagate
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let present = state
+                .voice_sessions
+                .read()
+                .unwrap()
+                .contains_key(&("agent-cleanup".to_string(), "voice-cleanup".to_string()));
+            if !present
+                && !state
+                    .voice_service
+                    .participant_ids("voice-cleanup")
+                    .await
+                    .iter()
+                    .any(|id| id == "agent-cleanup")
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("disconnected agent remained in session map or voice room");
 
     // After disconnect, the voice session should be cleaned up
     let sessions = state
@@ -772,7 +893,7 @@ async fn test_voice_session_cleaned_up_on_disconnect() {
         .read()
         .expect("voice_sessions lock poisoned");
     assert!(
-        !sessions.contains_key("agent-cleanup"),
+        !sessions.contains_key(&("agent-cleanup".to_string(), "voice-cleanup".to_string())),
         "Voice session should be cleaned up after WebSocket disconnect"
     );
 }

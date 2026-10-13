@@ -67,6 +67,7 @@ async fn setup_app() -> axum::Router {
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
         voice_token_secret: std::sync::Arc::new([0u8; 32]),
+        federation_transport: Default::default(),
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
@@ -197,6 +198,7 @@ async fn test_attest_membership_invalid_signature() {
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
         voice_token_secret: std::sync::Arc::new([0u8; 32]),
+        federation_transport: Default::default(),
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
@@ -306,6 +308,7 @@ async fn test_attest_membership_valid_signature_fails_network() {
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
         voice_token_secret: std::sync::Arc::new([0u8; 32]),
+        federation_transport: Default::default(),
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
@@ -477,6 +480,7 @@ async fn setup_app_with_known_instance(
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
         voice_token_secret: std::sync::Arc::new([0u8; 32]),
+        federation_transport: Default::default(),
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
@@ -609,6 +613,7 @@ async fn test_attest_membership_v2_requires_nullifier_hex_in_signing_input() {
             "1".to_string(),
             "2".to_string(),
             real_topic_hash.to_string(),
+            "0".to_string(), // challenge is the fifth pinned-circuit signal
         ]),
         nullifier_hex: None,
         topic_hash_hex: Some(real_topic_hash_hex),
@@ -682,6 +687,7 @@ async fn test_attest_membership_v2_topic_mismatch_rejected() {
             "2".to_string(),
             // Use 1 (not the real topicHash) so publicSignals[3] != expected
             "1".to_string(),
+            "0".to_string(), // challenge
         ]),
         nullifier_hex: Some(nullifier_hex),
         topic_hash_hex: Some(real_topic_hash_hex),

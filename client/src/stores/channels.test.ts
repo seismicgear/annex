@@ -51,6 +51,126 @@ describe('channels store', () => {
     mockAppendTranscript.mockClear();
   });
 
+  it('refreshes a previously unverified channel after explicit trust even though the old enabled flag was unknown', async () => {
+    const apiModule = await import('@/lib/api');
+    const { useChannelsStore } = await import('./channels');
+    const cryptoState = await import('@/lib/message-crypto');
+    cryptoState.markChannelE2eUnknown('room');
+    useChannelsStore.setState({ activeChannelId: 'room', activeChannelE2e: false, activeChannelKeyState: 'unverified',
+      joinedChannelIds: new Set(['room']), messages: [], composerError: 'Could not confirm this channel is encrypted. Reload before sending.' });
+    const before = vi.mocked(apiModule.getChannelE2e).mock.calls.length;
+    await useChannelsStore.getState().retryChannelKey('member');
+    expect(vi.mocked(apiModule.getChannelE2e).mock.calls.length).toBe(before + 1);
+    expect(cryptoState.isChannelE2eUnknown('room')).toBe(false);
+    expect(useChannelsStore.getState().activeChannelKeyState).toBe('ready');
+    expect(useChannelsStore.getState().composerError).toBeNull();
+  });
+
+  it('serializes an explicit leave after an in-flight selection join so server membership stays left', async () => {
+    const apiModule = await import('@/lib/api');
+    const { useChannelsStore } = await import('./channels');
+    let finishJoin!: () => void;
+    let serverMember = false;
+    const mutations: string[] = [];
+    vi.mocked(apiModule.joinChannel).mockImplementationOnce(async () => {
+      mutations.push('join-start');
+      await new Promise<void>(resolve => { finishJoin = resolve; });
+      serverMember = true;
+      mutations.push('join-commit');
+    });
+    vi.mocked(apiModule.leaveChannel).mockImplementationOnce(async () => {
+      mutations.push('leave-commit');
+      serverMember = false;
+    });
+    const selecting = useChannelsStore.getState().selectChannel('member', 'deferred-room');
+    await vi.waitFor(() => expect(finishJoin).toBeTypeOf('function'));
+    const leaving = useChannelsStore.getState().leaveChannel('member', 'deferred-room');
+    expect(mutations).toEqual(['join-start']);
+    finishJoin();
+    await Promise.all([selecting, leaving]);
+    expect(mutations).toEqual(['join-start', 'join-commit', 'leave-commit']);
+    expect(serverMember).toBe(false);
+    expect(useChannelsStore.getState().joinedChannelIds.has('deferred-room')).toBe(false);
+    expect(useChannelsStore.getState().activeChannelId).toBeNull();
+    expect(useChannelsStore.getState().historyLoading).toBe(false);
+  });
+
+  it('selecting an existing membership reads history without issuing another join', async () => {
+    const apiModule = await import('@/lib/api');
+    const { useChannelsStore } = await import('./channels');
+    useChannelsStore.setState({ joinedChannelIds: new Set(['already-joined']) });
+    const before = vi.mocked(apiModule.joinChannel).mock.calls.length;
+    await useChannelsStore.getState().selectChannel('member', 'already-joined');
+    expect(vi.mocked(apiModule.joinChannel).mock.calls.length).toBe(before);
+    expect(apiModule.getMessages).toHaveBeenCalledWith('member', 'already-joined', undefined, 50);
+  });
+
+  it('rejects a channel-list response captured before a completed leave', async () => {
+    const apiModule = await import('@/lib/api');
+    const { useChannelsStore } = await import('./channels');
+    let finishList!: (value: Awaited<ReturnType<typeof apiModule.listChannels>>) => void;
+    vi.mocked(apiModule.listChannels).mockImplementationOnce(() => new Promise(resolve => { finishList = resolve; }));
+    useChannelsStore.setState({ joinedChannelIds: new Set(['room']) });
+    const loading = useChannelsStore.getState().loadChannels('member');
+    await vi.waitFor(() => expect(finishList).toBeTypeOf('function'));
+    await useChannelsStore.getState().leaveChannel('member', 'room');
+    finishList([{ channel_id: 'room', name: 'Room', channel_type: 'Text', topic: null, federation_scope: 'Local', is_member: true }]);
+    await loading;
+    expect(useChannelsStore.getState().joinedChannelIds.has('room')).toBe(false);
+  });
+
+  it('drops history from an earlier selection of the same channel', async () => {
+    const apiModule = await import('@/lib/api');
+    const { useChannelsStore } = await import('./channels');
+    useChannelsStore.setState({ joinedChannelIds: new Set(['room']) });
+    let finishHistory!: (value: Message[]) => void;
+    vi.mocked(apiModule.getMessages).mockImplementationOnce(() => new Promise(resolve => { finishHistory = resolve; }));
+    const first = useChannelsStore.getState().selectChannel('member', 'room');
+    await vi.waitFor(() => expect(finishHistory).toBeTypeOf('function'));
+    const current = { message_id: 'current', channel_id: 'room', sender_pseudonym: 'member', content: 'Current history', reply_to_message_id: null, created_at: '' };
+    vi.mocked(apiModule.getMessages).mockResolvedValueOnce([current]);
+    await useChannelsStore.getState().selectChannel('member', 'room');
+    finishHistory([{ ...current, message_id: 'stale', content: 'Stale history' }]);
+    await first;
+    expect(useChannelsStore.getState().messages.map(message => message.message_id)).toEqual(['current']);
+  });
+
+  it('retains history, fails pending sends and stops calls locally when displaced', async () => {
+    const { AnnexWebSocket } = await import('@/lib/ws');
+    const { useChannelsStore } = await import('./channels');
+    let status!: (connected: boolean, state: string) => void;
+    const socket = {
+      onStatus: vi.fn((handler: typeof status) => { status = handler; }),
+      onMessage: vi.fn(), connect: vi.fn(), disconnect: vi.fn(),
+      subscribe: vi.fn(), reconnectHere: vi.fn(), sendWithRequestId: vi.fn(),
+    };
+    vi.mocked(AnnexWebSocket).mockImplementationOnce(function () { return socket as never; });
+    useChannelsStore.getState().connectWs('takeover-member');
+    const stored: Message = { message_id: 'saved', channel_id: 'room', sender_pseudonym: 'peer', content: 'Readable history', reply_to_message_id: null, created_at: '', edited_at: null, deleted_at: null };
+    const revert = vi.fn();
+    useChannelsStore.setState({
+      activeChannelId: 'room',
+      messages: [stored, { ...stored, message_id: 'pending', pending: true, clientRequestId: 'queued' }],
+      pendingSends: new Map([['queued', { channelId: 'room', content: 'unsent', replyTo: null } as never]]),
+      pendingMessageOps: new Map([['edit', { revert } as never]]),
+    });
+    status(false, 'taken_over');
+    const state = useChannelsStore.getState();
+    expect(state.messages[0]).toEqual(stored);
+    expect(state.messages[1]).toMatchObject({ pending: false, failed: true });
+    expect(state.pendingSends.size).toBe(0);
+    expect(state.pendingMessageOps.size).toBe(0);
+    expect(revert).toHaveBeenCalledWith('This identity is active on another device.');
+    expect(mockForceReset).toHaveBeenCalledTimes(1);
+    expect(mockLeaveCall).not.toHaveBeenCalled();
+    state.sendMessage('takeover-member', 'must not send');
+    expect(socket.sendWithRequestId).not.toHaveBeenCalled();
+    expect(socket.reconnectHere).not.toHaveBeenCalled();
+    state.reconnectHere();
+    expect(socket.reconnectHere).toHaveBeenCalledTimes(1);
+    state.disconnectWs();
+  });
+
   it('resetServerState clears all per-server transient state', async () => {
     const { useChannelsStore } = await import('./channels');
 

@@ -9,6 +9,8 @@
  * rather than reaching into the legacy `@/lib/api` re-export.
  */
 
+import { beginLiveOperation } from '@/lib/session-ownership';
+
 /** Base error class for API responses. */
 export class ApiError extends Error {
   status: number;
@@ -425,14 +427,15 @@ export async function fetchWithTimeout(
   init?: RequestInit,
   timeoutMs?: number,
 ): Promise<Response> {
-  if (!timeoutMs) return fetch(url, init);
+  if (!timeoutMs) return fetchAuthenticated(url, init);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    const signal = init?.signal ? AbortSignal.any([init.signal, controller.signal]) : controller.signal;
+    return await fetchAuthenticated(url, { ...init, signal });
   } catch (err) {
-    if (err instanceof DOMException && err.name === 'AbortError') {
+    if (controller.signal.aborted && !init?.signal?.aborted) {
       throw new Error(`Request timed out after ${timeoutMs}ms`);
     }
     throw err;
@@ -464,14 +467,68 @@ function jsonHeaders(options?: RequestInit): Headers {
   return headers;
 }
 
+let proofRenewal: { serial: number; proof: string; promise: Promise<void> } | null = null;
+
+/** Retry only a verified, known retired-root refusal, before the handler runs.
+ * The bearer token never changes; ordinary authorization refusals never retry.
+ */
+export async function fetchAuthenticated(url: string, init?: RequestInit): Promise<Response> {
+  const context = getCredentialContext(), token = getSessionToken(), proof = getZkProofPayload();
+  const headers = new Headers(init?.headers);
+  const localOrigin = typeof window === 'undefined' ? 'http://localhost' : window.location.origin;
+  const target = new URL(url, context.baseUrl || localOrigin);
+  const currentServer = new URL(context.baseUrl || localOrigin);
+  const eligible = !!context.pseudonymId && !!token && !!proof
+    && target.origin === currentServer.origin
+    && headers.get('Authorization') === `Bearer ${token}`
+    && headers.get('x-annex-zk-proof') === toBase64Utf8(proof)
+    && !(typeof ReadableStream !== 'undefined' && init?.body instanceof ReadableStream);
+  const response = await fetch(url, init);
+  if (!eligible || response.status !== 403) return response;
+  let refusal: unknown;
+  try { refusal = await response.clone().json(); } catch { return response; }
+  if (!refusal || typeof refusal !== 'object' || (refusal as { error?: unknown }).error !== 'zk_root_retired') return response;
+  const check = () => {
+    init?.signal?.throwIfAborted();
+    if (!isCredentialContextCurrent(context) || getSessionToken() !== token) throw new StaleCredentialContextError('Membership assertion renewal');
+  };
+  check();
+  // A concurrent request may already have installed the fresh assertion.
+  if (getZkProofPayload() === proof) {
+    if (!proofRenewal || proofRenewal.serial !== context.serial || proofRenewal.proof !== proof) {
+      const pending = { serial: context.serial, proof, promise: Promise.resolve() };
+      pending.promise = import('@/lib/renew-membership').then(module => module.renewMembershipAssertion())
+        .finally(() => { if (proofRenewal === pending) proofRenewal = null; });
+      proofRenewal = pending;
+    }
+    await proofRenewal.promise;
+  }
+  check();
+  const fresh = getZkProofPayload();
+  if (!fresh || fresh === proof) throw new Error('The server membership proof could not be renewed. Retry the action.');
+  headers.set('x-annex-zk-proof', toBase64Utf8(fresh));
+  // Exactly one retry of the same URL/method/body. No recursion or session mint.
+  return fetch(url, { ...init, headers });
+}
+
 export async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const url = _context.baseUrl ? `${_context.baseUrl}${path}` : path;
-  const res = await fetch(url, {
-    ...options,
-    headers: jsonHeaders(options),
-  });
-  if (!res.ok) await throwApiError(res);
-  return res.json() as Promise<T>;
+  const method = options?.method?.toUpperCase() ?? 'GET';
+  // Attachment grants only authorize reading already-visible history.
+  const writes = method !== 'GET' && method !== 'HEAD' && path !== '/api/uploads/grant';
+  const operation = writes && _context.pseudonymId
+    ? beginLiveOperation(_context.baseUrl, _context.pseudonymId) : null;
+  try {
+    const res = await fetchAuthenticated(url, {
+      ...options,
+      ...(operation ? { signal: options?.signal ? AbortSignal.any([options.signal, operation.signal]) : operation.signal } : {}),
+      headers: jsonHeaders(options),
+    });
+    if (!res.ok) await throwApiError(res);
+    const result = await res.json() as T;
+    operation?.signal.throwIfAborted();
+    return result;
+  } finally { operation?.release(); }
 }
 
 /**

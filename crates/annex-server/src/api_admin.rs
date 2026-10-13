@@ -68,6 +68,10 @@ pub async fn update_policy_handler(
         )));
     }
 
+    annex_vrp::VrpCapabilitySharingContract::from_policy(&new_policy)
+        .rtx_restrictions()
+        .map_err(ApiError::BadRequest)?;
+
     let version_id = Uuid::new_v4().to_string();
     let policy_json = serde_json::to_string(&new_policy)
         .map_err(|e| ApiError::BadRequest(format!("failed to serialize policy: {e}")))?;
@@ -138,6 +142,13 @@ pub async fn update_policy_handler(
             .write()
             .map_err(|_| ApiError::InternalServerError("policy lock poisoned".to_string()))?;
         *policy_lock = new_policy;
+    }
+
+    if !policy_clone.voice_enabled {
+        crate::services::ChannelService::new(state.clone())
+            .disconnect_all_voice()
+            .await
+            .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
     }
 
     recalculate_all_alignments(state.clone()).await?;
@@ -701,11 +712,36 @@ pub async fn update_member_capabilities_handler(
     let state_clone = state.clone();
     let target = target_pseudonym.clone();
     let moderator = identity.pseudonym_id.clone();
+    let moderator_epoch = identity.token_epoch;
+
+    // Serialize the committed capability change and media teardown with a
+    // pending voice join. A stale grant must not publish after revocation, and
+    // concurrent grant/revoke notifications must retain their commit order.
+    let _lifecycle = state
+        .connection_manager
+        .lock_lifecycle(&target_pseudonym)
+        .await;
 
     tokio::task::spawn_blocking(move || {
-        let conn = state_clone.pool.get().map_err(|e| {
+        let mut conn = state_clone.pool.get().map_err(|e| {
             ApiError::InternalServerError(format!("db connection failed: {e}"))
         })?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| ApiError::InternalServerError(format!("capability transaction: {e}")))?;
+        let current = annex_identity::get_platform_identity(
+            &tx, state_clone.server_id, &moderator,
+        ).map_err(|e| match e {
+            annex_identity::IdentityError::DatabaseError(rusqlite::Error::QueryReturnedNoRows) =>
+                ApiError::Unauthorized("moderator session is no longer active".into()),
+            other => ApiError::InternalServerError(format!("moderator lookup: {other}")),
+        })?;
+        if current.token_epoch != moderator_epoch || !current.active {
+            return Err(ApiError::Unauthorized("moderator session is no longer active".into()));
+        }
+        if !current.can_moderate {
+            return Err(ApiError::Forbidden("moderator capability is no longer active".into()));
+        }
 
         // Refuse to remove the last active moderator. Without this guard a
         // moderator can clear `can_moderate` on the founder, every other
@@ -713,7 +749,7 @@ pub async fn update_member_capabilities_handler(
         // an irreversible lockout that also drops the server into the
         // no-moderator self-heal state where an unauthenticated identity read
         // re-promotes the lowest-id account.
-        if would_remove_last_moderator(&conn, state_clone.server_id, &target, caps).map_err(
+        if would_remove_last_moderator(&tx, state_clone.server_id, &target, caps).map_err(
             |e| ApiError::InternalServerError(format!("failed to check moderator count: {e}")),
         )? {
             return Err(ApiError::Conflict(
@@ -721,9 +757,12 @@ pub async fn update_member_capabilities_handler(
             ));
         }
 
-        update_capabilities(&conn, state_clone.server_id, &target, caps).map_err(|e| {
-            ApiError::InternalServerError(format!("failed to update capabilities: {e}"))
+        update_capabilities(&tx, state_clone.server_id, &target, caps).map_err(|e| match e {
+            annex_identity::IdentityError::DatabaseError(rusqlite::Error::QueryReturnedNoRows) =>
+                ApiError::NotFound(format!("no such member: {target}")),
+            other => ApiError::InternalServerError(format!("failed to update capabilities: {other}")),
         })?;
+        tx.commit().map_err(|e| ApiError::InternalServerError(format!("capability commit: {e}")))?;
 
         let observe_payload = EventPayload::ModerationAction {
             moderator_pseudonym: moderator.clone(),
@@ -747,6 +786,23 @@ pub async fn update_member_capabilities_handler(
     })
     .await
     .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
+
+    if !body.can_voice {
+        crate::services::ChannelService::new(state.clone())
+            .disconnect_voice_participant(&target_pseudonym)
+            .await;
+    }
+    let hint = crate::api_ws::OutgoingMessage::IdentityCapabilitiesChanged {
+        can_voice: body.can_voice,
+    };
+    state
+        .connection_manager
+        .send(
+            &target_pseudonym,
+            serde_json::to_string(&hint)
+                .map_err(|e| ApiError::InternalServerError(e.to_string()))?,
+        )
+        .await;
 
     Ok(AxumJson(serde_json::json!({ "status": "ok" })).into_response())
 }
@@ -781,6 +837,13 @@ pub async fn revoke_member_sessions_handler(
             "insufficient permissions to revoke sessions".to_string(),
         ));
     }
+
+    // Serialize persistent revocation, socket cancellation and media teardown
+    // with the final authorization check of an in-flight WebSocket upgrade.
+    let _lifecycle = state
+        .connection_manager
+        .lock_lifecycle(&target_pseudonym)
+        .await;
 
     let state_clone = state.clone();
     let target = target_pseudonym.clone();
@@ -823,6 +886,14 @@ pub async fn revoke_member_sessions_handler(
     })
     .await
     .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
+
+    state
+        .connection_manager
+        .disconnect_user_locked(&target_pseudonym)
+        .await;
+    crate::services::ChannelService::new(state.clone())
+        .disconnect_voice_participant(&target_pseudonym)
+        .await;
 
     Ok(AxumJson(serde_json::json!({ "status": "ok", "token_epoch": epoch })).into_response())
 }

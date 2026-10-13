@@ -12,6 +12,9 @@ import { CreateChannelDialog } from '@/components/CreateChannelDialog';
 import { createInviteLink } from '@/lib/invite';
 import { getApiBaseUrl } from '@/lib/api';
 import type { Channel } from '@/types';
+import { getCredentialContext } from '@/api/core';
+import { FederatedChannelsDialog } from './FederatedChannelsDialog';
+import { ChannelAuthorityDialog } from './ChannelAuthorityDialog';
 
 const CHANNEL_TYPE_ICONS: Record<string, { icon: string; tooltip: string }> = {
   Text: { icon: '#', tooltip: 'Text channel — chat with messages' },
@@ -43,6 +46,7 @@ function ChannelItem({
   const [copied, setCopied] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [fallbackInviteUrl, setFallbackInviteUrl] = useState<string | null>(null);
+  const [authorityOpen, setAuthorityOpen] = useState(false);
 
   const handleJoin = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -110,6 +114,8 @@ function ChannelItem({
         )}
       </button>
       <div className="channel-actions">
+        {channel.federation_scope === 'Federated' && <button className="channel-action-btn" type="button"
+          title="Channel authority" onClick={event => { event.stopPropagation(); setAuthorityOpen(true); }}>F</button>}
         <button
           className="channel-action-btn invite-btn"
           onClick={handleCopyInvite}
@@ -168,6 +174,8 @@ function ChannelItem({
           </button>
         </div>
       )}
+      {authorityOpen && <ChannelAuthorityDialog key={JSON.stringify([getCredentialContext().serial, pseudonymId, channel.channel_id])}
+        pseudonym={pseudonymId} channelId={channel.channel_id} onClose={() => setAuthorityOpen(false)} />}
     </div>
   );
 }
@@ -186,6 +194,7 @@ export function ChannelList() {
     unreadCounts,
   } = useChannelsStore();
   const [showCreate, setShowCreate] = useState(false);
+  const [showFederated, setShowFederated] = useState(false);
   // Declare all hooks before any conditional returns so hook order stays
   // constant across renders (identity present, absent, or switching).
   const [selectError, setSelectError] = useState<string | null>(null);
@@ -231,6 +240,9 @@ export function ChannelList() {
         )}
       </div>
       {body}
+      <button type="button" onClick={() => setShowFederated(true)}>Federated channels</button>
+      {showFederated && <FederatedChannelsDialog key={JSON.stringify([getCredentialContext().serial, identity.pseudonymId])}
+        pseudonym={identity.pseudonymId!} onClose={() => setShowFederated(false)} />}
     </nav>
   );
 
@@ -290,6 +302,9 @@ export function ChannelList() {
         />
       ))}
       {showCreate && <CreateChannelDialog onClose={() => setShowCreate(false)} />}
+      <button type="button" onClick={() => setShowFederated(true)}>Federated channels</button>
+      {showFederated && <FederatedChannelsDialog key={JSON.stringify([getCredentialContext().serial, identity.pseudonymId])}
+        pseudonym={identity.pseudonymId!} onClose={() => setShowFederated(false)} />}
     </nav>
   );
 }

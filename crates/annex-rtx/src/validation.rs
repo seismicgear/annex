@@ -387,6 +387,47 @@ pub fn reasoning_commitment(chain: Option<&str>) -> String {
     hex::encode(Sha256::digest(chain.unwrap_or("").as_bytes()))
 }
 
+/// V2 retains every author field except reasoning, including tags and caveats.
+/// V1 bytes remain unchanged for explicitly constrained legacy verification.
+pub fn scope_invariant_content_digest_v2(bundle: &ReflectionSummaryBundle) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"annex/rtx/scope-invariant/v2\n");
+    h.update(scope_invariant_content_digest(bundle).as_bytes());
+    for fields in [&bundle.domain_tags, &bundle.caveats] {
+        h.update((fields.len() as u64).to_le_bytes());
+        for field in fields {
+            h.update((field.len() as u64).to_le_bytes());
+            h.update(field.as_bytes());
+        }
+    }
+    hex::encode(h.finalize())
+}
+
+/// V2 attestation uses a new signature domain and the stronger invariant digest.
+pub fn origin_attestation_payload_v2(
+    bundle: &ReflectionSummaryBundle,
+    origin_server: &str,
+    commitment: &str,
+    max_hops: u8,
+) -> String {
+    origin_attestation_payload(
+        &bundle.bundle_id,
+        origin_server,
+        &bundle.source_pseudonym,
+        bundle.created_at,
+        &bundle.vrp_handshake_ref,
+        &scope_invariant_content_digest_v2(bundle),
+        commitment,
+        max_hops,
+    )
+    .replacen(
+        "annex/rtx/origin-attestation/v1",
+        "annex/rtx/origin-attestation/v2",
+        1,
+    )
+}
+
 /// What the origin server signs. Domain `annex/rtx/origin-attestation/v1`.
 ///
 /// Length-prefixed per field in the same style as [`author_signing_payload`],
@@ -491,7 +532,7 @@ pub fn hop_payloads(
             .get(i + 1)
             .map(|h| h.server.as_str())
             .unwrap_or(holder_url);
-        let payload = relay_hop_payload(
+        let payload = crate::relay_hop_payload_with_contract(
             &provenance.bundle_id,
             &provenance.origin_server,
             origin_signature,
@@ -500,6 +541,7 @@ pub fn hop_payloads(
             next_peer,
             &hop.content_hash,
             &prev_digest,
+            hop.contract.as_ref(),
         );
         prev_digest = chain_digest(&payload);
         payloads.push(payload);
@@ -514,6 +556,7 @@ pub fn hop_payloads(
 /// `/api/federation/rtx` has no auth middleware in front of it, so the cheap
 /// rejection is the one that matters.
 pub fn validate_provenance_structure(provenance: &BundleProvenance) -> Result<(), RtxError> {
+    crate::provenance_contract(provenance).map_err(RtxError::InvalidBundle)?;
     if provenance.origin_server.is_empty() {
         return Err(RtxError::InvalidBundle(
             "provenance names no origin server".to_string(),
@@ -668,6 +711,7 @@ mod hop_chain_tests {
             hops: hops
                 .iter()
                 .map(|h| RelayHop {
+                    contract: None,
                     server: h.to_string(),
                     content_hash: "00".repeat(32),
                     signature: "aa".repeat(64),

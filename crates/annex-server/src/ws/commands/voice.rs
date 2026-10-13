@@ -8,10 +8,8 @@
 //!   2. Reject empty / overlong text with the same wording, same
 //!      `MAX_VOICE_INTENT_TEXT_LEN` cap.
 //!   3. Same membership gate.
-//!   4. Look up the agent's voice profile via the `agent_registrations`
-//!      JOIN. Failures (DB / task-join / NULL) fall back to
-//!      `"default"` with a warn-level trace, matching the previous
-//!      handler exactly.
+//!   4. Resolve the assigned profile. Use `default` only for an explicit
+//!      unassigned profile; database failures and missing assignments fail closed.
 //!   5. Synthesize via `tts_service.synthesize(text, voice_profile_id)`.
 //!   6. Reuse an existing `voice_sessions` entry for this pseudonym if
 //!      one is present; otherwise generate a fresh voice-room token,
@@ -25,14 +23,11 @@
 //!
 //! No protocol or capability changes.
 
-use std::sync::Arc;
-
 use rusqlite::OptionalExtension;
 
 use crate::ws::context::CommandContext;
 use crate::ws::dispatch::{check_ws_membership, MembershipResult, MAX_VOICE_INTENT_TEXT_LEN};
 use crate::ws::error::send_ws_error;
-use crate::ws::protocol::OutgoingMessage;
 use annex_types::RoleCode;
 
 pub(crate) async fn handle(ctx: &CommandContext<'_>, channel_id: String, text: String) {
@@ -131,185 +126,87 @@ pub(crate) async fn handle(ctx: &CommandContext<'_>, channel_id: String, text: S
         let pid = ctx.pseudonym.to_string();
         let result = tokio::task::spawn_blocking(move || {
             let conn = pool.get().map_err(|e| format!("pool error: {e}"))?;
-            let profile_id: Option<String> = conn
-                .query_row(
-                    "SELECT vp.profile_id
-                     FROM agent_registrations ar
-                     JOIN voice_profiles vp ON ar.voice_profile_id = vp.id
-                     WHERE ar.server_id = ?1 AND ar.pseudonym_id = ?2",
-                    rusqlite::params![server_id, pid],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(|e| format!("db error: {e}"))?;
-            Ok::<Option<String>, String>(profile_id)
-        })
-        .await;
-
-        match result {
-            Ok(Ok(Some(id))) => id,
-            Ok(Ok(None)) => "default".to_string(),
-            Ok(Err(e)) => {
-                tracing::warn!(
-                    pseudonym = %ctx.pseudonym,
-                    "voice profile lookup failed, using default: {}",
-                    e
-                );
-                "default".to_string()
+            let profile: Option<(Option<i64>,Option<String>)> = conn.query_row(
+                "SELECT ar.voice_profile_id,vp.profile_id FROM agent_registrations ar LEFT JOIN voice_profiles vp ON ar.voice_profile_id=vp.id AND vp.server_id=ar.server_id WHERE ar.server_id=?1 AND ar.pseudonym_id=?2 AND ar.active=1",
+                rusqlite::params![server_id,pid],|row|Ok((row.get(0)?,row.get(1)?))).optional().map_err(|e|format!("db error: {e}"))?;
+            match profile {
+                Some((None,_))=>Ok("default".to_string()),
+                Some((Some(_),Some(id)))=>Ok(id),
+                Some((Some(_),None))=>Err("assigned voice profile is unavailable".to_string()),
+                None=>Err("active agent registration is unavailable".to_string()),
             }
-            Err(e) => {
-                tracing::warn!(
-                    pseudonym = %ctx.pseudonym,
-                    "voice profile lookup task failed, using default: {}",
-                    e
-                );
-                "default".to_string()
+        }).await;
+        match result {
+            Ok(Ok(id)) => id,
+            Ok(Err(error)) => {
+                tracing::warn!(pseudonym=%ctx.pseudonym,%error,"voice profile resolution refused");
+                send_ws_error(ctx.tx, "The assigned voice profile is unavailable".into());
+                return;
+            }
+            Err(error) => {
+                tracing::error!(pseudonym=%ctx.pseudonym,%error,"voice profile lookup task failed");
+                send_ws_error(ctx.tx, "Voice profile lookup failed".into());
+                return;
             }
         }
     };
 
+    let svc = crate::services::ChannelService::new(ctx.state.clone());
+    if let Err(e) = svc.ensure_voice_allowed(ctx.identity, &channel_id).await {
+        send_ws_error(ctx.tx, e.to_string());
+        return;
+    }
+
     match ctx
         .state
         .tts_service
-        .synthesize(&text, &voice_profile_id)
+        .synthesize_audio(&text, &voice_profile_id)
         .await
     {
         Ok(audio) => {
-            // Fast-path: read lock to check for an existing session.
-            let client_opt = match ctx.state.voice_sessions.read() {
-                Ok(sessions) => sessions.get(ctx.pseudonym).cloned(),
-                Err(_) => {
-                    tracing::error!("voice_sessions lock poisoned");
-                    return;
-                }
-            };
-
-            let client = if let Some(c) = client_opt {
-                c
-            } else {
-                let room_name = channel_id.clone();
-                let token = match ctx.state.voice_service.generate_join_token(
-                    &room_name,
-                    ctx.pseudonym,
-                    ctx.pseudonym,
-                    &ctx.state.voice_token_secret,
-                    annex_voice::VOICE_TOKEN_DEFAULT_TTL_SECS,
-                ) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        tracing::error!(
-                            pseudonym = %ctx.pseudonym,
-                            room = %room_name,
-                            "failed to generate voice join token: {}",
-                            e
-                        );
-                        send_ws_error(ctx.tx, "Failed to generate voice token".to_string());
-                        return;
-                    }
-                };
-                let url = ctx.state.voice_service.get_url();
-
-                match annex_voice::AgentVoiceClient::connect(
-                    url,
-                    &token,
-                    &room_name,
-                    &ctx.state.voice_token_secret,
-                    ctx.state.stt_service.clone(),
-                    ctx.state.voice_service.api_key(),
-                    ctx.state.voice_service.api_secret(),
-                    ctx.state.voice_service.clone(),
+            // Synthesis may take seconds. Recheck admission after it finishes so
+            // a leave, deletion or policy change cannot create a new voice client.
+            if !matches!(
+                check_ws_membership(
+                    ctx.state.pool.clone(),
+                    ctx.state.server_id,
+                    &channel_id,
+                    ctx.pseudonym
                 )
+                .await,
+                MembershipResult::Allowed
+            ) {
+                send_ws_error(ctx.tx, format!("Not a member of channel {channel_id}"));
+                return;
+            }
+            if let Err(e) = svc.ensure_voice_allowed(ctx.identity, &channel_id).await {
+                send_ws_error(ctx.tx, e.to_string());
+                return;
+            }
+            match svc
+                .connect_agent_voice_client(ctx.identity, &channel_id)
                 .await
-                {
-                    Ok(c) => {
-                        let arc = Arc::new(c);
-
-                        // Double-check under write lock to prevent TOCTOU
-                        // race with concurrent voice intents.
-                        match ctx.state.voice_sessions.write() {
-                            Ok(mut sessions) => {
-                                use std::collections::hash_map::Entry;
-                                match sessions.entry(ctx.pseudonym.to_string()) {
-                                    Entry::Vacant(entry) => {
-                                        // Subscribe to transcriptions only for the winning insert
-                                        let mut rx = arc.subscribe_transcriptions();
-                                        let cm = ctx.state.connection_manager.clone();
-                                        let p_clone = ctx.pseudonym.to_string();
-
-                                        // Differentiate `Lagged` from `Closed` so a brief
-                                        // burst of transcription events that overflows the
-                                        // 256-deep broadcast window does NOT terminate this
-                                        // forwarder permanently. See [F36] for the analysis.
-                                        tokio::spawn(async move {
-                                            loop {
-                                                let event = match rx.recv().await {
-                                                    Ok(e) => e,
-                                                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                                                        tracing::warn!(
-                                                            pseudonym = %p_clone,
-                                                            skipped = n,
-                                                            "transcription broadcast lagged; some events skipped",
-                                                        );
-                                                        continue;
-                                                    }
-                                                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                                                };
-                                                let msg = OutgoingMessage::Transcription {
-                                                    channel_id: event.channel_id,
-                                                    speaker_pseudonym: event.speaker_pseudonym,
-                                                    text: event.text,
-                                                };
-
-                                                match serde_json::to_string(&msg) {
-                                                    Ok(json) => {
-                                                        cm.send(&p_clone, json).await;
-                                                    }
-                                                    Err(e) => {
-                                                        tracing::error!(
-                                                            "failed to serialize transcription message: {}",
-                                                            e
-                                                        );
-                                                    }
-                                                }
-                                            }
-                                        });
-
-                                        entry.insert(arc.clone());
-                                    }
-                                    Entry::Occupied(_) => {
-                                        // Concurrent request won; drop our client
-                                    }
-                                }
-                                match sessions.get(ctx.pseudonym).cloned() {
-                                    Some(s) => s,
-                                    None => {
-                                        tracing::error!(
-                                            pseudonym = %ctx.pseudonym,
-                                            "voice session missing after insert; this is a bug"
-                                        );
-                                        return;
-                                    }
-                                }
-                            }
-                            Err(_) => {
-                                tracing::error!("voice_sessions lock poisoned");
-                                return;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        send_ws_error(ctx.tx, format!("Failed to connect voice: {e}"));
+            {
+                Ok(client) => {
+                    if let Err(e) = svc.ensure_voice_allowed(ctx.identity, &channel_id).await {
+                        svc.disconnect_voice_participant(ctx.pseudonym).await;
+                        send_ws_error(ctx.tx, e.to_string());
                         return;
                     }
+                    if let Err(e) = client
+                        .publish_audio_with_format(
+                            &audio.pcm_s16le,
+                            audio.sample_rate,
+                            audio.channels,
+                        )
+                        .await
+                    {
+                        send_ws_error(ctx.tx, format!("Failed to publish audio: {e}"));
+                    }
                 }
-            };
-
-            if let Err(e) = client.publish_audio(&audio).await {
-                send_ws_error(ctx.tx, format!("Failed to publish audio: {e}"));
+                Err(e) => send_ws_error(ctx.tx, format!("Failed to connect voice: {e}")),
             }
         }
-        Err(e) => {
-            send_ws_error(ctx.tx, format!("TTS failed: {e}"));
-        }
+        Err(e) => send_ws_error(ctx.tx, format!("TTS failed: {e}")),
     }
 }

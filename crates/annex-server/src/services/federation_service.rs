@@ -77,6 +77,44 @@ pub(crate) const FEDERATION_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 /// any local client can produce. Bound it before persisting.
 pub(crate) const FEDERATION_MAX_MESSAGE_CONTENT_LEN: usize = 65_536;
 
+/// Once a channel has pinned an ordered authority, legacy envelopes must not
+/// write around its admission, epoch, and durable sequence checks. Call under
+/// the same writer transaction as the mutation so authority adoption cannot
+/// race this gate. The local message also binds edits/deletions to their real
+/// channel; a signed envelope cannot substitute an unrelated legacy channel.
+pub(crate) fn require_legacy_channel(
+    conn: &rusqlite::Connection,
+    server_id: i64,
+    channel_id: &str,
+    message_id: Option<&str>,
+) -> Result<(), FederationError> {
+    if let Some(message_id) = message_id {
+        let actual: Option<String> = conn
+            .query_row(
+                "SELECT channel_id FROM messages WHERE server_id=?1 AND message_id=?2",
+                rusqlite::params![server_id, message_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if actual.as_deref().is_some_and(|actual| actual != channel_id) {
+            return Err(FederationError::Forbidden(
+                "envelope channel does not match the original message".into(),
+            ));
+        }
+    }
+    let managed: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM channel_authorities WHERE server_id=?1 AND channel_id=?2)",
+        rusqlite::params![server_id, channel_id],
+        |r| r.get(0),
+    )?;
+    if managed {
+        return Err(FederationError::Forbidden(
+            "channel requires the ordered authority protocol".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Builds a reqwest client with timeouts to prevent resource exhaustion
 /// from slow or malicious federation peers. Re-exported by
 /// `api_federation::federation_http_client`.
@@ -114,6 +152,8 @@ pub struct JoinFederatedChannelRequest {
 
 #[derive(Debug, Error)]
 pub enum FederationError {
+    #[error("stored content integrity check failed: {0}")]
+    StorageIntegrity(#[from] crate::at_rest::AtRestError),
     #[error("Handshake failed: {0}")]
     Handshake(#[from] HandshakeError),
     #[error("Database error: {0}")]
@@ -413,6 +453,20 @@ pub fn check_freshness(
     Ok(())
 }
 
+/// Database message timestamps are SQLite UTC (`YYYY-MM-DD HH:MM:SS`).
+/// Federation signs RFC3339 timestamps, including an explicit timezone. Convert
+/// before signing so the strict receiver validates exactly the bytes we sent;
+/// never replace an old message's creation time with the current time.
+pub(crate) fn outbound_message_timestamp(value: &str) -> Result<String, String> {
+    let utc = match chrono::DateTime::parse_from_rfc3339(value) {
+        Ok(timestamp) => timestamp.with_timezone(&chrono::Utc),
+        Err(_) => chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f")
+            .map_err(|_| "message.created_at is not a valid UTC database timestamp".to_string())?
+            .and_utc(),
+    };
+    Ok(utc.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true))
+}
+
 /// Parses an attestation reference string into `(commitment_hex, topic)`.
 ///
 /// The expected format is `"topic:commitment_hex"` where both parts are non-empty.
@@ -545,7 +599,7 @@ impl FederationService {
     /// Dispatches to the v1 or v2 verifier based on the peer's
     /// `protocol_version`. v1 (legacy / default) verifies a 2-signal proof
     /// against `state.membership_vkey` and derives the nullifier as
-    /// `Poseidon(commitment, topic)`. v2 verifies a 4-signal proof against
+    /// `Poseidon(commitment, topic)`. v2 verifies a 5-signal proof against
     /// `state.membership_vkey_v2`, cross-checks `publicSignals[3]` against
     /// the server-recomputed `topic_hash_for_v2(payload.topic)`, and uses
     /// the secret-derived nullifier from `publicSignals[2]`. v2 attestations
@@ -599,9 +653,9 @@ impl FederationService {
                     "v2 attestation must include publicSignals".to_string(),
                 )
             })?;
-            if raw_public_signals.len() != 4 {
+            if raw_public_signals.len() != 5 {
                 return Err(FederationError::ZkVerification(format!(
-                    "v2 attestation publicSignals must have length 4, got {}",
+                    "v2 attestation publicSignals must have length 5, got {}",
                     raw_public_signals.len()
                 )));
             }
@@ -782,6 +836,10 @@ impl FederationService {
                 ));
             }
             // expected_topic_hash already validated against publicSignals[3] above.
+            // Keep the fifth (challenge) signal in the verified input vector:
+            // the shipped membership_v2 circuit binds it cryptographically.
+            // An attestation records peer-proven membership; it does not mint
+            // a local login session or consume this server's login challenges.
             let _ = v2.expected_topic_hash;
             (v2.public_signals, v2.canonical_nullifier_hex)
         } else {
@@ -1038,6 +1096,15 @@ impl FederationService {
         &self,
         envelope: FederatedMessageEnvelope,
     ) -> Result<(), FederationError> {
+        self.receive_federated_message_with_mode(envelope, DeliveryMode::Live)
+            .await
+    }
+
+    pub(crate) async fn receive_federated_message_with_mode(
+        &self,
+        envelope: FederatedMessageEnvelope,
+        delivery_mode: DeliveryMode,
+    ) -> Result<(), FederationError> {
         // Enforce the same per-message content cap that local WS messages
         // honour. Without this, a federated peer (signed envelopes still
         // pass signature verification) could push messages up to axum's
@@ -1087,7 +1154,7 @@ impl FederationService {
                         chrono::Utc::now(),
                         fed_cfg.freshness_window_seconds,
                         fed_cfg.future_skew_seconds,
-                        DeliveryMode::Live,
+                        delivery_mode,
                     ) {
                         Ok(()) => {}
                         Err(FreshnessRejection::Unparseable) => {
@@ -1273,6 +1340,14 @@ impl FederationService {
                 let env_hash = message_envelope_hash(&envelope);
                 let tx = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)
                     .map_err(FederationError::DbError)?;
+                require_legacy_channel(&tx, state.server_id, &envelope.channel_id, Some(&envelope.message_id))?;
+
+                let tombstoned: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM federation_catchup_tombstones WHERE remote_instance_id = ?1 AND message_id = ?2 AND channel_id = ?3)",
+                    rusqlite::params![instance.id, &envelope.message_id, &envelope.channel_id],
+                    |row| row.get(0),
+                )?;
+                if tombstoned { return Ok(None); }
 
                 let receipt_existing: Option<String> = tx
                     .query_row(
@@ -1306,12 +1381,13 @@ impl FederationService {
                 tx.execute(
                     "INSERT INTO federation_message_receipts \
                      (remote_instance_id, message_id, envelope_hash, envelope_created_at, delivery_mode) \
-                     VALUES (?1, ?2, ?3, ?4, 'live')",
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
                     rusqlite::params![
                         instance.id,
                         &envelope.message_id,
                         &env_hash,
                         &envelope.created_at,
+                        delivery_mode.as_str(),
                     ],
                 )
                 .map_err(FederationError::DbError)?;
@@ -1328,7 +1404,7 @@ impl FederationService {
                     channel_id: envelope.channel_id.clone(),
                     message_id: envelope.message_id.clone(),
                     sender_pseudonym: identity.pseudonym_id.clone(),
-                    content: state.message_cipher().encrypt(&envelope.content),
+                    content: state.message_cipher().encrypt(&envelope.content)?,
                     reply_to_message_id: None,
                 };
 
@@ -1414,6 +1490,15 @@ impl FederationService {
         &self,
         envelope: FederatedRedactionEnvelope,
     ) -> Result<Option<String>, FederationError> {
+        self.receive_federated_redaction_with_mode(envelope, DeliveryMode::Live)
+            .await
+    }
+
+    pub(crate) async fn receive_federated_redaction_with_mode(
+        &self,
+        envelope: FederatedRedactionEnvelope,
+        delivery_mode: DeliveryMode,
+    ) -> Result<Option<String>, FederationError> {
         // 1. Envelope shape — cheap rejects before any DB I/O.
         if envelope.envelope_kind != annex_federation::FEDERATED_ENVELOPE_KIND_REDACTION {
             return Err(FederationError::Forbidden(format!(
@@ -1476,7 +1561,7 @@ impl FederationService {
                     chrono::Utc::now(),
                     fed_cfg.freshness_window_seconds,
                     fed_cfg.future_skew_seconds,
-                    DeliveryMode::Live,
+                    delivery_mode,
                 ) {
                     Ok(()) => {}
                     Err(FreshnessRejection::Unparseable) => {
@@ -1551,6 +1636,7 @@ impl FederationService {
                 let ledger_key = format!("{REDACTION_LEDGER_PREFIX}{}", envelope.message_id);
                 let tx = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)
                     .map_err(FederationError::DbError)?;
+                require_legacy_channel(&tx, state.server_id, &envelope.channel_id, Some(&envelope.message_id))?;
 
                 let prior: Option<String> = tx
                     .query_row(
@@ -1580,8 +1666,8 @@ impl FederationService {
                 tx.execute(
                     "INSERT INTO federation_message_receipts \
                      (remote_instance_id, message_id, envelope_hash, envelope_created_at, delivery_mode) \
-                     VALUES (?1, ?2, ?3, ?4, 'live')",
-                    rusqlite::params![instance.id, &ledger_key, &env_hash, &envelope.created_at],
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    rusqlite::params![instance.id, &ledger_key, &env_hash, &envelope.created_at, delivery_mode.as_str()],
                 )
                 .map_err(FederationError::DbError)?;
 
@@ -1594,6 +1680,9 @@ impl FederationService {
                         )
                         .map_err(FederationError::DbError)?;
                     }
+                    // The edit audit contains earlier message bodies. A remote
+                    // deletion must purge them in the same transaction too.
+                    tx.execute("DELETE FROM message_edits WHERE message_id = ?1", [&envelope.message_id])?;
                     // Re-read the (now blanked) row so the broadcast
                     // payload matches what the local-delete flow sends.
                     let updated = annex_channels::get_message(&tx, &envelope.message_id)
@@ -1671,6 +1760,15 @@ impl FederationService {
         &self,
         envelope: FederatedEditEnvelope,
     ) -> Result<Option<String>, FederationError> {
+        self.receive_federated_edit_with_mode(envelope, DeliveryMode::Live)
+            .await
+    }
+
+    pub(crate) async fn receive_federated_edit_with_mode(
+        &self,
+        envelope: FederatedEditEnvelope,
+        delivery_mode: DeliveryMode,
+    ) -> Result<Option<String>, FederationError> {
         // 1. Envelope shape — cheap rejects before any DB I/O.
         if envelope.envelope_kind != annex_federation::FEDERATED_ENVELOPE_KIND_EDIT {
             return Err(FederationError::Forbidden(format!(
@@ -1741,7 +1839,7 @@ impl FederationService {
                     chrono::Utc::now(),
                     fed_cfg.freshness_window_seconds,
                     fed_cfg.future_skew_seconds,
-                    DeliveryMode::Live,
+                    delivery_mode,
                 ) {
                     Ok(()) => {}
                     Err(FreshnessRejection::Unparseable) => {
@@ -1813,6 +1911,7 @@ impl FederationService {
                 let ledger_key = format!("{EDIT_LEDGER_PREFIX}{}", envelope.edit_id);
                 let tx = Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)
                     .map_err(FederationError::DbError)?;
+                require_legacy_channel(&tx, state.server_id, &envelope.channel_id, Some(&envelope.message_id))?;
 
                 let prior: Option<String> = tx
                     .query_row(
@@ -1841,8 +1940,8 @@ impl FederationService {
                 tx.execute(
                     "INSERT INTO federation_message_receipts \
                      (remote_instance_id, message_id, envelope_hash, envelope_created_at, delivery_mode) \
-                     VALUES (?1, ?2, ?3, ?4, 'live')",
-                    rusqlite::params![instance.id, &ledger_key, &env_hash, &envelope.created_at],
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    rusqlite::params![instance.id, &ledger_key, &env_hash, &envelope.created_at, delivery_mode.as_str()],
                 )
                 .map_err(FederationError::DbError)?;
 
@@ -1853,7 +1952,8 @@ impl FederationService {
                         // Both timestamps were minted by the origin;
                         // datetime() normalizes the two storage formats
                         // ('YYYY-MM-DD HH:MM:SS' vs RFC 3339).
-                        let stored_content = state.message_cipher().encrypt(&envelope.content);
+                        state.message_cipher().decrypt(&prior_content)?;
+                        let stored_content = state.message_cipher().encrypt(&envelope.content)?;
                         let updated_rows = tx
                             .execute(
                                 "UPDATE messages SET content = ?1, edited_at = datetime(?2) \
@@ -1875,7 +1975,7 @@ impl FederationService {
                             .map_err(FederationError::DbError)?;
                             let mut updated = annex_channels::get_message(&tx, &envelope.message_id)
                                 .map_err(FederationError::Channel)?;
-                            state.message_cipher().decrypt_in_place(&mut updated.content);
+                            state.message_cipher().decrypt_in_place(&mut updated.content)?;
                             Some((channel_id, updated))
                         } else {
                             tracing::debug!(
@@ -1941,14 +2041,10 @@ impl FederationService {
         let state = self.state.clone();
         let bundle_id_for_response = envelope.bundle.bundle_id.clone();
 
-        // The third element is the onward relay obligation: the bundle as this
-        // server will forward it, and the provenance to extend. `None` means do
-        // not relay — a duplicate, or an envelope with no signed chain.
-        #[allow(clippy::type_complexity)]
-        let (delivered_count, deliveries, onward): (
+        // Onward obligations commit with the bundle and authenticated receipt.
+        let (delivered_count, deliveries): (
             usize,
             Vec<(String, String)>,
-            Option<(annex_rtx::ReflectionSummaryBundle, annex_rtx::BundleProvenance)>,
         ) = tokio::task::spawn_blocking({
             let state = state.clone();
             move || {
@@ -2055,7 +2151,13 @@ impl FederationService {
                         // it for a `ReflectionSummariesOnly` peer — which is the
                         // whole reason it is a separate digest from
                         // `rtx_bundle_content_hash`.
-                        let payload = annex_rtx::origin_attestation_payload(
+                        let payload = match attestation.version {
+                            3 => annex_rtx::origin_attestation_payload_v3(&envelope.bundle,
+                                &envelope.provenance.origin_server, &attestation.reasoning_commitment, attestation.max_hops,
+                                attestation.contract.as_ref().ok_or_else(|| FederationError::Forbidden("RTX v3 origin contract is missing".into()))?),
+                            2 => annex_rtx::origin_attestation_payload_v2(&envelope.bundle,
+                                &envelope.provenance.origin_server, &attestation.reasoning_commitment, attestation.max_hops),
+                            1 if envelope.relaying_server == envelope.provenance.origin_server => annex_rtx::origin_attestation_payload(
                             &envelope.bundle.bundle_id,
                             &envelope.provenance.origin_server,
                             &envelope.bundle.source_pseudonym,
@@ -2064,7 +2166,10 @@ impl FederationService {
                             &annex_rtx::scope_invariant_content_digest(&envelope.bundle),
                             &attestation.reasoning_commitment,
                             attestation.max_hops,
-                        );
+                            ),
+                            1 => return Err(FederationError::Forbidden("legacy RTX origin attestation cannot authenticate tags and caveats across relays; origin must republish with attestation v2".into())),
+                            _ => return Err(FederationError::Forbidden("unsupported RTX origin attestation version".into())),
+                        };
                         let digest = <sha2::Sha256 as sha2::Digest>::digest(payload.as_bytes());
                         verify_ed25519(
                             &origin_instance.public_key_hex,
@@ -2210,6 +2315,9 @@ impl FederationService {
                         ));
                     }
                     None => {
+                        if envelope.relaying_server != envelope.provenance.origin_server {
+                            return Err(FederationError::Forbidden("legacy RTX without an origin attestation is accepted only directly from the origin; origin must upgrade to attestation v2 for relaying".into()));
+                        }
                         // A peer on an older build. Accepted on the legacy
                         // single-hop path below, delivered locally, and NOT
                         // re-relayed: an unsigned chain is not something to
@@ -2240,6 +2348,12 @@ impl FederationService {
                             "Federation agreement has invalid transfer scope".to_string(),
                         )
                     })?;
+                let policy = state.policy.read().map_err(|_| FederationError::LockPoisoned)?;
+                if !policy.federation_enabled {
+                    return Err(FederationError::Forbidden("RTX federation is disabled by server policy".into()));
+                }
+                let agreement_scope = crate::services::rtx_service::configured_transfer_scope(agreement_scope, &policy);
+                drop(policy);
 
                 if agreement_scope < VrpTransferScope::ReflectionSummariesOnly {
                     return Err(FederationError::Forbidden(
@@ -2319,6 +2433,23 @@ impl FederationService {
                     .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
                     .map_err(FederationError::DbError)?;
 
+                // Re-evaluate the accepted contract in the same writer snapshot
+                // as storage. A policy or handshake mutation cannot widen a
+                // bundle's earlier signed restriction set.
+                let negotiated = crate::services::rtx_contract::peer_contract(&tx, &state, instance.id)
+                    .map_err(FederationError::Forbidden)?;
+                if envelope.provenance.origin.as_ref().map(|o|o.version).unwrap_or(1)<3 && !negotiated.is_legacy_compatible() {
+                    return Err(FederationError::Forbidden("restricted RTX requires signed origin attestation v3; origin must re-handshake and republish".into()));
+                }
+                let rtx_contract = annex_rtx::provenance_contract(&envelope.provenance)
+                    .map_err(FederationError::Forbidden)?.intersect(&negotiated);
+                crate::services::rtx_contract::require_peer_support(&tx, &state, instance.id, &rtx_contract)
+                    .map_err(FederationError::Forbidden)?;
+                let now = crate::services::rtx_contract::now_ms().map_err(FederationError::Forbidden)?;
+                crate::services::rtx_contract::require_live(&tx, &state, &scoped_bundle.bundle_id, now)
+                    .map_err(FederationError::Forbidden)?;
+                annex_rtx::check_bundle_contract(&envelope.bundle, &rtx_contract, now).map_err(FederationError::Forbidden)?;
+
                 // Store bundle with provenance (idempotent on duplicate bundle_id).
                 let inserted = repo::insert_rtx_bundle(
                     &tx,
@@ -2337,14 +2468,16 @@ impl FederationService {
                 )
                 .map_err(FederationError::DbError)?;
 
+                crate::services::rtx_service::record_authenticated_rtx_receipt(
+                    &tx, state.server_id, &envelope, inserted,
+                )?;
+                crate::services::rtx_contract::retain(&tx, &state, &scoped_bundle, &rtx_contract)
+                    .map_err(FederationError::Forbidden)?;
                 if !inserted {
-                    // Duplicate bundle (idempotent) — already received.
-                    // Transaction is dropped without commit (implicit
-                    // rollback), which is correct because no writes
-                    // succeeded. And no onward relay: re-forwarding on every
-                    // duplicate is how a mesh with two paths between two
-                    // servers turns into a broadcast storm.
-                    return Ok((0_usize, Vec::<(String, String)>::new(), None));
+                    // An exact retry or a separately authenticated path to the
+                    // same origin never repeats fanout or onward relay.
+                    tx.commit().map_err(FederationError::DbError)?;
+                    return Ok((0_usize, Vec::<(String, String)>::new()));
                 }
 
                 // 7. Log the federated transfer (receive-side audit row).
@@ -2373,6 +2506,14 @@ impl FederationService {
                     .map_err(FederationError::DbError)?;
 
                 for sub in subscribers {
+                    let receiver_contract = match crate::services::rtx_contract::agent_contract(&tx, &state, &sub.pseudonym) {
+                        Ok(value) => rtx_contract.intersect(&value), Err(_) => continue,
+                    };
+                    if crate::services::rtx_contract::require_agent_support(&tx, &state, &sub.pseudonym, &scoped_bundle, &receiver_contract).is_err() { continue; }
+                    let receiver_expiry = match annex_rtx::check_bundle_contract(&scoped_bundle, &receiver_contract,
+                        crate::services::rtx_contract::now_ms().map_err(FederationError::Forbidden)?) {
+                        Ok(value) => value, Err(_) => continue,
+                    };
                     // Parse domain filters. Corrupted JSON → skip this
                     // subscriber entirely (reject) rather than defaulting to
                     // accept-all, which could cause unauthorized knowledge
@@ -2434,6 +2575,8 @@ impl FederationService {
                     let payload = serde_json::json!({
                         "type": "rtx_bundle",
                         "bundle": receiver_bundle,
+                        "contract": receiver_contract,
+                        "expiresAtMs": receiver_expiry,
                         "federated": true,
                         "provenance": envelope.provenance,
                     });
@@ -2478,28 +2621,12 @@ impl FederationService {
                     }
                 }
 
+                crate::services::rtx_service::enqueue_rtx_bundle_onwards(
+                    &tx, &state, &scoped_bundle, &envelope.provenance,
+                ).map_err(|e| FederationError::DbError(rusqlite::Error::InvalidParameterName(e)))?;
                 let count = deliveries.len();
                 tx.commit().map_err(FederationError::DbError)?;
-
-                // Only an envelope with a signed chain is extended. The
-                // provenance handed on is the one that arrived; the relay
-                // function appends this server's hop per peer, because the hop
-                // signature binds the destination and the post-scope content and
-                // so differs for each of them.
-                let onward = envelope
-                    .provenance
-                    .origin
-                    .as_ref()
-                    .map(|_| (scoped_bundle.clone(), envelope.provenance.clone()));
-
-                Ok::<
-                    (
-                        usize,
-                        Vec<(String, String)>,
-                        Option<(annex_rtx::ReflectionSummaryBundle, annex_rtx::BundleProvenance)>,
-                    ),
-                    FederationError,
-                >((count, deliveries, onward))
+                Ok::<_, FederationError>((count, deliveries))
             }
         })
         .await
@@ -2508,24 +2635,6 @@ impl FederationService {
         // 9. Deliver via WebSocket (async, outside spawn_blocking)
         for (pseudonym, json) in &deliveries {
             state.connection_manager.send(pseudonym, json.clone()).await;
-        }
-
-        // 10. Relay onwards. THIS is the second hop, and until it existed there
-        // was none: `receive_federated_rtx` stored the bundle, fanned it out to
-        // local subscribers, and stopped. No bundle had ever taken more than one
-        // hop, so the ROADMAP's "single-hop only" was accurate and the
-        // circular-relay check it recorded as complete was guarding a path
-        // nothing could take.
-        //
-        // After the commit, and only on a fresh insert: relaying before the
-        // write would forward a bundle this server might then fail to store, and
-        // relaying on a duplicate would re-forward on every arrival.
-        if let Some((bundle, provenance)) = onward {
-            tokio::spawn(crate::services::rtx_service::relay_rtx_bundle_onwards(
-                state.clone(),
-                bundle,
-                provenance,
-            ));
         }
 
         Ok((bundle_id_for_response, delivered_count))
@@ -2595,6 +2704,8 @@ pub fn enqueue_message_envelope(
     channel_id: &str,
     message: &annex_channels::Message,
 ) -> Result<usize, String> {
+    require_legacy_channel(conn, state.server_id, channel_id, Some(&message.message_id))
+        .map_err(|e| e.to_string())?;
     let allow_private_peers = state.federation_config.allow_private_peer_addresses;
 
     // 1. Fetch active peers.
@@ -2643,7 +2754,7 @@ pub fn enqueue_message_envelope(
         originating_server: pub_url.clone(),
         attestation_ref: attestation_ref.clone(),
         signature: String::new(), // placeholder for signing input only
-        created_at: message.created_at.clone(),
+        created_at: outbound_message_timestamp(&message.created_at)?,
     };
     let signature = state
         .signing_key
@@ -2661,7 +2772,10 @@ pub fn enqueue_message_envelope(
     // read. `MessageCipher::decrypt` passes unmarked values through unchanged,
     // so rows enqueued before this change still route and deliver — no
     // migration needed.
-    let stored_envelope = state.message_cipher().encrypt(&envelope_json);
+    let stored_envelope = state
+        .message_cipher()
+        .encrypt(&envelope_json)
+        .map_err(|error| error.to_string())?;
 
     // 4. Peers that should receive it, applying the transfer-scope and SSRF
     //    filters. The outbox worker does NOT re-evaluate these — they are
@@ -2700,11 +2814,13 @@ pub fn enqueue_message_envelope(
     //    silently.
     let mut enqueued = 0usize;
     for peer_id in peer_ids {
-        match conn.execute(
-            "INSERT OR IGNORE INTO federation_outbox \
-             (peer_instance_id, message_id, envelope_json, status, attempts, next_retry_at) \
-             VALUES (?1, ?2, ?3, 'pending', 0, datetime('now'))",
-            rusqlite::params![peer_id, &message.message_id, &stored_envelope],
+        match super::federation_catchup::enqueue_outbox(
+            conn,
+            peer_id,
+            &message.message_id,
+            &message.message_id,
+            channel_id,
+            &stored_envelope,
         ) {
             Ok(n) => enqueued += n,
             Err(e) => {
@@ -2771,136 +2887,93 @@ pub async fn relay_redaction(
     redacted_by: String,
     redaction_reason: &'static str,
 ) {
-    let allow_private_peers = state.federation_config.allow_private_peer_addresses;
-    let peers_result = tokio::task::spawn_blocking({
-        let state = state.clone();
-        let redactor = redacted_by.clone();
-        move || {
-            let conn = state.pool.get().map_err(|e| e.to_string())?;
-            let peers =
-                repo::list_active_peers(&conn, state.server_id).map_err(|e| e.to_string())?;
-
-            let mut attestation_ref = "annex:server:v1:unknown".to_string();
-            match repo::find_commitment_for_pseudonym(&conn, &redactor) {
-                Ok(Some((commitment, topic))) => {
-                    attestation_ref = format!("{topic}:{commitment}");
-                }
-                Ok(None) => {
-                    tracing::debug!(redactor = %redactor, "no commitment found for redactor, using unknown attestation ref");
-                }
-                Err(e) => {
-                    tracing::warn!(redactor = %redactor, "failed to look up commitment for redactor: {}", e);
-                }
-            }
-            Ok::<_, String>((peers, attestation_ref))
-        }
-    })
-    .await
-    .unwrap_or_else(|e| Err(e.to_string()));
-
-    let (peers, attestation_ref) = match peers_result {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::error!("Failed to fetch federation peers for redaction: {}", e);
-            return;
-        }
-    };
-    if peers.is_empty() {
-        return;
-    }
-
-    let envelope_for_signing = FederatedRedactionEnvelope {
-        envelope_kind: annex_federation::FEDERATED_ENVELOPE_KIND_REDACTION.to_string(),
-        envelope_version: annex_federation::FEDERATED_REDACTION_ENVELOPE_V1.to_string(),
-        message_id: message_id.clone(),
-        channel_id,
-        originating_server: state.get_public_url(),
-        redacted_by,
-        redaction_reason: redaction_reason.to_string(),
-        attestation_ref,
-        signature: String::new(), // placeholder for signing input only
-        created_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
-    };
-    let signature = state
-        .signing_key
-        .sign(redaction_signing_input(&envelope_for_signing).as_bytes());
-    let envelope = FederatedRedactionEnvelope {
-        signature: hex::encode(signature.to_bytes()),
-        ..envelope_for_signing
-    };
-
-    let envelope_json = match serde_json::to_string(&envelope) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!("failed to serialise outbound redaction envelope: {}", e);
-            return;
-        }
-    };
-    let outbox_key = format!("{REDACTION_LEDGER_PREFIX}{message_id}");
-
-    let peer_ids: Vec<i64> = peers
-        .into_iter()
-        .filter(|p| {
-            if p.transfer_scope == "NO_TRANSFER" {
-                return false;
-            }
-            if crate::api_link_preview::is_peer_url_disallowed(&p.base_url, allow_private_peers) {
-                tracing::warn!(
-                    peer = %p.base_url,
-                    "skipping redaction enqueue: peer base_url is not an allowed federation peer address"
-                );
-                return false;
-            }
-            true
-        })
-        .map(|p| p.id)
-        .collect();
-    if peer_ids.is_empty() {
-        return;
-    }
-
-    let pool = state.pool.clone();
-    let health = state.storage_health.clone();
-    // Stored encrypted, like the message envelope: a redaction envelope carries
-    // the message body (or its id and provenance) in cleartext, and
-    // `federation_outbox` rows outlive the retention sweep that deletes from
-    // `messages`. `background::start_federation_outbox_task` decrypts on read.
-    let stored_envelope = state.message_cipher().encrypt(&envelope_json);
-    let _ = tokio::task::spawn_blocking(move || {
-        let conn = match pool.get() {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::error!("redaction outbox enqueue: pool error: {}", e);
-                return;
-            }
-        };
-        for peer_id in peer_ids {
-            match conn.execute(
-                "INSERT OR IGNORE INTO federation_outbox \
-                 (peer_instance_id, message_id, envelope_json, status, attempts, next_retry_at) \
-                 VALUES (?1, ?2, ?3, 'pending', 0, datetime('now'))",
-                rusqlite::params![peer_id, &outbox_key, &stored_envelope],
-            ) {
-                Ok(_) => {}
-                Err(e) => {
-                    if crate::storage_health::interpret_sqlite_error(&health, &e) {
-                        tracing::error!(
-                            peer_instance_id = peer_id,
-                            "redaction outbox enqueue tripped storage gate: {}",
-                            e
-                        );
-                        break;
-                    }
-                    tracing::warn!(
-                        peer_instance_id = peer_id,
-                        "redaction outbox enqueue failed: {}",
-                        e
-                    );
-                }
-            }
-        }
+    let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let mut conn = state.pool.get().map_err(|e| e.to_string())?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+        enqueue_redaction_envelope(
+            &tx,
+            &state,
+            &channel_id,
+            &message_id,
+            &redacted_by,
+            redaction_reason,
+        )?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(())
     })
     .await;
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::error!(%error,"redaction enqueue failed"),
+        Err(error) => tracing::error!(%error,"redaction enqueue task failed"),
+    }
+}
+
+/// Same transaction as local deletion. Any peer enqueue failure rolls back
+/// the tombstone, edit-history purge, and attachment cleanup together.
+pub fn enqueue_redaction_envelope(
+    conn: &rusqlite::Connection,
+    state: &AppState,
+    channel_id: &str,
+    message_id: &str,
+    redacted_by: &str,
+    redaction_reason: &str,
+) -> Result<usize, String> {
+    require_legacy_channel(conn, state.server_id, channel_id, Some(message_id))
+        .map_err(|e| e.to_string())?;
+    let peers = repo::list_active_peers(conn, state.server_id).map_err(|e| e.to_string())?;
+    let attestation_ref = repo::find_commitment_for_pseudonym(conn, redacted_by)
+        .map_err(|e| e.to_string())?
+        .map(|(commitment, topic)| format!("{topic}:{commitment}"))
+        .unwrap_or_else(|| "annex:server:v1:unknown".into());
+    let mut envelope = FederatedRedactionEnvelope {
+        envelope_kind: annex_federation::FEDERATED_ENVELOPE_KIND_REDACTION.into(),
+        envelope_version: annex_federation::FEDERATED_REDACTION_ENVELOPE_V1.into(),
+        channel_id: channel_id.into(),
+        message_id: message_id.into(),
+        originating_server: state.get_public_url(),
+        redacted_by: redacted_by.into(),
+        redaction_reason: redaction_reason.into(),
+        attestation_ref,
+        created_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        signature: String::new(),
+    };
+    envelope.signature = hex::encode(
+        state
+            .signing_key
+            .sign(redaction_signing_input(&envelope).as_bytes())
+            .to_bytes(),
+    );
+    let stored = state
+        .message_cipher()
+        .encrypt(&serde_json::to_string(&envelope).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    let mut inserted = 0;
+    for peer in peers {
+        if peer.transfer_scope == "NO_TRANSFER"
+            || crate::api_link_preview::is_peer_url_disallowed(
+                &peer.base_url,
+                state.federation_config.allow_private_peer_addresses,
+            )
+        {
+            continue;
+        }
+        inserted += super::federation_catchup::enqueue_outbox(
+            conn,
+            peer.id,
+            &format!("{REDACTION_LEDGER_PREFIX}{message_id}"),
+            message_id,
+            channel_id,
+            &stored,
+        )
+        .map_err(|error| {
+            crate::storage_health::interpret_sqlite_error(&state.storage_health, &error);
+            error.to_string()
+        })?;
+    }
+    Ok(inserted)
 }
 
 /// Enqueue a signed edit envelope into the federation outbox for every
@@ -2916,54 +2989,58 @@ pub async fn relay_edit(
     edited_by: String,
     content: String,
 ) {
-    let allow_private_peers = state.federation_config.allow_private_peer_addresses;
-    let peers_result = tokio::task::spawn_blocking({
-        let state = state.clone();
-        let editor = edited_by.clone();
-        move || {
-            let conn = state.pool.get().map_err(|e| e.to_string())?;
-            let peers =
-                repo::list_active_peers(&conn, state.server_id).map_err(|e| e.to_string())?;
-
-            let mut attestation_ref = "annex:server:v1:unknown".to_string();
-            match repo::find_commitment_for_pseudonym(&conn, &editor) {
-                Ok(Some((commitment, topic))) => {
-                    attestation_ref = format!("{topic}:{commitment}");
-                }
-                Ok(None) => {
-                    tracing::debug!(editor = %editor, "no commitment found for editor, using unknown attestation ref");
-                }
-                Err(e) => {
-                    tracing::warn!(editor = %editor, "failed to look up commitment for editor: {}", e);
-                }
-            }
-            Ok::<_, String>((peers, attestation_ref))
-        }
+    // Compatibility entry point for callers that already persisted their edit.
+    // The normal message service calls enqueue_edit_envelope inside its own
+    // edit transaction, before returning success to the WebSocket handler.
+    let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let mut conn = state.pool.get().map_err(|e| e.to_string())?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+        enqueue_edit_envelope(&tx, &state, &channel_id, &message_id, &edited_by, &content)?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(())
     })
-    .await
-    .unwrap_or_else(|e| Err(e.to_string()));
-
-    let (peers, attestation_ref) = match peers_result {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::error!("Failed to fetch federation peers for edit relay: {}", e);
-            return;
-        }
-    };
-    if peers.is_empty() {
-        return;
+    .await;
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::error!(%error, "edit outbox enqueue failed"),
+        Err(error) => tracing::error!(%error, "edit outbox enqueue task failed"),
     }
+}
+
+/// Write a signed edit obligation using the caller's message transaction.
+/// Errors propagate so neither the edited body nor history can commit alone.
+pub fn enqueue_edit_envelope(
+    conn: &rusqlite::Connection,
+    state: &AppState,
+    channel_id: &str,
+    message_id: &str,
+    edited_by: &str,
+    content: &str,
+) -> Result<usize, String> {
+    require_legacy_channel(conn, state.server_id, channel_id, Some(message_id))
+        .map_err(|e| e.to_string())?;
+    let allow_private_peers = state.federation_config.allow_private_peer_addresses;
+    let peers = repo::list_active_peers(conn, state.server_id).map_err(|e| e.to_string())?;
+    if peers.is_empty() {
+        return Ok(0);
+    }
+    let attestation_ref = repo::find_commitment_for_pseudonym(conn, edited_by)
+        .map_err(|e| e.to_string())?
+        .map(|(commitment, topic)| format!("{topic}:{commitment}"))
+        .unwrap_or_else(|| "annex:server:v1:unknown".into());
 
     let edit_id = uuid::Uuid::new_v4().to_string();
     let envelope_for_signing = FederatedEditEnvelope {
         envelope_kind: annex_federation::FEDERATED_ENVELOPE_KIND_EDIT.to_string(),
         envelope_version: annex_federation::FEDERATED_EDIT_ENVELOPE_V1.to_string(),
         edit_id: edit_id.clone(),
-        message_id,
-        channel_id,
-        content,
+        message_id: message_id.to_owned(),
+        channel_id: channel_id.to_owned(),
+        content: content.to_owned(),
         originating_server: state.get_public_url(),
-        edited_by,
+        edited_by: edited_by.to_owned(),
         attestation_ref,
         signature: String::new(), // placeholder for signing input only
         created_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
@@ -2976,13 +3053,7 @@ pub async fn relay_edit(
         ..envelope_for_signing
     };
 
-    let envelope_json = match serde_json::to_string(&envelope) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!("failed to serialise outbound edit envelope: {}", e);
-            return;
-        }
-    };
+    let envelope_json = serde_json::to_string(&envelope).map_err(|e| e.to_string())?;
     let outbox_key = format!("{EDIT_LEDGER_PREFIX}{edit_id}");
 
     let peer_ids: Vec<i64> = peers
@@ -3003,56 +3074,50 @@ pub async fn relay_edit(
         .map(|p| p.id)
         .collect();
     if peer_ids.is_empty() {
-        return;
+        return Ok(0);
     }
 
-    let pool = state.pool.clone();
-    let health = state.storage_health.clone();
     // Stored encrypted, like the message envelope: a edit envelope carries
     // the message body (or its id and provenance) in cleartext, and
     // `federation_outbox` rows outlive the retention sweep that deletes from
     // `messages`. `background::start_federation_outbox_task` decrypts on read.
-    let stored_envelope = state.message_cipher().encrypt(&envelope_json);
-    let _ = tokio::task::spawn_blocking(move || {
-        let conn = match pool.get() {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::error!("edit outbox enqueue: pool error: {}", e);
-                return;
-            }
-        };
-        for peer_id in peer_ids {
-            match conn.execute(
-                "INSERT OR IGNORE INTO federation_outbox \
-                 (peer_instance_id, message_id, envelope_json, status, attempts, next_retry_at) \
-                 VALUES (?1, ?2, ?3, 'pending', 0, datetime('now'))",
-                rusqlite::params![peer_id, &outbox_key, &stored_envelope],
-            ) {
-                Ok(_) => {}
-                Err(e) => {
-                    if crate::storage_health::interpret_sqlite_error(&health, &e) {
-                        tracing::error!(
-                            peer_instance_id = peer_id,
-                            "edit outbox enqueue tripped storage gate: {}",
-                            e
-                        );
-                        break;
-                    }
-                    tracing::warn!(
-                        peer_instance_id = peer_id,
-                        "edit outbox enqueue failed: {}",
-                        e
-                    );
-                }
-            }
-        }
-    })
-    .await;
+    let stored_envelope = state
+        .message_cipher()
+        .encrypt(&envelope_json)
+        .map_err(|error| error.to_string())?;
+    let mut inserted = 0;
+    for peer_id in peer_ids {
+        inserted += super::federation_catchup::enqueue_outbox(
+            conn,
+            peer_id,
+            &outbox_key,
+            message_id,
+            channel_id,
+            &stored_envelope,
+        )
+        .map_err(|error| {
+            crate::storage_health::interpret_sqlite_error(&state.storage_health, &error);
+            format!("edit outbox enqueue failed for peer {peer_id}: {error}")
+        })?;
+    }
+    Ok(inserted)
 }
 
 #[cfg(test)]
 mod tests {
     use super::parse_attestation_ref;
+
+    #[test]
+    fn outbound_timestamps_preserve_the_original_instant_in_rfc3339() {
+        for (input, expected) in [
+            ("2020-01-01 03:04:05", "2020-01-01T03:04:05Z"),
+            ("2020-01-01 03:04:05.123", "2020-01-01T03:04:05.123Z"),
+            ("2020-01-01T04:04:05+01:00", "2020-01-01T03:04:05Z"),
+        ] {
+            assert_eq!(super::outbound_message_timestamp(input).unwrap(), expected);
+        }
+        assert!(super::outbound_message_timestamp("not a timestamp").is_err());
+    }
 
     #[test]
     fn parse_attestation_ref_simple() {

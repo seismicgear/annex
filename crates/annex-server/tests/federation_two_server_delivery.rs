@@ -91,6 +91,7 @@ fn build_state(
         ws_token_secret: Arc::new([0u8; 32]),
         voice_token_secret: Arc::new([0u8; 32]),
         federation_config,
+        federation_transport: Default::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
@@ -178,16 +179,19 @@ fn add_sender_nullifier(pool: &DbPool) {
         .unwrap();
 }
 
-fn a_message(id: &str, content: &str) -> annex_channels::Message {
+fn a_message(state: &AppState, id: &str, content: &str) -> annex_channels::Message {
+    let created_at = chrono::Utc::now().to_rfc3339();
+    let conn = state.pool.get().unwrap();
+    conn.execute("INSERT INTO messages(server_id,channel_id,message_id,sender_pseudonym,content,created_at) VALUES(?1,?2,?3,?4,?5,?6)",rusqlite::params![state.server_id, CHANNEL_ID,id,SENDER,state.message_cipher().encrypt(content).unwrap(),created_at]).unwrap();
     annex_channels::Message {
-        id: 0,
-        server_id: 0,
+        id: conn.last_insert_rowid(),
+        server_id: state.server_id,
         channel_id: CHANNEL_ID.to_string(),
         message_id: id.to_string(),
         sender_pseudonym: SENDER.to_string(),
         content: content.to_string(),
         reply_to_message_id: None,
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at,
         expires_at: None,
         edited_at: None,
         deleted_at: None,
@@ -203,6 +207,46 @@ fn count_messages(pool: &DbPool, message_id: &str) -> i64 {
             |r| r.get(0),
         )
         .unwrap()
+}
+
+#[tokio::test]
+async fn http_refusal_uses_response_status_and_never_parses_error_text_for_retry_policy() {
+    use annex_server::services::{channel_authority::AuthorityError, federation_delivery};
+    let key = SigningKey::from_bytes(&[73; 32]);
+    let (state, pool, server_id) = build_state("status-sender", key, "http://sender", true);
+    let router = axum::Router::new().route(
+        "/api/federation/channel-authority/operations",
+        axum::routing::post(|body: String| async move {
+            (
+                axum::http::StatusCode::from_u16(body.parse().unwrap()).unwrap(),
+                "HTTP 403: text is not a status",
+            )
+        }),
+    );
+    let (url, _) = serve(router).await;
+    let peer = add_peer(
+        &pool,
+        server_id,
+        &url,
+        &hex::encode(SigningKey::from_bytes(&[74; 32]).verifying_key().to_bytes()),
+        "FULL_TRANSFER",
+    );
+    for status in [400, 401, 403, 404, 409, 422, 408, 425, 429, 503] {
+        let error = federation_delivery::request_typed(
+            state.clone(),
+            peer,
+            "/api/federation/channel-authority/operations",
+            &status.to_string(),
+        )
+        .await
+        .unwrap_err();
+        let error = AuthorityError::from(error);
+        assert_eq!(error.status_code().as_u16(), status);
+        assert_eq!(
+            error.is_terminal_refusal(),
+            (400..500).contains(&status) && ![408, 425, 429].contains(&status)
+        );
+    }
 }
 
 fn outbox_row(pool: &DbPool, message_id: &str) -> Option<(String, i64, Option<String>)> {
@@ -261,7 +305,7 @@ async fn a_message_relayed_on_server_a_arrives_in_server_bs_database() {
     // A resolves its own sender's commitment from `zk_nullifiers`.
     add_sender_nullifier(&pool_a);
 
-    let msg = a_message("msg-crosses-the-wire", "hello from A");
+    let msg = a_message(&state_a, "msg-crosses-the-wire", "hello from A");
     annex_server::services::federation_service::relay_message(
         state_a.clone(),
         CHANNEL_ID.to_string(),
@@ -318,7 +362,7 @@ async fn a_private_peer_is_still_refused_when_the_flag_is_off() {
     annex_server::services::federation_service::relay_message(
         state_a.clone(),
         CHANNEL_ID.to_string(),
-        a_message("msg-refused", "should not leave"),
+        a_message(&state_a, "msg-refused", "should not leave"),
     )
     .await;
 
@@ -348,7 +392,7 @@ async fn the_flag_does_not_admit_a_non_http_peer_url() {
     annex_server::services::federation_service::relay_message(
         state_a.clone(),
         CHANNEL_ID.to_string(),
-        a_message("msg-file-scheme", "nope"),
+        a_message(&state_a, "msg-file-scheme", "nope"),
     )
     .await;
 
@@ -404,7 +448,7 @@ async fn a_message_queued_while_a_peer_is_down_is_delivered_when_it_returns() {
     add_peer(&pool_a, server_a_id, &url_b, &pub_b, "FULL_TRANSFER");
     add_sender_nullifier(&pool_a);
 
-    let msg = a_message("msg-during-outage", "sent while B was down");
+    let msg = a_message(&state_a, "msg-during-outage", "sent while B was down");
     annex_server::services::federation_service::relay_message(
         state_a.clone(),
         CHANNEL_ID.to_string(),
@@ -516,7 +560,7 @@ async fn re_delivering_the_same_message_does_not_duplicate_it() {
     add_federated_identity(&pool_b, server_b_id, a_on_b);
     add_sender_nullifier(&pool_a);
 
-    let msg = a_message("msg-delivered-twice", "exactly once, please");
+    let msg = a_message(&state_a, "msg-delivered-twice", "exactly once, please");
     annex_server::services::federation_service::relay_message(
         state_a.clone(),
         CHANNEL_ID.to_string(),
@@ -588,7 +632,7 @@ async fn an_unreachable_peer_does_not_block_a_healthy_one() {
     add_federated_identity(&pool_b, server_b_id, a_on_b);
     add_sender_nullifier(&pool_a);
 
-    let msg = a_message("msg-past-a-dead-peer", "B should still get this");
+    let msg = a_message(&state_a, "msg-past-a-dead-peer", "B should still get this");
     annex_server::services::federation_service::relay_message(
         state_a.clone(),
         CHANNEL_ID.to_string(),

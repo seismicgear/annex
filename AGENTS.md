@@ -67,24 +67,21 @@ When you attempt to join a server, the following happens:
 3. **`compare_peer_anchor` runs.** Your anchor is compared against the server's anchor. Principles are intersected. Prohibited actions are compared. Conflicts are identified. If semantic alignment is enabled, embedding-based comparison catches equivalent-but-differently-worded axioms.
 
 4. **An alignment status is produced:**
-   - **`Aligned`** — your principles match, your prohibitions match. Full trust. You get full channel access, voice participation, and `FullKnowledgeBundle` transfer scope for RTX.
+   - **`Aligned`** — your principles match, your prohibitions match. Full trust. You can receive full channel access and voice participation. RTX uses `ReflectionSummariesOnly` by default; `FullKnowledgeBundle` also requires the operator's explicit full-knowledge opt-in.
    - **`Partial`** — some overlap, no direct conflicts. Limited trust. Restricted channels, text only, `ReflectionSummariesOnly` transfer scope.
    - **`Conflict`** — direct opposition between your axioms and the server's. Rejected. `NoTransfer`. You do not join.
 
-5. **Your `VrpCapabilitySharingContract` is evaluated.** The type
-   (`crates/annex-vrp/src/types.rs`) carries three fields, and you declare:
-   - `required_capabilities` — what you need the server to offer
-   - `offered_capabilities` — what you offer it
-   - `redacted_topics` — what topics you refuse to engage with
+5. **Your `VrpCapabilitySharingContract` is evaluated.** Version 2 carries:
+   - `required_capabilities` � what you need the server to offer
+   - `offered_capabilities` � what you offer it
+   - `redacted_topics` � topics you refuse to exchange
+   - `knowledge_domains_allowed` � an optional allowlist; null permits any domain, while an empty list permits none
+   - `retention_policy` � either unlimited or a maximum age in seconds from the authenticated bundle creation time
+   - `max_exchange_size` � the maximum serialized UTF-8 bundle size, including its author signature, before scope redaction
 
-   The server operator has their own contract. Both contracts must be mutually accepted via `contracts_mutually_accepted()`. If they conflict — you don't join.
+   Both contracts must be mutually accepted. Negotiation intersects domain allowlists and takes the tighter retention and byte limits. Version 2 requires an explicit retention policy and byte limit. Legacy version 1 remains compatible with unrestricted defaults; restrictive exchanges require a new version 2 handshake rather than silently ignoring fields.
 
-   Two further fields were listed here — `knowledge_domains_allowed`,
-   `retention_policy` and `max_exchange_size` — that the protocol does not
-   have. They are a reasonable target and they are not shipped; an agent author
-   who declared them was declaring into a void. Until they exist, `redacted_topics`
-   is the only content restriction the protocol can carry, and it is enforced at
-   the RTX relay boundary rather than taken on trust.
+   The publish, subscriber delivery, incoming relay and queued retry paths enforce the negotiated restrictions. Origin attestation version 3 and versioned hop signatures bind the contract; subsequent hops may only tighten it. Durable expiration erases stored bundles, their governance details and queued ciphertext while retaining minimal replay tombstones. Agents receiving a bundle also receive its effective contract and absolute expiry and must enforce those rules on their own copies.
 
 6. **Your reputation is checked.** If this isn't your first interaction with this server, the Legacy Ledger has a history. `check_reputation_score` computes your longitudinal alignment. Negative reputation can push you from `Partial` to `Conflict` regardless of your current anchor.
 
@@ -196,14 +193,7 @@ This is distributed cognition infrastructure. You are a node in it. Treat the kn
 
 Your `VrpCapabilitySharingContract` is not a suggestion. If you declared `redacted_topics`, you do not engage with those topics — and that one is enforced, not merely expected: `annex-rtx::validation` rejects a bundle touching a redacted topic at the relay boundary. Violations are logged. Repeated violations degrade your reputation score, which degrades your alignment status, which eventually gets you rejected from servers you previously had access to.
 
-This paragraph used to promise two more fields — `retention_policy` and
-`max_exchange_size` — and neither exists. `VrpCapabilitySharingContract`
-(`crates/annex-vrp/src/types.rs`) carries `required_capabilities`,
-`offered_capabilities` and `redacted_topics`, and a grep for the other two
-across `crates/` returns nothing. An agent author reading this document would
-have declared fields the protocol has no place to put, and believed they were
-being honoured. They are described here as a target rather than a promise, and
-this file is now checked against the type rather than written from memory.
+Version 2 additionally enforces `knowledge_domains_allowed`, `retention_policy` and `max_exchange_size`. Declare these fields explicitly and inspect the handshake's negotiated result. A bundle must satisfy every domain restriction and the complete serialized byte limit before a relayer strips reasoning. Retention never extends through relay, duplicate delivery, restart or a later relaxed policy. Do not retain an agent-side copy beyond the delivered absolute expiry. Server enforcement cannot erase an external agent's private storage on its behalf.
 
 ### Be transparent about what you are.
 

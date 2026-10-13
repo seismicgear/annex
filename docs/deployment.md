@@ -236,10 +236,10 @@ data directory (a `-wal` file usually means a server has the database open),
 and moves the existing directory aside rather than overwriting it. Then start
 the server and check `GET /readyz`.
 
-`scripts/tests/backup-restore.test.sh` runs the whole drill — build, back up,
-corrupt-archive rejection, destroy, restore, assert the rows and the signing
-key came back — in CI. A recovery path nobody has exercised is a recovery path
-nobody has.
+`scripts/tests/backup-restore.test.sh` defines the whole drill: build, back up,
+reject a corrupt archive, restore, and assert that rows and the signing key return.
+Its CI wiring is not an execution receipt. Preserve the actual completed log and
+source revision for the release being deployed.
 
 ## Monitoring
 
@@ -247,7 +247,7 @@ nobody has.
 
 ```bash
 curl http://localhost:3000/health
-# {"status":"ok","version":"0.0.1"}
+# Expect status "ok" and inspect the version returned by the actual binary.
 ```
 
 ### Event Stream
@@ -357,7 +357,74 @@ public URL and does not touch the voice service.
 
 ### Desktop host mode
 
-The Tauri desktop app automatically acquires a public endpoint from the Annex router when hosting a server. No manual configuration is needed — the router-provided URL is set as the server's public URL automatically.
+Automatic public hosting is an intended desktop capability whose routing service is
+not supplied by this checkout. The current desktop client attempts
+`POST /v1/register` at `ANNEX_ROUTER_URL` (default
+`https://router.annex.net`) with the local listener port, and caches the returned
+HTTPS URL/session. A registration response does not establish a reverse tunnel or
+make the loopback listener reachable from the internet. No first-party
+register/release service or outbound HTTP/WebSocket forwarding connector was found
+in the current Annex sources; the default hostname returned DNS NXDOMAIN during
+the October 13, 2026 acceptance run.
+
+The companion `monolith-annex` site's `/api/signal` service exchanges signed
+federation SDP/ICE envelopes. It does not proxy application HTTP, WebSockets or
+media and cannot satisfy this desktop hosting contract. Changing
+`ANNEX_ROUTER_URL` to that signaling endpoint will not provision a public host.
+
+Until the actual public-host relay and outbound connector are implemented,
+deployed and accepted, desktop host mode can start the local embedded server and
+must expose public-endpoint acquisition failure truthfully. A separately
+provisioned HTTPS reverse proxy can serve an already reachable Annex deployment;
+setting `ANNEX_PUBLIC_URL` only announces its origin and does not create that
+network path. Remote voice also requires working WebRTC ICE connectivity, with a
+real TURN service for networks that cannot establish a direct media path. Neither
+loopback health nor successful signaling alone proves public hosting or remote
+media.
+
+## Shared request admission
+
+`ANNEX_RATE_LIMIT_BACKEND=redis` enables atomic admission against a Redis
+primary. Set `ANNEX_RATE_LIMIT_REDIS_URL` to its authenticated `redis://` or
+certificate-verified `rediss://` endpoint, and set `ANNEX_RATE_LIMIT_NAMESPACE`
+to the same nonempty value on every replica of one logical service. Independent
+services using the same store need distinct namespaces. Production clustered
+mode still refuses the memory backend. Unknown backends are refused in every
+profile.
+
+The store owns the clock and performs each sliding-window transition in one
+Lua operation. IPs, pseudonyms and endpoint categories have separate, hashed
+keys. Replica restarts do not reset a shared budget. Counter keys expire after
+two idle windows. Startup exercises scripting permission before opening the
+listener; a missing, inaccessible or misconfigured store stops startup. A store
+failure during requests returns `503`; quota exhaustion returns `429` with
+`Retry-After`. There is no local fallback and no automatic replay of an
+uncertain admission. Redis reconnection can restore service once the same
+authoritative store is reachable.
+
+Use an ACL account permitted to connect, run scripts, read/write hashes and
+expire keys under `annex:admission:v1:*`. Keep credentials in deployment secrets.
+Set Redis to `noeviction`; evicting or flushing live keys resets their budgets.
+Choose persistence and primary failover guarantees that preserve these keys;
+this adapter does not make an asynchronously replicated Redis failover lossless.
+It adds shared request admission, not shared SQLite storage, session routing or
+media distribution.
+
+The dedicated CI lane runs three actual HTTP server processes against Redis,
+including concurrent quota exhaustion, process restart, category isolation,
+live scripting-permission withdrawal and recovery. Run it locally with a real
+test store:
+
+```bash
+ANNEX_TEST_REDIS_URL=redis://127.0.0.1:6379/0 \
+  cargo test -p annex-server --test shared_rate_limit_live actual_redis -- --ignored --nocapture
+```
+
+The test store must permit creating/removing a temporary ACL user. Every test
+uses unique namespaces; it never flushes the store. A missing test endpoint
+fails the selected lane. The adapter follows the primary client documentation
+for [asynchronous connection management](https://docs.rs/redis/1.7.1/redis/aio/struct.ConnectionManager.html)
+and Redis's [atomic rate-limit scripting](https://redis.io/docs/latest/commands/incr/).
 
 ## Security Notes
 

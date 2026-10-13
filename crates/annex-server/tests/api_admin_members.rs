@@ -284,3 +284,112 @@ async fn an_inactive_moderator_does_not_count_as_cover() {
         "an account that cannot sign in is not a moderator anyone can fall back on",
     );
 }
+
+fn disk_state() -> (tempfile::TempDir, std::sync::Arc<annex_server::AppState>) {
+    let dir = tempfile::tempdir().unwrap();
+    let pool = annex_db::create_pool(
+        dir.path().join("moderation.db").to_str().unwrap(),
+        annex_db::DbRuntimeSettings::default(),
+    )
+    .unwrap();
+    {
+        let conn = pool.get().unwrap();
+        annex_db::run_migrations(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO servers(id,slug,label,policy_json) VALUES(1,'test','Test',?1)",
+            [serde_json::to_string(&annex_types::ServerPolicy::default()).unwrap()],
+        )
+        .unwrap();
+    }
+    let state = common::build_app_state(
+        pool,
+        annex_identity::MerkleTree::new(20).unwrap(),
+        Default::default(),
+    );
+    (dir, std::sync::Arc::new(state))
+}
+
+async fn apply_captured(
+    state: std::sync::Arc<annex_server::AppState>,
+    caller: annex_identity::PlatformIdentity,
+    target: &str,
+    body: &str,
+) -> StatusCode {
+    use axum::response::IntoResponse;
+    annex_server::api_admin::update_member_capabilities_handler(
+        axum::Extension(state),
+        axum::Extension(annex_server::middleware::IdentityContext(caller)),
+        axum::extract::Path(target.into()),
+        axum::Json(serde_json::from_str(body).unwrap()),
+    )
+    .await
+    .into_response()
+    .status()
+}
+
+#[tokio::test]
+async fn captured_moderator_context_cannot_mutate_after_revocation_or_demotion() {
+    let (_dir, state) = disk_state();
+    add_member(&state.pool, "moderator", true);
+    add_member(&state.pool, "surviving_mod", true);
+    add_member(&state.pool, "target", false);
+    let captured =
+        annex_identity::get_platform_identity(&state.pool.get().unwrap(), 1, "moderator").unwrap();
+    state
+        .pool
+        .get()
+        .unwrap()
+        .execute(
+            "UPDATE platform_identities SET token_epoch=1 WHERE pseudonym_id='moderator'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(
+        apply_captured(state.clone(), captured, "target", ALL_CAPS).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert!(!can_moderate(&state.pool, "target"));
+    let captured =
+        annex_identity::get_platform_identity(&state.pool.get().unwrap(), 1, "moderator").unwrap();
+    state
+        .pool
+        .get()
+        .unwrap()
+        .execute(
+            "UPDATE platform_identities SET can_moderate=0 WHERE pseudonym_id='moderator'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(
+        apply_captured(state.clone(), captured, "target", ALL_CAPS).await,
+        StatusCode::FORBIDDEN
+    );
+    assert!(!can_moderate(&state.pool, "target"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_captured_moderators_cannot_demote_every_moderator() {
+    let (_dir, state) = disk_state();
+    add_member(&state.pool, "mod_a", true);
+    add_member(&state.pool, "mod_b", true);
+    let a = annex_identity::get_platform_identity(&state.pool.get().unwrap(), 1, "mod_a").unwrap();
+    let b = annex_identity::get_platform_identity(&state.pool.get().unwrap(), 1, "mod_b").unwrap();
+    // Both requests have already passed middleware. The writer transaction
+    // must serialize the final privilege check, count, and update on disk.
+    let (left, right) = tokio::join!(
+        apply_captured(state.clone(), a, "mod_b", NO_MODERATE),
+        apply_captured(state.clone(), b, "mod_a", NO_MODERATE),
+    );
+    assert_eq!(
+        [left, right]
+            .iter()
+            .filter(|&&s| s == StatusCode::OK)
+            .count(),
+        1
+    );
+    assert!([left, right].contains(&StatusCode::FORBIDDEN));
+    let count:i64 = state.pool.get().unwrap().query_row(
+        "SELECT count(*) FROM platform_identities WHERE server_id=1 AND active=1 AND can_moderate=1", [], |row|row.get(0),
+    ).unwrap();
+    assert_eq!(count, 1);
+}

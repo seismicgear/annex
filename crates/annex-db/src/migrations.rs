@@ -7,6 +7,10 @@
 use rusqlite::Connection;
 use thiserror::Error;
 
+#[cfg(test)]
+#[path = "graph_membership_tests.rs"]
+mod graph_membership_tests;
+
 /// A single embedded migration.
 struct Migration {
     name: &'static str,
@@ -206,6 +210,70 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         name: "047_alignment_scorer_id",
         sql: include_str!("migrations/047_alignment_scorer_id.sql"),
+    },
+    Migration {
+        name: "048_federation_catchup",
+        sql: include_str!("migrations/048_federation_catchup.sql"),
+    },
+    Migration {
+        name: "049_deleted_message_edit_history",
+        sql: include_str!("migrations/049_deleted_message_edit_history.sql"),
+    },
+    Migration {
+        name: "051_rtx_durable_delivery",
+        sql: include_str!("migrations/051_rtx_durable_delivery.sql"),
+    },
+    Migration {
+        name: "052_device_key_epochs",
+        sql: include_str!("migrations/052_device_key_epochs.sql"),
+    },
+    Migration {
+        name: "053_upload_lifecycle",
+        sql: include_str!("migrations/053_upload_lifecycle.sql"),
+    },
+    Migration {
+        name: "054_channel_authority",
+        sql: include_str!("migrations/054_channel_authority.sql"),
+    },
+    Migration {
+        name: "055_federated_attachments",
+        sql: include_str!("migrations/055_federated_attachments.sql"),
+    },
+    Migration {
+        name: "056_device_certificates",
+        sql: include_str!("migrations/056_device_certificates.sql"),
+    },
+    Migration {
+        name: "057_channel_manifests",
+        sql: include_str!("migrations/057_channel_manifests.sql"),
+    },
+    Migration {
+        name: "058_rtx_contract_retention",
+        sql: include_str!("migrations/058_rtx_contract_retention.sql"),
+    },
+    Migration {
+        name: "059_authority_replication",
+        sql: include_str!("migrations/059_authority_replication.sql"),
+    },
+    Migration {
+        name: "060_upload_cancellations",
+        sql: include_str!("migrations/060_upload_cancellations.sql"),
+    },
+    Migration {
+        name: "061_federated_plaintext_attachments",
+        sql: include_str!("migrations/061_federated_plaintext_attachments.sql"),
+    },
+    Migration {
+        name: "062_graph_metadata_grants",
+        sql: include_str!("migrations/062_graph_metadata_grants.sql"),
+    },
+    Migration {
+        name: "063_graph_channel_membership",
+        sql: include_str!("migrations/063_graph_channel_membership.sql"),
+    },
+    Migration {
+        name: "064_authority_reconciliation",
+        sql: include_str!("migrations/064_authority_reconciliation.sql"),
     },
 ];
 
@@ -463,6 +531,144 @@ fn run_migrations_from_list(
 mod tests {
     use super::*;
     use rusqlite::Connection;
+
+    #[test]
+    fn certificate_migration_preserves_legacy_keys_and_makes_upgrade_atomic_immutable() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        run_migrations_from_list(&conn, migrations_before("056_device_certificates")).unwrap();
+        conn.execute_batch("INSERT INTO servers(id,slug,label,policy_json) VALUES(1,'cert','Certificate','{}');
+            INSERT INTO platform_identities(server_id,pseudonym_id,participant_type) VALUES(1,'alice','HUMAN');
+            INSERT INTO channels(server_id,channel_id,name,channel_type,e2e_enabled) VALUES(1,'cert','Certificate',json_quote('Text'),1);
+            INSERT INTO channel_members(server_id,channel_id,pseudonym_id) VALUES(1,'cert','alice');
+            INSERT INTO member_device_keys(server_id,pseudonym_id,device_id,x25519_pub_hex) VALUES(1,'alice','device','preserved-public-key');
+            INSERT INTO channel_key_wraps(server_id,channel_id,recipient_pseudonym_id,sender_pseudonym_id,key_epoch,wrapped_key_b64) VALUES(1,'cert','alice','alice',3,'preserved-opaque-history');").unwrap();
+        run_migrations(&conn).unwrap();
+        let read = || {
+            conn.query_row("SELECT d.x25519_pub_hex,d.device_certificate,d.certificate_sha256,s.revision FROM member_device_keys d JOIN channel_key_state s ON s.server_id=d.server_id WHERE d.device_id='device' AND s.channel_id='cert'", [], |row| Ok((row.get::<_,String>(0)?,row.get::<_,Option<String>>(1)?,row.get::<_,Option<String>>(2)?,row.get::<_,i64>(3)?))).unwrap()
+        };
+        let before = read();
+        assert_eq!(
+            (&before.0, &before.1, &before.2),
+            (&"preserved-public-key".to_string(), &None, &None)
+        );
+        // This tests storage constraints only. Cryptographic admission is
+        // independently covered by the actual-proof server/client tests.
+        let body = "opaque-verified-certificate-bytes";
+        let digest = "a".repeat(64);
+        conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+        conn.execute("UPDATE member_device_keys SET device_certificate=?1,certificate_sha256=?2 WHERE device_id='device'",[body,&digest]).unwrap();
+        assert_eq!(read().3, before.3 + 1);
+        conn.execute_batch("ROLLBACK").unwrap();
+        assert_eq!(
+            read(),
+            before,
+            "certificate and revision must roll back together"
+        );
+        conn.execute("UPDATE member_device_keys SET device_certificate=?1,certificate_sha256=?2 WHERE device_id='device'",[body,&digest]).unwrap();
+        let certified = read();
+        assert_eq!(certified.3, before.3 + 1);
+        conn.execute("UPDATE member_device_keys SET device_certificate=?1,certificate_sha256=?2 WHERE device_id='device'",[body,&digest]).unwrap();
+        assert_eq!(
+            read(),
+            certified,
+            "exact idempotence does not bump revision"
+        );
+        for sql in [
+            "UPDATE member_device_keys SET device_certificate=NULL,certificate_sha256=NULL WHERE device_id='device'",
+            "UPDATE member_device_keys SET device_certificate='replacement' WHERE device_id='device'",
+            "UPDATE member_device_keys SET certificate_sha256=NULL WHERE device_id='device'",
+        ] { assert!(conn.execute(sql,[]).is_err()); assert_eq!(read(),certified); }
+        let history: String = conn
+            .query_row(
+                "SELECT wrapped_key_b64 FROM channel_key_wraps WHERE channel_id='cert'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(history, "preserved-opaque-history");
+        assert_eq!(run_migrations(&conn).unwrap(), 0);
+    }
+
+    #[test]
+    fn device_epoch_upgrade_preserves_legacy_wraps_and_reserves_a_fresh_epoch() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        run_migrations_from_list(&conn, migrations_before("052_device_key_epochs")).unwrap();
+        conn.execute_batch("INSERT INTO servers(id,slug,label,policy_json) VALUES(1,'test','Test','{}');
+            INSERT INTO platform_identities(server_id,pseudonym_id,participant_type) VALUES(1,'alice','HUMAN'),(1,'bob','HUMAN');
+            INSERT INTO channels(server_id,channel_id,name,channel_type,e2e_enabled) VALUES(1,'legacy','Legacy',json_quote('Text'),1);
+            INSERT INTO channel_members(server_id,channel_id,pseudonym_id) VALUES(1,'legacy','alice');
+            INSERT INTO channel_key_wraps(server_id,channel_id,recipient_pseudonym_id,sender_pseudonym_id,key_epoch,wrapped_key_b64) VALUES(1,'legacy','alice','alice',3,'opaque-alice'),(1,'legacy','bob','alice',9,'opaque-bob');").unwrap();
+        run_migrations(&conn).unwrap();
+        let state:(i64,i64,String)=conn.query_row("SELECT current_epoch,required_epoch,history_policy FROM channel_key_state WHERE channel_id='legacy'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+        assert_eq!(
+            state,
+            (0, 10, "all_members".into()),
+            "reserve above all recipients, including departed members"
+        );
+        let wraps: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM channel_key_wraps WHERE wrapped_key_b64 LIKE 'opaque-%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let devices: i64 = conn
+            .query_row("SELECT COUNT(*) FROM channel_device_key_wraps", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            (wraps, devices),
+            (2, 0),
+            "never guess which device an old wrap targeted"
+        );
+        assert_eq!(run_migrations(&conn).unwrap(), 0);
+    }
+
+    #[test]
+    fn deleted_edit_bodies_are_purged_on_upgrade_and_future_soft_deletes() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations_from_list(&conn, migrations_before("049_deleted_message_edit_history"))
+            .unwrap();
+        conn.execute_batch("INSERT INTO servers (id,slug,label,policy_json) VALUES (1,'test','Test','{}');
+            INSERT INTO platform_identities (server_id,pseudonym_id,participant_type) VALUES (1,'author','HUMAN');
+            INSERT INTO channels (server_id,channel_id,name,channel_type,federation_scope) VALUES (1,'channel','Channel','\"Text\"','\"Local\"');
+            INSERT INTO messages (server_id,channel_id,message_id,sender_pseudonym,content,deleted_at) VALUES (1,'channel','old','author','',datetime('now'));
+            INSERT INTO message_edits (message_id,old_content) VALUES ('old','legacy private body');
+            INSERT INTO messages (server_id,channel_id,message_id,sender_pseudonym,content) VALUES (1,'channel','current','author','current body');
+            INSERT INTO message_edits (message_id,old_content) VALUES ('current','earlier body');").unwrap();
+        run_migrations(&conn).unwrap();
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM message_edits WHERE message_id='old'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 0);
+        let current: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM message_edits WHERE message_id='current'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            current, 1,
+            "retain valid edit history until its message is deleted"
+        );
+        conn.execute(
+            "UPDATE messages SET content='',deleted_at=datetime('now') WHERE message_id='current'",
+            [],
+        )
+        .unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM message_edits", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0);
+    }
 
     #[test]
     fn run_migrations_on_fresh_db() {

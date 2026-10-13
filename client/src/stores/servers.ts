@@ -276,7 +276,7 @@ export const useServersStore = create<ServersState>((set, get) => ({
   addRemoteServer: async (baseUrl: string) => {
     // Check if we already have this server
     const { servers } = get();
-    const existing = servers.find((s) => s.baseUrl === baseUrl);
+    const existing = servers.find((s) => s.baseUrl.replace(/\/+$/, '') === baseUrl.replace(/\/+$/, ''));
     if (existing) return existing;
 
     try {

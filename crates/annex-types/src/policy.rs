@@ -38,6 +38,23 @@ pub struct ServerPolicy {
     pub agent_required_capabilities: Vec<String>,
     /// Whether federation with other servers is enabled.
     pub federation_enabled: bool,
+    /// Permit RTX reflection summaries for accepted agents and peers.
+    #[serde(default = "default_true")]
+    pub allow_reflection_summaries: bool,
+    /// Explicit operator opt-in to full RTX knowledge for Aligned participants.
+    /// Partial alignment never receives full knowledge, even when enabled.
+    #[serde(default)]
+    pub allow_full_knowledge: bool,
+    /// RTX domain allowlist. None permits any domain; an empty list permits none.
+    #[serde(default)]
+    pub knowledge_domains_allowed: Option<Vec<String>>,
+    /// Maximum RTX lifetime measured from the authenticated author timestamp.
+    /// None permits indefinite retention. Hops can shorten, never extend it.
+    #[serde(default)]
+    pub rtx_retention_seconds: Option<u64>,
+    /// Maximum canonical serialized RTX bundle size in UTF-8 bytes.
+    #[serde(default = "default_max_exchange_size")]
+    pub max_exchange_size: u64,
     /// Default message retention period in days.
     pub default_retention_days: u32,
     /// Whether voice channels are enabled.
@@ -84,6 +101,10 @@ pub struct ServerPolicy {
 
 fn default_access_mode() -> String {
     "public".to_string()
+}
+
+fn default_max_exchange_size() -> u64 {
+    1_048_576
 }
 
 fn default_true() -> bool {
@@ -134,6 +155,11 @@ impl Default for ServerPolicy {
             agent_min_alignment_score: 0.06,
             agent_required_capabilities: Vec::new(),
             federation_enabled: true,
+            allow_reflection_summaries: true,
+            allow_full_knowledge: false,
+            knowledge_domains_allowed: None,
+            rtx_retention_seconds: None,
+            max_exchange_size: default_max_exchange_size(),
             default_retention_days: 30,
             voice_enabled: true,
             max_members: 1000,
@@ -188,5 +214,17 @@ mod tests {
         let json = serde_json::to_string(&policy).expect("should serialize");
         let decoded: ServerPolicy = serde_json::from_str(&json).expect("should deserialize");
         assert_eq!(policy, decoded);
+    }
+
+    #[test]
+    fn old_policy_documents_keep_conservative_rtx_defaults() {
+        let mut old = serde_json::to_value(ServerPolicy::default()).unwrap();
+        old.as_object_mut()
+            .unwrap()
+            .remove("allow_reflection_summaries");
+        old.as_object_mut().unwrap().remove("allow_full_knowledge");
+        let policy: ServerPolicy = serde_json::from_value(old).unwrap();
+        assert!(policy.allow_reflection_summaries);
+        assert!(!policy.allow_full_knowledge);
     }
 }

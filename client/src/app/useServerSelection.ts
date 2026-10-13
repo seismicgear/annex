@@ -134,6 +134,9 @@ export function useServerSelection({
           if (!cancelled && isCurrentFlow()) {
             await registerWithServer(slug, pendingInviteCode ?? undefined, serverPassword || undefined);
             if (!isCurrentFlow()) return;
+            // registerWithServer records refusal/proof failures in the store.
+            // Retain the admission inputs until membership really succeeds.
+            if (useIdentityStore.getState().phase !== 'ready') return;
             setPendingInviteCode(null);
             setPendingServerSlug(null);
             setPasswordRequired(false);

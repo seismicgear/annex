@@ -19,6 +19,10 @@ use crate::api_link_preview;
 use crate::api_ws;
 use crate::middleware::RateLimiter;
 
+/// Agent and channel keyed publishers, including the shared room transcriber.
+pub type VoiceSessionMap =
+    std::collections::HashMap<(String, String), Arc<annex_voice::AgentVoiceClient>>;
+
 /// Application state shared across all request handlers.
 #[derive(Clone)]
 pub struct AppState {
@@ -85,13 +89,13 @@ pub struct AppState {
     pub tts_service: Arc<annex_voice::TtsService>,
     /// STT service.
     pub stt_service: Arc<annex_voice::SttService>,
-    /// Active agent voice sessions (pseudonym -> client).
+    /// Active agent voice sessions ((pseudonym, channel) -> client).
+    /// The empty pseudonym is reserved for the room's shared caption transcriber.
     ///
     /// Uses `std::sync::RwLock` intentionally: all lock acquisitions are brief
     /// HashMap operations (get/insert/remove) that never span `.await` points,
     /// making a synchronous lock safe and more efficient than `tokio::sync::RwLock`.
-    pub voice_sessions:
-        Arc<RwLock<std::collections::HashMap<String, Arc<annex_voice::AgentVoiceClient>>>>,
+    pub voice_sessions: Arc<RwLock<VoiceSessionMap>>,
     /// Broadcast channel for public observe events (SSE stream).
     pub observe_tx: broadcast::Sender<annex_observe::PublicEvent>,
     /// Directory for uploaded files (images, etc.).
@@ -116,6 +120,11 @@ pub struct AppState {
     /// `Config::federation` at boot; the worker and the receive
     /// handler both read from here so policy can be tuned in one place.
     pub federation_config: crate::config::FederationConfig,
+    /// Selected data-channel transport, installed before workers start. Empty
+    /// means HTTP. Startup fails if the explicitly configured transport cannot
+    /// be installed; delivery never silently falls back between transports.
+    pub federation_transport:
+        Arc<std::sync::OnceLock<Arc<annex_federation::transport::FederationTransport>>>,
     /// Storage health thresholds + maintenance schedule.
     pub storage_config: crate::config::StorageConfig,
     /// Storage-health gate. Writes consult this; flipping to

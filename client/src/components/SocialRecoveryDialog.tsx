@@ -23,6 +23,7 @@ import { useDialogTitleId } from '@/lib/use-dialog-title-id';
 
 interface Props {
   onClose: () => void;
+  initialMode?: 'choose' | 'recover';
 }
 
 type Mode = 'choose' | 'setup' | 'setup-complete' | 'recover';
@@ -34,12 +35,12 @@ interface RecoveryShardEntry {
   payload: ShardPayload | null;
 }
 
-export function SocialRecoveryDialog({ onClose }: Props) {
+export function SocialRecoveryDialog({ onClose, initialMode = 'choose' }: Props) {
   const titleId = useDialogTitleId();
   const identity = useIdentityStore((s) => s.identity);
   const importBackup = useIdentityStore((s) => s.importBackup);
 
-  const [mode, setMode] = useState<Mode>('choose');
+  const [mode, setMode] = useState<Mode>(initialMode);
   const [error, setError] = useState<string | null>(null);
 
   // Setup state

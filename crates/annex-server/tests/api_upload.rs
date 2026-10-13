@@ -34,6 +34,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use serde_json::Value;
+use sha2::Digest;
 use std::net::SocketAddr;
 use tower::ServiceExt;
 
@@ -95,7 +96,7 @@ fn add_channel(pool: &DbPool, channel_id: &str, member: &str) {
     let conn = pool.get().unwrap();
     conn.execute(
         "INSERT INTO channels (channel_id, server_id, name, channel_type, federation_scope)
-         VALUES (?1, 1, 'uploads', 'Text', 'LOCAL_ONLY')",
+         VALUES (?1, 1, 'uploads', json_quote('Text'), json_quote('Local'))",
         [channel_id],
     )
     .unwrap();
@@ -173,39 +174,13 @@ async fn get(router: &axum::Router, uri: &str, caller: Option<&str>) -> (StatusC
 
 // ── Fixtures ─────────────────────────────────────────────────────────────
 
-/// A PNG with a `tEXt` metadata chunk, so stripping has something to remove.
+/// Actual encoded fixtures, independently decoded by Pillow/libwebp.
 fn png_with_text_chunk() -> Vec<u8> {
-    let mut png: Vec<u8> = vec![137, 80, 78, 71, 13, 10, 26, 10];
-    // IHDR (kept)
-    png.extend_from_slice(&13u32.to_be_bytes());
-    png.extend_from_slice(b"IHDR");
-    png.extend_from_slice(&[0u8; 13]);
-    png.extend_from_slice(&[0, 0, 0, 0]);
-    // tEXt (stripped) — the payload is the thing that must not survive
-    let text = b"Author\0annex-secret-name";
-    png.extend_from_slice(&(text.len() as u32).to_be_bytes());
-    png.extend_from_slice(b"tEXt");
-    png.extend_from_slice(text);
-    png.extend_from_slice(&[0, 0, 0, 0]);
-    // IEND (kept)
-    png.extend_from_slice(&0u32.to_be_bytes());
-    png.extend_from_slice(b"IEND");
-    png.extend_from_slice(&[0, 0, 0, 0]);
-    png
+    include_bytes!("fixtures/image-privacy/animated.png").to_vec()
 }
 
-/// A JPEG carrying an APP1/EXIF segment with a recognisable payload.
 fn jpeg_with_exif() -> Vec<u8> {
-    let mut jpeg: Vec<u8> = vec![0xFF, 0xD8];
-    // APP1 / EXIF (stripped). Length covers the two length bytes themselves.
-    let exif = b"Exif\0\0annex-gps-location";
-    let seg_len = (exif.len() + 2) as u16;
-    jpeg.extend_from_slice(&[0xFF, 0xE1]);
-    jpeg.extend_from_slice(&seg_len.to_be_bytes());
-    jpeg.extend_from_slice(exif);
-    // SOS + a scrap of scan data (kept)
-    jpeg.extend_from_slice(&[0xFF, 0xDA, 0x00, 0x02, 0x01, 0x02, 0x03]);
-    jpeg
+    include_bytes!("fixtures/image-privacy/progressive.jpg").to_vec()
 }
 
 fn webm() -> Vec<u8> {
@@ -397,8 +372,8 @@ async fn exif_is_gone_from_the_bytes_that_are_actually_served() {
     let original = jpeg_with_exif();
     assert!(
         original
-            .windows(b"annex-gps-location".len())
-            .any(|w| w == b"annex-gps-location"),
+            .windows(b"ANNEX_PRIVATE_METADATA_LOCATION_AUTHOR_12345".len())
+            .any(|w| w == b"ANNEX_PRIVATE_METADATA_LOCATION_AUTHOR_12345"),
         "fixture is wrong: the EXIF payload is not in the input",
     );
 
@@ -419,8 +394,8 @@ async fn exif_is_gone_from_the_bytes_that_are_actually_served() {
     // thing that changed.)
     assert!(
         !served
-            .windows(b"annex-gps-location".len())
-            .any(|w| w == b"annex-gps-location"),
+            .windows(b"ANNEX_PRIVATE_METADATA_LOCATION_AUTHOR_12345".len())
+            .any(|w| w == b"ANNEX_PRIVATE_METADATA_LOCATION_AUTHOR_12345"),
         "the EXIF payload survived to the served file — stripping ran on a \
          copy that was thrown away, or did not run at all",
     );
@@ -443,15 +418,21 @@ async fn png_text_chunks_do_not_survive_the_round_trip() {
     let json: Value = serde_json::from_str(&body).unwrap();
     let url = json["url"].as_str().expect("url");
 
-    let (_, served) = get(&a.router, url, Some("alice")).await;
+    let granted = format!("{url}?t={}", grant_for("alice", 0));
+    let (status, served) = get(&a.router, &granted, Some("alice")).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the privacy assertion must inspect an actual served image"
+    );
     assert!(
         !served.windows(4).any(|w| w == b"tEXt"),
         "a tEXt chunk survived the upload pipeline",
     );
     assert!(
         !served
-            .windows(b"annex-secret-name".len())
-            .any(|w| w == b"annex-secret-name"),
+            .windows(b"ANNEX_PRIVATE_METADATA_LOCATION_AUTHOR_12345".len())
+            .any(|w| w == b"ANNEX_PRIVATE_METADATA_LOCATION_AUTHOR_12345"),
         "the tEXt payload survived the upload pipeline",
     );
 }
@@ -474,7 +455,7 @@ async fn a_video_is_refused_when_the_policy_disables_videos() {
 
     assert_eq!(
         status,
-        StatusCode::BAD_REQUEST,
+        StatusCode::FORBIDDEN,
         "a policy toggle that the route never consults is a checkbox that \
          does nothing: {body}",
     );
@@ -638,7 +619,7 @@ fn add_e2e_channel(pool: &DbPool, channel_id: &str, member: &str) {
     let conn = pool.get().unwrap();
     conn.execute(
         "INSERT INTO channels (channel_id, server_id, name, channel_type, federation_scope, e2e_enabled)
-         VALUES (?1, 1, 'secret', 'Text', 'LOCAL_ONLY', 1)",
+         VALUES (?1, 1, 'secret', json_quote('Text'), json_quote('Local'), 1)",
         [channel_id],
     )
     .unwrap();
@@ -837,6 +818,21 @@ async fn a_removed_member_loses_access_to_attachments_they_had_seen() {
     let url = upload_and_get_path(&app, "chan-shared", "alice").await;
     let bob_url = format!("{url}?t={}", grant_for("bob", 0));
 
+    let (status, _) = get(&app.router, &bob_url, None).await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "an unpublished preview belongs only to its uploader"
+    );
+    // Establish the published-message fixture. Transactional association and
+    // author/epoch validation are tested independently in upload_lifecycle.
+    {
+        let conn = app.pool.get().unwrap();
+        let upload_id = url.rsplit('/').next().unwrap().split('.').next().unwrap();
+        conn.execute("INSERT INTO messages(server_id,channel_id,message_id,sender_pseudonym,content) VALUES(1,'chan-shared','published-upload','alice',?1)",[&url]).unwrap();
+        conn.execute("INSERT INTO message_uploads(server_id,message_id,upload_id) VALUES(1,'published-upload',?1)",[upload_id]).unwrap();
+    }
+
     let (status, _bytes) = get(&app.router, &bob_url, None).await;
     assert_eq!(status, StatusCode::OK, "bob should see it while a member");
 
@@ -920,4 +916,119 @@ async fn server_branding_is_still_public() {
         "server branding must remain fetchable without a grant"
     );
     assert!(!bytes.is_empty());
+}
+
+const IMAGE_PRIVACY_FIXTURES: [(&str, &str, &[u8]); 5] = [
+    (
+        "progressive.jpg",
+        "image/jpeg",
+        include_bytes!("fixtures/image-privacy/progressive.jpg"),
+    ),
+    (
+        "animated.png",
+        "image/png",
+        include_bytes!("fixtures/image-privacy/animated.png"),
+    ),
+    (
+        "animated.gif",
+        "image/gif",
+        include_bytes!("fixtures/image-privacy/animated.gif"),
+    ),
+    (
+        "animated.webp",
+        "image/webp",
+        include_bytes!("fixtures/image-privacy/animated.webp"),
+    ),
+    (
+        "still.webp",
+        "image/webp",
+        include_bytes!("fixtures/image-privacy/still.webp"),
+    ),
+];
+
+#[tokio::test]
+async fn every_supported_image_round_trips_as_independently_decoded_privacy_checked_bytes() {
+    let app = setup_upload_app(ServerPolicy::default()).await;
+    add_member(&app.pool, "uploader", true);
+    add_channel(&app.pool, "images", "uploader");
+    let independently_decoded: Value =
+        serde_json::from_str(include_str!("fixtures/image-privacy/decoded-cleaned.json")).unwrap();
+    for route in ["/api/admin/server/image", "/api/channels/images/upload"] {
+        for (name, mime, data) in IMAGE_PRIVACY_FIXTURES {
+            let (status, body) = post_multipart(
+                &app.router,
+                route,
+                "uploader",
+                multipart_body(name, mime, data),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{route} {name}: {body}");
+            let uploaded: Value = serde_json::from_str(&body).unwrap();
+            let url = uploaded["url"].as_str().unwrap();
+            let request_url = if route.contains("/channels/") {
+                format!("{url}?t={}", grant_for("uploader", 0))
+            } else {
+                url.to_string()
+            };
+            let (status, served) = get(&app.router, &request_url, Some("uploader")).await;
+            assert_eq!(status, StatusCode::OK, "{route} {name}");
+            let expected = independently_decoded["results"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| item["file"] == name)
+                .unwrap();
+            // The recorded output was decoded by Pillow/libwebp and compared
+            // with every original RGBA frame, duration, loop and color profile.
+            assert_eq!(
+                hex::encode(sha2::Sha256::digest(&served)),
+                expected["sha256"].as_str().unwrap(),
+                "{route} {name}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn malformed_images_are_refused_before_file_or_database_persistence() {
+    let app = setup_upload_app(ServerPolicy::default()).await;
+    add_member(&app.pool, "uploader", true);
+    add_channel(&app.pool, "images", "uploader");
+    for route in ["/api/admin/server/image", "/api/channels/images/upload"] {
+        for (name, mime, data) in IMAGE_PRIVACY_FIXTURES {
+            let (status, body) = post_multipart(
+                &app.router,
+                route,
+                "uploader",
+                multipart_body(name, mime, &data[..data.len() - 1]),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{route} {name}: {body}");
+            let rows: i64 = app
+                .pool
+                .get()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM uploads", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(rows, 0, "a malformed container must not persist a row");
+        }
+    }
+    fn files(path: &std::path::Path) -> usize {
+        std::fs::read_dir(path)
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                if entry.file_type().unwrap().is_dir() {
+                    files(&entry.path())
+                } else {
+                    1
+                }
+            })
+            .sum()
+    }
+    assert_eq!(
+        files(app._dir.path()),
+        0,
+        "a malformed container must not persist bytes"
+    );
 }

@@ -1,6 +1,6 @@
 //! Connection pool creation and configuration.
 
-use r2d2::Pool;
+use r2d2::{ManageConnection, Pool};
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::OpenFlags;
 use thiserror::Error;
@@ -25,7 +25,46 @@ impl Default for DbRuntimeSettings {
 }
 
 /// A type alias for the SQLite connection pool.
-pub type DbPool = Pool<SqliteConnectionManager>;
+pub type DbPool = Pool<DbConnectionManager>;
+
+/// A returned connection must have neither an unfinished transaction nor a
+/// reader-only policy. The upstream manager otherwise considers every returned
+/// SQLite connection reusable, even after rollback or guard restoration fails.
+#[derive(Debug)]
+pub struct DbConnectionManager {
+    inner: SqliteConnectionManager,
+}
+
+fn clean_connection(conn: &rusqlite::Connection) -> bool {
+    conn.is_autocommit()
+        && matches!(
+            conn.pragma_query_value(None, "query_only", |row| row.get::<_, bool>(0)),
+            Ok(false)
+        )
+}
+
+impl ManageConnection for DbConnectionManager {
+    type Connection = rusqlite::Connection;
+    type Error = rusqlite::Error;
+
+    fn connect(&self) -> Result<Self::Connection, Self::Error> {
+        self.inner.connect()
+    }
+
+    fn is_valid(&self, conn: &mut Self::Connection) -> Result<(), Self::Error> {
+        if !clean_connection(conn) {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_MISUSE),
+                Some("pooled connection retained transaction or read-only state".into()),
+            ));
+        }
+        self.inner.is_valid(conn)
+    }
+
+    fn has_broken(&self, conn: &mut Self::Connection) -> bool {
+        !clean_connection(conn)
+    }
+}
 
 /// Errors that can occur when creating the database pool.
 #[derive(Debug, Error)]
@@ -98,7 +137,7 @@ pub fn create_pool(db_path: &str, settings: DbRuntimeSettings) -> Result<DbPool,
 
     let pool = Pool::builder()
         .max_size(effective_max_size)
-        .build(manager)?;
+        .build(DbConnectionManager { inner: manager })?;
 
     Ok(pool)
 }
@@ -106,6 +145,60 @@ pub fn create_pool(db_path: &str, settings: DbRuntimeSettings) -> Result<DbPool,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pool_discards_unrestored_reader_policy_and_rolls_back_unfinished_writers() {
+        let directory = tempfile::tempdir().unwrap();
+        let filename = directory.path().join("reuse.sqlite");
+        let pool = create_pool(
+            filename.to_str().unwrap(),
+            DbRuntimeSettings {
+                pool_max_size: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute_batch("CREATE TABLE data(value INTEGER); INSERT INTO data VALUES(1);")
+                .unwrap();
+            // Exact persistent state after an unsuccessful read-guard restore.
+            conn.pragma_update(None, "query_only", true).unwrap();
+        }
+        {
+            let conn = pool.get_timeout(std::time::Duration::from_secs(5)).unwrap();
+            assert!(clean_connection(&conn));
+            conn.execute("UPDATE data SET value=2", []).unwrap();
+            // Exact persistent state after a transaction fails to roll back.
+            conn.execute_batch("BEGIN IMMEDIATE; UPDATE data SET value=99;")
+                .unwrap();
+        }
+        let conn = pool.get_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert!(clean_connection(&conn));
+        assert_eq!(
+            conn.query_row("SELECT value FROM data", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        conn.execute("UPDATE data SET value=3", []).unwrap();
+    }
+
+    #[test]
+    fn checkout_validation_rejects_dirty_state_instead_of_resetting_it_silently() {
+        let manager = DbConnectionManager {
+            inner: SqliteConnectionManager::memory(),
+        };
+        let mut conn = manager.connect().unwrap();
+        conn.pragma_update(None, "query_only", true).unwrap();
+        assert!(manager.is_valid(&mut conn).is_err());
+        assert!(manager.has_broken(&mut conn));
+        conn.pragma_update(None, "query_only", false).unwrap();
+        conn.execute_batch("BEGIN IMMEDIATE;").unwrap();
+        assert!(manager.is_valid(&mut conn).is_err());
+        assert!(manager.has_broken(&mut conn));
+        conn.execute_batch("ROLLBACK;").unwrap();
+        assert!(manager.is_valid(&mut conn).is_ok());
+    }
 
     #[test]
     fn create_in_memory_pool() {

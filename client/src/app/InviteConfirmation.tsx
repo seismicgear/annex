@@ -26,10 +26,14 @@ export function InviteConfirmation({
   invite,
   onAccept,
   onIgnore,
+  busy = false,
+  error = null,
 }: {
   invite: InvitePayload | null;
   onAccept: () => void;
   onIgnore: () => void;
+  busy?: boolean;
+  error?: string | null;
 }) {
   if (!invite) return null;
   return (
@@ -40,10 +44,11 @@ export function InviteConfirmation({
       aria-label="Invite confirmation"
     >
       <span>Invite received for {invite.server}</span>
-      <button className="primary-btn" onClick={onAccept}>
-        Join invite server
+      {error && <span role="alert">{error}</span>}
+      <button className="primary-btn" onClick={onAccept} disabled={busy}>
+        {busy ? 'Joining invite server…' : error ? 'Retry invite' : 'Join invite server'}
       </button>
-      <button className="secondary-btn" onClick={onIgnore}>
+      <button className="secondary-btn" onClick={onIgnore} disabled={busy}>
         Ignore
       </button>
     </div>

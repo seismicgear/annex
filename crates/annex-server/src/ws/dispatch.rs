@@ -87,6 +87,7 @@ pub(crate) async fn dispatch(ctx: &CommandContext<'_>, msg: IncomingMessage) {
             channel_id,
             content,
             reply_to,
+            attachment_ids,
             client_request_id,
         } => {
             // Per-session flood control. The error echoes clientRequestId
@@ -100,12 +101,21 @@ pub(crate) async fn dispatch(ctx: &CommandContext<'_>, msg: IncomingMessage) {
                 );
                 return;
             }
-            message::handle(ctx, channel_id, content, reply_to, client_request_id).await;
+            message::handle(
+                ctx,
+                channel_id,
+                content,
+                reply_to,
+                attachment_ids,
+                client_request_id,
+            )
+            .await;
         }
         IncomingMessage::EditMessage {
             channel_id,
             message_id,
             content,
+            attachment_ids,
             client_request_id,
         } => {
             if !ctx.command_rate_limiter.try_admit().await {
@@ -116,7 +126,15 @@ pub(crate) async fn dispatch(ctx: &CommandContext<'_>, msg: IncomingMessage) {
                 );
                 return;
             }
-            edit::handle(ctx, channel_id, message_id, content, client_request_id).await;
+            edit::handle(
+                ctx,
+                channel_id,
+                message_id,
+                content,
+                attachment_ids,
+                client_request_id,
+            )
+            .await;
         }
         IncomingMessage::DeleteMessage {
             channel_id,

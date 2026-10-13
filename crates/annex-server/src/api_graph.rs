@@ -1,7 +1,8 @@
 //! Graph API handlers.
 
 use crate::AppState;
-use annex_graph::{find_path_bfs, get_visible_profile, BfsPath, GraphError, GraphProfile};
+use crate::{api::ApiError, middleware::IdentityContext, services::graph_service};
+use annex_graph::{find_path_bfs, BfsPath, GraphProfile};
 use axum::{
     extract::{Extension, Path, Query},
     http::StatusCode,
@@ -99,23 +100,33 @@ pub async fn get_profile_handler(
         crate::middleware::IdentityContext,
     >,
     Path(target_pseudonym): Path<String>,
-) -> Result<Json<GraphProfile>, GraphApiError> {
-    let viewer_pseudonym = identity.pseudonym_id;
+) -> Result<Json<GraphProfile>, ApiError> {
+    Ok(Json(
+        graph_service::profile(state, identity, target_pseudonym).await?,
+    ))
+}
 
-    let result = tokio::task::spawn_blocking(move || {
-        let conn = state.pool.get().map_err(|e| {
-            GraphApiError::InternalServerError(format!("db connection failed: {e}"))
-        })?;
+pub async fn get_metadata_grants_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(IdentityContext(identity)): Extension<IdentityContext>,
+) -> Result<Json<graph_service::MetadataGrants>, ApiError> {
+    Ok(Json(graph_service::grants(state, identity).await?))
+}
 
-        get_visible_profile(&conn, state.server_id, &viewer_pseudonym, &target_pseudonym).map_err(
-            |e| match e {
-                GraphError::NodeNotFound(_) => GraphApiError::NotFound(e.to_string()),
-                _ => GraphApiError::InternalServerError(e.to_string()),
-            },
-        )
-    })
-    .await
-    .map_err(|e| GraphApiError::InternalServerError(format!("task join error: {e}")))??;
+pub async fn put_metadata_grant_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(IdentityContext(identity)): Extension<IdentityContext>,
+    Path(grantee): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    graph_service::set_grant(state, identity, grantee, true).await?;
+    Ok(Json(serde_json::json!({"granted":true})))
+}
 
-    Ok(Json(result))
+pub async fn delete_metadata_grant_handler(
+    Extension(state): Extension<Arc<AppState>>,
+    Extension(IdentityContext(identity)): Extension<IdentityContext>,
+    Path(grantee): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    graph_service::set_grant(state, identity, grantee, false).await?;
+    Ok(Json(serde_json::json!({"granted":false})))
 }

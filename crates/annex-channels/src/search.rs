@@ -25,6 +25,7 @@ pub fn scan_messages(
                 reply_to_message_id, created_at, expires_at, edited_at, deleted_at
          FROM messages
          WHERE server_id = ?1 AND channel_id = ?2 AND deleted_at IS NULL
+           AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
          ORDER BY created_at DESC, id DESC
          LIMIT ?3",
     )?;
@@ -56,6 +57,7 @@ pub fn search_messages(
              FROM messages
              WHERE server_id = ?1 AND channel_id = ?2 AND content LIKE ?3
                AND deleted_at IS NULL
+               AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
              ORDER BY created_at DESC
              LIMIT ?4",
         )?;
@@ -72,6 +74,7 @@ pub fn search_messages(
              FROM messages
              WHERE server_id = ?1 AND content LIKE ?2
                AND deleted_at IS NULL
+               AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
              ORDER BY created_at DESC
              LIMIT ?3",
         )?;

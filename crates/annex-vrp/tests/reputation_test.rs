@@ -32,6 +32,7 @@ fn test_reputation_scoring() {
 
     // Record an ALIGNED outcome
     let report_aligned = VrpValidationReport {
+        negotiated_rtx: None,
         alignment_status: VrpAlignmentStatus::Aligned,
         transfer_scope: VrpTransferScope::FullKnowledgeBundle,
         alignment_score: 1.0,
@@ -51,6 +52,7 @@ fn test_reputation_scoring() {
 
     // Record a CONFLICT outcome
     let report_conflict = VrpValidationReport {
+        negotiated_rtx: None,
         alignment_status: VrpAlignmentStatus::Conflict,
         transfer_scope: VrpTransferScope::NoTransfer,
         alignment_score: 0.0,
@@ -70,6 +72,7 @@ fn test_reputation_scoring() {
 
     // Record a PARTIAL outcome
     let report_partial = VrpValidationReport {
+        negotiated_rtx: None,
         alignment_status: VrpAlignmentStatus::Partial,
         transfer_scope: VrpTransferScope::ReflectionSummariesOnly,
         alignment_score: 0.5,
@@ -95,6 +98,7 @@ fn test_reputation_persistence() {
     let peer_pseudonym = "agent-persistent";
 
     let report = VrpValidationReport {
+        negotiated_rtx: None,
         alignment_status: VrpAlignmentStatus::Aligned,
         transfer_scope: VrpTransferScope::FullKnowledgeBundle,
         alignment_score: 1.0,
@@ -126,6 +130,7 @@ fn test_reputation_adversarial_oscillation() {
     let peer = "adversarial-oscillator";
 
     let report_aligned = VrpValidationReport {
+        negotiated_rtx: None,
         alignment_status: VrpAlignmentStatus::Aligned,
         transfer_scope: VrpTransferScope::FullKnowledgeBundle,
         alignment_score: 1.0,
@@ -133,6 +138,7 @@ fn test_reputation_adversarial_oscillation() {
         scoring: None,
     };
     let report_conflict = VrpValidationReport {
+        negotiated_rtx: None,
         alignment_status: VrpAlignmentStatus::Conflict,
         transfer_scope: VrpTransferScope::NoTransfer,
         alignment_score: 0.0,
@@ -165,6 +171,7 @@ fn test_reputation_sustained_conflict_floors() {
     let peer = "sustained-conflict";
 
     let report_conflict = VrpValidationReport {
+        negotiated_rtx: None,
         alignment_status: VrpAlignmentStatus::Conflict,
         transfer_scope: VrpTransferScope::NoTransfer,
         alignment_score: 0.0,
@@ -193,6 +200,7 @@ fn test_reputation_independent_per_pseudonym() {
     let server_id = 1;
 
     let report_conflict = VrpValidationReport {
+        negotiated_rtx: None,
         alignment_status: VrpAlignmentStatus::Conflict,
         transfer_scope: VrpTransferScope::NoTransfer,
         alignment_score: 0.0,
@@ -200,6 +208,7 @@ fn test_reputation_independent_per_pseudonym() {
         scoring: None,
     };
     let report_aligned = VrpValidationReport {
+        negotiated_rtx: None,
         alignment_status: VrpAlignmentStatus::Aligned,
         transfer_scope: VrpTransferScope::FullKnowledgeBundle,
         alignment_score: 1.0,

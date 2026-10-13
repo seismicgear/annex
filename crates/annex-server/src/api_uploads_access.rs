@@ -101,9 +101,15 @@ pub struct VerifiedGrant {
 
 /// Verify a grant's signature and expiry. Says nothing about membership.
 pub fn verify_upload_grant(token: &str, secret: &[u8; 32]) -> Option<VerifiedGrant> {
+    if token.len() > 1024 {
+        return None;
+    }
     let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(token)
         .ok()?;
+    if base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&raw) != token {
+        return None;
+    }
     let decoded = String::from_utf8(raw).ok()?;
     let (payload, sig) = decoded.rsplit_once('|')?;
 
@@ -117,14 +123,26 @@ pub fn verify_upload_grant(token: &str, secret: &[u8; 32]) -> Option<VerifiedGra
 
     let mut fields = payload.split('|');
     let pseudonym = fields.next()?.to_string();
-    let epoch: i64 = fields.next()?.parse().ok()?;
-    let expires: u64 = fields.next()?.parse().ok()?;
+    let encoded_epoch = fields.next()?;
+    let encoded_expiry = fields.next()?;
+    let epoch: i64 = encoded_epoch.parse().ok()?;
+    let expires: u64 = encoded_expiry.parse().ok()?;
+    if fields.next().is_some()
+        || pseudonym.is_empty()
+        || pseudonym.len() > 256
+        || pseudonym.chars().any(char::is_control)
+        || epoch < 0
+        || epoch.to_string() != encoded_epoch
+        || expires.to_string() != encoded_expiry
+    {
+        return None;
+    }
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    if expires <= now {
+    if expires <= now || expires > now.saturating_add(UPLOAD_GRANT_TTL_SECS) {
         return None;
     }
     Some(VerifiedGrant { pseudonym, epoch })
@@ -177,91 +195,68 @@ pub async fn serve_chat_upload(
         return refuse(StatusCode::BAD_REQUEST, "invalid attachment path");
     }
 
-    let state_for_db = state.clone();
-    let lookup = tokio::task::spawn_blocking(move || -> Result<Option<(String, i64)>, String> {
-        let conn = state_for_db.pool.get().map_err(|e| e.to_string())?;
-        use rusqlite::OptionalExtension;
-        // channel_id for the file, and the CURRENT epoch of the grant holder.
-        let channel: Option<String> = conn
-            .query_row(
-                "SELECT channel_id FROM uploads WHERE server_id = ?1 AND upload_id = ?2",
-                rusqlite::params![state_for_db.server_id, &upload_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|e| e.to_string())?
-            .flatten();
-        let epoch: Option<i64> = conn
-            .query_row(
-                "SELECT token_epoch FROM platform_identities \
-                 WHERE server_id = ?1 AND pseudonym_id = ?2 AND active = 1",
-                rusqlite::params![state_for_db.server_id, &grant.pseudonym],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|e| e.to_string())?;
-        let (Some(channel), Some(epoch)) = (channel, epoch) else {
-            return Ok(None);
-        };
-        let member =
-            annex_channels::is_member(&conn, state_for_db.server_id, &channel, &grant.pseudonym)
-                .map_err(|e| e.to_string())?;
-        Ok(member.then_some((channel, epoch)))
+    let relative = format!("chat/{category}/{filename}");
+    let lookup = tokio::task::spawn_blocking(move || {
+        crate::services::upload_service::read_upload_for_grant(
+            &state,
+            &relative,
+            &upload_id,
+            &grant.pseudonym,
+            grant.epoch,
+        )
     })
     .await;
-
-    let authorized = match lookup {
-        Ok(Ok(Some((_channel, current_epoch)))) => {
-            // A revoked grant is refused here too. Without this, revoking a
-            // member's sessions would stop their API calls and leave their
-            // in-flight attachment grants working until they expired.
-            if current_epoch != grant.epoch {
-                return refuse(StatusCode::UNAUTHORIZED, "grant has been revoked");
-            }
-            true
+    match lookup {
+        Ok(Ok((bytes, content_type))) => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, content_type),
+                (header::CACHE_CONTROL, "private, no-store".into()),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff".into()),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Ok(Err(error)) => ApiError::from(error).into_response(),
+        Err(error) => {
+            tracing::error!(error = %error, "attachment authorization/read task failed");
+            refuse(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
         }
-        Ok(Ok(None)) => false,
-        Ok(Err(e)) => {
-            tracing::error!(error = %e, "attachment authorization query failed");
-            return refuse(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "attachment authorization task failed");
-            return refuse(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
-        }
-    };
-
-    if !authorized {
-        // 404, not 403. A 403 confirms the file exists, which turns this
-        // endpoint into an oracle for whether a given upload id is real.
-        return refuse(StatusCode::NOT_FOUND, "not found");
-    }
-
-    let path = std::path::Path::new(&state.upload_dir)
-        .join("chat")
-        .join(&category)
-        .join(&filename);
-    match tokio::fs::read(&path).await {
-        Ok(bytes) => {
-            let ct = content_type_for(&filename);
-            (
-                StatusCode::OK,
-                [
-                    (header::CONTENT_TYPE, ct),
-                    // Never cached by a shared proxy: the URL carries a
-                    // credential and the response is per-member.
-                    (header::CACHE_CONTROL, "private, max-age=300"),
-                ],
-                bytes,
-            )
-                .into_response()
-        }
-        Err(_) => refuse(StatusCode::NOT_FOUND, "not found"),
     }
 }
 
 fn refuse(status: StatusCode, message: &str) -> Response {
     (status, message.to_string()).into_response()
+}
+
+pub async fn serve_server_image(
+    Extension(state): Extension<Arc<AppState>>,
+    AxumPath(filename): AxumPath<String>,
+) -> Response {
+    if !is_safe_segment(&filename) {
+        return refuse(StatusCode::BAD_REQUEST, "invalid image path");
+    }
+    match tokio::task::spawn_blocking(move || {
+        crate::services::upload_service::read_public_server_image(&state, &filename)
+    })
+    .await
+    {
+        Ok(Ok((bytes, mime))) => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, mime),
+                (header::CACHE_CONTROL, "no-store".into()),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff".into()),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Ok(Err(error)) => ApiError::from(error).into_response(),
+        Err(error) => {
+            tracing::error!(%error,"server image read failed");
+            refuse(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+        }
+    }
 }
 
 /// One path segment, no traversal, no separators.
@@ -277,6 +272,7 @@ fn is_safe_segment(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
 }
 
+#[cfg(test)]
 fn content_type_for(filename: &str) -> &'static str {
     match filename.rsplit('.').next().unwrap_or("") {
         "jpg" | "jpeg" => "image/jpeg",
@@ -334,6 +330,31 @@ mod tests {
         let forged = decoded.replacen("alice", "mallo", 1);
         let reencoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(forged);
         assert!(verify_upload_grant(&reencoded, &SECRET).is_none());
+    }
+
+    #[test]
+    fn signed_malformed_fields_and_unbounded_lifetimes_are_refused() {
+        let expiry = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 600;
+        for payload in [
+            format!("alice|0|{expiry}|extra"),
+            format!("|0|{expiry}"),
+            format!("alice|-1|{expiry}"),
+            format!("alice|00|{expiry}"),
+            format!("alice|0|0{expiry}"),
+        ] {
+            let token = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(format!("{payload}|{}", sign(&payload, &SECRET)));
+            assert!(verify_upload_grant(&token, &SECRET).is_none());
+        }
+        assert!(
+            verify_upload_grant(&generate_upload_grant("alice", &SECRET, 3600, 0), &SECRET)
+                .is_none()
+        );
+        assert!(verify_upload_grant(&"a".repeat(1025), &SECRET).is_none());
     }
 
     #[test]

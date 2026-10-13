@@ -151,86 +151,92 @@ impl SttService {
             return Ok(String::new());
         }
 
+        // In current whisper.cpp, stdin input selects output-file "-" and
+        // suppresses the ordinary stdout callback. Exit 0 plus empty stdout
+        // therefore does not mean silence. Request a concrete text artifact.
+        // The private directory is removed on success, error or cancellation;
+        // it never stores the source audio, only this short transcript window.
+        let output_dir = tempfile::Builder::new()
+            .prefix("annex-caption-")
+            .tempdir()
+            .map_err(|e| VoiceError::Stt(format!("Failed to create caption output: {e}")))?;
+        let output_base = output_dir.path().join("transcript");
+        let output_file = output_base.with_extension("txt");
         let mut command = Command::new(&self.binary_path);
-
-        // whisper.cpp CLI arguments:
-        //   -m <model_path>  path to the GGML model
-        //   -f -             read the input file from stdin
-        //   -nt              no timestamps, so stdout is the transcript
-        //                    and nothing else. Without it every line
-        //                    arrives as `[00:00:00.000 --> ...]   text`
-        //                    and the caption strip shows the brackets.
-        //
-        // `kill_on_drop(true)` ensures the child process is reaped if the
-        // tokio future is cancelled (e.g. on STT_TIMEOUT). Without it,
-        // every timeout leaks an orphaned whisper.cpp process — under a
-        // malicious workload that pushes many oversized payloads, the
-        // server eventually exhausts process slots / RAM.
         command
             .arg("-m")
             .arg(&self.model_path)
             .arg("-f")
-            .arg("-") // read from stdin
+            .arg("-")
             .arg("-nt")
+            .arg("-otxt")
+            .arg("-of")
+            .arg(&output_base)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
-
         let mut child = command
             .spawn()
             .map_err(|e| VoiceError::Stt(format!("Failed to spawn STT binary: {e}")))?;
-
         let mut stdin = child
             .stdin
             .take()
-            .ok_or_else(|| VoiceError::Stt("Failed to open stdin".to_string()))?;
-
-        // A child that exits before reading all of stdin closes the read
-        // end, and the next write returns `BrokenPipe`. That is the
-        // child's business, not a transcription failure: whisper.cpp
-        // bails out early on a header it dislikes, and the useful
-        // diagnosis is on its stderr and in its exit status, both of
-        // which we are about to read. Returning here instead threw away
-        // the real message and reported "Failed to write to stdin" —
-        // and, because the exit is a race against our own write, it did
-        // so only sometimes.
-        if let Err(e) = stdin.write_all(&wav).await {
-            if e.kind() != std::io::ErrorKind::BrokenPipe {
-                return Err(VoiceError::Stt(format!("Failed to write to stdin: {e}")));
-            }
-        }
-        drop(stdin); // Close stdin to signal EOF
-
-        let output = tokio::time::timeout(STT_TIMEOUT, child.wait_with_output())
-            .await
-            .map_err(|_| {
-                VoiceError::Stt(format!(
-                    "STT process timed out after {} seconds",
-                    STT_TIMEOUT.as_secs()
-                ))
-            })?
-            .map_err(|e| VoiceError::Stt(format!("Failed to read stdout: {e}")))?;
+            .ok_or_else(|| VoiceError::Stt("Failed to open stdin".into()))?;
+        // Drain both output pipes while writing input: model initialization can
+        // fill stderr before the provider reads stdin. The deadline also covers
+        // that write, so a stuck process cannot retain a room permit forever.
+        let output = tokio::time::timeout(STT_TIMEOUT, async {
+            let write = async {
+                let result = stdin.write_all(&wav).await;
+                drop(stdin);
+                match result {
+                    Ok(()) => Ok(()),
+                    Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+                    Err(e) => Err(VoiceError::Stt(format!("Failed to write to stdin: {e}"))),
+                }
+            };
+            let (written, output) = tokio::join!(write, child.wait_with_output());
+            written?;
+            output.map_err(|e| VoiceError::Stt(format!("Failed to read provider output: {e}")))
+        })
+        .await
+        .map_err(|_| {
+            VoiceError::Stt(format!(
+                "STT process timed out after {} seconds",
+                STT_TIMEOUT.as_secs()
+            ))
+        })??;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(VoiceError::Stt(format!("STT binary failed: {stderr}")));
         }
 
-        let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        Ok(text)
+        let metadata = std::fs::metadata(&output_file).map_err(|e| {
+            VoiceError::Stt(format!("STT exited without its requested transcript: {e}"))
+        })?;
+        if metadata.len() > 1024 * 1024 {
+            return Err(VoiceError::Stt("STT transcript exceeds size limit".into()));
+        }
+        let text = std::fs::read_to_string(&output_file)
+            .map_err(|e| VoiceError::Stt(format!("Failed to read STT transcript: {e}")))?;
+        Ok(text.trim().to_owned())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     fn write_script(dir: &std::path::Path, name: &str, body: &str, mode: u32) -> PathBuf {
-        let p = dir.join(name);
-        std::fs::write(&p, body).unwrap();
+        let p = crate::test_support::python_process(dir, name, body);
+        #[cfg(unix)]
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode)).unwrap();
+        #[cfg(not(unix))]
+        let _ = mode;
         p
     }
 
@@ -271,6 +277,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn a_binary_without_the_executable_bit_is_not_ready() {
         // The case `is_file()` could never see. An archive extracted
         // without modes, or a COPY from a context that lost them, leaves a
@@ -318,7 +325,7 @@ if rate != 16000: sys.stderr.write("sample rate %d, want 16000\n" % rate); sys.e
 if bits != 16: sys.stderr.write("bits %d\n" % bits); sys.exit(1)
 if chans != 1: sys.stderr.write("channels %d\n" % chans); sys.exit(1)
 frames = struct.unpack("<I", data[40:44])[0] // 2
-sys.stdout.write("ok %d frames" % frames)
+open(sys.argv[sys.argv.index("-of")+1]+".txt", "w").write("ok %d frames" % frames)
 "#,
             0o755,
         );
@@ -341,7 +348,7 @@ sys.stdout.write("ok %d frames" % frames)
         let bin = write_script(
             dir.path(),
             "whisper",
-            "#!/bin/sh\nprintf 'early exit transcript'\nexit 0\n",
+            "import sys\nopen(sys.argv[sys.argv.index('-of')+1]+'.txt','w').write('early exit transcript')\n",
             0o755,
         );
         let svc = SttService::new(&model, &bin);
@@ -362,7 +369,7 @@ sys.stdout.write("ok %d frames" % frames)
         let bin = write_script(
             dir.path(),
             "whisper",
-            "#!/bin/sh\necho 'error: failed to load model' >&2\nexit 1\n",
+            "import sys\nsys.stderr.write('error: failed to load model')\nsys.exit(1)\n",
             0o755,
         );
         let svc = SttService::new(&model, &bin);
@@ -379,6 +386,69 @@ sys.stdout.write("ok %d frames" % frames)
         // proves nothing was spawned.
         let svc = SttService::new("/nonexistent/model", "/nonexistent/whisper");
         assert_eq!(svc.transcribe(&[]).await.unwrap(), "");
+    }
+
+    #[tokio::test]
+    async fn successful_exit_without_requested_text_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = write_script(
+            dir.path(),
+            "whisper",
+            "import sys\nsys.stdin.buffer.read()\n",
+            0o755,
+        );
+        let service = SttService::new(dir.path().join("model"), bin);
+        let error = service.transcribe(&tone_pcm(0.3)).await.unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("without its requested transcript"));
+    }
+
+    #[tokio::test]
+    async fn model_logs_are_drained_before_provider_reads_audio() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = write_script(
+            dir.path(),
+            "whisper",
+            r#"import sys
+sys.stderr.write('model initialization\n' * 20000)
+sys.stderr.flush()
+sys.stdin.buffer.read()
+open(sys.argv[sys.argv.index('-of')+1]+'.txt','w').write('concurrent pipes completed')
+"#,
+            0o755,
+        );
+        let service = SttService::new(dir.path().join("model"), bin);
+        let result =
+            tokio::time::timeout(Duration::from_secs(5), service.transcribe(&tone_pcm(4.0)))
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(result, "concurrent pipes completed");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires actual Whisper binary, model, and known 48kHz speech PCM; run explicitly with ANNEX_REAL_STT_*"]
+    async fn real_provider_transcribes_known_speech_through_production_service() {
+        let binary =
+            std::env::var("ANNEX_REAL_STT_BINARY").expect("actual Whisper binary is required");
+        let model =
+            std::env::var("ANNEX_REAL_STT_MODEL").expect("actual Whisper model is required");
+        let speech = std::fs::read(
+            std::env::var("ANNEX_REAL_STT_PCM_48K")
+                .expect("known 48kHz mono s16 speech is required"),
+        )
+        .unwrap();
+        let service = SttService::new(model, binary);
+        let text = service.transcribe(&speech).await.unwrap().to_lowercase();
+        assert!(
+            text.contains("speech verification"),
+            "actual provider result: {text:?}"
+        );
+        assert!(
+            text.contains("channel carries"),
+            "actual provider result: {text:?}"
+        );
     }
 
     #[tokio::test]

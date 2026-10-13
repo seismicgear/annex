@@ -26,7 +26,7 @@ not deleted (`I-DESKTOP-2`).
 
 - **Windows runner** (CI: `windows-latest`).
 - **MSVC C++ toolchain** — Visual Studio with `Microsoft.VisualStudio.Workload.NativeDesktop`. Verified by `release-desktop.yml::Verify Visual Studio C++ workload`.
-- **Rust toolchain pinned** to `rust-toolchain.toml` (channel `1.88`) — `dtolnay/rust-toolchain@1.88` in `release-desktop.yml`.
+- **Rust toolchain pinned** to `rust-toolchain.toml` (channel `1.96.0`) — `dtolnay/rust-toolchain@1.96.0` in `release-desktop.yml`.
 - **Node.js 22** — for `scripts/build-desktop.js` and the ZK setup.
 - **CMake env knob**: `CMAKE_ARGS: -DCMAKE_POLICY_VERSION_MINIMUM=3.5` is set in CI; without it, an upstream cmake-using crate fails to configure on the modern CMake shipped on `windows-latest`.
 

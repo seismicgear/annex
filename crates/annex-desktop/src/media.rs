@@ -194,12 +194,11 @@ pub(crate) fn get_platform_media_status() -> PlatformMediaStatus {
         // Camera and Microphone are explicitly allowed. If the OS-level
         // privacy toggle is off, the user still needs to grant in Windows
         // Settings, but the webview layer will no longer silently deny.
-        let mut warnings = Vec::new();
-        warnings.push(
+        let warnings = vec![
             "Camera/microphone requests are handled by the app. If devices are not \
              detected, check Windows Settings → Privacy & security → Camera / Microphone."
                 .into(),
-        );
+        ];
         PlatformMediaStatus {
             screen_share_available: true,
             camera_mic_available: MediaReadiness::Available,
@@ -277,7 +276,7 @@ pub(crate) fn media_keepalive_on_window_event(window: &tauri::Window, event: &ta
                     // The async_runtime dispatches this closure to the main thread
                     // via PostMessage, so we are on the correct apartment.
                     unsafe {
-                        wv.controller().SetIsVisible(true.into()).ok();
+                        wv.controller().SetIsVisible(true).ok();
                     }
                 });
             }

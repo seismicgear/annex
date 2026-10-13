@@ -46,6 +46,221 @@ const ORIGIN_URL: &str = "http://origin.example";
 const MIDDLE_URL: &str = "http://middle.example";
 const RELAYER_URL: &str = "http://relayer.example";
 
+fn v3_envelope(env: &Env, id: &str) -> FederatedRtxEnvelope {
+    let handshake = annex_vrp::VrpFederationHandshake {
+        anchor_snapshot: annex_vrp::VrpAnchorSnapshot::new(&[], &[]).unwrap(),
+        capability_contract: annex_vrp::VrpCapabilitySharingContract::from_policy(
+            &ServerPolicy::default(),
+        ),
+        scorer: None,
+    };
+    env.state
+        .pool
+        .get()
+        .unwrap()
+        .execute(
+            "UPDATE federation_agreements SET remote_handshake_json=?1",
+            [serde_json::to_string(&handshake).unwrap()],
+        )
+        .unwrap();
+    let mut b = bundle(id, Some("controlled reasoning"));
+    b.created_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    let mut contract = annex_vrp::NegotiatedRtxContract {
+        knowledge_domains_allowed: Some(vec!["rust".into()]),
+        retention_seconds: Some(60),
+        max_exchange_size: 4096,
+    };
+    let commitment = annex_rtx::reasoning_commitment(b.reasoning_chain.as_deref());
+    let payload =
+        annex_rtx::origin_attestation_payload_v3(&b, ORIGIN_URL, &commitment, 3, &contract);
+    let attestation = OriginAttestation {
+        version: 3,
+        contract: Some(contract.clone()),
+        reasoning_commitment: commitment,
+        max_hops: 3,
+        signature: hex::encode(
+            env.origin
+                .key
+                .sign(&Sha256::digest(payload.as_bytes()))
+                .to_bytes(),
+        ),
+    };
+    let mut p = BundleProvenance {
+        origin_server: ORIGIN_URL.into(),
+        relay_path: vec![],
+        bundle_id: b.bundle_id.clone(),
+        hops: vec![],
+        origin: Some(attestation),
+    };
+    let mut previous = String::new();
+    for (index, peer) in [&env.origin, &env.relayer].iter().enumerate() {
+        if index == 1 {
+            contract.retention_seconds = Some(30);
+            b.reasoning_chain = None;
+        }
+        let next = if index == 0 { RELAYER_URL } else { LOCAL_URL };
+        let content_hash = rtx_bundle_content_hash(&b);
+        let payload = annex_rtx::relay_hop_payload_with_contract(
+            id,
+            ORIGIN_URL,
+            &p.origin.as_ref().unwrap().signature,
+            index,
+            &peer.url,
+            next,
+            &content_hash,
+            &previous,
+            Some(&contract),
+        );
+        previous = annex_rtx::chain_digest(&payload);
+        p.hops.push(RelayHop {
+            server: peer.url.clone(),
+            content_hash,
+            contract: Some(contract.clone()),
+            signature: hex::encode(
+                peer.key
+                    .sign(&Sha256::digest(payload.as_bytes()))
+                    .to_bytes(),
+            ),
+        });
+    }
+    p.relay_path = p.hops.iter().map(|h| h.server.clone()).collect();
+    envelope(b, p, &env.relayer)
+}
+
+#[tokio::test]
+async fn version_three_signed_contract_survives_reasoning_strip_and_tightens_retention_per_hop() {
+    let env = setup("FULL_KNOWLEDGE_BUNDLE", true, true);
+    let e = v3_envelope(&env, "v3-tightened");
+    let (status, body) = post(&env.state, &e).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let expiry: i64 = env
+        .state
+        .pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT expires_at_ms FROM rtx_bundles WHERE bundle_id='v3-tightened'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(expiry, e.bundle.created_at as i64 + 30_000);
+    assert_eq!(post(&env.state, &e).await.0, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn version_three_origin_and_hop_contract_tampering_fails_before_storage() {
+    for tamper in [
+        "origin-age",
+        "origin-size",
+        "origin-domains",
+        "hop-age",
+        "missing-hop",
+        "widened-hop",
+    ] {
+        let env = setup("FULL_KNOWLEDGE_BUNDLE", true, true);
+        let mut e = v3_envelope(&env, tamper);
+        match tamper {
+            "origin-age" => {
+                e.provenance
+                    .origin
+                    .as_mut()
+                    .unwrap()
+                    .contract
+                    .as_mut()
+                    .unwrap()
+                    .retention_seconds = Some(90)
+            }
+            "origin-size" => {
+                e.provenance
+                    .origin
+                    .as_mut()
+                    .unwrap()
+                    .contract
+                    .as_mut()
+                    .unwrap()
+                    .max_exchange_size = 8192
+            }
+            "origin-domains" => {
+                e.provenance
+                    .origin
+                    .as_mut()
+                    .unwrap()
+                    .contract
+                    .as_mut()
+                    .unwrap()
+                    .knowledge_domains_allowed = None
+            }
+            "hop-age" => {
+                e.provenance.hops[1]
+                    .contract
+                    .as_mut()
+                    .unwrap()
+                    .retention_seconds = Some(20)
+            }
+            "missing-hop" => e.provenance.hops[1].contract = None,
+            "widened-hop" => {
+                e.provenance.hops[1]
+                    .contract
+                    .as_mut()
+                    .unwrap()
+                    .retention_seconds = Some(120)
+            }
+            _ => unreachable!(),
+        }
+        let (status, _) = post(&env.state, &e).await;
+        assert_eq!(
+            status,
+            if matches!(tamper, "missing-hop" | "widened-hop") {
+                StatusCode::FORBIDDEN
+            } else {
+                StatusCode::UNAUTHORIZED
+            },
+            "{tamper}"
+        );
+        assert_eq!(
+            env.state
+                .pool
+                .get()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM rtx_bundles", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_restricted_v3_bundle_requires_the_immediate_peer_to_acknowledge_contract_v2() {
+    let env = setup("FULL_KNOWLEDGE_BUNDLE", true, true);
+    let e = v3_envelope(&env, "v3-unacknowledged");
+    env.state
+        .pool
+        .get()
+        .unwrap()
+        .execute(
+            "UPDATE federation_agreements SET remote_handshake_json=NULL",
+            [],
+        )
+        .unwrap();
+    let (status, body) = post(&env.state, &e).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(
+        env.state
+            .pool
+            .get()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM rtx_bundles", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
 /// A server in the mesh: a URL and the key its `instances` row publishes.
 struct Peer {
     url: String,
@@ -79,7 +294,10 @@ fn setup(transfer_scope: &str, known_middle: bool, require_chain: bool) -> Env {
     let origin = Peer::new(ORIGIN_URL);
     let middle = Peer::new(MIDDLE_URL);
     let relayer = Peer::new(RELAYER_URL);
-    let policy = ServerPolicy::default();
+    let policy = ServerPolicy {
+        allow_full_knowledge: true,
+        ..ServerPolicy::default()
+    };
 
     {
         let conn = pool.get().unwrap();
@@ -158,6 +376,7 @@ fn setup(transfer_scope: &str, known_middle: bool, require_chain: bool) -> Env {
         ws_token_secret: Arc::new([0u8; 32]),
         voice_token_secret: Arc::new([0u8; 32]),
         federation_config,
+        federation_transport: Default::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: Arc::new(annex_server::storage_health::StorageHealth::new()),
         trusted_proxy_depth: 0,
@@ -222,6 +441,7 @@ fn provenance_for(
         );
         prev_digest = annex_rtx::chain_digest(&payload);
         hops.push(RelayHop {
+            contract: None,
             server: peer.url.clone(),
             content_hash,
             signature: hex::encode(
@@ -275,6 +495,11 @@ async fn post(state: &AppState, envelope: &FederatedRtxEnvelope) -> (StatusCode,
     let body = axum::body::to_bytes(res.into_body(), usize::MAX)
         .await
         .unwrap();
+    if status == StatusCode::OK {
+        annex_server::background::drain_outbox_batch(Arc::new(state.clone()), 32)
+            .await
+            .unwrap();
+    }
     (status, String::from_utf8_lossy(&body).to_string())
 }
 
@@ -438,6 +663,7 @@ async fn a_chain_that_already_contains_this_server_is_refused() {
     p.hops.insert(
         1,
         RelayHop {
+            contract: None,
             server: LOCAL_URL.to_string(),
             content_hash: rtx_bundle_content_hash(&b),
             signature: "00".repeat(64),
@@ -491,6 +717,7 @@ async fn a_chain_past_the_protocol_ceiling_is_refused_before_any_signature_work(
         p.hops.insert(
             1,
             RelayHop {
+                contract: None,
                 server: format!("http://filler{i}.example"),
                 content_hash: "00".repeat(32),
                 signature: "00".repeat(64),
@@ -552,6 +779,79 @@ async fn a_relayer_may_strip_a_reasoning_chain_for_scope() {
     );
 }
 
+#[tokio::test]
+async fn origin_v2_rejects_tags_and_caveats_tampered_after_legitimate_reasoning_strip() {
+    for tags in [true, false] {
+        let env = setup("FULL_KNOWLEDGE_BUNDLE", true, true);
+        let original = bundle(
+            if tags { "v2-tags" } else { "v2-caveats" },
+            Some("original controlled reasoning"),
+        );
+        let attestation = attest(&original, &env.origin, 3);
+        assert_eq!(attestation.version, 2);
+        let mut changed = original.clone();
+        changed.reasoning_chain = None;
+        if tags {
+            changed.domain_tags.push("forged-filter-target".into());
+        } else {
+            changed.caveats.push("forged-caveat".into());
+        }
+        let provenance = provenance_for(
+            &changed,
+            &attestation,
+            &[(&env.origin, &original), (&env.relayer, &changed)],
+        );
+        let (status, body) = post(&env.state, &envelope(changed, provenance, &env.relayer)).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+        assert!(body.contains("origin attestation"), "{body}");
+        let count: i64 = env
+            .state
+            .pool
+            .get()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM rtx_bundles", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+}
+
+#[tokio::test]
+async fn legacy_v1_origin_cannot_authorize_malleable_fields_through_a_relayer() {
+    let env = setup("FULL_KNOWLEDGE_BUNDLE", true, true);
+    let original = bundle("v1-migration", Some("controlled reasoning"));
+    let commitment = annex_rtx::reasoning_commitment(original.reasoning_chain.as_deref());
+    let payload = annex_rtx::origin_attestation_payload(
+        &original.bundle_id,
+        ORIGIN_URL,
+        &original.source_pseudonym,
+        original.created_at,
+        &original.vrp_handshake_ref,
+        &annex_rtx::scope_invariant_content_digest(&original),
+        &commitment,
+        3,
+    );
+    let attestation = OriginAttestation {
+        contract: None,
+        version: 1,
+        signature: hex::encode(
+            env.origin
+                .key
+                .sign(&Sha256::digest(payload.as_bytes()))
+                .to_bytes(),
+        ),
+        reasoning_commitment: commitment,
+        max_hops: 3,
+    };
+    let provenance = provenance_for(
+        &original,
+        &attestation,
+        &[(&env.origin, &original), (&env.relayer, &original)],
+    );
+    let (status, body) = post(&env.state, &envelope(original, provenance, &env.relayer)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(body.contains("republish with attestation v2"), "{body}");
+}
+
 // ── Compatibility ─────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -578,9 +878,10 @@ async fn an_envelope_with_no_chain_is_accepted_while_the_shim_is_on() {
     // an envelope is delivered locally and NOT re-relayed — an unsigned chain is
     // not something to extend.
     let env = setup("FULL_KNOWLEDGE_BUNDLE", true, false);
-    let b = bundle("mh-legacy-ok", None);
+    let mut b = bundle("mh-legacy-ok", None);
+    b.source_server = RELAYER_URL.to_string();
     let p = BundleProvenance {
-        origin_server: ORIGIN_URL.to_string(),
+        origin_server: RELAYER_URL.to_string(),
         relay_path: vec![env.relayer.url.clone()],
         bundle_id: b.bundle_id.clone(),
         hops: Vec::new(),
@@ -798,9 +1099,10 @@ async fn an_unsigned_legacy_envelope_is_not_extended() {
         "FULL_KNOWLEDGE_BUNDLE",
     );
 
-    let b = bundle("mh-legacy-not-extended", None);
+    let mut b = bundle("mh-legacy-not-extended", None);
+    b.source_server = RELAYER_URL.to_string();
     let p = BundleProvenance {
-        origin_server: ORIGIN_URL.to_string(),
+        origin_server: RELAYER_URL.to_string(),
         relay_path: vec![env.relayer.url.clone()],
         bundle_id: b.bundle_id.clone(),
         hops: Vec::new(),

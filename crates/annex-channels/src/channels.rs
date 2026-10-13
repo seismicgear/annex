@@ -208,6 +208,11 @@ pub fn delete_channel(conn: &Connection, channel_id: &str) -> Result<(), Channel
         "DELETE FROM channel_key_wraps WHERE channel_id = ?1",
         [channel_id],
     )?;
+    tx.execute(
+        "DELETE FROM graph_edges WHERE to_node = 'annex:channel:' || server_id || ':' || ?1 AND kind IN ('AGENT_SERVING', 'MEMBER_OF', 'MODERATES') \
+         AND server_id = (SELECT server_id FROM channels WHERE channel_id = ?1)",
+        [channel_id],
+    )?;
 
     let count = tx.execute("DELETE FROM channels WHERE channel_id = ?1", [channel_id])?;
     if count == 0 {

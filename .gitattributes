@@ -1,2 +1,4 @@
 # Force LF line endings for shell scripts so they work in Docker
 *.sh text eol=lf
+# Hash-pinned ceremony JSON must retain its exact committed bytes on Windows.
+zk/artifacts/**/*.json text eol=lf

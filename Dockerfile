@@ -50,19 +50,19 @@ ARG ANNEX_BUILD_PROFILE=production
 
 # ── Build server ──
 # Rust toolchain version is pinned to match rust-toolchain.toml and the
-# `dtolnay/rust-toolchain@1.88` step in .github/workflows/release-desktop.yml.
+# `dtolnay/rust-toolchain@1.96.0` step in .github/workflows/release-desktop.yml.
 # Drift between CI and Docker has bitten us before — change all three together
 # or not at all.
-FROM rust:1.88-slim-bookworm AS server-builder
+FROM rust:1.96.0-slim-bookworm AS server-builder
 
 WORKDIR /build
 COPY rust-toolchain.toml ./
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 
-# Install build dependencies for openssl-sys
+# Build OpenSSL bindings and the pinned reference Opus decoder.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    pkg-config libssl-dev \
+    pkg-config libssl-dev cmake build-essential libclang-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Build release binary
@@ -387,6 +387,7 @@ WORKDIR /app
 
 # Server binary
 COPY --from=server-builder /build/target/release/annex-server /app/annex-server
+COPY THIRD_PARTY_NOTICES.md /app/THIRD_PARTY_NOTICES.md
 
 # Client static files
 COPY --from=client-builder /build/client/dist /app/client/dist

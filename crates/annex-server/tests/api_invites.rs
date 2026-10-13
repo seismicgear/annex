@@ -78,6 +78,7 @@ fn build_state_parts() -> (axum::Router, annex_db::DbPool, Arc<RwLock<ServerPoli
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: Arc::new([0u8; 32]),
         voice_token_secret: Arc::new([0u8; 32]),
+        federation_transport: Default::default(),
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),

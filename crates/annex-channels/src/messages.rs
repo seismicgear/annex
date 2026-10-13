@@ -119,6 +119,7 @@ pub fn list_messages(
                 reply_to_message_id, created_at, expires_at, edited_at, deleted_at
             FROM messages
             WHERE server_id = ?1 AND channel_id = ?2
+              AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
               AND (created_at < ?3 OR (created_at = ?3 AND id < ?4))
             ORDER BY created_at DESC, id DESC
             LIMIT {limit}"
@@ -140,6 +141,7 @@ pub fn list_messages(
                 reply_to_message_id, created_at, expires_at, edited_at, deleted_at
             FROM messages
             WHERE server_id = ?1 AND channel_id = ?2
+              AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
             ORDER BY created_at DESC, id DESC
             LIMIT {limit}"
         );
@@ -183,7 +185,28 @@ pub fn edit_message(
     // critical section needs.
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
 
-    let msg = get_message(&tx, message_id)?;
+    let updated = edit_message_in_transaction(&tx, message_id, sender_pseudonym, new_content)?;
+    tx.commit()?;
+    Ok(updated)
+}
+
+/// Edit inside the caller's existing IMMEDIATE transaction. This lets the
+/// server commit the body, edit history, and signed federation obligation
+/// atomically rather than acknowledging an edit before it can be relayed.
+pub fn edit_message_in_transaction(
+    tx: &Transaction<'_>,
+    message_id: &str,
+    sender_pseudonym: &str,
+    new_content: &str,
+) -> Result<Message, ChannelError> {
+    let msg = get_message(tx, message_id)?;
+
+    let readable:bool=tx.query_row("SELECT expires_at IS NULL OR datetime(expires_at)>datetime('now') FROM messages WHERE message_id=?1",[message_id],|r|r.get::<_,Option<bool>>(0).map(|v|v.unwrap_or(false)))?;
+    if !readable {
+        return Err(ChannelError::NotFound(format!(
+            "message {message_id} has expired"
+        )));
+    }
 
     // Ownership check
     if msg.sender_pseudonym != sender_pseudonym {
@@ -221,8 +244,7 @@ pub fn edit_message(
         params![new_content, message_id],
     )?;
 
-    tx.commit()?;
-    get_message(conn, message_id)
+    get_message(tx, message_id)
 }
 
 /// Soft-deletes a message, enforcing ownership and the edit time window.
@@ -234,12 +256,20 @@ pub fn delete_message(
     message_id: &str,
     sender_pseudonym: &str,
 ) -> Result<Message, ChannelError> {
-    // BEGIN IMMEDIATE — serialize concurrent edit/delete operations.
-    // See `edit_message` above for the full lost-update analysis;
-    // delete is the symmetric path and shares the bug under DEFERRED.
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let message = delete_message_in_transaction(&tx, message_id, sender_pseudonym)?;
+    tx.commit()?;
+    Ok(message)
+}
 
-    let msg = get_message(&tx, message_id)?;
+/// Delete under the caller's existing writer transaction, so tombstone relay
+/// and attachment cleanup obligations commit with the removed content.
+pub fn delete_message_in_transaction(
+    tx: &Transaction<'_>,
+    message_id: &str,
+    sender_pseudonym: &str,
+) -> Result<Message, ChannelError> {
+    let msg = get_message(tx, message_id)?;
 
     // Ownership check
     if msg.sender_pseudonym != sender_pseudonym {
@@ -287,8 +317,7 @@ pub fn delete_message(
         params![message_id],
     )?;
 
-    tx.commit()?;
-    get_message(conn, message_id)
+    get_message(tx, message_id)
 }
 
 /// Returns the edit history for a message in a channel (oldest first).
@@ -313,6 +342,8 @@ pub fn get_edit_history(
          FROM message_edits e
          JOIN messages m ON m.message_id = e.message_id
          WHERE e.message_id = ?1 AND m.channel_id = ?2 AND m.server_id = ?3
+           AND m.deleted_at IS NULL
+           AND (m.expires_at IS NULL OR datetime(m.expires_at) > datetime('now'))
          ORDER BY e.edited_at ASC",
     )?;
 

@@ -4,9 +4,8 @@
  * Connects to the Annex native Rust SFU via WebSocket signaling
  * using direct RTCPeerConnection for voice, video, and screen sharing.
  *
- * The SFU is audio-first: it creates 2 outbound audio tracks per peer
- * (forwarded peer audio + agent TTS). Video tracks are offered by the
- * client and accepted by the SFU but not forwarded to other peers yet.
+ * The SFU forwards each participant's audio, camera and screen separately.
+ * Camera and screen slots are negotiated before either capture is enabled.
  */
 
 // ── Track source enum ──
@@ -51,7 +50,7 @@ export interface TrackPublication {
  * unrecognised track degrades to an unnamed tile rather than a wrong name.
  */
 export function senderFromTrackId(trackId: string): string | null {
-  const m = /^(?:audio|video)-(.+)$/.exec(trackId);
+  const m = /^(?:audio|video|screen)-(.+)$/.exec(trackId);
   return m ? m[1] : null;
 }
 
@@ -101,6 +100,8 @@ export class WebRtcSession {
   /** Remote camera/video tracks forwarded by the SFU (one per remote sender). */
   remoteVideoTracks: RemoteVideoTrack[] = [];
   isSpeaking = false;
+  /** Capture failures can occur after getUserMedia has already succeeded. */
+  localMediaError: string | null = null;
 
   // ── Callbacks ──
 
@@ -125,6 +126,20 @@ export class WebRtcSession {
   private cameraSender: RTCRtpSender | null = null;
   private screenTrack: MediaStreamTrack | null = null;
   private screenSender: RTCRtpSender | null = null;
+  /** Newer user intent supersedes pending permission/device requests. */
+  private mediaRequests: Record<TrackSource, number> = {
+    microphone: 0, camera: 0, screen_share: 0,
+  };
+  /** Serialize sender changes while allowing captures to resolve independently. */
+  private mediaUpdates: Record<TrackSource, Promise<void>> = {
+    microphone: Promise.resolve(), camera: Promise.resolve(), screen_share: Promise.resolve(),
+  };
+  /** Captures acquired but not committed to a sender yet. */
+  private pendingCaptures: Record<TrackSource, Set<MediaStream>> = {
+    microphone: new Set(), camera: new Set(), screen_share: new Set(),
+  };
+  private interruptedMedia = new Set<TrackSource>();
+  private localMediaErrorSource: TrackSource | null = null;
 
   // Speaking detection
   private audioContext: AudioContext | null = null;
@@ -134,6 +149,7 @@ export class WebRtcSession {
   // Pending ICE candidates received before remote description is set
   private pendingCandidates: RTCIceCandidateInit[] = [];
   private remoteDescriptionSet = false;
+  private signalingUpdates: Promise<void> = Promise.resolve();
 
   constructor(
     iceServers: RTCIceServer[],
@@ -163,6 +179,17 @@ export class WebRtcSession {
 
   get isScreenShareEnabled(): boolean {
     return this.screenTrack !== null && this.screenTrack.readyState === 'live' && this.screenTrack.enabled;
+  }
+
+  wasMediaInterrupted(source: TrackSource): boolean {
+    return this.interruptedMedia.has(source);
+  }
+
+  clearLocalMediaError(): void {
+    if (!this.localMediaError) return;
+    this.localMediaError = null;
+    this.localMediaErrorSource = null;
+    this.onLocalTrackChanged?.();
   }
 
   /**
@@ -201,7 +228,7 @@ export class WebRtcSession {
    * Create the peer connection, acquire the microphone, and send an SDP offer.
    * The caller must wire up handleAnswer/handleIceCandidate from WS messages.
    */
-  async connect(): Promise<void> {
+  async connect(options?: { microphoneEnabled?: boolean; inputDeviceId?: string | null }): Promise<void> {
     this.setConnectionState(ConnectionState.Connecting);
     this.remoteDescriptionSet = false;
     this.pendingCandidates = [];
@@ -248,6 +275,7 @@ export class WebRtcSession {
 
     // Remote tracks from the SFU (peer audio + agent audio)
     pc.ontrack = (event) => {
+      if (this.pc !== pc) return;
       const track = event.track;
       const stream = event.streams[0] ?? new MediaStream([track]);
 
@@ -258,11 +286,14 @@ export class WebRtcSession {
           track,
           stream,
         };
-        this.remoteAudioTracks = [...this.remoteAudioTracks, remoteTrack];
+        // Re-enabling an existing m-line can dispatch ontrack again for the
+        // same receiver. One publication must have only one playback sink.
+        this.remoteAudioTracks = [...this.remoteAudioTracks.filter(t => t.id !== track.id), remoteTrack];
         this.onRemoteTracksChanged?.();
 
         track.onended = () => {
-          this.remoteAudioTracks = this.remoteAudioTracks.filter((t) => t.id !== track.id);
+          if (this.pc !== pc) return;
+          this.remoteAudioTracks = this.remoteAudioTracks.filter((t) => t.track !== track);
           this.onRemoteTracksChanged?.();
         };
       } else if (track.kind === 'video') {
@@ -276,53 +307,76 @@ export class WebRtcSession {
           track,
           stream,
         };
-        this.remoteVideoTracks = [...this.remoteVideoTracks, remoteVideo];
+        this.remoteVideoTracks = [...this.remoteVideoTracks.filter(t => t.id !== track.id), remoteVideo];
         this.onRemoteTracksChanged?.();
 
         track.onended = () => {
-          this.remoteVideoTracks = this.remoteVideoTracks.filter((t) => t.id !== track.id);
+          if (this.pc !== pc) return;
+          this.remoteVideoTracks = this.remoteVideoTracks.filter((t) => t.track !== track);
           this.onRemoteTracksChanged?.();
         };
-        track.onmute = () => this.onRemoteTracksChanged?.();
-        track.onunmute = () => this.onRemoteTracksChanged?.();
+        track.onmute = () => { if (this.pc === pc) this.onRemoteTracksChanged?.(); };
+        track.onunmute = () => { if (this.pc === pc) this.onRemoteTracksChanged?.(); };
       }
     };
 
-    // Acquire microphone and add to peer connection
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true },
-      });
-      this.micTrack = stream.getAudioTracks()[0];
-      this.micSender = pc.addTrack(this.micTrack, stream);
-      this.startSpeakingDetection(stream);
-    } catch (err) {
-      // Mic not available — still connect for listen-only
-      console.warn('[webrtc] microphone unavailable, connecting in listen-only mode:', err);
-      // Add a recvonly audio transceiver so the SFU can still send us audio
-      pc.addTransceiver('audio', { direction: 'recvonly' });
-    }
+    // All publishing slots must exist in the initial offer. A later addTrack
+    // needs renegotiation; without it screen capture only worked locally.
+    // The first video MID is camera and the second is screen, a stable source
+    // contract with the SFU even when replaceTrack changes capture devices.
+    // Publishing and receiving use distinct m-lines. Reusing a pre-created
+    // receive slot leaves its immutable browser-generated track ID in place,
+    // losing the SFU's audio/video/screen sender attribution for late joiners.
+    // The SFU introduces each inbound publication in its follow-up offer.
+    this.micSender = pc.addTransceiver('audio', { direction: 'sendonly' }).sender;
+    this.cameraSender = pc.addTransceiver('video', { direction: 'sendonly' }).sender;
+    this.screenSender = pc.addTransceiver('video', { direction: 'sendonly' }).sender;
 
-    // Pre-create a sendrecv video transceiver so the INITIAL offer already
-    // carries an m=video line. Without this the SFU negotiated audio-only and
-    // camera video was never sent (captured + previewed locally, but not
-    // transported). Pre-creating it means setCameraEnabled() just calls
-    // replaceTrack() on this sender (no renegotiation), and the SFU forwards
-    // this peer's camera to the other participants.
-    try {
-      const videoTransceiver = pc.addTransceiver('video', { direction: 'sendrecv' });
-      this.cameraSender = videoTransceiver.sender;
-    } catch (err) {
-      console.warn('[webrtc] could not pre-create video transceiver:', err);
+    if (options?.microphoneEnabled !== false) {
+      try {
+        await this.setMicrophoneEnabled(true,
+          options?.inputDeviceId ? { deviceId: options.inputDeviceId } : undefined);
+      } catch (err) {
+        // Keep the negotiated publishing slot so enabling the microphone later
+        // works even when the first permission request was declined.
+        console.warn('[webrtc] microphone unavailable, connecting in listen-only mode:', err);
+      }
     }
+    if (this.pc !== pc) return;
 
     // Create and send offer
     const offer = await pc.createOffer();
+    if (this.pc !== pc) return;
     await pc.setLocalDescription(offer);
+    if (this.pc !== pc) return;
     this.signaling.sendOffer(this.channelId, offer.sdp!);
   }
 
-  /** Handle an SDP answer from the SFU. */
+  /** Apply WebSocket signaling in wire order, including asynchronous SDP work. */
+  private enqueueSignaling(operation: (pc: RTCPeerConnection) => Promise<void>): Promise<void> {
+    const pc = this.pc;
+    if (!pc) return Promise.resolve();
+    const update = this.signalingUpdates.then(async () => {
+      if (this.pc !== pc) return;
+      await operation(pc);
+    });
+    this.signalingUpdates = update.catch(() => {
+      if (this.pc === pc) this.setConnectionState(ConnectionState.Disconnected);
+    });
+    return update;
+  }
+
+  private async applyRemoteDescription(pc: RTCPeerConnection, type: RTCSdpType, sdp: string): Promise<void> {
+    await pc.setRemoteDescription({ type, sdp });
+    if (this.pc !== pc) return;
+    this.remoteDescriptionSet = true;
+    const candidates = this.pendingCandidates.splice(0);
+    for (const candidate of candidates) {
+      if (this.pc !== pc) return;
+      await pc.addIceCandidate(candidate);
+    }
+  }
+
   /**
    * Answer an offer the SERVER initiated.
    *
@@ -333,65 +387,63 @@ export class WebRtcSession {
    * tracks never become live — a call stays frozen at whoever was in it when
    * this peer joined.
    */
-  async handleRemoteOffer(sdp: string): Promise<void> {
-    if (!this.pc) return;
-    await this.pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp }));
-    this.remoteDescriptionSet = true;
-
-    // Candidates that arrived before a remote description could not be added
-    // then; the renegotiation is the first chance for some of them.
-    for (const candidate of this.pendingCandidates) {
-      await this.pc.addIceCandidate(new RTCIceCandidate(candidate));
-    }
-    this.pendingCandidates = [];
-
-    const answer = await this.pc.createAnswer();
-    await this.pc.setLocalDescription(answer);
-    this.signaling.sendAnswer(this.channelId, answer.sdp!);
+  handleRemoteOffer(sdp: string): Promise<void> {
+    return this.enqueueSignaling(async (pc) => {
+      await this.applyRemoteDescription(pc, 'offer', sdp);
+      if (this.pc !== pc) return;
+      const answer = await pc.createAnswer();
+      if (this.pc !== pc) return;
+      await pc.setLocalDescription(answer);
+      if (this.pc === pc) this.signaling.sendAnswer(this.channelId, answer.sdp!);
+    });
   }
 
-  async handleAnswer(sdp: string): Promise<void> {
-    if (!this.pc) return;
-    await this.pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp }));
-    this.remoteDescriptionSet = true;
-
-    // Flush any ICE candidates that arrived before the answer
-    for (const candidate of this.pendingCandidates) {
-      await this.pc.addIceCandidate(new RTCIceCandidate(candidate));
-    }
-    this.pendingCandidates = [];
+  /** Handle the initial SDP answer before processing any follow-up offers. */
+  handleAnswer(sdp: string): Promise<void> {
+    return this.enqueueSignaling((pc) => this.applyRemoteDescription(pc, 'answer', sdp));
   }
 
   /** Handle an ICE candidate from the SFU. */
-  async handleIceCandidate(init: RTCIceCandidateInit): Promise<void> {
-    if (!this.pc) return;
-    if (!this.remoteDescriptionSet) {
-      // Buffer until remote description is set
-      this.pendingCandidates.push(init);
-      return;
-    }
-    await this.pc.addIceCandidate(new RTCIceCandidate(init));
+  handleIceCandidate(init: RTCIceCandidateInit): Promise<void> {
+    return this.enqueueSignaling(async (pc) => {
+      if (!this.remoteDescriptionSet) this.pendingCandidates.push(init);
+      else await pc.addIceCandidate(init);
+    });
   }
 
   /** Tear down the peer connection and all local tracks. */
   disconnect(): void {
     this.stopSpeakingDetection();
+    this.interruptedMedia.clear();
+    this.localMediaError = null;
+    this.localMediaErrorSource = null;
+    for (const source of Object.values(TrackSource)) {
+      this.mediaRequests[source] += 1;
+      for (const stream of this.pendingCaptures[source]) stream.getTracks().forEach((track) => track.stop());
+      this.pendingCaptures[source].clear();
+    }
 
     if (this.micTrack) {
+      this.micTrack.onended = null;
       this.micTrack.stop();
       this.micTrack = null;
       this.micSender = null;
     }
     if (this.cameraTrack) {
+      this.cameraTrack.onended = null;
       this.cameraTrack.stop();
       this.cameraTrack = null;
       this.cameraSender = null;
     }
     if (this.screenTrack) {
+      this.screenTrack.onended = null;
       this.screenTrack.stop();
       this.screenTrack = null;
       this.screenSender = null;
     }
+    this.micSender = null;
+    this.cameraSender = null;
+    this.screenSender = null;
 
     if (this.pc) {
       this.pc.onconnectionstatechange = null;
@@ -410,10 +462,136 @@ export class WebRtcSession {
 
   // ── Media controls ──
 
-  async setMicrophoneEnabled(enabled: boolean, opts?: { deviceId?: string }): Promise<void> {
-    if (!this.pc) throw new Error('Not connected');
+  /** Change a capture atomically; failed replacement keeps the working track. */
+  private async updateLocalMedia(
+    source: TrackSource,
+    enabled: boolean,
+    capture: () => Promise<MediaStream>,
+  ): Promise<void> {
+    const pc = this.pc;
+    if (!pc) throw new Error('Not connected');
+    const request = ++this.mediaRequests[source];
+    // A pending replaceTrack does not yet own a publication, but its device
+    // is already recording. Stop it immediately when superseded or muted.
+    for (const pending of this.pendingCaptures[source]) pending.getTracks().forEach((track) => track.stop());
+    this.pendingCaptures[source].clear();
+    const current = () => this.pc === pc && this.mediaRequests[source] === request;
+    const getTrack = () => source === TrackSource.Microphone ? this.micTrack
+      : source === TrackSource.Camera ? this.cameraTrack : this.screenTrack;
+    const setTrack = (track: MediaStreamTrack | null) => {
+      if (source === TrackSource.Microphone) this.micTrack = track;
+      else if (source === TrackSource.Camera) this.cameraTrack = track;
+      else this.screenTrack = track;
+    };
 
-    if (enabled) {
+    // Turning capture off is immediate, even while an earlier permission
+    // prompt or replaceTrack is pending. Its eventual result is invalidated.
+    if (!enabled) {
+      const previous = getTrack();
+      if (previous) { previous.onended = null; previous.stop(); }
+      setTrack(null);
+      this.interruptedMedia.delete(source);
+      if (this.localMediaErrorSource === source) this.clearLocalMediaError();
+      if (source === TrackSource.Microphone) {
+        this.stopSpeakingDetection();
+        this.isSpeaking = false;
+      }
+      this.onLocalTrackChanged?.();
+    }
+
+    const stream = enabled ? await capture() : null;
+    const stopCapture = () => {
+      stream?.getTracks().forEach((track) => track.stop());
+      if (stream) this.pendingCaptures[source].delete(stream);
+    };
+    if (!current()) { stopCapture(); return; }
+    if (stream) this.pendingCaptures[source].add(stream);
+    const update = this.mediaUpdates[source].then(async () => {
+      if (!current()) { stopCapture(); return; }
+      const newTrack = source === TrackSource.Microphone
+        ? stream?.getAudioTracks()[0] : stream?.getVideoTracks()[0];
+      if (enabled && !newTrack) {
+        stopCapture();
+        throw new Error('The selected device did not provide a media track');
+      }
+      // Capture state is native and may change while replaceTrack is awaited.
+      const captureEnded = () => newTrack?.readyState === 'ended';
+      if (captureEnded()) {
+        stopCapture();
+        throw new Error('The selected capture stopped before it could be published. Try again.');
+      }
+      const sender = source === TrackSource.Microphone ? this.micSender
+        : source === TrackSource.Camera ? this.cameraSender : this.screenSender;
+      try {
+        if (sender) {
+          await sender.replaceTrack(newTrack ?? null);
+        } else if (newTrack && stream) {
+          const added = pc.addTrack(newTrack, stream);
+          if (source === TrackSource.Microphone) this.micSender = added;
+          else if (source === TrackSource.Camera) this.cameraSender = added;
+          else this.screenSender = added;
+        }
+      } catch (err) {
+        stopCapture();
+        throw err;
+      }
+      if (!current()) {
+        stopCapture();
+        // A superseded replacement may have reached the transport while its
+        // promise was pending. Restore the committed track (or mute) before
+        // the next queued sender change, including when the newer capture fails.
+        if (this.pc === pc && sender) await sender.replaceTrack(getTrack());
+        return;
+      }
+      if (captureEnded()) {
+        stopCapture();
+        if (sender) await sender.replaceTrack(getTrack());
+        throw new Error('The selected capture stopped before it could be published. Try again.');
+      }
+      const oldTrack = getTrack();
+      if (oldTrack && oldTrack !== newTrack) { oldTrack.onended = null; oldTrack.stop(); }
+      if (stream) this.pendingCaptures[source].delete(stream);
+      setTrack(newTrack ?? null);
+      this.interruptedMedia.delete(source);
+      if (this.localMediaErrorSource === source) this.clearLocalMediaError();
+      if (source === TrackSource.Microphone && stream) this.startSpeakingDetection(stream);
+      if (newTrack) {
+        newTrack.onended = () => {
+          if (this.pc !== pc || getTrack() !== newTrack) return;
+          if (source === TrackSource.ScreenShare) {
+            // The browser's Stop sharing action is an ordinary user stop.
+            void this.setScreenShareEnabled(false).catch(() => {});
+            return;
+          }
+          setTrack(null);
+          this.interruptedMedia.add(source);
+          if (source === TrackSource.Microphone) {
+            this.stopSpeakingDetection();
+            this.isSpeaking = false;
+          }
+          this.localMediaErrorSource = source;
+          this.localMediaError = source === TrackSource.Camera
+            ? 'Camera capture stopped unexpectedly. Turn on the camera to try again.'
+            : 'Microphone capture stopped unexpectedly. Unmute the microphone to try again.';
+          this.onLocalTrackChanged?.();
+          // An old capture may end while a device switch is in progress.
+          // Detach only that exact track after queued replacements settle.
+          const publisher = source === TrackSource.Microphone ? this.micSender : this.cameraSender;
+          const release = this.mediaUpdates[source].then(async () => {
+            if (this.pc === pc && publisher?.track === newTrack) await publisher.replaceTrack(null);
+          });
+          this.mediaUpdates[source] = release.catch(() => {});
+        };
+      }
+      this.onLocalTrackChanged?.();
+    });
+    // A rejected device switch must not poison later attempts for this source.
+    this.mediaUpdates[source] = update.catch(() => {});
+    await update;
+  }
+
+  async setMicrophoneEnabled(enabled: boolean, opts?: { deviceId?: string }): Promise<void> {
+    await this.updateLocalMedia(TrackSource.Microphone, enabled, async () => {
       // Acquire new mic track (respects device selection)
       const constraints: MediaTrackConstraints = {
         echoCancellation: true,
@@ -430,41 +608,12 @@ export class WebRtcSession {
       // decides what to do when it cannot be met.
       if (opts?.deviceId) constraints.deviceId = { exact: opts.deviceId };
 
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: constraints });
-      const newTrack = stream.getAudioTracks()[0];
-
-      // Replace or add the track on the peer connection
-      if (this.micSender) {
-        await this.micSender.replaceTrack(newTrack);
-      } else {
-        this.micSender = this.pc.addTrack(newTrack, stream);
-      }
-
-      // Stop old track if it exists
-      if (this.micTrack && this.micTrack !== newTrack) {
-        this.micTrack.stop();
-      }
-      this.micTrack = newTrack;
-      this.startSpeakingDetection(stream);
-    } else {
-      // Mute: stop the track and clear the sender
-      if (this.micTrack) {
-        this.micTrack.stop();
-        this.micTrack = null;
-      }
-      if (this.micSender) {
-        await this.micSender.replaceTrack(null);
-      }
-      this.stopSpeakingDetection();
-      this.isSpeaking = false;
-    }
-    this.onLocalTrackChanged?.();
+      return navigator.mediaDevices.getUserMedia({ audio: constraints });
+    });
   }
 
   async setCameraEnabled(enabled: boolean, opts?: { deviceId?: string }): Promise<void> {
-    if (!this.pc) throw new Error('Not connected');
-
-    if (enabled) {
+    await this.updateLocalMedia(TrackSource.Camera, enabled, async () => {
       const constraints: MediaTrackConstraints = {
         width: { ideal: 640 },
         height: { ideal: 480 },
@@ -478,70 +627,17 @@ export class WebRtcSession {
       // appear no matter which camera was missing.
       if (opts?.deviceId) constraints.deviceId = { exact: opts.deviceId };
 
-      const stream = await navigator.mediaDevices.getUserMedia({ video: constraints });
-      const newTrack = stream.getVideoTracks()[0];
-
-      if (this.cameraSender) {
-        await this.cameraSender.replaceTrack(newTrack);
-      } else {
-        this.cameraSender = this.pc.addTrack(newTrack, stream);
-      }
-
-      if (this.cameraTrack && this.cameraTrack !== newTrack) {
-        this.cameraTrack.stop();
-      }
-      this.cameraTrack = newTrack;
-    } else {
-      if (this.cameraTrack) {
-        this.cameraTrack.stop();
-        this.cameraTrack = null;
-      }
-      if (this.cameraSender) {
-        await this.cameraSender.replaceTrack(null);
-      }
-    }
-    this.onLocalTrackChanged?.();
+      return navigator.mediaDevices.getUserMedia({ video: constraints });
+    });
   }
 
   async setScreenShareEnabled(enabled: boolean): Promise<void> {
-    if (!this.pc) throw new Error('Not connected');
-
-    if (enabled) {
-      const stream = await navigator.mediaDevices.getDisplayMedia({
+    await this.updateLocalMedia(TrackSource.ScreenShare, enabled, () =>
+      navigator.mediaDevices.getDisplayMedia({
         video: true,
         audio: false,
-      });
-      const newTrack = stream.getVideoTracks()[0];
-
-      // Listen for browser-level stop (user clicks "Stop Sharing" in browser chrome)
-      newTrack.onended = () => {
-        this.screenTrack = null;
-        if (this.screenSender) {
-          this.screenSender.replaceTrack(null).catch(() => {});
-        }
-        this.onLocalTrackChanged?.();
-      };
-
-      if (this.screenSender) {
-        await this.screenSender.replaceTrack(newTrack);
-      } else {
-        this.screenSender = this.pc.addTrack(newTrack, stream);
-      }
-
-      if (this.screenTrack && this.screenTrack !== newTrack) {
-        this.screenTrack.stop();
-      }
-      this.screenTrack = newTrack;
-    } else {
-      if (this.screenTrack) {
-        this.screenTrack.stop();
-        this.screenTrack = null;
-      }
-      if (this.screenSender) {
-        await this.screenSender.replaceTrack(null);
-      }
-    }
-    this.onLocalTrackChanged?.();
+      }),
+    );
   }
 
   // ── Speaking detection ──

@@ -95,6 +95,7 @@ fn build_state(db_path: &str, initial_policy: ServerPolicy) -> (Arc<AppState>, a
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
         voice_token_secret: std::sync::Arc::new([0u8; 32]),
+        federation_transport: Default::default(),
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
@@ -188,6 +189,7 @@ async fn test_federation_full_lifecycle() {
         required_capabilities: vec![],
         offered_capabilities: vec!["federation".to_string()],
         redacted_topics: vec![],
+        ..Default::default()
     };
     let handshake = VrpFederationHandshake {
         anchor_snapshot: anchor.clone(),
@@ -368,7 +370,7 @@ async fn test_federation_full_lifecycle() {
             "federated message content should be encrypted at rest"
         );
         assert_eq!(
-            state.message_cipher().decrypt(&content),
+            state.message_cipher().decrypt(&content).unwrap(),
             "Hello from Server A!"
         );
     }

@@ -86,6 +86,8 @@ export {
 } from '@/api/rtx';
 
 export type { MemberInfo, OutboxEntry, OutboxPage, StorageHealth } from '@/api/admin';
+export { listDirectoryMembers } from '@/api/members';
+export type { DirectoryMember } from '@/api/members';
 export {
   clearStorageGate,
   getFederationOutbox,
@@ -119,14 +121,7 @@ export {
   setUsername,
 } from '@/api/usernames';
 
-export type { KeyWrapRecord, KeyWrapUpload, MemberKey } from '@/api/e2e';
 export {
   getChannelE2e,
-  getChannelKeyStatus,
-  getChannelKeyWraps,
-  getChannelMemberKeys,
-  getMemberKey,
-  postChannelKeyWraps,
-  publishMyKey,
   setChannelE2e,
 } from '@/api/e2e';

@@ -137,6 +137,7 @@ fn build_harness(seed_original_receipt: bool) -> Harness {
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: Arc::new([0u8; 32]),
         voice_token_secret: Arc::new([0u8; 32]),
+        federation_transport: Default::default(),
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: Arc::new(annex_server::storage_health::StorageHealth::new()),
@@ -219,6 +220,7 @@ fn redaction_receipt_count(pool: &DbPool) -> i64 {
 #[tokio::test]
 async fn valid_redaction_blanks_message_and_replay_is_idempotent() {
     let h = build_harness(true);
+    h.pool.get().unwrap().execute("INSERT INTO message_edits (message_id,old_content) VALUES (?1,'earlier private content')", [MESSAGE_ID]).unwrap();
     let envelope = signed_redaction(&h.remote_key, SENDER, "deleted", &now_iso());
 
     let response = post_redaction(h.app.clone(), &envelope).await;
@@ -233,6 +235,20 @@ async fn valid_redaction_blanks_message_and_replay_is_idempotent() {
     assert_eq!(content, "", "content must be blanked");
     assert!(deleted_at.is_some(), "deleted_at must be set");
     assert_eq!(redaction_receipt_count(&h.pool), 1);
+    let edits: i64 = h
+        .pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM message_edits WHERE message_id=?1",
+            [MESSAGE_ID],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        edits, 0,
+        "a federated deletion must purge earlier message bodies too"
+    );
 
     // Replay of the identical envelope: 200, applied=false, no
     // duplicate receipt — outbox retries are safe.
@@ -370,6 +386,7 @@ async fn relay_redaction_enqueues_prefixed_outbox_rows() {
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: Arc::new([0u8; 32]),
         voice_token_secret: Arc::new([0u8; 32]),
+        federation_transport: Default::default(),
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: Arc::new(annex_server::storage_health::StorageHealth::new()),
@@ -410,7 +427,7 @@ async fn relay_redaction_enqueues_prefixed_outbox_rows() {
     // Decrypt, as the delivery worker does. `federation_outbox` rows are
     // stored encrypted and outlive the retention sweep.
     let mut decrypted = envelope_json.clone();
-    relay_cipher.decrypt_in_place(&mut decrypted);
+    relay_cipher.decrypt_in_place(&mut decrypted).unwrap();
     assert_ne!(
         decrypted, envelope_json,
         "the queued envelope must be encrypted at rest"

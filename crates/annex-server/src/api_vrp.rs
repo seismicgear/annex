@@ -16,7 +16,7 @@ use axum::{
     Json,
 };
 use rusqlite::OptionalExtension;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// Request body for agent VRP handshake.
@@ -35,6 +35,20 @@ pub struct AgentHandshakeRequest {
     /// signature check.
     #[serde(rename = "signingPubkey", default)]
     pub signing_pubkey: Option<String>,
+}
+
+/// The existing report fields remain at the top level for older clients.
+/// Authors must sign the returned reference into subsequent RTX bundles.
+#[derive(Debug, Serialize)]
+pub struct AgentHandshakeResponse {
+    #[serde(flatten)]
+    pub report: VrpValidationReport,
+    #[serde(rename = "handshakeRef")]
+    pub handshake_ref: Option<String>,
+}
+
+pub(crate) fn accepted_handshake_ref(server_id: i64, handshake_id: i64) -> String {
+    format!("vrp:{server_id}:{handshake_id}")
 }
 
 /// Verifies a `Authorization: Bearer <session-token>` header and returns the
@@ -85,7 +99,7 @@ pub async fn agent_handshake_handler(
     Extension(state): Extension<Arc<AppState>>,
     headers: HeaderMap,
     Json(payload): Json<AgentHandshakeRequest>,
-) -> Result<Json<VrpValidationReport>, ApiError> {
+) -> Result<Json<AgentHandshakeResponse>, ApiError> {
     // Validate Authorization header up-front (before any DB I/O) so a
     // malformed token never produces a partial state change. The token is
     // optional here — pre-registration handshakes do not have one yet —
@@ -253,6 +267,8 @@ pub async fn agent_handshake_handler(
             required_capabilities: policy.agent_required_capabilities.clone(),
             offered_capabilities,
             redacted_topics: vec![],
+    ..VrpCapabilitySharingContract::from_policy(&policy)
+
         };
 
         // 5. Construct Alignment Config
@@ -263,8 +279,8 @@ pub async fn agent_handshake_handler(
 
         // 6. Construct Transfer Acceptance Config
         let transfer_config = VrpTransferAcceptanceConfig {
-            allow_reflection_summaries: true,
-            allow_full_knowledge: false, // Conservative default
+            allow_reflection_summaries: policy.allow_reflection_summaries,
+            allow_full_knowledge: policy.allow_full_knowledge,
         };
 
         // 7. Validate Handshake
@@ -312,6 +328,9 @@ pub async fn agent_handshake_handler(
             &report,
         )
         .map_err(|e| ApiError::InternalServerError(format!("failed to log vrp outcome: {e}")))?;
+        let handshake_id = tx.last_insert_rowid();
+        let accepted = matches!(report.alignment_status, VrpAlignmentStatus::Aligned | VrpAlignmentStatus::Partial);
+        let handshake_ref = accepted.then(|| accepted_handshake_ref(state.server_id, handshake_id));
 
         // 10. Upsert Agent Registration
         if report.alignment_status == VrpAlignmentStatus::Aligned
@@ -363,8 +382,8 @@ pub async fn agent_handshake_handler(
             tx.execute(
                 "INSERT INTO agent_registrations (
                     server_id, pseudonym_id, alignment_status, transfer_scope,
-                    capability_contract_json, anchor_snapshot_json, reputation_score, last_handshake_at, signing_pubkey, active, created_at, updated_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, datetime('now'), datetime('now'))
+                    capability_contract_json, anchor_snapshot_json, reputation_score, last_handshake_at, signing_pubkey, current_handshake_id, active, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1, datetime('now'), datetime('now'))
                 ON CONFLICT(server_id, pseudonym_id) DO UPDATE SET
                     alignment_status = excluded.alignment_status,
                     transfer_scope = excluded.transfer_scope,
@@ -376,6 +395,7 @@ pub async fn agent_handshake_handler(
                     -- one, so an agent cannot silently drop author-signature
                     -- enforcement by re-handshaking without its key.
                     signing_pubkey = COALESCE(excluded.signing_pubkey, agent_registrations.signing_pubkey),
+                    current_handshake_id = excluded.current_handshake_id,
                     active = 1,
                     updated_at = datetime('now')
                 ",
@@ -389,6 +409,7 @@ pub async fn agent_handshake_handler(
                     reputation_score,
                     now,
                     validated_signing_pubkey,
+                    handshake_id,
                 ],
             )
             .map_err(|e| {
@@ -431,6 +452,7 @@ pub async fn agent_handshake_handler(
                      SET alignment_status = ?3,
                          transfer_scope = 'NO_TRANSFER',
                          active = 0,
+                         current_handshake_id = NULL,
                          updated_at = datetime('now')
                      WHERE server_id = ?1 AND pseudonym_id = ?2",
                     rusqlite::params![
@@ -490,14 +512,14 @@ pub async fn agent_handshake_handler(
             })?;
         }
 
-        Ok(report)
+        Ok(AgentHandshakeResponse { report, handshake_ref })
     })
     .await
     .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     // If the agent was deactivated due to Conflict alignment, disconnect their
     // WebSocket session so they cannot continue sending/receiving messages.
-    if result.alignment_status == VrpAlignmentStatus::Conflict {
+    if result.report.alignment_status == VrpAlignmentStatus::Conflict {
         state_for_disconnect
             .connection_manager
             .disconnect_user(&pseudonym_id_for_disconnect)

@@ -95,13 +95,14 @@ function AddServerDialog({ onClose, onAdd }: AddServerDialogProps) {
   );
 }
 
-function ServerIcon({ server, isActive, imageUrl, onClick, onRetry, onRemove }: {
+function ServerIcon({ server, isActive, imageUrl, onClick, onRetry, onRemove, actionPending }: {
   server: SavedServer;
   isActive: boolean;
   imageUrl?: string | null;
   onClick: () => void;
   onRetry?: () => void;
   onRemove?: () => void;
+  actionPending: boolean;
 }) {
   const initial = server.label.charAt(0).toUpperCase();
   const memberCount = server.cachedSummary?.total_active_members;
@@ -120,10 +121,11 @@ function ServerIcon({ server, isActive, imageUrl, onClick, onRetry, onRemove }: 
           ...(isPending && !isFailed ? { opacity: 0.5 } : {}),
           ...(isFailed ? { opacity: 0.6 } : {}),
         } as React.CSSProperties}
-        onClick={isFailed ? undefined : onClick}
-        disabled={isPending && !isFailed}
+        onClick={isFailed ? onRetry : onClick}
+        disabled={(isPending && !isFailed) || actionPending}
+        aria-label={isFailed ? `Retry registration for ${server.label}` : server.label}
         title={isFailed
-          ? `${server.label} — registration failed (right-click to retry or remove)`
+          ? `${server.label} — registration failed (click to retry)`
           : isPending
             ? `${server.label} — registration pending`
             : `${server.label}${server.slug ? ` (${server.slug})` : ''}${memberCount ? ` — ${memberCount} online` : ''}`}
@@ -137,12 +139,12 @@ function ServerIcon({ server, isActive, imageUrl, onClick, onRetry, onRemove }: 
       {isFailed && (
         <div className="server-hub-failed-actions">
           {onRetry && (
-            <button className="server-hub-retry-btn" onClick={onRetry} title="Retry registration">
+            <button className="server-hub-retry-btn" onClick={onRetry} title="Retry registration" aria-label="Retry registration" disabled={actionPending}>
               Retry
             </button>
           )}
           {onRemove && (
-            <button className="server-hub-remove-btn" onClick={onRemove} title="Remove server">
+            <button className="server-hub-remove-btn" onClick={onRemove} title="Remove server" aria-label="Remove server" disabled={actionPending}>
               &times;
             </button>
           )}
@@ -163,6 +165,8 @@ export function ServerHub() {
   const removeServer = useServersStore((s) => s.removeServer);
   const serverImageUrl = useServersStore((s) => s.serverImageUrl);
   const [showAddDialog, setShowAddDialog] = useState(false);
+  const [actionPending, setActionPending] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const handleSwitch = useCallback(async (serverId: string) => {
     try {
@@ -182,24 +186,43 @@ export function ServerHub() {
   }, [beginRemoteRegistration]);
 
   const handleRetry = useCallback(async (server: SavedServer) => {
-    // Remove the stale placeholder and re-initiate registration
-    await removeServer(server.id).catch(() => {});
-    const newServer = await beginRemoteRegistration(server.baseUrl);
-    if (!newServer) {
-      throw new Error(
-        useServersStore.getState().registrationError ?? 'Failed to retry registration',
-      );
+    setActionPending(true);
+    setActionError(null);
+    try {
+      await removeServer(server.id);
+      const newServer = await beginRemoteRegistration(server.baseUrl);
+      if (!newServer) {
+        throw new Error(useServersStore.getState().registrationError ?? 'Failed to retry registration');
+      }
+    } catch (err) {
+      setActionError(`Could not retry ${server.label}: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setActionPending(false);
     }
   }, [beginRemoteRegistration, removeServer]);
 
   const handleRemove = useCallback(async (serverId: string) => {
-    await removeServer(serverId);
+    setActionPending(true);
+    setActionError(null);
+    try {
+      await removeServer(serverId);
+    } catch (err) {
+      setActionError(`Could not remove server: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setActionPending(false);
+    }
   }, [removeServer]);
 
-  if (servers.length === 0) return null;
+  if (servers.length === 0 && !actionError) return null;
 
   return (
     <>
+      {actionError && (
+        <div className="server-switch-error" role="alert">
+          <span>{actionError}</span>
+          <button type="button" onClick={() => setActionError(null)} aria-label="Dismiss">&times;</button>
+        </div>
+      )}
       {/* Not inside the rail. It used to be: a `role="alert"` wrapping the
           single character "!", with the real message in a `title`. That
           announced "!" to a screen reader, was invisible to touch (a title
@@ -236,6 +259,7 @@ export function ServerHub() {
               onClick={() => handleSwitch(server.id)}
               onRetry={() => handleRetry(server)}
               onRemove={() => handleRemove(server.id)}
+              actionPending={actionPending}
             />
           ))}
         </div>

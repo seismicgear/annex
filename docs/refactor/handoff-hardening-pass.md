@@ -140,7 +140,7 @@ No frontend / E2E run in this pass — none of the changes touch `client/`. The 
 
 1. WS `IncomingMessage::Message` with a `clientRequestId` is now idempotent per `(server, sender, request_id)`. The first send creates a row; replays return the same `message_id`. The WS broadcast still fires on replays so the sender's pending-send promise resolves.
 2. Federation relay is no longer fire-and-forget. Local commit enqueues an outbox row per peer; the background worker delivers with bounded exponential backoff (default ~3 hours total). Receivers are idempotent on the receipt ledger so retries are safe.
-3. v2 federated message envelopes are freshness-checked against `Config::federation::{freshness_window_seconds, future_skew_seconds}` on the live receive path. Catch-up (when implemented — ADR-0014) will write through `delivery_mode = 'catchup'` to bypass the live window.
+3. v2 federated message envelopes are freshness-checked against `Config::federation::{freshness_window_seconds, future_skew_seconds}` on the live receive path. Catch-up (implemented — ADR-0014) writes through `delivery_mode = 'catchup'` to bypass the live window.
 4. SQLite errors of class `SQLITE_FULL` / `SQLITE_IOERR` trip the storage gate. While `Degraded`, the auth middleware returns HTTP 507 on POST/PUT/PATCH/DELETE. Reads continue. Operator restarts the process (or the future admin-clear endpoint lands) to clear the gate.
 5. `public_event_log` rows now carry `prev_hash` + `event_hash`. A tamper to one row is detectable by `verify_event_log_chain`.
 6. The migration runner verifies SHA-256 of every embedded migration against the recorded hash on every boot. An edit to a committed migration after deploy is now a startup error rather than silently accepted.
@@ -152,7 +152,7 @@ These were either out of scope for this pass or have a concrete prerequisite tha
 
 | Gap | Status | Why deferred | Next step |
 | --- | --- | --- | --- |
-| **Federation catch-up endpoint** | Deferred (ADR-0014) | Needs envelope `v3` with per-origin sequence number + receipt ledger schema extension | Land v3 envelope; add `channel_id` + `origin_seq` to `federation_message_receipts`; build endpoint |
+| **Federation catch-up endpoint** | Implemented (ADR-0014 amendment) | Signed nonce-bound batches over durable outbox sequence; cursor and deletion markers persist across restart | Run real peer handshake, attestation, join, partition and restart acceptance |
 | **Federated redaction tombstones** | **Landed 2026-06-10** (ADR-0011 amendment) | — | `FederatedRedactionEnvelope` + `POST /api/federation/redactions`; WS delete on FEDERATED channels enqueues signed tombstones via the outbox; origin-receipt + sender/moderation authority checks; receipt-ledger idempotent |
 | **Admin endpoint to clear storage gate** | **Landed 2026-06-10** (ADR-0009 amendment) | — | `GET /api/admin/storage` + `POST /api/admin/storage/clear` (exempt from the degraded-gate 507; `can_moderate`-gated) |
 | **Admin endpoint to inspect/retry outbox** | **Landed 2026-06-10** (ADR-0008 amendment) | — | `GET /api/admin/federation/outbox` (filter/pagination/counts) + `POST .../{id}/retry` (resets backoff budget; 409 on `pending`/`delivered`) |

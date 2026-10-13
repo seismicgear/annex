@@ -28,6 +28,7 @@ assets/voices/*
 !assets/voices/.gitkeep
 assets/models/
 assets/whisper/
+assets/desktop-provenance.json
 # VRP semantic embedding model — 7.5 MB, fetched and SHA-256-pinned by
 # scripts/setup-embedding-model.sh. The .gitkeep is tracked so the Tauri
 # bundler's resource validation passes on a fresh checkout, the same way

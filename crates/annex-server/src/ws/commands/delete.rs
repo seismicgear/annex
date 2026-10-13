@@ -14,10 +14,8 @@
 //!      client-supplied one) to prevent cross-channel broadcast
 //!      spoofing.
 //!   4. On error surface `Delete failed: <e>` via `send_ws_error`.
-//!   5. If the channel is `FEDERATED`-scoped, spawn
-//!      `relay_redaction(...)` so a signed tombstone (ADR-0011) is
-//!      enqueued in the federation outbox for every active peer —
-//!      mirroring how `message.rs` relays the original send.
+//!   5. The service commits the signed federation tombstones with the
+//!      deletion before any local success is broadcast.
 
 use crate::ws::context::CommandContext;
 use crate::ws::dispatch::{check_ws_membership, MembershipResult};
@@ -58,16 +56,29 @@ pub(crate) async fn handle(
     }
 
     let svc = crate::services::ChannelService::new(ctx.state.clone());
-    match svc
-        .delete_message(ctx.pseudonym, &channel_id, &message_id)
-        .await
-    {
-        Ok((updated, is_federated)) => {
+    let remote = crate::services::channel_replication::maybe_message(
+        ctx.state.clone(),
+        ctx.identity,
+        &channel_id,
+        client_request_id.as_deref(),
+        serde_json::json!({"kind":"delete","message_id":message_id}),
+        None,
+    )
+    .await;
+    let result = match remote {
+        Ok(Some(message)) => Ok((message, true)),
+        Err(error) => Err(error.into()),
+        Ok(None) => {
+            svc.delete_message(ctx.pseudonym, &channel_id, &message_id)
+                .await
+        }
+    };
+    match result {
+        Ok((updated, _is_federated)) => {
             // Use the persisted channel_id from DB, not the
             // client-supplied one, to prevent cross-channel broadcast
             // spoofing.
             let persisted_channel_id = updated.channel_id.clone();
-            let persisted_message_id = updated.message_id.clone();
             let ws_payload: WsMessagePayload = updated.into();
             let out = OutgoingMessage::MessageDeleted(ws_payload);
             match serde_json::to_string(&out) {
@@ -80,21 +91,6 @@ pub(crate) async fn handle(
                 Err(e) => {
                     tracing::error!("failed to serialize delete broadcast: {}", e);
                 }
-            }
-
-            // Propagate the deletion to federation peers as a signed
-            // redaction tombstone (ADR-0011). Durable + asynchronous:
-            // the envelope lands in the federation outbox and the
-            // background worker delivers with retry, exactly like the
-            // original message relay.
-            if is_federated {
-                tokio::spawn(crate::api_federation::relay_redaction(
-                    ctx.state.clone(),
-                    persisted_channel_id,
-                    persisted_message_id,
-                    ctx.pseudonym.to_string(),
-                    "deleted",
-                ));
             }
         }
         Err(e) => {

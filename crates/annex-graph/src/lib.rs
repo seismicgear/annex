@@ -18,9 +18,18 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashSet, VecDeque};
 use thiserror::Error;
 
+mod metadata;
+pub use metadata::{list_metadata_grantees, set_metadata_grant};
+
 /// Maximum number of nodes the BFS traversal will visit before stopping.
 /// Prevents unbounded memory growth on densely connected graphs.
 const MAX_BFS_VISITED_NODES: usize = 10_000;
+
+/// Virtual channel vertices are disjoint from authenticated pseudonyms.
+/// Keep this encoding in sync with the membership projection migration.
+pub fn channel_vertex(server_id: i64, channel_id: &str) -> String {
+    format!("annex:channel:{server_id}:{channel_id}")
+}
 
 /// Errors specific to the graph module.
 #[derive(Debug, Error)]
@@ -33,6 +42,8 @@ pub enum GraphError {
     NodeAlreadyExists(String),
     #[error("node not found: {0}")]
     NodeNotFound(String),
+    #[error("invalid metadata grant: {0}")]
+    InvalidMetadataGrant(String),
 }
 
 /// A filtered view of a graph node, respecting visibility rules.
@@ -45,7 +56,8 @@ pub struct GraphProfile {
     /// Only visible if visibility >= Degree1 (or Self).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_seen_at: Option<String>,
-    /// Only visible if visibility == Self or specific permission (not implemented yet, so Self only).
+    /// Visible to self, or to an explicitly authorized active local identity
+    /// already within the owner's degree-based visibility boundary.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata_json: Option<String>,
     pub visibility: VisibilityLevel,
@@ -469,8 +481,16 @@ pub fn get_visible_profile(
 
     let visibility = get_node_visibility(conn, server_id, viewer, target)?;
 
+    let shared_metadata = matches!(
+        visibility,
+        VisibilityLevel::Degree1 | VisibilityLevel::Degree2 | VisibilityLevel::Degree3
+    ) && metadata::can_read_metadata(conn, server_id, target, viewer)?;
     let (last_seen_at, metadata_json) = match visibility {
         VisibilityLevel::Self_ => (node.last_seen_at, node.metadata_json),
+        VisibilityLevel::Degree1 if shared_metadata => (node.last_seen_at, node.metadata_json),
+        VisibilityLevel::Degree2 | VisibilityLevel::Degree3 if shared_metadata => {
+            (None, node.metadata_json)
+        }
         VisibilityLevel::Degree1 => (node.last_seen_at, None), // Hide metadata for degree 1
         VisibilityLevel::Degree2 => (None, None),              // Hide last_seen and metadata
         VisibilityLevel::Degree3 => (None, None),              // Hide last_seen and metadata

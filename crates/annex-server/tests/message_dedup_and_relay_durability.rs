@@ -147,6 +147,7 @@ fn file_backed_state(federated: bool) -> (Arc<AppState>, tempfile::TempDir) {
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: Arc::new([0u8; 32]),
         voice_token_secret: Arc::new([0u8; 32]),
+        federation_transport: Default::default(),
         federation_config: annex_server::config::FederationConfig {
             allow_private_peer_addresses: true,
             ..Default::default()
@@ -343,10 +344,225 @@ async fn the_queued_envelope_is_encrypted_at_rest() {
     // …and it must still be readable by the delivery worker, or encrypting it
     // has simply broken federation.
     let mut roundtrip = stored.clone();
-    state.message_cipher().decrypt_in_place(&mut roundtrip);
+    state
+        .message_cipher()
+        .decrypt_in_place(&mut roundtrip)
+        .unwrap();
     assert!(
         roundtrip.contains(secret),
         "the worker decrypts this before routing and POSTing it; if it does not \
          round-trip, no federated message is deliverable"
     );
+}
+
+/// Even failure on the second peer must roll back the edited body, history,
+/// and first peer's enqueue. The sender cannot observe successful local edits
+/// whose federation obligation vanished before becoming durable.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn edit_and_history_roll_back_when_any_peer_outbox_insert_fails() {
+    let (state, _dir) = file_backed_state(true);
+    let svc = ChannelService::new(state.clone());
+    let (message, _, _) = svc
+        .send_message("sender-1", "chan-1", "original body".into(), None, None)
+        .await
+        .unwrap();
+    {
+        let conn = state.pool.get().unwrap();
+        conn.execute("INSERT INTO instances (base_url,public_key,label,status) VALUES ('https://peer2.example','bb','Peer 2','ACTIVE')", []).unwrap();
+        let second_peer = conn.last_insert_rowid();
+        conn.execute("INSERT INTO federation_agreements (local_server_id,remote_instance_id,alignment_status,transfer_scope,agreement_json,active) VALUES (1,?1,'ALIGNED','FullKnowledge','{}',1)", [second_peer]).unwrap();
+        conn.execute_batch("CREATE TRIGGER reject_second_peer_edit BEFORE INSERT ON federation_outbox WHEN NEW.message_id LIKE 'edit:%' AND NEW.peer_instance_id = 2 BEGIN SELECT RAISE(ABORT, 'simulated durable edit enqueue failure'); END;").unwrap();
+    }
+    let error = svc
+        .edit_message("sender-1", "chan-1", &message.message_id, "must roll back")
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("could not queue this edit for federation"));
+    {
+        let conn = state.pool.get().unwrap();
+        let (stored, edited_at): (String, Option<String>) = conn
+            .query_row(
+                "SELECT content,edited_at FROM messages WHERE message_id=?1",
+                [&message.message_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            state.message_cipher().decrypt(&stored).unwrap(),
+            "original body"
+        );
+        assert!(edited_at.is_none());
+        let history: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM message_edits WHERE message_id=?1",
+                [&message.message_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let edits: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM federation_outbox WHERE message_id LIKE 'edit:%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!((history, edits), (0, 0));
+        conn.execute_batch("DROP TRIGGER reject_second_peer_edit;")
+            .unwrap();
+    }
+    let (updated, federated) = svc
+        .edit_message(
+            "sender-1",
+            "chan-1",
+            &message.message_id,
+            "committed revision",
+        )
+        .await
+        .unwrap();
+    assert!(federated);
+    assert_eq!(updated.content, "committed revision");
+    let conn = state.pool.get().unwrap();
+    let history: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM message_edits WHERE message_id=?1",
+            [&message.message_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let edits: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM federation_outbox WHERE message_id LIKE 'edit:%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        (history, edits),
+        (1, 2),
+        "history and both obligations exist immediately after success"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delete_rolls_back_history_and_every_peer_when_later_enqueue_fails() {
+    let (state, _dir) = file_backed_state(true);
+    let svc = ChannelService::new(state.clone());
+    let (message, _, _) = svc
+        .send_message("sender-1", "chan-1", "original".into(), None, None)
+        .await
+        .unwrap();
+    svc.edit_message("sender-1", "chan-1", &message.message_id, "revision")
+        .await
+        .unwrap();
+    {
+        let conn = state.pool.get().unwrap();
+        conn.execute("INSERT INTO instances (base_url,public_key,label,status) VALUES ('https://peer2.example','bb','Peer 2','ACTIVE')", []).unwrap();
+        let peer = conn.last_insert_rowid();
+        conn.execute("INSERT INTO federation_agreements (local_server_id,remote_instance_id,alignment_status,transfer_scope,agreement_json,active) VALUES (1,?1,'ALIGNED','FullKnowledge','{}',1)", [peer]).unwrap();
+        conn.execute_batch("CREATE TRIGGER refuse_second_redaction BEFORE INSERT ON federation_outbox WHEN NEW.message_id LIKE 'redaction:%' AND NEW.peer_instance_id=2 BEGIN SELECT RAISE(ABORT,'simulated redaction enqueue failure'); END;").unwrap();
+    }
+    let error = svc
+        .delete_message("sender-1", "chan-1", &message.message_id)
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("could not queue this deletion"),
+        "{error}"
+    );
+    {
+        let conn = state.pool.get().unwrap();
+        let (stored, deleted): (String, Option<String>) = conn
+            .query_row(
+                "SELECT content,deleted_at FROM messages WHERE message_id=?1",
+                [&message.message_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(state.message_cipher().decrypt(&stored).unwrap(), "revision");
+        assert!(deleted.is_none());
+        let history: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM message_edits WHERE message_id=?1",
+                [&message.message_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let tombstones: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM federation_outbox WHERE message_id LIKE 'redaction:%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!((history, tombstones), (1, 0));
+        conn.execute_batch("DROP TRIGGER refuse_second_redaction;")
+            .unwrap();
+    }
+    let (deleted, remote) = svc
+        .delete_message("sender-1", "chan-1", &message.message_id)
+        .await
+        .unwrap();
+    assert!(remote && deleted.deleted_at.is_some() && deleted.content.is_empty());
+    let conn = state.pool.get().unwrap();
+    let history: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM message_edits WHERE message_id=?1",
+            [&message.message_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let tombstones: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM federation_outbox WHERE message_id LIKE 'redaction:%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!((history, tombstones), (0, 2));
+}
+
+#[tokio::test]
+async fn idempotency_replay_cannot_retarget_a_different_joined_channel() {
+    let (state, _dir) = file_backed_state(false);
+    let svc = ChannelService::new(state.clone());
+    let (message, _, _) = svc
+        .send_message(
+            "sender-1",
+            "chan-1",
+            "original".into(),
+            None,
+            Some("request".into()),
+        )
+        .await
+        .unwrap();
+    {
+        let conn = state.pool.get().unwrap();
+        conn.execute("INSERT INTO channels(server_id,channel_id,name,channel_type,federation_scope) VALUES(1,'chan-2','Other',json_quote('Text'),json_quote('Local'))",[]).unwrap();
+        conn.execute("INSERT INTO channel_members(server_id,channel_id,pseudonym_id) VALUES(1,'chan-2','sender-1')",[]).unwrap();
+    }
+    let error = svc
+        .send_message(
+            "sender-1",
+            "chan-2",
+            "other".into(),
+            None,
+            Some("request".into()),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.status_code(), axum::http::StatusCode::CONFLICT);
+    let (replayed, _, outcome) = svc
+        .send_message(
+            "sender-1",
+            "chan-1",
+            "changed".into(),
+            None,
+            Some("request".into()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(replayed.message_id, message.message_id);
+    assert_eq!(outcome, SendOutcome::Replayed);
 }

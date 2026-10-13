@@ -15,12 +15,12 @@
  * server's business; this only has to be honest about what happened.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import * as api from '@/lib/api';
 import type { OutboxEntry } from '@/lib/api';
 
 /** The statuses the server accepts as a filter, in queue-lifecycle order. */
-const STATUSES = ['pending', 'failed', 'paused', 'delivered'] as const;
+const STATUSES = ['pending', 'failed', 'paused', 'delivered', 'cancelled'] as const;
 
 /** Only these two can be retried; the server answers 409 for the others. */
 const RETRYABLE = new Set(['failed', 'paused']);
@@ -39,9 +39,13 @@ export function FederationOutbox({ pseudonymId }: { pseudonymId: string }) {
   const [retrying, setRetrying] = useState<number | null>(null);
   const [retryError, setRetryError] = useState<string | null>(null);
   const [retried, setRetried] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const generation = useRef(0);
 
   const load = useCallback(
     async (status: string) => {
+      const current = ++generation.current;
+      setLoading(true);
       // A failed read is not an empty queue. Rendering it as one tells the
       // operator every envelope has been delivered, which is the single
       // conclusion this request did not support.
@@ -50,37 +54,28 @@ export function FederationOutbox({ pseudonymId }: { pseudonymId: string }) {
           status: status || undefined,
           limit: 50,
         });
+        if (current !== generation.current) return;
         setEntries(page.entries);
         setCounts(page.counts);
         setError(null);
       } catch (err) {
+        if (current !== generation.current) return;
         setEntries(null);
         setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (current === generation.current) setLoading(false);
       }
     },
     [pseudonymId],
   );
 
   useEffect(() => {
-    let cancelled = false;
-    // Keyed on both, so switching servers or filters cannot land a stale page.
-    api
-      .getFederationOutbox(pseudonymId, { status: filter || undefined, limit: 50 })
-      .then((page) => {
-        if (cancelled) return;
-        setEntries(page.entries);
-        setCounts(page.counts);
-        setError(null);
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        setEntries(null);
-        setError(err instanceof Error ? err.message : String(err));
-      });
+    void load(filter);
+    const epoch = generation;
     return () => {
-      cancelled = true;
+      epoch.current++;
     };
-  }, [pseudonymId, filter]);
+  }, [load, filter]);
 
   const handleRetry = async (entry: OutboxEntry) => {
     setRetrying(entry.id);
@@ -88,7 +83,9 @@ export function FederationOutbox({ pseudonymId }: { pseudonymId: string }) {
     setRetried(null);
     try {
       const result = await api.retryFederationOutboxRow(pseudonymId, entry.id);
-      setRetried(result.message_id);
+      setRetried(entry.operation_kind === 'attachment'
+        ? `Attachment ${entry.attachment_id ?? entry.message_id}`
+        : `Message ${result.message_id}`);
       await load(filter);
     } catch (err) {
       setRetryError(err instanceof Error ? err.message : String(err));
@@ -104,9 +101,12 @@ export function FederationOutbox({ pseudonymId }: { pseudonymId: string }) {
       <div className="policy-section">
         <h3>Delivery Queue</h3>
         <p className="field-hint">
-          Envelopes this server is sending to its federation peers. A row that
-          keeps failing is a delivery nobody on the other side has received.
+          Messages sent to federation peers and attachments received from them.
+          Failed deliveries remain here until they recover or are cancelled.
         </p>
+        <button type="button" onClick={() => void load(filter)} disabled={loading}>
+          {loading ? 'Refreshing...' : 'Refresh delivery queue'}
+        </button>
 
         {error && (
           <p className="error-message" role="alert">
@@ -149,7 +149,7 @@ export function FederationOutbox({ pseudonymId }: { pseudonymId: string }) {
 
             {retried && (
               <p className="success-message" role="status">
-                Message {retried} is back in the retry rotation.
+                {retried} is back in the retry rotation.
               </p>
             )}
             {retryError && (
@@ -180,6 +180,9 @@ export function FederationOutbox({ pseudonymId }: { pseudonymId: string }) {
                           entry.peer_base_url ??
                           `peer #${entry.peer_instance_id} (removed)`}
                       </span>
+                      {entry.operation_kind === 'attachment' && (
+                        <span>Incoming attachment</span>
+                      )}
                       {RETRYABLE.has(entry.status) && (
                         <button
                           type="button"
@@ -196,9 +199,29 @@ export function FederationOutbox({ pseudonymId }: { pseudonymId: string }) {
                       <span>
                         {entry.attempts} {entry.attempts === 1 ? 'attempt' : 'attempts'}
                       </span>
-                      <span>{formatBytes(entry.envelope_bytes)}</span>
-                      <span>next try {entry.next_retry_at}</span>
+                      {entry.operation_kind === 'attachment' ? (
+                        <span>
+                          {entry.transferred_bytes != null && entry.total_bytes != null
+                            ? `${formatBytes(entry.transferred_bytes)} of ${formatBytes(entry.total_bytes)} received`
+                            : formatBytes(entry.envelope_bytes)}
+                        </span>
+                      ) : <span>{formatBytes(entry.envelope_bytes)}</span>}
+                      {(entry.status === 'pending' || RETRYABLE.has(entry.status)) && (
+                        <span>next try {entry.next_retry_at}</span>
+                      )}
                     </div>
+                    {entry.operation_kind === 'attachment' && entry.attachment_id && (
+                      <div className="outbox-row-meta">
+                        <span>attachment {entry.attachment_id}</span>
+                        {entry.transferred_bytes != null && entry.total_bytes != null && entry.total_bytes > 0 && (
+                          <progress
+                            aria-label={`Attachment ${entry.attachment_id} received`}
+                            value={entry.transferred_bytes}
+                            max={entry.total_bytes}
+                          />
+                        )}
+                      </div>
+                    )}
                     {entry.last_error && (
                       <p className="outbox-row-error">{entry.last_error}</p>
                     )}

@@ -11,7 +11,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { uploadChatImage, uploadChatFile } from './uploads';
-import { ApiError } from './core';
+import { ApiError, setSessionToken } from './core';
 
 const originalFetch = globalThis.fetch;
 
@@ -27,6 +27,7 @@ function response(status: number, body: string, headers: Record<string, string> 
 
 beforeEach(() => {
   globalThis.fetch = vi.fn();
+  setSessionToken(null, 'p1');
 });
 afterEach(() => {
   globalThis.fetch = originalFetch;

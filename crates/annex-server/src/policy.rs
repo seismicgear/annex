@@ -41,6 +41,7 @@ pub async fn recalculate_agent_alignments(state: Arc<AppState>) -> Result<(), Ap
         required_capabilities: policy.agent_required_capabilities.clone(),
         offered_capabilities,
         redacted_topics: vec![],
+        ..VrpCapabilitySharingContract::from_policy(&policy)
     };
 
     let alignment_config = VrpAlignmentConfig {
@@ -49,8 +50,8 @@ pub async fn recalculate_agent_alignments(state: Arc<AppState>) -> Result<(), Ap
     };
 
     let transfer_config = VrpTransferAcceptanceConfig {
-        allow_reflection_summaries: true,
-        allow_full_knowledge: false,
+        allow_reflection_summaries: policy.allow_reflection_summaries,
+        allow_full_knowledge: policy.allow_full_knowledge,
     };
 
     let state_clone = state.clone();
@@ -309,6 +310,7 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
         required_capabilities: policy.agent_required_capabilities.clone(),
         offered_capabilities,
         redacted_topics: vec![],
+        ..VrpCapabilitySharingContract::from_policy(&policy)
     };
 
     let alignment_config = VrpAlignmentConfig {
@@ -317,8 +319,8 @@ pub async fn recalculate_federation_agreements(state: Arc<AppState>) -> Result<(
     };
 
     let transfer_config = VrpTransferAcceptanceConfig {
-        allow_reflection_summaries: policy.federation_enabled,
-        allow_full_knowledge: false,
+        allow_reflection_summaries: policy.federation_enabled && policy.allow_reflection_summaries,
+        allow_full_knowledge: policy.federation_enabled && policy.allow_full_knowledge,
     };
 
     let state_clone = state.clone();
@@ -615,6 +617,7 @@ pub async fn notify_federation_peers_of_policy_change(
             required_capabilities: policy.agent_required_capabilities.clone(),
             offered_capabilities,
             redacted_topics: vec![],
+            ..VrpCapabilitySharingContract::from_policy(&policy)
         };
 
         // Outbound: tell the peer what we are scoring with, so it can see

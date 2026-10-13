@@ -15,13 +15,15 @@ const SERVER_STORE = 'servers';
 let dbPromise: Promise<IDBPDatabase> | null = null;
 
 /** Reset the cached DB connection handle (used after clearAllDatabases). */
-export function resetDbHandle(): void {
+export async function resetDbHandle(): Promise<void> {
+  const pending = dbPromise;
   dbPromise = null;
+  if (pending) (await pending.catch(() => null))?.close();
 }
 
 function getDb(): Promise<IDBPDatabase> {
   if (!dbPromise) {
-    dbPromise = openDB(DB_NAME, DB_VERSION, {
+    const opening = openDB(DB_NAME, DB_VERSION, {
       upgrade(db) {
         if (!db.objectStoreNames.contains(SERVER_STORE)) {
           const store = db.createObjectStore(SERVER_STORE, { keyPath: 'id' });
@@ -29,7 +31,14 @@ function getDb(): Promise<IDBPDatabase> {
           store.createIndex('slug', 'slug', { unique: false });
         }
       },
+      blocking(_current, _next, event) {
+        (event.target as IDBDatabase).close();
+        if (dbPromise === opening) dbPromise = null;
+      },
+      terminated() { if (dbPromise === opening) dbPromise = null; },
     });
+    dbPromise = opening;
+    void opening.catch(() => { if (dbPromise === opening) dbPromise = null; });
   }
   return dbPromise;
 }

@@ -204,10 +204,12 @@ fn contract_ws_incoming_message_fixture_deserializes() {
             content,
             reply_to,
             client_request_id,
+            attachment_ids,
         } => {
             assert_eq!(channel_id, "general");
             assert_eq!(content, "Hello, world!");
             assert!(reply_to.is_none());
+            assert!(attachment_ids.is_empty());
             assert_eq!(client_request_id.as_deref(), Some("req-018dSCao"));
         }
         other => panic!("expected IncomingMessage::Message, got {other:?}"),

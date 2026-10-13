@@ -8,8 +8,8 @@ Contributions are welcome. This document explains how to build, test, and submit
 
 | Tool | Version | Notes |
 |------|---------|-------|
-| Rust | 1.85+ | Install from [rustup.rs](https://rustup.rs) |
-| Node.js | 22+ | For client builds |
+| Rust | 1.96.0 | Use the repository's `rust-toolchain.toml` pin |
+| Node.js | 22.12+ | For client/ZK builds and acceptance tools |
 | sqlite3 | Any | For database seeding (optional — deploy scripts handle this) |
 
 ## Build
@@ -31,8 +31,8 @@ npm run build
 ### Desktop (Tauri)
 
 ```bash
-cd client
-npm run tauri build
+cd crates/annex-desktop
+cargo tauri build
 ```
 
 ### Full workspace
@@ -47,7 +47,7 @@ cargo build --workspace
 cargo test --workspace
 ```
 
-Some tests require ZK trusted setup keys in `zk/keys/`. Tests that depend on these keys are skipped when the keys are absent. This is expected in most development environments.
+Proof integration tests require the pinned ZK artifacts in `zk/keys/` and the installed snarkjs CLI. Prepare them with the repository setup scripts before running the suite; a missing artifact or failed proof fails the test. Tests explicitly marked `#[ignore]` identify separate prerequisites such as real speech providers or Redis. Run those with their documented inputs and record their results separately; an ignored prerequisite is not a passing acceptance check.
 
 To run client tests:
 

@@ -110,6 +110,42 @@ async fn voice_config_status(Extension(state): Extension<Arc<AppState>>) -> Json
 pub fn app(state: AppState) -> Router {
     let protected_routes = Router::new()
         .route(
+            "/api/federation/authority-peers",
+            get(crate::services::authority_directory::http_peers),
+        )
+        .route(
+            "/api/federation/authority-peers/{peer_id}/channels",
+            get(crate::services::authority_directory::http_channels),
+        )
+        .route(
+            "/api/channels/{channel_id}/authority",
+            get(crate::services::authority_directory::http_binding),
+        )
+        .route(
+            "/api/channels/{channel_id}/authority/initialize",
+            post(crate::services::authority_directory::http_initialize),
+        )
+        .route(
+            "/api/channels/{channel_id}/authority/reconciliation-preview",
+            get(crate::services::authority_reconciliation::http_preview),
+        )
+        .route(
+            "/api/channels/{channel_id}/authority/reconcile",
+            post(crate::services::authority_reconciliation::http_reconcile),
+        )
+        .route(
+            "/api/channels/{channel_id}/authority/reconciliations",
+            get(crate::services::authority_reconciliation::http_list),
+        )
+        .route(
+            "/api/channels/{channel_id}/authority/reconciliations/{operation_id}",
+            delete(crate::services::authority_reconciliation::http_cancel),
+        )
+        .route(
+            "/api/federation/channels/{channel_id}/attach",
+            post(crate::services::channel_replication::http_attach),
+        )
+        .route(
             "/api/channels",
             post(api_channels::create_channel_handler).get(api_channels::list_channels_handler),
         )
@@ -146,6 +182,10 @@ pub fn app(state: AppState) -> Router {
             get(api_channels::get_channel_history_handler),
         )
         .route(
+            "/api/channels/{channelId}/federation-gaps",
+            get(api_channels::federation_gaps_handler),
+        )
+        .route(
             "/api/channels/{channelId}/messages/{messageId}/edits",
             get(api_channels::get_message_edits_handler),
         )
@@ -156,6 +196,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/api/agents/{pseudonymId}/voice-profile",
             put(api_agent::update_agent_voice_profile_handler),
+        )
+        .route(
+            "/api/voice-profiles",
+            get(crate::api_voice_profiles::list_voice_profiles_handler),
         )
         .route("/api/rtx/publish", post(api_rtx::publish_handler))
         .route(
@@ -177,7 +221,11 @@ pub fn app(state: AppState) -> Router {
         .route("/api/metrics", get(crate::api_metrics::metrics))
         .route(
             "/api/uploads/grant",
-            post(crate::api_uploads_access::issue_upload_grant),
+            post(crate::api_federated_uploads::issue_upload_grant),
+        )
+        .route(
+            "/api/channels/{channelId}/uploads/{uploadId}/retry",
+            post(crate::api_federated_uploads::retry_member_transfer),
         )
         .route(
             "/api/admin/policy",
@@ -201,11 +249,11 @@ pub fn app(state: AppState) -> Router {
         )
         .route(
             "/api/admin/federation/outbox",
-            get(api_admin::list_federation_outbox_handler),
+            get(crate::api_federated_uploads::list_delivery),
         )
         .route(
             "/api/admin/federation/outbox/{id}/retry",
-            post(api_admin::retry_federation_outbox_handler),
+            post(crate::api_federated_uploads::retry_delivery),
         )
         .route(
             "/api/admin/storage",
@@ -216,6 +264,10 @@ pub fn app(state: AppState) -> Router {
             post(api_admin::clear_storage_gate_handler),
         )
         .route("/api/admin/members", get(api_admin::list_members_handler))
+        .route(
+            "/api/members",
+            get(crate::api_members::list_members_handler),
+        )
         .route(
             "/api/admin/members/{pseudonymId}/capabilities",
             patch(api_admin::update_member_capabilities_handler),
@@ -266,8 +318,20 @@ pub fn app(state: AppState) -> Router {
         // ── End-to-end encrypted channels (content-blind key distribution) ──
         .route("/api/keys/me", put(api_e2e::put_my_key_handler))
         .route(
+            "/api/keys/certificate-context",
+            get(api_e2e::get_certificate_context_handler),
+        )
+        .route(
+            "/api/keys/me/{deviceId}",
+            delete(api_e2e::revoke_my_device_handler),
+        )
+        .route(
             "/api/keys/{pseudonymId}",
             get(api_e2e::get_member_key_handler),
+        )
+        .route(
+            "/api/channels/{channelId}/key-manifest",
+            get(api_e2e::get_channel_manifest_handler).post(api_e2e::post_channel_manifest_handler),
         )
         .route(
             "/api/channels/{channelId}/member-keys",
@@ -276,17 +340,31 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/api/channels/{channelId}/key-wraps",
             get(api_e2e::get_channel_key_wraps_handler)
-                .post(api_e2e::post_channel_key_wraps_handler),
+                .post(api_e2e::post_channel_key_wraps_handler)
+                .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024)),
         )
         .route(
             "/api/channels/{channelId}/key-status",
             get(api_e2e::get_channel_key_status_handler),
         )
         .route(
+            "/api/channels/{channelId}/upload-policy",
+            get(crate::api_upload_policy::get_upload_policy),
+        )
+        .route(
             "/api/channels/{channelId}/e2e",
             get(api_e2e::get_channel_e2e_handler).put(api_e2e::set_channel_e2e_handler),
         )
         .route("/api/ws/token", post(api_ws::create_ws_token_handler))
+        .route(
+            "/api/graph/metadata-grants",
+            get(api_graph::get_metadata_grants_handler),
+        )
+        .route(
+            "/api/graph/metadata-grants/{grantee}",
+            put(api_graph::put_metadata_grant_handler)
+                .delete(api_graph::delete_metadata_grant_handler),
+        )
         .route(
             "/api/graph/profile/{targetPseudonym}",
             get(api_graph::get_profile_handler),
@@ -312,7 +390,8 @@ pub fn app(state: AppState) -> Router {
         .layer(axum::middleware::from_fn(middleware::auth_middleware));
 
     // Upload routes need a larger body limit for media uploads.
-    // The hard ceiling is 50 MiB; the handler enforces per-category limits from policy.
+    // The file ceiling is 50 MiB; allow bounded multipart headers and the
+    // encrypted nonce/tag overhead above it. Handlers enforce category limits.
     let upload_routes = Router::new()
         .route(
             "/api/admin/server/image",
@@ -322,7 +401,15 @@ pub fn app(state: AppState) -> Router {
             "/api/channels/{channelId}/upload",
             post(api_upload::upload_chat_handler),
         )
-        .layer(DefaultBodyLimit::max(50 * 1024 * 1024))
+        .route(
+            "/api/channels/{channelId}/encrypted-upload",
+            post(crate::api_upload_lifecycle::upload_encrypted_handler),
+        )
+        .route(
+            "/api/channels/{channelId}/uploads/{uploadId}",
+            axum::routing::delete(crate::api_upload_lifecycle::abort_upload_handler),
+        )
+        .layer(DefaultBodyLimit::max(50 * 1024 * 1024 + 64 * 1024))
         // Same layer ordering as protected_routes: auth first, then
         // pseudonym-aware rate limit, then the upload handler.
         .layer(axum::middleware::from_fn(middleware::rate_limit_middleware))
@@ -356,7 +443,7 @@ pub fn app(state: AppState) -> Router {
         // on the next request rather than whenever a token expires.
         .route(
             "/uploads/chat/{category}/{filename}",
-            get(crate::api_uploads_access::serve_chat_upload),
+            get(crate::api_federated_uploads::serve_chat_upload),
         )
         .route("/api/registry/register", post(api::register_handler))
         .route(
@@ -435,6 +522,32 @@ pub fn app(state: AppState) -> Router {
             post(api_federation::receive_federated_message_handler),
         )
         .route(
+            "/api/federation/channel-authority/operations",
+            post(crate::services::channel_authority::http_operation).layer(DefaultBodyLimit::max(
+                annex_federation::transport::MAX_APPLICATION_REQUEST_BYTES,
+            )),
+        )
+        .route(
+            "/api/federation/channel-authority/directory",
+            post(crate::services::authority_directory::http_receive),
+        )
+        .route(
+            "/api/federation/human-membership",
+            post(crate::services::human_federation::http_attest),
+        )
+        .route(
+            "/api/federation/channel-authority/catch-up",
+            post(crate::services::channel_authority::http_catchup),
+        )
+        .route(
+            "/api/federation/channel-authority/read-permit",
+            post(crate::services::channel_authority::http_read_permit),
+        )
+        .route(
+            "/api/federation/catch-up",
+            post(api_federation::catchup_handler),
+        )
+        .route(
             "/api/federation/redactions",
             post(api_federation::receive_federated_redaction_handler),
         )
@@ -445,6 +558,11 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/api/federation/rtx",
             post(api_federation::receive_federated_rtx_handler),
+        )
+        .route(
+            "/api/federation/attachments/chunk",
+            post(crate::api_federated_uploads::chunk_handler)
+                .layer(DefaultBodyLimit::max(64 * 1024)),
         )
         .route("/api/public/events", get(api_observe::get_events_handler))
         .route(

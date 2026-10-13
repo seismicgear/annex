@@ -94,6 +94,10 @@ export interface Channel {
 
 /** Message from API or WebSocket. */
 export interface Message {
+  /** Staged attachment ownership follows failed optimistic messages for retry. */
+  attachment_ids?: string[];
+  /** Original authenticated wire body retained locally for late key admission. Never sent as display text. */
+  encrypted_content?: string;
   message_id: string;
   channel_id: string;
   sender_pseudonym: string;
@@ -120,6 +124,7 @@ export interface MessageEdit {
 
 /** WebSocket frame for sending messages. */
 export interface WsSendFrame {
+  attachmentIds?: string[];
   type: 'message' | 'edit_message' | 'delete_message' | 'typing' | 'resume'
     | 'webrtc_offer' | 'webrtc_answer' | 'webrtc_ice_candidate';
   channelId: string;
@@ -148,8 +153,16 @@ export interface WsSendFrame {
 /** WebSocket frame received from server. */
 export interface WsReceiveFrame {
   type: 'message' | 'message_edited' | 'message_deleted' | 'rtx_bundle' | 'transcription' | 'error'
-    | 'channel_created' | 'channel_updated' | 'channel_deleted' | 'channel_e2e_changed' | 'typing' | 'resumed'
-    | 'webrtc_answer' | 'webrtc_offer' | 'webrtc_ice_candidate' | 'internal_error';
+    | 'channel_created' | 'channel_updated' | 'channel_deleted' | 'channel_e2e_changed' | 'channel_key_state_changed' | 'typing' | 'resumed'
+    | 'webrtc_answer' | 'webrtc_offer' | 'webrtc_ice_candidate' | 'internal_error' | 'federation_history_pruned' | 'attachment_transfer_changed' | 'channel_membership_changed' | 'identity_capabilities_changed';
+  canVoice?: boolean;
+  member?: boolean;
+  attachmentId?: string;
+  status?: 'pending' | 'ready' | 'failed' | 'removed';
+  transferredBytes?: number;
+  totalBytes?: number;
+  originatingServer?: string;
+  throughSeq?: number;
   // Message fields (camelCase from WsMessagePayload)
   channelId?: string;
   messageId?: string;
@@ -163,6 +176,10 @@ export interface WsReceiveFrame {
   channel?: Channel;
   /** Whether E2E is now enabled (channel_e2e_changed). */
   e2eEnabled?: boolean;
+  revision?: number;
+  currentEpoch?: number;
+  requiredEpoch?: number;
+  keyId?: string | null;
   // Typing indicator fields
   pseudonymId?: string;
   // Resume fields
@@ -279,6 +296,11 @@ export interface ServerPolicy {
   agent_min_alignment_score: number;
   agent_required_capabilities: string[];
   federation_enabled: boolean;
+  allow_reflection_summaries: boolean;
+  allow_full_knowledge: boolean;
+  knowledge_domains_allowed?: string[] | null;
+  rtx_retention_seconds?: number | null;
+  max_exchange_size?: number;
   default_retention_days: number;
   voice_enabled: boolean;
   max_members: number;

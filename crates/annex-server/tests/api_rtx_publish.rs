@@ -31,7 +31,10 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool) {
     drop(conn);
 
     let tree = MerkleTree::new(20).unwrap();
-    let policy = ServerPolicy::default();
+    let policy = ServerPolicy {
+        allow_full_knowledge: true,
+        ..ServerPolicy::default()
+    };
 
     let state = AppState {
         pool: pool.clone(),
@@ -64,6 +67,7 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool) {
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
         voice_token_secret: std::sync::Arc::new([0u8; 32]),
+        federation_transport: Default::default(),
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
@@ -75,101 +79,82 @@ async fn setup_app() -> (axum::Router, annex_db::DbPool) {
     (app(state), pool)
 }
 
-/// Creates an aligned agent registration in the DB so the agent can publish.
-fn register_agent(pool: &annex_db::DbPool, pseudonym: &str, transfer_scope: &str) {
-    let conn = pool.get().unwrap();
-
-    // Insert platform identity (required for auth middleware)
-    conn.execute(
-        "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active)
-         VALUES (1, ?1, 'AI_AGENT', 1)",
-        [pseudonym],
-    )
-    .unwrap();
-
-    // Insert agent registration with specified transfer scope
-    let contract_json = serde_json::json!({
-        "required_capabilities": [],
-        "offered_capabilities": ["TEXT", "VRP"],
-        "redacted_topics": []
-    })
-    .to_string();
-
-    conn.execute(
-        "INSERT INTO agent_registrations (
-            server_id, pseudonym_id, alignment_status, transfer_scope,
-            capability_contract_json, reputation_score, last_handshake_at
-        ) VALUES (1, ?1, 'ALIGNED', ?2, ?3, 1.0, datetime('now'))",
-        rusqlite::params![pseudonym, transfer_scope, contract_json],
-    )
-    .unwrap();
-}
-
-/// Creates an aligned agent registration carrying an Ed25519 signing pubkey,
-/// so the publish path enforces the per-agent author signature (P4-FED-1).
-fn register_agent_with_pubkey(
-    pool: &annex_db::DbPool,
-    pseudonym: &str,
-    transfer_scope: &str,
-    signing_pubkey_hex: &str,
-) {
-    let conn = pool.get().unwrap();
-    conn.execute(
-        "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active)
-         VALUES (1, ?1, 'AI_AGENT', 1)",
-        [pseudonym],
-    )
-    .unwrap();
-    let contract_json = serde_json::json!({
-        "required_capabilities": [],
-        "offered_capabilities": ["TEXT", "VRP"],
-        "redacted_topics": []
-    })
-    .to_string();
-    conn.execute(
-        "INSERT INTO agent_registrations (
-            server_id, pseudonym_id, alignment_status, transfer_scope,
-            capability_contract_json, reputation_score, last_handshake_at, signing_pubkey
-        ) VALUES (1, ?1, 'ALIGNED', ?2, ?3, 1.0, datetime('now'), ?4)",
-        rusqlite::params![pseudonym, transfer_scope, contract_json, signing_pubkey_hex],
-    )
-    .unwrap();
-}
-
-/// Creates an agent registration with redacted topics.
-fn register_agent_with_redactions(
+/// Exercise the actual handshake handler before inserting the authentication
+/// fixture. The explicit scope override below isolates existing per-scope gate
+/// tests; negotiation itself is covered by api_vrp_handshake and the live lane.
+async fn register_agent_contract(
+    app: &axum::Router,
     pool: &annex_db::DbPool,
     pseudonym: &str,
     transfer_scope: &str,
     redacted_topics: &[&str],
+    signing_pubkey: Option<&str>,
 ) {
+    let handshake = annex_vrp::VrpFederationHandshake {
+        anchor_snapshot: annex_vrp::VrpAnchorSnapshot::new(&[], &[]).unwrap(),
+        capability_contract: annex_vrp::VrpCapabilitySharingContract {
+            required_capabilities: vec![],
+            offered_capabilities: vec!["TEXT".into(), "VRP".into()],
+            redacted_topics: redacted_topics.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        },
+        scorer: None,
+    };
+    let mut req = Request::builder().uri("/api/vrp/agent-handshake").method("POST")
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::json!({"pseudonymId": pseudonym, "handshake": handshake, "signingPubkey": signing_pubkey}).to_string())).unwrap();
+    req.extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12345))));
+    let response = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let report: Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(report["handshakeRef"]
+        .as_str()
+        .unwrap()
+        .starts_with("vrp:1:"));
     let conn = pool.get().unwrap();
-
-    conn.execute(
-        "INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active)
-         VALUES (1, ?1, 'AI_AGENT', 1)",
-        [pseudonym],
-    )
-    .unwrap();
-
-    let contract_json = serde_json::json!({
-        "required_capabilities": [],
-        "offered_capabilities": ["TEXT", "VRP"],
-        "redacted_topics": redacted_topics
-    })
-    .to_string();
-
-    conn.execute(
-        "INSERT INTO agent_registrations (
-            server_id, pseudonym_id, alignment_status, transfer_scope,
-            capability_contract_json, reputation_score, last_handshake_at
-        ) VALUES (1, ?1, 'ALIGNED', ?2, ?3, 1.0, datetime('now'))",
-        rusqlite::params![pseudonym, transfer_scope, contract_json],
-    )
-    .unwrap();
+    conn.execute("INSERT INTO platform_identities (server_id, pseudonym_id, participant_type, active) VALUES (1, ?1, 'AI_AGENT', 1)", [pseudonym]).unwrap();
+    conn.execute("UPDATE agent_registrations SET transfer_scope = ?1 WHERE server_id = 1 AND pseudonym_id = ?2", rusqlite::params![transfer_scope, pseudonym]).unwrap();
 }
 
-fn make_bundle(pseudonym: &str) -> Value {
+async fn register_agent(
+    app: &axum::Router,
+    pool: &annex_db::DbPool,
+    pseudonym: &str,
+    transfer_scope: &str,
+) {
+    register_agent_contract(app, pool, pseudonym, transfer_scope, &[], None).await;
+}
+async fn register_agent_with_pubkey(
+    app: &axum::Router,
+    pool: &annex_db::DbPool,
+    pseudonym: &str,
+    transfer_scope: &str,
+    key: &str,
+) {
+    register_agent_contract(app, pool, pseudonym, transfer_scope, &[], Some(key)).await;
+}
+async fn register_agent_with_redactions(
+    app: &axum::Router,
+    pool: &annex_db::DbPool,
+    pseudonym: &str,
+    transfer_scope: &str,
+    topics: &[&str],
+) {
+    register_agent_contract(app, pool, pseudonym, transfer_scope, topics, None).await;
+}
+fn current_ref(pool: &annex_db::DbPool, pseudonym: &str) -> String {
+    use rusqlite::OptionalExtension;
+    let id: Option<i64> = pool.get().unwrap().query_row("SELECT current_handshake_id FROM agent_registrations WHERE server_id = 1 AND pseudonym_id = ?1", [pseudonym], |r| r.get(0)).optional().unwrap();
+    format!("vrp:1:{}", id.unwrap_or(0))
+}
+
+fn make_bundle(pool: &annex_db::DbPool, pseudonym: &str) -> Value {
     serde_json::json!({
         "bundle_id": format!("bundle-{}", uuid::Uuid::new_v4()),
         "source_pseudonym": pseudonym,
@@ -180,7 +165,7 @@ fn make_bundle(pseudonym: &str) -> Value {
         "caveats": ["Applies to safe Rust only"],
         "created_at": 1700000000000_u64,
         "signature": "abcdef1234567890",
-        "vrp_handshake_ref": "server1:instance1:agreement1"
+        "vrp_handshake_ref": current_ref(pool, pseudonym)
     })
 }
 
@@ -204,9 +189,9 @@ fn build_publish_request(pseudonym: &str, bundle: &Value) -> Request<Body> {
 #[tokio::test]
 async fn test_publish_bundle_success_reflection_scope() {
     let (app, pool) = setup_app().await;
-    register_agent(&pool, "agent-pub", "REFLECTION_SUMMARIES_ONLY");
+    register_agent(&app, &pool, "agent-pub", "REFLECTION_SUMMARIES_ONLY").await;
 
-    let bundle = make_bundle("agent-pub");
+    let bundle = make_bundle(&pool, "agent-pub");
     let req = build_publish_request("agent-pub", &bundle);
 
     let response = app.oneshot(req).await.unwrap();
@@ -261,9 +246,9 @@ async fn test_publish_bundle_success_reflection_scope() {
 #[tokio::test]
 async fn test_publish_bundle_success_full_scope() {
     let (app, pool) = setup_app().await;
-    register_agent(&pool, "agent-full", "FULL_KNOWLEDGE_BUNDLE");
+    register_agent(&app, &pool, "agent-full", "FULL_KNOWLEDGE_BUNDLE").await;
 
-    let bundle = make_bundle("agent-full");
+    let bundle = make_bundle(&pool, "agent-full");
     let req = build_publish_request("agent-full", &bundle);
 
     let response = app.oneshot(req).await.unwrap();
@@ -290,9 +275,9 @@ async fn test_publish_bundle_success_full_scope() {
 
 #[tokio::test]
 async fn test_publish_requires_auth() {
-    let (app, _pool) = setup_app().await;
+    let (app, pool) = setup_app().await;
 
-    let bundle = make_bundle("agent-noauth");
+    let bundle = make_bundle(&pool, "agent-noauth");
 
     // No auth header
     let addr = SocketAddr::from(([127, 0, 0, 1], 12345));
@@ -311,9 +296,9 @@ async fn test_publish_requires_auth() {
 #[tokio::test]
 async fn test_publish_rejects_no_transfer_scope() {
     let (app, pool) = setup_app().await;
-    register_agent(&pool, "agent-notransfer", "NO_TRANSFER");
+    register_agent(&app, &pool, "agent-notransfer", "NO_TRANSFER").await;
 
-    let bundle = make_bundle("agent-notransfer");
+    let bundle = make_bundle(&pool, "agent-notransfer");
     let req = build_publish_request("agent-notransfer", &bundle);
 
     let response = app.oneshot(req).await.unwrap();
@@ -323,10 +308,10 @@ async fn test_publish_rejects_no_transfer_scope() {
 #[tokio::test]
 async fn test_publish_rejects_mismatched_pseudonym() {
     let (app, pool) = setup_app().await;
-    register_agent(&pool, "agent-real", "REFLECTION_SUMMARIES_ONLY");
+    register_agent(&app, &pool, "agent-real", "REFLECTION_SUMMARIES_ONLY").await;
 
     // Bundle claims source_pseudonym is "agent-fake" but auth is "agent-real"
-    let mut bundle = make_bundle("agent-fake");
+    let mut bundle = make_bundle(&pool, "agent-fake");
     // Keep the pseudonym as "agent-fake" in the bundle
     bundle["source_pseudonym"] = serde_json::json!("agent-fake");
 
@@ -339,9 +324,9 @@ async fn test_publish_rejects_mismatched_pseudonym() {
 #[tokio::test]
 async fn test_publish_rejects_wrong_source_server() {
     let (app, pool) = setup_app().await;
-    register_agent(&pool, "agent-srv", "REFLECTION_SUMMARIES_ONLY");
+    register_agent(&app, &pool, "agent-srv", "REFLECTION_SUMMARIES_ONLY").await;
 
-    let mut bundle = make_bundle("agent-srv");
+    let mut bundle = make_bundle(&pool, "agent-srv");
     bundle["source_server"] = serde_json::json!("http://evil-server:9999");
 
     let req = build_publish_request("agent-srv", &bundle);
@@ -365,7 +350,7 @@ async fn test_publish_rejects_unregistered_agent() {
         .unwrap();
     } // conn dropped here — must not hold it during oneshot
 
-    let bundle = make_bundle("agent-noreg");
+    let bundle = make_bundle(&pool, "agent-noreg");
     let req = build_publish_request("agent-noreg", &bundle);
 
     let response = app.oneshot(req).await.unwrap();
@@ -379,9 +364,9 @@ async fn test_publish_rejects_unregistered_agent() {
 #[tokio::test]
 async fn test_publish_rejects_empty_summary() {
     let (app, pool) = setup_app().await;
-    register_agent(&pool, "agent-val", "REFLECTION_SUMMARIES_ONLY");
+    register_agent(&app, &pool, "agent-val", "REFLECTION_SUMMARIES_ONLY").await;
 
-    let mut bundle = make_bundle("agent-val");
+    let mut bundle = make_bundle(&pool, "agent-val");
     bundle["summary"] = serde_json::json!("");
 
     let req = build_publish_request("agent-val", &bundle);
@@ -393,9 +378,9 @@ async fn test_publish_rejects_empty_summary() {
 #[tokio::test]
 async fn test_publish_rejects_duplicate_bundle_id() {
     let (app, pool) = setup_app().await;
-    register_agent(&pool, "agent-dup", "REFLECTION_SUMMARIES_ONLY");
+    register_agent(&app, &pool, "agent-dup", "REFLECTION_SUMMARIES_ONLY").await;
 
-    let bundle = make_bundle("agent-dup");
+    let bundle = make_bundle(&pool, "agent-dup");
 
     // First publish
     let req1 = build_publish_request("agent-dup", &bundle);
@@ -416,14 +401,16 @@ async fn test_publish_rejects_duplicate_bundle_id() {
 async fn test_publish_enforces_redacted_topics() {
     let (app, pool) = setup_app().await;
     register_agent_with_redactions(
+        &app,
         &pool,
         "agent-redact",
         "REFLECTION_SUMMARIES_ONLY",
         &["politics"],
-    );
+    )
+    .await;
 
     // Bundle has domain_tag "politics" which is redacted
-    let mut bundle = make_bundle("agent-redact");
+    let mut bundle = make_bundle(&pool, "agent-redact");
     bundle["domain_tags"] = serde_json::json!(["politics", "ethics"]);
 
     let req = build_publish_request("agent-redact", &bundle);
@@ -440,14 +427,16 @@ async fn test_publish_enforces_redacted_topics() {
 async fn test_publish_allows_non_redacted_topics() {
     let (app, pool) = setup_app().await;
     register_agent_with_redactions(
+        &app,
         &pool,
         "agent-ok",
         "REFLECTION_SUMMARIES_ONLY",
         &["politics"],
-    );
+    )
+    .await;
 
     // Bundle has "rust" and "systems" which are not redacted
-    let bundle = make_bundle("agent-ok");
+    let bundle = make_bundle(&pool, "agent-ok");
 
     let req = build_publish_request("agent-ok", &bundle);
 
@@ -466,8 +455,8 @@ async fn test_publish_allows_non_redacted_topics() {
 #[tokio::test]
 async fn test_publish_delivers_to_subscribers() {
     let (app, pool) = setup_app().await;
-    register_agent(&pool, "agent-sender", "FULL_KNOWLEDGE_BUNDLE");
-    register_agent(&pool, "agent-receiver", "REFLECTION_SUMMARIES_ONLY");
+    register_agent(&app, &pool, "agent-sender", "FULL_KNOWLEDGE_BUNDLE").await;
+    register_agent(&app, &pool, "agent-receiver", "REFLECTION_SUMMARIES_ONLY").await;
 
     // Create a subscription for agent-receiver
     let conn = pool.get().unwrap();
@@ -479,7 +468,7 @@ async fn test_publish_delivers_to_subscribers() {
     .unwrap();
     drop(conn);
 
-    let bundle = make_bundle("agent-sender");
+    let bundle = make_bundle(&pool, "agent-sender");
     let req = build_publish_request("agent-sender", &bundle);
 
     let response = app.oneshot(req).await.unwrap();
@@ -509,8 +498,8 @@ async fn test_publish_delivers_to_subscribers() {
 #[tokio::test]
 async fn test_publish_respects_subscriber_domain_filters() {
     let (app, pool) = setup_app().await;
-    register_agent(&pool, "agent-pub-df", "FULL_KNOWLEDGE_BUNDLE");
-    register_agent(&pool, "agent-sub-df", "REFLECTION_SUMMARIES_ONLY");
+    register_agent(&app, &pool, "agent-pub-df", "FULL_KNOWLEDGE_BUNDLE").await;
+    register_agent(&app, &pool, "agent-sub-df", "REFLECTION_SUMMARIES_ONLY").await;
 
     // Subscribe with domain filter that doesn't match
     let conn = pool.get().unwrap();
@@ -523,7 +512,7 @@ async fn test_publish_respects_subscriber_domain_filters() {
     drop(conn);
 
     // Bundle has domain_tags ["rust", "systems"] - doesn't match subscriber filter
-    let bundle = make_bundle("agent-pub-df");
+    let bundle = make_bundle(&pool, "agent-pub-df");
     let req = build_publish_request("agent-pub-df", &bundle);
 
     let response = app.oneshot(req).await.unwrap();
@@ -552,9 +541,15 @@ async fn test_publish_respects_subscriber_domain_filters() {
 #[tokio::test]
 async fn test_publish_skips_subscriber_with_corrupted_domain_filters() {
     let (app, pool) = setup_app().await;
-    register_agent(&pool, "agent-pub-corrupt", "FULL_KNOWLEDGE_BUNDLE");
-    register_agent(&pool, "agent-sub-corrupt", "REFLECTION_SUMMARIES_ONLY");
-    register_agent(&pool, "agent-sub-good", "REFLECTION_SUMMARIES_ONLY");
+    register_agent(&app, &pool, "agent-pub-corrupt", "FULL_KNOWLEDGE_BUNDLE").await;
+    register_agent(
+        &app,
+        &pool,
+        "agent-sub-corrupt",
+        "REFLECTION_SUMMARIES_ONLY",
+    )
+    .await;
+    register_agent(&app, &pool, "agent-sub-good", "REFLECTION_SUMMARIES_ONLY").await;
 
     // Insert one subscription with corrupted JSON and one with valid JSON
     let conn = pool.get().unwrap();
@@ -572,7 +567,7 @@ async fn test_publish_skips_subscriber_with_corrupted_domain_filters() {
     .unwrap();
     drop(conn);
 
-    let bundle = make_bundle("agent-pub-corrupt");
+    let bundle = make_bundle(&pool, "agent-pub-corrupt");
     let req = build_publish_request("agent-pub-corrupt", &bundle);
 
     let response = app.oneshot(req).await.unwrap();
@@ -597,7 +592,7 @@ async fn test_publish_skips_subscriber_with_corrupted_domain_filters() {
 #[tokio::test]
 async fn test_publish_skips_subscriber_with_unparseable_scope() {
     let (app, pool) = setup_app().await;
-    register_agent(&pool, "agent-pub-scope", "FULL_KNOWLEDGE_BUNDLE");
+    register_agent(&app, &pool, "agent-pub-scope", "FULL_KNOWLEDGE_BUNDLE").await;
 
     // Create a subscriber identity + registration with a corrupted transfer_scope
     let conn = pool.get().unwrap();
@@ -623,7 +618,7 @@ async fn test_publish_skips_subscriber_with_unparseable_scope() {
     .unwrap();
     drop(conn);
 
-    let bundle = make_bundle("agent-pub-scope");
+    let bundle = make_bundle(&pool, "agent-pub-scope");
     let req = build_publish_request("agent-pub-scope", &bundle);
 
     let response = app.oneshot(req).await.unwrap();
@@ -650,7 +645,11 @@ async fn test_publish_skips_subscriber_with_unparseable_scope() {
 /// Builds a bundle and signs it with `sk` using the canonical author payload
 /// (independently re-derived here via the public `author_signing_payload`, so
 /// this proves the server's verifier matches an external signer).
-fn signed_bundle(pseudonym: &str, sk: &ed25519_dalek::SigningKey) -> Value {
+fn signed_bundle(
+    pool: &annex_db::DbPool,
+    pseudonym: &str,
+    sk: &ed25519_dalek::SigningKey,
+) -> Value {
     use ed25519_dalek::Signer;
     use sha2::{Digest, Sha256};
 
@@ -664,7 +663,7 @@ fn signed_bundle(pseudonym: &str, sk: &ed25519_dalek::SigningKey) -> Value {
         caveats: vec!["safe Rust only".into()],
         created_at: 1_700_000_000_000,
         signature: String::new(),
-        vrp_handshake_ref: "server1:instance1:agreement1".into(),
+        vrp_handshake_ref: current_ref(pool, pseudonym),
     };
     let digest = Sha256::digest(annex_rtx::author_signing_payload(&bundle).as_bytes());
     bundle.signature = hex::encode(sk.sign(&digest).to_bytes());
@@ -676,9 +675,16 @@ async fn test_publish_accepts_valid_author_signature() {
     let (app, pool) = setup_app().await;
     let sk = ed25519_dalek::SigningKey::from_bytes(&[3u8; 32]);
     let pubkey_hex = hex::encode(sk.verifying_key().to_bytes());
-    register_agent_with_pubkey(&pool, "agent-signed", "FULL_KNOWLEDGE_BUNDLE", &pubkey_hex);
+    register_agent_with_pubkey(
+        &app,
+        &pool,
+        "agent-signed",
+        "FULL_KNOWLEDGE_BUNDLE",
+        &pubkey_hex,
+    )
+    .await;
 
-    let bundle = signed_bundle("agent-signed", &sk);
+    let bundle = signed_bundle(&pool, "agent-signed", &sk);
     let req = build_publish_request("agent-signed", &bundle);
     let response = app.oneshot(req).await.unwrap();
     assert_eq!(
@@ -693,11 +699,18 @@ async fn test_publish_rejects_tampered_content_when_pubkey_registered() {
     let (app, pool) = setup_app().await;
     let sk = ed25519_dalek::SigningKey::from_bytes(&[4u8; 32]);
     let pubkey_hex = hex::encode(sk.verifying_key().to_bytes());
-    register_agent_with_pubkey(&pool, "agent-tamper", "FULL_KNOWLEDGE_BUNDLE", &pubkey_hex);
+    register_agent_with_pubkey(
+        &app,
+        &pool,
+        "agent-tamper",
+        "FULL_KNOWLEDGE_BUNDLE",
+        &pubkey_hex,
+    )
+    .await;
 
     // Sign a bundle, then alter the summary AFTER signing — the author
     // signature no longer covers the content the server receives.
-    let mut bundle = signed_bundle("agent-tamper", &sk);
+    let mut bundle = signed_bundle(&pool, "agent-tamper", &sk);
     bundle["summary"] = serde_json::json!("MALICIOUSLY rewritten content");
     let req = build_publish_request("agent-tamper", &bundle);
     let response = app.oneshot(req).await.unwrap();
@@ -713,10 +726,17 @@ async fn test_publish_rejects_garbage_signature_when_pubkey_registered() {
     let (app, pool) = setup_app().await;
     let sk = ed25519_dalek::SigningKey::from_bytes(&[5u8; 32]);
     let pubkey_hex = hex::encode(sk.verifying_key().to_bytes());
-    register_agent_with_pubkey(&pool, "agent-garbage", "FULL_KNOWLEDGE_BUNDLE", &pubkey_hex);
+    register_agent_with_pubkey(
+        &app,
+        &pool,
+        "agent-garbage",
+        "FULL_KNOWLEDGE_BUNDLE",
+        &pubkey_hex,
+    )
+    .await;
 
     // A structurally-valid but cryptographically-bogus signature.
-    let mut bundle = signed_bundle("agent-garbage", &sk);
+    let mut bundle = signed_bundle(&pool, "agent-garbage", &sk);
     bundle["signature"] = serde_json::json!(hex::encode([0u8; 64]));
     let req = build_publish_request("agent-garbage", &bundle);
     let response = app.oneshot(req).await.unwrap();
@@ -728,8 +748,8 @@ async fn test_publish_legacy_agent_without_pubkey_still_works() {
     // Backward compat: an agent that never advertised a signing key keeps the
     // legacy structural-only check (no author signature enforced).
     let (app, pool) = setup_app().await;
-    register_agent(&pool, "agent-legacy", "FULL_KNOWLEDGE_BUNDLE");
-    let bundle = make_bundle("agent-legacy");
+    register_agent(&app, &pool, "agent-legacy", "FULL_KNOWLEDGE_BUNDLE").await;
+    let bundle = make_bundle(&pool, "agent-legacy");
     let req = build_publish_request("agent-legacy", &bundle);
     let response = app.oneshot(req).await.unwrap();
     assert_eq!(
@@ -737,4 +757,157 @@ async fn test_publish_legacy_agent_without_pubkey_still_works() {
         StatusCode::OK,
         "legacy agent with no pubkey on file must still publish"
     );
+}
+
+#[tokio::test]
+async fn publish_requires_current_accepted_handshake_owned_by_author() {
+    let (app, pool) = setup_app().await;
+    register_agent(&app, &pool, "author-ref", "FULL_KNOWLEDGE_BUNDLE").await;
+    register_agent(&app, &pool, "other-ref", "FULL_KNOWLEDGE_BUNDLE").await;
+    for reference in ["vrp:1:999999".to_string(), current_ref(&pool, "other-ref")] {
+        let mut bundle = make_bundle(&pool, "author-ref");
+        bundle["vrp_handshake_ref"] = Value::String(reference);
+        let response = app
+            .clone()
+            .oneshot(build_publish_request("author-ref", &bundle))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+    let mut bundle = make_bundle(&pool, "author-ref");
+    // A migrated registration without a historical accepted decision must not
+    // gain one from the fact it was already active before this release.
+    pool.get().unwrap().execute("UPDATE agent_registrations SET current_handshake_id = NULL WHERE pseudonym_id = 'author-ref'", []).unwrap();
+    bundle["bundle_id"] = serde_json::json!(uuid::Uuid::new_v4().to_string());
+    let response = app
+        .oneshot(build_publish_request("author-ref", &bundle))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert!(String::from_utf8_lossy(&body).contains("current accepted VRP handshake"));
+    let count: i64 = pool
+        .get()
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM rtx_bundles", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[tokio::test]
+async fn actual_rehandshake_invalidates_previous_reference_and_profile_exposes_new_one() {
+    let (app, pool) = setup_app().await;
+    register_agent(&app, &pool, "author-fresh", "FULL_KNOWLEDGE_BUNDLE").await;
+    let old_bundle = make_bundle(&pool, "author-fresh");
+    let token = annex_server::api_ws::generate_session_token("author-fresh", &[0; 32], 3600, 0);
+    let handshake = annex_vrp::VrpFederationHandshake {
+        anchor_snapshot: annex_vrp::VrpAnchorSnapshot::new(&[], &[]).unwrap(),
+        capability_contract: annex_vrp::VrpCapabilitySharingContract {
+            required_capabilities: vec![],
+            offered_capabilities: vec!["TEXT".into(), "VRP".into()],
+            redacted_topics: vec![],
+            ..Default::default()
+        },
+        scorer: None,
+    };
+    let mut req = Request::builder()
+        .uri("/api/vrp/agent-handshake")
+        .method("POST")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(
+            serde_json::json!({"pseudonymId":"author-fresh", "handshake":handshake}).to_string(),
+        ))
+        .unwrap();
+    req.extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12345))));
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let report: Value = serde_json::from_slice(
+        &axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_ne!(report["handshakeRef"], old_bundle["vrp_handshake_ref"]);
+    assert_eq!(report["handshakeRef"], current_ref(&pool, "author-fresh"));
+    assert_eq!(
+        app.clone()
+            .oneshot(build_publish_request("author-fresh", &old_bundle))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    let fresh = make_bundle(&pool, "author-fresh");
+    assert_eq!(
+        app.clone()
+            .oneshot(build_publish_request("author-fresh", &fresh))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    let mut req = Request::builder()
+        .uri("/api/agents/author-fresh")
+        .header("X-Annex-Pseudonym", "author-fresh")
+        .body(Body::empty())
+        .unwrap();
+    req.extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12345))));
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let profile: Value = serde_json::from_slice(
+        &axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(profile["handshakeRef"], report["handshakeRef"]);
+}
+
+#[tokio::test]
+async fn outbox_failure_rolls_back_bundle_and_every_transfer_record() {
+    let (app, pool) = setup_app().await;
+    register_agent(&app, &pool, "atomic-author", "REFLECTION_SUMMARIES_ONLY").await;
+    let conn = pool.get().unwrap();
+    conn.execute("INSERT INTO instances (base_url, public_key, label, status) VALUES ('https://8.8.8.8', ?1, 'Unit peer', 'ACTIVE')", ["ab".repeat(32)]).unwrap();
+    let peer = conn.last_insert_rowid();
+    conn.execute("INSERT INTO federation_agreements (local_server_id, remote_instance_id, alignment_status, transfer_scope, agreement_json, active) VALUES (1, ?1, 'ALIGNED', 'FULL_KNOWLEDGE_BUNDLE', '{}', 1)", [peer]).unwrap();
+    conn.execute_batch("CREATE TRIGGER reject_rtx_queue BEFORE INSERT ON federation_outbox WHEN NEW.envelope_kind = 'rtx' BEGIN SELECT RAISE(ABORT, 'controlled queue write failure'); END;").unwrap();
+    drop(conn);
+    let bundle = make_bundle(&pool, "atomic-author");
+    let response = app
+        .clone()
+        .oneshot(build_publish_request("atomic-author", &bundle))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let conn = pool.get().unwrap();
+    for table in ["rtx_bundles", "rtx_transfer_log", "federation_outbox"] {
+        let count: i64 = conn
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            count, 0,
+            "{table} must roll back with the failed queue write"
+        );
+    }
+    conn.execute_batch("DROP TRIGGER reject_rtx_queue").unwrap();
+    drop(conn);
+    assert_eq!(
+        app.oneshot(build_publish_request("atomic-author", &bundle))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    let conn = pool.get().unwrap();
+    let (kind, id, source, channel): (String, String, Option<String>, Option<String>) = conn.query_row(
+        "SELECT envelope_kind, message_id, source_message_id, channel_id FROM federation_outbox", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
+    assert_eq!(kind, "rtx");
+    assert_eq!(id, format!("rtx:{}", bundle["bundle_id"].as_str().unwrap()));
+    assert_eq!((source, channel), (None, None));
 }

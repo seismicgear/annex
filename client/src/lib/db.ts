@@ -15,15 +15,29 @@ const IDENTITY_STORE = 'identities';
 
 let dbPromise: Promise<IDBPDatabase> | null = null;
 
+async function resetIdentityDbHandle(): Promise<void> {
+  const pending = dbPromise;
+  dbPromise = null;
+  if (pending) (await pending.catch(() => null))?.close();
+}
+
 function getDb(): Promise<IDBPDatabase> {
   if (!dbPromise) {
-    dbPromise = openDB(DB_NAME, DB_VERSION, {
+    const opening = openDB(DB_NAME, DB_VERSION, {
       upgrade(db) {
         if (!db.objectStoreNames.contains(IDENTITY_STORE)) {
           db.createObjectStore(IDENTITY_STORE, { keyPath: 'id' });
         }
       },
+      blocking(_current, _next, event) {
+        (event.target as IDBDatabase).close();
+        if (dbPromise === opening) dbPromise = null;
+      },
+      terminated() { if (dbPromise === opening) dbPromise = null; },
     });
+    dbPromise = opening;
+    // A transient native storage failure must not poison every later Retry.
+    void opening.catch(() => { if (dbPromise === opening) dbPromise = null; });
   }
   return dbPromise;
 }
@@ -136,20 +150,20 @@ export async function importIdentity(json: string): Promise<StoredIdentity> {
 export async function clearAllDatabases(): Promise<{ unremoved: string[] }> {
   const DB_NAMES = ['annex-identity', 'annex-servers', 'annex-personas', 'annex-e2e'];
   // Close all cached connection handles so subsequent calls re-open fresh databases.
-  dbPromise = null;
+  await resetIdentityDbHandle();
   // Also reset handles in the servers and personas modules.
   // Dynamic imports to avoid circular dependency at module level.
   try {
     const { resetDbHandle: resetServersDb } = await import('@/lib/servers');
-    resetServersDb();
+    await resetServersDb();
   } catch { /* module may not be loaded yet */ }
   try {
     const { resetDbHandle: resetPersonasDb } = await import('@/lib/personas');
-    resetPersonasDb();
+    await resetPersonasDb();
   } catch { /* module may not be loaded yet */ }
   try {
     const { resetE2eDbHandle } = await import('@/lib/e2e-store');
-    resetE2eDbHandle();
+    await resetE2eDbHandle();
   } catch { /* module may not be loaded yet */ }
   // Report what could not be removed instead of claiming success for it.
   //

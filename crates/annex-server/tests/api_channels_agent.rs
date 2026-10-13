@@ -69,6 +69,7 @@ fn setup_test_app() -> (axum::Router, annex_db::DbPool, tempfile::NamedTempFile)
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
         voice_token_secret: std::sync::Arc::new([0u8; 32]),
+        federation_transport: Default::default(),
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
@@ -143,10 +144,12 @@ async fn test_agent_join_creates_edge() {
 
     // 4. Verify Edge Created
     let edges = get_edges(&conn, server_id, pseudonym).unwrap();
-    assert_eq!(edges.len(), 1);
-    let edge = &edges[0];
-    assert_eq!(edge.to_node, channel_id);
-    assert_eq!(edge.kind, EdgeKind::AgentServing);
+    assert_eq!(edges.len(), 2);
+    assert!(edges
+        .iter()
+        .all(|edge| edge.to_node == annex_graph::channel_vertex(server_id, channel_id)));
+    assert!(edges.iter().any(|edge| edge.kind == EdgeKind::AgentServing));
+    assert!(edges.iter().any(|edge| edge.kind == EdgeKind::MemberOf));
 
     // 5. Call Leave
     let uri = format!("/api/channels/{channel_id}/leave");

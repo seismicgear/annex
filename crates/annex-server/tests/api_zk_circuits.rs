@@ -9,8 +9,8 @@
 //! drives it through the live router. Negative cases (wrong role, wrong topic,
 //! unconfigured circuit) assert the handler rejects rather than rubber-stamps.
 //!
-//! Like `api_zk_verify`, these skip cleanly when the ZK toolchain isn't built
-//! (fresh sandbox); CI builds the circuits first so the full round-trip runs.
+//! Pinned circuit artifacts and the installed proof generator are required.
+//! Missing prerequisites or failed proof generation fail these tests.
 
 mod common;
 
@@ -56,12 +56,14 @@ fn zk_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../zk")
 }
 
-/// Loads a real circuit vkey from `zk/keys/<name>_vkey.json`, or `None` if the
-/// toolchain hasn't produced it.
+/// Loads a required real circuit key. None is reserved for deliberately
+/// unconfigured endpoint tests.
 fn load_circuit_vkey(name: &str) -> Option<Arc<VerifyingKey<Bn254>>> {
     let path = zk_dir().join("keys").join(format!("{name}_vkey.json"));
-    let json = std::fs::read_to_string(path).ok()?;
-    let vk = parse_verification_key(&json).ok()?;
+    let json = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("required circuit key {}: {error}", path.display()));
+    let vk =
+        parse_verification_key(&json).expect("required circuit verification key must be valid");
     Some(Arc::new(vk))
 }
 
@@ -107,6 +109,7 @@ fn build_state(pool: annex_db::DbPool, tree: MerkleTree, with_circuits: bool) ->
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: Arc::new([0u8; 32]),
         voice_token_secret: Arc::new([0u8; 32]),
+        federation_transport: Default::default(),
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: Arc::new(annex_server::storage_health::StorageHealth::new()),
@@ -116,33 +119,25 @@ fn build_state(pool: annex_db::DbPool, tree: MerkleTree, with_circuits: bool) ->
     }
 }
 
-/// Runs `snarkjs groth16 fullprove`. Returns `None` (skip) when the toolchain
-/// is unavailable; otherwise `(proof, publicSignals)`.
-fn snarkjs_prove(
-    circuit_wasm_dir: &str,
-    circuit: &str,
-    input: &Value,
-) -> Option<(Value, Vec<String>)> {
+/// Executes real Groth16 proving; missing prerequisites and child failures fail.
+fn snarkjs_prove(circuit_wasm_dir: &str, circuit: &str, input: &Value) -> (Value, Vec<String>) {
     let zk = zk_dir();
-    let node_modules_bin = zk.join("node_modules/.bin");
+    let cli = zk.join("node_modules/snarkjs/build/cli.cjs");
     let wasm = zk
         .join("build")
         .join(circuit_wasm_dir)
         .join(format!("{circuit}.wasm"));
     let zkey = zk.join("keys").join(format!("{circuit}_final.zkey"));
-    if !node_modules_bin.exists() || !wasm.exists() || !zkey.exists() {
-        eprintln!("[api_zk_circuits] skipping: ZK toolchain not built for {circuit}");
-        return None;
+    for path in [&cli, &wasm, &zkey] {
+        assert!(path.is_file(), "real proof prerequisite missing: {}; install the pinned ZK artifacts and npm dependencies", path.display());
     }
-    let tmp = std::env::temp_dir();
-    let id = uuid::Uuid::new_v4();
-    let input_path = tmp.join(format!("in-{circuit}-{id}.json"));
-    let proof_path = tmp.join(format!("proof-{circuit}-{id}.json"));
-    let public_path = tmp.join(format!("public-{circuit}-{id}.json"));
-    std::fs::write(&input_path, input.to_string()).ok()?;
-
-    let out = Command::new("node")
-        .arg(node_modules_bin.join("snarkjs"))
+    let temp = tempfile::tempdir().expect("create isolated circuit proof directory");
+    let input_path = temp.path().join("input.json");
+    let proof_path = temp.path().join("proof.json");
+    let public_path = temp.path().join("public.json");
+    std::fs::write(&input_path, input.to_string()).expect("write real proof input");
+    let output = Command::new("node")
+        .arg(cli)
         .arg("groth16")
         .arg("fullprove")
         .arg(&input_path)
@@ -152,24 +147,20 @@ fn snarkjs_prove(
         .arg(&public_path)
         .current_dir(&zk)
         .output()
-        .ok()?;
-    let result = if out.status.success() {
-        let proof: Value =
-            serde_json::from_str(&std::fs::read_to_string(&proof_path).ok()?).ok()?;
-        let signals: Vec<String> =
-            serde_json::from_str(&std::fs::read_to_string(&public_path).ok()?).ok()?;
-        Some((proof, signals))
-    } else {
-        eprintln!(
-            "[api_zk_circuits] snarkjs failed for {circuit}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        None
-    };
-    let _ = std::fs::remove_file(&input_path);
-    let _ = std::fs::remove_file(&proof_path);
-    let _ = std::fs::remove_file(&public_path);
-    result
+        .expect("node must execute the real snarkjs proof generator");
+    assert!(
+        output.status.success(),
+        "real {circuit} proof generation failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let proof =
+        serde_json::from_str(&std::fs::read_to_string(&proof_path).expect("read generated proof"))
+            .expect("generated proof must be JSON");
+    let signals = serde_json::from_str(
+        &std::fs::read_to_string(&public_path).expect("read generated public signals"),
+    )
+    .expect("generated public signals must be decimal strings");
+    (proof, signals)
 }
 
 /// Registers an identity and returns `(app, commitment_hex, GetPathResponse)`.
@@ -255,11 +246,7 @@ async fn channel_eligibility_valid_and_negatives() {
         "requiredRoleCode": RoleCode::Human as u8,
         "channelTopicHash": channel_topic_hash,
     });
-    let Some((proof, signals)) =
-        snarkjs_prove("channel_eligibility_js", "channel_eligibility", &input)
-    else {
-        return; // toolchain not built — skip
-    };
+    let (proof, signals) = snarkjs_prove("channel_eligibility_js", "channel_eligibility", &input);
     assert_eq!(signals.len(), 4, "eligibility publicSignals length");
 
     // Valid: 200.
@@ -329,10 +316,7 @@ async fn link_pseudonyms_valid() {
         "topicHashA": topic_hash_decimal(topic_a),
         "topicHashB": topic_hash_decimal(topic_b),
     });
-    let Some((proof, signals)) = snarkjs_prove("link_pseudonyms_js", "link_pseudonyms", &input)
-    else {
-        return;
-    };
+    let (proof, signals) = snarkjs_prove("link_pseudonyms_js", "link_pseudonyms", &input);
     assert_eq!(signals.len(), 4);
 
     let (status, body) = post_json(
@@ -394,13 +378,11 @@ async fn federation_attestation_valid() {
         "pathIndexBits": path.path_indices,
         "federationContextHash": topic_hash_decimal(context),
     });
-    let Some((proof, signals)) = snarkjs_prove(
+    let (proof, signals) = snarkjs_prove(
         "federation_attestation_js",
         "federation_attestation",
         &input,
-    ) else {
-        return;
-    };
+    );
     assert_eq!(signals.len(), 3);
 
     let (status, body) = post_json(

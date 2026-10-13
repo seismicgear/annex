@@ -17,10 +17,10 @@
 //! [`touch_activity`] helper live here because they are part of the
 //! connection's heartbeat — not of any single command.
 
-use std::sync::Arc;
+use std::sync::{atomic::Ordering, Arc};
 
 use annex_identity::PlatformIdentity;
-use axum::extract::ws::{Message as AxumMessage, WebSocket};
+use axum::extract::ws::{CloseFrame, Message as AxumMessage, WebSocket};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 
@@ -54,18 +54,90 @@ impl WsSession {
         // try_send paths.
         let (tx, mut rx) = mpsc::channel::<String>(256);
 
-        let (session_id, cancel) = state
-            .connection_manager
-            .add_session(pseudonym.clone(), tx.clone())
+        let replacement_state = state.clone();
+        let replacement_pseudonym = pseudonym.clone();
+        let (session_id, cancel, close_code) = {
+            let _lifecycle = state.connection_manager.lock_lifecycle(&pseudonym).await;
+            // HTTP upgrade authorization can precede a moderator's revocation.
+            // Check again while holding the same guard as epoch invalidation,
+            // before replacing a current socket or exposing any broadcasts.
+            let pool = state.pool.clone();
+            let server_id = state.server_id;
+            let id = pseudonym.clone();
+            let epoch = identity.token_epoch;
+            let authorized = tokio::task::spawn_blocking(move || {
+                let conn = pool.get().ok()?;
+                let current = annex_identity::get_platform_identity(&conn, server_id, &id).ok()?;
+                Some(current.active && current.token_epoch == epoch)
+            })
             .await;
+            if !matches!(authorized, Ok(Some(true))) {
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_secs(1),
+                    sender.send(AxumMessage::Close(Some(CloseFrame {
+                        code: 4001,
+                        reason: "session_revoked".into(),
+                    }))),
+                )
+                .await;
+                return;
+            }
+            state
+                .connection_manager
+                .add_session_with_cleanup_locked(pseudonym.clone(), tx.clone(), async move {
+                    crate::services::ChannelService::new(replacement_state)
+                        .disconnect_voice_participant(&replacement_pseudonym)
+                        .await;
+                })
+                .await
+        };
 
-        // Forward outbound mpsc → websocket.
-        let send_task = tokio::spawn(async move {
-            while let Some(msg) = rx.recv().await {
-                if sender.send(AxumMessage::Text(msg.into())).await.is_err() {
-                    break;
+        // Closure has priority over a full application queue. A takeover must
+        // transmit its Close frame; aborting this task looks like network loss
+        // and makes two linked devices reconnect and evict each other forever.
+        let writer_cancel = cancel.clone();
+        let writer_close_code = close_code.clone();
+        let writer_shutdown = state.shutdown.clone();
+        let mut send_task = tokio::spawn(async move {
+            loop {
+                let msg = tokio::select! {
+                    biased;
+                    _ = writer_cancel.cancelled() => break,
+                    _ = writer_shutdown.cancelled() => {
+                        let _ = writer_close_code.compare_exchange(0, 1001, Ordering::SeqCst, Ordering::SeqCst);
+                        break;
+                    }
+                    msg = rx.recv() => match msg {
+                        Some(msg) => msg,
+                        None => break,
+                    },
+                };
+                tokio::select! {
+                    biased;
+                    _ = writer_cancel.cancelled() => break,
+                    _ = writer_shutdown.cancelled() => {
+                        let _ = writer_close_code.compare_exchange(0, 1001, Ordering::SeqCst, Ordering::SeqCst);
+                        break;
+                    }
+                    result = sender.send(AxumMessage::Text(msg.into())) => {
+                        if result.is_err() { return; }
+                    }
                 }
             }
+            let (code, reason) = match writer_close_code.load(Ordering::SeqCst) {
+                4090 => (4090, "identity_active_elsewhere"),
+                4001 => (4001, "session_revoked"),
+                1001 => (1001, "server_shutting_down"),
+                _ => (1000, "session_closed"),
+            };
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                sender.send(AxumMessage::Close(Some(CloseFrame {
+                    code,
+                    reason: reason.into(),
+                }))),
+            )
+            .await;
         });
 
         // Relay this peer's ICE candidates to the websocket.
@@ -204,6 +276,7 @@ impl WsSession {
                     break;
                 }
                 _ = state.shutdown.cancelled() => {
+                    let _ = close_code.compare_exchange(0, 1001, Ordering::SeqCst, Ordering::SeqCst);
                     tracing::debug!(pseudonym = %pseudonym, "closing WebSocket session: server shutting down");
                     break;
                 }
@@ -226,15 +299,58 @@ impl WsSession {
                 AxumMessage::Text(text) => {
                     match serde_json::from_str::<IncomingMessage>(&text.to_string()) {
                         Ok(incoming) => {
-                            let ctx = CommandContext {
-                                state: &state,
-                                identity: &identity,
-                                pseudonym: &pseudonym,
-                                tx: &tx,
-                                typing_throttle: &typing_throttle,
-                                command_rate_limiter: &command_rate_limiter,
+                            // Each frame uses current authority. Capability changes
+                            // affect the existing text socket without disconnecting it.
+                            let command = async {
+                                let pool = state.pool.clone();
+                                let server_id = state.server_id;
+                                let pid = pseudonym.clone();
+                                let fresh = tokio::task::spawn_blocking(move || {
+                                    let conn = pool.get().map_err(|e| e.to_string())?;
+                                    annex_identity::get_platform_identity(&conn, server_id, &pid)
+                                        .map_err(|e| e.to_string())
+                                })
+                                .await;
+                                let current = match fresh {
+                                    Ok(Ok(current))
+                                        if current.active
+                                            && current.token_epoch == identity.token_epoch =>
+                                    {
+                                        current
+                                    }
+                                    _ => {
+                                        let _ = close_code.compare_exchange(
+                                            0,
+                                            4001,
+                                            Ordering::SeqCst,
+                                            Ordering::SeqCst,
+                                        );
+                                        return false;
+                                    }
+                                };
+                                let ctx = CommandContext {
+                                    state: &state,
+                                    identity: &current,
+                                    pseudonym: &pseudonym,
+                                    tx: &tx,
+                                    typing_throttle: &typing_throttle,
+                                    command_rate_limiter: &command_rate_limiter,
+                                };
+                                dispatch(&ctx, incoming).await;
+                                true
                             };
-                            dispatch(&ctx, incoming).await;
+                            let keep_open = tokio::select! {
+                                biased;
+                                _ = cancel.cancelled() => false,
+                                _ = state.shutdown.cancelled() => {
+                                    let _ = close_code.compare_exchange(0, 1001, Ordering::SeqCst, Ordering::SeqCst);
+                                    false
+                                },
+                                keep_open = command => keep_open,
+                            };
+                            if !keep_open {
+                                break;
+                            }
                         }
                         Err(_) => {
                             tracing::warn!(
@@ -250,49 +366,26 @@ impl WsSession {
             }
         }
 
-        // Cleanup with session_id check
-        state
-            .connection_manager
-            .remove_session(&pseudonym, session_id)
-            .await;
-        send_task.abort();
+        cancel.cancel();
         ice_task.abort();
         reneg_task.abort();
-
-        // Leave any call this session was in.
-        //
-        // Peers were previously only removed by an explicit leave, so closing a
-        // tab, losing a network, or crashing left them in the SFU room
-        // forever — still on the roster, still holding a track slot on every
-        // other peer's connection, and keeping the room alive so it was never
-        // reaped. Everyone else saw a tile for somebody who had gone.
-        let left = state
-            .voice_service
-            .remove_participant_everywhere(&pseudonym)
+        if tokio::time::timeout(std::time::Duration::from_millis(1500), &mut send_task)
+            .await
+            .is_err()
+        {
+            send_task.abort();
+            let _ = send_task.await;
+        }
+        let cleanup_state = state.clone();
+        let cleanup_pseudonym = pseudonym.clone();
+        state
+            .connection_manager
+            .finalize_session(&pseudonym, session_id, async move {
+                crate::services::ChannelService::new(cleanup_state)
+                    .disconnect_voice_participant(&cleanup_pseudonym)
+                    .await;
+            })
             .await;
-        if !left.is_empty() {
-            tracing::debug!(
-                pseudonym = %pseudonym,
-                channels = ?left,
-                "removed disconnected peer from voice rooms",
-            );
-        }
-
-        // Clean up voice session for this pseudonym. Dropping the Arc
-        // decrements its reference count; when it reaches zero the
-        // AgentVoiceClient drops, its broadcast sender closes, and the
-        // spawned transcription task exits naturally.
-        match state.voice_sessions.write() {
-            Ok(mut sessions) => {
-                sessions.remove(&pseudonym);
-            }
-            Err(e) => {
-                tracing::error!(
-                    pseudonym = %pseudonym,
-                    "voice_sessions RwLock poisoned during cleanup: {}", e
-                );
-            }
-        }
     }
 }
 

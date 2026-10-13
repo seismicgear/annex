@@ -55,4 +55,21 @@ describe('InviteConfirmation', () => {
     expect(onAccept).toHaveBeenCalledTimes(1);
     expect(onIgnore).toHaveBeenCalledTimes(1);
   });
+
+  it('keeps the destination and error visible with an explicit retry', async () => {
+    const onAccept = vi.fn();
+    render(<InviteConfirmation invite={invite} onAccept={onAccept} onIgnore={vi.fn()} error="Server unavailable" />);
+    expect(screen.getByRole('alert')).toHaveTextContent('Server unavailable');
+    expect(screen.getByText(/https:\/\/peer\.example/)).toBeVisible();
+    await userEvent.click(screen.getByRole('button', { name: 'Retry invite' }));
+    expect(onAccept).toHaveBeenCalledOnce();
+  });
+
+  it('prevents duplicate joins or ignoring an operation already in progress', async () => {
+    const onAccept = vi.fn(); const onIgnore = vi.fn();
+    render(<InviteConfirmation invite={invite} onAccept={onAccept} onIgnore={onIgnore} busy />);
+    await userEvent.click(screen.getByRole('button', { name: 'Joining invite server…' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Ignore' }));
+    expect(onAccept).not.toHaveBeenCalled(); expect(onIgnore).not.toHaveBeenCalled();
+  });
 });

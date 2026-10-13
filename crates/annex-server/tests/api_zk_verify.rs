@@ -1,5 +1,3 @@
-mod common;
-
 use annex_db::{create_pool, DbRuntimeSettings};
 use annex_identity::{generate_commitment, MerkleTree, RoleCode};
 use annex_server::{
@@ -42,7 +40,11 @@ async fn test_verify_membership_flow() {
     let state = AppState {
         pool,
         merkle_tree: Arc::new(Mutex::new(tree)),
-        membership_vkey: common::load_vkey_or_dummy(),
+        membership_vkey: Arc::new(annex_identity::zk::parse_verification_key(
+            &fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../zk/keys/membership_vkey.json"))
+                .expect("real membership verification key is required; install the pinned ceremony artifacts"),
+        ).expect("real membership verification key must be valid")),
         membership_vkey_v2: None,
         channel_eligibility_vkey: None,
         link_pseudonyms_vkey: None,
@@ -72,6 +74,7 @@ async fn test_verify_membership_flow() {
         invite_base_url: "https://monolithannex.com/invite".to_string(),
         ws_token_secret: std::sync::Arc::new([0u8; 32]),
         voice_token_secret: std::sync::Arc::new([0u8; 32]),
+        federation_transport: Default::default(),
         federation_config: annex_server::config::FederationConfig::default(),
         storage_config: annex_server::config::StorageConfig::default(),
         storage_health: std::sync::Arc::new(annex_server::storage_health::StorageHealth::new()),
@@ -125,38 +128,15 @@ async fn test_verify_membership_flow() {
         .unwrap();
     let path_data: GetPathResponse = serde_json::from_slice(&body_bytes).unwrap();
 
-    // 5. Generate Proof via SnarkJS
-    // Construct input JSON
+    // Real proof generation is required; absent artifacts cannot count as a pass.
     let zk_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../zk");
-    let build_dir = zk_dir.join("build");
-    let keys_dir = zk_dir.join("keys");
-    let node_modules_bin = zk_dir.join("node_modules/.bin");
-    let wasm_path = build_dir.join("membership_js/membership.wasm");
-    let zkey_path = keys_dir.join("membership_final.zkey");
-
-    // Gracefully skip when the ZK toolchain hasn't been built (fresh
-    // checkout / sandbox). CI runs `node zk/scripts/build-circuits.js +
-    // dev-setup-groth16.js` before tests, so the real path still exercises
-    // the full Groth16 round-trip; only fresh sandboxes skip.
-    //
-    // Per-file checks (not per-directory): a fresh checkout that runs
-    // `build-circuits.js` produces `keys/pot14_*.ptau` so `keys_dir.exists()`
-    // is true, but `membership_final.zkey` only appears after
-    // `setup-groth16.js` (or `dev-setup-groth16.js`) finishes. The previous
-    // dir-only guard let the test through and snarkjs panicked downstream.
-    if !node_modules_bin.exists() || !wasm_path.exists() || !zkey_path.exists() {
-        eprintln!(
-            "[api_zk_verify] skipping: ZK toolchain not built (need {}, {}, {}) — run `cd zk && npm ci && node scripts/build-circuits.js && node scripts/dev-setup-groth16.js`",
-            node_modules_bin.display(),
-            wasm_path.display(),
-            zkey_path.display()
-        );
-        return;
+    let wasm_path = zk_dir.join("build/membership_js/membership.wasm");
+    let zkey_path = zk_dir.join("keys/membership_final.zkey");
+    let snarkjs_cmd = zk_dir.join("node_modules/snarkjs/build/cli.cjs");
+    for path in [&wasm_path, &zkey_path, &snarkjs_cmd] {
+        assert!(path.is_file(), "real proof prerequisite missing: {}; install the pinned ZK artifacts and npm dependencies", path.display());
     }
 
-    // Convert hex sk to decimal string for circom input if needed, or pass hex if snarkjs supports it
-    // Usually snarkjs expects decimal strings or hex with 0x prefix for big numbers
-    // Let's use BigInt to be safe
     let sk_bigint = num_bigint::BigInt::parse_bytes(sk.as_bytes(), 16).unwrap();
 
     let input_json = serde_json::json!({
@@ -168,21 +148,15 @@ async fn test_verify_membership_flow() {
         "pathIndexBits": path_data.path_indices
     });
 
-    let temp_dir = std::env::temp_dir();
-    let unique_id = uuid::Uuid::new_v4();
-    let input_path = temp_dir.join(format!("input-{unique_id}.json"));
-    let proof_path = temp_dir.join(format!("proof-{unique_id}.json"));
-    let public_path = temp_dir.join(format!("public-{unique_id}.json"));
+    let temp_dir = tempfile::tempdir().expect("create isolated proof directory");
+    let input_path = temp_dir.path().join("input.json");
+    let proof_path = temp_dir.path().join("proof.json");
+    let public_path = temp_dir.path().join("public.json");
 
     fs::write(&input_path, input_json.to_string()).expect("failed to write input.json");
-
-    // Run snarkjs
-    // Command: snarkjs groth16 fullprove input.json wasm zkey proof.json public.json
-    let snarkjs_cmd = node_modules_bin.join("snarkjs");
-
-    // Skip if `node` itself isn't on PATH (sandbox without node).
-    let output = match Command::new("node")
-        .arg(snarkjs_cmd)
+    // .bin/snarkjs is a shell shim on Windows. The package entry point is portable.
+    let output = Command::new("node")
+        .arg(&snarkjs_cmd)
         .arg("groth16")
         .arg("fullprove")
         .arg(&input_path)
@@ -190,31 +164,14 @@ async fn test_verify_membership_flow() {
         .arg(&zkey_path)
         .arg(&proof_path)
         .arg(&public_path)
-        .current_dir(&zk_dir) // Run from zk dir to ensure node resolution works if needed
+        .current_dir(&zk_dir)
         .output()
-    {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("[api_zk_verify] snarkjs invocation failed (skipping): {e}");
-            let _ = fs::remove_file(&input_path);
-            return;
-        }
-    };
-
-    if !output.status.success() {
-        // Most common cause in CI/sandbox: snarkjs's npm dependencies
-        // (notably `ffjavascript`) aren't installed. We already verified
-        // the .wasm and .zkey are present above; if snarkjs itself fails
-        // here, the production code under test is not the cause. Skip
-        // cleanly rather than panicking.
-        eprintln!(
-            "[api_zk_verify] snarkjs returned non-zero exit; ZK toolchain not fully provisioned, skipping. stdout={}, stderr={}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let _ = fs::remove_file(&input_path);
-        return;
-    }
+        .expect("node must execute the real snarkjs proof generator");
+    assert!(
+        output.status.success(),
+        "real snarkjs proof generation failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let proof_str = fs::read_to_string(&proof_path).expect("failed to read proof.json");
     let public_str = fs::read_to_string(&public_path).expect("failed to read public.json");

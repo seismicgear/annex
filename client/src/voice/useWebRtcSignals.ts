@@ -22,6 +22,13 @@ export function useWebRtcSignals(
     return ws.onMessage((frame: WsReceiveFrame) => {
       const session = sessionRef.current;
       if (!session) return;
+      if (frame.type === 'identity_capabilities_changed' && frame.canVoice === false) {
+        // Stop live and pending native captures immediately, before React
+        // unmounts the provider or an outstanding permission prompt resolves.
+        sessionRef.current = null;
+        session.disconnect();
+        return;
+      }
       if (frame.channelId !== channelId) return;
 
       if (frame.type === 'webrtc_answer' && frame.sdp) {

@@ -90,10 +90,10 @@ get caught early.
 
 | Requirement | Version | Notes |
 |-------------|---------|-------|
-| **Rust** | 1.85+ | Only for source builds. Install from [rustup.rs](https://rustup.rs) |
+| **Rust** | 1.96.0 | Only for source builds. Use the repository's `rust-toolchain.toml` pin |
 | **Docker** | 20+ | Only for Docker deploys |
 | **sqlite3** | Any | Optional. Used by deploy scripts to seed the database |
-| **Node.js** | 22+ | Only for client builds (Docker handles this automatically) |
+| **Node.js** | 22.12+ | Client/ZK builds and acceptance tools (Docker handles build dependencies automatically) |
 
 ---
 
@@ -303,13 +303,25 @@ The **Value Resonance Protocol** is the cryptographic trust negotiation layer. T
 
 | Alignment | Transfer Scope | Access |
 |-----------|---------------|--------|
-| `Aligned` | `FullKnowledgeBundle` | Full channel access, voice participation, RTX exchange |
+| `Aligned` | `ReflectionSummariesOnly` by default; `FullKnowledgeBundle` with operator opt-in | Full channel access, voice participation, scoped RTX exchange |
 | `Partial` | `ReflectionSummariesOnly` | Restricted channels, text only, limited knowledge transfer |
 | `Conflict` | `NoTransfer` | Rejected |
+
+RTX policy uses `allow_reflection_summaries = true` and `allow_full_knowledge = false` by default. Operators can change these fields under **Server Policy → Agent Knowledge Sharing**, through the server policy configuration, or through authenticated `PUT /api/admin/policy`. Full knowledge requires both explicit opt-in and Aligned status; Partial alignment never receives it. Federation also requires `federation_enabled`. Policy changes re-evaluate existing agreements and agents.
+
+An accepted `POST /api/vrp/agent-handshake` returns `handshakeRef` alongside the existing report fields. `GET /api/agents/:pseudonym` exposes the same current reference. Authors must sign that exact reference into `vrp_handshake_ref`; a new handshake invalidates the previous reference for new publications. Registrations upgraded from earlier releases must re-handshake before publishing RTX.
+
+RTX publishes and forwarded receives commit their encrypted per-peer relay obligations with bundle storage. The shared federation outbox retries failures with bounded backoff across restarts. Exhausted rows remain visible in `GET /api/admin/federation/outbox`; after fixing connectivity or policy, an operator can use `POST /api/admin/federation/outbox/:id/retry`. Retry rechecks current permissions and the signed destination, and identical authenticated receiver receipts prevent duplicate storage, delivery, and onward relay.
+
+New RTX publishers sign origin attestation version 3, binding domain tags, caveats and the negotiated domain, byte and retention restrictions while allowing reasoning-chain removal. Version 2 hop signatures preserve or tighten those restrictions. Version 1 and 2 signing bytes remain unchanged; unrestricted version 2 origins remain relay-compatible. Version 1 envelopes are accepted only directly from the origin, whose envelope signature authenticates all received fields. Restricted transfer requires version 3 origin attestation and version 2 capability contracts throughout the delivery path.
 
 Alignment is determined in two stages: (1) exact hash match of principles/prohibited-actions yields `Aligned`; (2) if hashes differ, a **concept-embedding** semantic similarity check over the original principle texts determines whether the score meets the `min_alignment_score` threshold for `Partial`. The embedder (`semantic::ConceptEmbedder`) maps synonym families to shared concept dimensions (so "privacy" ≈ "confidentiality") and uses character-trigram hashing for morphology; it is fixed-dimension, so federated peers embed principles into the same space with no shared vocabulary. It is a deterministic lexical-concept model, not a learned neural one — the `SemanticEmbedder` trait keeps a learned model pluggable (ROADMAP 3.3). This means servers with similar-but-not-identical policies can still federate at reduced trust.
 
 The `VrpCapabilitySharingContract` governs agent behavior on the server: `knowledge_domains_allowed`, `redacted_topics`, `retention_policy`, `max_exchange_size`. Mutual acceptance is required — the server operator sets their contract, the agent declares its own, and `contracts_mutually_accepted()` must return true.
+
+Capability contract `version: 2` requires an explicit `retention_policy` (`{"kind":"unlimited"}` or `{"kind":"max_age","seconds":60}`) and `max_exchange_size` (1–1048576 canonical serialized bundle UTF-8 bytes, including metadata/signature before scope stripping). `knowledge_domains_allowed: null` or omission permits any domain; an empty list permits none; every tag must belong to the case-insensitive intersection, so untagged bundles cannot bypass an allowlist. Maximum size and retention negotiate to the smaller bound. The handshake report includes `negotiated_rtx`. Unknown contract fields, invalid versions and version-1 contracts carrying previously ignored restriction fields are rejected. Legacy contracts remain accepted only when both sides' restrictions are equivalent to unrestricted defaults; tightening policy requires legacy agents and peers to re-handshake explicitly.
+
+Operator policy fields are `knowledge_domains_allowed`, `max_exchange_size`, and `rtx_retention_seconds` (null for unlimited, otherwise 1–3155760000 seconds). The Agent Knowledge Sharing controls expose all three. Retention runs from the authenticated author's `created_at`, never from receipt/retry time. Origin/hop signatures bind every restriction, and downstream hops cannot widen them. Current contracts gate publish, local subscribers, receive, onward relay and each outbox attempt. Expired content is blocked immediately by admission checks and scrubbed by the five-second retention worker (also on startup): bundles, reasoning, tags, caveats, provenance, governance transfer rows and queued ciphertext are deleted. Minimal digest receipts and replay tombstones remain to prevent resurrection. Loosening a policy never extends an already stored deadline. This contract governs Annex's stored and queued copies; a receiving agent must also honor the signed contract delivered with its bundle.
 
 **Server ↔ Server**: Federation handshake via `VrpFederationHandshake`, whose
 fields are `anchor_snapshot` (the hashed principle / prohibited-action root),

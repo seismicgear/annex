@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use crate::deep_links::DeepLinkInvite;
+use crate::deep_links::InviteInbox;
 
 /// Tracks whether the embedded server is running.
 pub(crate) struct ServerState {
@@ -20,6 +20,9 @@ pub(crate) struct ServerState {
     /// and sending it — so the peer never receives a message this server
     /// believes it delivered, and the row will not be retried.
     pub(crate) shutdown: tokio_util::sync::CancellationToken,
+    /// Set only after the listener and background workers have finished.
+    /// False means the bounded drain failed and an update must not proceed.
+    pub(crate) shutdown_complete: tokio::sync::watch::Receiver<Option<bool>>,
 }
 
 /// Tracks an Annex router session that provides a public endpoint for the
@@ -78,6 +81,10 @@ pub(crate) struct WebRtcConfigOverride {
 pub(crate) struct AppManagedState {
     pub(crate) data_dir: PathBuf,
     pub(crate) config_path: PathBuf,
+    /// Serializes host startup and reset so deletion cannot race server preparation.
+    pub(crate) server_lifecycle: tokio::sync::Mutex<()>,
+    pub(crate) keyring_service: String,
+    pub(crate) isolated_profile: bool,
     pub(crate) server: Mutex<Option<ServerState>>,
     pub(crate) router_session: Mutex<Option<RouterSessionState>>,
     pub(crate) webrtc: Mutex<Option<WebRTCProcessState>>,
@@ -86,7 +93,6 @@ pub(crate) struct AppManagedState {
     /// to avoid the UB-prone `std::env::set_var` path under the live Tauri
     /// runtime. See [`WebRtcConfigOverride`] for the full rationale.
     pub(crate) webrtc_config_override: Mutex<Option<WebRtcConfigOverride>>,
-    /// Buffered cold-start invite parsed before the React listener mounts.
-    /// Consumed exactly once via the `get_pending_invite` command.
-    pub(crate) pending_invite: Mutex<Option<DeepLinkInvite>>,
+    /// Latest cold/runtime delivery, retained until the frontend acknowledges it.
+    pub(crate) pending_invite: Mutex<InviteInbox>,
 }

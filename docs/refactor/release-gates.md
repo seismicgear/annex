@@ -35,7 +35,7 @@ as authoritative for CI and update this file.
 - Command: `cargo fmt --all --check`
 - Workflow: `.github/workflows/ci.yml::check-server::cargo fmt`
 - Catches: import sort drift, indent drift.
-- Pinned by: `rust-toolchain.toml` (channel 1.88).
+- Pinned by: `rust-toolchain.toml` (channel 1.96.0).
 
 ### srv-clippy
 - Command: `cargo clippy --workspace --exclude annex-desktop --all-targets -- -D warnings`
@@ -246,13 +246,18 @@ Everything below is in `.github/workflows/release-desktop.yml`.
 
 ### rel-assets
 - Workflow: `release-desktop.yml::release::Create GitHub Release`
-- The `files:` list must include the updater BUNDLES, not only their `.sig`
-  files. It did not until 2026-09-15: `latest.json` advertised
-  `*.AppImage.tar.gz`, `*.nsis.zip`, `*.msi.zip` and `*.app.tar.gz`, none of
-  which were uploaded, so every update 404'd and every signature check above it
-  was inert. `SHA256SUMS` covers them and `latest.json` too — a user could
-  previously checksum the installer they clicked and not the payload their
-  machine fetches unattended.
+- `scripts/stage-desktop-release.mjs` requires Windows x64, Linux x64 and both
+  macOS architectures. It verifies each updater's Ed25519/Minisign signature
+  and authenticated comment against the configured production public key,
+  copies exact native bytes to canonical names, and refuses missing,
+  duplicate or mixed outputs. With Tauri 2 `createUpdaterArtifacts: true`, the
+  updater payloads are `.exe`, `.AppImage` and `.app.tar.gz`; the former
+  `.nsis.zip`/`.AppImage.tar.gz` patterns do not apply to this mode.
+- `latest.json` references those same verified payloads; `downloads.json`
+  records source SHA, sizes and hashes. `SHA256SUMS` is generated last over
+  every release asset including both metadata files. The workflow publishes
+  only that assembled directory into the draft. An unsigned dispatch is
+  explicit and never creates updater metadata or qualifies a public release.
 
 ### rel-notes
 - Command: `python3 scripts/changelog-section.py CHANGELOG.md <version>`

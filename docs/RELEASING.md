@@ -25,20 +25,67 @@ What a release IS verifiable by:
   release, so anyone can check what the bundled proving and verification keys
   descend from without cloning the repository.
 
-The OS code-signing hooks are left in place and inactive in
-`release-desktop.yml`. Tauri skips signing when the certificate environment
-variables are empty, so adding certificates later is a secrets change and not a
-workflow change.
+The workflow currently configures updater signing only. Windows Authenticode
+and Apple Developer ID/notarization are not configured. Introducing either
+requires its actual credentials, explicit workflow integration, and platform
+verification; updater signatures do not establish OS trust.
 
 ## 1. The updater signing key (one-time, and only you can do it)
 
-The workflow consumes `secrets.TAURI_SIGNING_PRIVATE_KEY`. Until that secret
-exists, a **tagged** release fails at the `Check for updater signatures` step
-rather than publishing unsigned artifacts quietly — which is what it used to
-do, because the workflow passed an empty string and Tauri skipped signing
-without comment. Even with the key set, the signatures could not have reached
-the release: the upload steps listed only `.deb`/`.AppImage`/`.exe`/`.msi`, so
-the `.sig` files never left the build job.
+Before a desktop build, prepare its native resources on the matching native
+runner with `node scripts/prepare-desktop-assets.mjs`, then verify with the same
+command plus `--verify`. The release workflow does both on Windows x64, Linux
+x64, macOS Apple Silicon, and macOS Intel. All four are required before the
+release draft is assembled. The production build hook requires
+that verified inventory; it does not accept merely existing speech binaries.
+For clean-stage validation without touching an existing checkout's resources,
+use `--assets-dir /absolute/staging/assets --work-dir /absolute/staging/build`.
+On Windows, use `scripts/prepare-desktop-assets.ps1 -AssetsDir ... -WorkDir ...`;
+it selects the installed Visual C++ x64 environment and Ninja before running
+the same preparation. Windows Whisper links its C runtime statically.
+An existing different runtime is refused; preserve it separately before using
+an empty destination. `--data-only` prepares verified models and Piper but
+deliberately does not produce a complete receipt or permit packaging.
+
+`scripts/desktop-assets.json` pins the official Piper 2023.11.14-2 archives,
+both voice files, the base.en Whisper model and the semantic embedding files.
+Model pins match the immutable revisions and hashes already used in the
+Docker/model preparation paths. Piper Linux x64 retains the existing Docker
+digest. The Windows and macOS archive digests were measured from the named
+official release assets over HTTPS on 2026-10-13; the old release API publishes
+no digest/signature, so these are reviewed local pins, not publisher signatures.
+The Intel macOS archive is `piper_macos_x64.tar.gz`. Recheck the official release
+when deliberately updating any pin; do not substitute `latest` or `resolve/main`.
+
+Whisper is compiled from the same immutable v1.7.4 commit pinned by the
+Dockerfile, with a static CPU backend and host-specific instruction tuning,
+dynamic backend loading, OpenMP, CUDA, Metal and BLAS disabled. Its real
+`whisper-cli` target, license, source/flags/compiler-tool provenance and local
+binary digest are bundled. This avoids shipping a deprecated `main` stub or
+unbundled runtime DLLs. The preparation smoke invokes each real CLI; it is not
+transcription or installed-application acceptance. CMake, a native C++ compiler,
+Git and tar are required. The macOS Intel and ARM jobs run on matching native
+runner architectures. Linux ARM and Windows ARM have no qualified preparation
+path and are refused explicitly.
+
+The pinned speech DSP binding also needs libclang at Rust build time. Linux
+build stages install `libclang-dev`; Windows and macOS use the runner's LLVM
+or Xcode library. `node scripts/verify-libclang.mjs` verifies the directory
+and sets `LIBCLANG_PATH` in GitHub Actions. No libclang runtime is bundled
+with Annex. CI desktop bundle jobs prepare the same verified speech resources
+instead of creating an apparently complete package with empty asset folders.
+
+The complete `assets/desktop-provenance.json` records every resource digest and
+the pin-manifest digest. Its generated runtime hashes describe the actual local
+compiler output; they are not a claim of bit-for-bit reproducible native builds.
+Installed captions, voice, deep links, updates and uninstall still require
+their separate real-session acceptance.
+
+The workflow requires `TAURI_SIGNING_PRIVATE_KEY` and
+`TAURI_SIGNING_PUBLIC_KEY` in preflight for both signed drafts and tags.
+The release assembly then cryptographically verifies every native updater
+artifact and its trusted comment against that public key. A signature file's
+presence alone cannot pass this check.
 
 ```bash
 cargo install tauri-cli@2.11.2 --locked     # if you do not have it
@@ -78,19 +125,21 @@ would have produced signed bundles that nothing in the app could consume.
 
 ### What the workflow enforces
 
-* Every updater bundle must carry its OWN `.sig`. It previously counted
-  signature files and passed on any non-zero total, so one signed Linux bundle
-  satisfied the check for a release whose Windows bundles were unsigned.
+* Every updater artifact carries its own valid `.sig`; a wrong key, changed
+  payload or altered signed comment refuses draft assembly.
 * A dry run enforces the same thing a tag does. It previously warned where a
   tag errored, so a green dry run established nothing about the tagged-release
   contract — the only thing a dry run is for.
 * `unsigned_dry_run: true` on a `workflow_dispatch` is the single explicit way
   to build without keys. It is refused on a tag.
-* `latest.json` is generated from the `.sig` files themselves, so the update
-  manifest and the signatures cannot disagree.
+* `latest.json` is generated from verified signatures and the same canonical
+  filenames uploaded to the release. `downloads.json` identifies the exact
+  source commit, platform assets, byte lengths and SHA-256 hashes.
+* `SHA256SUMS` is produced last and includes both metadata files and all other
+  released assets. Duplicate/missing platform outputs refuse assembly.
 
 OS code signing (Authenticode, Apple Developer ID) is a separate decision and
-is NOT what any of the above is about. Those hooks remain inactive; this
+is NOT what any of the above is about. Those integrations remain unconfigured; this
 project distributes OS-unsigned installers, verified by `SHA256SUMS` and, for
 updates, by the Tauri key above.
 
@@ -116,7 +165,8 @@ used to say otherwise and that paragraph is gone.
 
 Actions → **Release Desktop App** → Run workflow → `dry_run: true`.
 
-It runs the pre-flight gates, builds the full bundles on Linux and Windows
+It runs the pre-flight gates, builds the full bundles on Linux, Windows and
+both macOS architectures
 under `ANNEX_BUILD_PROFILE=production`, builds and **boots** the server tarball,
 verifies the pinned ZK artifacts and the ceremony chain, generates `SHA256SUMS`
 and the SBOMs, and creates a **draft** release named `dry-run-<sha>`.
@@ -128,10 +178,11 @@ point:
   dev-fixture proving key, before 30-60 minutes of Tauri builds rather than
   after. Both checks run again in `release`, because a `workflow_dispatch` dry
   run reaches that job and a gate a path can skip is not a gate.
-* **The updater bundles are in the asset list**, not just their `.sig` files.
-  `latest.json` points at `*.AppImage.tar.gz`, `*.nsis.zip`, `*.msi.zip` and
-  `*.app.tar.gz`; none of them were uploaded until 2026-09-15, so every update
-  the manifest advertised 404'd and every signing check above it was inert.
+* **The updater payloads are in the asset list**, not just their `.sig` files.
+  With Tauri 2 `createUpdaterArtifacts: true`, these are native `.AppImage`
+  and `.exe` files, and macOS `.app.tar.gz`. Optional MSI files carry their own
+  signature. The old `.AppImage.tar.gz`/`.nsis.zip` patterns describe Tauri's
+  compatibility mode and do not match this configuration.
 * **`SHA256SUMS` covers those bundles and `latest.json`.** A user could
   previously checksum the installer they clicked and not the payload their
   machine fetches unattended — which is the one they never see.
@@ -167,8 +218,23 @@ with GitHub's generated commit list appended. Review it, attach anything
 missing, then publish.
 
 Assets: the desktop installers, the updater bundles and their signatures,
-`latest.json`, `SHA256SUMS`, the SBOMs, and
+`latest.json`, `downloads.json`, `SHA256SUMS`, the SBOMs, and
 `annex-server-<version>-x86_64-unknown-linux-gnu.tar.gz`.
+
+The public website uses these stable, architecture-specific installer names:
+
+| Platform | Release asset |
+|---|---|
+| Windows x64 | `annex-desktop-windows-x86_64.exe` |
+| Linux x64 | `annex-desktop-linux-x86_64.AppImage` |
+| macOS Apple Silicon | `annex-desktop-macos-aarch64.dmg` |
+| macOS Intel | `annex-desktop-macos-x86_64.dmg` |
+
+`scripts/stage-desktop-release.mjs` copies the verified native build outputs to
+those names without changing their contents. The macOS updater archives use
+the corresponding `.app.tar.gz` names. Publish the verified release before
+deploying website links; then check all four real download responses and
+correlate downloaded bytes with `downloads.json` and `SHA256SUMS`.
 
 ### The container image
 

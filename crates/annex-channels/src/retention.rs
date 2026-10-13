@@ -25,7 +25,7 @@ pub fn delete_expired_messages(conn: &Connection) -> Result<usize, ChannelError>
     let count = conn.execute(
         "DELETE FROM messages WHERE rowid IN (\
              SELECT rowid FROM messages \
-             WHERE expires_at IS NOT NULL AND expires_at < datetime('now') \
+             WHERE expires_at IS NOT NULL AND datetime(expires_at) <= datetime('now') \
              LIMIT ?1\
          )",
         [RETENTION_BATCH_LIMIT],
