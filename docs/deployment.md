@@ -13,19 +13,24 @@ is no release-bound capacity or supported-concurrency guarantee yet.
 ```bash
 git clone --branch v0.1.0 https://github.com/seismicgear/annex.git
 cd annex
-export ANNEX_IMAGE=ghcr.io/seismicgear/annex:0.1.0
 export ANNEX_CORS_ORIGINS=https://annex.example.com
 export ANNEX_PUBLIC_URL=https://annex.example.com
-docker compose -f docker-compose.prod.yml pull
-docker compose -f docker-compose.prod.yml up -d --no-build
+docker compose -f docker-compose.prod.yml up -d --build
 ```
 
 Replace the example origin with your actual reachable HTTPS origin and put a TLS
-reverse proxy in front of the HTTP listener. The release workflow published the
-versioned image and ran its startup validator. The ordinary `docker-compose.yml`
+reverse proxy in front of the HTTP listener. This builds the production image from the published tag. The release workflow
+also built and pushed a versioned image and ran its startup validator. The ordinary `docker-compose.yml`
 is **development-only** (wildcard CORS and development profile); do not use it for
-a public deployment. To build production from the pinned checkout instead,
-leave `ANNEX_IMAGE` unset and run `docker compose -f docker-compose.prod.yml up -d --build`.
+a public deployment. Leave `ANNEX_IMAGE` unset for this source-build path.
+
+**Registry access:** the release workflow pushed
+`ghcr.io/seismicgear/annex:0.1.0`, but an anonymous pull-token request returned
+HTTP 403 `DENIED` during this readiness pass. Do not rely on a public `docker
+pull` until package visibility/access is resolved. The source build above and
+the public standalone server archive below are the available operator paths.
+An authorized registry account may have access; publishing a workflow artifact
+does not establish anonymous registry access.
 
 These are operator procedures, not evidence that every hosting provider, clean
 OS image, or external network has been accepted. See [the evidence ledger](RELEASE_READINESS.md).

@@ -314,7 +314,9 @@ docker tag   ghcr.io/seismicgear/annex:0.1.0 ghcr.io/seismicgear/annex:latest
 docker push  ghcr.io/seismicgear/annex:latest
 ```
 
-Operators run the published image by setting `ANNEX_IMAGE`; without it
+The release job pushed the image, but anonymous GHCR access returned 403 during
+the public-readiness pass. Resolve package visibility before advertising public
+`docker pull`. Authorized operators can set `ANNEX_IMAGE`; without it
 `docker-compose.prod.yml` builds locally exactly as before:
 
 ```bash

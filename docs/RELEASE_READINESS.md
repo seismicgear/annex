@@ -26,6 +26,12 @@ AppImage/DEB, and Apple Silicon/Intel DMGs. `SHA256SUMS`, `downloads.json`,
 `latest.json`, updater payloads/signatures, SBOMs, ceremony manifests/transcript,
 and dependency-backport provenance accompany them. See [Installation](installation.md).
 
+The server container was built and pushed by the release job, but anonymous
+GHCR pull authorization returned HTTP 403 `DENIED` during the public-readiness
+pass. [Deployment](deployment.md) therefore leads with a production build from
+the published tag and offers the public server archive; anonymous container
+availability remains unresolved.
+
 ### Still incomplete
 
 - Native Windows and macOS invitation-to-message acceptance. An earlier Windows

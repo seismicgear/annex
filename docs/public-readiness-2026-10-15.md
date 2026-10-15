@@ -46,10 +46,22 @@ external agent runtimes, and per-channel encryption.
 - **All six installer URLs and SHA256SUMS returned HTTP 200** after redirects.
   Link availability is not a claim that each native installer was executed here.
 
-The website has repeatable browser checks in its CI and supports rerunning them
+The website runs its route/signaling/catalog/renderer test gate in the existing
+Vercel build. Repeatable browser checks support rerunning them
 against the deployed URL. Merge/build/deployment receipts belong to GitHub and
 the existing Vercel integration; final production acceptance must inspect the
 actual deployed pages, not merely the preview or commit.
+
+Additional browser/backend acceptance: seven startup/full-flow tests passed
+against the actual published Linux server archive plus the rebuilt post-tag
+web client, including identity, proof, channel join, and messaging. This is not
+new native desktop acceptance. Local full Rust execution encountered two real
+WebRTC data-channel tests with no gathered candidates in this environment;
+those tests remain enabled for CI, not weakened or reported as local passes.
+
+The anonymous GHCR token request for `seismicgear/annex:pull` returned 403
+`DENIED`; production deployment instructions now use a source build or the
+public server archive. Package access/visibility remains maintainer-owned work.
 
 ## Dependency PR decisions
 
