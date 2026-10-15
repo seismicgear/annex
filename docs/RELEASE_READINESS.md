@@ -42,6 +42,25 @@ Post-release source also fixes Host startup restarting on a parent rerender and
 adds bounded discovery/identity request deadlines. Those fixes require a later
 installer release; the published v0.1.1 bytes do not contain them.
 
+The additional [Host/founder repair](https://github.com/seismicgear/annex/commit/6444bfbde5a90df119fb036112ea0a38026d1120)
+automates identity creation from Host, selects the existing founder by the actual
+running database, recovers interrupted admission from matching saved secret keys,
+and establishes membership before public-endpoint acquisition. Startup no longer
+erases the server when browser keys and the onboarding marker are absent. The
+profile badge comes from the server's founder identity, not moderator capability.
+Local verification: 949 client tests, lint, production frontend build, strict
+desktop/server Clippy, two Windows-compiled desktop database tests, and the backend
+identity endpoint test passed. These are implementation checks, **not a repaired
+published Windows/macOS Host receipt**. The native Host observer now checks the
+logged-in desktop account, rather than assuming it matches the shell account.
+
+The public hosting relay and outbound connector are still missing. The default
+desktop registration target remains `router.annex.net`; no functional replacement
+was fabricated at `monolithannex.com`. [Deployment notes](deployment.md#desktop-host-mode)
+describe the exact transport gap. End-to-end automatic Host and generated-invite
+acceptance remain blocked, even though the separate public invitation routing
+and recipient sessions passed for a configured reachable server.
+
 ## Published v0.1.0 — October 15, 2026
 
 The [public release](https://github.com/seismicgear/annex/releases/tag/v0.1.0)

@@ -8,6 +8,13 @@ October 15, 2026. Their tags and installer bytes remain unchanged.
 
 ## [Unreleased]
 
+- Let a fresh desktop Host action create its identity automatically. Select the
+  founder from the running server's database, recover interrupted admission from
+  matching saved keys, and complete sign-in before requesting public access.
+  Preserve other server memberships and existing server data during startup;
+  show the server-confirmed founder in identity settings. These source repairs
+  are not present in either published installer release and do not implement the
+  missing public-host transport.
 - Keep Host startup stable when the parent elapsed timer rerenders; bound server
   discovery and identity requests so a stalled response produces a retryable
   error. These source fixes are not in the published v0.1.1 installers.

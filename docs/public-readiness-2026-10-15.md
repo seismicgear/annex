@@ -1,5 +1,13 @@
 # v0.1.0 public-readiness verification — October 15, 2026
 
+**Latest Host status:** published Windows Host failure is unresolved. Source
+repairs in 6444bfb automate and stabilize local identity setup and founder
+selection, with 949 frontend tests and targeted native/backend tests passing.
+No installer containing those repairs has been published or accepted. Automatic
+public hosting still lacks its actual transport; the successful Mac recipient
+journeys do not qualify it. The website independently advanced to v0.1.1 links;
+it is no longer held at v0.1.0. See the [current release ledger](RELEASE_READINESS.md).
+
 Scope: the application/docs repository, `seismicgear/monolith-annex`, and
 <https://monolithannex.com>. The owner's request authorizes publication and
 merging the open PRs. Original v0.1.0 artifacts remain unchanged; post-tag source
