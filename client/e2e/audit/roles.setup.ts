@@ -43,8 +43,7 @@ async function warmRole(browser: import('@playwright/test').Browser) {
   const timeline = setup.info().outputPath('seed-websocket-events.jsonl');
   mkdirSync(dirname(timeline), { recursive: true });
   page.on('websocket', socket => {
-    for (const [event, direction] of [['framesent', 'sent'], ['framereceived', 'received']] as const) {
-      socket.on(event, ({ payload }) => {
+    const record = (direction: 'sent' | 'received') => ({ payload }: { payload: string | Buffer }) => {
         try {
           const frame = JSON.parse(typeof payload === 'string' ? payload : payload.toString('utf8'));
           if (typeof frame.type !== 'string') return;
@@ -57,8 +56,9 @@ async function warmRole(browser: import('@playwright/test').Browser) {
               ? createHash('sha256').update(frame.content).digest('hex') : null,
           }) + '\n');
         } catch { /* Non-JSON protocol data is not application evidence. */ }
-      });
-    }
+    };
+    socket.on('framesent', record('sent'));
+    socket.on('framereceived', record('received'));
   });
 
   await completeStartup(page);
