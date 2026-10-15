@@ -114,7 +114,13 @@ final class NativeAcceptance: XCTestCase {
         click(safari, "Admin", timeout: 180)
         waitForAdmissionCount(1)
         click(safari, "Server Settings")
-        click(safari, "Create Invite Link")
+        // Server Settings generates the invitation after loading a valid
+        // public address. Use that actual UI result; the manual action is
+        // available only when automatic generation has not succeeded.
+        let copyInvite = safari.buttons["Copy Link"].firstMatch
+        if !copyInvite.waitForExistence(timeout: 30) {
+            click(safari, "Create Invite Link")
+        }
         click(safari, "Copy Link")
         capture(safari, "founder-generated-and-copied-invite")
         let invite = try XCTUnwrap(NSPasteboard.general.string(forType: .string))
