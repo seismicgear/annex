@@ -89,8 +89,12 @@ final class NativeAcceptance: XCTestCase {
 
     func focusSafariPage(_ title: String) {
         safari.activate()
-        safari.menuBars.menuBarItems["Window"].firstMatch.click()
-        let page = safari.menuItems[title].firstMatch
+        let windowMenu = safari.menuBars.menuBarItems["Window"].firstMatch
+        windowMenu.click()
+        // History also contains an "Annex" entry. Scope to Window so this
+        // activates the existing founder page instead of navigating again.
+        let page = windowMenu.descendants(matching: .menuItem).matching(
+            NSPredicate(format: "title == %@", title)).firstMatch
         XCTAssertTrue(page.waitForExistence(timeout: 10))
         page.click()
     }
