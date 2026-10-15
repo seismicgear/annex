@@ -9,7 +9,7 @@
 #                (webrtc pulls its own generation of a few ecosystem crates),
 #                so they are a warning rather than a failure until the list
 #                stops growing.
-#   licenses   — a noncommercial-licensed project has to know what it is
+#   licenses   — a source-available project has to know what it is
 #                linking. The workspace's own LicenseRef is allowed explicitly.
 #   sources    — everything must come from crates.io. A git dependency in a
 #                release build is an unpinned third party.
@@ -69,40 +69,40 @@ allow = ["CDLA-Permissive-2.0"]
 # the check exists to know what THIRD parties are linked in.
 [[licenses.exceptions]]
 name = "annex-server"
-allow = ["LicenseRef-Annex-Noncommercial"]
+allow = ["LicenseRef-Annex-Community-2.0"]
 [[licenses.exceptions]]
 name = "annex-identity"
-allow = ["LicenseRef-Annex-Noncommercial"]
+allow = ["LicenseRef-Annex-Community-2.0"]
 [[licenses.exceptions]]
 name = "annex-vrp"
-allow = ["LicenseRef-Annex-Noncommercial"]
+allow = ["LicenseRef-Annex-Community-2.0"]
 [[licenses.exceptions]]
 name = "annex-graph"
-allow = ["LicenseRef-Annex-Noncommercial"]
+allow = ["LicenseRef-Annex-Community-2.0"]
 [[licenses.exceptions]]
 name = "annex-channels"
-allow = ["LicenseRef-Annex-Noncommercial"]
+allow = ["LicenseRef-Annex-Community-2.0"]
 [[licenses.exceptions]]
 name = "annex-voice"
-allow = ["LicenseRef-Annex-Noncommercial"]
+allow = ["LicenseRef-Annex-Community-2.0"]
 [[licenses.exceptions]]
 name = "annex-federation"
-allow = ["LicenseRef-Annex-Noncommercial"]
+allow = ["LicenseRef-Annex-Community-2.0"]
 [[licenses.exceptions]]
 name = "annex-rtx"
-allow = ["LicenseRef-Annex-Noncommercial"]
+allow = ["LicenseRef-Annex-Community-2.0"]
 [[licenses.exceptions]]
 name = "annex-observe"
-allow = ["LicenseRef-Annex-Noncommercial"]
+allow = ["LicenseRef-Annex-Community-2.0"]
 [[licenses.exceptions]]
 name = "annex-db"
-allow = ["LicenseRef-Annex-Noncommercial"]
+allow = ["LicenseRef-Annex-Community-2.0"]
 [[licenses.exceptions]]
 name = "annex-types"
-allow = ["LicenseRef-Annex-Noncommercial"]
+allow = ["LicenseRef-Annex-Community-2.0"]
 [[licenses.exceptions]]
 name = "annex-desktop"
-allow = ["LicenseRef-Annex-Noncommercial"]
+allow = ["LicenseRef-Annex-Community-2.0"]
 
 [bans]
 multiple-versions = "warn"

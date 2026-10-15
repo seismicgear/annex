@@ -50,7 +50,9 @@ subtle = "2"
 sha2.workspace = true
 hmac = "0.12"
 chacha20poly1305 = "0.10"
-hkdf = "0.12"
+hkdf = "0.13"
+# HKDF 0.13 uses digest 0.11; preserve other hashes on the existing API.
+sha2_11 = { package = "sha2", version = "0.11" }
 scraper = "0.27"
 url = "2"
 open = "5"
@@ -58,7 +60,7 @@ redis = { version = "=1.7.1", default-features = false, features = ["tokio-rustl
 
 [dev-dependencies]
 annex-voice = { workspace = true }
-tokio-tungstenite = "0.28"
+tokio-tungstenite = "0.29"
 futures-util = "0.3"
 tokio = { workspace = true, features = ["test-util"] }
 num-bigint = "0.4"

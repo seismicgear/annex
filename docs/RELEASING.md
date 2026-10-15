@@ -4,14 +4,20 @@ This is the operator runbook. `docs/refactor/release-gates.md` lists the gates;
 this says what to do with them, in order, and names the two things only a human
 can do.
 
+## Published baseline
+
+v0.1.0 was published on October 15, 2026. The tag and original installers must
+remain immutable. This runbook is for a future release; it is not a request to
+rebuild v0.1.0. See [release evidence](RELEASE_READINESS.md) for completed runs,
+Linux native acceptance, and Windows/macOS/updater/provider qualification still
+open. Repository documentation/license changes do not alter binary bytes.
+
 ## 0. What a release is signed by, and what it is not
 
-Annex ships **unsigned by the operating system**. There is no Windows
-Authenticode certificate and no Apple Developer ID, so a Windows user sees a
-SmartScreen warning and a macOS user has to clear the quarantine attribute.
-That is a deliberate, stated position rather than an oversight: certificates
-cost money and carry an identity, and the project would rather say so than
-imply a verification that is not happening.
+Windows installers have no Authenticode signing. macOS packages are ad-hoc
+signed, without Developer ID or notarization. OS trust prompts are therefore
+possible. Direct users to [installation](installation.md) for origin/checksum
+verification and per-app approval; do not advise globally disabling OS protection.
 
 What a release IS verifiable by:
 
@@ -308,7 +314,9 @@ docker tag   ghcr.io/seismicgear/annex:0.1.0 ghcr.io/seismicgear/annex:latest
 docker push  ghcr.io/seismicgear/annex:latest
 ```
 
-Operators run the published image by setting `ANNEX_IMAGE`; without it
+The release job pushed the image, but anonymous GHCR access returned 403 during
+the public-readiness pass. Resolve package visibility before advertising public
+`docker pull`. Authorized operators can set `ANNEX_IMAGE`; without it
 `docker-compose.prod.yml` builds locally exactly as before:
 
 ```bash

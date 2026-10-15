@@ -5,6 +5,13 @@ runs in two places: a browser against a remote server, and inside the Tauri
 desktop shell (`crates/annex-desktop`), which bundles this `dist/` and points
 it at an embedded server.
 
+## Prerequisites
+
+Use Node ≥22.12. From the repository root, follow
+[development setup](../docs/development.md) to install the pinned ZK artifacts
+and copy the provers into `client/public/zk` before building. A fresh `npm ci`
+alone does not prepare those resources. The commands below run from `client/`.
+
 ## Run it
 
 ```bash

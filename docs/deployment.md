@@ -1,30 +1,78 @@
-# Deployment Guide
+# Deploy Annex v0.1.0
 
-Deploy Annex on a clean machine using Docker Compose. No prior knowledge of the codebase required.
+For an individual desktop installation, use [Installation](installation.md).
+This guide is for operators responsible for persistence, HTTPS, admission,
+networking, backups, and optional federation or speech services.
 
-## Prerequisites
+## Production Compose
 
-- Docker Engine 24+ with Compose v2
-- 2GB+ RAM (4GB recommended for voice models)
-- 1GB+ disk for database and voice model files
-
-## Quick Start
+Use Docker Engine with Compose v2. Leave disk capacity for the image, models,
+database, uploads, and backups; speech workloads need additional CPU/RAM. There
+is no release-bound capacity or supported-concurrency guarantee yet.
 
 ```bash
-git clone <repo-url> annex
+git clone --branch v0.1.0 https://github.com/seismicgear/annex.git
 cd annex
-docker compose up -d
+export ANNEX_CORS_ORIGINS=https://annex.example.com
+export ANNEX_PUBLIC_URL=https://annex.example.com
+docker compose -f docker-compose.prod.yml up -d --build
 ```
 
-The server starts at `http://localhost:3000`. The web client is served from the same port.
+Replace the example origin with your actual reachable HTTPS origin and put a TLS
+reverse proxy in front of the HTTP listener. This builds the production image from the published tag. The release workflow
+also built and pushed a versioned image and ran its startup validator. The ordinary `docker-compose.yml`
+is **development-only** (wildcard CORS and development profile); do not use it for
+a public deployment. Leave `ANNEX_IMAGE` unset for this source-build path.
+
+**Registry access:** the release workflow pushed
+`ghcr.io/seismicgear/annex:0.1.0`, but an anonymous pull-token request returned
+HTTP 403 `DENIED` during this readiness pass. Do not rely on a public `docker
+pull` until package visibility/access is resolved. The source build above and
+the public standalone server archive below are the available operator paths.
+An authorized registry account may have access; publishing a workflow artifact
+does not establish anonymous registry access.
+
+These are operator procedures, not evidence that every hosting provider, clean
+OS image, or external network has been accepted. See [the evidence ledger](RELEASE_READINESS.md).
+
+## Standalone Linux server archive
+
+Download `annex-server-0.1.0-x86_64-unknown-linux-gnu.tar.gz` and `SHA256SUMS` from
+[the release](https://github.com/seismicgear/annex/releases/tag/v0.1.0). Compare the
+archive's checksum, then extract and run from its directory so relative resource
+paths resolve:
+
+```bash
+sha256sum annex-server-0.1.0-x86_64-unknown-linux-gnu.tar.gz
+tar --no-same-owner -xzf annex-server-0.1.0-x86_64-unknown-linux-gnu.tar.gz
+cd annex-server-0.1.0-x86_64-unknown-linux-gnu
+export ANNEX_HOST=127.0.0.1
+export ANNEX_CORS_ORIGINS=https://annex.example.com
+export ANNEX_PUBLIC_URL=https://annex.example.com
+./annex-server --check
+./annex-server
+```
+
+`--check` validates startup and exits; it can create/migrate the configured
+database and persist a signing key. It is not a read-only inspection command.
+The published archive was downloaded, checksum-verified, and this startup path
+was exercised during the public-readiness pass.
+
+The archive includes the backend, configuration, verification keys, and alignment
+model. It **does not include the browser client or native speech resources**.
+Connect with the desktop client, or [build the matching web client](development.md)
+and set `ANNEX_CLIENT_DIR` to its absolute `client/dist` path. Use a service manager
+for persistent operation. Keep the database and `signing.key` in durable storage;
+back up both, and test restoration. Do not run a public server from a temporary
+extraction directory.
 
 ## Configuration
 
 ### Environment Variables
 
-All configuration can be overridden via environment variables. Set them in `docker-compose.yml` under `annex.environment` or in a `.env` file.
+Supported environment variables override configuration. In Compose, set variables that `docker-compose.prod.yml` explicitly forwards/interpolates, or add the needed variable under the service environment. A `.env` file supplies Compose interpolation; it does not automatically pass every variable into the container.
 
-Authoritative env-var names live in `crates/annex-server/src/config.rs::load_config`. This table is a subset for deploy operators; consult the README for the full list.
+Authoritative env-var names live in `crates/annex-server/src/config.rs::load_config`. This table is a subset for deploy operators; see [Configuration](configuration.md) and the source for additional settings.
 
 <!-- Keep this table CONTIGUOUS. Prose, or even an HTML comment, between two
      rows ends a GitHub-flavoured Markdown table: the seven
@@ -63,7 +111,7 @@ Authoritative env-var names live in `crates/annex-server/src/config.rs::load_con
 | `ANNEX_FEDERATION_OUTBOX_INTERVAL_SECONDS` | `5` | Outbox worker tick interval |
 | `ANNEX_FEDERATION_OUTBOX_PER_PEER_BATCH` | `8` | Max outbox rows drained per peer per tick (fairness cap) |
 | `ANNEX_FEDERATION_ALLOW_PRIVATE_PEERS` | `false` | Permit federation peers at private / loopback / link-local addresses — see below |
-| `ANNEX_FEDERATION_RELAY_TRANSPORT_ENABLED` | `false` | **Accepted and validated, but not yet wired.** The relay transport exists in `annex-federation` and no server code starts it; setting this logs a warning at startup and changes nothing. Under a production profile it additionally requires `ANNEX_SIGNAL_TRUSTED_PEERS`. Federation runs over the HTTP outbox either way |
+| `ANNEX_FEDERATION_RELAY_TRANSPORT_ENABLED` | `false` | Starts the experimental relay/rendezvous transport during server startup. Disabled by default; production also requires `ANNEX_SIGNAL_TRUSTED_PEERS`. This is a federation transport, not a public application tunnel. The durable HTTP outbox remains the ordinary delivery path |
 | `ANNEX_RTX_MAX_HOPS` | `3` | How far an RTX bundle published by THIS server may travel, in relay hops. Signed into the origin attestation, so it limits this server's own publications rather than what it accepts; a receiver bounds what it accepts with a compile-time ceiling of 5 and takes the minimum. `0` disables relay of locally-published bundles |
 | `ANNEX_RTX_REQUIRE_HOP_CHAIN` | `false` | Refuse an RTX envelope that carries no signed hop chain. `false` for one release so peers on older builds keep working — such an envelope is accepted and delivered locally but never re-relayed. Flipping it to `true` is a decision about whether your peers have upgraded, which the software cannot know |
 
@@ -167,7 +215,7 @@ Voice runs inside the Annex process. Provide:
    faster; `--verify` checks what is already installed and never downloads.
    Mounting your own model and setting the variable by hand works too.
 
-Without voice models, text channels still work. Voice channels will be unavailable.
+Human WebRTC voice does not require a speech model. Missing speech resources disable the affected transcription or synthetic-voice provider. Desktop v0.1.0 bundles pinned Piper/voices and native Whisper with `base.en`; the standalone archive does not. The container bundles speech executables and a Piper voice but requires a configured Whisper GGML model. Provider readiness and OS permissions still need checking on the target host.
 
 Speech-to-text is separable from the rest of voice: a call works without it and
 simply has no captions. `GET /api/voice/config-status` reports `stt_ready`, and
@@ -181,7 +229,7 @@ To federate with another Annex instance:
 
 1. Register the remote instance:
    ```
-   POST /federation/handshake
+   POST /api/federation/handshake
    ```
    With the remote server's VRP anchor snapshot and capability contract.
 

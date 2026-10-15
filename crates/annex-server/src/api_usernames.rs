@@ -35,7 +35,7 @@ const AEAD_OVERHEAD: usize = 12 + 16;
 
 /// Derives a 256-bit AEAD key for a specific pseudonym using HKDF-SHA256.
 fn derive_aead_key(signing_key: &SigningKey, pseudonym_id: &str) -> [u8; 32] {
-    let hk = Hkdf::<Sha256>::new(Some(pseudonym_id.as_bytes()), signing_key.as_bytes());
+    let hk = Hkdf::<sha2_11::Sha256>::new(Some(pseudonym_id.as_bytes()), signing_key.as_bytes());
     let mut key = [0u8; 32];
     hk.expand(b"annex-username-encryption-v2", &mut key)
         .expect("32-byte output is valid for HKDF-SHA256");

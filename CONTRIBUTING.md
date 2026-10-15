@@ -1,144 +1,100 @@
 # Contributing to Annex
 
-Contributions are welcome. This document explains how to build, test, and submit changes.
+Contributions are welcome: reproducible bug reports, clearer documentation,
+accessibility improvements, operator feedback, integrations, and code. Start
+with [the product guide](README.md), [architecture](docs/architecture.md), and
+[the roadmap](ROADMAP.md) so your change fits what is implemented and what is planned.
 
----
+## Before you change code
 
-## Prerequisites
+- Search existing issues and PRs. Describe the user-visible problem and a small,
+  reviewable solution. Discuss changes to identity, trust, wire formats, storage,
+  or licensing before undertaking a broad redesign.
+- Read `AGENTS.md` and `CLAUDE.md`, including the applicable repository workflow.
+  `FOUNDATIONS.md` records the architectural principles; preserve their meaning.
+- Use a branch from current `main`. Use `v0.1.0` when reproducing a published
+  binary problem and say which revision you tested.
+- Follow [development setup](docs/development.md). Install from lockfiles with
+  `npm ci`; prepare the pinned ZK artifacts and alignment model before running
+  real proof, backend, or browser tests.
 
-| Tool | Version | Notes |
-|------|---------|-------|
-| Rust | 1.96.0 | Use the repository's `rust-toolchain.toml` pin |
-| Node.js | 22.12+ | For client/ZK builds and acceptance tools |
-| sqlite3 | Any | For database seeding (optional — deploy scripts handle this) |
+## Good bug reports
 
-## Build
+Include the version/commit, OS and architecture, installation method, exact
+steps, expected and actual behavior, and a small sanitized log or screenshot.
+For networking issues, describe whether the server is local or remote and
+whether HTTPS/ICE/TURN are configured. Do not include private messages, identity
+secrets, invite codes, recovery material, access tokens, or unredacted database
+files. Report vulnerabilities privately through [SECURITY.md](SECURITY.md).
 
-### Server
+## Implementation expectations
 
-```bash
-cargo build --release -p annex-server
-```
+Keep changes focused. Preserve authorization checks at the point of action,
+cryptographic domain separation, input bounds, durable retry behavior, and
+truthful failure states. Do not bypass a startup gate or weaken a proof/signature
+check to make a test pass. Version protocol/storage changes deliberately, and
+keep older-data behavior explicit.
 
-### Client
+For UI work, use the existing modal and focus primitives, accessible names,
+keyboard navigation, and responsive layouts. Update the audit surface manifest
+when adding a reachable surface. Review snapshots visually; record intentional
+baseline changes separately rather than accepting every diff automatically.
 
-```bash
-cd client
-npm install
-npm run build
-```
+For docs, check claims against implementation and reproducible evidence. Distinguish:
 
-### Desktop (Tauri)
+1. Implemented behavior with a cited source or test.
+2. Verified behavior with the platform, version, and test context stated.
+3. Known limitations or incomplete acceptance.
+4. Future architectural goals and their remaining criteria.
 
-```bash
-cd crates/annex-desktop
-cargo tauri build
-```
+Keep `ROADMAP.md`'s status summary, phase status, criteria, and dated status
+changes consistent. Preserve criteria that are still needed; do not erase
+unfinished architecture to make the release look complete.
 
-### Full workspace
+## Verification and pull requests
 
-```bash
-cargo build --workspace
-```
+Run the relevant checks from [development](docs/development.md). For a backend
+change, exercise both the intended path and the permission/failure boundary it
+affects. For a protocol change, use real proof/signature/persistence integration
+tests, not only mocked success. For a website or docs change, check links,
+commands, keyboard access, and the user journey it describes.
 
-## Test
+A PR should state:
 
-```bash
-cargo test --workspace
-```
+- The problem, resulting behavior, and scope.
+- The implementation or document evidence supporting its claims.
+- Commands/tests run, their results, and any skips or environmental limitations.
+- Compatibility, migrations, deployment changes, or remaining acceptance work.
 
-Proof integration tests require the pinned ZK artifacts in `zk/keys/` and the installed snarkjs CLI. Prepare them with the repository setup scripts before running the suite; a missing artifact or failed proof fails the test. Tests explicitly marked `#[ignore]` identify separate prerequisites such as real speech providers or Redis. Run those with their documented inputs and record their results separately; an ignored prerequisite is not a passing acceptance check.
+Passing compilation is not runtime acceptance. A browser test is not an installed
+desktop test. Leave the existing CI gates enabled and fix genuine failures. Do
+not attach sensitive credentials or private user content to artifacts. Maintainers
+review and merge contributions; opening a PR does not authorize a release or
+rewrite of published artifacts.
 
-To run client tests:
+## Copyright, contribution terms, and sign-off
 
-```bash
-cd client
-npm test
-```
+Annex uses the [Annex Community License 2.0](LICENSE.md). It allows commercial
+use and modifications, with a separate agreement required for resale or paid
+hosted access. It is source available, **not OSI open source**. Read
+[the license guide](docs/licensing.md) before contributing.
 
-## Code Style
+You retain copyright in your original work. By intentionally submitting it for
+inclusion, you offer it under the repository license and represent that you have
+the right to do so. Disclose any third-party code, generated material, or
+additional license obligations. Do not submit employer/client code without the
+necessary authorization, or copy material whose terms are incompatible.
 
-### Rust
+Use a `Signed-off-by: Name <email>` commit trailer (`git commit -s`) to certify
+the [Developer Certificate of Origin 1.1](https://developercertificate.org/).
+The sign-off certifies provenance and the right to contribute; it is **not** a
+copyright assignment or a license to unrelated IP. Use an address you are
+comfortable publishing in Git history. Maintainers may request a provenance
+correction before merging; this policy applies to new submissions and does not
+retroactively alter existing contributions.
 
-- Run `cargo fmt` before committing
-- Run `cargo clippy` and resolve all warnings
-- No `unsafe` without justification and a safety comment
-- No `unwrap()` in production code paths — use proper error handling
-
-### TypeScript / React
-
-- Project ESLint and Prettier configs are in `client/`
-- Run `npm run lint` to check
-
-## Architecture
-
-The workspace is organized into focused crates:
-
-```
-crates/
-├── annex-server      # HTTP/WebSocket server, route handlers, middleware
-├── annex-identity    # ZKP identity, Poseidon hashing, Merkle trees
-├── annex-vrp         # Value Resonance Protocol, trust negotiation
-├── annex-graph       # Social/presence graph, pseudonym profiles
-├── annex-channels    # Channel management, message storage
-├── annex-voice       # Native WebRTC SFU (webrtc-rs), Piper TTS, Whisper STT
-├── annex-federation  # Server-to-server protocol, attestations
-├── annex-rtx         # Recursive Thought Exchange transport
-├── annex-observe     # Observability, event streams, public APIs
-├── annex-db          # Database pool, migrations, connection management
-├── annex-types       # Shared types and data structures
-└── annex-desktop     # Tauri desktop application
-```
-
-Architecture decision records live in `docs/adr/`. Read these before proposing changes to foundational subsystems.
-
-## Submitting a Pull Request
-
-1. Fork the repository and create a branch from `main`
-2. Make your changes with clear, descriptive commits
-3. Ensure `cargo fmt`, `cargo clippy`, and `cargo test --workspace` pass
-4. Open a PR with:
-   - A description of what changed and why
-   - A test plan (how you verified the change works)
-   - Note any database migration changes
-   - Note any configuration changes
-5. Reference a GitHub issue if one exists
-
-### What gets extra review
-
-Changes to these subsystems are security-critical and receive additional scrutiny:
-
-- ZK circuits (`zk/circuits/`)
-- VRP trust negotiation (`crates/annex-vrp/`)
-- Federation protocol (`crates/annex-federation/`)
-- Authentication and authorization middleware (`crates/annex-server/src/middleware.rs`)
-- Cryptographic operations (signing, hashing, proof verification)
-- Database migrations (`crates/annex-db/`)
-
-If your PR touches these areas, flag it in the description.
-
-### What will get rejected
-
-- Changes that violate [FOUNDATIONS.md](FOUNDATIONS.md) — these are non-negotiable
-- Surveillance, telemetry, or behavioral tracking
-- Mandatory identity disclosure mechanisms
-- Centralized control or kill-switch mechanisms
-- Changes that weaken ZK proof guarantees or VRP trust evaluation
-
-Read FOUNDATIONS.md before proposing architectural changes. If a proposal conflicts with those principles, it will be rejected regardless of technical merit.
-
-## Database Migrations
-
-Migrations live in `crates/annex-db/` and run automatically on server startup. If your change requires a schema change:
-
-- Add a new migration (never modify existing ones)
-- Migrations must be idempotent (`CREATE TABLE IF NOT EXISTS`, `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`)
-- Test with a fresh database and with an existing database from the previous version
-
-## License
-
-By contributing, you agree that your contributions are licensed under the [Annex Noncommercial + Protocol-Integrity License](LICENSE.md). This is not an MIT/Apache project — read the license before contributing.
-
----
-
-Questions? Open a discussion or email contact@montgomerykuykendall.com.
+The repository license does not automatically authorize KI to relicense your
+contribution for reseller products or reuse it under different terms in another
+project. If broader commercial/relicensing rights are needed, a separate written
+agreement with the rightsholder is required. Existing agreements and third-party
+licenses remain in force; no blanket ownership assignment is inferred from a PR.
