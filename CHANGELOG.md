@@ -4,12 +4,22 @@ Notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 `release_v0.1.md` preserves the historical February 2026 preparation notes.
-Version 0.1.0 has not previously been published; the subsequent fixes belong
-to this first release candidate, rather than a separate later release.
+Version 0.1.0 was published on October 15, 2026. Later corrections ship as
+new versions; published installers are not silently replaced.
 
 ## [Unreleased]
 
-The first release candidate is consolidated under 0.1.0 below.
+No changes yet.
+
+## [0.1.1] — native packaging correction
+
+- Seal macOS app bundles with an explicit ad-hoc code signature on both
+  architectures, including their resources. Fail release upload if the bundle
+  or any embedded Mach-O executable or library fails strict verification.
+- Ad-hoc signatures establish bundle integrity, not Apple Developer ID or
+  notarization. Those credentials are not configured for this release.
+- Add native macOS desktop and public-site acceptance infrastructure using
+  actual published installers and XCTest UI sessions.
 
 ## [0.1.0] — release candidate
 

@@ -732,6 +732,18 @@ jobs:
           TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
           ANNEX_UPDATER_ENDPOINT: ${{ vars.ANNEX_UPDATER_ENDPOINT || 'https://github.com/seismicgear/annex/releases/latest/download/latest.json' }}
 
+      - name: Verify sealed macOS application and embedded code
+        run: |
+          python3 scripts/verify-macos-bundle.py "target/${{ matrix.target }}/release/bundle/macos/Annex.app" \
+            --output "target/${{ matrix.target }}/release/macos-signature-verification.json"
+
+      - name: Preserve macOS signature verification
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-signature-${{ matrix.arch }}
+          path: target/${{ matrix.target }}/release/macos-signature-verification.json
+          if-no-files-found: error
+
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
