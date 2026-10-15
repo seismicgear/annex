@@ -1,6 +1,17 @@
 name: Reassemble verified release artifacts
 
 on:
+  workflow_call:
+    inputs:
+      build_run:
+        required: true
+        type: string
+      subject_commit:
+        required: true
+        type: string
+    secrets:
+      TAURI_SIGNING_PUBLIC_KEY:
+        required: true
   workflow_dispatch:
     inputs:
       build_run:

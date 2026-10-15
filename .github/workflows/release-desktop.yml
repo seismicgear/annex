@@ -22,6 +22,14 @@ on:
         options:
           - "false"
           - "true"
+      reassemble_run:
+        description: Optional completed build run to recover after upload failure; does not rebuild or publish
+        required: false
+        default: ''
+      reassemble_source:
+        description: Exact source SHA for read-only recovery; required with reassemble_run
+        required: false
+        default: ''
 
 env:
   CARGO_TERM_COLOR: always
@@ -31,6 +39,17 @@ env:
   ANNEX_UNSIGNED_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.unsigned_dry_run || 'false' }}
 
 jobs:
+  reassemble:
+    if: ${{ inputs.reassemble_run != '' }}
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/reassemble-verified-release.yml
+    with:
+      build_run: ${{ inputs.reassemble_run }}
+      subject_commit: ${{ inputs.reassemble_source }}
+    secrets:
+      TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
   # ── Cheap gates, before 30-60 minutes of Tauri builds ─────────────────────
   #
   # Both of these were written, both pass, and both ran in no release path.
@@ -43,6 +62,7 @@ jobs:
   # tag path; a conditional gate is how that asymmetry comes back somewhere new.
   preflight:
     name: Pre-flight gates
+    if: ${{ !inputs.reassemble_run }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
