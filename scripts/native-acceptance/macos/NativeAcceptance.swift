@@ -11,11 +11,16 @@ final class NativeAcceptance: XCTestCase {
 
     override func setUpWithError() throws { continueAfterFailure = false }
     override func tearDownWithError() throws {
+        try persistEvents()
         // XCTest assertion failures can skip Swift defer. Preserve both apps here.
         if safari.state != .notRunning { capture(safari, "final-safari-" + phase) }
         if annex.state != .notRunning { capture(annex, "final-annex-" + phase) }
+        try persistEvents()
+    }
+
+    func persistEvents() throws {
         try JSONSerialization.data(withJSONObject: events, options: [.prettyPrinted, .sortedKeys])
-            .write(to: evidence.appendingPathComponent("ui-events.json"))
+            .write(to: evidence.appendingPathComponent("ui-events.json"), options: .atomic)
     }
 
     func capture(_ app: XCUIApplication, _ name: String) {
@@ -26,8 +31,11 @@ final class NativeAcceptance: XCTestCase {
         screenshot.name = name; screenshot.lifetime = .keepAlways; add(screenshot)
         let hierarchy = XCTAttachment(string: hierarchyText)
         hierarchy.name = name + "-accessibility"; hierarchy.lifetime = .keepAlways; add(hierarchy)
+        let bundle = app === safari ? "com.apple.Safari" : "com.annex.desktop"
         events.append(["phase": name, "at": ISO8601DateFormatter().string(from: Date()),
-                       "application": app.label, "state": app.state.rawValue])
+                       "application": bundle,
+                       "foreground": NSRunningApplication.runningApplications(withBundleIdentifier: bundle).first?.isActive ?? false])
+        do { try persistEvents() } catch { XCTFail("Could not preserve actual UI events: \(error)") }
     }
 
     func click(_ app: XCUIApplication, _ title: String, timeout: TimeInterval = 60) {
@@ -60,8 +68,28 @@ final class NativeAcceptance: XCTestCase {
     }
 
     func textExists(_ app: XCUIApplication, _ text: String, timeout: TimeInterval = 30) -> Bool {
-        let expected = NSPredicate { _, _ in app.debugDescription.contains(text) }
-        return XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: expected, object: nil)], timeout: timeout) == .completed
+        // XCTest abbreviates text values in debugDescription, even when the
+        // complete address is visibly rendered. Read actual accessibility
+        // attributes from the front window instead of that diagnostic string.
+        let expected = NSPredicate { _, _ in
+            app.windows.firstMatch.descendants(matching: .staticText).allElementsBoundByIndex.contains {
+                $0.label.contains(text) || ($0.value as? String)?.contains(text) == true
+            }
+        }
+        let found = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: expected, object: nil)], timeout: timeout) == .completed
+        if found {
+            events.append(["phase": "exact-ui-text-verified", "text": text,
+                           "application": app === safari ? "Safari" : "Annex"])
+        }
+        return found
+    }
+
+    func focusSafariPage(_ title: String) {
+        safari.activate()
+        safari.menuBars.menuBarItems["Window"].firstMatch.click()
+        let page = safari.menuItems[title].firstMatch
+        XCTAssertTrue(page.waitForExistence(timeout: 10))
+        page.click()
     }
 
     func selectGeneral(_ app: XCUIApplication) {
@@ -167,11 +195,10 @@ final class NativeAcceptance: XCTestCase {
         XCTAssertTrue(textExists(annex, message))
         capture(annex, "native-recipient-message-sent")
 
-        safari.activate()
-        safari.typeKey("1", modifierFlags: .command)
+        focusSafariPage("Annex")
         XCTAssertTrue(textExists(safari, message, timeout: 60))
         capture(safari, "independent-founder-received-native-message")
-        safari.typeKey("2", modifierFlags: .command)
+        focusSafariPage(label + " — Annex")
         XCTAssertTrue(safari.buttons["Open in Annex"].waitForExistence(timeout: 30))
         openFromPublicPage()
         XCTAssertTrue(annex.buttons["Join invite server"].waitForExistence(timeout: 30))
