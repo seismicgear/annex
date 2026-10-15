@@ -804,6 +804,7 @@ jobs:
           body_path: RELEASE_NOTES.md
           generate_release_notes: true
           tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('dry-run-{0}', github.sha) }}
+          target_commitish: ${{ github.sha }}
           name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('Dry run {0}', github.sha) }}
           # Names, actual signatures, download catalog and final checksums are
           # generated together from the required native outputs above.
