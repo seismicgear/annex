@@ -26,14 +26,13 @@ mandatory: the unpatched registry source must never be accepted.
 
 ## Maintenance findings requiring individual disposition
 
-These are upstream maintenance-status notices. None of the four advisories
+These are upstream maintenance-status notices. None of the three retained advisories
 identifies an exploitable code defect. Any disposition is limited to the exact
 package version, direct parent versions, enabled features, and review period;
 new advisories remain blocking. Review expires 2027-01-13.
 
 | Advisory and package | Exact direct parents | Exposure and replacement assessment |
 | --- | --- | --- |
-| [RUSTSEC-2025-0141](https://rustsec.org/advisories/RUSTSEC-2025-0141.html), bincode 1.3.3 | webrtc-dtls 0.10.0 | DTLS state snapshot serialization, not the DTLS wire parser. The only production uses in this crate are `State::marshal_binary` / `unmarshal_binary`; neither Annex nor webrtc 0.11.0 calls these APIs. The advisory records the maintainers' assessment that 1.3.3 is complete. Latest stable webrtc-dtls 0.12.0 still depends on bincode ^1, so a parent bump does not remove it. Replacing the state format requires an explicit migration and DTLS state round-trip tests. |
 | [RUSTSEC-2024-0388](https://rustsec.org/advisories/RUSTSEC-2024-0388.html), derivative 2.2.0 | ark-crypto-primitives 0.5.0 | Procedural derive macro executed at compilation; not a runtime parser. Enabled feature is `use_core`. Latest ark-crypto-primitives 0.6.0 also depends on derivative ^2. A maintained derive replacement requires upstream-equivalent generated trait implementations and proof-system regression tests. |
 | [RUSTSEC-2024-0436](https://rustsec.org/advisories/RUSTSEC-2024-0436.html), paste 1.0.15 | ark-ff 0.5.0; tokenizers 0.23.2 | Procedural token-concatenation macro executed at compilation; no enabled features. Tokenizers 0.23.2 is the current stable release and retains paste. `pastey` is a maintained candidate, requiring parent manifest changes and macro expansion compatibility tests. An Ark family change also affects proof interoperability and cannot be presented as a trivial package substitution. |
 | [RUSTSEC-2024-0370](https://rustsec.org/advisories/RUSTSEC-2024-0370.html), proc-macro-error 1.0.4 | glib-macros 0.18.5; gtk3-macros 0.18.2 | Build-time diagnostics used by the GTK procedural macros. Features: default, syn, syn-error. GTK3-compatible published parents still retain it. Upstream removal commits are [GLib c74a40a](https://github.com/gtk-rs/gtk-rs-core/commit/c74a40a16b23a1b9c8e67842d32d02bc187f551d) and [GTK 4578225](https://github.com/gtk-rs/gtk3-rs/commit/45782251fa35ecf8bfe759ffceb3db32659a0c97); applying these requires separate macro diagnostic and generated-code regression work. |
@@ -49,4 +48,14 @@ webpki-roots 1.0.6 contains certificate-root data under
 Section 2.1 permits sharing with the agreement text. The exact crate LICENSE
 text is included in `../THIRD_PARTY_NOTICES.md`, which desktop bundles and the
 server container ship. The license exception is limited to webpki-roots 1.0.6;
-Annex's own noncommercial license is unchanged.
+The v0.1.0 binaries retain their original bundled license. The public-readiness pass adopts Annex Community License 2.0 on main with an additional KI-owned-code grant for v0.1.0; see [licensing](licensing.md).
+
+## Post-release WebRTC integration (October 15, 2026)
+
+The v0.1.0 tag retains its original review and binary graph. On `main`, the
+webrtc 0.17.2 migration removes bincode entirely from locked all-features metadata.
+The obsolete RUSTSEC-2025-0141 exception and review entry are therefore removed;
+no replacement ignore is added. The three remaining reviewed packages keep the
+same versions, checksums, features, and parents, validated by the existing gate.
+The original webrtc-dtls 0.10.0 reachability assessment described the release
+stack, not the new dtls 0.17.2 graph.

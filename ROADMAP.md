@@ -1,5 +1,12 @@
 # Roadmap
 
+> **v0.1.0 is published (October 15, 2026).** This roadmap preserves the full
+> architecture and remaining acceptance criteria. COMPLETE means the phase's
+> recorded criteria, not an independent security audit or universal platform
+> support. Current user-facing status is in [README](README.md) and the
+> [release evidence ledger](docs/RELEASE_READINESS.md). Phase 12 is reopened where
+> earlier checked claims lacked release-bound evidence.
+
 **The single source of truth for what's built, what's in progress, and what's next.**
 
 This document is the project's canonical state. If you are a contributor — human or AI — you read this before touching code. You do not start work on a phase that isn't marked `IN PROGRESS` or `NEXT`. You do not declare a phase complete unless every completion criterion is met. You do not skip phases. You do not reorder phases. You do not "start on the easy parts" of a later phase while an earlier phase has unmet criteria.
@@ -72,7 +79,7 @@ Phase 9: RTX Knowledge Exchange ........ COMPLETE (relay content-bound vs
                                                    exist at all)
 Phase 10: Observability ................ COMPLETE
 Phase 11: Client ....................... COMPLETE
-Phase 12: Hardening & Audit ............ COMPLETE
+Phase 12: Hardening & Audit ............ PARTIAL
 ```
 
 > **Reality check (2026-06-19):** several phases above were previously marked
@@ -873,9 +880,7 @@ Phase 6 is **COMPLETE** when:
 
 ## Phase 7: Voice Infrastructure
 
-**Status**: `PARTIAL` — no GGML model is bundled; `scripts/setup-stt.sh` installs one
-with a pinned digest. The transcription path itself was repaired on 2026-09-15; before
-that it was wired end to end and produced no text in any deployment (see 7.5).
+**Status**: `PARTIAL` — v0.1.0 desktop packages now bundle pinned Piper, voices, native Whisper, and the `base.en` model. The standalone server archive does not bundle speech resources, and the container requires a configured GGML model. Full provider/platform and real-network voice acceptance remains incomplete. The transcription path was repaired on 2026-09-15 (see 7.5).
 **Prerequisites**: Phase 4 `COMPLETE`, Phase 6 `COMPLETE`
 **Estimated scope**: native WebRTC SFU, voice LLM TTS service, STT service, agent voice pipeline, voice profiles
 
@@ -1294,18 +1299,18 @@ Phase 11 is **COMPLETE** when:
 
 ## Phase 12: Hardening & Audit
 
-**Status**: `COMPLETE`
+**Status**: `PARTIAL` — release builds, automated security/functional gates, browser UI checks, and published Linux native acceptance have evidence. Independent external review, the stated scale/latency targets, a seven-day load soak, complete native Windows/macOS acceptance, and installed updater qualification do not yet have sufficient release-bound evidence.
 **Prerequisites**: All previous phases `COMPLETE`
 **Estimated scope**: Security audit, performance testing, ZKP circuit audit, federation stress test, documentation final pass
 
 ### What This Phase Produces
 
-A system that is ready for public deployment. Not "ready for beta." Ready for people to trust with their communities.
+The qualification needed for confident public operation at the stated scale. Publishing v0.1.0 does not itself satisfy these audit and performance criteria. See [release evidence](docs/RELEASE_READINESS.md) for the completed, bounded acceptance.
 
 ### Steps
 
 #### 12.1 — ZKP circuit audit
-- [x] External review of all Circom circuits for soundness
+- [ ] External review of all Circom circuits for soundness
 - [x] Verify that invalid witnesses cannot produce valid proofs
 - [x] Verify trusted setup is reproducible
 - [x] Document any assumptions or limitations
@@ -1322,11 +1327,11 @@ A system that is ready for public deployment. Not "ready for beta." Ready for pe
 - [x] Attempt to correlate pseudonyms across servers without opt-in linkage
 
 #### 12.4 — Performance testing
-- [x] WebSocket throughput: target 10K concurrent connections per server
-- [x] Message delivery latency: target < 100ms p95 for text
-- [x] VRP handshake latency: target < 500ms including proof verification
-- [x] Merkle tree insert + proof: target < 50ms for 1M-leaf tree
-- [x] Voice pipeline latency: target < 2s from text intent to audible speech
+- [ ] WebSocket throughput: target 10K concurrent connections per server
+- [ ] Message delivery latency: target < 100ms p95 for text
+- [ ] VRP handshake latency: target < 500ms including proof verification
+- [ ] Merkle tree insert + proof: target < 50ms for 1M-leaf tree
+- [ ] Voice pipeline latency: target < 2s from text intent to audible speech
 
 #### 12.5 — Documentation final pass
 - [x] README accurate to implementation
@@ -1346,10 +1351,10 @@ A system that is ready for public deployment. Not "ready for beta." Ready for pe
 
 Phase 12 is **COMPLETE** when:
 
-- [x] All audits pass or findings are resolved
-- [x] Performance targets are met or documented with justification for misses
+- [ ] All audits pass or findings are resolved
+- [ ] Performance targets are met or documented with justification for misses
 - [x] A new operator can deploy Annex from the documentation alone without contacting the developers
-- [x] The system has run continuously for 7 days under load without intervention
+- [ ] The system has run continuously for 7 days under load without intervention
 
 ---
 
@@ -1359,6 +1364,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-10-15 | Public v0.1.0 readiness reconciliation: Phase 7 remains PARTIAL, with desktop speech resources now bundled and provider/platform acceptance still open. Phase 12 reopened to PARTIAL: external review, scale/latency targets, seven-day soak, Windows/macOS native acceptance, and installed updater qualification lack sufficient release-bound evidence. Earlier dated completion claims below remain historical, not current status. No architectural criterion removed. |
 | 2026-09-15 | Phase 9 `COMPLETE`. Multi-hop RTX relay: a signed hop chain where each hop covers the previous hop's digest, an origin attestation over a scope-invariant content digest plus a reasoning-chain commitment, `rtx_max_hops` / `RTX_HOP_CEILING` as a TTL, and loop prevention that can see more than one hop. Before this, `relay_path` was reset to one entry on every send and nothing re-relayed, so multi-hop did not exist and the two items 9.4 recorded as done were guarding a path no bundle could take. Also: the RTX relay's SSRF gate ignored `allow_private_peer_addresses` while the message relay honoured it, so an operator who set that flag got messages relayed and RTX bundles silently dropped at the same peer. |
 | 2026-09-15 | Phase 6 `COMPLETE`. Alignment is enforced at action time (`services/agent_policy.rs`), a `Conflict` verdict revokes the agent's sessions in the same transaction that deactivates it, and the WebSocket send handler stopped reporting every refusal as "internal error". The phase's stated gap named the capability contract; the contract was never an action permission set, and the thing actually missing was alignment. |
 | 2026-09-15 | Phase 7.5 (`STT service`) REOPENED and repaired. The path was wired end to end and transcribed nothing: headerless 48 kHz PCM to a loader that requires a 16 kHz WAV, one process per 20 ms frame, and the resulting error logged at DEBUG. Audio conversion, per-speaker windowing, `SttReadiness`/`stt_detail`, and a Dockerfile that copies `whisper-cli` rather than its deprecation stub. |

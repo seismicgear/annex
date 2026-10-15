@@ -44,7 +44,7 @@ jobs:
     env:
       RUSTFLAGS: "-D warnings"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install native speech codec build tools
         run: sudo apt-get update && sudo apt-get install -y cmake build-essential libclang-dev
       - uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea # 1.96.0
@@ -63,7 +63,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Setup Node.js (for ZK key generation)
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: 'npm'
@@ -162,7 +162,7 @@ jobs:
     name: Build Desktop (Linux, required)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea # 1.96.0
         with:
           components: clippy, rustfmt
@@ -208,7 +208,7 @@ jobs:
           fi
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: 'npm'
@@ -299,7 +299,7 @@ jobs:
     name: Build Desktop (Windows, required)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea # 1.96.0
       - name: Verify native codec build tools
         run: cmake --version
@@ -316,7 +316,7 @@ jobs:
           key: windows-desktop
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: 'npm'
@@ -407,7 +407,7 @@ jobs:
     runs-on: macos-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea # 1.96.0
       - name: Verify native codec build tools
         run: cmake --version
@@ -424,7 +424,7 @@ jobs:
           key: macos-desktop
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: 'npm'
@@ -463,8 +463,8 @@ jobs:
       run:
         working-directory: client
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: 'npm'
@@ -495,7 +495,7 @@ jobs:
     env:
       ANNEX_SMOKE_PORT: 7321
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea # 1.96.0
       - name: Verify native codec build tools
         run: cmake --version
@@ -512,7 +512,7 @@ jobs:
           key: smoke-server-linux
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: 'npm'
@@ -566,7 +566,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: check-server
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea # 1.96.0
       - name: Verify native codec build tools
         run: cmake --version
@@ -583,7 +583,7 @@ jobs:
           key: ui-audit
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: 'npm'
@@ -716,7 +716,7 @@ jobs:
     name: Supply chain (advisories, licences, sources)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea # 1.96.0
@@ -741,7 +741,7 @@ jobs:
           sudo apt-get update && sudo apt-get install -y libglib2.0-dev pkg-config
           bash scripts/check-dependency-security.sh
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -807,7 +807,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: check-desktop-linux
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea # 1.96.0
         with:
           components: clippy
@@ -840,7 +840,7 @@ jobs:
             xvfb
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: 'npm'
@@ -888,7 +888,7 @@ jobs:
     env:
       ANNEX_SMOKE_PORT: 7321
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea # 1.96.0
       - name: Verify native codec build tools
         run: cmake --version
@@ -905,7 +905,7 @@ jobs:
           key: smoke-server-windows
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: 'npm'

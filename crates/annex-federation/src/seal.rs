@@ -24,7 +24,7 @@ use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use hkdf::Hkdf;
 use rand::RngCore;
-use sha2::{Digest, Sha256, Sha512};
+use sha2::{Digest, Sha512};
 use x25519_dalek::{PublicKey as XPublic, StaticSecret as XSecret};
 
 /// Domain-separation label for federation signaling seals (Ed25519 recipients).
@@ -76,7 +76,7 @@ fn derive_key(shared: &[u8], epk: &[u8; 32], recipient_pub: &[u8; 32], info: &[u
     let mut salt = [0u8; 64];
     salt[..32].copy_from_slice(epk);
     salt[32..].copy_from_slice(recipient_pub);
-    let hk = Hkdf::<Sha256>::new(Some(&salt), shared);
+    let hk = Hkdf::<sha2_11::Sha256>::new(Some(&salt), shared);
     let mut okm = [0u8; 32];
     hk.expand(info, &mut okm)
         .expect("hkdf expand of 32 bytes never fails");

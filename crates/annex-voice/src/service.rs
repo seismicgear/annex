@@ -1243,7 +1243,6 @@ impl VoiceService {
                 urls: s.urls.clone(),
                 username: s.username.clone(),
                 credential: s.credential.clone(),
-                ..Default::default()
             })
             .collect();
 
