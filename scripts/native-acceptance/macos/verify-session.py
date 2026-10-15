@@ -8,6 +8,7 @@ result = json.loads((root / 'native-invite-result.json').read_text())
 fixture = json.loads((root / 'fixture.json').read_text())
 download = json.loads((root / 'published-dmg-verification.json').read_text())
 signature = json.loads((root / 'installed-signature-verification.json').read_text())
+compilation = json.loads((root / 'destination-compilation.json').read_text())
 observations = [json.loads(line) for line in (root / 'database-observations.jsonl').read_text().splitlines()]
 http = [json.loads(line) for line in (root / 'http-observations.jsonl').read_text().splitlines()]
 events = json.loads((root / 'ui-events.json').read_text())
@@ -17,6 +18,8 @@ assert not result['native_app_launched_directly_by_test']
 assert result['server_slug'] == fixture['slug']
 assert result['destination'] == fixture['origin']
 assert fixture['source_commit'] == download['source_commit']
+assert compilation['source_commit'] == fixture['source_commit']
+assert compilation['sha256'] == fixture['server_sha256']
 assert signature['strict_bundle_verification']
 assert signature['version'] == download['version']
 assert observations[0]['admitted_identities'] == []

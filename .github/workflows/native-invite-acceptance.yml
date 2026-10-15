@@ -60,17 +60,36 @@ jobs:
           key: ${{ matrix.target }}-native-acceptance
           workspaces: subject -> target
           cache-on-failure: true
+      - name: Restore exact-source compiled destination
+        id: destination-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .native-destination-cache
+          key: native-destination-v1-${{ matrix.target }}-${{ env.SUBJECT_COMMIT }}
       - name: Build actual source-bound native destination and founder client
-        working-directory: subject
         run: |
           set -euo pipefail
+          cd subject
           node scripts/verify-libclang.mjs
           node zk/scripts/install-ceremony.js
           node zk/scripts/verify-artifacts.js --all
           node scripts/prepare-zk-dev.js
           npm --prefix client ci
           npm --prefix client run build
-          cargo build --release --locked --target ${{ matrix.target }} -p annex-server
+          if [ '${{ steps.destination-cache.outputs.cache-hit }}' = true ]; then
+            cd ..
+            python3 scripts/native-acceptance/macos/destination-cache.py restore '${{ matrix.target }}'
+          else
+            cargo build --release --locked --target ${{ matrix.target }} -p annex-server
+            cd ..
+            python3 scripts/native-acceptance/macos/destination-cache.py record '${{ matrix.target }}'
+          fi
+      - name: Preserve exact-source compiled destination before UI testing
+        if: steps.destination-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .native-destination-cache
+          key: native-destination-v1-${{ matrix.target }}-${{ env.SUBJECT_COMMIT }}
       - name: Retrieve and install exact release DMG
         env:
           GH_TOKEN: ${{ github.token }}
