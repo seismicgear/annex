@@ -195,7 +195,7 @@ jobs:
           sha256sum "annex-server-${version}-x86_64-unknown-linux-gnu.tar.gz"
 
       - name: Upload the server tarball
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: server-linux-x86_64
           path: annex-server-*.tar.gz
@@ -470,7 +470,7 @@ jobs:
           python3 scripts/verify-linux-protocol.py --deb target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb --appimage target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
 
       - name: Upload Linux artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: annex-linux-x86_64
           path: |
@@ -579,7 +579,7 @@ jobs:
 
       - name: Preserve Windows installer compilation diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-installer-compilation
           path: |
@@ -607,14 +607,14 @@ jobs:
 
       - name: Preserve Windows prerequisite regression evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-prerequisite-regression
           path: C:/AnnexWebViewFixture/evidence/
           if-no-files-found: warn
 
       - name: Upload Windows artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: annex-windows-x86_64
           path: |
@@ -733,7 +733,7 @@ jobs:
           ANNEX_UPDATER_ENDPOINT: ${{ vars.ANNEX_UPDATER_ENDPOINT || 'https://github.com/seismicgear/annex/releases/latest/download/latest.json' }}
 
       - name: Upload macOS artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: annex-macos-${{ matrix.arch }}
           path: |
