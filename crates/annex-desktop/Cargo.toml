@@ -56,4 +56,4 @@ windows-core = "0.62"
 [target.'cfg(target_os = "linux")'.dependencies]
 # deep-link 2.6.2 constructs the two-field ParseOption from this release.
 # rust-ini 0.21.2+ added public fields without a compatible struct initializer.
-rust-ini = "=0.21.1"
+rust-ini = "=0.21.3"
