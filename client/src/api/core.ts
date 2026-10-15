@@ -511,24 +511,35 @@ export async function fetchAuthenticated(url: string, init?: RequestInit): Promi
   return fetch(url, { ...init, headers });
 }
 
-export async function request<T>(path: string, options?: RequestInit): Promise<T> {
+export async function request<T>(path: string, options?: RequestInit, timeoutMs?: number): Promise<T> {
   const url = _context.baseUrl ? `${_context.baseUrl}${path}` : path;
   const method = options?.method?.toUpperCase() ?? 'GET';
   // Attachment grants only authorize reading already-visible history.
   const writes = method !== 'GET' && method !== 'HEAD' && path !== '/api/uploads/grant';
   const operation = writes && _context.pseudonymId
     ? beginLiveOperation(_context.baseUrl, _context.pseudonymId) : null;
+  const deadline = timeoutMs ? new AbortController() : null;
+  const timer = deadline ? setTimeout(() => deadline.abort(), timeoutMs) : undefined;
+  const signals = [options?.signal, operation?.signal, deadline?.signal].filter((s): s is AbortSignal => !!s);
   try {
     const res = await fetchAuthenticated(url, {
       ...options,
-      ...(operation ? { signal: options?.signal ? AbortSignal.any([options.signal, operation.signal]) : operation.signal } : {}),
+      ...(signals.length ? { signal: signals.length === 1 ? signals[0] : AbortSignal.any(signals) } : {}),
       headers: jsonHeaders(options),
     });
     if (!res.ok) await throwApiError(res);
     const result = await res.json() as T;
     operation?.signal.throwIfAborted();
     return result;
-  } finally { operation?.release(); }
+  } catch (error) {
+    if (deadline?.signal.aborted && !options?.signal?.aborted && !operation?.signal.aborted) {
+      throw new Error(`The server did not finish responding within ${Math.round(timeoutMs! / 1000)} seconds. Please retry.`);
+    }
+    throw error;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    operation?.release();
+  }
 }
 
 /**

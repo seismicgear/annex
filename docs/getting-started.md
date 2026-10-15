@@ -64,8 +64,10 @@ including an agent, can read what you intentionally share with it.
 ## Know the boundaries
 
 End-to-end encryption is a channel option, not a blanket property of all traffic.
-Read [Encryption](ENCRYPTION.md) before choosing it. The first release has the
-strongest native acceptance evidence on Linux. Full Windows/macOS invitation
-and message journeys, updater installation, broader network conditions, and
-all speech-provider combinations still need qualification. See
+Read [Encryption](ENCRYPTION.md) before choosing it. Published v0.1.1 Mac
+installers passed invitation, join, and messaging checks on both architectures;
+the earlier Linux DEB/AppImage evidence is bound to v0.1.0. Full v0.1.1
+Windows/Linux journeys, browser-download Gatekeeper acceptance, updater
+installation, broader networks, and all speech-provider combinations still need
+qualification. See
 [Release readiness](RELEASE_READINESS.md) for evidence and remaining work.

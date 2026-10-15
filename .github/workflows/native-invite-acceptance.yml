@@ -1,0 +1,176 @@
+name: Published native invite acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: Published app journey to exercise
+        required: false
+        default: invite
+        type: choice
+        options: [invite, host]
+      release_tag:
+        description: Exact release whose installer will be tested
+        required: true
+      subject_commit:
+        description: Exact source commit recorded in that release's downloads.json
+        required: true
+      candidate_run:
+        description: Optional exact signed build run for unpublished candidate testing; leave empty for public installer acceptance
+        required: false
+        default: ''
+      architecture:
+        description: Native architecture to exercise
+        required: false
+        default: both
+        type: choice
+        options: [both, aarch64, x86_64]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  published-host:
+    if: inputs.scenario == 'host'
+    uses: ./.github/workflows/native-host-acceptance.yml
+    with:
+      release_tag: ${{ inputs.release_tag }}
+      subject_commit: ${{ inputs.subject_commit }}
+  macos-session:
+    if: inputs.scenario != 'host'
+    name: Native session (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include: >-
+          ${{ fromJSON(inputs.architecture == 'aarch64' &&
+          '[{"os":"macos-15","arch":"aarch64","target":"aarch64-apple-darwin"}]' ||
+          inputs.architecture == 'x86_64' &&
+          '[{"os":"macos-15-intel","arch":"x86_64","target":"x86_64-apple-darwin"}]' ||
+          '[{"os":"macos-15","arch":"aarch64","target":"aarch64-apple-darwin"},{"os":"macos-15-intel","arch":"x86_64","target":"x86_64-apple-darwin"}]') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      SUBJECT_COMMIT: ${{ inputs.subject_commit }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      CANDIDATE_RUN: ${{ inputs.candidate_run }}
+      CARGO_BUILD_JOBS: 2
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Verify actual native TLS fixture before compiling
+        run: python3 scripts/native-acceptance/macos/prepare-fixture.py --verify-tls
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.SUBJECT_COMMIT }}
+          path: subject
+          persist-credentials: false
+      - name: Record actual desktop environment
+        run: |
+          mkdir -p native-evidence
+          sw_vers > native-evidence/macos-version.txt
+          uname -m > native-evidence/architecture.txt
+          stat -f '%Su' /dev/console > native-evidence/console-user.txt
+          xcodebuild -version > native-evidence/xcode-version.txt
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: subject/client/package-lock.json
+      - uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: ${{ matrix.target }}-native-acceptance
+          workspaces: subject -> target
+          cache-on-failure: true
+      - name: Restore exact-source compiled destination
+        id: destination-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .native-destination-cache
+          key: native-destination-v1-${{ matrix.target }}-${{ env.SUBJECT_COMMIT }}
+      - name: Build actual source-bound native destination and founder client
+        run: |
+          set -euo pipefail
+          cd subject
+          node scripts/verify-libclang.mjs
+          node zk/scripts/install-ceremony.js
+          node zk/scripts/verify-artifacts.js --all
+          node scripts/prepare-zk-dev.js
+          npm --prefix client ci
+          npm --prefix client run build
+          if [ '${{ steps.destination-cache.outputs.cache-hit }}' = true ]; then
+            cd ..
+            python3 scripts/native-acceptance/macos/destination-cache.py restore '${{ matrix.target }}'
+          else
+            cargo build --release --locked --target ${{ matrix.target }} -p annex-server
+            cd ..
+            python3 scripts/native-acceptance/macos/destination-cache.py record '${{ matrix.target }}'
+          fi
+      - name: Preserve exact-source compiled destination before UI testing
+        if: steps.destination-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .native-destination-cache
+          key: native-destination-v1-${{ matrix.target }}-${{ env.SUBJECT_COMMIT }}
+      - name: Retrieve and install exact release DMG
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          asset="annex-desktop-macos-${ASSET_ARCH}.dmg"
+          # Destination compilation may finish while the exact candidate's
+          # other native platforms are still building. Never substitute assets.
+          if [ -n "$CANDIDATE_RUN" ]; then
+            python3 scripts/native-acceptance/macos/download-candidate.py "$RUNNER_TEMP/release" "$ASSET_ARCH"
+          else
+            python3 scripts/native-acceptance/macos/wait-release.py "$ASSET_ARCH"
+            gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --pattern downloads.json --pattern SHA256SUMS --dir "$RUNNER_TEMP/release"
+            python3 scripts/native-acceptance/macos/verify-download.py "$RUNNER_TEMP/release" "$ASSET_ARCH"
+          fi
+          hdiutil attach -readonly -nobrowse -mountpoint "$RUNNER_TEMP/annex-dmg" "$RUNNER_TEMP/release/$asset" | tee native-evidence/dmg-mount.txt
+          test ! -e /Applications/Annex.app
+          ditto "$RUNNER_TEMP/annex-dmg/Annex.app" /Applications/Annex.app
+          hdiutil detach "$RUNNER_TEMP/annex-dmg"
+          shasum -a 256 /Applications/Annex.app/Contents/MacOS/* > native-evidence/installed-executable-sha256.txt
+          plutil -p /Applications/Annex.app/Contents/Info.plist > native-evidence/installed-info-plist.txt
+      - name: Verify published app signature
+        id: signature
+        continue-on-error: true
+        run: python3 scripts/verify-macos-bundle.py /Applications/Annex.app --output native-evidence/installed-signature-verification.json 2> native-evidence/installed-signature-check.txt
+      - name: Prepare isolated HTTPS destination
+        run: python3 scripts/native-acceptance/macos/prepare-fixture.py subject subject/target/${{ matrix.target }}/release/annex-server
+      - name: Exercise public invite and real native admission
+        run: |
+          set -euo pipefail
+          python3 scripts/native-acceptance/macos/make-project.py
+          xcodebuild -project scripts/native-acceptance/macos/NativeAcceptance.xcodeproj -scheme NativeAcceptance -destination 'platform=macOS' -resultBundlePath native-evidence/native-session.xcresult test | tee native-evidence/xcode-test.log
+      - name: Export native test screenshots
+        if: always()
+        run: |
+          if test -d native-evidence/native-session.xcresult; then
+            xcrun xcresulttool export attachments --path native-evidence/native-session.xcresult --output-path native-evidence/attachments
+            python3 scripts/native-acceptance/macos/extract-ui-receipts.py
+          fi
+      - name: Require the complete evidence and signature gates
+        if: always()
+        env:
+          SIGNATURE_OUTCOME: ${{ steps.signature.outcome }}
+        run: |
+          test "$SIGNATURE_OUTCOME" = success
+          python3 scripts/native-acceptance/macos/verify-session.py
+      - name: Preserve actual native evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-session-macos-${{ matrix.arch }}
+          path: |
+            native-evidence/
+            !native-evidence/*private*
+          if-no-files-found: error
+          retention-days: 14

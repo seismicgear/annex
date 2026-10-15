@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import { StartupModeSelector } from './StartupModeSelector';
 import { TAURI_DESKTOP_ORIGINS } from '@/lib/tauri';
 
@@ -81,6 +81,40 @@ describe('StartupModeSelector', () => {
     });
     fetchWithTimeoutMock.mockResolvedValue({ ok: false, status: 503 } as Response);
     global.fetch = vi.fn(async () => ({ ok: false, status: 503 } as Response));
+  });
+
+  it('keeps a manual Host startup in progress when the parent elapsed timer renders again', async () => {
+    getStartupModeMock.mockResolvedValue(null);
+    let finishServer!: (url: string) => void;
+    startEmbeddedServerMock.mockImplementationOnce(() => new Promise(resolve => { finishServer = resolve; }));
+    const firstReady = vi.fn();
+    const latestReady = vi.fn();
+    const view = render(<StartupModeSelector onReady={firstReady} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Start Hosting' }));
+    await screen.findByText('Starting server...');
+
+    // StartupGate passes an inline callback and renders on each elapsed tick.
+    await act(async () => { view.rerender(<StartupModeSelector onReady={latestReady} />); });
+    expect(screen.getByText('Starting server...')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Start Hosting' })).not.toBeInTheDocument();
+    expect(getStartupModeMock).toHaveBeenCalledTimes(1);
+    await act(async () => { finishServer('http://127.0.0.1:9999'); });
+    await waitFor(() => expect(latestReady).toHaveBeenCalledTimes(1));
+    expect(firstReady).not.toHaveBeenCalled();
+    expect(startEmbeddedServerMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not start a second auto-host operation on a parent render', async () => {
+    getStartupModeMock.mockResolvedValue({ startup_mode: { mode: 'host' } });
+    let finishServer!: (url: string) => void;
+    startEmbeddedServerMock.mockImplementationOnce(() => new Promise(resolve => { finishServer = resolve; }));
+    const ready = vi.fn();
+    const view = render(<StartupModeSelector onReady={vi.fn()} />);
+    await screen.findByText('Starting server...');
+    await act(async () => { view.rerender(<StartupModeSelector onReady={ready} />); });
+    expect(startEmbeddedServerMock).toHaveBeenCalledTimes(1);
+    await act(async () => { finishServer('http://127.0.0.1:9999'); });
+    await waitFor(() => expect(ready).toHaveBeenCalledTimes(1));
   });
 
   it('keeps choose phase and pre-fills unreachable client URL from startup prefs', async () => {

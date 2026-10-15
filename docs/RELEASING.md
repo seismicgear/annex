@@ -6,18 +6,21 @@ can do.
 
 ## Published baseline
 
-v0.1.0 was published on October 15, 2026. The tag and original installers must
-remain immutable. This runbook is for a future release; it is not a request to
+v0.1.0 and the macOS packaging correction v0.1.1 were published on October 15,
+2026. Both tags and their original installers must remain immutable. This runbook is for a future release; it is not a request to
 rebuild v0.1.0. See [release evidence](RELEASE_READINESS.md) for completed runs,
-Linux native acceptance, and Windows/macOS/updater/provider qualification still
-open. Repository documentation/license changes do not alter binary bytes.
+Linux v0.1.0 and Mac v0.1.1 native sessions, and the remaining Windows/Linux v0.1.1,
+OS-trust, updater, and provider qualification. Repository documentation/license
+changes do not alter binary bytes.
 
 ## 0. What a release is signed by, and what it is not
 
-Windows installers have no Authenticode signing. macOS packages are ad-hoc
-signed, without Developer ID or notarization. OS trust prompts are therefore
-possible. Direct users to [installation](installation.md) for origin/checksum
-verification and per-app approval; do not advise globally disabling OS protection.
+Windows installers have no Authenticode signing. The published v0.1.0 macOS
+apps have incomplete bundle signatures. The published v0.1.1 correction uses
+ad-hoc signing and strict bundle/native-file verification, without Developer ID
+or notarization. See [installation](installation.md) for the current packages. Neither updater signatures nor a successful build establishes
+normal browser-download/Gatekeeper acceptance. Do not advise disabling OS
+protection to work around a defective package.
 
 What a release IS verifiable by:
 
@@ -31,7 +34,7 @@ What a release IS verifiable by:
   release, so anyone can check what the bundled proving and verification keys
   descend from without cloning the repository.
 
-The workflow currently configures updater signing only. Windows Authenticode
+The workflow configures updater signing and local macOS ad-hoc integrity signing. Windows Authenticode
 and Apple Developer ID/notarization are not configured. Introducing either
 requires its actual credentials, explicit workflow integration, and platform
 verification; updater signatures do not establish OS trust.
@@ -95,7 +98,11 @@ These signatures do not establish an Apple Developer ID or notarization and do
 not provide publisher trust. Preparation then executes the bundled Piper CLI
 and synthesizes a nonempty WAV with the pinned voice model. A failed native
 launch or synthesis fails resource preparation. Each Mac Piper bundle includes
-its component licenses and source/runtime smoke provenance.
+its component licenses and source/runtime smoke provenance. The corrected
+preparation path also signs and verifies Whisper before recording its digest.
+After Tauri bundles the app, `scripts/verify-macos-bundle.py` verifies the resource
+envelope and every native Mach-O file before upload. It rejects missing seals,
+unsigned native code, unexpected bundle identity, and escaping symlinks.
 
 Whisper is compiled from the same immutable v1.7.4 commit pinned by the
 Dockerfile, with a static CPU backend and host-specific instruction tuning,

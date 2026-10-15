@@ -1,6 +1,6 @@
 {
   "productName": "Annex",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "identifier": "com.annex.desktop",
   "build": {
     "beforeBuildCommand": "node ../scripts/build-desktop.js",
@@ -58,6 +58,7 @@
       "icons/icon.ico"
     ],
     "macOS": {
+      "signingIdentity": "-",
       "entitlements": "Entitlements.plist",
       "infoPlist": "Info.plist",
       "minimumSystemVersion": "11.0"

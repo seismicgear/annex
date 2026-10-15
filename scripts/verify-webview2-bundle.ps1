@@ -71,7 +71,9 @@ foreach ($msi in $msis) {
     try {
         Export-MsiBinary $msi.FullName 'MicrosoftEdgeWebView2RuntimeInstaller.exe' $temporary
         $embedded = Read-AuthenticatedInstaller $temporary
-        if ($embedded.sha256 -ne $payload.sha256) { throw 'NSIS and MSI contain different WebView2 runtime installers.' }
+        if ($embedded.sha256 -ne $payload.sha256) {
+            throw ("NSIS and MSI contain different authenticated WebView2 runtime installers. NSIS: version={0}, sha256={1}; MSI: version={2}, sha256={3}. Rebuild both from the same Microsoft payload; do not bypass this gate." -f $payload.version,$payload.sha256,$embedded.version,$embedded.sha256)
+        }
         $verified += [ordered]@{file=$msi.Name;sha256=(Get-FileHash -LiteralPath $msi.FullName).Hash.ToLowerInvariant();embedded_installer=$embedded}
     } finally { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force } }
     $temporary = Join-Path $directory ('webview2-probe-verify-' + [Guid]::NewGuid().ToString('N') + '.dll')

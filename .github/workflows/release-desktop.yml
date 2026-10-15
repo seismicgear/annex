@@ -22,6 +22,14 @@ on:
         options:
           - "false"
           - "true"
+      reassemble_run:
+        description: Optional completed build run to recover after upload failure; does not rebuild or publish
+        required: false
+        default: ''
+      reassemble_source:
+        description: Exact source SHA for read-only recovery; required with reassemble_run
+        required: false
+        default: ''
 
 env:
   CARGO_TERM_COLOR: always
@@ -31,6 +39,17 @@ env:
   ANNEX_UNSIGNED_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.unsigned_dry_run || 'false' }}
 
 jobs:
+  reassemble:
+    if: ${{ inputs.reassemble_run != '' }}
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/reassemble-verified-release.yml
+    with:
+      build_run: ${{ inputs.reassemble_run }}
+      subject_commit: ${{ inputs.reassemble_source }}
+    secrets:
+      TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
   # ── Cheap gates, before 30-60 minutes of Tauri builds ─────────────────────
   #
   # Both of these were written, both pass, and both ran in no release path.
@@ -43,6 +62,7 @@ jobs:
   # tag path; a conditional gate is how that asymmetry comes back somewhere new.
   preflight:
     name: Pre-flight gates
+    if: ${{ !inputs.reassemble_run }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -80,7 +100,7 @@ jobs:
           bash scripts/check-dependency-security.sh
 
       - name: Desktop resource safety checks
-        run: node --test scripts/tests/desktop-assets.test.mjs scripts/tests/pinned-git-source.test.mjs scripts/tests/desktop-release.test.mjs scripts/tests/macos-piper.test.mjs scripts/tests/windows-runtime.test.mjs scripts/tests/release-write-eligibility.test.mjs
+        run: node --test scripts/tests/desktop-assets.test.mjs scripts/tests/pinned-git-source.test.mjs scripts/tests/desktop-release.test.mjs scripts/tests/macos-piper.test.mjs scripts/tests/windows-runtime.test.mjs scripts/tests/release-write-eligibility.test.mjs scripts/tests/release-draft-upload.test.mjs
 
       - name: Require production updater signing credentials
         env:
@@ -195,7 +215,7 @@ jobs:
           sha256sum "annex-server-${version}-x86_64-unknown-linux-gnu.tar.gz"
 
       - name: Upload the server tarball
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: server-linux-x86_64
           path: annex-server-*.tar.gz
@@ -235,7 +255,7 @@ jobs:
                       /opt/hostedtoolcache/CodeQL /usr/local/share/boost
           df -h /
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Resolve the image reference
         id: img
@@ -250,7 +270,7 @@ jobs:
       # the local daemon for the start check below, and an image is pushed only
       # after something has run it.
       - name: Build the image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           load: true
@@ -470,7 +490,7 @@ jobs:
           python3 scripts/verify-linux-protocol.py --deb target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb --appimage target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
 
       - name: Upload Linux artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: annex-linux-x86_64
           path: |
@@ -579,7 +599,7 @@ jobs:
 
       - name: Preserve Windows installer compilation diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-installer-compilation
           path: |
@@ -607,14 +627,14 @@ jobs:
 
       - name: Preserve Windows prerequisite regression evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-prerequisite-regression
           path: C:/AnnexWebViewFixture/evidence/
           if-no-files-found: warn
 
       - name: Upload Windows artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: annex-windows-x86_64
           path: |
@@ -662,6 +682,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+          cache-on-failure: true
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
@@ -732,8 +753,20 @@ jobs:
           TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
           ANNEX_UPDATER_ENDPOINT: ${{ vars.ANNEX_UPDATER_ENDPOINT || 'https://github.com/seismicgear/annex/releases/latest/download/latest.json' }}
 
+      - name: Verify sealed macOS application and embedded code
+        run: |
+          python3 scripts/verify-macos-bundle.py "target/${{ matrix.target }}/release/bundle/macos/Annex.app" \
+            --output "target/${{ matrix.target }}/release/macos-signature-verification.json"
+
+      - name: Preserve macOS signature verification
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-signature-${{ matrix.arch }}
+          path: target/${{ matrix.target }}/release/macos-signature-verification.json
+          if-no-files-found: error
+
       - name: Upload macOS artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: annex-macos-${{ matrix.arch }}
           path: |
@@ -845,17 +878,24 @@ jobs:
           ANNEX_RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('dry-run-{0}', github.sha) }}
         run: node scripts/check-release-write-eligibility.mjs
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Preserve verified assembly before GitHub upload
+        uses: actions/upload-artifact@v7
         with:
-          draft: true
-          overwrite_files: false
-          body_path: RELEASE_NOTES.md
-          generate_release_notes: true
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('dry-run-{0}', github.sha) }}
-          target_commitish: ${{ github.sha }}
-          name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('Dry run {0}', github.sha) }}
-          # Names, actual signatures, download catalog and final checksums are
-          # generated together from the required native outputs above.
-          files: release-assets/*
-          fail_on_unmatched_files: true
+          name: verified-release-assembly
+          path: |
+            release-assets/
+            RELEASE_NOTES.md
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ANNEX_RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('dry-run-{0}', github.sha) }}
+        run: node scripts/upload-release-draft.mjs
+
+      - name: Preserve exact draft upload receipt
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-draft-upload
+          path: release-draft-upload.json
+          if-no-files-found: error

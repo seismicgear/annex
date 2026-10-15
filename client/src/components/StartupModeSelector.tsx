@@ -10,7 +10,7 @@
  * the preference.
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   isTauri,
   startEmbeddedServer,
@@ -61,11 +61,20 @@ export function StartupModeSelector({ onReady }: Props) {
   const [remoteUrl, setRemoteUrl] = useState('');
   const [error, setError] = useState('');
   const inTauri = isTauri();
+  const readyCallback = useRef(onReady);
+  const hostInFlight = useRef(false);
+  useEffect(() => { readyCallback.current = onReady; }, [onReady]);
+  // StartupGate's elapsed timer changes its inline callback every second.
+  // That must not reload preferences, reset the chooser, or restart Host.
+  const completeStartup = useCallback((degraded?: DegradedStartupInfo) => {
+    readyCallback.current(degraded);
+  }, []);
 
   // ── Tauri host mode ──
   const applyHost = useCallback(
     async (skipSave: boolean) => {
-      if (!inTauri) return;
+      if (!inTauri || hostInFlight.current) return;
+      hostInFlight.current = true;
       setError('');
       const degraded: DegradedStartupInfo = { voiceFailed: false, publicEndpointFailed: false, webrtcRouteUnavailable: false };
       try {
@@ -138,7 +147,7 @@ export function StartupModeSelector({ onReady }: Props) {
         if (!skipSave) {
           await saveStartupMode({ startup_mode: { mode: 'host' } });
         }
-        onReady(degraded.voiceFailed || degraded.publicEndpointFailed || degraded.webrtcRouteUnavailable ? degraded : undefined);
+        completeStartup(degraded.voiceFailed || degraded.publicEndpointFailed || degraded.webrtcRouteUnavailable ? degraded : undefined);
       } catch (e) {
         if (inTauri) {
           await clearStartupMode().catch(() => {});
@@ -147,9 +156,11 @@ export function StartupModeSelector({ onReady }: Props) {
         }
         setError(e instanceof Error ? e.message : String(e));
         setPhase('error');
+      } finally {
+        hostInFlight.current = false;
       }
     },
-    [onReady, inTauri],
+    [completeStartup, inTauri],
   );
 
   // ── Connect to a remote server (shared by Tauri + web) ──
@@ -208,7 +219,7 @@ export function StartupModeSelector({ onReady }: Props) {
       const existing = useServersStore.getState().findServerByBaseUrl(normalized);
       if (existing?.identityId) {
         await useIdentityStore.getState().selectIdentity(existing.identityId);
-        onReady();
+        completeStartup();
       } else {
         // No existing identity for this server — route through remote
         // registration so App.tsx Gate 3 creates a proper identity/server pair.
@@ -221,10 +232,10 @@ export function StartupModeSelector({ onReady }: Props) {
           setPhase('choose');
           return;
         }
-        onReady();
+        completeStartup();
       }
     },
-    [onReady, inTauri],
+    [completeStartup, inTauri],
   );
 
   // ── Use this server (web/Docker — current origin) ──
@@ -242,9 +253,9 @@ export function StartupModeSelector({ onReady }: Props) {
       if (!skipSave) {
         saveWebStartupMode({ mode: 'local' });
       }
-      onReady();
+      completeStartup();
     },
-    [onReady],
+    [completeStartup],
   );
 
   // On mount, load saved preference. For returning Tauri host users,

@@ -162,6 +162,12 @@ even where an unchanged v0.1.0 package contains the earlier Annex Noncommercial
 + Protocol-Integrity License. The published installers, checksums, signatures,
 and tag are not replaced by this notice.
 
+This additional offer also covers Kuykendall Industries-owned material in the
+v0.1.1 packaging correction built from source commit
+`bf90d930663a14b3a1db7f24e0d741ed3475675d`, if distributed with the earlier
+license text. This grant does not assert that a candidate is published or
+qualified, and does not replace its artifacts.
+
 This additional offer covers only rights Kuykendall Industries can grant. The
 licenses of third-party dependencies, bundled speech tools/models, and other
 contributors' independently owned materials remain applicable. Permissions
