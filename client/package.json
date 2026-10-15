@@ -29,7 +29,7 @@
     "idb": "^8.0.4",
     "qrcode-generator": "^2.0.4",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0",
+    "react-dom": "^19.3.0",
     "snarkjs": "^0.7.6",
     "zustand": "^5.0.15"
   },
@@ -42,7 +42,7 @@
     "@testing-library/user-event": "^14.6.7",
     "@types/node": "^24.12.4",
     "@types/react": "^19.2.7",
-    "@types/react-dom": "^19.2.3",
+    "@types/react-dom": "^19.3.0",
     "@types/snarkjs": "^0.7.9",
     "@vitejs/plugin-react": "^5.1.1",
     "eslint": "^9.39.1",
