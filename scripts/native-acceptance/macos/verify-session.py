@@ -28,6 +28,8 @@ message_sha = hashlib.sha256(result['message'].encode()).hexdigest()
 messages = [row for row in latest['messages'] if row['content_sha256'] == message_sha]
 assert len(messages) == 1
 assert messages[0]['server_id'] == latest['servers'][0]['id']
+assert messages[0]['authenticated_at_rest']
+assert messages[0]['stored_content_sha256'] != message_sha
 founder = next(row['admitted_identities'][0]['pseudonym_sha256'] for row in observations
               if len(row['admitted_identities']) == 1)
 recipients = [row['pseudonym_sha256'] for row in latest['admitted_identities']
