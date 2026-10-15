@@ -21,7 +21,7 @@ opus-rs = "0.1.12"
 opusic-c = "=1.6.1"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 hex = "0.4"
-hmac = "0.12"
+hmac = "0.13"
 sha2 = { workspace = true }
 tempfile = { workspace = true }
 signalsmith-stretch = "=0.1.3"
