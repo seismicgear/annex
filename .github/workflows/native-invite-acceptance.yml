@@ -13,6 +13,12 @@ on:
         description: Optional exact signed build run for unpublished candidate testing; leave empty for public installer acceptance
         required: false
         default: ''
+      architecture:
+        description: Native architecture to exercise
+        required: false
+        default: both
+        type: choice
+        options: [both, aarch64, x86_64]
 
 permissions:
   contents: read
@@ -24,13 +30,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: macos-15
-            arch: aarch64
-            target: aarch64-apple-darwin
-          - os: macos-15-intel
-            arch: x86_64
-            target: x86_64-apple-darwin
+        include: >-
+          ${{ fromJSON(inputs.architecture == 'aarch64' &&
+          '[{"os":"macos-15","arch":"aarch64","target":"aarch64-apple-darwin"}]' ||
+          inputs.architecture == 'x86_64' &&
+          '[{"os":"macos-15-intel","arch":"x86_64","target":"x86_64-apple-darwin"}]' ||
+          '[{"os":"macos-15","arch":"aarch64","target":"aarch64-apple-darwin"},{"os":"macos-15-intel","arch":"x86_64","target":"x86_64-apple-darwin"}]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     env:
