@@ -10,6 +10,7 @@ import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import { spawnSync } from 'node:child_process';
 import { buildMacPiper } from './build-macos-piper.mjs';
+import { preparePinnedGitSource } from './pinned-git-source.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pinPath = path.join(root, 'scripts', 'desktop-assets.json');
@@ -39,6 +40,13 @@ export function checkedPath(base, relative) {
   const resolved = path.resolve(base, relative);
   if (!resolved.startsWith(path.resolve(base) + path.sep)) throw new Error('Resource escapes destination');
   return resolved;
+}
+export function whisperBuildDirectory(cache, source, generator) {
+  const sourceKey = createHash('sha256').update(path.resolve(source)).digest('hex').slice(0, 16);
+  const prefix = generator ? `whisper-build-${generator.replace(/[^a-z0-9]+/gi, '-')}` : 'whisper-build';
+  // CMake binds a build tree to its original source path. A recovered checkout
+  // must not reuse (or remove) another source directory's configured build tree.
+  return path.join(cache, `${prefix}-${sourceKey}`);
 }
 async function digest(filename) {
   const hash = createHash('sha256');
@@ -122,16 +130,10 @@ async function preparePiper(pins, platform, assets, cache) {
   if (!result.includes('--model') || !result.includes('--output_raw')) throw new Error('Piper runtime is not the expected CLI');
 }
 async function prepareWhisper(pins, platform, assets, cache) {
-  const source = path.join(cache, 'whisper-source');
-  if (!await exists(source)) {
-    command('git', ['clone', '--depth', '1', '--branch', pins.whisper.tag, pins.whisper.repository, source], cache);
-  }
-  const actual = command('git', ['rev-parse', 'HEAD'], source, true).trim();
-  if (actual !== pins.whisper.commit) throw new Error(`Whisper source commit ${actual} differs from pin ${pins.whisper.commit}: ${source}`);
-  const changed = command('git', ['status', '--porcelain', '--untracked-files=no'], source, true).trim();
-  if (changed) throw new Error(`Whisper source is not clean at pinned commit ${actual}: ${source}\n${changed}`);
+  const source = await preparePinnedGitSource({ cache, name: 'whisper-source', ...pins.whisper });
+  const actual = pins.whisper.commit; // The source helper verified this exact commit.
   const generator = process.env.CMAKE_GENERATOR;
-  const build = path.join(cache, generator ? `whisper-build-${generator.replace(/[^a-z0-9]+/gi, '-')}` : 'whisper-build');
+  const build = whisperBuildDirectory(cache, source, generator);
   const flags = [...cmakeFlags];
   if (platform === 'darwin-x64') flags.push('-DCMAKE_OSX_ARCHITECTURES=x86_64');
   if (platform === 'darwin-arm64') flags.push('-DCMAKE_OSX_ARCHITECTURES=arm64');

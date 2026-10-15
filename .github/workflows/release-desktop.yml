@@ -80,7 +80,7 @@ jobs:
           bash scripts/check-dependency-security.sh
 
       - name: Desktop resource safety checks
-        run: node --test scripts/tests/desktop-assets.test.mjs scripts/tests/desktop-release.test.mjs scripts/tests/macos-piper.test.mjs scripts/tests/windows-runtime.test.mjs
+        run: node --test scripts/tests/desktop-assets.test.mjs scripts/tests/pinned-git-source.test.mjs scripts/tests/desktop-release.test.mjs scripts/tests/macos-piper.test.mjs scripts/tests/windows-runtime.test.mjs
 
       - name: Require production updater signing credentials
         env:

@@ -127,6 +127,9 @@ jobs:
       - name: Signaling relay tests
         run: node --test api/signal.test.mjs
 
+      - name: Pinned desktop source regression tests
+        run: node --test scripts/tests/pinned-git-source.test.mjs scripts/tests/desktop-assets.test.mjs
+
       # The scripts everything else runs through. Their failures were the
       # silent kind: e2e-server.sh reported "Server ready" about a server it
       # had not started, and claude-setup.sh ended on a failed apt-get with
@@ -234,7 +237,7 @@ jobs:
       # Rust regression fails CI in under a minute rather than after a
       # full bundle attempt.
       - name: Prepare pinned native desktop resources
-        run: node scripts/prepare-desktop-assets.mjs
+        run: node scripts/prepare-desktop-assets.mjs --work-dir "${{ runner.temp }}/annex-desktop-assets"
 
       - name: Ensure asset stub dirs exist
         run: mkdir -p assets/piper assets/voices assets/embedding
@@ -400,7 +403,7 @@ jobs:
         working-directory: client
 
       - name: Prepare pinned native desktop resources
-        run: node scripts/prepare-desktop-assets.mjs
+        run: node scripts/prepare-desktop-assets.mjs --work-dir "${{ runner.temp }}/annex-desktop-assets"
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli@2.11.2 --locked
@@ -815,7 +818,7 @@ jobs:
         working-directory: zk
 
       - name: Prepare pinned native desktop resources
-        run: node scripts/prepare-desktop-assets.mjs
+        run: node scripts/prepare-desktop-assets.mjs --work-dir "${{ runner.temp }}/annex-desktop-assets"
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli@2.11.2 --locked
