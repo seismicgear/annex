@@ -4941,6 +4941,24 @@
     flex-shrink: 0;
   }
 
+  .channel-federation-btn {
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+
+  /* Loading and retry instructions need a complete row, with controls kept
+     in their reading order instead of squeezed between channel chips. */
+  .channel-list-with-status {
+    flex-wrap: wrap;
+  }
+
+  .channel-list-with-status .channel-list-status {
+    flex: 0 0 100%;
+    min-width: 0;
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+
   /* An error inside a row of chips has nowhere to wrap to, so it keeps its
      own line under the strip rather than stretching it. */
   .channel-action-error {
@@ -4976,6 +4994,18 @@
     order: 2;
     margin-left: auto;
     max-width: 55%;
+  }
+
+  /* The gear moves beside the wordmark when the header wraps. Anchor its
+     menu to the full header so right alignment cannot clip the left edge. */
+  .admin-menu {
+    position: static;
+  }
+
+  .admin-dropdown {
+    right: 0.75rem;
+    min-width: min(180px, calc(100vw - 1.5rem));
+    max-width: calc(100vw - 1.5rem);
   }
 
   /* Status bar: two rows rather than one overflowing row. */

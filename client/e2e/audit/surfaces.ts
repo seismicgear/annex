@@ -15,6 +15,7 @@
 
 import { expect } from '@playwright/test';
 import type { Surface } from './types';
+import { createEncryptionChannel, enableEncryption, interruptKeyDelivery, removeEncryptionChannel } from './encryption-fixture';
 import { SEED } from './roles';
 import {
   openAdminDropdown,
@@ -35,6 +36,17 @@ function stub(pattern: string | RegExp, body: unknown, status = 200) {
       }),
     );
   };
+}
+
+/** Exercise the scrollable identity footer, then restore the surface for capture. */
+async function reopenIdentityAfterFooter(page: import('@playwright/test').Page) {
+  const dialog = page.getByRole('dialog');
+  const close = dialog.getByRole('button', { name: 'Close', exact: true });
+  await close.scrollIntoViewIfNeeded();
+  await expect(close).toBeInViewport();
+  await close.click();
+  await expect(dialog).toBeHidden();
+  await openStatusBarDialog(page, 'Identity');
 }
 
 /**
@@ -371,7 +383,7 @@ export const SURFACES: Surface[] = [
     role: 'fresh',
     intent: 'Alternative onboarding path for users who already have an identity elsewhere.',
     navigate: async (page) => {
-      await page.locator('.device-link-setup-btn').click();
+      await page.getByRole('button', { name: 'Link from Another Device', exact: true }).click();
       await expect(page.locator('.device-link-choose')).toBeVisible();
     },
   },
@@ -385,8 +397,8 @@ export const SURFACES: Surface[] = [
       'disabled here — you cannot share an identity you do not have yet — but nothing on screen ' +
       'says so, which is a finding in its own right.',
     navigate: async (page) => {
-      await page.locator('.device-link-setup-btn').click();
-      await page.locator('.device-link-option').nth(1).click();
+      await page.getByRole('button', { name: 'Link from Another Device', exact: true }).click();
+      await page.getByRole('button', { name: /Receive from Another Device/ }).click();
       await expect(page.locator('.device-link-receive')).toBeVisible();
     },
   },
@@ -399,6 +411,20 @@ export const SURFACES: Surface[] = [
       'Sharing requires an existing identity, so this is only reachable from the status bar ' +
       'once signed in. The QR image and pairing code are regenerated per run, so both are masked.',
     navigate: async (page) => {
+      await openStatusBarDialog(page, 'Link');
+      await page.locator('.device-link-option').first().click();
+      await expect(page.locator('.device-link-share')).toBeVisible();
+      const back = page.getByRole('button', { name: 'Back', exact: true });
+      await back.scrollIntoViewIfNeeded();
+      await expect(back).toBeInViewport();
+      await back.click();
+      await expect(page.locator('.device-link-choose')).toBeVisible();
+      await page.locator('.device-link-option').first().click();
+      const done = page.getByRole('button', { name: 'Done', exact: true });
+      await done.scrollIntoViewIfNeeded();
+      await expect(done).toBeInViewport();
+      await done.click();
+      await expect(page.getByRole('dialog')).toBeHidden();
       await openStatusBarDialog(page, 'Link');
       await page.locator('.device-link-option').first().click();
       await expect(page.locator('.device-link-share')).toBeVisible();
@@ -1321,22 +1347,28 @@ export const SURFACES: Surface[] = [
     stage: '06-messaging',
     title: 'Turning on encryption, refused by the server',
     role: 'founder',
-    intent:
-      'The bar offers one irreversible action and had no captured failure state. Turning on ' +
-      'E2E either happened or it did not, and a moderator who is told nothing will press the ' +
-      'button again — on a channel that may or may not already be encrypted.',
-    setup: stub('**/api/channels/*/e2e', { error: 'could not enable encryption' }, 500),
+    intent: 'The real signed membership write is refused; the channel must remain plaintext and show the actionable error.',
     navigate: async (page) => {
-      await selectChannel(page, SEED.defaultChannel);
-      await page.locator('.channel-encryption-bar button').click();
-      await expect(page.locator('.channel-encryption-error')).toBeVisible({ timeout: 15_000 });
+      const channel = await createEncryptionChannel(page);
+      let rejectedWrites = 0;
+      await page.route(url => url.pathname === `/api/channels/${channel}/key-manifest`, async route => {
+        if (route.request().method() !== 'POST') return route.continue();
+        rejectedWrites++;
+        await route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"could not enable encryption"}' });
+      });
+      await page.getByRole('button', { name: '🔒 Enable encryption', exact: true }).click();
+      await expect(page.locator('.channel-encryption-error')).toContainText('could not enable encryption');
+      expect(rejectedWrites).toBeGreaterThan(0);
+      await expect(page.locator('.channel-encryption-bar.encrypted')).toHaveCount(0);
     },
+    cleanup: removeEncryptionChannel,
     clip: '.channel-encryption-bar',
     waive: {
-      network: 'the 500 is the stub this surface installs — it is the condition under test',
-      console: 'the browser logs the injected 500 to the console as well',
+      network: 'The scoped signed-manifest POST returns the deliberate 500 under test.',
+      console: 'The browser reports the deliberately refused signed-manifest request.',
     },
   },
+
   {
     id: 'channel-encryption-bar-cta',
     stage: '06-messaging',
@@ -1346,7 +1378,12 @@ export const SURFACES: Surface[] = [
       'Moderator-only prompt to turn on E2E for a channel. Non-moderators never see this bar.',
     navigate: async (page) => {
       await selectChannel(page, SEED.defaultChannel);
-      await expect(page.locator('.channel-encryption-bar')).toBeVisible();
+      await expect(page.getByRole('button', { name: '🔒 Enable encryption', exact: true })).toBeEnabled();
+      await expect(page.locator('.channel-encryption-bar')).toHaveText(
+        'Messages in this channel are stored on the server. Enable end-to-end encryption so only authorized members can read new messages.🔒 Enable encryption',
+      );
+      await expect(page.getByRole('button', { name: 'Verify encryption', exact: true })).toHaveCount(0);
+      await expect(page.locator('.channel-encryption-bar.encrypted, .channel-encryption-error')).toHaveCount(0);
     },
     clip: '.channel-encryption-bar',
   },
@@ -1355,149 +1392,49 @@ export const SURFACES: Surface[] = [
     stage: '06-messaging',
     title: 'An encrypted channel, key in hand',
     role: 'founder',
-    intent:
-      'The headline feature actually switched on, which nothing captured before: only the ' +
-      '"turn it on" prompt and the non-moderator hidden case were reachable. This is the state ' +
-      'the other two encryption surfaces are measured against — the one where the user can read ' +
-      'the channel.',
-    setup: async (page) => {
-      // Hermetic on purpose. Left to the real server this surface passed at
-      // the first viewport and failed at the other three: provisioning a key
-      // writes wraps to the shared DB, and the next context has a fresh
-      // device key that can open none of them, so the channel came back as
-      // `has_key: true` with nothing for us — the pending state, captured
-      // under the name of the ready one. Stubbing both key routes makes each
-      // viewport mint its own key and reach the same state, and stops this
-      // surface leaving key material behind for the ones after it.
-      await page.route('**/api/channels/*/e2e', (route) =>
-        route.fulfill({ status: 200, contentType: 'application/json', body: '{"e2e_enabled":true}' }),
-      );
-      await page.route('**/api/channels/*/key-status', (route) =>
-        route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: '{"has_key":false,"max_epoch":0}',
-        }),
-      );
-      await page.route('**/api/channels/*/key-wraps', (route) =>
-        route.request().method() === 'POST'
-          ? route.fulfill({
-              status: 200,
-              contentType: 'application/json',
-              body: '{"status":"ok","inserted":1}',
-            })
-          : route.fulfill({ status: 200, contentType: 'application/json', body: '{"wraps":[]}' }),
-      );
-    },
+    intent: 'A fresh real channel is enabled through its signed membership history, and this device retrieves its actual sealed key.',
     navigate: async (page) => {
-      await selectChannel(page, SEED.defaultChannel);
-      await expect(page.locator('.channel-encryption-bar.encrypted')).toBeVisible({
-        timeout: 15_000,
-      });
+      await createEncryptionChannel(page);
+      await enableEncryption(page);
     },
+    cleanup: removeEncryptionChannel,
     clip: '.channel-encryption-bar',
   },
+
   {
     id: 'channel-encryption-key-pending',
     stage: '06-messaging',
-    title: 'Encrypted, and not admitted yet',
+    title: 'Encrypted, but key delivery is pending',
     role: 'founder',
-    intent:
-      'You are in an encrypted channel whose key nobody has sealed to you yet, so every message ' +
-      'reads "🔒 encrypted message (no key)". This used to render under the reassuring green bar ' +
-      'above — true, and useless. The wait ends on its own when any key-holder next opens the ' +
-      'channel, and the bar now says so rather than leaving it looking like a dead end.',
-    setup: async (page) => {
-      // The channel is encrypted and HAS key material, but none of it is
-      // sealed to us — exactly the shape that makes `resolveChannelKey`
-      // raise `E2eKeyPendingError`.
-      await page.route('**/api/channels/*/e2e', (route) =>
-        route.fulfill({ status: 200, contentType: 'application/json', body: '{"e2e_enabled":true}' }),
-      );
-      await page.route('**/api/channels/*/key-wraps', (route) =>
-        route.fulfill({ status: 200, contentType: 'application/json', body: '{"wraps":[]}' }),
-      );
-      await page.route('**/api/channels/*/key-status', (route) =>
-        route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: '{"has_key":true,"max_epoch":1}',
-        }),
-      );
-    },
+    intent: 'The real signed channel and key epoch exist, but this device cannot retrieve a sealed key; the UI explains that delivery is pending and offers Check again.',
     navigate: async (page) => {
-      await selectChannel(page, SEED.defaultChannel);
-      await expect(page.locator('.channel-encryption-bar.key-pending')).toBeVisible({
-        timeout: 15_000,
-      });
+      const channel = await createEncryptionChannel(page);
+      await enableEncryption(page);
+      await interruptKeyDelivery(page, channel, 'pending');
     },
-    // Diffed again, after two runs of identical code disagreed here.
-    //
-    // The difference was one constant-width rectangle spanning columns
-    // 368-674 that had moved horizontally — no text moved, and the crop was
-    // 708x123 in both. The bar contains no element in the mask set, so that
-    // box could only be a mask overlay from something else on the page,
-    // painted at its own page coordinates into a crop it has no business
-    // being in. The surface was made `reportOnly` on that evidence, which
-    // was the right read of a harness defect and the wrong remedy: it gave
-    // up the pixel diff instead of fixing the masks.
-    //
-    // `maskLocators` now scopes masks to the clipped element, so a clipped
-    // capture is painted only with masks that belong inside the picture.
-    // The overlay that moved is no longer drawn at all.
+    cleanup: removeEncryptionChannel,
     clip: '.channel-encryption-bar',
   },
+
   {
     id: 'channel-encryption-key-failed',
     stage: '06-messaging',
     title: 'Encrypted, and the key would not load',
     role: 'founder',
-    intent:
-      'The other half. A key that cannot be fetched at all is not a wait — it will not resolve, ' +
-      'and sending stays blocked. It used to be indistinguishable from the state above because ' +
-      'one bare catch handled both.',
-    setup: async (page) => {
-      await page.route('**/api/channels/*/e2e', (route) =>
-        route.fulfill({ status: 200, contentType: 'application/json', body: '{"e2e_enabled":true}' }),
-      );
-      await page.route('**/api/channels/*/key-wraps', (route) =>
-        route.fulfill({
-          status: 500,
-          contentType: 'application/json',
-          body: '{"error":"internal server error"}',
-        }),
-      );
-    },
+    intent: 'The real encrypted channel’s key-delivery endpoint fails; the UI offers Retry and reports that sending remains blocked.',
     navigate: async (page) => {
-      await selectChannel(page, SEED.defaultChannel);
-      await expect(page.locator('.channel-encryption-bar.key-failed')).toBeVisible({
-        timeout: 15_000,
-      });
+      const channel = await createEncryptionChannel(page);
+      await enableEncryption(page);
+      await interruptKeyDelivery(page, channel, 'failed');
     },
-    // Diffed again, after two runs of identical code disagreed here.
-    //
-    // The difference was one constant-width rectangle spanning columns
-    // 368-674 that had moved horizontally — no text moved, and the crop was
-    // 708x123 in both. The bar contains no element in the mask set, so that
-    // box could only be a mask overlay from something else on the page,
-    // painted at its own page coordinates into a crop it has no business
-    // being in. The surface was made `reportOnly` on that evidence, which
-    // was the right read of a harness defect and the wrong remedy: it gave
-    // up the pixel diff instead of fixing the masks.
-    //
-    // `maskLocators` now scopes masks to the clipped element, so a clipped
-    // capture is painted only with masks that belong inside the picture.
-    // The overlay that moved is no longer drawn at all.
+    cleanup: removeEncryptionChannel,
     clip: '.channel-encryption-bar',
     waive: {
-      network:
-        'the 500 is the stub this surface installs on purpose — it is the condition under test, ' +
-        'not an incidental failed request.',
-      console: 'the browser logs the injected 500 to the console as well',
+      network: 'Only this fixture channel’s key-wrap GET returns the deliberate 500 under test.',
+      console: 'The browser reports the deliberately unavailable key-delivery request.',
     },
   },
 
-  // ─────────────────────── 07 · voice ───────────────────────
   {
     id: 'voice-panel-disconnected',
     stage: '07-voice',
@@ -1625,14 +1562,13 @@ export const SURFACES: Surface[] = [
       await selectChannel(page, SEED.channels.voice);
       await page.locator('.voice-join-btn').first().click();
       await expect(page.locator('.media-controls')).toBeVisible({ timeout: 30_000 });
-      // The fallback lives in the enable branch of `toggleMic`, so the mic has
-      // to be off before the toggle that exercises it. Scoped to the in-call
-      // controls — the status bar carries a button with the same title.
+      // A missing saved input joins listen-only. Enable it once to exercise
+      // fallback; a substring match for "Mute" also matches "Unmute".
       const controls = page.locator('.media-controls');
-      await controls.getByTitle('Mute microphone').click();
-      await expect(controls.getByTitle('Unmute microphone')).toBeVisible({ timeout: 15_000 });
-      await controls.getByTitle('Unmute microphone').click();
-      await expect(page.locator('.media-error')).toBeVisible({ timeout: 30_000 });
+      await expect(controls.getByTitle('Unmute microphone', { exact: true })).toBeVisible();
+      await controls.getByTitle('Unmute microphone', { exact: true }).click();
+      await expect(controls.getByTitle('Mute microphone', { exact: true })).toBeVisible();
+      await expect(page.locator('.media-error')).toContainText('Saved microphone not found or disconnected — using the default device instead.', { timeout: 30_000 });
     },
     clip: '.voice-panel',
   },
@@ -1651,8 +1587,8 @@ export const SURFACES: Surface[] = [
       // Scoped to the in-call controls: the status bar carries its own mute
       // button with the same title, so an unscoped locator matches both.
       const controls = page.locator('.media-controls');
-      await controls.getByTitle('Mute microphone').click();
-      await expect(controls.getByTitle('Unmute microphone')).toBeVisible({ timeout: 15_000 });
+      await controls.getByTitle('Mute microphone', { exact: true }).click();
+      await expect(controls.getByTitle('Unmute microphone', { exact: true })).toBeVisible({ timeout: 15_000 });
     },
     clip: '.voice-panel',
   },
@@ -1877,6 +1813,7 @@ export const SURFACES: Surface[] = [
     intent: 'The user’s own profile surface: persona CRUD, server username, visibility grants.',
     navigate: async (page) => {
       await openStatusBarDialog(page, 'Identity');
+      await reopenIdentityAfterFooter(page);
     },
     clip: '.dialog',
   },
@@ -1894,6 +1831,7 @@ export const SURFACES: Surface[] = [
     setup: stub('**/api/profile/username/grants', { error: 'internal server error' }, 500),
     navigate: async (page) => {
       await openStatusBarDialog(page, 'Identity');
+      await reopenIdentityAfterFooter(page);
       await expect(page.locator('.member-list-error')).toBeVisible({ timeout: 15_000 });
     },
     clip: '.dialog',
@@ -1913,10 +1851,12 @@ export const SURFACES: Surface[] = [
       'The other half. A failed member list used to render as "No other members on this server ' +
       'yet." — a statement about the server, made because a request did not arrive. The two ' +
       'lists fail independently and now report independently.',
-    setup: stub('**/api/admin/members', { error: 'internal server error' }, 500),
+    setup: stub('**/api/members', { error: 'internal server error' }, 500),
     navigate: async (page) => {
       await openStatusBarDialog(page, 'Identity');
-      await expect(page.locator('.member-list-error')).toBeVisible({ timeout: 15_000 });
+      await reopenIdentityAfterFooter(page);
+      await expect(page.locator('.member-list-error')).toContainText('Could not load the member list:');
+      await expect(page.locator('.member-list-error').getByRole('button', { name: 'Retry', exact: true })).toBeVisible();
     },
     clip: '.dialog',
     waive: {
@@ -1989,6 +1929,12 @@ export const SURFACES: Surface[] = [
       await openStatusBarDialog(page, 'Identity');
       await page.getByRole('button', { name: 'New Persona' }).click();
       await expect(page.locator('.color-picker')).toBeVisible();
+      await reopenIdentityAfterFooter(page);
+      await page.getByRole('button', { name: 'New Persona' }).click();
+      const swatch = page.locator('.color-swatch').first();
+      await swatch.click();
+      await expect(swatch).toHaveClass(/active/);
+      await expect(swatch).toHaveCSS('background-color', 'rgb(230, 57, 70)');
     },
     clip: '.dialog',
   },
@@ -2014,8 +1960,8 @@ export const SURFACES: Surface[] = [
     intent: 'The paste-shards path a user takes when they have lost their device.',
     navigate: async (page) => {
       await openStatusBarDialog(page, 'Recovery');
-      await page.locator('.device-link-option').nth(1).click();
-      await expect(page.locator('.dialog')).toBeVisible();
+      await page.getByRole('dialog').getByRole('button', { name: /Recover Identity/ }).click();
+      await expect(page.locator('.recovery-reconstruct')).toBeVisible();
     },
     clip: '.dialog',
   },
@@ -2027,7 +1973,7 @@ export const SURFACES: Surface[] = [
     intent: 'The paste-payload half of device linking, reached mid-session.',
     navigate: async (page) => {
       await openStatusBarDialog(page, 'Link');
-      await page.locator('.device-link-option').nth(1).click();
+      await page.getByRole('button', { name: /Receive from Another Device/ }).click();
       await expect(page.locator('.device-link-receive')).toBeVisible();
     },
     clip: '.dialog',
@@ -2364,6 +2310,9 @@ export const SURFACES: Surface[] = [
     navigate: async (page) => {
       await selectChannel(page, SEED.defaultChannel);
       await expect(page.locator('.admin-menu-btn')).toHaveCount(0);
+      await expect(page.locator('.create-channel-btn')).toHaveCount(0);
+      await expect(page.locator('.channel-encryption-bar, .channel-encryption-error')).toHaveCount(0);
+      await expect(page.getByRole('button', { name: 'Verify encryption', exact: true })).toHaveCount(0);
     },
   },
 
@@ -2877,6 +2826,10 @@ export const SURFACES: Surface[] = [
       // screenshot does not preserve would capture nothing.
       await page.locator('.info-tip').first().focus();
       await expect(page.locator('.info-tip-popup')).toBeVisible({ timeout: 10_000 });
+    },
+    beforeCapture: async (page) => {
+      await expect(page.locator('.info-tip').first()).toBeFocused();
+      await expect(page.locator('.info-tip-popup')).toBeVisible();
     },
     clip: '.view-content',
   },

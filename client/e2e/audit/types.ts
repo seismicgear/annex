@@ -138,6 +138,10 @@ export interface Surface {
   setup?: (page: Page) => Promise<void>;
   /** Drives the UI to the surface. Called with the app already loaded. */
   navigate: (page: Page) => Promise<void>;
+  /** Remove only this surface's real fixtures, including after a failed capture. */
+  cleanup?: (page: Page) => Promise<void>;
+  /** Recheck transient UI after layout/font stabilization, immediately before capture. */
+  beforeCapture?: (page: Page) => Promise<void>;
 
   /**
    * Skip `landing()` and let `navigate` do its own `page.goto`.

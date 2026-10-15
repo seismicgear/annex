@@ -565,6 +565,21 @@ jobs:
       - name: Run UI audit
         run: bash scripts/ui-audit.sh
 
+      # Later Playwright suites clear their output directories. Preserve the
+      # audit's actual/diff frames before starting any of those suites.
+      - name: Preserve UI audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-audit-report
+          path: |
+            docs/ui-audit/
+            client/e2e/audit/diagnostics/
+            client/e2e-results/
+            client/e2e-report/
+          retention-days: 30
+          if-no-files-found: ignore
+
       # The functional lane — `client/e2e/*.spec.ts`, the `chromium` project.
       # It ran in NO workflow until this step: identity creation, server
       # selection, the in-browser Groth16 proof, channel join, send, edit,
@@ -577,11 +592,23 @@ jobs:
       # (`ensure_founder` promotes the earliest registrant, and the audit's
       # roles are already in the database by now).
       - name: Functional browser suite
+        id: functional-browser
         if: ${{ !cancelled() }}
         run: |
           bash scripts/e2e-server.sh start
           (cd client && npm run test:e2e)
           bash scripts/e2e-server.sh stop
+
+      - name: Preserve functional browser evidence
+        if: ${{ always() && steps.functional-browser.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: functional-browser-report
+          path: |
+            client/e2e-results/
+            client/e2e-report/
+          retention-days: 30
+          if-no-files-found: ignore
 
       # The group-call lane. `16a76b7` rearchitected the SFU to one outbound
       # track per (receiver, sender) pair and deleted the test that existed to
@@ -591,11 +618,23 @@ jobs:
       # devices, so it is minutes rather than seconds, and its failures mean
       # "a call cannot be held" rather than "a screen changed".
       - name: Group call lane
+        id: group-call
         if: ${{ !cancelled() }}
         run: |
           bash scripts/e2e-server.sh start
           (cd client && npx playwright test --project=group-call --reporter=list)
           bash scripts/e2e-server.sh stop
+
+      - name: Preserve group call evidence
+        if: ${{ always() && steps.group-call.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: group-call-report
+          path: |
+            client/e2e-results/
+            client/e2e-report/
+          retention-days: 30
+          if-no-files-found: ignore
 
       # The puppeteer harness. A second driver over the same journey — cold
       # start, identity, in-browser proof, chat, channel create — and it does
@@ -611,29 +650,6 @@ jobs:
           bash scripts/e2e-server.sh start
           (cd client && npm run test:e2e:puppeteer)
           bash scripts/e2e-server.sh stop
-
-      # `client/e2e-results/` is the half that was missing, and it is the half
-      # that can actually diagnose a failure. Playwright writes
-      # `<surface>-actual.png` and `<surface>-diff.png` there on every
-      # `toHaveScreenshot` mismatch — the actual taken with the SAME mask and
-      # clip as the baseline, plus a pixel diff. Without it the only evidence
-      # leaving CI was `diagnostics/`, which is an unmasked, unclipped
-      # full-page shot and therefore cannot be compared to a baseline at all.
-      #
-      # A 53-surface failure was read three different ways from the wrong
-      # artifact before anyone noticed the right one was never uploaded.
-      - name: Upload audit report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ui-audit-report
-          path: |
-            docs/ui-audit/
-            client/e2e/audit/diagnostics/
-            client/e2e-results/
-            client/e2e-report/
-          retention-days: 30
-          if-no-files-found: ignore
 
   # ── Supply chain ────────────────────────────────────────────────────────
   #

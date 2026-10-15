@@ -119,6 +119,7 @@ for (const surface of ORDERED_SURFACES) {
 
       const page = await context.newPage();
       const collector = attachCollector(page);
+      let failure: { error: unknown } | undefined;
 
       try {
         await surface.setup?.(page);
@@ -127,6 +128,7 @@ for (const surface of ORDERED_SURFACES) {
         }
         await surface.navigate(page);
         await stabilize(page);
+        await surface.beforeCapture?.(page);
 
         const target = surface.clip ? page.locator(surface.clip) : page;
         const file = shotPath(surface.id, viewport, surface.reportOnly);
@@ -252,10 +254,20 @@ for (const surface of ORDERED_SURFACES) {
         // Audit FINDINGS (accessibility, contrast, overflow) stay
         // non-fatal by design, so one flawed screen does not truncate the
         // sweep. These are a different class.
-        throw err;
+        failure = { error: err };
       } finally {
-        await context.close();
+        try {
+          await surface.cleanup?.(page);
+        } catch (error) {
+          record({ surfaceId: surface.id, stage: surface.stage, viewport: viewport.id,
+            audit: 'console', severity: 'p1', rule: 'fixture-cleanup-failed',
+            detail: error instanceof Error ? error.message : String(error) });
+          failure ??= { error };
+        } finally {
+          await context.close();
+        }
       }
+      if (failure) throw failure.error;
     });
   }
 }

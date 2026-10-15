@@ -15,7 +15,9 @@ interface InfoTipProps {
 }
 
 export function InfoTip({ text }: InfoTipProps) {
-  const [visible, setVisible] = useState(false);
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const visible = hovered || focused;
   const tipRef = useRef<HTMLSpanElement>(null);
   const popupRef = useRef<HTMLSpanElement>(null);
 
@@ -51,10 +53,10 @@ export function InfoTip({ text }: InfoTipProps) {
     <span
       className="info-tip"
       ref={tipRef}
-      onMouseEnter={() => setVisible(true)}
-      onMouseLeave={() => setVisible(false)}
-      onFocus={() => setVisible(true)}
-      onBlur={() => setVisible(false)}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
       tabIndex={0}
       role="button"
       aria-label={text}

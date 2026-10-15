@@ -226,7 +226,7 @@ export function ChannelList() {
   // whole column changed width mid-load because the shell was not there to
   // hold it. Keep the shell in all three states and swap only the body.
   const shell = (body: ReactNode) => (
-    <nav className="channel-list" aria-label="Channel list">
+    <nav className="channel-list channel-list-with-status" aria-label="Channel list">
       <div className="channel-list-header">
         <h2>Channels</h2>
         {!loading && !error && permissions?.capabilities.can_moderate && (
@@ -240,7 +240,7 @@ export function ChannelList() {
         )}
       </div>
       {body}
-      <button type="button" onClick={() => setShowFederated(true)}>Federated channels</button>
+      <button className="channel-federation-btn" type="button" onClick={() => setShowFederated(true)}>Federated channels</button>
       {showFederated && <FederatedChannelsDialog key={JSON.stringify([getCredentialContext().serial, identity.pseudonymId])}
         pseudonym={identity.pseudonymId!} onClose={() => setShowFederated(false)} />}
     </nav>
@@ -302,7 +302,7 @@ export function ChannelList() {
         />
       ))}
       {showCreate && <CreateChannelDialog onClose={() => setShowCreate(false)} />}
-      <button type="button" onClick={() => setShowFederated(true)}>Federated channels</button>
+      <button className="channel-federation-btn" type="button" onClick={() => setShowFederated(true)}>Federated channels</button>
       {showFederated && <FederatedChannelsDialog key={JSON.stringify([getCredentialContext().serial, identity.pseudonymId])}
         pseudonym={identity.pseudonymId!} onClose={() => setShowFederated(false)} />}
     </nav>
