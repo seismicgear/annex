@@ -120,12 +120,14 @@ function ensureWhisperAssets() {
     fatal(`Whisper runtime missing from ${WHISPER_DIR}. Set ANNEX_STT_BINARY_PATH to a built whisper-cli and ANNEX_STT_MODEL_PATH to its ggml model before packaging.`);
   }
   if (!isWindows) fs.accessSync(binary, fs.constants.X_OK);
-  if (!fs.statSync(WHISPER_MODEL, { throwIfNoEntry: false })?.isFile()) {
-    fatal(`Whisper model missing: ${WHISPER_MODEL}. Set ANNEX_STT_MODEL_PATH to the ggml-base.en.bin model before packaging.`);
-  }
   const fd = fs.openSync(WHISPER_MODEL, "r");
   const header = Buffer.alloc(4);
   try {
+    // Inspect the opened object, not a path that could be replaced between
+    // stat and open. The format check reads from this same descriptor.
+    if (!fs.fstatSync(fd).isFile()) {
+      throw new Error(`Whisper model is not a regular file: ${WHISPER_MODEL}`);
+    }
     if (fs.readSync(fd, header, 0, 4, 0) !== 4 || header.readUInt32LE() !== 0x67676d6c) {
       fatal(`Whisper model is not a ggml model: ${WHISPER_MODEL}`);
     }

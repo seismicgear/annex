@@ -34,8 +34,19 @@ test('portable Whisper build disables host-specific and unbundled accelerator li
 });
 test('each official archive and each model has an immutable verified pin', async () => {
   const pins = JSON.parse(await fs.readFile(new URL('../desktop-assets.json', import.meta.url), 'utf8'));
-  assert.equal(pins.piper.archives['darwin-x64'].name, 'piper_macos_x64.tar.gz');
+  assert.deepEqual(Object.keys(pins.piper.archives).sort(), ['linux-x64', 'win32-x64']);
   for (const pin of Object.values(pins.piper.archives)) { assert.match(pin.sha256, /^[0-9a-f]{64}$/); assert.ok(pin.bytes > 0); }
   for (const pin of pins.files) { assert.match(pin.sha256, /^[0-9a-f]{64}$/); assert.match(pin.url, /\/resolve\/[0-9a-f]{40}\//); }
   assert.equal(pins.whisper.commit, '8a9ad7844d6e2a10cddf4b92de4089d7ac2b14a9');
+  assert.deepEqual(Object.keys(pins.piper.macos_sources).sort(), ['espeak', 'fmt', 'phonemize', 'piper', 'sonic', 'spdlog']);
+  for (const pin of Object.values(pins.piper.macos_sources)) {
+    assert.match(pin.commit, /^[0-9a-f]{40}$/);
+    assert.ok(pin.url.endsWith(`/tar.gz/${pin.commit}`));
+    assert.match(pin.sha256, /^[0-9a-f]{64}$/); assert.ok(pin.bytes > 0);
+  }
+  for (const [platform, arch] of [['darwin-arm64', 'arm64'], ['darwin-x64', 'x86_64']]) {
+    const pin = pins.piper.macos_onnxruntime[platform];
+    assert.equal(pin.name, `onnxruntime-osx-${arch}-1.14.1.tgz`);
+    assert.match(pin.sha256, /^[0-9a-f]{64}$/); assert.ok(pin.bytes > 0);
+  }
 });

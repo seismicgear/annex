@@ -4,10 +4,88 @@
     "release": "2023.11.14-2",
     "base_url": "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/",
     "archives": {
-      "win32-x64": { "name": "piper_windows_amd64.zip", "bytes": 22477236, "sha256": "f3c58906402b24f3a96d92145f58acba6d86c9b5db896d207f78dc80811efcea" },
-      "linux-x64": { "name": "piper_linux_x86_64.tar.gz", "bytes": 26460462, "sha256": "a50cb45f355b7af1f6d758c1b360717877ba0a398cc8cbe6d2a7a3a26e225992" },
-      "darwin-x64": { "name": "piper_macos_x64.tar.gz", "bytes": 19146927, "sha256": "ced85c0a3df13945b1e623b878a48fdc2854d5c485b4b67f62857cf551deaf8b" },
-      "darwin-arm64": { "name": "piper_macos_aarch64.tar.gz", "bytes": 19146957, "sha256": "6b1eb03b3735946cb35216e063e7eebcc33a6bbf5dd96ec0217959bf1cdcb0cc" }
+      "win32-x64": {
+        "name": "piper_windows_amd64.zip",
+        "bytes": 22477236,
+        "sha256": "f3c58906402b24f3a96d92145f58acba6d86c9b5db896d207f78dc80811efcea"
+      },
+      "linux-x64": {
+        "name": "piper_linux_x86_64.tar.gz",
+        "bytes": 26460462,
+        "sha256": "a50cb45f355b7af1f6d758c1b360717877ba0a398cc8cbe6d2a7a3a26e225992"
+      }
+    },
+    "macos_sources": {
+      "spdlog": {
+        "repository": "https://github.com/gabime/spdlog",
+        "commit": "7e635fca68d014934b4af8a1cf874f63989352b7",
+        "url": "https://codeload.github.com/gabime/spdlog/tar.gz/7e635fca68d014934b4af8a1cf874f63989352b7",
+        "name": "spdlog-7e635fca68d014934b4af8a1cf874f63989352b7.tar.gz",
+        "root": "spdlog-7e635fca68d014934b4af8a1cf874f63989352b7",
+        "bytes": 251147,
+        "sha256": "1010aa76cdea700e8c693aa29e58ceb0ea51c8f020e2b15c81318e2c05562aec"
+      },
+      "fmt": {
+        "repository": "https://github.com/fmtlib/fmt",
+        "commit": "a0b8a92e3d1532361c2f7feb63babc5c18d00ef2",
+        "url": "https://codeload.github.com/fmtlib/fmt/tar.gz/a0b8a92e3d1532361c2f7feb63babc5c18d00ef2",
+        "name": "fmt-a0b8a92e3d1532361c2f7feb63babc5c18d00ef2.tar.gz",
+        "root": "fmt-a0b8a92e3d1532361c2f7feb63babc5c18d00ef2",
+        "bytes": 851975,
+        "sha256": "2da863d7d454814286c48ef90c9b461a5d27834f026ed9472eed53bd6abbc426"
+      },
+      "phonemize": {
+        "repository": "https://github.com/rhasspy/piper-phonemize",
+        "commit": "fccd4f335aa68ac0b72600822f34d84363daa2bf",
+        "url": "https://codeload.github.com/rhasspy/piper-phonemize/tar.gz/fccd4f335aa68ac0b72600822f34d84363daa2bf",
+        "name": "phonemize-fccd4f335aa68ac0b72600822f34d84363daa2bf.tar.gz",
+        "root": "piper-phonemize-fccd4f335aa68ac0b72600822f34d84363daa2bf",
+        "bytes": 9788138,
+        "sha256": "625cc8f76b3ba2c0e0e7c7e47c1c5aaaf163df9b8296fcf42b9628231f3e264a"
+      },
+      "piper": {
+        "repository": "https://github.com/rhasspy/piper",
+        "commit": "38917ffd8c0e219c6581d73e07b30ef1d572fce1",
+        "url": "https://codeload.github.com/rhasspy/piper/tar.gz/38917ffd8c0e219c6581d73e07b30ef1d572fce1",
+        "name": "piper-38917ffd8c0e219c6581d73e07b30ef1d572fce1.tar.gz",
+        "root": "piper-38917ffd8c0e219c6581d73e07b30ef1d572fce1",
+        "bytes": 25603435,
+        "sha256": "4506521709cbad8ac355594005c8ff9aa0269f03f217bb6d512881f90ede1415"
+      },
+      "espeak": {
+        "repository": "https://github.com/rhasspy/espeak-ng",
+        "commit": "0f65aa301e0d6bae5e172cc74197d32a6182200f",
+        "url": "https://codeload.github.com/rhasspy/espeak-ng/tar.gz/0f65aa301e0d6bae5e172cc74197d32a6182200f",
+        "name": "espeak-0f65aa301e0d6bae5e172cc74197d32a6182200f.tar.gz",
+        "root": "espeak-ng-0f65aa301e0d6bae5e172cc74197d32a6182200f",
+        "bytes": 16321475,
+        "sha256": "37ebbabb010200be8ec26c61b770e93f964f4503a329d7d74c239a1a40051e43"
+      },
+      "sonic": {
+        "repository": "https://github.com/waywardgeek/sonic",
+        "commit": "fbf75c3d6d846bad3bb3d456cbc5d07d9fd8c104",
+        "url": "https://codeload.github.com/waywardgeek/sonic/tar.gz/fbf75c3d6d846bad3bb3d456cbc5d07d9fd8c104",
+        "name": "sonic-fbf75c3d6d846bad3bb3d456cbc5d07d9fd8c104.tar.gz",
+        "root": "sonic-fbf75c3d6d846bad3bb3d456cbc5d07d9fd8c104",
+        "bytes": 5361159,
+        "sha256": "715827b5a39b79e56e44397d7b845910df996d4cca74777b3b61629b1ddc98c1"
+      }
+    },
+    "macos_onnxruntime": {
+      "darwin-x64": {
+        "url": "https://github.com/microsoft/onnxruntime/releases/download/v1.14.1/onnxruntime-osx-x86_64-1.14.1.tgz",
+        "name": "onnxruntime-osx-x86_64-1.14.1.tgz",
+        "root": "onnxruntime-osx-x86_64-1.14.1",
+        "bytes": 7327070,
+        "sha256": "e23fa5cd5bfc70be493e8dddf405922d8867adb72029136e50b6aa21c5967214"
+      },
+      "darwin-arm64": {
+        "url": "https://github.com/microsoft/onnxruntime/releases/download/v1.14.1/onnxruntime-osx-arm64-1.14.1.tgz",
+        "name": "onnxruntime-osx-arm64-1.14.1.tgz",
+        "root": "onnxruntime-osx-arm64-1.14.1",
+        "bytes": 6563098,
+        "sha256": "ed75ab93a7950cece7f9f3b2d97507479c359a083f67772ee527c94d0e5cd83c"
+      }
     }
   },
   "whisper": {
@@ -16,10 +94,31 @@
     "commit": "8a9ad7844d6e2a10cddf4b92de4089d7ac2b14a9"
   },
   "files": [
-    { "path": "voices/en_US-lessac-medium.onnx", "url": "https://huggingface.co/rhasspy/piper-voices/resolve/1162a9173d0ce503555aed757976b7a9912eae4c/en/en_US/lessac/medium/en_US-lessac-medium.onnx", "sha256": "5efe09e69902187827af646e1a6e9d269dee769f9877d17b16b1b46eeaaf019f" },
-    { "path": "voices/en_US-lessac-medium.onnx.json", "url": "https://huggingface.co/rhasspy/piper-voices/resolve/1162a9173d0ce503555aed757976b7a9912eae4c/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json", "sha256": "efe19c417bed055f2d69908248c6ba650fa135bc868b0e6abb3da181dab690a0" },
-    { "path": "models/ggml-base.en.bin", "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.en.bin", "bytes": 147964211, "sha256": "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002" },
-    { "path": "embedding/model.safetensors", "url": "https://huggingface.co/minishlab/potion-base-2M/resolve/389b9f64be5aa4ae7a6bc6fe95ef20ce485ae5da/model.safetensors", "sha256": "f95ffde02ad06f63ae38eb9d400038cd5ccaf8411ec3cb650c6025113f96cbb8" },
-    { "path": "embedding/tokenizer.json", "url": "https://huggingface.co/minishlab/potion-base-2M/resolve/389b9f64be5aa4ae7a6bc6fe95ef20ce485ae5da/tokenizer.json", "sha256": "e67e803f624fb4d67dea1c730d06e1067e1b14d830e2c2202569e3ef0f70bb50" }
+    {
+      "path": "voices/en_US-lessac-medium.onnx",
+      "url": "https://huggingface.co/rhasspy/piper-voices/resolve/1162a9173d0ce503555aed757976b7a9912eae4c/en/en_US/lessac/medium/en_US-lessac-medium.onnx",
+      "sha256": "5efe09e69902187827af646e1a6e9d269dee769f9877d17b16b1b46eeaaf019f"
+    },
+    {
+      "path": "voices/en_US-lessac-medium.onnx.json",
+      "url": "https://huggingface.co/rhasspy/piper-voices/resolve/1162a9173d0ce503555aed757976b7a9912eae4c/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json",
+      "sha256": "efe19c417bed055f2d69908248c6ba650fa135bc868b0e6abb3da181dab690a0"
+    },
+    {
+      "path": "models/ggml-base.en.bin",
+      "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.en.bin",
+      "bytes": 147964211,
+      "sha256": "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002"
+    },
+    {
+      "path": "embedding/model.safetensors",
+      "url": "https://huggingface.co/minishlab/potion-base-2M/resolve/389b9f64be5aa4ae7a6bc6fe95ef20ce485ae5da/model.safetensors",
+      "sha256": "f95ffde02ad06f63ae38eb9d400038cd5ccaf8411ec3cb650c6025113f96cbb8"
+    },
+    {
+      "path": "embedding/tokenizer.json",
+      "url": "https://huggingface.co/minishlab/potion-base-2M/resolve/389b9f64be5aa4ae7a6bc6fe95ef20ce485ae5da/tokenizer.json",
+      "sha256": "e67e803f624fb4d67dea1c730d06e1067e1b14d830e2c2202569e3ef0f70bb50"
+    }
   ]
 }

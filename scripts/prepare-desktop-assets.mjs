@@ -9,6 +9,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import { spawnSync } from 'node:child_process';
+import { buildMacPiper } from './build-macos-piper.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pinPath = path.join(root, 'scripts', 'desktop-assets.json');
@@ -98,6 +99,9 @@ async function resourceInventory(assets) {
   return rows.sort((a,b)=>a.path.localeCompare(b.path));
 }
 async function preparePiper(pins, platform, assets, cache) {
+  if (platform.startsWith('darwin-')) {
+    return buildMacPiper({ pins, platform, assets, cache, download, command, inventory, checkedPath });
+  }
   const pin = pins.piper.archives[platform];
   const archive = path.join(cache, pin.name);
   await download(pins.piper.base_url + pin.name, archive, pin);

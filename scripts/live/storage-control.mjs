@@ -30,10 +30,15 @@ function restart() {
   execFileSync(process.env.ANNEX_TEST_POWERSHELL ?? 'pwsh.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(work, 'restart-session.ps1'), '-Name', name], { stdio: 'ignore', timeout: 60_000 });
 }
 if (action === 'prepare') {
-  assert(!existsSync(backup), 'Restore the prior controlled storage run before starting another');
   checkpoint();
   const original = readFileSync(config, 'utf8');
-  writeFileSync(backup, original, { flag: 'wx' });
+  // Exclusive creation is the check: a prior backup or a racing replacement
+  // cannot be overwritten between an existence check and this write.
+  try { writeFileSync(backup, original, { flag: 'wx' }); }
+  catch (error) {
+    if (error.code === 'EEXIST') throw new Error('Restore the prior controlled storage run before starting another', { cause: error });
+    throw error;
+  }
   const cap = size() + 2 * 1024 * 1024;
   // Replace only this isolated profile's documented operator configuration.
   // The production probe will measure actual database/WAL growth itself.

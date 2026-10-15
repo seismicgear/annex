@@ -66,6 +66,16 @@ function writeManifest(dir, manifest) {
   return p;
 }
 
+function addTranscriptReference(dir, manifest) {
+  // This suite tests artifact hashes and the required local transcript reference.
+  // The cryptographic transcript itself is verified by verify-ceremony.js and
+  // its separate tests; these deliberately inert bytes do not claim that proof.
+  fs.writeFileSync(path.join(dir, "test-transcript.json"), JSON.stringify({
+    fixtureScope: "artifact reference gate only; not ceremony verification",
+  }));
+  manifest.ceremony = { type: "mpc", transcript: "test-transcript.json" };
+}
+
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "verify-artifacts-test-"));
 }
@@ -152,19 +162,34 @@ test("production profile + ANNEX_ALLOW_DEV_CEREMONY=1 → success", () => {
   assert.match(r.stdout, /WARN ANNEX_ALLOW_DEV_CEREMONY=1/);
 });
 
-test("production profile: ceremony=mpc → success", () => {
+test("production profile: declared mpc with local transcript reference → artifact success", () => {
   const dir = tmpDir();
   const manifest = makeStubArtifacts(dir, false);
-  manifest.ceremony = {
-    type: "mpc",
-    contributors: 5,
-    transcript: "https://example.com/transcript",
-  };
+  addTranscriptReference(dir, manifest);
   const manifestPath = writeManifest(dir, manifest);
   const r = runScript(["--manifest", manifestPath, "--profile", "production"]);
   assert.strictEqual(r.status, 0, `stderr: ${r.stderr}\nstdout: ${r.stdout}`);
   // No dev-fixture warning, no escape-hatch warning.
   assert.doesNotMatch(r.stdout, /dev-fixture/);
+});
+
+test("production profile: mpc without transcript reference → exit 3", () => {
+  const dir = tmpDir();
+  const manifest = makeStubArtifacts(dir, false);
+  manifest.ceremony = { type: "mpc" };
+  const r = runScript(["--manifest", writeManifest(dir, manifest), "--profile", "production"]);
+  assert.strictEqual(r.status, 3, `stdout: ${r.stdout}\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, /names no.*ceremony\.transcript/);
+});
+
+test("production profile: missing declared transcript file → exit 3", () => {
+  const dir = tmpDir();
+  const manifest = makeStubArtifacts(dir, false);
+  addTranscriptReference(dir, manifest);
+  fs.unlinkSync(path.join(dir, manifest.ceremony.transcript));
+  const r = runScript(["--manifest", writeManifest(dir, manifest), "--profile", "production"]);
+  assert.strictEqual(r.status, 3, `stdout: ${r.stdout}\nstderr: ${r.stderr}`);
+  assert.match(r.stderr, /no file exists/);
 });
 
 test("unknown profile → exit 1", () => {
@@ -196,7 +221,7 @@ test("ANNEX_ALLOW_DEV_CEREMONY=1 has no effect under dev profile", () => {
 test("hash mismatch → exit 2 (regression: still detected under production)", () => {
   const dir = tmpDir();
   const manifest = makeStubArtifacts(dir, false);
-  manifest.ceremony = { type: "mpc" };
+  addTranscriptReference(dir, manifest);
   // Corrupt one of the artifacts so its sha256 no longer matches.
   fs.writeFileSync(path.join(dir, "membership.wasm"), "tampered-bytes");
   const manifestPath = writeManifest(dir, manifest);

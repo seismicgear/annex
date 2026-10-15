@@ -1,0 +1,9 @@
+{
+  "name": "annex-release-tauri-cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Integrity-pinned official Tauri CLI used only to build release installers",
+  "dependencies": {
+    "@tauri-apps/cli": "2.11.2"
+  }
+}

@@ -67,7 +67,7 @@ jobs:
         run: sh scripts/verify-production-rejects-dev-fixtures.sh
 
       - name: Desktop resource safety checks
-        run: node --test scripts/tests/desktop-assets.test.mjs scripts/tests/desktop-release.test.mjs
+        run: node --test scripts/tests/desktop-assets.test.mjs scripts/tests/desktop-release.test.mjs scripts/tests/macos-piper.test.mjs
 
       - name: Require production updater signing credentials
         env:
@@ -113,7 +113,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y cmake build-essential libclang-dev
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea # 1.96.0
 
       - name: Verify native codec build tools
         run: cmake --version
@@ -298,7 +298,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea # 1.96.0
         with:
           targets: x86_64-unknown-linux-gnu
 
@@ -400,8 +400,14 @@ jobs:
       - name: Verify complete desktop resource inventory
         run: node scripts/prepare-desktop-assets.mjs --verify --target x86_64-unknown-linux-gnu
 
-      - name: Install Tauri CLI
-        run: cargo install tauri-cli@2.11.2 --locked
+      - name: Install and authenticate pinned official Tauri CLI
+        working-directory: tools/tauri-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+          npm audit signatures
+          node node_modules/@tauri-apps/cli/tauri.js --version
 
       - name: Build Tauri app (Linux)
         working-directory: crates/annex-desktop
@@ -425,8 +431,13 @@ jobs:
             echo "The release job refuses this unless unsigned_dry_run was set."
             CONFIG='{}'
           fi
-          cargo tauri build --target x86_64-unknown-linux-gnu --config "${CONFIG}"
+          node ../../tools/tauri-cli/node_modules/@tauri-apps/cli/tauri.js build --verbose --target x86_64-unknown-linux-gnu --config "${CONFIG}"
         env:
+          # linuxdeploy's bundled strip predates modern ELF RELR sections in
+          # WebKitGTK's dependencies. Preserve them instead of rewriting them
+          # with that tool; the Rust release profile still optimizes the app.
+          # https://github.com/tauri-apps/tauri/issues/14796
+          NO_STRIP: "true"
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
@@ -450,7 +461,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea # 1.96.0
         with:
           targets: x86_64-pc-windows-msvc
 
@@ -508,8 +519,14 @@ jobs:
       - name: Verify complete desktop resource inventory
         run: node scripts/prepare-desktop-assets.mjs --verify --target x86_64-pc-windows-msvc
 
-      - name: Install Tauri CLI
-        run: cargo install tauri-cli@2.11.2 --locked
+      - name: Install and authenticate pinned official Tauri CLI
+        working-directory: tools/tauri-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+          npm audit signatures
+          node node_modules/@tauri-apps/cli/tauri.js --version
 
       - name: Build Tauri app (Windows)
         working-directory: crates/annex-desktop
@@ -526,7 +543,7 @@ jobs:
             echo "No TAURI_SIGNING_PUBLIC_KEY — building WITHOUT updater artifacts."
             CONFIG='{}'
           fi
-          cargo tauri build --target x86_64-pc-windows-msvc --config "${CONFIG}"
+          node ../../tools/tauri-cli/node_modules/@tauri-apps/cli/tauri.js build --target x86_64-pc-windows-msvc --config "${CONFIG}"
         env:
           CMAKE_ARGS: -DCMAKE_POLICY_VERSION_MINIMUM=3.5
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -564,7 +581,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea # 1.96.0
         with:
           targets: ${{ matrix.target }}
 
@@ -621,8 +638,14 @@ jobs:
       - name: Verify complete desktop resource inventory
         run: node scripts/prepare-desktop-assets.mjs --verify --target ${{ matrix.target }}
 
-      - name: Install Tauri CLI
-        run: cargo install tauri-cli@2.11.2 --locked
+      - name: Install and authenticate pinned official Tauri CLI
+        working-directory: tools/tauri-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+          npm audit signatures
+          node node_modules/@tauri-apps/cli/tauri.js --version
 
       - name: Build Tauri app (macOS)
         working-directory: crates/annex-desktop
@@ -638,7 +661,7 @@ jobs:
             echo "No TAURI_SIGNING_PUBLIC_KEY — building WITHOUT updater artifacts."
             CONFIG='{}'
           fi
-          cargo tauri build --target ${{ matrix.target }} --config "${CONFIG}"
+          node ../../tools/tauri-cli/node_modules/@tauri-apps/cli/tauri.js build --target ${{ matrix.target }} --config "${CONFIG}"
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -693,7 +716,7 @@ jobs:
         run: sh scripts/verify-production-rejects-dev-fixtures.sh
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea # 1.96.0
 
       # Three SBOMs because there are three dependency graphs, and a release
       # that names only the Rust one is not an inventory of what shipped.
