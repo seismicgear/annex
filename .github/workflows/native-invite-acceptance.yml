@@ -99,14 +99,7 @@ jobs:
           asset="annex-desktop-macos-${ASSET_ARCH}.dmg"
           # Destination compilation may finish while the exact candidate's
           # other native platforms are still building. Never substitute assets.
-          for attempt in $(seq 1 90); do
-            if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json tagName,isDraft,targetCommitish,url > native-evidence/release.json 2> native-evidence/release-lookup.txt; then
-              break
-            fi
-            if [ "$attempt" = 90 ]; then cat native-evidence/release-lookup.txt; exit 1; fi
-            sleep 20
-          done
-          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json tagName,isDraft,targetCommitish,url > native-evidence/release.json
+          python3 scripts/native-acceptance/macos/wait-release.py "$ASSET_ARCH"
           gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --pattern downloads.json --pattern SHA256SUMS --dir "$RUNNER_TEMP/release"
           python3 scripts/native-acceptance/macos/verify-download.py "$RUNNER_TEMP/release" "$ASSET_ARCH"
           hdiutil attach -readonly -nobrowse -mountpoint "$RUNNER_TEMP/annex-dmg" "$RUNNER_TEMP/release/$asset" | tee native-evidence/dmg-mount.txt
