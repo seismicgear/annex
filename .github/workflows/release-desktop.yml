@@ -100,7 +100,7 @@ jobs:
           bash scripts/check-dependency-security.sh
 
       - name: Desktop resource safety checks
-        run: node --test scripts/tests/desktop-assets.test.mjs scripts/tests/pinned-git-source.test.mjs scripts/tests/desktop-release.test.mjs scripts/tests/macos-piper.test.mjs scripts/tests/windows-runtime.test.mjs scripts/tests/release-write-eligibility.test.mjs
+        run: node --test scripts/tests/desktop-assets.test.mjs scripts/tests/pinned-git-source.test.mjs scripts/tests/desktop-release.test.mjs scripts/tests/macos-piper.test.mjs scripts/tests/windows-runtime.test.mjs scripts/tests/release-write-eligibility.test.mjs scripts/tests/release-draft-upload.test.mjs
 
       - name: Require production updater signing credentials
         env:
@@ -878,17 +878,24 @@ jobs:
           ANNEX_RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('dry-run-{0}', github.sha) }}
         run: node scripts/check-release-write-eligibility.mjs
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Preserve verified assembly before GitHub upload
+        uses: actions/upload-artifact@v4
         with:
-          draft: true
-          overwrite_files: false
-          body_path: RELEASE_NOTES.md
-          generate_release_notes: true
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('dry-run-{0}', github.sha) }}
-          target_commitish: ${{ github.sha }}
-          name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('Dry run {0}', github.sha) }}
-          # Names, actual signatures, download catalog and final checksums are
-          # generated together from the required native outputs above.
-          files: release-assets/*
-          fail_on_unmatched_files: true
+          name: verified-release-assembly
+          path: |
+            release-assets/
+            RELEASE_NOTES.md
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ANNEX_RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('dry-run-{0}', github.sha) }}
+        run: node scripts/upload-release-draft.mjs
+
+      - name: Preserve exact draft upload receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-draft-upload
+          path: release-draft-upload.json
+          if-no-files-found: error
