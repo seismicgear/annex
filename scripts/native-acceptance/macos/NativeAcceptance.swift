@@ -147,7 +147,7 @@ final class NativeAcceptance: XCTestCase {
         capture(safari, "actual-monolithannex-public-invite-page")
         openFromPublicPage()
         let coldPid = try XCTUnwrap(runningAnnex()?.processIdentifier)
-        capture(annex, "published-app-cold-launched-by-public-invite")
+        capture(annex, "installed-app-cold-launched-by-public-invite")
         waitForAdmissionCount(1)
         click(annex, "Create New Identity")
         XCTAssertTrue(annex.buttons["Join invite server"].waitForExistence(timeout: 90))
@@ -158,7 +158,7 @@ final class NativeAcceptance: XCTestCase {
         waitForAdmissionCount(2, timeout: 180)
         XCTAssertTrue(textExists(annex, slug, timeout: 90))
         XCTAssertTrue(textExists(annex, label))
-        capture(annex, "published-app-joined-correct-destination")
+        capture(annex, "installed-app-joined-correct-destination")
         selectGeneral(annex)
         let composer = annex.textViews.firstMatch
         XCTAssertTrue(composer.waitForExistence(timeout: 60))

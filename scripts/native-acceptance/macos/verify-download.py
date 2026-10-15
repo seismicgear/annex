@@ -19,9 +19,12 @@ with asset.open('rb') as stream:
 assert digest == expected['sha256']
 assert asset.stat().st_size == expected['size']
 assert f'{digest}  {asset.name}' in (directory / 'SHA256SUMS').read_text().splitlines()
-Path('native-evidence/published-dmg-verification.json').write_text(json.dumps({
+release = json.loads(Path('native-evidence/release.json').read_text())
+assert release['isDraft'] is False, 'Public acceptance requires a published release'
+Path('native-evidence/installer-verification.json').write_text(json.dumps({
     'passed': True, 'source_commit': catalog['sourceCommit'], 'tag': catalog['tag'],
     'version': catalog['version'], 'asset': asset.name, 'sha256': digest,
     'bytes': asset.stat().st_size, 'acquisition': 'authenticated GitHub release download',
+    'published_installer': True,
     'browser_quarantine_journey': False}, indent=2) + '\n')
 print(f'Actual release DMG verified: {asset.name}, {digest}')

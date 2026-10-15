@@ -9,9 +9,14 @@ on:
       subject_commit:
         description: Exact source commit recorded in that release's downloads.json
         required: true
+      candidate_run:
+        description: Optional exact signed build run for unpublished candidate testing; leave empty for public installer acceptance
+        required: false
+        default: ''
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   macos-session:
@@ -31,15 +36,19 @@ jobs:
     env:
       SUBJECT_COMMIT: ${{ inputs.subject_commit }}
       RELEASE_TAG: ${{ inputs.release_tag }}
+      CANDIDATE_RUN: ${{ inputs.candidate_run }}
       CARGO_BUILD_JOBS: 2
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Verify actual native TLS fixture before compiling
         run: python3 scripts/native-acceptance/macos/prepare-fixture.py --verify-tls
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.SUBJECT_COMMIT }}
           path: subject
+          persist-credentials: false
       - name: Record actual desktop environment
         run: |
           mkdir -p native-evidence
@@ -99,9 +108,13 @@ jobs:
           asset="annex-desktop-macos-${ASSET_ARCH}.dmg"
           # Destination compilation may finish while the exact candidate's
           # other native platforms are still building. Never substitute assets.
-          python3 scripts/native-acceptance/macos/wait-release.py "$ASSET_ARCH"
-          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --pattern downloads.json --pattern SHA256SUMS --dir "$RUNNER_TEMP/release"
-          python3 scripts/native-acceptance/macos/verify-download.py "$RUNNER_TEMP/release" "$ASSET_ARCH"
+          if [ -n "$CANDIDATE_RUN" ]; then
+            python3 scripts/native-acceptance/macos/download-candidate.py "$RUNNER_TEMP/release" "$ASSET_ARCH"
+          else
+            python3 scripts/native-acceptance/macos/wait-release.py "$ASSET_ARCH"
+            gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --pattern downloads.json --pattern SHA256SUMS --dir "$RUNNER_TEMP/release"
+            python3 scripts/native-acceptance/macos/verify-download.py "$RUNNER_TEMP/release" "$ASSET_ARCH"
+          fi
           hdiutil attach -readonly -nobrowse -mountpoint "$RUNNER_TEMP/annex-dmg" "$RUNNER_TEMP/release/$asset" | tee native-evidence/dmg-mount.txt
           test ! -e /Applications/Annex.app
           ditto "$RUNNER_TEMP/annex-dmg/Annex.app" /Applications/Annex.app

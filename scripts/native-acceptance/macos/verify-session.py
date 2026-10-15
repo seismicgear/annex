@@ -6,7 +6,7 @@ from pathlib import Path
 root = Path('native-evidence')
 result = json.loads((root / 'native-invite-result.json').read_text())
 fixture = json.loads((root / 'fixture.json').read_text())
-download = json.loads((root / 'published-dmg-verification.json').read_text())
+download = json.loads((root / 'installer-verification.json').read_text())
 signature = json.loads((root / 'installed-signature-verification.json').read_text())
 compilation = json.loads((root / 'destination-compilation.json').read_text())
 observations = [json.loads(line) for line in (root / 'database-observations.jsonl').read_text().splitlines()]
@@ -44,14 +44,17 @@ assert any(row['path'] == '/api/invites/redeem' and row['status'] == 200
 assert sum(row['path'] == '/api/zk/verify-membership' and row['status'] == 200 for row in http) == 2
 phases = {row['phase'] for row in events}
 required = {'founder-generated-and-copied-invite', 'actual-monolithannex-public-invite-page',
-            'published-app-cold-launched-by-public-invite', 'exact-destination-awaiting-explicit-join',
-            'published-app-joined-correct-destination', 'independent-founder-received-native-message',
+            'installed-app-cold-launched-by-public-invite', 'exact-destination-awaiting-explicit-join',
+            'installed-app-joined-correct-destination', 'independent-founder-received-native-message',
             'warm-public-invite-same-native-process'}
 assert required <= phases
 receipt = {'passed': True, 'source_commit': download['source_commit'], 'asset_sha256': download['sha256'],
            'journeys': 1, 'destination_slug': result['server_slug'], 'recipient_message_sha256': message_sha,
            'native_signature': signature['signing'], 'notarized': False,
            'release_was_draft': json.loads((root / 'release.json').read_text())['isDraft'],
+           'published_installer': download['published_installer'],
+           'installer_acquisition': download['acquisition'],
+           'candidate_build_run': download.get('candidate_build_run'),
            'browser_download_gatekeeper_acceptance': False}
 (root / 'correlated-acceptance.json').write_text(json.dumps(receipt, indent=2) + '\n')
 print(json.dumps(receipt, indent=2))
