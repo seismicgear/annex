@@ -1,7 +1,7 @@
-# Install Annex v0.1.0
+# Install Annex v0.1.1
 
 Use the [download table](../README.md#download-and-install) or
-[release assets](https://github.com/seismicgear/annex/releases/tag/v0.1.0).
+[release assets](https://github.com/seismicgear/annex/releases/tag/v0.1.1).
 Windows and Linux packages are x86-64; macOS has separate Apple Silicon and
 Intel DMGs. Native Linux ARM and Windows ARM packages are not published.
 
@@ -21,8 +21,10 @@ Get-FileHash .\annex-desktop-windows-x86_64.exe -Algorithm SHA256
 Windows packages lack Authenticode signatures. Review the release origin and
 checksum before approving a trust prompt; respect managed-device policy. If
 WebView2 cannot initialize, repair/install Microsoft's WebView2 Runtime and
-restart. A release-era Windows Sandbox attempt was blocked at this step; the
-full native invitation-to-message workflow has not yet been accepted on Windows.
+restart. A release-era Sandbox attempt was blocked at this step. A later
+[user-performed v0.1.0 public-invite launch and admission](acceptance/windows-0.1.0-public-invite.json)
+succeeded in an isolated standard Windows account. That receipt does not qualify
+message exchange or a different installer version.
 
 ## macOS
 

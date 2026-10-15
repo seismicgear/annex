@@ -7,21 +7,21 @@ community on your own hardware, use text and voice channels, choose who joins,
 and connect selected servers through federation. Create a local cryptographic
 identity without an email address or phone number.
 
-**[Download v0.1.0](https://monolithannex.com/#download)** ·
+**[Download v0.1.1](https://monolithannex.com/#download)** ·
 [Get started](docs/getting-started.md) · [Documentation](docs/README.md) ·
 [Release notes](CHANGELOG.md) · [Website](https://monolithannex.com)
 
 ## Download and install
 
-v0.1.0 was published on **October 15, 2026**. These links are pinned to that
-release, rather than a moving latest build.
+v0.1.1 repairs macOS bundle integrity and includes the current community license
+and reviewed dependency updates. These links are pinned to that release.
 
 | System | Installer |
 | --- | --- |
-| Windows x64 | [EXE](https://github.com/seismicgear/annex/releases/download/v0.1.0/annex-desktop-windows-x86_64.exe) · [MSI](https://github.com/seismicgear/annex/releases/download/v0.1.0/annex-desktop-windows-x86_64.msi) |
-| macOS Apple Silicon | [DMG](https://github.com/seismicgear/annex/releases/download/v0.1.0/annex-desktop-macos-aarch64.dmg) |
-| macOS Intel | [DMG](https://github.com/seismicgear/annex/releases/download/v0.1.0/annex-desktop-macos-x86_64.dmg) |
-| Linux x64 | [AppImage](https://github.com/seismicgear/annex/releases/download/v0.1.0/annex-desktop-linux-x86_64.AppImage) · [Debian / Ubuntu DEB](https://github.com/seismicgear/annex/releases/download/v0.1.0/annex-desktop-linux-x86_64.deb) |
+| Windows x64 | [EXE](https://github.com/seismicgear/annex/releases/download/v0.1.1/annex-desktop-windows-x86_64.exe) · [MSI](https://github.com/seismicgear/annex/releases/download/v0.1.1/annex-desktop-windows-x86_64.msi) |
+| macOS Apple Silicon | [DMG](https://github.com/seismicgear/annex/releases/download/v0.1.1/annex-desktop-macos-aarch64.dmg) |
+| macOS Intel | [DMG](https://github.com/seismicgear/annex/releases/download/v0.1.1/annex-desktop-macos-x86_64.dmg) |
+| Linux x64 | [AppImage](https://github.com/seismicgear/annex/releases/download/v0.1.1/annex-desktop-linux-x86_64.AppImage) · [Debian / Ubuntu DEB](https://github.com/seismicgear/annex/releases/download/v0.1.1/annex-desktop-linux-x86_64.deb) |
 
 See [installation instructions](docs/installation.md) for checksums, OS trust
 prompts, Linux prerequisites, and invite-handler troubleshooting. Windows builds
@@ -65,7 +65,12 @@ These capabilities are implemented in the published source. Test coverage and
 real-world acceptance differ by feature and platform; implementation alone is
 not a claim of universal compatibility or an independent security audit.
 
-## What has been verified—and what remains
+## Acceptance evidence by release
+
+The table below records the original v0.1.0 baseline. Native receipts identify
+their exact version; earlier results do not qualify a newer installer. The
+[native acceptance workflow](https://github.com/seismicgear/annex/actions/workflows/native-invite-acceptance.yml)
+retains source-bound Mac session results and artifacts.
 
 | Evidence | v0.1.0 status |
 | --- | --- |
@@ -73,7 +78,8 @@ not a claim of universal compatibility or an independent security audit.
 | Native Linux DEB | Published installer completed an app-created public invite, OS handoff, explicit join, and message exchange with an independent recipient |
 | Native Linux AppImage | Published AppImage launched from its persistent path and handled an invitation through the OS |
 | Browser and backend | Automated unit/integration suites, 13 functional browser tests, 6 group-call tests, and 426 UI checks across 105 surfaces passed on release source |
-| Windows / macOS native end-to-end | Full invitation-to-message acceptance remains pending; an earlier Windows Sandbox run failed at WebView2 initialization |
+| Windows native public invite | [User-performed public launch and correct-server admission](docs/acceptance/windows-0.1.0-public-invite.json) corroborated by installed executable, browser parentage, unchanged invitation code/destination, and server admission records; no message or v0.1.1 claim |
+| macOS native | Version-specific installation and invitation evidence is recorded by the native acceptance workflow |
 | Other qualification | In-place updater installation, every optional speech provider/platform combination, broad NAT/network coverage, independent cryptographic review, and production-scale load/soak evidence remain incomplete |
 
 The [release evidence ledger](docs/RELEASE_READINESS.md) links the exact tag,

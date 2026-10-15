@@ -1,0 +1,55 @@
+{
+  "passed": true,
+  "version": "0.1.0",
+  "scope": "Published Windows v0.1.0 app-generated public invite, ordinary browser launch, and correct-server admission",
+  "performer": "User confirmed performing Open in Annex and explicit Join; resulting UI and passive process/server records were verified.",
+  "source_commit": "2ac5d190481757ce871a3149feafc6f3c44b2b47",
+  "installer_sha256": "6bf644d251b9408461991d9c3a3b105d9e3f5975f7ec22f1de22c09c9f7a8f89",
+  "installed_executable_sha256": "58adb21238b5e3d865553fd05f5539ab799c8823f5c8717fe8edf4336b0231fc",
+  "public_routing_origin": "https://www.monolithannex.com",
+  "invite_sha256": "c622487bdec8ce05921183ce24479ab834ea7f694c4b51236fa0aae3175c2d4e",
+  "destination": "https://annex-win-2ac5d19.localtest.me:3480",
+  "server_slug": "2ac590dfc743",
+  "server_label": "Annex Windows Native Target 2ac5d19",
+  "native_launch_at": "2026-10-15T18:54:42.7977290Z",
+  "browser_parentage_verified": true,
+  "launch_argument": {
+    "server": "https://annex-win-2ac5d19.localtest.me:3480",
+    "code_sha256": "e9063ea563652d37569d6b1d3dcbf5ff19ffb4fd5c4e80d94949f1242520b5e9",
+    "uri_sha256": "118a93aa68cecaeae8ee7559162cb177e73e2a7abe7ec431d4c0cc3f6ea679c8"
+  },
+  "admission_http_events": [
+    {
+      "at": "2026-10-15T18:54:48.125Z",
+      "method": "POST",
+      "path": "/api/invites/redeem",
+      "status": 200,
+      "request_origin": "https://tauri.localhost"
+    },
+    {
+      "at": "2026-10-15T18:54:48.155Z",
+      "method": "POST",
+      "path": "/api/registry/register",
+      "status": 200,
+      "request_origin": "https://tauri.localhost"
+    },
+    {
+      "at": "2026-10-15T18:54:48.687Z",
+      "method": "POST",
+      "path": "/api/zk/verify-membership",
+      "status": 200,
+      "request_origin": "https://tauri.localhost"
+    }
+  ],
+  "admitted_identities_before": 1,
+  "admitted_identities_after": 2,
+  "access_mode": "public",
+  "invite_use_note": "Public access does not consume invite-only admission seats; the real invite validation request passed.",
+  "full_local_receipt_sha256": "8b36f14821d2b984da7f87e00297408e1b108f5997f1472822ec1c11e8726a40",
+  "limitations": [
+    "No recording of the user clicks",
+    "No independent message or warm-invite acceptance in this Windows receipt",
+    "Does not qualify Windows 0.1.1 or macOS",
+    "Only newly created isolated test identities and the loopback target were used"
+  ]
+}

@@ -104,3 +104,42 @@ found the marketing record but did not establish an existing writable project
 thread. No competing tracker or out-of-scope thread was created. This source-linked
 repository record preserves the handoff; retry synchronization after the service
 and project/thread identity are available. No synchronization success is claimed.
+
+### Native release follow-up — 2026-10-15 20:50 UTC
+
+[PR 322](https://github.com/seismicgear/annex/pull/322) integrates the native
+signing correction with main 097261105ef6c00add1fa2dc474151ecf2dee4b1.
+The final application candidate is c4513be6f301e49511e219c9c969d5eefd7e109b,
+[release run 38800373470](https://github.com/seismicgear/annex/actions/runs/38800373470).
+At this checkpoint its Apple Silicon bundle passed strict verification, including
+every embedded native file; the other installer jobs were still running. The
+earlier bf90d93 packaging probe passed strict verification on both Mac architectures
+but was superseded without publication. Native acceptance is a separate gate.
+
+The [Windows v0.1.0 receipt](acceptance/windows-0.1.0-public-invite.json) records
+the user's confirmed public invitation launch and explicit correct-server join.
+Process, invitation, and server admission evidence corroborate it. It does not
+claim a recording of the user's clicks, message exchange, Windows v0.1.1, or Mac
+acceptance. Only fresh test identities and the isolated loopback destination were
+used. The private invitation code and account paths are omitted from this record.
+
+The [Mac native run](https://github.com/seismicgear/annex/actions/runs/38803891289)
+uses the exact candidate with harness ad4e0c8acc28c284e49aee9e4ababb31a9ad16a6.
+It creates the founder and invitation through actual UI, follows monolithannex.com,
+requires native launch and explicit admission, and correlates an independently
+received message with authenticated encrypted storage. Its compiled test server
+cache is bound to the exact source, architecture, and binary hash; every session
+uses a fresh database. This run was in progress at the checkpoint, not accepted.
+
+The integrated client passed all 928 tests across 106 files. The existing 22
+resource/release checks passed, as did CodeQL on the integrated application source.
+[Website PR 29](https://github.com/seismicgear/monolith-annex/pull/29) prepares the
+v0.1.1 links on the current site design; all 110 route, signaling, catalog and
+renderer checks passed. Publication and production link readback remain required.
+
+**Not synchronized to KI AI Congress / Constellation.** The current authorized
+workspace orientation also returned SOURCE_READ_TIMEOUT, SQLSTATE 57014, phase
+nodes. This existing record preserves the handoff. The owner remains the native
+release workstream; the next observable gates are completed native receipts,
+unchanged-byte canonical release publication, public download readback, and native
+acceptance against the published installers. No new tracker was created.
