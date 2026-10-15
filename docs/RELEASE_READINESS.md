@@ -45,10 +45,35 @@ availability remains unresolved.
   ceremony, broader alignment-threshold calibration, measured target-scale/latency
   qualification, and a seven-day load soak.
 
-Windows binaries are not Authenticode-signed; macOS uses ad-hoc signatures and
-is not notarized. Tauri updater signing is a separate trust mechanism. The
+Windows binaries are not Authenticode-signed. A later packaging investigation
+in [#322](https://github.com/seismicgear/annex/pull/322) found **incomplete macOS
+bundle signatures in v0.1.0**. Earlier build/updater checks did not establish
+complete native bundle sealing. Wait for the separately qualified v0.1.1
+correction; Developer ID signing and notarization remain unavailable.
+Tauri updater signing is a separate trust mechanism. The
 roadmap retains these incomplete requirements rather than treating publication
 as evidence of their completion.
+
+### macOS correction after publication
+
+PR #322 adds explicit ad-hoc signing, signs the embedded Whisper executable
+before resource provenance is recorded, and fails release upload unless the
+finished app and every native Mach-O file pass strict verification. Its first
+candidate was rejected because the Intel Whisper binary was unsigned. The
+[corrected candidate build](https://github.com/seismicgear/annex/actions/runs/38795731644)
+uses source `bf90d930663a14b3a1db7f24e0d741ed3475675d`; do not infer a published
+or accepted release from a running workflow.
+
+The new native workflow binds the exact downloaded DMG and destination server
+to the release source and checks Safari → installed Annex → explicit Join →
+independently received message, plus warm invite delivery. Its receipts explicitly
+do not qualify browser-download quarantine/Gatekeeper behavior. Successful
+execution still needs its own source/artifact-bound receipt.
+
+The same PR reports a user-performed Windows v0.1.0 public-invite launch and
+correct-server admission, corroborated by the installed process and admission
+observations. This narrower evidence does not qualify a complete Windows message
+journey or any v0.1.1 Windows installer.
 
 ### Public-presence pass
 

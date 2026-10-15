@@ -1,0 +1,132 @@
+name: Published native invite acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Exact release whose installer will be tested
+        required: true
+      subject_commit:
+        description: Exact source commit recorded in that release's downloads.json
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  macos-session:
+    name: Native session (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            arch: aarch64
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            arch: x86_64
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      SUBJECT_COMMIT: ${{ inputs.subject_commit }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      CARGO_BUILD_JOBS: 2
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify actual native TLS fixture before compiling
+        run: python3 scripts/native-acceptance/macos/prepare-fixture.py --verify-tls
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.SUBJECT_COMMIT }}
+          path: subject
+      - name: Record actual desktop environment
+        run: |
+          mkdir -p native-evidence
+          sw_vers > native-evidence/macos-version.txt
+          uname -m > native-evidence/architecture.txt
+          stat -f '%Su' /dev/console > native-evidence/console-user.txt
+          xcodebuild -version > native-evidence/xcode-version.txt
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: subject/client/package-lock.json
+      - uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}-native-acceptance
+          workspaces: subject -> target
+          cache-on-failure: true
+      - name: Build actual source-bound native destination and founder client
+        working-directory: subject
+        run: |
+          set -euo pipefail
+          node scripts/verify-libclang.mjs
+          node zk/scripts/install-ceremony.js
+          node zk/scripts/verify-artifacts.js --all
+          node scripts/prepare-zk-dev.js
+          npm --prefix client ci
+          npm --prefix client run build
+          cargo build --release --locked --target ${{ matrix.target }} -p annex-server
+      - name: Retrieve and install exact release DMG
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          asset="annex-desktop-macos-${ASSET_ARCH}.dmg"
+          # Destination compilation may finish while the exact candidate's
+          # other native platforms are still building. Never substitute assets.
+          for attempt in $(seq 1 90); do
+            if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json tagName,isDraft,targetCommitish,url > native-evidence/release.json 2> native-evidence/release-lookup.txt; then
+              break
+            fi
+            if [ "$attempt" = 90 ]; then cat native-evidence/release-lookup.txt; exit 1; fi
+            sleep 20
+          done
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json tagName,isDraft,targetCommitish,url > native-evidence/release.json
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --pattern downloads.json --pattern SHA256SUMS --dir "$RUNNER_TEMP/release"
+          python3 scripts/native-acceptance/macos/verify-download.py "$RUNNER_TEMP/release" "$ASSET_ARCH"
+          hdiutil attach -readonly -nobrowse -mountpoint "$RUNNER_TEMP/annex-dmg" "$RUNNER_TEMP/release/$asset" | tee native-evidence/dmg-mount.txt
+          test ! -e /Applications/Annex.app
+          ditto "$RUNNER_TEMP/annex-dmg/Annex.app" /Applications/Annex.app
+          hdiutil detach "$RUNNER_TEMP/annex-dmg"
+          shasum -a 256 /Applications/Annex.app/Contents/MacOS/* > native-evidence/installed-executable-sha256.txt
+          plutil -p /Applications/Annex.app/Contents/Info.plist > native-evidence/installed-info-plist.txt
+      - name: Verify published app signature
+        id: signature
+        continue-on-error: true
+        run: python3 scripts/verify-macos-bundle.py /Applications/Annex.app --output native-evidence/installed-signature-verification.json 2> native-evidence/installed-signature-check.txt
+      - name: Prepare isolated HTTPS destination
+        run: python3 scripts/native-acceptance/macos/prepare-fixture.py subject subject/target/${{ matrix.target }}/release/annex-server
+      - name: Exercise public invite and real native admission
+        run: |
+          set -euo pipefail
+          python3 scripts/native-acceptance/macos/make-project.py
+          xcodebuild -project scripts/native-acceptance/macos/NativeAcceptance.xcodeproj -scheme NativeAcceptance -destination 'platform=macOS' -resultBundlePath native-evidence/native-session.xcresult test | tee native-evidence/xcode-test.log
+      - name: Export native test screenshots
+        if: always()
+        run: |
+          if test -d native-evidence/native-session.xcresult; then
+            xcrun xcresulttool export attachments --path native-evidence/native-session.xcresult --output-path native-evidence/attachments
+          fi
+      - name: Require the complete evidence and signature gates
+        if: always()
+        env:
+          SIGNATURE_OUTCOME: ${{ steps.signature.outcome }}
+        run: |
+          test "$SIGNATURE_OUTCOME" = success
+          python3 scripts/native-acceptance/macos/verify-session.py
+      - name: Preserve actual native evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-session-macos-${{ matrix.arch }}
+          path: |
+            native-evidence/
+            !native-evidence/*private*
+          if-no-files-found: error
+          retention-days: 14

@@ -35,11 +35,18 @@ shasum -a 256 annex-desktop-macos-aarch64.dmg
 # For Intel, substitute annex-desktop-macos-x86_64.dmg.
 ```
 
-The bundles are ad-hoc signed, without Developer ID signing or notarization.
-After verifying the download, use the per-app approval offered by **System
-Settings → Privacy & Security**, if available. Do not disable Gatekeeper globally.
-Both native builds passed release gates; complete Mac invite/join/message
-acceptance remains pending.
+**Known v0.1.0 packaging problem:** the published apps lack complete bundle
+signatures and macOS may reject them. Wait for a corrected, qualified release;
+do not remove quarantine or disable Gatekeeper to work around this defect.
+[#322](https://github.com/seismicgear/annex/pull/322) adds explicit ad-hoc app
+signing, signed embedded Whisper code, and strict checks of the completed bundle.
+That correction is prepared as v0.1.1 and is separate from the immutable v0.1.0
+assets. Developer ID signing and notarization are still unavailable.
+
+The original native builds passed their then-existing release gates, which did
+not establish complete bundle sealing. Full Mac invitation/join/message
+acceptance and normal browser-download/Gatekeeper acceptance remain separate
+requirements; the new native workflow is not proof that either has passed.
 
 ## Linux
 

@@ -25,7 +25,10 @@ release, rather than a moving latest build.
 
 See [installation instructions](docs/installation.md) for checksums, OS trust
 prompts, Linux prerequisites, and invite-handler troubleshooting. Windows builds
-are not Authenticode-signed; macOS builds are ad-hoc signed and not notarized.
+are not Authenticode-signed. **The v0.1.0 Mac packages have incomplete bundle
+signatures and may be rejected by macOS.** Wait for the separately qualified
+packaging correction tracked in [#322](https://github.com/seismicgear/annex/pull/322).
+Developer ID signing and notarization are not available.
 The Tauri updater signatures are separate from OS publisher signing.
 
 ## Your first conversation

@@ -149,6 +149,14 @@ async function prepareWhisper(pins, platform, assets, cache) {
   if (existing.some(item => ![name, 'LICENSE', 'source-provenance.json', '.gitkeep'].includes(item))) throw new Error('Whisper destination contains a different runtime. Use an empty asset directory.');
   await fs.copyFile(binary, path.join(dest, name));
   await fs.copyFile(path.join(source, 'LICENSE'), path.join(dest, 'LICENSE'));
+  // Resource executables are not automatically signed by Tauri's app-bundle
+  // signer. Intel's linker leaves this binary unsigned; ARM's incidental
+  // linker signature is not a portable packaging contract. Sign before the
+  // provenance inventory is sealed, so it describes the shipped bytes.
+  if (platform.startsWith('darwin-')) {
+    command('codesign', ['--force', '--sign', '-', '--timestamp=none', path.join(dest, name)], dest);
+    command('codesign', ['--verify', '--strict', path.join(dest, name)], dest);
+  }
   // --help is written to stderr by some official releases; capture both streams.
   const help = command(path.join(dest, name), ['--help'], dest, true);
   if (/deprecated/i.test(help) || !help.includes('--model') || !help.includes('--output-txt')) throw new Error('Refusing an incomplete or deprecated Whisper CLI');
@@ -168,6 +176,10 @@ export async function run(options = {}) {
     const actual = await resourceInventory(assets);
     if (JSON.stringify(actual) !== JSON.stringify(receipt.files)) throw new Error('Desktop runtime inventory changed since verified preparation');
     for (const pin of pins.files) await verifyFile(checkedPath(assets, pin.path), pin);
+    if (platform.startsWith('darwin-')) {
+      // Refuse a previously prepared unsigned runtime before a costly rebuild.
+      command('codesign', ['--verify', '--strict', path.join(assets, 'whisper', 'whisper-cli')], assets);
+    }
     console.log(`[desktop-assets] verified ${actual.length} files for ${platform}`); return;
   }
   if (await exists(receiptPath)) return run({ ...options, verify: true });

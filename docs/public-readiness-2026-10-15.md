@@ -104,3 +104,24 @@ found the marketing record but did not establish an existing writable project
 thread. No competing tracker or out-of-scope thread was created. This source-linked
 repository record preserves the handoff; retry synchronization after the service
 and project/thread identity are available. No synchronization success is claimed.
+
+## Merged and deployed receipts
+
+- [Application/docs PR #321](https://github.com/seismicgear/annex/pull/321), merged
+  as `097261105ef6c00add1fa2dc474151ecf2dee4b1`.
+  [Final CI](https://github.com/seismicgear/annex/actions/runs/38791097575) passed:
+  1,567 Rust test passes, real-SRTP rejoin, separate Redis multiprocess checks,
+  strict lint/format/proof/supply-chain gates, 928 frontend tests, required Linux
+  and Windows packaging, Linux install/launch/removal, browser/group-call checks,
+  and both server smoke platforms. The conditional macOS PR lane was skipped;
+  this is not Mac native acceptance. CodeQL also passed.
+- [Website PR #27](https://github.com/seismicgear/monolith-annex/pull/27), merged
+  as `95cf781a90ec4f82c4dd5e7f6c52038edd949cd0`, deployed READY through the existing
+  Vercel integration. Public verification checked 27 links, all six installers,
+  invite `no-store`, the actual 1200×630 social image, HEAD/404 handling, and an
+  exact deployed/source CSS match. Production npm audit found zero vulnerabilities.
+- A concurrent macOS investigation found incomplete v0.1.0 bundle signatures.
+  The installation page, website, and release ledger now identify that defect
+  and the separate #322 correction; no successful Mac acceptance is invented.
+  [Dependency decisions](dependency-upgrades.md) record the newly refilled queue
+  and the temporary routine-version freeze, with security updates retained.

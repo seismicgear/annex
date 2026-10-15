@@ -195,7 +195,7 @@ jobs:
           sha256sum "annex-server-${version}-x86_64-unknown-linux-gnu.tar.gz"
 
       - name: Upload the server tarball
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: server-linux-x86_64
           path: annex-server-*.tar.gz
@@ -235,7 +235,7 @@ jobs:
                       /opt/hostedtoolcache/CodeQL /usr/local/share/boost
           df -h /
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Resolve the image reference
         id: img
@@ -250,7 +250,7 @@ jobs:
       # the local daemon for the start check below, and an image is pushed only
       # after something has run it.
       - name: Build the image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           load: true
@@ -470,7 +470,7 @@ jobs:
           python3 scripts/verify-linux-protocol.py --deb target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb --appimage target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
 
       - name: Upload Linux artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: annex-linux-x86_64
           path: |
@@ -579,7 +579,7 @@ jobs:
 
       - name: Preserve Windows installer compilation diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-installer-compilation
           path: |
@@ -607,14 +607,14 @@ jobs:
 
       - name: Preserve Windows prerequisite regression evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-prerequisite-regression
           path: C:/AnnexWebViewFixture/evidence/
           if-no-files-found: warn
 
       - name: Upload Windows artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: annex-windows-x86_64
           path: |
@@ -662,6 +662,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+          cache-on-failure: true
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
@@ -732,8 +733,20 @@ jobs:
           TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
           ANNEX_UPDATER_ENDPOINT: ${{ vars.ANNEX_UPDATER_ENDPOINT || 'https://github.com/seismicgear/annex/releases/latest/download/latest.json' }}
 
-      - name: Upload macOS artifacts
+      - name: Verify sealed macOS application and embedded code
+        run: |
+          python3 scripts/verify-macos-bundle.py "target/${{ matrix.target }}/release/bundle/macos/Annex.app" \
+            --output "target/${{ matrix.target }}/release/macos-signature-verification.json"
+
+      - name: Preserve macOS signature verification
         uses: actions/upload-artifact@v4
+        with:
+          name: macos-signature-${{ matrix.arch }}
+          path: target/${{ matrix.target }}/release/macos-signature-verification.json
+          if-no-files-found: error
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v7
         with:
           name: annex-macos-${{ matrix.arch }}
           path: |
@@ -846,7 +859,7 @@ jobs:
         run: node scripts/check-release-write-eligibility.mjs
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           draft: true
           overwrite_files: false

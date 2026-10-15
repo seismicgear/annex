@@ -8,6 +8,18 @@ unchanged. `Unreleased` describes work after that tag.
 
 ## [Unreleased]
 
+The source version is being prepared as **0.1.1**. It is not a published release
+until its own release gates and installer evidence are complete. The original
+v0.1.0 installers remain unchanged.
+
+- Correct macOS bundle sealing with explicit ad-hoc app signing and a signed
+  embedded Whisper executable. Strictly verify the completed bundle and every
+  embedded Mach-O file before release upload.
+- Add source/asset-bound native macOS public-invite acceptance infrastructure
+  using actual DMGs, XCTest, and independently correlated destination records.
+  Candidate acceptance is still pending; this is not an acceptance receipt.
+- Developer ID signing and notarization remain unconfigured.
+
 - Refresh the website, onboarding, README, architecture, privacy documentation,
   and contribution guide against implementation and release evidence.
 - Adopt Annex Community License 2.0: commercial use and modification allowed,
