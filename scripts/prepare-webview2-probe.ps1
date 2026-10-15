@@ -45,8 +45,8 @@ function Assert-Probe([string]$File) {
 # Invoke this script in a child PowerShell so this toolchain cannot replace the
 # caller's x64 environment used for the speech sidecars and Rust build.
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-$installation = & $vswhere -latest -version '[17.0,18.0)' -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-if ($LASTEXITCODE -ne 0 -or -not $installation) { throw 'Visual Studio 2022 C++ x86 build tools are required.' }
+$installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+if ($LASTEXITCODE -ne 0 -or -not $installation) { throw 'Visual Studio C++ x86/x64 build tools are required.' }
 $developerCommand = Join-Path $installation 'VC\Auxiliary\Build\vcvars32.bat'
 $compilerEnvironment = & cmd.exe /d /c ('"'+$developerCommand+'" >nul && set')
 if ($LASTEXITCODE -ne 0) { throw 'Could not initialize the x86 Visual C++ toolchain.' }
