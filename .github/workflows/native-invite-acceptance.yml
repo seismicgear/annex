@@ -60,6 +60,12 @@ jobs:
           set -euo pipefail
           python3 scripts/native-acceptance/macos/make-project.py
           xcodebuild -project scripts/native-acceptance/macos/NativeAcceptance.xcodeproj -scheme NativeAcceptance -destination 'platform=macOS' -resultBundlePath native-evidence/native-session.xcresult test | tee native-evidence/xcode-test.log
+      - name: Export native test screenshots
+        if: always()
+        run: |
+          if test -d native-evidence/native-session.xcresult; then
+            xcrun xcresulttool export attachments --path native-evidence/native-session.xcresult --output-path native-evidence/attachments
+          fi
       - name: Preserve actual native evidence
         if: always()
         uses: actions/upload-artifact@v4
