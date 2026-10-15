@@ -69,7 +69,7 @@ jobs:
       - name: Install Rust toolchain for dependency security gate
         uses: dtolnay/rust-toolchain@3fc1e40d4c4ce3007de028907c886bc3996ce2ea # 1.96.0
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: dependency-security
           workspaces: scripts/security-regressions -> target

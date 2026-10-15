@@ -123,9 +123,9 @@ test.describe.serial('real history, rate and storage boundaries',()=>{
     // Explicit opt-in is required because this case restarts its disposable
     // captured server and changes only that session configuration temporarily.
     expect(session,'Set ANNEX_BOUNDARY_SESSION to the matching dedicated session JSON').toBeTruthy();
-    let prepared=false;let transport:Awaited<ReturnType<typeof dataSocket>>|undefined;
+    let transport:Awaited<ReturnType<typeof dataSocket>>|undefined;
     try{
-      prepared=true;const preparedState=await storage('prepare');expect(preparedState.cap).toBeGreaterThan(preparedState.bytes);
+      const preparedState=await storage('prepare');expect(preparedState.cap).toBeGreaterThan(preparedState.bytes);
       await founder.page.reload();await expect(founder.page.getByRole('button',{name:'Chat',exact:true})).toBeVisible({timeout:150_000});
       const writer=await newActor(browser);actors.push(writer);await select(writer,channel.name);transport=await dataSocket(writer);
       let size=preparedState;let writes=0;
@@ -146,6 +146,6 @@ test.describe.serial('real history, rate and storage boundaries',()=>{
       const cleared=founder.page.waitForResponse(r=>r.request().method()==='POST'&&new URL(r.url()).pathname==='/api/admin/storage/clear');await founder.page.getByRole('button',{name:'Clear storage gate',exact:true}).click();expect((await cleared).status()).toBe(200);await expect(founder.page.getByRole('status').filter({hasText:'Storage gate cleared'})).toBeVisible();
       const marker=`storage-recovered-${Date.now()}`;await send(founder,channel.name,marker);
       await info.attach('real-storage-recovery',{body:Buffer.from(JSON.stringify({writes,cap:preparedState.cap,overCapBytes:size.bytes,afterMaintenanceBytes:maintained.bytes,recoveredMessage:marker})),contentType:'application/json'});
-    }finally{transport?.ws.close();await founder.context.setOffline(false);if(prepared)await storage('restore');}
+    }finally{transport?.ws.close();await founder.context.setOffline(false);await storage('restore');}
   });
 });

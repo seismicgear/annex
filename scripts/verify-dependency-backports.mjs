@@ -1,6 +1,7 @@
 // Reconstruct each reviewed backport from a checksum-pinned crates.io archive.
 // This must pass with resolved Cargo metadata before an advisory disposition.
 import fs from 'node:fs/promises';
+import { constants } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { gunzipSync } from 'node:zlib';
@@ -33,10 +34,22 @@ function tarFiles(archive, prefix) {
   if (!files.size) throw new Error('Pinned crate contains no files');
   return files;
 }
-async function regularFile(filename) {
-  const stat = await fs.lstat(filename);
-  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`Backport file must be a regular file: ${filename}`);
-  return fs.readFile(filename);
+export async function regularFile(filename) {
+  const handle = await fs.open(filename, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const opened = await handle.stat({ bigint: true });
+    // Windows does not expose O_NOFOLLOW through Node. Reject links and require
+    // the current directory entry to identify this exact opened object there
+    // too. The subsequent read never reopens the replaceable pathname.
+    const entry = await fs.lstat(filename, { bigint: true });
+    if (!opened.isFile() || !entry.isFile() || entry.isSymbolicLink()
+      || opened.dev !== entry.dev || opened.ino !== entry.ino) {
+      throw new Error(`Backport file must be the same regular file: ${filename}`);
+    }
+    return await handle.readFile();
+  } finally {
+    await handle.close();
+  }
 }
 async function filePaths(directory, prefix = '') {
   const paths = [];

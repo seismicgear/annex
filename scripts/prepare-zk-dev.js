@@ -192,13 +192,6 @@ function copyCapabilityCircuits() {
   }
 }
 
-function capabilityArtifactsPresent() {
-  return CAPABILITY_CIRCUITS.every((name) => {
-    const p = capabilityArtifactPaths(name);
-    return exists(p.wasmDest) && exists(p.zkeyDest);
-  });
-}
-
 // ── Staleness is about CONTENT, not existence ─────────────────────────────
 //
 // This block used to be `if (every dest exists) { nothing to do }`, and that

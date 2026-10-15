@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { verifyBackports } from '../verify-dependency-backports.mjs';
+import { regularFile, verifyBackports } from '../verify-dependency-backports.mjs';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 async function fixture(t) {
@@ -67,4 +67,48 @@ test('removing a runtime regression cannot leave the source gate green', async t
   const { root, metadata } = await fixture(t);
   await fs.writeFile(path.join(root, 'scripts/security-regressions/src/lib.rs'), '// omitted tests\n');
   await assert.rejects(verifyBackports(root, metadata), /regression gate changed/);
+});
+
+test('reads the verified descriptor when its pathname is replaced after inspection', async t => {
+  const { root } = await fixture(t);
+  const filename = path.join(root, 'opened-file');
+  await fs.writeFile(filename, 'verified original bytes');
+  const lstat = fs.lstat.bind(fs);
+  t.mock.method(fs, 'lstat', async (target, options) => {
+    const inspected = await lstat(target, options);
+    if (target === filename) {
+      await fs.rename(filename, `${filename}.original`);
+      await fs.writeFile(filename, 'unreviewed replacement bytes');
+    }
+    return inspected;
+  });
+  assert.equal((await regularFile(filename)).toString(), 'verified original bytes');
+});
+
+test('refuses a pathname changed between opening and identity inspection', async t => {
+  const { root } = await fixture(t);
+  const filename = path.join(root, 'opened-file');
+  await fs.writeFile(filename, 'original bytes');
+  const lstat = fs.lstat.bind(fs);
+  t.mock.method(fs, 'lstat', async (target, options) => {
+    if (target === filename) {
+      await fs.rename(filename, `${filename}.original`);
+      await fs.writeFile(filename, 'replacement bytes');
+    }
+    return lstat(target, options);
+  });
+  await assert.rejects(regularFile(filename), /same regular file/);
+});
+
+test('refuses actual symbolic filesystem entries', async t => {
+  const { root } = await fixture(t);
+  const link = path.join(root, 'link');
+  if (process.platform === 'win32') {
+    // Junction creation requires no Administrator or Developer Mode setting.
+    // File symlink refusal is also exercised on the Linux/macOS CI runners.
+    await fs.symlink(path.join(root, 'vendor'), link, 'junction');
+  } else {
+    await fs.symlink(path.join(root, 'vendor/glib/Cargo.toml'), link);
+  }
+  await assert.rejects(regularFile(link), /ELOOP|EISDIR|EPERM|same regular file/);
 });
