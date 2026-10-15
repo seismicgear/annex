@@ -193,6 +193,10 @@ pub struct GetIdentityResponse {
     pub participant_type: RoleCode,
     /// Whether the identity is active.
     pub active: bool,
+    /// Whether this is the original identity on this server, independent of
+    /// later moderator grants. This label does not confer capabilities.
+    #[serde(rename = "isFounder", default)]
+    pub is_founder: bool,
     /// Capability flags.
     pub capabilities: Capabilities,
 }
@@ -364,15 +368,30 @@ pub async fn get_identity_handler(
     Extension(state): Extension<Arc<AppState>>,
     Path(pseudonym_id): Path<String>,
 ) -> Result<Json<GetIdentityResponse>, ApiError> {
-    let result =
-        tokio::task::spawn_blocking(move || fetch_platform_identity(&state, &pseudonym_id))
-            .await
-            .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
+    let (result, is_founder) = tokio::task::spawn_blocking(move || {
+        let identity = fetch_platform_identity(&state, &pseudonym_id)?;
+        let conn = state
+            .pool
+            .get()
+            .map_err(|e| ApiError::InternalServerError(format!("db connection failed: {e}")))?;
+        let founder_id: i64 = conn
+            .query_row(
+                "SELECT id FROM platform_identities WHERE server_id=?1 ORDER BY id LIMIT 1",
+                [state.server_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| ApiError::InternalServerError(e.to_string()))?;
+        let is_founder = identity.id == founder_id;
+        Ok::<_, ApiError>((identity, is_founder))
+    })
+    .await
+    .map_err(|e| ApiError::InternalServerError(format!("task join error: {e}")))??;
 
     Ok(Json(GetIdentityResponse {
         pseudonym_id: result.pseudonym_id,
         participant_type: result.participant_type,
         active: result.active,
+        is_founder,
         capabilities: Capabilities {
             can_voice: result.can_voice,
             can_moderate: result.can_moderate,

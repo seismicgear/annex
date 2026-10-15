@@ -99,6 +99,7 @@ pub(crate) async fn start_embedded_server(
         .get_or_init(|| init_tracing(&cfg.logging).map_err(|error| error.to_string()))
         .clone()?;
 
+    let database_path = std::path::PathBuf::from(&cfg.database.path);
     // Prepare the server (DB, state, listener).
     let PreparedServer {
         listener,
@@ -122,6 +123,7 @@ pub(crate) async fn start_embedded_server(
         let mut guard = state.server.lock().map_err(|e| e.to_string())?;
         *guard = Some(ServerState {
             url: url.clone(),
+            database_path,
             shutdown: shutdown.clone(),
             shutdown_complete,
         });

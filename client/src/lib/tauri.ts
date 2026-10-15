@@ -107,6 +107,16 @@ export async function startEmbeddedServer(): Promise<string> {
   return invoke<string>('start_embedded_server');
 }
 
+export interface HostIdentityContext {
+  server_slug: string;
+  founder_pseudonym_id: string | null;
+}
+
+/** Public identity identifiers from this process's actual embedded database. */
+export function getHostIdentityContext(): Promise<HostIdentityContext> {
+  return invoke<HostIdentityContext>('get_host_identity_context');
+}
+
 /** Register with the Annex router to acquire a public endpoint. Returns the public URL. */
 export async function acquirePublicEndpoint(): Promise<string> {
   return invoke<string>('acquire_public_endpoint');

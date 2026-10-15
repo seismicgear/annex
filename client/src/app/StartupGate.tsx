@@ -279,6 +279,36 @@ export function StartupGate(props: StartupGateProps) {
     );
   }
 
+  // Gate 2: Server not yet selected → Screen 2 (startup mode selector).
+  // The server is NOT started yet — StartupModeSelector handles starting
+  // the embedded server if the user picks "Host a Server".
+  const canChooseBeforeIdentity = isTauri() && !pendingInvite && !pendingProtocolInvite
+    && !pendingProtocolInviteConfirmation && !protocolInviteLoading;
+  if (!serverReady && (identity?.sk || canChooseBeforeIdentity)) {
+    return (
+      <div className="app">
+        <InviteConfirmation
+          invite={pendingProtocolInviteConfirmation}
+          busy={protocolInviteBusy}
+          error={protocolInviteError}
+          onAccept={handleAcceptProtocolInvite}
+          onIgnore={handleIgnoreProtocolInvite}
+        />
+        <main className="app-main setup">
+          {protocolInviteLoading || pendingProtocolInvite || pendingProtocolInviteConfirmation ? (
+            <p role="status">{protocolInviteLoading ? 'Checking for an invite…' : protocolInviteBusy ? 'Connecting to the invited server…' : 'Choose whether to join the invited server or ignore this invite.'}</p>
+          ) : <StartupModeSelector
+            onReady={(degraded) => {
+              beginStartupFlow();
+              setServerReady(true);
+              if (degraded) setDegradedStartup(degraded);
+            }}
+          />}
+        </main>
+      </div>
+    );
+  }
+
   // Gate 1 — HARD GATE: No identity keys → Screen 1 (identity creation).
   // This screen makes ZERO network requests.
   if (!identity?.sk) {
@@ -306,34 +336,6 @@ export function StartupGate(props: StartupGateProps) {
         />
         <main className="app-main setup">
           <IdentitySetup />
-        </main>
-      </div>
-    );
-  }
-
-  // Gate 2: Server not yet selected → Screen 2 (startup mode selector).
-  // The server is NOT started yet — StartupModeSelector handles starting
-  // the embedded server if the user picks "Host a Server".
-  if (!serverReady) {
-    return (
-      <div className="app">
-        <InviteConfirmation
-          invite={pendingProtocolInviteConfirmation}
-          busy={protocolInviteBusy}
-          error={protocolInviteError}
-          onAccept={handleAcceptProtocolInvite}
-          onIgnore={handleIgnoreProtocolInvite}
-        />
-        <main className="app-main setup">
-          {protocolInviteLoading || pendingProtocolInvite || pendingProtocolInviteConfirmation ? (
-            <p role="status">{protocolInviteLoading ? 'Checking for an invite…' : protocolInviteBusy ? 'Connecting to the invited server…' : 'Choose whether to join the invited server or ignore this invite.'}</p>
-          ) : <StartupModeSelector
-            onReady={(degraded) => {
-              beginStartupFlow();
-              setServerReady(true);
-              if (degraded) setDegradedStartup(degraded);
-            }}
-          />}
         </main>
       </div>
     );

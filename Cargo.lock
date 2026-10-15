@@ -139,6 +139,7 @@ dependencies = [
  "raw-window-handle",
  "reqwest 0.12.28",
  "rfd",
+ "rusqlite",
  "rust-ini",
  "serde",
  "serde_json",

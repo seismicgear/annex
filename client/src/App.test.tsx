@@ -76,6 +76,7 @@ vi.mock('@/lib/zk', () => {
     generateNodeId: vi.fn(() => 1),
     computeCommitment: vi.fn(async () => '0xabc'),
     generateMembershipProof: vi.fn(async () => ({ proof: {}, publicSignals: [] })),
+    generateMembershipProofV2: vi.fn(async () => ({ proof: {}, publicSignals: [], nullifierHex: 'n', topicHashHex: 't', challengeHex: 'c' })),
     cancelMembershipProofGeneration: vi.fn(async () => {}),
     isProofGenerationInFlight: vi.fn(() => false),
     ZkProofAssetsError,
@@ -132,6 +133,7 @@ vi.mock('@/lib/api', () => ({
     pathElements: ['0x1'],
     pathIndexBits: [0],
   })),
+  requestAuthChallenge: vi.fn(async () => ({ challenge: 'c'.repeat(64), expiresInSecs: 300 })),
   verifyMembership: vi.fn(async () => ({
     ok: true,
     pseudonymId: 'pseudo-123',
@@ -186,6 +188,7 @@ vi.mock('@/lib/tauri', () => ({
   getStartupMode: vi.fn(async () => null),
   saveStartupMode: vi.fn(async () => {}),
   clearStartupMode: vi.fn(async () => {}),
+  getHostIdentityContext: vi.fn(async () => ({ server_slug: 'default', founder_pseudonym_id: null as string | null })),
   acquirePublicEndpoint: vi.fn(async () => 'https://host-abc123.router.annex.net'),
   releasePublicEndpoint: vi.fn(async () => {}),
   getPublicEndpoint: vi.fn(async () => null),
@@ -256,10 +259,14 @@ beforeEach(async () => {
   // Tests that need pre-existing identities must override this BEFORE render.
   const dbMock = await import('@/lib/db');
   vi.mocked(dbMock.listIdentities).mockResolvedValue([]);
+  const stored = new Map<string, StoredIdentity>();
+  vi.mocked(dbMock.saveIdentity).mockImplementation(async identity => { stored.set(identity.id, { ...identity }); });
+  vi.mocked(dbMock.getIdentity).mockImplementation(async id => stored.get(id) ?? (await dbMock.listIdentities()).find(i => i.id === id));
   // Restore default Tauri mocks — vi.clearAllMocks() only clears call counts,
   // it does NOT reset implementations set by mockResolvedValue in earlier tests.
   const tauriMock = await import('@/lib/tauri');
   vi.mocked(tauriMock.getStartupMode).mockResolvedValue(null);
+  vi.mocked(tauriMock.getHostIdentityContext).mockResolvedValue({ server_slug: 'default', founder_pseudonym_id: null });
   vi.mocked(tauriMock.startEmbeddedServer).mockResolvedValue('http://127.0.0.1:9999');
   vi.mocked(tauriMock.checkFirstRunCompleted).mockResolvedValue(false);
   vi.mocked(tauriMock.getPendingInvite).mockResolvedValue(null);
@@ -395,159 +402,56 @@ describe('App startup flow', () => {
     });
   });
 
-  describe('Tauri mode — the critical EXE startup flow', () => {
-    beforeEach(() => {
-      tauriEnabled = true;
+  describe('Tauri mode — explicit one-click Host setup', () => {
+    beforeEach(() => { tauriEnabled = true; });
+
+    it('offers Host immediately without starting a server or generating keys before the click', async () => {
+      const App = (await import('./App')).default;
+      const tauri = await import('@/lib/tauri');
+      const zk = await import('@/lib/zk');
+      render(<App />);
+      expect(await screen.findByRole('button', { name: 'Start Hosting' })).toBeInTheDocument();
+      expect(screen.queryByTestId('identity-setup')).not.toBeInTheDocument();
+      expect(tauri.startEmbeddedServer).not.toHaveBeenCalled();
+      expect(zk.generateSecretKey).not.toHaveBeenCalled();
     });
 
-    it('shows IdentitySetup (NOT "Starting server...") on first launch when no identity exists', async () => {
-      // THIS IS THE CRITICAL TEST.
-      //
-      // On first EXE launch, no identity keys exist. The app MUST show the
-      // identity creation screen — not a server selection or "Starting
-      // server..." screen. No server is started during identity creation.
-      // The server only enters the picture on Screen 2.
-
+    it('keeps explicit identity import available without starting a host', async () => {
       const App = (await import('./App')).default;
+      const tauri = await import('@/lib/tauri');
       render(<App />);
-
-      await waitFor(() => {
-        expect(screen.getByTestId('identity-setup')).toBeInTheDocument();
-      });
-      // No server-related UI during identity creation.
-      expect(screen.queryByText('Choose how to use Annex. Remembered values are shown as suggestions.')).not.toBeInTheDocument();
-      expect(screen.queryByText(/Starting server/)).not.toBeInTheDocument();
+      await userEvent.click(await screen.findByRole('button', { name: 'Restore an existing identity' }));
+      expect(screen.getByTestId('identity-setup')).toBeInTheDocument();
+      expect(tauri.startEmbeddedServer).not.toHaveBeenCalled();
     });
 
-    it('IdentitySetup has NO server field, NO "Failed to fetch" error', async () => {
+    it('one Host click creates keys, registers and verifies them before showing the main app', async () => {
       const App = (await import('./App')).default;
+      const api = await import('@/lib/api');
+      const tauri = await import('@/lib/tauri');
       render(<App />);
-
-      await waitFor(() => {
-        expect(screen.getByTestId('identity-setup')).toBeInTheDocument();
-      });
-
-      // The identity-setup mock renders "Create Your Identity" — no server
-      // fields, no network error text.
-      expect(screen.queryByText(/Failed to fetch/)).not.toBeInTheDocument();
-    });
-
-    it('after keys created, shows StartupModeSelector immediately (no server gate)', async () => {
-      const App = (await import('./App')).default;
-      render(<App />);
-
-      // Start on Screen 1
-      await waitFor(() => {
-        expect(screen.getByTestId('identity-setup')).toBeInTheDocument();
-      });
-
-      // User creates identity keys (locally, offline)
-      act(() => {
-        useIdentityStore.setState({
-          phase: 'keys_ready',
-          identity: KEYS_ONLY_IDENTITY,
-          storedIdentities: [KEYS_ONLY_IDENTITY],
-        });
-      });
-
-      // Screen 2 appears immediately — no "Starting server..." gate.
-      // The server hasn't started yet; it only starts when the user
-      // explicitly picks "Host a Server" on this screen.
-      await waitFor(() => {
-        expect(screen.getByText('Choose how to use Annex. Remembered values are shown as suggestions.')).toBeInTheDocument();
-      });
+      await userEvent.click(await screen.findByRole('button', { name: 'Start Hosting' }));
+      await screen.findByTestId('status-bar');
+      expect(tauri.startEmbeddedServer).toHaveBeenCalledTimes(1);
+      expect(api.register).toHaveBeenCalledTimes(1);
+      expect(api.requestAuthChallenge).toHaveBeenCalledTimes(1);
+      expect(api.verifyMembership).toHaveBeenCalledTimes(1);
+      expect(useIdentityStore.getState().identity?.pseudonymId).toBe('pseudo-123');
       expect(screen.queryByTestId('identity-setup')).not.toBeInTheDocument();
     });
 
-    it('existing identity with saved prefs auto-resumes past selector to main app', async () => {
-      // Returning user: IndexedDB already has a fully registered identity
-      // AND startup prefs exist (they completed the full flow before).
-      // Screen 1 (identity creation) AND Screen 2 (selector) should both
-      // be skipped — the app auto-resumes the saved startup mode and
-      // proceeds directly to the main app.
+    it('resumes the saved host using the founder reported by its database', async () => {
       const dbMock = await import('@/lib/db');
       vi.mocked(dbMock.listIdentities).mockResolvedValue([FAKE_IDENTITY]);
       const tauri = await import('@/lib/tauri');
-      vi.mocked(tauri.getStartupMode).mockResolvedValue({
-        startup_mode: { mode: 'host' },
-      });
-      // Returning user: first_run_completed exists (skip destructive cleanup)
+      vi.mocked(tauri.getStartupMode).mockResolvedValue({ startup_mode: { mode: 'host' } });
+      vi.mocked(tauri.getHostIdentityContext).mockResolvedValue({ server_slug: 'default', founder_pseudonym_id: 'pseudo-123' });
       vi.mocked(tauri.checkFirstRunCompleted).mockResolvedValue(true);
-
       const App = (await import('./App')).default;
       render(<App />);
-
-      // Should auto-resume to the main app, skipping both selector and identity setup
-      await waitFor(() => {
-        expect(screen.getByTestId('status-bar')).toBeInTheDocument();
-      });
-      expect(screen.queryByTestId('identity-setup')).not.toBeInTheDocument();
-      expect(screen.queryByText('Choose how to use Annex. Remembered values are shown as suggestions.')).not.toBeInTheDocument();
-      // startEmbeddedServer should have been called for auto-resume
-      expect(tauri.startEmbeddedServer).toHaveBeenCalled();
-    });
-
-    it('full Tauri flow: Screen 1 → Screen 2 → main app', async () => {
-      const App = (await import('./App')).default;
-      render(<App />);
-
-      // Step 1: Screen 1 (identity creation)
-      await waitFor(() => {
-        expect(screen.getByTestId('identity-setup')).toBeInTheDocument();
-      });
-
-      // Step 2: User creates keys
-      act(() => {
-        useIdentityStore.setState({
-          phase: 'keys_ready',
-          identity: KEYS_ONLY_IDENTITY,
-          storedIdentities: [KEYS_ONLY_IDENTITY],
-        });
-      });
-
-      // Step 3: Screen 2 (server/mode selection) — no saved prefs so
-      // selector is shown.
-      await waitFor(() => {
-        expect(screen.getByText('Choose how to use Annex. Remembered values are shown as suggestions.')).toBeInTheDocument();
-      });
-
-      // Step 4: User picks "Host a Server" → triggers embedded server +
-      // auto-registration. Since all mocks resolve, registration completes
-      // and the main app renders.
-      await userEvent.click(screen.getByRole('button', { name: 'Start Hosting' }));
-
-      // Step 5: Manually simulate registration completing in case the
-      // auto-register flow didn't fully resolve yet.
-      act(() => {
-        useIdentityStore.setState({
-          phase: 'ready',
-          identity: FAKE_IDENTITY,
-          storedIdentities: [FAKE_IDENTITY],
-        });
-      });
-
-      // Step 6: Main app
-      await waitFor(() => {
-        expect(screen.getByTestId('status-bar')).toBeInTheDocument();
-      });
-      expect(screen.queryByTestId('identity-setup')).not.toBeInTheDocument();
-      expect(screen.queryByText('Choose how to use Annex. Remembered values are shown as suggestions.')).not.toBeInTheDocument();
-    });
-
-    it('no server is started during identity creation', async () => {
-      const tauri = await import('@/lib/tauri');
-
-      const App = (await import('./App')).default;
-      render(<App />);
-
-      // Identity creation screen should appear
-      await waitFor(() => {
-        expect(screen.getByTestId('identity-setup')).toBeInTheDocument();
-      });
-
-      // startEmbeddedServer must NOT have been called — the server has
-      // no business starting while the user is creating their identity.
-      expect(tauri.startEmbeddedServer).not.toHaveBeenCalled();
+      await screen.findByTestId('status-bar');
+      expect(useIdentityStore.getState().identity?.id).toBe(FAKE_IDENTITY.id);
+      expect(tauri.startEmbeddedServer).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -715,6 +619,7 @@ describe('App startup flow', () => {
         startup_mode: { mode: 'host' },
       });
       vi.mocked(tauri.checkFirstRunCompleted).mockResolvedValue(true);
+      vi.mocked(tauri.getHostIdentityContext).mockResolvedValue({ server_slug: 'default', founder_pseudonym_id: 'pseudo-123' });
       // getPublicEndpoint returns public_url but no public_webrtc_url
       vi.mocked(tauri.getPublicEndpoint).mockResolvedValue({
         public_url: 'https://host.router.annex.net',
@@ -732,10 +637,7 @@ describe('App startup flow', () => {
       // The degraded banner may be set by the getPublicEndpoint effect
       // We need to wait for the effect to run
       await waitFor(() => {
-        const banner = screen.queryByText(/remote voice\/video is unavailable/);
-        // This may or may not render depending on timing of the effect
-        // The test validates that the code path runs without errors
-        expect(banner !== null || true).toBe(true);
+        expect(screen.getByText(/remote voice\/video is unavailable/)).toBeInTheDocument();
       });
     });
   });
@@ -787,7 +689,7 @@ describe('App startup flow', () => {
       expect(vi.mocked(tauri.resetServerData)).not.toHaveBeenCalled();
     });
 
-    it('Tauri: first_run_completed=false triggers fresh install cleanup', async () => {
+    it('Tauri: missing browser keys and marker never erase a potentially existing server', async () => {
       tauriEnabled = true;
       const dbMock = await import('@/lib/db');
       vi.mocked(dbMock.listIdentities).mockResolvedValue([]);
@@ -797,10 +699,9 @@ describe('App startup flow', () => {
       const App = (await import('./App')).default;
       render(<App />);
 
-      // clearAllDatabases should be called for fresh install
-      await waitFor(() => {
-        expect(dbMock.clearAllDatabases).toHaveBeenCalled();
-      });
+      await screen.findByRole('button', { name: 'Start Hosting' });
+      expect(dbMock.clearAllDatabases).not.toHaveBeenCalled();
+      expect(tauri.resetServerData).not.toHaveBeenCalled();
     });
   });
 

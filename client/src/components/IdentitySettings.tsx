@@ -26,6 +26,9 @@ interface Props {
 export function IdentitySettings({ onClose }: Props) {
   const titleId = useDialogTitleId();
   const identity = useIdentityStore((s) => s.identity);
+  const isFounder = useIdentityStore(s => s.permissionsStatus === 'ready'
+    && s.permissionsPseudonymId === s.identity?.pseudonymId
+    && s.permissions?.isFounder === true);
   const loadVisibleUsernames = useUsernameStore((s) => s.loadVisibleUsernames);
   const pseudonymId = identity?.pseudonymId ?? '';
 
@@ -286,6 +289,7 @@ export function IdentitySettings({ onClose }: Props) {
           <span className="label">Cryptographic ID:<InfoTip text="A unique anonymous identifier generated on your device. This is how the server knows you without ever learning your real name." /></span>
           <span className="pseudonym">{identity.pseudonymId ? `${identity.pseudonymId.slice(0, 16)}...` : 'pending'}</span>
           <span className="server-badge">{identity.serverSlug}</span>
+          {isFounder && <span className="server-badge">Server founder</span>}
         </div>
       )}
 

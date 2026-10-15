@@ -11,6 +11,8 @@
  */
 
 import { create } from 'zustand';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex } from '@noble/hashes/utils.js';
 import type { StoredIdentity, IdentityInfo } from '@/types';
 import * as db from '@/lib/db';
 import * as zk from '@/lib/zk';
@@ -123,6 +125,8 @@ interface IdentityState {
    * answer is "the same identity, which belongs to this server".
    */
   reassertCredentials: () => Promise<void>;
+  /** Select the actual local host founder, or prepare keys for a fresh host. */
+  prepareHostIdentity: (serverSlug: string, founderPseudonym: string | null) => Promise<void>;
   /** Export current identity for backup. */
   exportCurrent: () => string | null;
   /** Import an identity from backup JSON. */
@@ -134,6 +138,7 @@ interface IdentityState {
 }
 
 let permissionsRequestGeneration = 0;
+let localKeyGeneration: Promise<void> | null = null;
 
 export const useIdentityStore = create<IdentityState>((set, get) => ({
   phase: 'uninitialized',
@@ -233,34 +238,43 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
   },
 
   generateLocalKeys: async (roleCode: number) => {
-    try {
-      set({ phase: 'generating', error: null, errorDetails: null });
-      await zk.initPoseidon();
-      const sk = zk.generateSecretKey();
-      const nodeId = zk.generateNodeId();
-      const commitmentHex = await zk.computeCommitment(sk, roleCode, nodeId);
+    // All callers await the same operation. A second Host/identity action
+    // must neither create duplicate keys nor continue before keys exist.
+    if (localKeyGeneration) return localKeyGeneration;
+    const operation = (async () => {
+      try {
+        set({ phase: 'generating', error: null, errorDetails: null });
+        await zk.initPoseidon();
+        const sk = zk.generateSecretKey();
+        const nodeId = zk.generateNodeId();
+        const commitmentHex = await zk.computeCommitment(sk, roleCode, nodeId);
 
-      const identity: StoredIdentity = {
-        id: crypto.randomUUID(),
-        sk: sk.toString(16),
-        roleCode,
-        nodeId,
-        commitmentHex,
-        pseudonymId: null,
-        sessionToken: null,
-        serverSlug: '',
-        leafIndex: null,
-        createdAt: new Date().toISOString(),
-      };
-      await db.saveIdentity(identity);
-      const identities = await db.listIdentities();
-      set({ identity, storedIdentities: identities, phase: 'keys_ready', proofInFlight: false, provingStatus: 'idle' });
-    } catch (e) {
-      set({
-        phase: 'error',
-        error: e instanceof Error ? e.message : String(e),
-        errorDetails: e instanceof Error ? `${e.name}: ${e.message}` : String(e),
-      });
+        const identity: StoredIdentity = {
+          id: crypto.randomUUID(),
+          sk: sk.toString(16),
+          roleCode,
+          nodeId,
+          commitmentHex,
+          pseudonymId: null,
+          sessionToken: null,
+          serverSlug: '',
+          leafIndex: null,
+          createdAt: new Date().toISOString(),
+        };
+        await db.saveIdentity(identity);
+        const identities = await db.listIdentities();
+        set({ identity, storedIdentities: identities, phase: 'keys_ready', proofInFlight: false, provingStatus: 'idle' });
+      } catch (e) {
+        set({
+          phase: 'error',
+          error: e instanceof Error ? e.message : String(e),
+          errorDetails: e instanceof Error ? `${e.name}: ${e.message}` : String(e),
+        });
+      }
+    })();
+    localKeyGeneration = operation;
+    try { await operation; } finally {
+      if (localKeyGeneration === operation) localKeyGeneration = null;
     }
   },
 
@@ -465,6 +479,52 @@ export const useIdentityStore = create<IdentityState>((set, get) => ({
     api.setSessionToken(null, null);
     api.setZkProofPayload(null);
     set({ phase: 'keys_ready', permissions: null, permissionsStatus: 'idle', permissionsPseudonymId: null });
+  },
+
+  prepareHostIdentity: async (serverSlug, founderPseudonym) => {
+    // A returning user's newest identity may belong to a remote server.
+    // The local founder comes from the running host's database, not its port.
+    api.setSessionToken(null, null);
+    api.setZkProofPayload(null);
+    set({ permissions: null, permissionsStatus: 'idle', permissionsPseudonymId: null });
+    const identities = await db.listIdentities();
+    if (founderPseudonym) {
+      let founder = identities.find(i => i.serverSlug === serverSlug && i.pseudonymId === founderPseudonym && i.sk);
+      if (!founder) {
+        // The server may have admitted the founder just before a response or
+        // local persistence failed. Recover from the actual secret-derived
+        // pseudonym, never from a matching display name or moderator flag.
+        const topic = `annex:server:${serverSlug}:v2`;
+        for (const candidate of identities) {
+          if (!candidate.sk || !/^[0-9a-f]{1,64}$/i.test(candidate.sk)) continue;
+          const nullifier = await zk.computeTopicNullifierV2(BigInt('0x' + candidate.sk), topic);
+          const pseudonym = bytesToHex(sha256(new TextEncoder().encode(`${topic}:${nullifier}`)));
+          if (pseudonym !== founderPseudonym) continue;
+          const recovered = !candidate.pseudonymId && (!candidate.serverSlug || candidate.serverSlug === serverSlug)
+            ? { ...candidate }
+            : await db.cloneIdentityForServer(candidate.id);
+          if (!recovered) continue;
+          founder = { ...recovered, serverSlug, pseudonymId: founderPseudonym, sessionToken: null, zkProofPayload: null };
+          await db.saveIdentity(founder);
+          break;
+        }
+      }
+      if (!founder) {
+        throw new Error('This hosted server already has a founder. Restore that founder’s identity backup to manage it. Your server and saved identities have been kept.');
+      }
+      await get().selectIdentity(founder.id);
+      return;
+    }
+    if (!get().identity?.sk) await get().generateLocalKeys(1);
+    const current = get().identity;
+    if (!current?.sk) throw new Error(get().error ?? 'Could not create your host identity. Please retry.');
+    const local = (!current.serverSlug || current.serverSlug === serverSlug) && !current.pseudonymId
+      ? { ...current }
+      : await db.cloneIdentityForServer(current.id);
+    if (!local) throw new Error('Could not prepare your host identity. Your other server identities have been kept.');
+    local.serverSlug = serverSlug;
+    await db.saveIdentity(local);
+    await get().selectIdentity(local.id);
   },
 
   exportCurrent: () => {

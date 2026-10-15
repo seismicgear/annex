@@ -9,6 +9,9 @@ const fetchWithTimeoutMock = vi.fn();
 const clearStartupModeMock = vi.fn(async () => {});
 const clearWebStartupModeMock = vi.fn();
 const startEmbeddedServerMock = vi.fn(async () => 'http://127.0.0.1:9999');
+const acquirePublicEndpointMock = vi.fn(async () => 'https://host.example.test');
+let identityPhase = 'keys_ready';
+const registerWithServerMock = vi.fn<(_slug: string) => Promise<void>>(async () => { identityPhase = 'ready'; });
 
 // Each mock stays behind a forwarding arrow: `vi.mock` is hoisted, so this
 // factory can run during the static import phase — before the `const`s above
@@ -25,7 +28,8 @@ vi.mock('@/lib/tauri', async () => {
     saveStartupMode: vi.fn(async () => {}),
     clearStartupMode: (...args: Parameters<typeof clearStartupModeMock>) => clearStartupModeMock(...args),
     startEmbeddedServer: (...args: Parameters<typeof startEmbeddedServerMock>) => startEmbeddedServerMock(...args),
-    acquirePublicEndpoint: vi.fn(async () => 'https://host-abc123.router.annex.net'),
+    getHostIdentityContext: vi.fn(async () => ({ server_slug: 'local-host', founder_pseudonym_id: null })),
+    acquirePublicEndpoint: () => acquirePublicEndpointMock(),
     getWebRtcConfig: vi.fn(async () => ({ configured: false, url: '', api_key: '', has_api_secret: false, token_ttl_seconds: 3600 })),
     startLocalWebRtc: vi.fn(async () => ({ url: 'ws://127.0.0.1:7880' })),
     exportIdentityJson: vi.fn(async () => null),
@@ -54,6 +58,11 @@ vi.mock('@/stores/servers', () => ({
 vi.mock('@/stores/identity', () => ({
   useIdentityStore: {
     getState: () => ({
+      identity: { sk: 'test-key' },
+      phase: identityPhase,
+      error: 'Host sign-in did not complete',
+      registerWithServer: (slug: string) => registerWithServerMock(slug),
+      prepareHostIdentity: vi.fn(async () => {}),
       selectIdentity: vi.fn(async () => {}),
       // Repointing the client at a server ends the credential context, so the
       // selector re-asserts afterwards. Mocked here because this file mocks
@@ -76,11 +85,40 @@ vi.mock('@/stores/voice', () => ({
 describe('StartupModeSelector', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    identityPhase = 'keys_ready';
     getStartupModeMock.mockResolvedValue({
       startup_mode: { mode: 'client', server_url: 'https://unreachable.invalid' },
     });
     fetchWithTimeoutMock.mockResolvedValue({ ok: false, status: 503 } as Response);
     global.fetch = vi.fn(async () => ({ ok: false, status: 503 } as Response));
+  });
+
+  it('establishes the founder before requesting public access', async () => {
+    getStartupModeMock.mockResolvedValue(null);
+    let finishRegistration!: () => void;
+    registerWithServerMock.mockImplementationOnce(() => new Promise(resolve => {
+      finishRegistration = () => { identityPhase = 'ready'; resolve(); };
+    }));
+    const ready = vi.fn();
+    render(<StartupModeSelector onReady={ready} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Start Hosting' }));
+    await waitFor(() => expect(registerWithServerMock).toHaveBeenCalledWith('local-host'));
+    expect(acquirePublicEndpointMock).not.toHaveBeenCalled();
+    expect(ready).not.toHaveBeenCalled();
+    await act(async () => { finishRegistration(); });
+    await waitFor(() => expect(acquirePublicEndpointMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(ready).toHaveBeenCalledTimes(1));
+  });
+
+  it('keeps the server private and shows the sign-in failure when founder setup fails', async () => {
+    getStartupModeMock.mockResolvedValue(null);
+    registerWithServerMock.mockImplementationOnce(async () => { identityPhase = 'error'; });
+    const ready = vi.fn();
+    render(<StartupModeSelector onReady={ready} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Start Hosting' }));
+    await screen.findByText(/Host sign-in did not complete/);
+    expect(acquirePublicEndpointMock).not.toHaveBeenCalled();
+    expect(ready).not.toHaveBeenCalled();
   });
 
   it('keeps a manual Host startup in progress when the parent elapsed timer renders again', async () => {

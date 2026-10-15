@@ -19,6 +19,7 @@ mod commands;
 mod config;
 mod deep_links;
 mod embedded_server;
+mod host_identity;
 mod keyring;
 mod media;
 mod profile;
@@ -645,6 +646,7 @@ fn main() {
             startup_mode::check_first_run_completed,
             startup_mode::mark_first_run_completed,
             embedded_server::start_embedded_server,
+            host_identity::get_host_identity_context,
             public_endpoint::acquire_public_endpoint,
             public_endpoint::release_public_endpoint,
             public_endpoint::get_public_endpoint,

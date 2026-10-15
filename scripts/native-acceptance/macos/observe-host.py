@@ -2,10 +2,15 @@
 import datetime
 import json
 import pathlib
+import os
+import pwd
 import sqlite3
 import time
 
-database = pathlib.Path.home() / 'Library/Application Support/Annex/annex.db'
+# XCTest launches LaunchServices apps as the logged-in desktop user, which
+# can differ from the shell runner. Read that account's ordinary data only.
+console_home = pathlib.Path(pwd.getpwuid(os.stat('/dev/console').st_uid).pw_dir)
+database = console_home / 'Library/Application Support/Annex/annex.db'
 output = pathlib.Path('native-evidence/host-observations.jsonl')
 deadline = time.monotonic() + 900
 while time.monotonic() < deadline:

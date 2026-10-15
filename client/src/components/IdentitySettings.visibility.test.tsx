@@ -17,7 +17,7 @@
  * Both must say what happened and offer a retry instead.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 const mockListUsernameGrants = vi.fn();
@@ -64,6 +64,28 @@ describe('username visibility — a failed load is not an answer', () => {
   });
   afterEach(() => {
     cleanup();
+  });
+
+  it('labels only the current server-confirmed founder, not another moderator or a stale snapshot', async () => {
+    mockListUsernameGrants.mockResolvedValue({ grantees: [] });
+    mockListMembers.mockResolvedValue([]);
+    await renderPanel();
+    const { useIdentityStore } = await import('@/stores/identity');
+    expect(screen.queryByText('Server founder')).not.toBeInTheDocument();
+    await act(async () => useIdentityStore.setState({
+      permissions: { pseudonymId: 'p-self', isFounder: true } as never,
+      permissionsPseudonymId: 'p-self', permissionsStatus: 'ready',
+    }));
+    expect(screen.getByText('Server founder')).toBeInTheDocument();
+    await act(async () => useIdentityStore.setState({ permissionsStatus: 'error' }));
+    expect(screen.queryByText('Server founder')).not.toBeInTheDocument();
+    await act(async () => useIdentityStore.setState({ permissionsStatus: 'ready', permissionsPseudonymId: 'another-server-member' }));
+    expect(screen.queryByText('Server founder')).not.toBeInTheDocument();
+    await act(async () => useIdentityStore.setState({
+      permissionsPseudonymId: 'p-self',
+      permissions: { pseudonymId: 'p-self', isFounder: false, capabilities: { can_moderate: true } } as never,
+    }));
+    expect(screen.queryByText('Server founder')).not.toBeInTheDocument();
   });
 
   it('does not report an empty server when the member list fails', async () => {

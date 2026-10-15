@@ -12,6 +12,7 @@ use crate::deep_links::InviteInbox;
 /// Tracks whether the embedded server is running.
 pub(crate) struct ServerState {
     pub(crate) url: String,
+    pub(crate) database_path: PathBuf,
     /// Cancelled on `RunEvent::Exit` to stop the server's background workers.
     ///
     /// The desktop app used to leave them running until the process image was

@@ -55,6 +55,11 @@ jobs:
           hdiutil attach -readonly -nobrowse -mountpoint "$RUNNER_TEMP/annex-dmg" "$RUNNER_TEMP/release/$asset"
           test ! -e /Applications/Annex.app
           test ! -e "$HOME/Library/Application Support/Annex"
+          python3 - <<'PY'
+          import os, pathlib, pwd
+          home = pathlib.Path(pwd.getpwuid(os.stat('/dev/console').st_uid).pw_dir)
+          assert not (home / 'Library/Application Support/Annex').exists(), 'Native desktop account is not a fresh Host profile'
+          PY
           ditto "$RUNNER_TEMP/annex-dmg/Annex.app" /Applications/Annex.app
           hdiutil detach "$RUNNER_TEMP/annex-dmg"
           python3 scripts/verify-macos-bundle.py /Applications/Annex.app --output native-evidence/installed-signature-verification.json

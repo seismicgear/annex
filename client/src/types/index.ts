@@ -78,6 +78,8 @@ export interface IdentityInfo {
   pseudonymId: string;
   participantType: ParticipantType;
   active: boolean;
+  /** Absent on older servers; only an affirmative server response is a founder label. */
+  isFounder?: boolean;
   capabilities: Capabilities;
 }
 

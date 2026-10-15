@@ -120,9 +120,34 @@ async fn test_get_identity_endpoints() {
     assert_eq!(identity.pseudonym_id, pseudonym_id);
     assert_eq!(identity.participant_type, role);
     assert!(identity.active);
+    assert!(identity.is_founder);
     assert!(identity.capabilities.can_voice);
     assert!(identity.capabilities.can_moderate);
     assert!(identity.capabilities.can_invite); // Founder gets full capabilities
+
+    // A subsequently promoted moderator must not be mislabeled as founder.
+    {
+        let conn = pool.get().unwrap();
+        create_platform_identity(&conn, server_id, "later-moderator", role).unwrap();
+        conn.execute(
+            "UPDATE platform_identities SET can_moderate=1 WHERE pseudonym_id='later-moderator'",
+            [],
+        )
+        .unwrap();
+    }
+    let mut member_req = Request::builder()
+        .uri("/api/identity/later-moderator")
+        .body(Body::empty())
+        .unwrap();
+    member_req.extensions_mut().insert(ConnectInfo(addr));
+    let member_resp = app.clone().oneshot(member_req).await.unwrap();
+    assert_eq!(member_resp.status(), StatusCode::OK);
+    let member_bytes = axum::body::to_bytes(member_resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let member: GetIdentityResponse = serde_json::from_slice(&member_bytes).unwrap();
+    assert!(member.capabilities.can_moderate);
+    assert!(!member.is_founder);
 
     // 4. Test GET /api/identity/:pseudonymId/capabilities
     let mut req_caps = Request::builder()

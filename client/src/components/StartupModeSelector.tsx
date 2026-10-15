@@ -22,6 +22,7 @@ import {
   clearStartupMode,
   acquirePublicEndpoint,
   getPublicEndpoint,
+  getHostIdentityContext,
   checkWebRtcReachable,
   desktopCorsGuidance,
 } from '@/lib/tauri';
@@ -31,6 +32,7 @@ import { describeServerUrlError, normalizeServerUrl } from '@/lib/url';
 import { useServersStore } from '@/stores/servers';
 import { useIdentityStore } from '@/stores/identity';
 import { useVoiceStore } from '@/stores/voice';
+import { IdentitySetup } from '@/components/IdentitySetup';
 
 
 /** Describes which optional subsystems failed during host startup. */
@@ -52,6 +54,7 @@ type Phase =
   | 'choose'
   | 'starting_voice'
   | 'starting_server'
+  | 'preparing_identity'
   | 'acquiring_endpoint'
   | 'connecting'
   | 'error';
@@ -60,6 +63,7 @@ export function StartupModeSelector({ onReady }: Props) {
   const [phase, setPhase] = useState<Phase>('loading');
   const [remoteUrl, setRemoteUrl] = useState('');
   const [error, setError] = useState('');
+  const [showIdentityTools, setShowIdentityTools] = useState(false);
   const inTauri = isTauri();
   const readyCallback = useRef(onReady);
   const hostInFlight = useRef(false);
@@ -116,12 +120,19 @@ export function StartupModeSelector({ onReady }: Props) {
         setPhase('starting_server');
         const url = await startEmbeddedServer();
         setApiBaseUrl(url);
-        // Repointing the client ends the credential context, so the identity
-        // loaded at bootstrap — before the embedded server had an address —
-        // has to say again that its credentials apply here. Without this a
-        // returning host user reaches the chat UI with no bearer token and
-        // every protected call 401s behind a signed-in-looking app.
-        await useIdentityStore.getState().reassertCredentials();
+        setPhase('preparing_identity');
+        const hostIdentity = await getHostIdentityContext();
+        await useIdentityStore.getState().prepareHostIdentity(
+          hostIdentity.server_slug, hostIdentity.founder_pseudonym_id,
+        );
+        // Establish the local founder before any public route can admit a
+        // stranger. Registration also owns the bounded proof/error lifecycle.
+        if (useIdentityStore.getState().phase !== 'ready') {
+          await useIdentityStore.getState().registerWithServer(hostIdentity.server_slug);
+        }
+        if (useIdentityStore.getState().phase !== 'ready') {
+          throw new Error(useIdentityStore.getState().error ?? 'Could not sign in to your hosted server. Please retry.');
+        }
 
         // Acquire a public endpoint via the Annex router so the server is
         // reachable from the internet. The returned URL is used as the
@@ -216,6 +227,10 @@ export function StartupModeSelector({ onReady }: Props) {
 
       // Resolve server-to-identity: if we have a saved server for this URL
       // with a registered identity, select that identity before proceeding.
+      if (!useIdentityStore.getState().identity?.sk) {
+        completeStartup();
+        return;
+      }
       const existing = useServersStore.getState().findServerByBaseUrl(normalized);
       if (existing?.identityId) {
         await useIdentityStore.getState().selectIdentity(existing.identityId);
@@ -362,8 +377,7 @@ export function StartupModeSelector({ onReady }: Props) {
         <h1>Annex</h1>
         <div className="startup-loading">Setting up voice...</div>
         <p className="tunnel-hint">
-          This may take a moment on first launch while the voice server is
-          downloaded.
+          Configuring the voice service included with Annex.
         </p>
       </div>
     );
@@ -374,6 +388,15 @@ export function StartupModeSelector({ onReady }: Props) {
       <div className="startup-mode-selector">
         <h1>Annex</h1>
         <div className="startup-loading">Starting server...</div>
+      </div>
+    );
+  }
+
+  if (phase === 'preparing_identity') {
+    return (
+      <div className="startup-mode-selector">
+        <h1>Annex</h1>
+        <div className="startup-loading" role="status">Preparing your host identity...</div>
       </div>
     );
   }
@@ -486,6 +509,12 @@ export function StartupModeSelector({ onReady }: Props) {
           </form>
         </div>
       </div>
+      {inTauri && <>
+        <button className="secondary-btn" onClick={() => setShowIdentityTools(value => !value)}>
+          {showIdentityTools ? 'Close identity options' : 'Restore an existing identity'}
+        </button>
+        {showIdentityTools && <IdentitySetup />}
+      </>}
     </div>
   );
 }
