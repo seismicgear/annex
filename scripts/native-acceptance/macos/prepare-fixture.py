@@ -42,16 +42,22 @@ execute('openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-sha256',
         '-days', '2', '-subj', '/CN=Annex Ephemeral Mac Native Test CA',
         '-addext', 'basicConstraints=critical,CA:TRUE,pathlen:0',
         '-addext', 'keyUsage=critical,keyCertSign,cRLSign',
+        '-addext', 'subjectKeyIdentifier=hash',
         '-keyout', str(tls / 'ca-private.key'), '-out', str(tls / 'ca.crt'))
 execute('openssl', 'req', '-new', '-newkey', 'rsa:2048', '-nodes', '-sha256',
         '-subj', f'/CN={hostname}', '-keyout', str(tls / 'server-private.key'),
         '-out', str(tls / 'server.csr'))
 (tls / 'extensions.cnf').write_text(
     f'subjectAltName=DNS:{hostname}\nbasicConstraints=critical,CA:FALSE\n'
-    'keyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n')
+    'keyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n'
+    'subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n')
 execute('openssl', 'x509', '-req', '-in', str(tls / 'server.csr'), '-CA', str(tls / 'ca.crt'),
         '-CAkey', str(tls / 'ca-private.key'), '-CAcreateserial', '-days', '2', '-sha256',
         '-extfile', str(tls / 'extensions.cnf'), '-out', str(tls / 'server.crt'))
+execute('openssl', 'verify', '-CAfile', str(tls / 'ca.crt'), str(tls / 'server.crt'))
+# Public certificates permit diagnosing trust failures without retaining private keys.
+(out / 'test-ca.crt').write_bytes((tls / 'ca.crt').read_bytes())
+(out / 'test-server.crt').write_bytes((tls / 'server.crt').read_bytes())
 # Only this disposable runner's test CA; no validation bypass or browser flag.
 execute('sudo', 'security', 'add-trusted-cert', '-d', '-r', 'trustRoot',
         '-k', '/Library/Keychains/System.keychain', str(tls / 'ca.crt'))
@@ -81,6 +87,7 @@ def start(args, name):
 
 
 def healthy(url, context=None):
+    last_error = None
     for _ in range(120):
         if any(child.poll() is not None for child in children):
             raise RuntimeError('Isolated destination process exited')
@@ -88,10 +95,12 @@ def healthy(url, context=None):
             with urllib.request.urlopen(url, context=context, timeout=2) as response:
                 if json.load(response)['status'] == 'ok':
                     return
-        except (OSError, ValueError):
-            pass
+        except (OSError, ValueError) as error:
+            last_error = repr(error)
         time.sleep(.5)
-    raise RuntimeError('Destination did not become healthy')
+    (out / 'health-failure.json').write_text(json.dumps(dict(
+        url=url, error=last_error, tls_verification_disabled=False), indent=2) + '\n')
+    raise RuntimeError(f'Destination did not become healthy: {last_error}')
 
 
 server_pid = start([str(server), str(config)], 'target-server')

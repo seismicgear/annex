@@ -12,6 +12,7 @@ observations = [json.loads(line) for line in (root / 'database-observations.json
 http = [json.loads(line) for line in (root / 'http-observations.jsonl').read_text().splitlines()]
 events = json.loads((root / 'ui-events.json').read_text())
 assert result['passed'] and result['explicit_join'] and result['cold_launch_by_public_link']
+assert result['independent_founder_received_message'] and result['warm_delivery_same_process']
 assert not result['native_app_launched_directly_by_test']
 assert result['server_slug'] == fixture['slug']
 assert result['destination'] == fixture['origin']
@@ -27,7 +28,12 @@ message_sha = hashlib.sha256(result['message'].encode()).hexdigest()
 messages = [row for row in latest['messages'] if row['content_sha256'] == message_sha]
 assert len(messages) == 1
 assert messages[0]['server_id'] == latest['servers'][0]['id']
-assert messages[0]['sender_pseudonym_sha256'] == latest['admitted_identities'][1]['pseudonym_sha256']
+founder = next(row['admitted_identities'][0]['pseudonym_sha256'] for row in observations
+              if len(row['admitted_identities']) == 1)
+recipients = [row['pseudonym_sha256'] for row in latest['admitted_identities']
+              if row['pseudonym_sha256'] != founder]
+assert len(recipients) == 1
+assert messages[0]['sender_pseudonym_sha256'] == recipients[0]
 assert any(row['path'] == '/api/invites/redeem' and row['status'] == 200
            and row['request_origin'] == 'tauri://localhost' for row in http)
 assert sum(row['path'] == '/api/zk/verify-membership' and row['status'] == 200 for row in http) == 2
