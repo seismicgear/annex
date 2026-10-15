@@ -15,6 +15,7 @@
  */
 
 import { appendFileSync, mkdirSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { attachCollector, runAudits } from './audits';
@@ -49,6 +50,14 @@ const LEDGER = path.join(LEDGER_DIR, 'findings.jsonl');
  * and it must not be reported as a partial sweep.
  */
 const CAPTURED = path.join(LEDGER_DIR, 'captured.jsonl');
+
+// Direct Playwright invocations must enforce the same font prerequisite as
+// ui-audit.sh, before any reference image can be recorded or compared.
+test.beforeAll(() => {
+  execFileSync(process.execPath, [path.resolve(process.cwd(), '..', 'scripts/check-ui-audit-fonts.mjs')], {
+    stdio: 'inherit',
+  });
+});
 
 /**
  * Append findings to disk as they are produced, one JSON object per line.

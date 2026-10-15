@@ -80,7 +80,7 @@ jobs:
           bash scripts/check-dependency-security.sh
 
       - name: Desktop resource safety checks
-        run: node --test scripts/tests/desktop-assets.test.mjs scripts/tests/pinned-git-source.test.mjs scripts/tests/desktop-release.test.mjs scripts/tests/macos-piper.test.mjs scripts/tests/windows-runtime.test.mjs
+        run: node --test scripts/tests/desktop-assets.test.mjs scripts/tests/pinned-git-source.test.mjs scripts/tests/desktop-release.test.mjs scripts/tests/macos-piper.test.mjs scripts/tests/windows-runtime.test.mjs scripts/tests/release-write-eligibility.test.mjs
 
       - name: Require production updater signing credentials
         env:
@@ -572,6 +572,27 @@ jobs:
       - name: Verify Windows native runtime closure
         run: node scripts/windows-runtime.mjs --directory target/x86_64-pc-windows-msvc/release
 
+      - name: Verify authenticated WebView2 installer prerequisites
+        shell: pwsh
+        run: ./scripts/verify-webview2-bundle.ps1 -BuildDir target/x86_64-pc-windows-msvc/release -RequireMsi
+
+      - name: Exercise Windows installer prerequisite failures and repairs
+        shell: pwsh
+        run: |
+          $resultFile = Join-Path $env:RUNNER_TEMP ('annex-webview2-package-' + [Guid]::NewGuid().ToString('N') + '.txt')
+          ./scripts/tests/webview2-installers.test.ps1 -Mode Build -ScratchDir $env:RUNNER_TEMP -ResultFile $resultFile
+          $package = [IO.File]::ReadAllText($resultFile).Trim()
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'run-tests.ps1') -Mode Run -PackageDirectory $package
+          if ($LASTEXITCODE -ne 0) { throw 'Windows prerequisite installer regression failed.' }
+
+      - name: Preserve Windows prerequisite regression evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-prerequisite-regression
+          path: C:/AnnexWebViewFixture/evidence/
+          if-no-files-found: warn
+
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -582,6 +603,7 @@ jobs:
             target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe.sig
             target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi.sig
             target/x86_64-pc-windows-msvc/release/windows-native-closure.json
+            target/x86_64-pc-windows-msvc/release/windows-webview2-closure.json
           if-no-files-found: error
 
   # Both Mac architectures are advertised publicly, so both are required.
@@ -797,10 +819,17 @@ jobs:
           echo "--- release body ---"
           head -30 RELEASE_NOTES.md
 
+      - name: Refuse changes to an already published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ANNEX_RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('dry-run-{0}', github.sha) }}
+        run: node scripts/check-release-write-eligibility.mjs
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           draft: true
+          overwrite_files: false
           body_path: RELEASE_NOTES.md
           generate_release_notes: true
           tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('dry-run-{0}', github.sha) }}

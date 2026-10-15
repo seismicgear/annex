@@ -77,7 +77,7 @@
         "installerHooks": "nsis/hooks.nsi"
       },
       "webviewInstallMode": {
-        "type": "downloadBootstrapper",
+        "type": "offlineInstaller",
         "silent": true
       }
     }

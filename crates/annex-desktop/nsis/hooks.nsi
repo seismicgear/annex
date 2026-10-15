@@ -1,6 +1,10 @@
 ; Annex NSIS installer hooks. Never recursively follow a redirected data path.
 !include "FileFunc.nsh"
 
+; Tauri defines its bundle constants after including hooks; the prerequisite
+; validates those constants when PREINSTALL is expanded, not at include time.
+!include "${__FILEDIR__}\..\windows\webview2.nsh"
+
 Var AnnexDataError
 Var AnnexDeleteData
 

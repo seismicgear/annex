@@ -1,5 +1,11 @@
 {
   "bundle": {
+    "windows": {
+      "wix": {
+        "fragmentPaths": ["windows/webview2.wxs"],
+        "componentGroupRefs": ["AnnexWebView2Prerequisite"]
+      }
+    },
     "resources": {
       "../../THIRD_PARTY_NOTICES.md": "_up_/_up_/THIRD_PARTY_NOTICES.md",
       "../../zk/keys/membership_vkey.json": "_up_/_up_/zk/keys/membership_vkey.json",
@@ -15,7 +21,9 @@
       "../../assets/windows-runtime/app/": "",
       "../../assets/windows-runtime/provenance.json": "windows-runtime-provenance.json",
       "../../assets/windows-runtime/piper/": "_up_/_up_/assets/piper/",
-      "../../assets/windows-runtime/whisper/": "_up_/_up_/assets/whisper/"
+      "../../assets/windows-runtime/whisper/": "_up_/_up_/assets/whisper/",
+      "../../assets/webview2/LICENSE.txt": "WEBVIEW2-SDK-LICENSE.txt",
+      "../../assets/webview2/provenance.json": "webview2-probe-provenance.json"
     }
   }
 }

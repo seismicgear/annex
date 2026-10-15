@@ -11,6 +11,11 @@ foreach($line in $compilerEnvironment){
 }
 $env:CMAKE_GENERATOR='Ninja'
 & (Join-Path $PSScriptRoot 'prepare-windows-runtime.ps1') -AssetsDir $AssetsDir
+$probeArguments=@('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $PSScriptRoot 'prepare-webview2-probe.ps1'))
+if($AssetsDir){$probeArguments+=@('-AssetsDir',$AssetsDir)}
+if($WorkDir){$probeArguments+=@('-WorkDir',$WorkDir)}
+& powershell.exe @probeArguments
+if($LASTEXITCODE -ne 0){throw 'Could not prepare the WebView2 prerequisite probe.'}
 $arguments=@((Join-Path $PSScriptRoot 'prepare-desktop-assets.mjs'),'--target','x86_64-pc-windows-msvc')
 if($AssetsDir){$arguments+=@('--assets-dir',$AssetsDir)}
 if($WorkDir){$arguments+=@('--work-dir',$WorkDir)}

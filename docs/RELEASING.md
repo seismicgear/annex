@@ -43,6 +43,20 @@ use `--assets-dir /absolute/staging/assets --work-dir /absolute/staging/build`.
 On Windows, use `scripts/prepare-desktop-assets.ps1 -AssetsDir ... -WorkDir ...`;
 it selects the installed Visual C++ x64 environment and Ninja before running
 the same preparation. Windows Whisper links its C runtime statically.
+Windows setup embeds Microsoft's Evergreen WebView2 standalone installer.
+Both NSIS and MSI check actual runtime availability through the Microsoft SDK,
+repair a missing runtime or stale registration, and check availability again
+before reporting success. The shared x86 probe uses the hash-pinned Microsoft
+WebView2 SDK 1.0.3800.47 with a static C runtime; its source, SDK archive and DLL
+hashes are recorded in the bundled provenance, with the SDK license preserved.
+NSIS verifies Microsoft's Authenticode signature before embedding the runtime
+installer. The post-bundle gate verifies the actual MSI embedded runtime and
+probe bytes, including agreement with NSIS's authenticated runtime input.
+The Evergreen installer comes from Microsoft's official current release URL;
+its exact executable hash, version and Microsoft signer are recorded per build.
+Windows then services that shared Evergreen runtime independently. Annex's
+uninstaller does not remove it. This Microsoft signature authenticates the
+prerequisite; Annex's own installers still have only updater signatures.
 An existing different runtime is refused; preserve it separately before using
 an empty destination. `--data-only` prepares verified models and Piper but
 deliberately does not produce a complete receipt or permit packaging.

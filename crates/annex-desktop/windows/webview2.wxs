@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <!-- Referencing this group pulls the prerequisite actions into Tauri's product. -->
+    <ComponentGroup Id="AnnexWebView2Prerequisite" />
+    <Binary Id="AnnexWebView2Probe" SourceFile="$(sys.SOURCEFILEDIR)..\..\..\assets\webview2\AnnexWebView2Probe.dll" />
+    <CustomAction Id="AnnexWebView2Detect" BinaryKey="AnnexWebView2Probe" DllEntry="AnnexWebView2MsiDetect" Execute="immediate" Return="check" />
+    <CustomAction Id="AnnexWebView2Verify" BinaryKey="AnnexWebView2Probe" DllEntry="AnnexWebView2MsiVerify" Execute="deferred" Impersonate="yes" Return="check" />
+    <InstallExecuteSequence>
+      <Custom Action="AnnexWebView2Detect" After="AppSearch">NOT REMOVE</Custom>
+      <Custom Action="AnnexWebView2Verify" After="InvokeStandalone">NOT REMOVE</Custom>
+    </InstallExecuteSequence>
+  </Fragment>
+</Wix>

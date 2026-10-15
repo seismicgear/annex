@@ -144,6 +144,13 @@ if (process.argv.includes("--check-speech-assets")) {
 
 log(`profile: ${IS_PRODUCTION ? "production" : "dev"}`);
 
+if (isWindows) {
+  log("Verifying the pinned WebView2 installer prerequisite probe...");
+  execFileSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+    path.join(ROOT_DIR, "scripts", "prepare-webview2-probe.ps1"), "-VerifyOnly"],
+  { cwd: ROOT_DIR, stdio: "inherit", windowsHide: true });
+}
+
 // Existing files are not provenance. The release workflow prepares this full
 // inventory first; local release builders use the same explicit entry point.
 // Verification never downloads, replaces runtime files, or weakens ZK gates.

@@ -348,13 +348,34 @@ jobs:
       - name: Tauri build (debug — validates bundle wiring)
         working-directory: crates/annex-desktop
         shell: bash
-        run: cargo tauri build --debug --bundles nsis
+        run: cargo tauri build --debug --bundles nsis,msi
         env:
           ANNEX_BUILD_PROFILE: dev
           CMAKE_ARGS: -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 
       - name: Verify Windows native runtime closure
         run: node scripts/windows-runtime.mjs --directory target/debug
+
+      - name: Verify authenticated WebView2 installer prerequisites
+        shell: pwsh
+        run: ./scripts/verify-webview2-bundle.ps1 -BuildDir target/debug -RequireMsi
+
+      - name: Exercise Windows installer prerequisite failures and repairs
+        shell: pwsh
+        run: |
+          $resultFile = Join-Path $env:RUNNER_TEMP ('annex-webview2-package-' + [Guid]::NewGuid().ToString('N') + '.txt')
+          ./scripts/tests/webview2-installers.test.ps1 -Mode Build -ScratchDir $env:RUNNER_TEMP -ResultFile $resultFile
+          $package = [IO.File]::ReadAllText($resultFile).Trim()
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $package 'run-tests.ps1') -Mode Run -PackageDirectory $package
+          if ($LASTEXITCODE -ne 0) { throw 'Windows prerequisite installer regression failed.' }
+
+      - name: Preserve Windows prerequisite regression evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-prerequisite-regression
+          path: C:/AnnexWebViewFixture/evidence/
+          if-no-files-found: warn
 
   # macOS desktop build — DEFERRED / non-blocking. Only runs when manually
   # dispatched with include_macos=true. Removing this from PR/main is intentional:
@@ -555,6 +576,9 @@ jobs:
       - name: Install Chromium for Playwright
         run: npx playwright install --with-deps chromium
         working-directory: client
+
+      - name: Install UI audit font faces
+        run: sudo apt-get install -y fontconfig fonts-dejavu-core fonts-dejavu-extra
 
       # The audit drives a real in-browser Groth16 proof per role, so the
       # pinned circuits and keys have to exist before the server starts.
