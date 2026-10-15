@@ -45,26 +45,6 @@ jobs:
           uname -m > native-evidence/architecture.txt
           stat -f '%Su' /dev/console > native-evidence/console-user.txt
           xcodebuild -version > native-evidence/xcode-version.txt
-      - name: Retrieve and install exact release DMG
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ASSET_ARCH: ${{ matrix.arch }}
-        run: |
-          set -euo pipefail
-          asset="annex-desktop-macos-${ASSET_ARCH}.dmg"
-          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json tagName,isDraft,targetCommitish,url > native-evidence/release.json
-          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --pattern downloads.json --pattern SHA256SUMS --dir "$RUNNER_TEMP/release"
-          python3 scripts/native-acceptance/macos/verify-download.py "$RUNNER_TEMP/release" "$ASSET_ARCH"
-          hdiutil attach -readonly -nobrowse -mountpoint "$RUNNER_TEMP/annex-dmg" "$RUNNER_TEMP/release/$asset" | tee native-evidence/dmg-mount.txt
-          test ! -e /Applications/Annex.app
-          ditto "$RUNNER_TEMP/annex-dmg/Annex.app" /Applications/Annex.app
-          hdiutil detach "$RUNNER_TEMP/annex-dmg"
-          shasum -a 256 /Applications/Annex.app/Contents/MacOS/* > native-evidence/installed-executable-sha256.txt
-          plutil -p /Applications/Annex.app/Contents/Info.plist > native-evidence/installed-info-plist.txt
-      - name: Verify published app signature
-        id: signature
-        continue-on-error: true
-        run: python3 scripts/verify-macos-bundle.py /Applications/Annex.app --output native-evidence/installed-signature-verification.json 2> native-evidence/installed-signature-check.txt
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -89,6 +69,26 @@ jobs:
           npm --prefix client ci
           npm --prefix client run build
           cargo build --release --locked --target ${{ matrix.target }} -p annex-server
+      - name: Retrieve and install exact release DMG
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          asset="annex-desktop-macos-${ASSET_ARCH}.dmg"
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json tagName,isDraft,targetCommitish,url > native-evidence/release.json
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --pattern downloads.json --pattern SHA256SUMS --dir "$RUNNER_TEMP/release"
+          python3 scripts/native-acceptance/macos/verify-download.py "$RUNNER_TEMP/release" "$ASSET_ARCH"
+          hdiutil attach -readonly -nobrowse -mountpoint "$RUNNER_TEMP/annex-dmg" "$RUNNER_TEMP/release/$asset" | tee native-evidence/dmg-mount.txt
+          test ! -e /Applications/Annex.app
+          ditto "$RUNNER_TEMP/annex-dmg/Annex.app" /Applications/Annex.app
+          hdiutil detach "$RUNNER_TEMP/annex-dmg"
+          shasum -a 256 /Applications/Annex.app/Contents/MacOS/* > native-evidence/installed-executable-sha256.txt
+          plutil -p /Applications/Annex.app/Contents/Info.plist > native-evidence/installed-info-plist.txt
+      - name: Verify published app signature
+        id: signature
+        continue-on-error: true
+        run: python3 scripts/verify-macos-bundle.py /Applications/Annex.app --output native-evidence/installed-signature-verification.json 2> native-evidence/installed-signature-check.txt
       - name: Prepare isolated HTTPS destination
         run: python3 scripts/native-acceptance/macos/prepare-fixture.py subject subject/target/${{ matrix.target }}/release/annex-server
       - name: Exercise public invite and real native admission
