@@ -49,6 +49,7 @@ jobs:
           mkdir native-evidence
           sw_vers > native-evidence/macos-version.txt
           asset="annex-desktop-macos-${ASSET_ARCH}.dmg"
+          python3 scripts/native-acceptance/macos/wait-release.py "$ASSET_ARCH"
           gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --pattern downloads.json --pattern SHA256SUMS --dir "$RUNNER_TEMP/release"
           python3 scripts/native-acceptance/macos/verify-download.py "$RUNNER_TEMP/release" "$ASSET_ARCH"
           hdiutil attach -readonly -nobrowse -mountpoint "$RUNNER_TEMP/annex-dmg" "$RUNNER_TEMP/release/$asset"
