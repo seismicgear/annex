@@ -53,8 +53,19 @@ if ($LASTEXITCODE -ne 0) { throw 'Could not initialize the x86 Visual C++ toolch
 foreach ($line in $compilerEnvironment) {
     if ($line -match '^([^=]+)=(.*)$') { [Environment]::SetEnvironmentVariable($matches[1],$matches[2],'Process') }
 }
-$compiler = (Get-Command cl.exe -CommandType Application).Source
-$script:dumpbin = (Get-Command dumpbin.exe -CommandType Application).Source
+if ($env:VSCMD_ARG_HOST_ARCH -ne 'x86' -or $env:VSCMD_ARG_TGT_ARCH -ne 'x86' -or -not $env:VCToolsInstallDir) { throw 'The selected Visual C++ toolchain must target x86 from an x86 host.' }
+# The caller may already have vcvars64 on PATH. Select the initialized x86
+# tools explicitly instead of collecting both architectures with Get-Command.
+$toolchainRoot = [IO.Path]::GetFullPath($env:VCToolsInstallDir)
+$installationTools = [IO.Path]::GetFullPath((Join-Path $installation 'VC\Tools\MSVC')) + [IO.Path]::DirectorySeparatorChar
+if (-not $toolchainRoot.StartsWith($installationTools, [StringComparison]::OrdinalIgnoreCase)) { throw 'The initialized C++ toolchain is outside the selected Visual Studio installation.' }
+$compiler = Join-Path $toolchainRoot 'bin\HostX86\x86\cl.exe'
+$script:dumpbin = Join-Path $toolchainRoot 'bin\HostX86\x86\dumpbin.exe'
+foreach ($tool in @($compiler, $script:dumpbin)) {
+    if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) { throw "Required x86 tool is missing: $tool" }
+}
+Write-Host "[webview2-probe] compiler: $compiler"
+Write-Host "[webview2-probe] inspector: $script:dumpbin"
 
 if (-not $VerifyOnly) {
     $cache = [IO.Path]::GetFullPath((Join-Path $WorkDir 'webview2-probe'))
