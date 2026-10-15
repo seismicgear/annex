@@ -27,13 +27,15 @@ jobs:
             arch: x86_64
             target: x86_64-apple-darwin
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       SUBJECT_COMMIT: ${{ inputs.subject_commit }}
       RELEASE_TAG: ${{ inputs.release_tag }}
       CARGO_BUILD_JOBS: 2
     steps:
       - uses: actions/checkout@v4
+      - name: Verify actual native TLS fixture before compiling
+        run: python3 scripts/native-acceptance/macos/prepare-fixture.py --verify-tls
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.SUBJECT_COMMIT }}
@@ -76,6 +78,15 @@ jobs:
         run: |
           set -euo pipefail
           asset="annex-desktop-macos-${ASSET_ARCH}.dmg"
+          # Destination compilation may finish while the exact candidate's
+          # other native platforms are still building. Never substitute assets.
+          for attempt in $(seq 1 90); do
+            if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json tagName,isDraft,targetCommitish,url > native-evidence/release.json 2> native-evidence/release-lookup.txt; then
+              break
+            fi
+            if [ "$attempt" = 90 ]; then cat native-evidence/release-lookup.txt; exit 1; fi
+            sleep 20
+          done
           gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json tagName,isDraft,targetCommitish,url > native-evidence/release.json
           gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --pattern downloads.json --pattern SHA256SUMS --dir "$RUNNER_TEMP/release"
           python3 scripts/native-acceptance/macos/verify-download.py "$RUNNER_TEMP/release" "$ASSET_ARCH"

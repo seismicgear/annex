@@ -10,17 +10,21 @@ import socket
 import ssl
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 
 if sys.platform != 'darwin' or os.environ.get('GITHUB_ACTIONS') != 'true':
     raise SystemExit('This fixture is restricted to the ephemeral macOS runner')
-source = pathlib.Path(sys.argv[1]).resolve(strict=True)
-server = pathlib.Path(sys.argv[2]).resolve(strict=True)
+transport_probe = sys.argv[1:] == ['--verify-tls']
+source = None if transport_probe else pathlib.Path(sys.argv[1]).resolve(strict=True)
+server = None if transport_probe else pathlib.Path(sys.argv[2]).resolve(strict=True)
 out = pathlib.Path('native-evidence').resolve()
-base = pathlib.Path(os.environ['RUNNER_TEMP']) / 'annex-native-destination'
+if transport_probe:
+    out /= 'tls-preflight'
+base = pathlib.Path(os.environ['RUNNER_TEMP']) / ('annex-native-transport-probe' if transport_probe else 'annex-native-destination')
 base.mkdir(mode=0o700, exist_ok=False)
-out.mkdir(exist_ok=True)
+out.mkdir(parents=True, exist_ok=True)
 hostname = 'annex-native.localtest.me'
 origin = f'https://{hostname}:3480'
 label = 'Annex Mac Native Target ' + platform.machine()
@@ -61,6 +65,44 @@ execute('openssl', 'verify', '-CAfile', str(tls / 'ca.crt'), str(tls / 'server.c
 # Only this disposable runner's test CA; no validation bypass or browser flag.
 execute('sudo', 'security', 'add-trusted-cert', '-d', '-r', 'trustRoot',
         '-k', '/Library/Keychains/System.keychain', str(tls / 'ca.crt'))
+if transport_probe:
+    # A real TLS handshake checks the exact certificate generator on the native
+    # runner before compiling Annex. This is only transport setup evidence.
+    server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_context.load_cert_chain(tls / 'server.crt', tls / 'server-private.key')
+    client_context = ssl.create_default_context(cafile=str(tls / 'ca.crt'))
+    errors = []
+    with socket.socket() as listener:
+        listener.bind(('127.0.0.1', 0))
+        listener.listen(1)
+        listener.settimeout(10)
+        def serve():
+            try:
+                connection, _ = listener.accept()
+                with server_context.wrap_socket(connection, server_side=True) as connection:
+                    if connection.recv(1) != b'x':
+                        raise RuntimeError('TLS probe request mismatch')
+                    connection.sendall(b'y')
+            except Exception as error:
+                errors.append(repr(error))
+        worker = threading.Thread(target=serve, daemon=True)
+        worker.start()
+        with socket.create_connection(listener.getsockname(), timeout=10) as connection:
+            with client_context.wrap_socket(connection, server_hostname=hostname) as connection:
+                connection.sendall(b'x')
+                if connection.recv(1) != b'y':
+                    raise RuntimeError('TLS probe response mismatch')
+                result = dict(passed=True, scope='real native TLS transport preflight only',
+                    hostname=hostname, protocol=connection.version(),
+                    verify_flags=int(client_context.verify_flags),
+                    certificate_verification=True, hostname_verification=True,
+                    peer_certificate_sha256=hashlib.sha256(connection.getpeercert(binary_form=True)).hexdigest())
+        worker.join(timeout=10)
+        if errors or worker.is_alive():
+            raise RuntimeError(f'TLS probe server did not complete: {errors}')
+    (out / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
+    print(json.dumps(result))
+    sys.exit(0)
 origins = [origin, 'tauri://localhost', 'https://tauri.localhost', 'http://tauri.localhost']
 config = base / 'config.toml'
 database = base / 'annex.db'
