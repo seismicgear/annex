@@ -24,6 +24,9 @@ updates:
     ignore:
       - dependency-name: "ark-*"
         update-types: ["version-update:semver-major"]
+      # 0.17 breaks the tested park/resume publication lifecycle.
+      - dependency-name: "webrtc"
+        versions: [">=0.17, <0.18"]
     groups:
       # One PR for the patch-level noise; anything that could plausibly break
       # a build arrives on its own and gets read.

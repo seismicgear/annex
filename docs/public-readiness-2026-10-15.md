@@ -31,9 +31,9 @@ external agent runtimes, and per-channel encryption.
 - Roadmap: **16 consistency checks passed**; phase summaries and detailed status
   agree, and unfinished criteria remain present.
 - Supply chain: exact GLib/Ark backports verified against Cargo metadata; the
-  three remaining maintenance dispositions retain reviewed versions, sources,
-  checksums, features, parents, and expiration. The WebRTC migration eliminates
-  bincode, so its obsolete exception was removed.
+  four maintenance dispositions retain reviewed versions, sources, checksums,
+  features, parents, and expiration. The proposed WebRTC migration failed a real
+  rejoin test and was deferred, so its original bincode disposition remains.
 - Published server archive: downloaded, SHA-256 matched the release, extracted
   with original resources, and `--check` passed. The path performs migrations,
   creates an initial channel/signing key, and exits. Missing web/speech payloads
@@ -58,6 +58,8 @@ web client, including identity, proof, channel join, and messaging. This is not
 new native desktop acceptance. Local full Rust execution encountered two real
 WebRTC data-channel tests with no gathered candidates in this environment;
 those tests remain enabled for CI, not weakened or reported as local passes.
+The retained 0.11 stack also cannot establish DTLS in this local environment;
+its real-SRTP rejoin acceptance must come from the CI runner.
 
 The anonymous GHCR token request for `seismicgear/annex:pull` returned 403
 `DENIED`; production deployment instructions now use a source build or the
@@ -66,10 +68,11 @@ public server archive. Package access/visibility remains maintainer-owned work.
 ## Dependency PR decisions
 
 [Dependency integration](dependency-upgrades.md) records each open PR's result.
-TypeScript 7 and Arkworks 0.6 are explicitly deferred at compatible versions;
+TypeScript 7, Arkworks 0.6, and WebRTC 0.17 are explicitly deferred at compatible versions;
 merging their histories does not claim those proposed versions were adopted.
 No security gate or published ceremony was weakened. Other compatible upgrades
-and repository handoff instructions are incorporated.
+and repository handoff instructions are incorporated. The failed real-SRTP rejoin
+check and upstream encoding-lifecycle change are linked in the dependency record.
 
 ## License
 

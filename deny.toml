@@ -32,6 +32,7 @@ yanked = "deny"
 # verify-dependency-maintenance.mjs before this audit in CI. Review expires
 # 2027-01-13; see docs/dependency-security-review.md. Unknown advisories still fail.
 ignore = [
+    { id = "RUSTSEC-2025-0141", reason = "Reviewed bincode 1.3.3 maintenance status; exact DTLS parent/source/features/expiry are gated." },
     { id = "RUSTSEC-2024-0388", reason = "Reviewed derivative 2.2.0 build-time maintenance status; exact Ark parent/source/features/expiry are gated." },
     { id = "RUSTSEC-2024-0436", reason = "Reviewed paste 1.0.15 build-time maintenance status; exact parents/source/features/expiry are gated." },
     { id = "RUSTSEC-2024-0370", reason = "Reviewed proc-macro-error 1.0.4 build-time maintenance status; exact GTK macro parents/source/features/expiry are gated." },

@@ -50,12 +50,11 @@ text is included in `../THIRD_PARTY_NOTICES.md`, which desktop bundles and the
 server container ship. The license exception is limited to webpki-roots 1.0.6;
 The v0.1.0 binaries retain their original bundled license. The public-readiness pass adopts Annex Community License 2.0 on main with an additional KI-owned-code grant for v0.1.0; see [licensing](licensing.md).
 
-## Post-release WebRTC integration (October 15, 2026)
+## Post-release WebRTC proposal (October 15, 2026)
 
-The v0.1.0 tag retains its original review and binary graph. On `main`, the
-webrtc 0.17.2 migration removes bincode entirely from locked all-features metadata.
-The obsolete RUSTSEC-2025-0141 exception and review entry are therefore removed;
-no replacement ignore is added. The three remaining reviewed packages keep the
-same versions, checksums, features, and parents, validated by the existing gate.
-The original webrtc-dtls 0.10.0 reachability assessment described the release
-stack, not the new dtls 0.17.2 graph.
+The proposed webrtc 0.17.2 migration failed the existing real-SRTP publication
+rejoin test in CI. It is deferred; see [dependency decisions](dependency-upgrades.md).
+Both the published tag and this integration retain webrtc 0.11 and its reviewed
+webrtc-dtls 0.10.0 / bincode 1.3.3 graph. All four maintenance dispositions keep
+the exact reviewed versions, checksums, features, parents, and expiry. No
+additional advisory exception is introduced and no acceptance test is weakened.

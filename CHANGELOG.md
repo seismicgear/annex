@@ -14,8 +14,8 @@ unchanged. `Unreleased` describes work after that tag.
   separate agreement for resale/paid hosting, and ownership retained. The
   additional KI-owned v0.1.0 grant does not replace the published binaries.
 - Reopen unsupported roadmap audit/performance completion claims.
-- Integrate compatible dependency and CI-action PRs; record TypeScript 7 and
-  Arkworks 0.6 deferrals in `docs/dependency-upgrades.md`. These source updates
+- Integrate compatible dependency and CI-action PRs; record TypeScript 7,
+  Arkworks 0.6, and WebRTC 0.17 deferrals in `docs/dependency-upgrades.md`. These source updates
   are not present in the published v0.1.0 packages.
 
 ## [0.1.0] — 2026-10-15

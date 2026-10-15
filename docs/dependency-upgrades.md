@@ -10,7 +10,7 @@ representing every proposed version as adopted.
 | #299, #315, #316 | Integrate checkout 7, download-artifact 8, setup-node 7; resolve their overlapping CI edits |
 | #313 | Integrate the tokio-tungstenite development dependency update |
 | #320 | Integrate the client patch updates and regenerate the supported lock graph |
-| #312 | Integrate webrtc 0.17.2; remove an obsolete default struct update and re-evaluate its dependency maintenance exposure |
+| #312 | **Defer webrtc 0.17.2.** Retain 0.11: the proposed upgrade breaks publication rejoining over real SRTP; the unchanged regression test caught it in CI |
 | #309 | Integrate hkdf 0.13 using an explicit SHA-2 0.11 alias for HKDF; retain the SHA-2 0.10 API for unrelated HMAC/hashes; existing cross-language known-answer tests protect the wire derivation |
 | #310, #314 | **Defer Arkworks 0.6 version bumps.** Retain Groth16 0.5 and SNARK 0.5.1 with the coherent BN254/FF/EC/serialize stack, light-poseidon 0.4, and reviewed ark-relations backport |
 | #302 | **Defer TypeScript 7.** Retain TypeScript 5.9: current typescript-eslint 8.71.2 declares TypeScript `>=4.8.4 <6.1.0`; the proposed installation fails peer resolution |
@@ -27,6 +27,17 @@ metadata, not a suppressed warning. Revisit when the parser/linter supports the
 compiler and the build/test configurations are migrated. Do not use
 `--legacy-peer-deps` or disable type checking as a resolution.
 
-Dependabot ignores only these unsupported major transitions, with this rationale.
+The WebRTC proposal compiled, but [CI](https://github.com/seismicgear/annex/actions/runs/38788361608)
+failed `rejoined_publication_preserves_sequence_over_real_srtp` with
+`ErrRTPSenderNewTrackHasIncorrectEnvelope`. In 0.17.2,
+`replace_track(None)` removes the encoding required by a subsequent
+`replace_track(Some(...))`. Annex parks and reuses publication slots to preserve
+SSRC, sequence, timestamps, and the browser receive pipeline. Adopting this
+version needs a deliberate lifecycle migration and real group-call rejoin
+acceptance; do not suppress the test or silently create new slots. The original
+reviewed bincode maintenance disposition remains because the 0.11 graph still
+contains it.
+
+Dependabot ignores these unsupported transitions, with this rationale.
 Compatible/security updates remain enabled. No audit gate, dependency-source pin,
 proof verifier, or acceptance requirement is relaxed to merge a PR.
