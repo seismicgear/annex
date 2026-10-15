@@ -42,11 +42,15 @@ def execute(*args):
 
 tls = base / 'tls'
 tls.mkdir(mode=0o700)
+(tls / 'ca.cnf').write_text(
+    '[req]\nprompt=no\ndistinguished_name=dn\nx509_extensions=ca\n'
+    '[dn]\nCN=Annex Ephemeral Mac Native Test CA\n'
+    '[ca]\nbasicConstraints=critical,CA:TRUE,pathlen:0\n'
+    'keyUsage=critical,keyCertSign,cRLSign\nsubjectKeyIdentifier=hash\n'
+    'authorityKeyIdentifier=keyid:always\n')
+execute('openssl', 'version')
 execute('openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-sha256',
-        '-days', '2', '-subj', '/CN=Annex Ephemeral Mac Native Test CA',
-        '-addext', 'basicConstraints=critical,CA:TRUE,pathlen:0',
-        '-addext', 'keyUsage=critical,keyCertSign,cRLSign',
-        '-addext', 'subjectKeyIdentifier=hash',
+        '-days', '2', '-config', str(tls / 'ca.cnf'), '-extensions', 'ca',
         '-keyout', str(tls / 'ca-private.key'), '-out', str(tls / 'ca.crt'))
 execute('openssl', 'req', '-new', '-newkey', 'rsa:2048', '-nodes', '-sha256',
         '-subj', f'/CN={hostname}', '-keyout', str(tls / 'server-private.key'),
@@ -58,10 +62,12 @@ execute('openssl', 'req', '-new', '-newkey', 'rsa:2048', '-nodes', '-sha256',
 execute('openssl', 'x509', '-req', '-in', str(tls / 'server.csr'), '-CA', str(tls / 'ca.crt'),
         '-CAkey', str(tls / 'ca-private.key'), '-CAcreateserial', '-days', '2', '-sha256',
         '-extfile', str(tls / 'extensions.cnf'), '-out', str(tls / 'server.crt'))
-execute('openssl', 'verify', '-CAfile', str(tls / 'ca.crt'), str(tls / 'server.crt'))
 # Public certificates permit diagnosing trust failures without retaining private keys.
 (out / 'test-ca.crt').write_bytes((tls / 'ca.crt').read_bytes())
 (out / 'test-server.crt').write_bytes((tls / 'server.crt').read_bytes())
+execute('openssl', 'x509', '-in', str(tls / 'ca.crt'), '-noout', '-text')
+execute('openssl', 'x509', '-in', str(tls / 'server.crt'), '-noout', '-text')
+execute('openssl', 'verify', '-CAfile', str(tls / 'ca.crt'), str(tls / 'server.crt'))
 # Only this disposable runner's test CA; no validation bypass or browser flag.
 execute('sudo', 'security', 'add-trusted-cert', '-d', '-r', 'trustRoot',
         '-k', '/Library/Keychains/System.keychain', str(tls / 'ca.crt'))
