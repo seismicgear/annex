@@ -51,8 +51,19 @@ profile badge comes from the server's founder identity, not moderator capability
 Local verification: 949 client tests, lint, production frontend build, strict
 desktop/server Clippy, two Windows-compiled desktop database tests, and the backend
 identity endpoint test passed. These are implementation checks, **not a repaired
-published Windows/macOS Host receipt**. The native Host observer now checks the
-logged-in desktop account, rather than assuming it matches the shell account.
+published Windows/macOS Host receipt**. The native Host observer now identifies
+the exact installed process and reads only its actual open database.
+
+[Diagnostic run 38820552079](https://github.com/seismicgear/annex/actions/runs/38820552079)
+resolved the observer gap on both published Mac architectures. Each actual app
+created one active HUMAN identity with moderator and invite permissions. Its
+database was inside the macOS application container. Each server's public URL
+remained loopback HTTP, router acquisition failed in the UI, and Copy Link never
+appeared. Both tests failed only at that public-invite step. An extra explicit
+identity-creation click was also still necessary. This confirms successful local
+founder creation on Mac and failed automatic public hosting; it does not qualify
+Windows, the unreleased repair, or one-click setup. The installed payloads still
+match c4513be and their strict ad-hoc signature verification passed.
 
 The public hosting relay and outbound connector are still missing. The default
 desktop registration target remains `router.annex.net`; no functional replacement

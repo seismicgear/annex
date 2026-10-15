@@ -57,8 +57,10 @@ jobs:
           test ! -e "$HOME/Library/Application Support/Annex"
           python3 - <<'PY'
           import os, pathlib, pwd
-          home = pathlib.Path(pwd.getpwuid(os.stat('/dev/console').st_uid).pw_dir)
-          assert not (home / 'Library/Application Support/Annex').exists(), 'Native desktop account is not a fresh Host profile'
+          homes = {pathlib.Path.home(), pathlib.Path(pwd.getpwuid(os.stat('/dev/console').st_uid).pw_dir)}
+          for home in homes:
+              for relative in ('Library/Application Support/Annex', 'Library/Containers/com.annex.desktop/Data/Library/Application Support/Annex'):
+                  assert not (home / relative).exists(), 'Native desktop account is not a fresh Host profile'
           PY
           ditto "$RUNNER_TEMP/annex-dmg/Annex.app" /Applications/Annex.app
           hdiutil detach "$RUNNER_TEMP/annex-dmg"
