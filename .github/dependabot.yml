@@ -19,6 +19,14 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    # Upgrade the proof ecosystem together, including light-poseidon and the
+    # audited ark-relations backport. See docs/dependency-upgrades.md.
+    ignore:
+      - dependency-name: "ark-*"
+        update-types: ["version-update:semver-major"]
+      # 0.17 breaks the tested park/resume publication lifecycle.
+      - dependency-name: "webrtc"
+        versions: [">=0.17, <0.18"]
     groups:
       # One PR for the patch-level noise; anything that could plausibly break
       # a build arrives on its own and gets read.
@@ -30,6 +38,10 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    # typescript-eslint currently supports TypeScript <6.1, not TypeScript 7.
+    ignore:
+      - dependency-name: "typescript"
+        versions: [">=7"]
     groups:
       patch-updates:
         update-types: ["patch"]

@@ -5,7 +5,66 @@ release checks. A runnable command or a configured workflow is not an execution
 receipt. Historical results below do not qualify later source, another operating
 system, or an installed application.
 
-## Current local checkpoint — October 13, 2026
+## Published v0.1.0 — October 15, 2026
+
+The [public release](https://github.com/seismicgear/annex/releases/tag/v0.1.0)
+was published at 17:35:51 UTC from
+[`2ac5d190481757ce871a3149feafc6f3c44b2b47`](https://github.com/seismicgear/annex/commit/2ac5d190481757ce871a3149feafc6f3c44b2b47).
+The original tag, binaries, signatures, and checksums remain unchanged.
+
+| Evidence | What it establishes | Boundary |
+| --- | --- | --- |
+| [Signed release workflow](https://github.com/seismicgear/annex/actions/runs/38769507686) | Four required native targets, desktop resource inventories, artifact/signature checks, Linux server tarball, container and startup checks passed | A successful build is not full native user acceptance |
+| [Release-source CI](https://github.com/seismicgear/annex/actions/runs/38769518406) | Server/client checks, desktop build/audit lanes, UI audit, and Linux/Windows server smoke passed | PR macOS lane is conditional; actual macOS release builds ran in the release workflow |
+| [CodeQL](https://github.com/seismicgear/annex/actions/runs/38769516895) | Static analysis passed on release source | Not an independent security or cryptographic audit |
+| [Published native acceptance account](https://github.com/seismicgear/annex/releases/tag/v0.1.0) | Real Ubuntu session with the published DEB: app-created public invite → OS handler → identity creation → explicit Join → intended server → independently received message. Repeated invite stayed in the same process | Linux DEB acceptance; not transferred to Windows or macOS |
+| Same release account, AppImage | Production-signed AppImage launched from a persistent path containing spaces; first launch registered its handler; invitation reached the same process without another admission | Launch/handler acceptance, not an independently repeated full message journey |
+| Same release account, final-source browser runs | 426 checks across 105 surfaces, zero findings; 13 functional browser tests; 6 group-call tests | Browser/fake-media evidence is not native microphone, display-capture, or every network topology |
+
+The published installer catalog contains Windows x64 EXE/MSI, Linux x64
+AppImage/DEB, and Apple Silicon/Intel DMGs. `SHA256SUMS`, `downloads.json`,
+`latest.json`, updater payloads/signatures, SBOMs, ceremony manifests/transcript,
+and dependency-backport provenance accompany them. See [Installation](installation.md).
+
+The server container was built and pushed by the release job, but anonymous
+GHCR pull authorization returned HTTP 403 `DENIED` during the public-readiness
+pass. [Deployment](deployment.md) therefore leads with a production build from
+the published tag and offers the public server archive; anonymous container
+availability remains unresolved.
+
+### Still incomplete
+
+- Native Windows and macOS invitation-to-message acceptance. An earlier Windows
+  Sandbox attempt reached the executable but WebView2 could not initialize or
+  complete repair; no Windows join/message pass is inferred from that attempt.
+- Actual installed updater replacement, all optional speech-provider/platform
+  combinations, and broader media/network/NAT qualification.
+- Automatic public hosting/tunneling. The invitation site only routes a link;
+  the destination must supply reachable HTTPS. Signaling is a separate service.
+- Independent comprehensive security/cryptographic review, a multi-contributor
+  ceremony, broader alignment-threshold calibration, measured target-scale/latency
+  qualification, and a seven-day load soak.
+
+Windows binaries are not Authenticode-signed; macOS uses ad-hoc signatures and
+is not notarized. Tauri updater signing is a separate trust mechanism. The
+roadmap retains these incomplete requirements rather than treating publication
+as evidence of their completion.
+
+### Public-presence pass
+
+[October 15 public-readiness verification](public-readiness-2026-10-15.md)
+records the later website/documentation/license and dependency-integration work.
+That work is on `main`; it does not retroactively alter the release. In this
+pass, the actual server archive's SHA-256 was checked against the release digest
+`2ef062e9102fa57e9611adefba2a3189a15757e27bda2f6669333e82c3add645`, and its
+`--check` startup path succeeded. The archive contains neither `client/dist`
+nor speech executables/models; those require separate operator setup.
+
+## Historical local checkpoint — October 13, 2026
+
+The following paragraphs and later historical inventories record earlier
+contexts. They do not supersede the published evidence above.
+
 
 The repaired Windows qualification run recorded 1,560 Rust workspace tests passed,
 zero failures and nine explicit ignored entries; the separate desktop suite passed

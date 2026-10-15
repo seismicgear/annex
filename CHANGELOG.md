@@ -3,15 +3,14 @@
 Notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-`release_v0.1.md` preserves the historical February 2026 preparation notes.
-Version 0.1.0 was published on October 15, 2026. Later corrections ship as
-new versions; published installers are not silently replaced.
+v0.1.0 was published on October 15, 2026. Its tag and installer bytes remain
+unchanged. Later corrections ship as new versions.
 
 ## [Unreleased]
 
 No changes yet.
 
-## [0.1.1] — native packaging correction
+## [0.1.1] — 2026-10-15
 
 - Seal macOS app bundles with an explicit ad-hoc code signature on both
   architectures, including their resources. Fail release upload if the bundle
@@ -20,8 +19,17 @@ No changes yet.
   notarization. Those credentials are not configured for this release.
 - Add native macOS desktop and public-site acceptance infrastructure using
   actual published installers and XCTest UI sessions.
+- Refresh the website, onboarding, README, architecture, privacy documentation,
+  and contribution guide against implementation and release evidence.
+- Adopt Annex Community License 2.0: commercial use and modification allowed,
+  separate agreement for resale/paid hosting, and ownership retained. The
+  additional KI-owned v0.1.0 grant does not replace the published binaries.
+- Reopen unsupported roadmap audit/performance completion claims.
+- Integrate compatible dependency and CI-action PRs; record TypeScript 7,
+  Arkworks 0.6, and WebRTC 0.17 deferrals in `docs/dependency-upgrades.md`. These source updates
+  are included in 0.1.1 and are not present in the published v0.1.0 packages.
 
-## [0.1.0] — release candidate
+## [0.1.0] — 2026-10-15
 
 ### Identity and security
 
@@ -108,26 +116,23 @@ No changes yet.
 
 ### Qualification and remaining boundaries
 
-This section describes the candidate source. It does **not** declare every
-implemented repair qualified through the final installed application.
-
-- Source-bound component suites and genuine browser sessions cover many
-  identity, encryption, attachment, media and federation paths. Their receipts
-  identify the candidate used; earlier passes are not silently transferred to
-  later source revisions.
-- The complete UI/native matrix on the final release source remains open.
-  In particular, the installed OS-handler invitation journey and actual join
-  of the intended server are pending until recorded against the installer.
-  Public landing-page routing alone does not establish installed delivery.
-- Cross-platform installer execution, updater installation, and optional
-  speech-provider/parameter combinations require their own platform evidence.
-  A build, signature check or bundled resource inventory does not replace it.
-- Installers are not Windows Authenticode signed or Apple Developer ID signed
-  and notarized. Tauri updater signatures and SHA-256 verification are separate
-  from operating-system trust; platform warnings remain possible.
-- The server's HTTP listener requires real TLS termination for public HTTPS.
-  Automatic public traffic hosting is not established by the invitation
-  website, and no working public tunnel service is claimed by this release.
+- All four native release targets, artifact/signature checks, server archive,
+  and container jobs passed. Release-source CI and CodeQL passed.
+- Final-source browser verification recorded 13 functional tests, 6 group-call
+  tests, and 426 UI checks across 105 surfaces with zero findings.
+- The published Linux DEB completed an app-created public invitation through the
+  OS handler, explicit join, and independently received messaging. The published
+  AppImage launched from a persistent path with spaces and received OS invitations.
+- Full Windows/macOS native invite-to-message acceptance and installed updater
+  acceptance remain open. Earlier Windows Sandbox acceptance was blocked by
+  WebView2 startup. Optional speech/provider and broad network/load/soak
+  qualification remain incomplete.
+- Windows has no Authenticode signing; macOS is ad-hoc signed without Developer ID
+  or notarization. Updater signatures and checksums are separate.
+- Public hosting requires reachable HTTPS. No working automatic public tunnel
+  is claimed. The trusted setup remains single-contributor with a beacon;
+  alignment thresholds are calibrated on a small corpus.
+- Exact source-bound receipts: [Release readiness](docs/RELEASE_READINESS.md).
 
 [Unreleased]: https://github.com/seismicgear/annex/commits/main
 [0.1.0]: https://github.com/seismicgear/annex/releases/tag/v0.1.0

@@ -1,5 +1,7 @@
 # Humans
 
+> New here? Read [Getting started](docs/getting-started.md), [installation](docs/installation.md), and the [license guide](docs/licensing.md). This page explains the principles; the release ledger records verified behavior.
+
 **How humans use, operate, and build Annex. Your rights, your infrastructure, your rules.**
 
 You're reading this because you're a person — a user, a server operator, a contributor, or someone deciding whether to trust this project with your community. This document is for you. It explains what Annex gives you, what it asks of you, and what it will never do to you.
@@ -106,7 +108,7 @@ Everything. Specifically:
 
 - **Other people's identities.** You can remove someone from your server's Merkle tree, but you can't revoke their cryptographic keypair. They still exist on the network; they just can't prove membership on your server anymore.
 - **Federated servers' policies.** Federation is bilateral. You can set your standards, but you can't force a federated peer to adopt them. If their policy diverges too far, federation trust downgrades automatically.
-- **The protocol itself.** Annex is open source. You run it as-is. If you modify the protocol to violate the FOUNDATIONS, you're running a fork, not Annex.
+- **The protocol itself.** Annex is source available. You run it as-is. If you modify the protocol to violate the FOUNDATIONS, you're running a fork, not Annex.
 
 ### Your Responsibility
 
@@ -123,14 +125,14 @@ You are not responsible for content on other servers, content in federated chann
 
 ## Contributing
 
-Annex is open source. Contributions are welcome from anyone who reads and respects the [FOUNDATIONS.md](./FOUNDATIONS.md).
+Annex is source available. Contributions are welcome from anyone who reads and respects the [FOUNDATIONS.md](./FOUNDATIONS.md).
 
 ### What We Need
 
 - **Rust engineers** — the server core is Rust (`tokio` + `axum`). If you write production Rust, there is work for you.
 - **Cryptography contributors** — the ZKP stack (Circom / Groth16 / Poseidon) is central to the platform. Circuit design, trusted setup, proof optimization, and verification performance are all active areas.
 - **Voice/audio engineers** — the in-process WebRTC SFU (`crates/annex-voice`, built on `webrtc-rs`), voice LLM pipeline optimization, STT accuracy, and latency reduction. There is no external media server to integrate against; the SFU, the RTP fan-out and the agent audio path all live in the Annex process.
-- **Frontend developers** — the client needs to be good. Not "good for open source." Good. People are migrating from Discord — the bar for UX is high.
+- **Frontend developers** — the client needs to be good. Not "good for source available." Good. People are migrating from Discord — the bar for UX is high.
 - **Protocol designers** — federation, RTX knowledge exchange, VRP trust negotiation, and cross-server identity are all evolving. If you think about distributed systems and trust models, there's room.
 - **Documentation writers** — this project has a lot of conceptual surface area. Clear documentation that doesn't require reading three PhD theses to understand is valuable.
 - **Security researchers** — if you can break the ZKP circuits, the VRP trust model, or the federation protocol, we want to know before anyone else does.

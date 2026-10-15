@@ -19,7 +19,6 @@ use base64::Engine;
 use chacha20poly1305::aead::Aead;
 use chacha20poly1305::{ChaCha20Poly1305, KeyInit};
 use hkdf::Hkdf;
-use sha2::Sha256;
 
 /// Marks a value produced by [`MessageCipher::encrypt`]. The leading 0x01 byte
 /// essentially never appears in legitimate chat text, and the AEAD tag makes a
@@ -57,7 +56,7 @@ impl MessageCipher {
     /// HKDF-SHA256 — same provenance as username encryption, different domain
     /// label, so the two keys are independent.
     pub fn from_signing_key(signing_key_bytes: &[u8; 32]) -> Self {
-        let hk = Hkdf::<Sha256>::new(Some(b"annex-message-at-rest"), signing_key_bytes);
+        let hk = Hkdf::<sha2_11::Sha256>::new(Some(b"annex-message-at-rest"), signing_key_bytes);
         let mut key = [0u8; 32];
         hk.expand(b"annex-message-at-rest-v1", &mut key)
             .expect("hkdf expand of 32 bytes never fails");
