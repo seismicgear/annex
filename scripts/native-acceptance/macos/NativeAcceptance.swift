@@ -112,11 +112,20 @@ final class NativeAcceptance: XCTestCase {
         // Only the ordinary Safari external-application confirmation, when shown.
         for _ in 0..<15 {
             if annex.state == .runningForeground { break }
-            let allow = safari.buttons["Allow"].firstMatch
-            let open = safari.buttons["Open"].firstMatch
-            if (allow.exists || open.exists) && safari.debugDescription.contains("Annex") {
+            // Safari exposes this modal's actions as Toggle elements. An
+            // application-wide Button query can instead find an obscured
+            // permission prompt in another window. Select the visible modal.
+            let dialog = safari.dialogs["AXSafariModalDialog"].firstMatch
+            if dialog.exists {
+                let message = dialog.textViews["SFDialogViewMessageText"].firstMatch
+                XCTAssertTrue((message.value as? String ?? "").contains("Annex"),
+                              "Only the observed Annex external-application prompt may be accepted")
+                let allow = dialog.descendants(matching: .any).matching(
+                    NSPredicate(format: "label == %@ OR title == %@", "Allow", "Allow")).firstMatch
+                XCTAssertTrue(allow.waitForExistence(timeout: 10))
+                XCTAssertTrue(allow.isHittable, "The visible Safari Allow action must be hittable")
                 capture(safari, "ordinary-open-application-prompt")
-                if allow.exists { allow.click() } else { open.click() }
+                allow.click()
                 break
             }
             Thread.sleep(forTimeInterval: 1)
