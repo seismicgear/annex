@@ -1,13 +1,13 @@
 # Roadmap
 
-> **v0.1.0 is published (October 15, 2026).** This roadmap preserves the full
+> **v0.1.0 and the v0.1.1 packaging correction are published (October 15, 2026).** This roadmap preserves the full
 > architecture and remaining acceptance criteria. COMPLETE means the phase's
 > recorded criteria, not an independent security audit or universal platform
 > support. Current user-facing status is in [README](README.md) and the
-> [release evidence ledger](docs/RELEASE_READINESS.md). Phase 12 is reopened where
+> [release evidence ledger](docs/RELEASE_READINESS.md). Phases 11 and 12 are reopened where
 > earlier checked claims lacked release-bound evidence.
 
-**The single source of truth for what's built, what's in progress, and what's next.**
+**Implementation status and future goals, checked against code and execution evidence.**
 
 This document is the project's canonical state. If you are a contributor — human or AI — you read this before touching code. You do not start work on a phase that isn't marked `IN PROGRESS` or `NEXT`. You do not declare a phase complete unless every completion criterion is met. You do not skip phases. You do not reorder phases. You do not "start on the easy parts" of a later phase while an earlier phase has unmet criteria.
 
@@ -62,8 +62,10 @@ Phase 7: Voice Infrastructure .......... PARTIAL  (native in-process SFU, no
                                                    Whisper STT transcribes for
                                                    real as of 2026-09-15 — it
                                                    never had before, see 7.5 —
-                                                   but still ships without a
-                                                   GGML model by design)
+                                                   desktop now bundles the
+                                                   base.en GGML model; broader
+                                                   provider/platform acceptance
+                                                   remains incomplete)
 Phase 8: Federation .................... COMPLETE (message/edit/redaction relay
                                                    verified; revocation works)
 Phase 9: RTX Knowledge Exchange ........ COMPLETE (relay content-bound vs
@@ -78,7 +80,9 @@ Phase 9: RTX Knowledge Exchange ........ COMPLETE (relay content-bound vs
                                                    before which multi-hop did not
                                                    exist at all)
 Phase 10: Observability ................ COMPLETE
-Phase 11: Client ....................... COMPLETE
+Phase 11: Client ....................... PARTIAL  (first-time user acceptance
+                                                   and comparative UX study
+                                                   remain unverified)
 Phase 12: Hardening & Audit ............ PARTIAL
 ```
 
@@ -88,7 +92,7 @@ Phase 12: Hardening & Audit ............ PARTIAL
 > completion criterion is met" — they are downgraded to `PARTIAL` with the
 > specific gaps noted inline in the phase summaries below.
 
-**Last updated**: 2026-09-15
+**Last updated**: 2026-10-15
 
 When phases change status, update this block and add a dated entry to the [Changelog](#changelog) at the bottom of this document.
 
@@ -951,10 +955,11 @@ Voice channels that work for both humans and agents. Humans speak via WebRTC to 
       whose only behaviour is to print a notice and exit non-zero. The
       Dockerfile copied it. It now copies `whisper-cli` and fails the build if
       the copied binary prints a deprecation notice.
-- [ ] A GGML model is provisioned automatically. `scripts/setup-stt.sh`
-      installs one with a pinned SHA-256, but the image still ships without a
-      model on purpose (141 MiB for an optional feature). This is what keeps
-      Phase 7 `PARTIAL`.
+- [ ] A GGML model is provisioned automatically across supported deployment
+      types. Desktop packages now bundle the pinned `base.en` model. The
+      standalone archive has no speech runtime, and the container still needs
+      a configured model; `scripts/setup-stt.sh` installs one with a pinned
+      SHA-256. Broader provider/platform acceptance also keeps Phase 7 `PARTIAL`.
 
 #### 7.6 — Voice profile assignment
 - [x] Server operator assigns voice profiles to agents via `agent_registrations.voice_profile_id`
@@ -1240,7 +1245,7 @@ Phase 10 is **COMPLETE** when:
 
 ## Phase 11: Client
 
-**Status**: `COMPLETE`
+**Status**: `PARTIAL` — the client and automated/browser/native journeys are implemented and have bounded evidence. First-time non-technical user acceptance and the subjective Discord-comparison criterion still lack a recorded user-study result.
 **Prerequisites**: Phase 7 `COMPLETE`, Phase 10 `COMPLETE`
 **Estimated scope**: Web client with identity management, channel UI, voice, agent visibility
 
@@ -1289,11 +1294,11 @@ A client people actually use. Not a developer tool. Not a proof-of-concept with 
 
 Phase 11 is **COMPLETE** when:
 
-- [x] A non-technical user can open the client, generate an identity, join a server, and chat — without touching a terminal
+- [ ] A non-technical user can open the client, generate an identity, join a server, and chat — without touching a terminal (the flow is implemented; independent first-time user acceptance remains)
 - [x] Voice works in the browser
 - [x] Agents are visually distinguishable from humans
 - [x] Key management is handled transparently (generation, storage, backup prompt)
-- [x] The UX is competitive with Discord (this is subjective but enforced by user testing)
+- [ ] The UX is competitive with Discord (this is subjective and requires recorded user testing)
 
 ---
 
@@ -1339,7 +1344,7 @@ The qualification needed for confident public operation at the stated scale. Pub
 - [x] AGENTS and HUMANS accurate to implementation
 - [x] ROADMAP fully reflects completion status
 - [x] Protocol specifications in `docs/protocol/` cover all flows
-- [x] Deployment guide exists and works on a clean machine
+- [ ] Deployment guide exists and works on a clean machine (published server startup is verified; complete clean-host deployment acceptance remains)
 
 #### 12.6 — Deployment packaging
 - [x] Docker image for server + dependencies
@@ -1351,9 +1356,10 @@ The qualification needed for confident public operation at the stated scale. Pub
 
 Phase 12 is **COMPLETE** when:
 
+- [x] Published artifact digests and the documented standalone server startup check pass (v0.1.1 archive and `--check` receipt in the release ledger)
 - [ ] All audits pass or findings are resolved
 - [ ] Performance targets are met or documented with justification for misses
-- [x] A new operator can deploy Annex from the documentation alone without contacting the developers
+- [ ] A new operator can deploy Annex from the documentation alone without contacting the developers
 - [ ] The system has run continuously for 7 days under load without intervention
 
 ---
@@ -1364,6 +1370,7 @@ Record phase status changes here with dates.
 
 | Date | Change |
 |------|--------|
+| 2026-10-15 | Final evidence reconciliation: both published Mac v0.1.1 invite/message sessions passed; Windows/Linux v0.1.1, Gatekeeper, updater, and automatic public hosting remain unqualified. Phase 11 reopened to PARTIAL because automated checks do not establish first-time non-technical user acceptance or the subjective UX comparison. Phase 12 retains clean-host/operator acceptance as unfinished. Corrected the stale Phase 7 summary: desktop bundles the Whisper model. No architectural goal or criterion removed. |
 | 2026-10-15 | Public v0.1.0 readiness reconciliation: Phase 7 remains PARTIAL, with desktop speech resources now bundled and provider/platform acceptance still open. Phase 12 reopened to PARTIAL: external review, scale/latency targets, seven-day soak, Windows/macOS native acceptance, and installed updater qualification lack sufficient release-bound evidence. Earlier dated completion claims below remain historical, not current status. No architectural criterion removed. |
 | 2026-09-15 | Phase 9 `COMPLETE`. Multi-hop RTX relay: a signed hop chain where each hop covers the previous hop's digest, an origin attestation over a scope-invariant content digest plus a reasoning-chain commitment, `rtx_max_hops` / `RTX_HOP_CEILING` as a TTL, and loop prevention that can see more than one hop. Before this, `relay_path` was reset to one entry on every send and nothing re-relayed, so multi-hop did not exist and the two items 9.4 recorded as done were guarding a path no bundle could take. Also: the RTX relay's SSRF gate ignored `allow_private_peer_addresses` while the message relay honoured it, so an operator who set that flag got messages relayed and RTX bundles silently dropped at the same peer. |
 | 2026-09-15 | Phase 6 `COMPLETE`. Alignment is enforced at action time (`services/agent_policy.rs`), a `Conflict` verdict revokes the agent's sessions in the same transaction that deactivates it, and the WebSocket send handler stopped reporting every refusal as "internal error". The phase's stated gap named the capability contract; the contract was never an action permission set, and the thing actually missing was alignment. |
